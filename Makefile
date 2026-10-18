@@ -45,6 +45,10 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest 
 test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker), incl. the plugin protocol client vs the real server.
 	./scripts/test-integration.sh
 
+.PHONY: test-integration-postgres14
+test-integration-postgres14: ## Run the store/migration integration tests and the rolling-upgrade test against PostgreSQL 14, the minimum supported version (docker compose; needs Docker).
+	./scripts/test-integration-postgres14.sh
+
 .PHONY: test-sim
 test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_SEED).
 	./scripts/test-sim.sh
