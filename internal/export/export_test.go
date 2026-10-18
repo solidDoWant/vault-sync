@@ -594,10 +594,6 @@ func TestExportListsAtMostOneHundredDocumentErrors(t *testing.T) {
 }
 
 func TestExportFailsRatherThanDropADocumentItCannotStore(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("skipping: root ignores directory permissions, which this test uses to make writes fail")
-	}
-
 	space := newWorkspace(t)
 	source := newFakeSource()
 	notes := source.addVault("Notes", store.EncryptionNone)
@@ -609,23 +605,24 @@ func TestExportFailsRatherThanDropADocumentItCannotStore(t *testing.T) {
 
 	before := snapshot(t, space.output)
 
-	// The disk refuses to create the unplaced tree.
+	// The unplaced tree cannot be created: something else took its name
+	// in the staging directory while the export ran.
 	source.onContent = func(context.Context, []byte) (io.ReadCloser, error) {
 		source.onContent = nil
 
 		staging := space.stagingDirectories(t)
 		require.Len(t, staging, 1)
-		require.NoError(t, os.Chmod(staging[0], 0o500))
-		t.Cleanup(func() { _ = os.Chmod(staging[0], 0o700) })
+		require.NoError(t, os.WriteFile(filepath.Join(staging[0], notes.String()+".unplaced"), nil, 0o600))
 
 		return nil, nil
 	}
 
 	summary, err := space.run(t, t.Context(), source)
-	require.ErrorIs(t, err, fs.ErrPermission)
+	require.ErrorIs(t, err, fs.ErrExist)
 
 	assert.Equal(t, export.StatusFailed, summary.Status)
 	assert.Equal(t, before, snapshot(t, space.output), "the previous export is untouched")
+	assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t), "the staging directory is removed")
 }
 
 func TestInterruptedExportLeavesThePreviousExportUntouched(t *testing.T) {
