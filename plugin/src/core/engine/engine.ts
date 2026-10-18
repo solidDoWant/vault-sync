@@ -322,20 +322,37 @@ export class SyncEngine {
   }
 
   /**
-   * Removes the file of an unmaterializable document if it still holds the
-   * synced content and no local operation of the document is pending: the
-   * server no longer has the document at that path, the content is on the
-   * server, and the path is then free for whatever the server puts there. A
-   * file with local changes stays, with them, until the document
-   * materializes and the merge path takes it.
+   * Releases the file of an unmaterializable document: the server no longer
+   * has the document at that path, so the path is freed for whatever the
+   * server or the user puts there. The file is removed if it still holds the
+   * synced content (which the server has) and no local operation of the
+   * document is pending; a file with local changes stays, with them, until
+   * the document materializes and the merge path takes it.
+   *
+   * The release is recorded in the journal by storing the document's state
+   * as `deleted` (no file of its own on this device; SPEC.md §8), so nothing
+   * at the old path is afterwards taken for the document's file: another
+   * document's, or a new local file, of any content. The record comes after
+   * the delete, and a release interrupted in between is finished by the next
+   * call (the interrupted pull's replay of the revision, or each start's
+   * push): the file is then gone, or another document holds the path (one
+   * the server put there meanwhile), and either way the document has no
+   * file there any more. Another document's file is never removed.
    */
   private async releaseFile(documentId: string): Promise<void> {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return;
     if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return;
-    const content = await this.readOrNull(state.path);
-    if (content === null || sha256Hex(content) !== state.baseHash) return;
-    await this.echoed(this.echoes.expectDelete(state.path), () => this.vault.delete(state.path));
+    const key = this.fileKey(state.path);
+    const taken = (await this.journal.listDocuments()).some((other) => other.documentId !== documentId && !other.deleted && this.fileKey(other.path) === key);
+    if (!taken) {
+      const content = await this.readOrNull(state.path);
+      if (content !== null) {
+        if (sha256Hex(content) !== state.baseHash) return;
+        await this.echoed(this.echoes.expectDelete(state.path), () => this.vault.delete(state.path));
+      }
+    }
+    await this.journal.putDocument({ ...state, deleted: true });
   }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
@@ -410,16 +427,15 @@ export class SyncEngine {
     if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
 
     // An unmaterializable document whose file was released has no file of
-    // its own here any more: it comes back as a new document would.
-    const released = deferred?.reason === "unmaterializable" && state !== undefined && !state.deleted && (await this.vault.stat(state.path)) === null;
-    const base = released ? undefined : state;
+    // its own here any more: its state is `deleted` (see releaseFile), so it
+    // comes back as a new document would.
 
     // Download before looking at the disk, so the check-then-write window is short.
-    const needsContent = !remote.deleted && (base === undefined || base.deleted || base.baseHash !== remote.contentHash);
+    const needsContent = !remote.deleted && (state === undefined || state.deleted || state.baseHash !== remote.contentHash);
     const content = needsContent ? await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size) : undefined;
 
-    const inspection = await this.inspect(base, remote);
-    if (inspection.kind === "dirty") return this.handToMerge(remote, base, inspection);
+    const inspection = await this.inspect(state, remote);
+    if (inspection.kind === "dirty") return this.handToMerge(remote, state, inspection);
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
       else if (!remote.deleted) await this.matchSpelling(remote.path);

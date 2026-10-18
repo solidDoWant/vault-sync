@@ -777,3 +777,89 @@ export async function unmaterializableOnWindows(endpoints: SimEndpoints): Promis
     documents: await liveDocuments(run),
   };
 }
+
+export interface FreedPathResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents before the renames and after the run: path to document label. */
+  before: Map<string, string>;
+  documents: Map<string, string>;
+}
+
+/**
+ * A path freed by an unmaterializable rename is reused (review of #217,
+ * SPEC.md §8). The POSIX engine renames three notes the Windows engine has
+ * synced, unchanged, to names Windows cannot hold, so the Windows engine
+ * removes their files. Then the POSIX engine creates a different note at one
+ * freed path and an empty note, of the same content as the empty original,
+ * at another, while the Windows user creates a new note at the third and the
+ * Windows engine crashes. Once the POSIX engine renames the originals to
+ * legal names, every one of the six notes must be live on the server, with
+ * its own content, and in both vaults: none merged into another, deleted,
+ * or left unpushed.
+ */
+export async function freedPathReused(endpoints: SimEndpoints): Promise<FreedPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+  const [posix, windows] = run.observers;
+  if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof posix) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof posix) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const moveAll = async (moves: [string, string][]) => {
+    for (const [from, to] of moves) log(await posix.move(from, to));
+    await push(posix);
+  };
+
+  log(await posix.edit("plan.md", encoder.encode(textLines("one", "two"))));
+  log(await posix.edit("empty.md", new Uint8Array()));
+  log(await posix.edit("draft.md", encoder.encode(textLines("draft"))));
+  await push(posix);
+  await pull(windows);
+  const before = await liveDocuments(run);
+
+  await moveAll([
+    ["plan.md", "plan?.md"],
+    ["empty.md", "empty?.md"],
+    ["draft.md", "draft?.md"],
+  ]);
+  await pull(windows);
+
+  // Another note at one freed path, an empty one at another, and a new local note at the third.
+  log(await posix.edit("plan.md", encoder.encode(textLines("another note"))));
+  log(await posix.edit("empty.md", new Uint8Array()));
+  await push(posix);
+  log(await windows.edit("draft.md", encoder.encode(textLines("brand new"))));
+  await pull(windows);
+  log(windows.crash());
+  await push(windows);
+  await pull(windows);
+
+  await moveAll([
+    ["plan?.md", "plan 2.md"],
+    ["empty?.md", "empty 2.md"],
+    ["draft?.md", "draft 2.md"],
+  ]);
+  await pull(windows);
+  await push(windows);
+  await pull(posix);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [posix, windows].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, before, documents: await liveDocuments(run) };
+}

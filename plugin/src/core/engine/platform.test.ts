@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { InMemoryJournal } from "../journal/memory";
 import { InMemoryVault } from "../vault/memory";
 import type { UnmaterializableDocument } from "./engine";
-import { copyOf, files, harness, type Harness } from "./testing";
+import { copyOf, Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, type Harness } from "./testing";
 
 // Platform path rules (SPEC.md §8): a remote document whose path the local
 // platform cannot hold is tracked as unmaterializable and reported, never
@@ -223,6 +223,213 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
 
       expect(await files(h.vault)).toEqual(new Map([["plan.md", "another note\n"]]));
       expect(await h.journal.listDeferred()).toEqual([expect.objectContaining({ reason: "unmaterializable" })]);
+    });
+  });
+
+  // Once its file is removed, the parked document has nothing at its old
+  // path: whatever is there later (another document's file, a new local
+  // file) is never taken for its file (review of #217).
+  describe("given a document whose file was removed when a remote rename gave it an illegal name", () => {
+    /** Synced at plan.md with `content`; then renamed remotely to plan?.md, which removes its unchanged file. */
+    async function released(content: string, rename: { content?: string } = {}, h: Harness = windowsDevice()) {
+      h.server.commit({ documentId: "doc", path: "plan.md", content });
+      await h.engine.pull();
+      h.server.commit({ documentId: "doc", path: "plan?.md", ...rename });
+      await h.engine.pull();
+      expect(await files(h.vault)).toEqual(new Map());
+      return h;
+    }
+
+    it("keeps another document the server puts at the old path apart when it materializes", async () => {
+      const h = await released("one\ntwo\n", { content: "one\ntwo\nthree\n" });
+      h.server.commit({ documentId: "other", path: "plan.md", content: "another note\n" });
+      await h.engine.pull();
+      await h.engine.push();
+      h.server.commit({ documentId: "doc", path: "plan 2.md" });
+
+      await h.engine.pull();
+      await h.engine.push();
+
+      const expected = new Map([
+        ["plan.md", "another note\n"],
+        ["plan 2.md", "one\ntwo\nthree\n"],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["plan.md", "other"],
+          ["plan 2.md", "doc"],
+        ]),
+      );
+      expect(await h.journal.listConflicts()).toEqual([]);
+    });
+
+    it("never deletes another document's file of the same content at the old path, across a restart", async () => {
+      const h = await released("");
+      h.server.commit({ documentId: "other", path: "plan.md", content: "" });
+      await h.engine.pull();
+      await h.engine.push();
+      h.restart();
+
+      await h.engine.push();
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(new Map([["plan.md", ""]]));
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["plan.md", ""],
+          ["plan?.md", ""],
+        ]),
+      );
+      expect(h.localChanges).toEqual([]);
+    });
+
+    it("never deletes another document's file at the old path of a kept edited file the user deleted meanwhile", async () => {
+      const h = windowsDevice();
+      h.server.commit({ documentId: "doc", path: "plan.md", content: "" });
+      await h.engine.pull();
+      await h.vault.write("plan.md", bytes("draft\n"));
+      h.server.commit({ documentId: "doc", path: "plan?.md" });
+      await h.engine.pull();
+      expect(await files(h.vault)).toEqual(new Map([["plan.md", "draft\n"]]));
+      // The user deletes the edited file while the pull that brings another document there is under way.
+      h.server.commit({ documentId: "other", path: "plan.md", content: "" });
+      let deleted = false;
+      h.server.interceptor = (method) => {
+        if (method !== "ListChanges" || deleted) return;
+        deleted = true;
+        void h.vault.delete("plan.md");
+      };
+      await h.engine.pull();
+      h.server.interceptor = undefined;
+
+      await h.engine.push();
+      h.restart();
+      await h.engine.push();
+
+      expect(await files(h.vault)).toEqual(new Map([["plan.md", ""]]));
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["plan.md", "other"],
+          ["plan?.md", "doc"],
+        ]),
+      );
+    });
+
+    it("pushes a new local file at the old path as a new document, before and after a restart", async () => {
+      for (const restart of [false, true]) {
+        const h = await released("one\n");
+        await h.vault.write("plan.md", bytes("brand new\n"));
+        if (restart) h.restart();
+
+        await h.engine.push();
+
+        expect(h.server.liveFiles(), `restart: ${String(restart)}`).toEqual(
+          new Map([
+            ["plan.md", "brand new\n"],
+            ["plan?.md", "one\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments().get("plan?.md")).toBe("doc");
+        expect(h.server.liveDocuments().get("plan.md")).not.toBe("doc");
+      }
+    });
+
+    it("keeps a new local file of the same content at the old path, and pushes it as a new document", async () => {
+      const h = await released("one\n");
+      await h.vault.write("plan.md", bytes("one\n"));
+      h.restart();
+
+      await h.engine.push();
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(new Map([["plan.md", "one\n"]]));
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["plan.md", "one\n"],
+          ["plan?.md", "one\n"],
+        ]),
+      );
+    });
+
+    it("reaches the same state after a crash at any point of the removal", async () => {
+      const finish = async (h: Harness) => {
+        h.server.commit({ documentId: "other", path: "plan.md", content: "" });
+        await h.engine.pull();
+        await h.engine.push();
+        h.server.commit({ documentId: "doc", path: "plan 2.md" });
+        await h.engine.pull();
+        await h.engine.push();
+        return { server: h.server.liveDocuments(), files: await files(h.vault), deferred: await h.journal.listDeferred(), conflicts: await h.journal.listConflicts() };
+      };
+      const expected = await finish(await released(""));
+      expect(expected.files).toEqual(
+        new Map([
+          ["plan.md", ""],
+          ["plan 2.md", ""],
+        ]),
+      );
+
+      let crashed = 0;
+      for (let crashAfter = 1; ; crashAfter++) {
+        const points = new CrashPoints();
+        const h = harness({ merge: "default", pathRules: windows, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
+        h.server.commit({ documentId: "doc", path: "plan.md", content: "" });
+        await h.engine.pull();
+        h.server.commit({ documentId: "doc", path: "plan?.md" });
+        points.count = 0;
+        points.crashAfter = crashAfter;
+        const outcome = await h.engine.pull().then(
+          () => "finished",
+          (error: unknown) => {
+            if (!(error instanceof Crash)) throw error;
+            return "crashed";
+          },
+        );
+        if (outcome === "finished") break;
+        crashed++;
+        points.crashAfter = 0;
+        await h.engine.settled();
+        h.restart();
+
+        expect(await finish(h), `crash after durable change ${String(crashAfter)}`).toEqual(expected);
+      }
+      // The deferral, the delete and the journal's record of it.
+      expect(crashed).toBeGreaterThanOrEqual(3);
+    });
+
+    it("does not take the removed file for a local delete when the next revision comes before a push after a crash", async () => {
+      let crashed = 0;
+      for (let crashAfter = 1; ; crashAfter++) {
+        const points = new CrashPoints();
+        // The harness's recording hook defers whatever it is given.
+        const h = harness({ pathRules: windows, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
+        h.server.commit({ documentId: "doc", path: "plan.md", content: "one\n" });
+        await h.engine.pull();
+        h.server.commit({ documentId: "doc", path: "plan?.md" });
+        points.count = 0;
+        points.crashAfter = crashAfter;
+        const outcome = await h.engine.pull().then(
+          () => "finished",
+          (error: unknown) => {
+            if (!(error instanceof Crash)) throw error;
+            return "crashed";
+          },
+        );
+        if (outcome === "finished") break;
+        crashed++;
+        points.crashAfter = 0;
+        await h.engine.settled();
+        h.restart();
+        h.server.commit({ documentId: "doc", path: "plan 2.md" });
+
+        await h.engine.pull();
+
+        expect(h.merges, `crash after durable change ${String(crashAfter)}`).toEqual([]);
+        expect(await files(h.vault), `crash after durable change ${String(crashAfter)}`).toEqual(new Map([["plan 2.md", "one\n"]]));
+      }
+      expect(crashed).toBeGreaterThanOrEqual(3);
     });
   });
 

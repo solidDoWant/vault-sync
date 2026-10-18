@@ -87,6 +87,11 @@ export interface DocumentState {
   size: bigint;
   /** The document's kind; every revision of a document has the same one. */
   kind: DocumentKindName;
+  /**
+   * The last synced revision is a tombstone, or this device holds no file of
+   * the document: an unmaterializable document whose file was released
+   * (SPEC.md §8), so `path` names no file of it any more.
+   */
   deleted: boolean;
 }
 
@@ -134,7 +139,8 @@ export interface RemoteRevision {
  *   platform path rules), e.g. a Windows reserved name. The document is
  *   tracked, never dropped or renamed on the server, and its local changes
  *   wait until a later revision gives it a path the platform can hold. A
- *   file it already had is removed if unchanged, and kept if edited.
+ *   file it already had is removed if unchanged (its DocumentState is then
+ *   stored as `deleted`), and kept if edited.
  */
 export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable";
 

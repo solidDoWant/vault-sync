@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, structuralOperations, unmaterializableOnWindows } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -287,6 +287,29 @@ describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
     // The renamed notes are still the same documents.
     expect(result.documents.get("plan 2.md"), trace).toBe(result.before.get("plan.md"));
     expect(result.documents.get("ok 2.md"), trace).toBe(result.before.get("ok.md"));
+  });
+
+  it("never takes what is later at a path an unmaterializable rename freed for the renamed note's file", async () => {
+    const result = await freedPathReused(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([
+      ["draft 2.md", "draft\n"],
+      ["draft.md", "brand new\n"],
+      ["empty 2.md", ""],
+      ["empty.md", ""],
+      ["plan 2.md", "one\ntwo\n"],
+      ["plan.md", "another note\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents.size, trace).toBe(expected.size);
+    // The renamed notes are still the same documents, and the notes at their old paths are others.
+    for (const name of ["plan", "empty", "draft"]) {
+      expect(result.documents.get(`${name} 2.md`), trace).toBe(result.before.get(`${name}.md`));
+      expect(result.documents.get(`${name}.md`), trace).not.toBe(result.before.get(`${name}.md`));
+    }
   });
 
   it("keeps every invariant in a seeded run under Windows rules, tracking the pool's illegal names", async () => {
