@@ -39,7 +39,10 @@ func (store *Store) AllVaults(ctx context.Context, after uuid.UUID, limit int) (
 
 // LiveDocument is a document's state at some seq, when it is not deleted.
 type LiveDocument struct {
-	ID         uuid.UUID
+	ID uuid.UUID
+	// Kind is the document's kind ("blob", "text" or "yjs"), which never
+	// changes.
+	Kind       string
 	RevisionID uuid.UUID
 	Path       string
 	// ContentRef is the content's blob id and Size its stored size.
@@ -59,7 +62,7 @@ type LiveDocument struct {
 // transaction open between pages.
 func (vault *VaultStore) LiveDocumentsAt(ctx context.Context, seq int64, after uuid.UUID, limit int) ([]LiveDocument, error) {
 	rows, err := vault.store.pool.Query(ctx, `
-		SELECT d.id, h.id, h.path, h.content_ref, b.size
+		SELECT d.id, d.kind, h.id, h.path, h.content_ref, b.size
 		FROM documents d
 		CROSS JOIN LATERAL (
 			SELECT r.id, r.path, r.content_ref, r.deleted
@@ -79,7 +82,7 @@ func (vault *VaultStore) LiveDocumentsAt(ctx context.Context, seq int64, after u
 	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (LiveDocument, error) {
 		var document LiveDocument
 
-		err := row.Scan(&document.ID, &document.RevisionID, &document.Path, &document.ContentRef, &document.Size)
+		err := row.Scan(&document.ID, &document.Kind, &document.RevisionID, &document.Path, &document.ContentRef, &document.Size)
 
 		return document, err
 	})

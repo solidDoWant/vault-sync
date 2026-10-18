@@ -2,6 +2,12 @@
 // a directory tree for the operator's archival tooling (SPEC.md §4). It runs
 // as the `vault-sync-server export` subcommand (docs/export.md).
 //
+// Every live document whose content can be read is exported: at its path in
+// the vault's directory when the filesystem can hold it there, otherwise in
+// the vault's unplaced tree by document id. A manifest per vault lists every
+// live document and where its bytes are, so the export can be restored
+// exactly.
+//
 // The export only reads the database and the object store. It writes a new
 // tree to a staging directory beside the output directory and swaps it into
 // place atomically, so the output directory always holds one complete
@@ -69,11 +75,13 @@ type Options struct {
 
 // Summary statuses.
 const (
-	// StatusOK: every live document of every exported vault was written
-	// and the new tree is in place.
+	// StatusOK: the bytes of every live document of every exported vault
+	// were written, at their path or in the unplaced tree, and the new
+	// tree is in place.
 	StatusOK = "ok"
-	// StatusPartial: the new tree is in place, but some documents were
-	// left out (see DocumentErrors).
+	// StatusPartial: the new tree is in place, but the content of some
+	// documents is missing or corrupt in the object store, so their bytes
+	// are not in it (see DocumentErrors).
 	StatusPartial = "partial"
 	// StatusFailed: the export stopped; the previous export, if any, is
 	// untouched.
@@ -92,13 +100,18 @@ type Summary struct {
 	// (end-to-end encrypted vaults).
 	Vaults        int `json:"vaults"`
 	SkippedVaults int `json:"skipped_vaults"`
-	// Files and Bytes count the files written.
+	// Files and Bytes count the document files written, in vault trees
+	// and unplaced trees.
 	Files int64 `json:"files"`
 	Bytes int64 `json:"bytes"`
-	// DocumentErrors counts the documents left out; the first
-	// maxListedDocumentErrors are listed under their vault.
-	DocumentErrors int            `json:"document_errors"`
-	VaultDetails   []VaultSummary `json:"vault_details"`
+	// DocumentErrors counts the documents whose content is missing or
+	// corrupt; the first maxListedDocumentErrors are listed under their
+	// vault.
+	DocumentErrors int `json:"document_errors"`
+	// Unplaced counts the documents written to unplaced trees because
+	// their path cannot be placed in their vault's tree.
+	Unplaced     int64          `json:"unplaced"`
+	VaultDetails []VaultSummary `json:"vault_details"`
 }
 
 // VaultSummary describes one vault's export.
@@ -112,10 +125,12 @@ type VaultSummary struct {
 	Skipped        string          `json:"skipped,omitempty"`
 	Files          int64           `json:"files"`
 	Bytes          int64           `json:"bytes"`
+	Unplaced       int64           `json:"unplaced"`
 	DocumentErrors []DocumentError `json:"document_errors,omitempty"`
 }
 
-// DocumentError is a document left out of the export.
+// DocumentError is a document whose content is missing or corrupt, so its
+// bytes are not in the export.
 type DocumentError struct {
 	DocumentID uuid.UUID `json:"document_id"`
 	Reason     string    `json:"reason"`
@@ -317,7 +332,7 @@ func writeMarker(staging string, startedAt time.Time) error {
 	content, err := json.Marshal(struct {
 		Format    int       `json:"format"`
 		StartedAt time.Time `json:"started_at"`
-	}{Format: 1, StartedAt: startedAt})
+	}{Format: FormatVersion, StartedAt: startedAt})
 	if err != nil {
 		return fmt.Errorf("encode marker: %w", err)
 	}
@@ -393,6 +408,24 @@ func (run *run) exportVault(ctx context.Context, staging string, vault store.Vau
 
 	defer func() { _ = tree.Close() }()
 
+	unplaced := &unplacedTree{directory: filepath.Join(staging, vault.ID.String()+UnplacedSuffix)}
+
+	defer func() { _ = unplaced.Close() }()
+
+	manifest, err := createManifest(filepath.Join(staging, vault.ID.String()+ManifestSuffix), vault, run.summary.StartedAt)
+	if err != nil {
+		return err
+	}
+
+	finished := false
+
+	defer func() {
+		if !finished {
+			manifest.abandon()
+		}
+	}()
+
+	out := &vaultOutput{id: vault.ID, tree: tree, unplaced: unplaced, manifest: manifest, details: details}
 	after := uuid.Nil
 
 	for {
@@ -406,7 +439,7 @@ func (run *run) exportVault(ctx context.Context, staging string, vault store.Vau
 				return fmt.Errorf("export interrupted: %w", err)
 			}
 
-			if err := run.exportDocument(ctx, tree, vault.ID, document, details); err != nil {
+			if err := run.exportDocument(ctx, out, document); err != nil {
 				return fmt.Errorf("document %s: %w", document.ID, err)
 			}
 		}
@@ -418,14 +451,60 @@ func (run *run) exportVault(ctx context.Context, staging string, vault store.Vau
 		after = documents[len(documents)-1].ID
 	}
 
+	finished = true
+
+	if err := manifest.finish(); err != nil {
+		return err
+	}
+
 	run.summary.Vaults++
 
 	return nil
 }
 
-func (run *run) exportDocument(ctx context.Context, tree *vaultTree, vaultID uuid.UUID, document store.LiveDocument, details *VaultSummary) error {
+// vaultOutput is where one vault's documents go.
+type vaultOutput struct {
+	id       uuid.UUID
+	tree     *vaultTree
+	unplaced *unplacedTree
+	manifest *manifestWriter
+	details  *VaultSummary
+}
+
+// exportDocument writes the document's bytes at its path in the vault tree
+// or, when the path cannot be placed there, in the unplaced tree, and lists
+// it in the manifest. Only missing or corrupt content leaves its bytes out.
+func (run *run) exportDocument(ctx context.Context, out *vaultOutput, document store.LiveDocument) error {
+	record := newManifestDocument(document)
+
+	var (
+		refused *documentError
+		remove  func() error
+	)
+
+	file, err := out.tree.create(document.Path)
+
+	switch {
+	case errors.As(err, &refused):
+		file, err = out.unplaced.create(document.ID)
+		if err != nil {
+			return err
+		}
+
+		record.Status = ManifestUnplaced
+		record.Location = out.id.String() + UnplacedSuffix + "/" + document.ID.String()
+		record.Reason = refused.reason.Error()
+		remove = func() error { return out.unplaced.remove(document.ID) }
+	case err != nil:
+		return err
+	default:
+		record.Status = ManifestPlaced
+		record.Location = out.id.String() + "/" + document.Path
+		remove = func() error { return out.tree.remove(document.Path) }
+	}
+
 	open := func() (io.ReadCloser, error) {
-		content, err := run.options.Source.Content(ctx, vaultID, document.ContentRef)
+		content, err := run.options.Source.Content(ctx, out.id, document.ContentRef)
 		if errors.Is(err, ErrContentMissing) {
 			return nil, refuse(errContentMissing)
 		}
@@ -433,33 +512,51 @@ func (run *run) exportDocument(ctx context.Context, tree *vaultTree, vaultID uui
 		return content, err
 	}
 
-	err := tree.write(document.Path, open, document.Size, document.ContentRef)
-
-	var refused *documentError
+	err = writeContent(file, open, document.Size, document.ContentRef)
 
 	switch {
 	case errors.As(err, &refused):
-		// The path is user data: log and report the document id only.
-		run.options.Logger.WarnContext(ctx, "document left out of the export",
-			"vault_id", vaultID, "document_id", document.ID, "reason", refused.reason.Error())
-
-		run.summary.DocumentErrors++
-
-		if run.listed < maxListedDocumentErrors {
-			run.listed++
-
-			details.DocumentErrors = append(details.DocumentErrors, DocumentError{DocumentID: document.ID, Reason: refused.reason.Error()})
+		if err := remove(); err != nil {
+			return err
 		}
 
-		return nil
+		run.missing(ctx, out, document.ID, refused.reason)
+
+		record.Status = ManifestMissing
+		record.Location = ""
+		record.Reason = refused.reason.Error()
 	case err != nil:
 		return err
+	case record.Status == ManifestUnplaced:
+		// The path is user data: log the document id only.
+		run.options.Logger.InfoContext(ctx, "document exported to the unplaced tree",
+			"vault_id", out.id, "document_id", document.ID, "reason", record.Reason)
+
+		out.details.Unplaced++
+		run.summary.Unplaced++
 	}
 
-	details.Files++
-	details.Bytes += document.Size
-	run.summary.Files++
-	run.summary.Bytes += document.Size
+	if record.Status != ManifestMissing {
+		out.details.Files++
+		out.details.Bytes += document.Size
+		run.summary.Files++
+		run.summary.Bytes += document.Size
+	}
 
-	return nil
+	return out.manifest.document(record)
+}
+
+// missing reports a document whose content is missing or corrupt.
+func (run *run) missing(ctx context.Context, out *vaultOutput, documentID uuid.UUID, reason error) {
+	// The path is user data: log and report the document id only.
+	run.options.Logger.WarnContext(ctx, "document content is missing or corrupt; its bytes are not in the export",
+		"vault_id", out.id, "document_id", documentID, "reason", reason.Error())
+
+	run.summary.DocumentErrors++
+
+	if run.listed < maxListedDocumentErrors {
+		run.listed++
+
+		out.details.DocumentErrors = append(out.details.DocumentErrors, DocumentError{DocumentID: documentID, Reason: reason.Error()})
+	}
 }

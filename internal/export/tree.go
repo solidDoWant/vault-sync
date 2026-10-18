@@ -10,6 +10,9 @@ import (
 	"os"
 	"strings"
 	"syscall"
+	"unicode/utf8"
+
+	"github.com/google/uuid"
 
 	"github.com/solidDoWant/vault-sync/internal/vaultpath"
 )
@@ -28,13 +31,16 @@ var (
 	errPathConflict    = errors.New("path conflicts with another document's file or directory")
 	errPathSymlink     = errors.New("path crosses a symbolic link")
 	errPathUnwritable  = errors.New("path cannot be created on this filesystem")
+	errPathNotUTF8     = errors.New("path is not valid UTF-8")
 	errContentLength   = errors.New("stored content does not have the blob's size")
 	errContentHash     = errors.New("stored content does not match its blob id")
 	errContentMissing  = errors.New("stored content is missing")
 )
 
-// documentError is a problem confined to one document: the document is left
-// out of the export, which continues.
+// documentError is a problem confined to one document. A problem with its
+// path puts the document in the unplaced tree instead of the vault tree; a
+// problem with its content leaves its bytes out of the export. Either way
+// the export continues.
 type documentError struct {
 	reason error
 }
@@ -69,30 +75,77 @@ func (tree *vaultTree) Close() error {
 	return tree.root.Close()
 }
 
-// write creates the file at the vault-relative path and fills it with the
-// content open returns, which must be exactly size bytes whose SHA-256 is
-// sum. open is called only once the path has been checked and the file
-// created. write returns a *documentError for a problem with this document
-// alone (the file is then not left behind), and any other error for a
-// failure of the export itself.
-func (tree *vaultTree) write(path string, open func() (io.ReadCloser, error), size int64, sum []byte) error {
-	file, err := tree.create(path)
-	if err != nil {
-		return err
+// remove removes the file at path after its content failed.
+func (tree *vaultTree) remove(path string) error {
+	if err := tree.root.Remove(path); err != nil {
+		return fmt.Errorf("remove file: %w", withoutPath(err))
 	}
 
-	err = fill(file, open, size, sum)
+	return nil
+}
+
+// unplacedTree holds a vault's documents that cannot be placed at their
+// path, each in a file named by its document id. The directory is created
+// when the first such document is written. Its names are chosen by the
+// export, never by users, so they can never conflict.
+type unplacedTree struct {
+	directory string
+	root      *os.Root
+}
+
+// create creates the empty file for the document. Any error is a failure of
+// the export itself: there is nowhere else to keep the document.
+func (tree *unplacedTree) create(id uuid.UUID) (*os.File, error) {
+	if tree.root == nil {
+		if err := os.Mkdir(tree.directory, dirMode); err != nil {
+			return nil, fmt.Errorf("create unplaced directory: %w", withoutPath(err))
+		}
+
+		root, err := os.OpenRoot(tree.directory)
+		if err != nil {
+			return nil, fmt.Errorf("open unplaced directory: %w", withoutPath(err))
+		}
+
+		tree.root = root
+	}
+
+	file, err := tree.root.OpenFile(id.String(), os.O_WRONLY|os.O_CREATE|os.O_EXCL, fileMode)
+	if err != nil {
+		return nil, fmt.Errorf("create unplaced file: %w", withoutPath(err))
+	}
+
+	return file, nil
+}
+
+// remove removes the document's file after its content failed.
+func (tree *unplacedTree) remove(id uuid.UUID) error {
+	if err := tree.root.Remove(id.String()); err != nil {
+		return fmt.Errorf("remove unplaced file: %w", withoutPath(err))
+	}
+
+	return nil
+}
+
+func (tree *unplacedTree) Close() error {
+	if tree.root == nil {
+		return nil
+	}
+
+	return tree.root.Close()
+}
+
+// writeContent fills file with the content open returns, which must be
+// exactly size bytes whose SHA-256 is sum, and closes it. open is called
+// only once the file has been created. It returns a *documentError for
+// missing or wrong content, and any other error for a failure of the export
+// itself. The caller removes the file after an error.
+func writeContent(file *os.File, open func() (io.ReadCloser, error), size int64, sum []byte) error {
+	err := fill(file, open, size, sum)
 	if closeErr := file.Close(); err == nil && closeErr != nil {
 		err = fmt.Errorf("write file: %w", withoutPath(closeErr))
 	}
 
-	if err != nil {
-		_ = tree.root.Remove(path)
-
-		return err
-	}
-
-	return nil
+	return err
 }
 
 // create checks path and creates its directories and an empty file.
@@ -103,6 +156,12 @@ func (tree *vaultTree) create(path string) (*os.File, error) {
 	// character of a name.
 	if err := vaultpath.Check(path); err != nil {
 		return nil, refuse(errPathNotRelative)
+	}
+
+	// The manifest is JSON, which carries only UTF-8: a file whose name is
+	// not UTF-8 could not be named exactly in it.
+	if !utf8.ValidString(path) {
+		return nil, refuse(errPathNotUTF8)
 	}
 
 	segments := strings.Split(path, "/")

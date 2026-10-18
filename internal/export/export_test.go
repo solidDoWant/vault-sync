@@ -5,8 +5,11 @@ package export_test
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -15,6 +18,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -70,6 +74,22 @@ func TestExportMirrorsEveryVaultsLiveDocuments(t *testing.T) {
 	_, err = os.Lstat(filepath.Join(space.output, secret.String()))
 	require.ErrorIs(t, err, fs.ErrNotExist, "an end-to-end encrypted vault is not exported")
 
+	_, err = os.Lstat(filepath.Join(space.output, secret.String()+".manifest.jsonl"))
+	require.ErrorIs(t, err, fs.ErrNotExist, "nor gets a manifest")
+
+	manifests := verifyManifests(t, space.output)
+	require.Len(t, manifests, 3, "every exported vault has a manifest, even an empty one")
+	assert.Len(t, manifests[notes].Documents, 7)
+	assert.Len(t, manifests[work].Documents, 1)
+	assert.Empty(t, manifests[empty].Documents)
+
+	_, err = os.Lstat(filepath.Join(space.output, notes.String()+".unplaced"))
+	require.ErrorIs(t, err, fs.ErrNotExist, "there is no unplaced tree when every document is placed")
+
+	marker, err := os.ReadFile(filepath.Join(space.output, export.MarkerName))
+	require.NoError(t, err)
+	assert.Contains(t, string(marker), `"format":2`, "the marker names the export format")
+
 	assert.Equal(t, export.StatusOK, summary.Status)
 	assert.Empty(t, summary.Error)
 	assert.Equal(t, space.output, summary.Output)
@@ -114,6 +134,7 @@ func TestExportReplacesThePreviousExport(t *testing.T) {
 		notes.String() + "/kept.md":     "kept, edited",
 		notes.String() + "/new/file.md": "new",
 	}, files(t, space.output))
+	assert.Len(t, verifyManifests(t, space.output)[notes].Documents, 2, "the manifest is replaced too")
 
 	assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t), "the previous export is removed")
 }
@@ -138,7 +159,7 @@ func TestExportWritesOnlyInsideTheVaultDirectory(t *testing.T) {
 	source := newFakeSource()
 
 	wantFiles := map[string]string{}
-	refused := map[uuid.UUID]bool{}
+	unplaced := map[uuid.UUID]string{}
 
 	for _, vector := range paths {
 		vault := source.addVault(vector.Name, store.EncryptionNone)
@@ -147,25 +168,37 @@ func TestExportWritesOnlyInsideTheVaultDirectory(t *testing.T) {
 		if vector.Valid {
 			wantFiles[vault.String()+"/"+vector.Path] = vector.Name
 		} else {
-			refused[document] = true
+			// Kept by document id, outside the vault directory.
+			wantFiles[vault.String()+".unplaced/"+document.String()] = vector.Name
+			unplaced[document] = vector.Path
 		}
 	}
 
 	summary, err := space.run(t, t.Context(), source)
 	require.NoError(t, err)
 
-	assert.Equal(t, wantFiles, files(t, space.output), "valid paths are written verbatim; invalid ones are not")
+	assert.Equal(t, wantFiles, files(t, space.output), "valid paths are written verbatim; invalid ones by document id")
 	assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t), "nothing is written beside the export")
 
-	assert.Equal(t, export.StatusPartial, summary.Status)
-	assert.Equal(t, len(refused), summary.DocumentErrors)
+	assert.Equal(t, export.StatusOK, summary.Status, "every document is in the export")
+	assert.Zero(t, summary.DocumentErrors)
+	assert.EqualValues(t, len(unplaced), summary.Unplaced)
+	assert.EqualValues(t, len(paths), summary.Files)
 
-	reasons := documentErrors(summary)
-	assert.Len(t, reasons, min(len(refused), 100))
+	manifests := verifyManifests(t, space.output)
+	require.Len(t, manifests, len(paths))
 
-	for document, reason := range reasons {
-		assert.True(t, refused[document], "document %s was refused but its path is valid", document)
-		assert.Equal(t, "path is not vault-relative", reason)
+	for _, vault := range manifests {
+		require.Len(t, vault.Documents, 1)
+		document := vault.Documents[0]
+
+		if path, ok := unplaced[document.DocumentID]; ok {
+			assert.Equal(t, "unplaced", document.Status)
+			assert.Equal(t, path, document.Path, "the manifest keeps the original path")
+			assert.Equal(t, "path is not vault-relative", document.Reason)
+		} else {
+			assert.Equal(t, "placed", document.Status)
+		}
 	}
 }
 
@@ -213,12 +246,19 @@ func TestExportNeverFollowsASymbolicLink(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, map[string]entry{"target.md": {Mode: 0o600, Content: "outside"}}, snapshot(t, outside), "nothing is written through a link")
+	assert.Equal(t, export.StatusOK, summary.Status)
+	assert.Zero(t, summary.DocumentErrors)
 
-	assert.Equal(t, map[uuid.UUID]string{
-		throughDirectory: "path crosses a symbolic link",
-		ontoFile:         "path conflicts with another document's file or directory",
-	}, documentErrors(summary))
-	assert.Equal(t, export.StatusPartial, summary.Status)
+	// The planted links stay in the tree; the documents they block are
+	// kept in the unplaced tree instead.
+	unplacedDir := filepath.Join(space.output, notes.String()+".unplaced")
+	exportedUnplaced := snapshot(t, unplacedDir)
+	assert.Equal(t, "through a directory link", exportedUnplaced[throughDirectory.String()].Content)
+	assert.Equal(t, "onto a file link", exportedUnplaced[ontoFile.String()].Content)
+
+	documents := verifyManifests(t, space.output)[notes].byID()
+	assert.Equal(t, "path crosses a symbolic link", documents[throughDirectory].Reason)
+	assert.Equal(t, "path conflicts with another document's file or directory", documents[ontoFile].Reason)
 
 	exported := snapshot(t, filepath.Join(space.output, notes.String()))
 	assert.Equal(t, "plants links", exported["plant.md"].Content)
@@ -228,22 +268,191 @@ func TestExportNeverFollowsASymbolicLink(t *testing.T) {
 	assert.Equal(t, "where the old tree had a link", exported["target.md"].Content)
 }
 
-func TestExportLeavesOutDocumentsItCannotWriteFaithfully(t *testing.T) {
+// placement is where a test expects a document's bytes.
+type placement struct {
+	path    string
+	content string
+	// unplaced is the reason the document cannot be placed in the main
+	// tree, or empty if it is placed at path.
+	unplaced string
+}
+
+func TestExportKeepsEveryDocumentItCannotPlace(t *testing.T) {
+	const (
+		conflict   = "path conflicts with another document's file or directory"
+		unwritable = "path cannot be created on this filesystem"
+	)
+
+	segment255 := strings.Repeat("x", 252) + ".md"
+	segment256 := strings.Repeat("y", 253) + ".md"
+
+	tests := []struct {
+		name      string
+		documents []placement
+	}{
+		{
+			name: "a file, then a document under it",
+			documents: []placement{
+				{path: "a", content: "a file"},
+				{path: "a/b.md", content: "a file under a file", unplaced: conflict},
+			},
+		},
+		{
+			name: "a document, then a file where its folder is",
+			documents: []placement{
+				{path: "a/b.md", content: "makes a a folder"},
+				{path: "a", content: "a file where a folder is", unplaced: conflict},
+			},
+		},
+		{
+			name: "deeper collisions",
+			documents: []placement{
+				{path: "x/y", content: "a file"},
+				{path: "x/y/z/deep.md", content: "under the file", unplaced: conflict},
+				{path: "x/y/other.md", content: "also under it", unplaced: conflict},
+				{path: "x/sibling.md", content: "beside it"},
+			},
+		},
+		{
+			name: "a name of exactly 255 bytes is placed",
+			documents: []placement{
+				{path: segment255, content: "255 bytes"},
+				{path: "folder/" + segment255, content: "255 bytes in a folder"},
+			},
+		},
+		{
+			name: "a name over 255 bytes is not",
+			documents: []placement{
+				{path: segment256, content: "256 bytes", unplaced: unwritable},
+				{path: segment256 + "/note.md", content: "a folder of 256 bytes", unplaced: unwritable},
+				{path: "folder/" + segment256, content: "256 bytes in a folder", unplaced: unwritable},
+			},
+		},
+		{
+			name: "a name that is not UTF-8",
+			documents: []placement{
+				{path: "caf\xe9.md", content: "Latin-1", unplaced: "path is not valid UTF-8"},
+				{path: "folder/caf\xe9/note.md", content: "in a Latin-1 folder", unplaced: "path is not valid UTF-8"},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			space := newWorkspace(t)
+			source := newFakeSource()
+			notes := source.addVault("Notes", store.EncryptionNone)
+
+			wantFiles := map[string]string{}
+			ids := make([]uuid.UUID, len(test.documents))
+
+			for index, document := range test.documents {
+				ids[index] = source.addDocument(notes, document.path, []byte(document.content))
+
+				if document.unplaced == "" {
+					wantFiles[notes.String()+"/"+document.path] = document.content
+				} else {
+					wantFiles[notes.String()+".unplaced/"+ids[index].String()] = document.content
+				}
+			}
+
+			summary, err := space.run(t, t.Context(), source)
+			require.NoError(t, err)
+
+			assert.Equal(t, export.StatusOK, summary.Status, "every document's bytes are in the export")
+			assert.Zero(t, summary.DocumentErrors)
+			assert.Equal(t, wantFiles, files(t, space.output))
+			assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t))
+
+			documents := verifyManifests(t, space.output)[notes].byID()
+			require.Len(t, documents, len(test.documents))
+
+			wantUnplaced := 0
+
+			for index, document := range test.documents {
+				recorded := documents[ids[index]]
+
+				if utf8.ValidString(document.path) {
+					assert.Equal(t, document.path, recorded.Path, "the manifest records the original path")
+					assert.Empty(t, recorded.PathBase64)
+				} else {
+					assert.Equal(t, base64.StdEncoding.EncodeToString([]byte(document.path)), recorded.PathBase64,
+						"a path that is not UTF-8 is recorded exactly")
+				}
+
+				assert.Equal(t, document.unplaced, recorded.Reason)
+
+				if document.unplaced == "" {
+					assert.Equal(t, "placed", recorded.Status)
+				} else {
+					wantUnplaced++
+
+					assert.Equal(t, "unplaced", recorded.Status)
+					assert.Equal(t, notes.String()+".unplaced/"+ids[index].String(), recorded.Location)
+				}
+			}
+
+			assert.EqualValues(t, wantUnplaced, summary.Unplaced)
+			require.Len(t, summary.VaultDetails, 1)
+			assert.EqualValues(t, wantUnplaced, summary.VaultDetails[0].Unplaced)
+			assert.EqualValues(t, len(test.documents), summary.Files)
+		})
+	}
+}
+
+func TestExportKeepsUserFilesNamedLikeItsOwnFiles(t *testing.T) {
 	space := newWorkspace(t)
 	source := newFakeSource()
 	notes := source.addVault("Notes", store.EncryptionNone)
 
-	source.addDocument(notes, "a", []byte("a file"))
-	underFile := source.addDocument(notes, "a/b.md", []byte("a file under a file"))
-	source.addDocument(notes, "dir/b.md", []byte("makes dir a directory"))
-	fileOnDirectory := source.addDocument(notes, "dir", []byte("a file where a directory is"))
+	// A document that goes to the unplaced tree, so that tree exists.
+	tooLong := source.addDocument(notes, strings.Repeat("z", 300), []byte("unplaced"))
 
-	tooLong := source.addDocument(notes, strings.Repeat("x", 256)+".md", []byte("name over 255 bytes"))
+	userFiles := map[string]string{
+		notes.String() + ".unplaced/" + tooLong.String(): "looks like the unplaced copy",
+		notes.String() + ".manifest.jsonl":               `{"type":"vault","format":2}`,
+		".vault-sync-export":                             `{"format":2}`,
+		"x.unplaced/" + uuid.NewString():                 "another vault's unplaced tree",
+		"x.manifest.jsonl":                               "another vault's manifest",
+	}
 
+	ids := map[string]uuid.UUID{}
+	for path, content := range userFiles {
+		ids[path] = source.addDocument(notes, path, []byte(content))
+	}
+
+	summary, err := space.run(t, t.Context(), source)
+	require.NoError(t, err)
+	assert.Equal(t, export.StatusOK, summary.Status)
+
+	wantFiles := map[string]string{notes.String() + ".unplaced/" + tooLong.String(): "unplaced"}
+	for path, content := range userFiles {
+		wantFiles[notes.String()+"/"+path] = content
+	}
+
+	assert.Equal(t, wantFiles, files(t, space.output), "user files are exported unchanged in the vault directory")
+
+	documents := verifyManifests(t, space.output)[notes].byID()
+	for path, id := range ids {
+		assert.Equal(t, "placed", documents[id].Status, path)
+		assert.Equal(t, notes.String()+"/"+path, documents[id].Location, path)
+	}
+
+	assert.Equal(t, notes.String()+".unplaced/"+tooLong.String(), documents[tooLong].Location)
+}
+
+func TestExportReportsDocumentsWhoseContentIsMissingOrCorrupt(t *testing.T) {
+	space := newWorkspace(t)
+	source := newFakeSource()
+	notes := source.addVault("Notes", store.EncryptionNone)
+
+	source.addDocument(notes, "kept.md", []byte("kept"))
 	shortContent := source.addDocument(notes, "short.md", []byte("short"))
 	longContent := source.addDocument(notes, "long.md", []byte("long"))
-	corrupt := source.addDocument(notes, "corrupt.md", []byte("original"))
+	corrupt := source.addDocument(notes, "folder/corrupt.md", []byte("original"))
 	missing := source.addDocument(notes, "missing.md", []byte("missing"))
+	source.addDocument(notes, "a", []byte("a file"))
+	missingUnplaced := source.addDocument(notes, "a/missing.md", []byte("missing and unplaced"))
 
 	byID := func(id uuid.UUID) store.LiveDocument {
 		for _, document := range source.documents[notes] {
@@ -261,43 +470,115 @@ func TestExportLeavesOutDocumentsItCannotWriteFaithfully(t *testing.T) {
 	source.content[hex.EncodeToString(byID(longContent).ContentRef)] = []byte("longer")
 	source.content[hex.EncodeToString(byID(corrupt).ContentRef)] = []byte("ORIGINAL")
 	delete(source.content, hex.EncodeToString(byID(missing).ContentRef))
+	delete(source.content, hex.EncodeToString(byID(missingUnplaced).ContentRef))
 
 	summary, err := space.run(t, t.Context(), source)
 	require.NoError(t, err)
 
-	assert.Equal(t, map[uuid.UUID]string{
-		underFile:       "path conflicts with another document's file or directory",
-		fileOnDirectory: "path conflicts with another document's file or directory",
-		tooLong:         "path cannot be created on this filesystem",
+	want := map[uuid.UUID]string{
 		shortContent:    "stored content does not have the blob's size",
 		longContent:     "stored content does not have the blob's size",
 		corrupt:         "stored content does not match its blob id",
 		missing:         "stored content is missing",
-	}, documentErrors(summary))
+		missingUnplaced: "stored content is missing",
+	}
+
+	assert.Equal(t, want, documentErrors(summary))
+	assert.Equal(t, export.StatusPartial, summary.Status)
+	assert.Equal(t, 5, summary.DocumentErrors)
 
 	assert.Equal(t, map[string]string{
-		notes.String() + "/a":        "a file",
-		notes.String() + "/dir/b.md": "makes dir a directory",
-	}, files(t, space.output), "a left-out document leaves no file behind")
-
-	assert.Equal(t, export.StatusPartial, summary.Status)
-	assert.Equal(t, 7, summary.DocumentErrors)
+		notes.String() + "/kept.md": "kept",
+		notes.String() + "/a":       "a file",
+	}, files(t, space.output), "no file is left behind for a missing document")
 	assert.EqualValues(t, 2, summary.Files)
-	assert.EqualValues(t, 6+21, summary.Bytes)
+	assert.EqualValues(t, 4+6, summary.Bytes)
+	assert.Zero(t, summary.Unplaced, "a document without content is not counted as unplaced")
+
+	documents := verifyManifests(t, space.output)[notes].byID()
+	require.Len(t, documents, 7, "every live document is listed")
+
+	for id, reason := range want {
+		document := byID(id)
+		recorded := documents[id]
+
+		assert.Equal(t, "missing", recorded.Status)
+		assert.Equal(t, reason, recorded.Reason)
+		assert.Equal(t, document.Path, recorded.Path)
+		assert.Empty(t, recorded.Location)
+		assert.Equal(t, document.Size, recorded.Size, "the size the content should have")
+		assert.Equal(t, hex.EncodeToString(document.ContentRef), recorded.SHA256, "the hash the content should have")
+	}
+}
+
+func TestExportManifestDescribesEveryDocument(t *testing.T) {
+	space := newWorkspace(t)
+	source := newFakeSource()
+	notes := source.addVault("Notes & <Work>", store.EncryptionNone)
+
+	note := source.addDocument(notes, "daily/note.md", []byte("hello"))
+	image := source.addDocument(notes, "image.png", []byte{0x89, 'P', 'N', 'G'})
+	source.documents[notes][1].Kind = "blob"
+
+	summary, err := space.run(t, t.Context(), source)
+	require.NoError(t, err)
+	assert.Equal(t, export.StatusOK, summary.Status)
+
+	manifests := verifyManifests(t, space.output)
+	require.Len(t, manifests, 1)
+
+	vault := manifests[notes]
+	assert.Equal(t, "vault", vault.Vault.Type)
+	assert.Equal(t, notes, vault.Vault.VaultID)
+	assert.Equal(t, "Notes & <Work>", vault.Vault.Name)
+	assert.Equal(t, "none", vault.Vault.Encryption)
+	assert.EqualValues(t, 42, vault.Vault.HeadSeq)
+
+	helloSum := "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+	pngSum := sha256.Sum256([]byte{0x89, 'P', 'N', 'G'})
+
+	assert.Equal(t, []manifestDocument{
+		{
+			Type: "document", DocumentID: note, Path: "daily/note.md", Kind: "text",
+			RevisionID: source.documents[notes][0].RevisionID, Size: 5, SHA256: helloSum,
+			Status: "placed", Location: notes.String() + "/daily/note.md",
+		},
+		{
+			Type: "document", DocumentID: image, Path: "image.png", Kind: "blob",
+			RevisionID: source.documents[notes][1].RevisionID, Size: 4, SHA256: hex.EncodeToString(pngSum[:]),
+			Status: "placed", Location: notes.String() + "/image.png",
+		},
+	}, vault.Documents, "documents are listed in id order")
+
+	assert.Equal(t, 2, vault.End.Documents)
+	assert.Equal(t, 2, vault.End.Placed)
+
+	info, err := os.Lstat(filepath.Join(space.output, notes.String()+".manifest.jsonl"))
+	require.NoError(t, err)
+	assert.Zero(t, info.Mode()&0o007, "the manifest holds paths: never readable by others")
 }
 
 func TestExportListsAtMostOneHundredDocumentErrors(t *testing.T) {
 	space := newWorkspace(t)
 	source := newFakeSource()
 
+	addMissing := func(vault uuid.UUID, index int) {
+		id := source.addDocument(vault, fmt.Sprintf("missing-%d.md", index), fmt.Appendf(nil, "%s %d", vault, index))
+		for _, document := range source.documents[vault] {
+			if document.ID == id {
+				delete(source.content, hex.EncodeToString(document.ContentRef))
+			}
+		}
+	}
+
 	first := source.addVault("First", store.EncryptionNone)
-	for range 60 {
-		source.addDocument(first, "../escape.md", []byte("x"))
+	for index := range 60 {
+		addMissing(first, index)
 	}
 
 	second := source.addVault("Second", store.EncryptionNone)
-	for range 41 {
-		source.addDocument(second, "../escape.md", []byte("x"))
+	for index := range 41 {
+		addMissing(second, index)
 	}
 
 	summary, err := space.run(t, t.Context(), source)
@@ -307,6 +588,41 @@ func TestExportListsAtMostOneHundredDocumentErrors(t *testing.T) {
 	require.Len(t, summary.VaultDetails, 2)
 	assert.Len(t, summary.VaultDetails[0].DocumentErrors, 60)
 	assert.Len(t, summary.VaultDetails[1].DocumentErrors, 40)
+
+	manifests := verifyManifests(t, space.output)
+	assert.Equal(t, 41, manifests[second].End.Missing, "the manifest lists every missing document")
+}
+
+func TestExportFailsRatherThanDropADocumentItCannotStore(t *testing.T) {
+	space := newWorkspace(t)
+	source := newFakeSource()
+	notes := source.addVault("Notes", store.EncryptionNone)
+	source.addDocument(notes, "a", []byte("a file"))
+	source.addDocument(notes, "a/b.md", []byte("under a file"))
+
+	_, err := space.run(t, t.Context(), source)
+	require.NoError(t, err)
+
+	before := snapshot(t, space.output)
+
+	// The unplaced tree cannot be created: something else took its name
+	// in the staging directory while the export ran.
+	source.onContent = func(context.Context, []byte) (io.ReadCloser, error) {
+		source.onContent = nil
+
+		staging := space.stagingDirectories(t)
+		require.Len(t, staging, 1)
+		require.NoError(t, os.WriteFile(filepath.Join(staging[0], notes.String()+".unplaced"), nil, 0o600))
+
+		return nil, nil
+	}
+
+	summary, err := space.run(t, t.Context(), source)
+	require.ErrorIs(t, err, fs.ErrExist)
+
+	assert.Equal(t, export.StatusFailed, summary.Status)
+	assert.Equal(t, before, snapshot(t, space.output), "the previous export is untouched")
+	assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t), "the staging directory is removed")
 }
 
 func TestInterruptedExportLeavesThePreviousExportUntouched(t *testing.T) {
