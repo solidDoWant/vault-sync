@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -15,6 +16,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -101,13 +103,18 @@ func (ca *testCA) serverCertificate(t *testing.T, ip net.IP) *tls.Certificate {
 	return &certificate
 }
 
-// fakePostgres accepts PostgreSQL SSLRequest negotiations, completes a TLS
-// handshake requiring a client certificate, records the client certificate's
-// common name, and hangs up.
+// fakePostgres accepts PostgreSQL SSLRequest negotiations, attempts a TLS
+// handshake requiring a client certificate, records the outcome for the
+// connection, and hangs up.
 type fakePostgres struct {
 	listener          net.Listener
 	serverCertificate atomic.Pointer[tls.Certificate]
-	clientCommonNames chan string
+
+	mu sync.Mutex
+	// outcomes holds the outcome of each handled connection, keyed by the
+	// client's address, so that a test attributes an outcome to the exact
+	// connection it opened.
+	outcomes map[string]chan string
 }
 
 func newFakePostgres(t *testing.T, clientCA *testCA, serverCertificate *tls.Certificate) *fakePostgres {
@@ -116,7 +123,7 @@ func newFakePostgres(t *testing.T, clientCA *testCA, serverCertificate *tls.Cert
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 
-	server := &fakePostgres{listener: listener, clientCommonNames: make(chan string, 16)}
+	server := &fakePostgres{listener: listener, outcomes: make(map[string]chan string)}
 	server.serverCertificate.Store(serverCertificate)
 
 	clientCAs := x509.NewCertPool()
@@ -147,8 +154,36 @@ func newFakePostgres(t *testing.T, clientCA *testCA, serverCertificate *tls.Cert
 	return server
 }
 
+// outcome returns the channel that receives the outcome of the connection
+// from clientAddress.
+func (server *fakePostgres) outcome(clientAddress string) chan string {
+	server.mu.Lock()
+	defer server.mu.Unlock()
+
+	outcome, ok := server.outcomes[clientAddress]
+	if !ok {
+		outcome = make(chan string, 1)
+		server.outcomes[clientAddress] = outcome
+	}
+
+	return outcome
+}
+
+// handle serves one connection and records its outcome: the client
+// certificate's common name if the TLS handshake completed, or "" if not.
 func (server *fakePostgres) handle(conn net.Conn, tlsConfig *tls.Config) {
 	defer func() { _ = conn.Close() }()
+
+	commonName := ""
+
+	defer func() {
+		// Outcomes nobody waits for (pgx cancel-request connections) are
+		// dropped rather than blocking the server.
+		select {
+		case server.outcome(conn.RemoteAddr().String()) <- commonName:
+		default:
+		}
+	}()
 
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 
@@ -166,36 +201,73 @@ func (server *fakePostgres) handle(conn net.Conn, tlsConfig *tls.Config) {
 		return
 	}
 
-	server.clientCommonNames <- tlsConn.ConnectionState().PeerCertificates[0].Subject.CommonName
+	commonName = tlsConn.ConnectionState().PeerCertificates[0].Subject.CommonName
 }
 
 func (server *fakePostgres) port() int {
 	return server.listener.Addr().(*net.TCPAddr).Port
 }
 
-// connect opens one connection with the store's configuration and returns
-// the client certificate common name the server saw, or the client error.
+// connect opens one connection with the store's configuration. It returns
+// the client certificate common name the server saw on that connection ("" if
+// the server completed no TLS handshake for it) and the client error. The
+// fake server hangs up after the handshake, so the client error is non-nil
+// even when the handshake completed.
 func (server *fakePostgres) connect(t *testing.T, cfg store.Config) (string, error) {
 	t.Helper()
 
 	poolConfig, err := store.NewPoolConfig(cfg)
 	require.NoError(t, err)
 
-	conn, err := pgconn.ConnectConfig(t.Context(), &poolConfig.ConnConfig.Config)
+	connConfig := &poolConfig.ConnConfig.Config
+
+	// When a connection breaks, pgx dials the server again from a background
+	// goroutine to send a cancel request, and that connection may complete a
+	// handshake of its own after this function returns. Only the first dial
+	// is the connection under test, so its outcome is looked up by address.
+	var once sync.Once
+
+	clientAddress := make(chan string, 1)
+	dial := connConfig.DialFunc
+	connConfig.DialFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+		conn, err := dial(ctx, network, address)
+
+		once.Do(func() {
+			if err == nil {
+				clientAddress <- conn.LocalAddr().String()
+			}
+
+			close(clientAddress)
+		})
+
+		return conn, err
+	}
+
+	conn, clientErr := pgconn.ConnectConfig(t.Context(), connConfig)
 	if conn != nil {
 		_ = conn.Close(t.Context())
 	}
 
-	// The server records the handshake before hanging up, and the client
-	// only returns after the hang-up, so no waiting is needed here.
-	select {
-	case commonName := <-server.clientCommonNames:
-		return commonName, nil
-	default:
-		require.Error(t, err)
+	address, ok := <-clientAddress
+	require.True(t, ok, "client did not reach the server: %v", clientErr)
 
-		return "", err
+	select {
+	case commonName := <-server.outcome(address):
+		return commonName, clientErr
+	case <-time.After(10 * time.Second):
+		require.FailNow(t, "server recorded no outcome for the connection", "client error: %v", clientErr)
+
+		return "", clientErr
 	}
+}
+
+// requireRejected asserts that the client rejected the server certificate on
+// a connection and that the server completed no handshake for it.
+func requireRejected(t *testing.T, commonName string, err error) {
+	t.Helper()
+
+	require.ErrorContains(t, err, "verify database server certificate")
+	require.Empty(t, commonName, "server completed a TLS handshake for a connection the client rejected")
 }
 
 func writeFile(t *testing.T, path string, contents []byte) {
@@ -249,8 +321,7 @@ func TestClientCertificateIsReReadForNewConnections(t *testing.T) {
 	cfg := files.config(server.port(), "verify-full")
 
 	commonName, err := server.connect(t, cfg)
-	require.NoError(t, err)
-	assert.Equal(t, "client-1", commonName)
+	require.Equal(t, "client-1", commonName, "client error: %v", err)
 
 	// Rotate the client certificate on disk; the same configuration must
 	// present the new certificate on the next connection.
@@ -259,8 +330,7 @@ func TestClientCertificateIsReReadForNewConnections(t *testing.T) {
 	writeFile(t, files.key, keyPEM)
 
 	commonName, err = server.connect(t, cfg)
-	require.NoError(t, err)
-	assert.Equal(t, "client-2", commonName)
+	require.Equal(t, "client-2", commonName, "client error: %v", err)
 }
 
 func TestServerCAIsReReadForNewConnections(t *testing.T) {
@@ -278,21 +348,21 @@ func TestServerCAIsReReadForNewConnections(t *testing.T) {
 
 	cfg := files.config(server.port(), "verify-full")
 
-	_, err := server.connect(t, cfg)
-	require.NoError(t, err)
+	commonName, err := server.connect(t, cfg)
+	require.Equal(t, "client", commonName, "client error: %v", err)
 
 	// The server moves to a certificate from a new CA that the client does
 	// not trust yet: the handshake must fail.
 	server.serverCertificate.Store(newServerCA.serverCertificate(t, loopback))
 
-	_, err = server.connect(t, cfg)
-	require.ErrorContains(t, err, "verify database server certificate")
+	commonName, err = server.connect(t, cfg)
+	requireRejected(t, commonName, err)
 
 	// Once the new CA bundle is on disk, new connections trust it.
 	writeFile(t, files.ca, newServerCA.pem)
 
-	_, err = server.connect(t, cfg)
-	require.NoError(t, err)
+	commonName, err = server.connect(t, cfg)
+	require.Equal(t, "client", commonName, "client error: %v", err)
 }
 
 func TestCAFileEnforcesHostNameVerification(t *testing.T) {
@@ -310,8 +380,8 @@ func TestCAFileEnforcesHostNameVerification(t *testing.T) {
 
 	for _, sslmode := range []string{"require", "verify-ca", "verify-full"} {
 		t.Run(sslmode, func(t *testing.T) {
-			_, err := server.connect(t, files.config(server.port(), sslmode))
-			require.ErrorContains(t, err, "verify database server certificate")
+			commonName, err := server.connect(t, files.config(server.port(), sslmode))
+			requireRejected(t, commonName, err)
 		})
 	}
 }
