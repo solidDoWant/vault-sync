@@ -17,6 +17,17 @@
 | `VAULT_SYNC_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn` or `error`. |
 | `VAULT_SYNC_OIDC_ISSUER_URL` | (required) | OIDC issuer identifier, for example `https://auth.example.com/application/o/vault-sync/` for Authentik. Access tokens' `iss` claim must equal it exactly (including any trailing slash). The signing keys are discovered from `<issuer>/.well-known/openid-configuration`. Must be `https`; plain `http` is accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) for local development. |
 | `VAULT_SYNC_OIDC_AUDIENCE` | (required) | Audience that access tokens' `aud` claim must contain; for Authentik, the client ID of the vault-sync provider. |
+| `VAULT_SYNC_S3_BUCKET` | unset | S3 bucket holding every vault's blobs. It must already exist. Required when any `VAULT_SYNC_S3_*` variable is set. When no `VAULT_SYNC_S3_*` variable is set, the server starts without an object store, logs a warning, and every `BlobService` RPC returns `unimplemented`. |
+| `VAULT_SYNC_S3_ENDPOINT` | unset (AWS S3) | Base URL of the S3-compatible store, for example `https://rgw.example.com`. Must be `http` or `https`, without credentials, query or fragment. |
+| `VAULT_SYNC_S3_REGION` | `us-east-1` | Region of the bucket. Ceph RGW accepts any region by default. |
+| `VAULT_SYNC_S3_ACCESS_KEY_ID_FILE` | unset | File containing the S3 access key id. Required with the bucket. |
+| `VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE` | unset | File containing the S3 secret access key. Required with the bucket. Both credential files are read at startup (failing if missing, empty or larger than 4 KiB) and again every 10 seconds, so rotated credentials (for example a swapped Kubernetes Secret) are used without a restart. Their contents are never logged. |
+| `VAULT_SYNC_S3_FORCE_PATH_STYLE` | `true` | `true` addresses the bucket as `<endpoint>/<bucket>` (what Ceph RGW and most self-hosted stores need); `false` uses virtual-hosted `<bucket>.<endpoint>`. |
+| `VAULT_SYNC_S3_TLS_CA_FILE` | unset (system roots) | PEM bundle of CAs trusted for the S3 endpoint's certificate instead of the system roots. Re-read for every new connection. |
+| `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES` | `786432` (768 KiB) | Largest upload chunk, and the largest range one `DownloadBlob` returns. At least 65536. It plus 1024 bytes of request framing must not exceed `VAULT_SYNC_MAX_REQUEST_BYTES`, or the server refuses to start. |
+| `VAULT_SYNC_BLOB_MAX_SIZE_BYTES` | `1073741824` (1 GiB) | Largest blob (file) that can be uploaded. At most 83886080000 (80 GiB). |
+| `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT` | `32` | Upload sessions that may be in progress at once in one vault (1 to 10000). Further `BeginBlob` calls get `resource_exhausted` until one completes or expires. |
+| `VAULT_SYNC_BLOB_UPLOAD_TTL` | `24h` | How long an upload session may be idle before the cleanup routine removes it. A Go duration of at least `10m`; keep it well above the time a commit of the largest blob takes. |
 
 ### Authentication
 
@@ -39,6 +50,14 @@ The first authenticated request of a new `(issuer, subject)` pair creates its us
 Every RPC whose request names a `vault_id` is authorized against the caller's membership in that vault before it runs. There is no administrator bypass. A caller who is not a member gets `not_found` (HTTP 404), the same response as for a vault that does not exist. A `viewer` calling a write RPC (committing revisions, uploading blobs) gets `permission_denied` (HTTP 403). A malformed `vault_id` (not a lowercase hyphenated UUID) gets `invalid_argument`.
 
 A user becomes a vault's `owner` by creating it. A user may own at most 100 vaults, and vault names are at most 256 bytes and may not contain control characters (Unicode category `Cc`, such as U+0000 or a newline); such names get `invalid_argument`. Creating an end-to-end encrypted vault is rejected with `failed_precondition` until end-to-end encryption is supported. Inviting other members comes in a later release.
+
+### Blob storage
+
+File contents are stored in the S3 bucket as one object per blob at `vaults/<vault_id>/blobs/<hex(blob_id)>`. Uploads arrive in chunks of at most `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES`, so no request exceeds the WAF's body limit; each chunk is staged as its own object under `vaults/<vault_id>/uploads/<upload_id>/` and `CommitBlob` streams the chunks into the blob's object, verifying the SHA-256 for plaintext vaults before anything becomes visible. Every chunk but the last must be at least 64 KiB. The server needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`, `s3:ListBucketMultipartUploads` and `s3:AbortMultipartUpload` on the bucket. At startup it checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
+
+Every 5 minutes a cleanup routine removes upload sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_TTL` (deleting their staged objects) and aborts multipart uploads under `vaults/` older than the TTL, which an interrupted commit leaves behind and which S3 would otherwise keep, invisibly, forever. Each run removes at most 100 sessions and 10,000 objects, so a backlog is worked off over several runs. Blobs no longer referenced by any revision are not deleted yet.
+
+Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
 
 ### PostgreSQL TLS
 
@@ -71,4 +90,4 @@ Calls rejected for authentication are counted with code `unauthenticated`. Reque
 
 ## Startup and shutdown
 
-On startup the server connects to PostgreSQL (exiting with status 1 if it cannot) and applies any pending schema migrations before it starts listening. On `SIGTERM` or `SIGINT` it stops accepting connections, reports not ready on `/readyz`, and waits up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` for in-flight requests. It exits with status 0 after a clean drain and status 1 if the timeout forced connections closed.
+On startup the server connects to PostgreSQL (exiting with status 1 if it cannot), applies any pending schema migrations, and, if an object store is configured, checks that its bucket is reachable before it starts listening. On `SIGTERM` or `SIGINT` it stops accepting connections, reports not ready on `/readyz`, and waits up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` for in-flight requests. It exits with status 0 after a clean drain and status 1 if the timeout forced connections closed.

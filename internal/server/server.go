@@ -63,6 +63,9 @@ type Options struct {
 	// Memberships resolves callers' vault roles for every procedure in
 	// VaultProcedures. When nil, every caller is treated as a non-member.
 	Memberships authz.MembershipStore
+	// Blobs serves BlobService. When nil, BlobService is unimplemented. Its
+	// Logger defaults to Logger.
+	Blobs *api.BlobService
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
@@ -134,6 +137,9 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		),
 		// Bounds the decoded (and decompressed) message size.
 		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
+		// Bounds every response message the same way. DownloadBlob caps
+		// its ranges at the chunk size, which fits within this limit.
+		connect.WithSendMaxBytes(int(options.MaxRequestBytes)),
 	}
 
 	var devices vaultsyncv1connect.DeviceServiceHandler = vaultsyncv1connect.UnimplementedDeviceServiceHandler{}
@@ -146,12 +152,23 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		vaults = api.VaultService{Vaults: options.Vaults, Logger: options.Logger}
 	}
 
+	var blobs vaultsyncv1connect.BlobServiceHandler = vaultsyncv1connect.UnimplementedBlobServiceHandler{}
+
+	if options.Blobs != nil {
+		service := *options.Blobs
+		if service.Logger == nil {
+			service.Logger = options.Logger
+		}
+
+		blobs = service
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(api.ServerInfoService{}, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaults, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(vaultsyncv1connect.UnimplementedSyncServiceHandler{}, handlerOptions...))
-	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(vaultsyncv1connect.UnimplementedBlobServiceHandler{}, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(blobs, handlerOptions...))
 
 	corsHandler := cors.New(cors.Options{
 		AllowedOrigins: AllowedOrigins,

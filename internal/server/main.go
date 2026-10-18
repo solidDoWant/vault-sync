@@ -7,8 +7,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"time"
 
+	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/version"
@@ -68,6 +71,13 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Logger:    logger,
 	})
 
+	blobs, err := startBlobs(ctx, cfg, queries, logger)
+	if err != nil {
+		logger.ErrorContext(ctx, "cannot use the S3 object store", "error", err)
+
+		return 1
+	}
+
 	srv := New(Options{
 		MaxRequestBytes: cfg.MaxRequestBytes,
 		ShutdownTimeout: cfg.ShutdownTimeout,
@@ -76,6 +86,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Devices:         queries,
 		Vaults:          queries,
 		Memberships:     queries,
+		Blobs:           blobs,
 		Logger:          logger,
 	})
 
@@ -86,6 +97,46 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	}
 
 	return 0
+}
+
+// s3CheckTimeout bounds the startup check that the bucket is reachable.
+const s3CheckTimeout = 30 * time.Second
+
+// startBlobs connects to the object store, checks that the bucket is
+// reachable and starts the upload cleanup routine, which stops with ctx. It
+// returns nil when no object store is configured.
+func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, logger *slog.Logger) (*api.BlobService, error) {
+	if cfg.S3 == nil {
+		logger.WarnContext(ctx, "no S3 object store is configured (VAULT_SYNC_S3_*); blob uploads and downloads are disabled")
+
+		return nil, nil
+	}
+
+	objects, err := blobstore.New(*cfg.S3)
+	if err != nil {
+		return nil, err
+	}
+
+	checkCtx, cancel := context.WithTimeout(ctx, s3CheckTimeout)
+	defer cancel()
+
+	if err := objects.Check(checkCtx); err != nil {
+		return nil, err
+	}
+
+	cleaner := &blobstore.Cleaner{Store: queries, Objects: objects, TTL: cfg.Blobs.UploadTTL, Logger: logger}
+	go cleaner.Run(ctx, blobstore.DefaultCleanupInterval)
+
+	return &api.BlobService{
+		Store:   queries,
+		Objects: objects,
+		Limits: api.BlobLimits{
+			MaxChunkBytes:      cfg.Blobs.MaxChunkBytes,
+			MaxBlobBytes:       cfg.Blobs.MaxSizeBytes,
+			MaxUploadsPerVault: cfg.Blobs.MaxUploadsPerVault,
+		},
+		Logger: logger,
+	}, nil
 }
 
 // problemList flattens errors.Join trees into one message per problem.

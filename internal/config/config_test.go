@@ -2,12 +2,15 @@ package config_test
 
 import (
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
@@ -53,7 +56,220 @@ func TestLoadDefaults(t *testing.T) {
 		MaxRequestBytes:      1 << 20,
 		ShutdownTimeout:      30 * time.Second,
 		LogLevel:             slog.LevelInfo,
+		Blobs: config.BlobConfig{
+			MaxChunkBytes:      768 << 10,
+			MaxSizeBytes:       1 << 30,
+			MaxUploadsPerVault: 32,
+			UploadTTL:          24 * time.Hour,
+		},
 	}, cfg)
+}
+
+// writeFile writes content to a new file in a test directory.
+func writeFile(t *testing.T, name, content string) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), name)
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+
+	return path
+}
+
+func TestLoadS3Settings(t *testing.T) {
+	accessKey := writeFile(t, "access-key-id", "AKIAEXAMPLE\n")
+	secretKey := writeFile(t, "secret-access-key", "super-secret-value")
+	emptyFile := writeFile(t, "empty", "")
+
+	complete := map[string]string{
+		config.S3BucketEnv:              "vault-sync",
+		config.S3AccessKeyIDFileEnv:     accessKey,
+		config.S3SecretAccessKeyFileEnv: secretKey,
+	}
+
+	with := func(overrides map[string]string) map[string]string {
+		env := withRequired(complete)
+		for name, value := range overrides {
+			env[name] = value
+		}
+
+		return env
+	}
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want *blobstore.Config
+		// wantProblems are substrings that must each appear in the error.
+		wantProblems []string
+	}{
+		{name: "unset disables blob storage", env: withRequired(nil)},
+		{
+			name: "defaults",
+			env:  withRequired(complete),
+			want: &blobstore.Config{Region: "us-east-1", Bucket: "vault-sync", AccessKeyIDFile: accessKey, SecretAccessKeyFile: secretKey, ForcePathStyle: true},
+		},
+		{
+			name: "everything set",
+			env: with(map[string]string{
+				config.S3EndpointEnv:       "https://rgw.example:8443",
+				config.S3RegionEnv:         "eu-west-1",
+				config.S3ForcePathStyleEnv: "false",
+			}),
+			want: &blobstore.Config{
+				Endpoint: "https://rgw.example:8443", Region: "eu-west-1", Bucket: "vault-sync",
+				AccessKeyIDFile: accessKey, SecretAccessKeyFile: secretKey,
+			},
+		},
+		{
+			name:         "any S3 variable requires the bucket and credentials",
+			env:          withRequired(map[string]string{config.S3EndpointEnv: "https://rgw.example"}),
+			wantProblems: []string{config.S3BucketEnv, config.S3AccessKeyIDFileEnv, config.S3SecretAccessKeyFileEnv},
+		},
+		{
+			name:         "endpoint is not a URL",
+			env:          with(map[string]string{config.S3EndpointEnv: "rgw.example"}),
+			wantProblems: []string{config.S3EndpointEnv},
+		},
+		{
+			name:         "endpoint with credentials",
+			env:          with(map[string]string{config.S3EndpointEnv: "https://user:pw@rgw.example"}),
+			wantProblems: []string{config.S3EndpointEnv},
+		},
+		{
+			name:         "unreadable credentials file",
+			env:          with(map[string]string{config.S3AccessKeyIDFileEnv: "/nonexistent/key"}),
+			wantProblems: []string{config.S3AccessKeyIDFileEnv},
+		},
+		{
+			name:         "empty credentials file",
+			env:          with(map[string]string{config.S3SecretAccessKeyFileEnv: emptyFile}),
+			wantProblems: []string{config.S3SecretAccessKeyFileEnv},
+		},
+		{
+			name:         "unreadable CA file",
+			env:          with(map[string]string{config.S3TLSCAFileEnv: "/nonexistent/ca.crt"}),
+			wantProblems: []string{config.S3TLSCAFileEnv},
+		},
+		{
+			name:         "path style not a boolean",
+			env:          with(map[string]string{config.S3ForcePathStyleEnv: "sometimes"}),
+			wantProblems: []string{config.S3ForcePathStyleEnv},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(lookup(test.env))
+			if len(test.wantProblems) > 0 {
+				require.Error(t, err)
+
+				for _, problem := range test.wantProblems {
+					assert.Contains(t, err.Error(), problem)
+				}
+
+				assert.NotContains(t, err.Error(), "super-secret-value")
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cfg.S3)
+		})
+	}
+}
+
+func TestLoadBlobSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		want config.BlobConfig
+		// wantProblems are substrings that must each appear in the error.
+		wantProblems []string
+	}{
+		{
+			name: "overrides",
+			env: map[string]string{
+				config.BlobMaxChunkBytesEnv:      "524288",
+				config.BlobMaxSizeBytesEnv:       "104857600",
+				config.BlobMaxUploadsPerVaultEnv: "8",
+				config.BlobUploadTTLEnv:          "6h",
+			},
+			want: config.BlobConfig{MaxChunkBytes: 512 << 10, MaxSizeBytes: 100 << 20, MaxUploadsPerVault: 8, UploadTTL: 6 * time.Hour},
+		},
+		{
+			name: "the largest chunk that fits the default request limit",
+			env:  map[string]string{config.BlobMaxChunkBytesEnv: "1047552"},
+			want: config.BlobConfig{MaxChunkBytes: 1<<20 - config.ChunkRequestOverheadBytes, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour},
+		},
+		{
+			name: "larger chunks with a larger request limit",
+			env:  map[string]string{config.BlobMaxChunkBytesEnv: "2097152", config.MaxRequestBytesEnv: "3145728"},
+			want: config.BlobConfig{MaxChunkBytes: 2 << 20, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour},
+		},
+		{
+			name:         "chunk plus framing above the default request limit",
+			env:          map[string]string{config.BlobMaxChunkBytesEnv: "1047553"},
+			wantProblems: []string{config.BlobMaxChunkBytesEnv, config.MaxRequestBytesEnv},
+		},
+		{
+			name:         "request limit lowered below the default chunk",
+			env:          map[string]string{config.MaxRequestBytesEnv: "524288"},
+			wantProblems: []string{config.BlobMaxChunkBytesEnv, config.MaxRequestBytesEnv},
+		},
+		{
+			name:         "chunk too small",
+			env:          map[string]string{config.BlobMaxChunkBytesEnv: "1024"},
+			wantProblems: []string{config.BlobMaxChunkBytesEnv},
+		},
+		{
+			name:         "chunk not a number",
+			env:          map[string]string{config.BlobMaxChunkBytesEnv: "768KiB"},
+			wantProblems: []string{config.BlobMaxChunkBytesEnv},
+		},
+		{
+			name:         "blob size zero",
+			env:          map[string]string{config.BlobMaxSizeBytesEnv: "0"},
+			wantProblems: []string{config.BlobMaxSizeBytesEnv},
+		},
+		{
+			name:         "blob size beyond what can be composed",
+			env:          map[string]string{config.BlobMaxSizeBytesEnv: "1099511627776"},
+			wantProblems: []string{config.BlobMaxSizeBytesEnv},
+		},
+		{
+			name:         "no uploads allowed",
+			env:          map[string]string{config.BlobMaxUploadsPerVaultEnv: "0"},
+			wantProblems: []string{config.BlobMaxUploadsPerVaultEnv},
+		},
+		{
+			name:         "TTL too short",
+			env:          map[string]string{config.BlobUploadTTLEnv: "1m"},
+			wantProblems: []string{config.BlobUploadTTLEnv},
+		},
+		{
+			name:         "TTL not a duration",
+			env:          map[string]string{config.BlobUploadTTLEnv: "1 day"},
+			wantProblems: []string{config.BlobUploadTTLEnv},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(lookup(withRequired(test.env)))
+			if len(test.wantProblems) > 0 {
+				require.Error(t, err)
+
+				for _, problem := range test.wantProblems {
+					assert.Contains(t, err.Error(), problem)
+				}
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cfg.Blobs)
+		})
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {

@@ -11,11 +11,15 @@ import (
 	"encoding/hex"
 	"net/url"
 	"os"
+	"path/filepath"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -108,4 +112,40 @@ func S3(t testing.TB) S3Config {
 		AccessKey: requireEnv(t, S3AccessKeyEnv, "the S3-compatible store"),
 		SecretKey: requireEnv(t, S3SecretKeyEnv, "the S3-compatible store"),
 	}
+}
+
+// S3Bucket creates an empty bucket for the calling test in the S3-compatible
+// store and returns an object-store configuration for it, with the
+// credentials written to files as in production.
+func S3Bucket(t testing.TB) blobstore.Config {
+	t.Helper()
+
+	connection := S3(t)
+	directory := t.TempDir()
+
+	accessKeyFile := filepath.Join(directory, "access-key-id")
+	secretKeyFile := filepath.Join(directory, "secret-access-key")
+
+	require.NoError(t, os.WriteFile(accessKeyFile, []byte(connection.AccessKey), 0o600))
+	require.NoError(t, os.WriteFile(secretKeyFile, []byte(connection.SecretKey), 0o600))
+
+	suffix := make([]byte, 8)
+	_, _ = rand.Read(suffix)
+
+	cfg := blobstore.Config{
+		Endpoint:            connection.Endpoint,
+		Region:              connection.Region,
+		Bucket:              "vault-sync-test-" + hex.EncodeToString(suffix),
+		AccessKeyIDFile:     accessKeyFile,
+		SecretAccessKeyFile: secretKeyFile,
+		ForcePathStyle:      true,
+	}
+
+	objects, err := blobstore.New(cfg)
+	require.NoError(t, err)
+
+	_, err = objects.Client().CreateBucket(t.Context(), &s3.CreateBucketInput{Bucket: aws.String(cfg.Bucket)})
+	require.NoError(t, err, "create test bucket")
+
+	return cfg
 }
