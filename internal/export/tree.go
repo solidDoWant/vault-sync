@@ -75,10 +75,38 @@ func (tree *vaultTree) Close() error {
 	return tree.root.Close()
 }
 
-// remove removes the file at path after its content failed.
+// remove removes the file at path after its content failed, and the
+// directories left empty by its removal.
 func (tree *vaultTree) remove(path string) error {
 	if err := tree.root.Remove(path); err != nil {
 		return fmt.Errorf("remove file: %w", withoutPath(err))
+	}
+
+	return tree.prune(path)
+}
+
+// prune removes the directories on path that are empty, deepest first, so a
+// refused document leaves no directory without a document in it. Only
+// directories the tree created or checked are considered, and removing one
+// never removes anything in it: the first that is not empty stops pruning.
+func (tree *vaultTree) prune(path string) error {
+	segments := strings.Split(path, "/")
+	for index := len(segments) - 1; index > 0; index-- {
+		dir := strings.Join(segments[:index], "/")
+		if !tree.dirs[dir] {
+			continue
+		}
+
+		err := tree.root.Remove(dir)
+		if errors.Is(err, syscall.ENOTEMPTY) || errors.Is(err, fs.ErrExist) {
+			return nil
+		}
+
+		if err != nil {
+			return fmt.Errorf("remove empty directory: %w", withoutPath(err))
+		}
+
+		delete(tree.dirs, dir)
 	}
 
 	return nil
@@ -91,6 +119,8 @@ func (tree *vaultTree) remove(path string) error {
 type unplacedTree struct {
 	directory string
 	root      *os.Root
+	// files counts the files in the directory.
+	files int
 }
 
 // create creates the empty file for the document. Any error is a failure of
@@ -114,13 +144,33 @@ func (tree *unplacedTree) create(id uuid.UUID) (*os.File, error) {
 		return nil, fmt.Errorf("create unplaced file: %w", withoutPath(err))
 	}
 
+	tree.files++
+
 	return file, nil
 }
 
-// remove removes the document's file after its content failed.
+// remove removes the document's file after its content failed, and the
+// directory if that was its only file, so the directory exists only when it
+// holds a document.
 func (tree *unplacedTree) remove(id uuid.UUID) error {
 	if err := tree.root.Remove(id.String()); err != nil {
 		return fmt.Errorf("remove unplaced file: %w", withoutPath(err))
+	}
+
+	tree.files--
+	if tree.files > 0 {
+		return nil
+	}
+
+	err := tree.root.Close()
+	tree.root = nil
+
+	if err != nil {
+		return fmt.Errorf("close unplaced directory: %w", withoutPath(err))
+	}
+
+	if err := os.Remove(tree.directory); err != nil {
+		return fmt.Errorf("remove empty unplaced directory: %w", withoutPath(err))
 	}
 
 	return nil
@@ -164,6 +214,21 @@ func (tree *vaultTree) create(path string) (*os.File, error) {
 		return nil, refuse(errPathNotUTF8)
 	}
 
+	file, err := tree.createFile(path)
+
+	var refused *documentError
+	if errors.As(err, &refused) {
+		// The document goes elsewhere: drop the directories made for it.
+		if err := tree.prune(path); err != nil {
+			return nil, err
+		}
+	}
+
+	return file, err
+}
+
+// createFile creates path's directories and an empty file.
+func (tree *vaultTree) createFile(path string) (*os.File, error) {
 	segments := strings.Split(path, "/")
 	for index := 1; index < len(segments); index++ {
 		if err := tree.mkdir(strings.Join(segments[:index], "/")); err != nil {
