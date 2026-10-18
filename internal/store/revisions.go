@@ -34,6 +34,9 @@ var (
 	ErrBlobSizeMismatch = errors.New("content size differs from the stored blob's size")
 	// ErrPathKeyTaken: another live document in the vault has the path key.
 	ErrPathKeyTaken = errors.New("path_key is taken by another live document")
+	// ErrInvalidPath: the path or path key is empty, longer than the
+	// schema allows (SPEC.md §5), or text PostgreSQL cannot store.
+	ErrInvalidPath = errors.New("path or path_key is empty, too long, or not valid UTF-8 without NUL")
 )
 
 // HeadMovedError is returned when a commit's base is not the document's
@@ -245,24 +248,40 @@ func sameRevision(existing Revision, revision NewRevision) bool {
 // commitError maps constraint violations to CommitRevision errors.
 func commitError(err error) error {
 	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != uniqueViolation {
+	if !errors.As(err, &pgErr) {
 		return err
 	}
 
 	switch {
-	case pgErr.ConstraintName == livePathKeyIndex:
+	case pgErr.Code == uniqueViolation && pgErr.ConstraintName == livePathKeyIndex:
 		return ErrPathKeyTaken
-	case idConstraints[pgErr.ConstraintName]:
+	case pgErr.Code == uniqueViolation && idConstraints[pgErr.ConstraintName]:
 		// A client-generated id that exists in another vault: lookups
 		// in this vault did not find it, but ids are globally unique.
 		return ErrIDInUse
+	case pgErr.Code == checkViolation && pathConstraints[pgErr.ConstraintName],
+		// Path and path key are a commit's only free-form text, so
+		// text PostgreSQL cannot store (NUL, invalid UTF-8) is one of
+		// them.
+		pgErr.Code == characterNotInRepertoire:
+		return ErrInvalidPath
 	default:
 		return err
 	}
 }
 
-// uniqueViolation is PostgreSQL's unique_violation SQLSTATE.
-const uniqueViolation = "23505"
+// pathConstraints bound the size of paths and path keys.
+var pathConstraints = map[string]bool{
+	"documents_path_key_length": true,
+	"revisions_path_length":     true,
+}
+
+// PostgreSQL SQLSTATEs.
+const (
+	uniqueViolation          = "23505"
+	checkViolation           = "23514"
+	characterNotInRepertoire = "22021"
+)
 
 // Changes is one page of a vault's change feed.
 type Changes struct {

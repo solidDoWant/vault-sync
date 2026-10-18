@@ -5,6 +5,7 @@ package main_test
 import (
 	"archive/tar"
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -232,6 +233,10 @@ func TestRollingUpgrade(t *testing.T) {
 	assert.ElementsMatch(t, vaults, listVaultIDs(t, previous, token))
 	assert.ElementsMatch(t, vaults, listVaultIDs(t, current, token))
 
+	if revisions != nil {
+		requirePathKeysAcrossReleases(t, previous, current, token, alongside.GetId())
+	}
+
 	resumed, err := early.begin(t, current)
 	require.NoError(t, err)
 	require.Equal(t, uint64(received), resumed.GetReceivedSize())
@@ -298,6 +303,47 @@ func previousHasRevisions(t *testing.T, previous *instance, token, vaultID strin
 	t.Logf("the previous release (%s) predates revisions; testing the upgrade without them", os.Getenv(previousReleaseEnv))
 
 	return false
+}
+
+// requirePathKeysAcrossReleases checks that live path keys stay unique, and
+// that collisions are ALREADY_EXISTS, when both releases commit on the newer
+// schema, whichever release holds the path. A release that indexes path_key
+// itself fails on long paths that do not compress (#121), so maximum-length
+// random paths are used too; on the newer schema the previous release
+// accepts them as well.
+func requirePathKeysAcrossReleases(t *testing.T, previous, current *instance, token, vaultID string) {
+	t.Helper()
+
+	client := newSyncClient(t, previous, token, vaultID)
+	content := client.content(t, previous, "path keys across releases")
+
+	random := make([]byte, 4096-len(".md"))
+	_, err := rand.Read(random)
+	require.NoError(t, err)
+
+	for index, value := range random {
+		random[index] = 'a' + value%26
+	}
+
+	longPath := string(random) + ".md"
+
+	tests := []struct {
+		name            string
+		holder, other   *instance
+		existing, taken string
+	}{
+		{name: "previous holds, current collides", holder: previous, other: current, existing: "from-previous.md", taken: "FROM-PREVIOUS.md"},
+		{name: "current holds, previous collides", holder: current, other: previous, existing: "from-current.md", taken: "From-Current.md"},
+		{name: "maximum length, previous holds", holder: previous, other: current, existing: "p" + longPath[1:], taken: "P" + longPath[1:]},
+		{name: "maximum length, current holds", holder: current, other: previous, existing: "c" + longPath[1:], taken: "C" + longPath[1:]},
+	}
+
+	for _, test := range tests {
+		client.mustCommit(t, test.holder, client.create(t, test.existing, content))
+
+		_, err := client.commit(t, test.other, client.create(t, test.taken, content))
+		assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err), "%s: %v", test.name, err)
+	}
 }
 
 // upgradeRevisions is one client's revisions of one document, committed
