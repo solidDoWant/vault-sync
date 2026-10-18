@@ -95,6 +95,10 @@ var idConstraints = map[string]bool{
 // commits, so commits to one vault are serialized by PostgreSQL across all
 // server processes: seqs are gapless, and a revision becomes visible only
 // after every revision with a lower seq.
+//
+// A new revision queues a VaultChangedChannel notification in the same
+// transaction, which PostgreSQL delivers to every listener once it commits.
+// An idempotent retry notifies nothing: the head did not move.
 func (vault *VaultStore) CommitRevision(ctx context.Context, revision NewRevision) (Revision, error) {
 	var committed Revision
 
@@ -214,6 +218,12 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		revision.Path, revision.Deleted, revision.DeviceID)
 	if err != nil {
 		return Revision{}, fmt.Errorf("insert revision: %w", err)
+	}
+
+	// Delivered to every server replica's realtime hub exactly when this
+	// transaction commits, and never if it rolls back (SPEC.md §6.4).
+	if err := notifyVaultChanged(ctx, tx, VaultChange{VaultID: vault.vaultID, Seq: seq}); err != nil {
+		return Revision{}, err
 	}
 
 	return vault.revision(ctx, tx, revision.ID)

@@ -29,6 +29,9 @@
 | `VAULT_SYNC_BLOB_MAX_SIZE_BYTES` | `1073741824` (1 GiB) | Largest blob (file) that can be uploaded. At most 83886080000 (80 GiB). |
 | `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT` | `32` | Upload sessions that may be in progress at once in one vault (1 to 10000). Further `BeginBlob` calls get `resource_exhausted` until one completes or expires. |
 | `VAULT_SYNC_BLOB_UPLOAD_TTL` | `24h` | How long an upload session may be idle before the cleanup routine removes it. A Go duration of at least `10m`. A commit in progress records activity after every 8 MiB part it composes, so it is never removed, however long it takes. |
+| `VAULT_SYNC_REALTIME_MAX_CONNECTIONS` | `10000` | Open realtime WebSocket connections this replica accepts (1 to 1000000). Further upgrades get HTTP 503, and the client reconnects, through the load balancer, to another replica. |
+| `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER` | `32` | Open realtime connections one user may hold on this replica (1 to 10000). Further upgrades get HTTP 429. Each device needs one. |
+| `VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS` | `128` | Vaults one realtime connection may subscribe to (1 to 10000). Reported to clients as `max_realtime_subscriptions` by `GetServerInfo`; a further `subscribe` gets a `RESOURCE_EXHAUSTED` error frame. |
 
 ### Authentication
 
@@ -70,6 +73,15 @@ Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both dir
 
 Commits to a vault are serialized by a PostgreSQL row lock on the vault, held for the duration of one short transaction, so any number of server replicas can accept commits for the same vault concurrently: each revision gets the vault's next sequence number with no gaps, and a revision is never visible in the change feed before one with a lower number. Revisions of end-to-end encrypted vaults are rejected (`failed_precondition`), like creating such a vault.
 
+### Realtime channel
+
+Clients learn about new revisions through one WebSocket per device at `GET /v1/realtime` on the API listener (SPEC.md §6.4); it carries binary protobuf frames, a few bytes each. Your ingress must allow WebSocket upgrades on that path and should not time out idle connections faster than every 30 seconds (the server pings each client every 30 seconds and disconnects one that does not answer within 10).
+
+- **Authentication.** Browser clients (the Obsidian plugin) send the access token as the WebSocket subprotocol `vaultsync.bearer.<token>`, next to `vaultsync.v1`; other clients may send `Authorization: Bearer <token>` instead. The token is never put in the URL, and the server never logs the `Sec-WebSocket-Protocol` header; if your proxy logs request headers, exclude that one. Upgrades are refused with HTTP 401 without a valid token and HTTP 403 from a browser origin other than the Obsidian app origins. When the token expires the server sends an `UNAUTHENTICATED` error frame and closes the connection, and the client reconnects with a fresh token.
+- **Authorization.** Each subscription is checked against the caller's vault membership, and so is every notification before it is sent: a non-member gets `NOT_FOUND`, exactly as for a vault that does not exist, and a member removed from a vault stops receiving its notifications.
+- **Multiple replicas.** Commits are announced through PostgreSQL `LISTEN/NOTIFY` (channel `vault_changed`), so a client connected to any replica is notified of commits made on every replica. Each replica holds one extra database connection for this, outside the connection pool. If it is lost (a database restart), the replica reconnects with backoff and then re-announces the current state of every subscribed vault, so no notification is lost for long. Clients also pull periodically, so notifications only ever reduce latency.
+- **Limits.** Besides the variables above, a client frame may be at most 4 KiB and clients may send 20 frames per second on average. Notifications for a slow client are queued only up to a fixed bound; a client that falls further behind is disconnected and reconnects.
+
 ### PostgreSQL TLS
 
 TLS is enabled with the DSN's `sslmode`; use `require`, `verify-ca` or `verify-full`. Setting any of the TLS file variables with a DSN whose first connection attempt is plaintext (`sslmode=disable` or `allow`) is rejected at startup. With `sslmode=prefer` (the libpq default when `sslmode` is omitted) and a TLS file set, the plaintext fallback is removed, so the connection never silently downgrades.
@@ -78,7 +90,7 @@ TLS is enabled with the DSN's `sslmode`; use `require`, `verify-ca` or `verify-f
 
 ## Endpoints
 
-The API listener serves only the ConnectRPC services under `/vaultsync.v1.*/`. Cross-origin requests are allowed only from the Obsidian app origins `app://obsidian.md`, `capacitor://localhost` and `http://localhost`.
+The API listener serves only the ConnectRPC services under `/vaultsync.v1.*/` and the realtime WebSocket at `/v1/realtime`. Cross-origin requests are allowed only from the Obsidian app origins `app://obsidian.md`, `capacitor://localhost` and `http://localhost`.
 
 The metrics listener serves:
 
@@ -97,6 +109,13 @@ Besides the standard Go runtime (`go_*`) and process (`process_*`) metrics:
 | `vault_sync_rpc_requests_total` | counter | `procedure`, `code` | RPCs handled, by full procedure name (for example `/vaultsync.v1.ServerInfoService/GetServerInfo`) and Connect status code (`ok`, `unimplemented`, ...). |
 | `vault_sync_rpc_request_duration_seconds` | histogram | `procedure`, `code` | Time spent handling each RPC. |
 
+| `vault_sync_realtime_connections` | gauge | | Open realtime WebSocket connections on this replica. |
+| `vault_sync_realtime_refused_upgrades_total` | counter | `reason` | Realtime upgrades refused: `origin`, `unauthenticated`, `protocol`, `user_limit`, `instance_limit`, `draining`, `unavailable`. |
+| `vault_sync_realtime_disconnects_total` | counter | `reason` | Realtime connections ended: `client`, `drain`, `slow_client`, `rate_limit`, `invalid_frame`, `frame_too_large`, `token_expired`, `ping_timeout`, `write_failed`. |
+| `vault_sync_realtime_notifications_total` | counter | | `vault_changed` frames queued to realtime clients. |
+| `vault_sync_realtime_listener_up` | gauge | | 1 while this replica listens for commits (PostgreSQL `LISTEN`), 0 while it reconnects. Alert if it stays 0. |
+| `vault_sync_realtime_listener_reconnects_total` | counter | | Times the commit listener lost its database connection and reconnected. |
+
 Calls rejected for authentication are counted with code `unauthenticated`. Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.
 
 ## Startup and shutdown
@@ -107,7 +126,7 @@ On `SIGTERM` or `SIGINT` it shuts down in this order:
 
 1. `/readyz` starts returning 503 immediately.
 2. For `VAULT_SYNC_SHUTDOWN_DELAY` the API keeps accepting and serving requests, but every response closes its connection, so clients and proxies reconnect, through the load balancer, to another replica.
-3. The API stops accepting connections, and in-flight requests get up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` to finish. Once the realtime channel ships, its open WebSockets will be closed at this step with close code 1001 ("going away"), so clients reconnect elsewhere.
+3. The API stops accepting connections, and in-flight requests get up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` to finish. Open realtime WebSockets are closed at this step with close code 1001 ("going away"), so clients reconnect elsewhere and re-subscribe.
 4. The process exits with status 0 after a clean drain, or status 1 if the timeout forced connections closed.
 
 Background jobs (the blob upload cleanup) stop at the signal. Work they leave half-done is finished by the next run on any replica.
@@ -118,7 +137,7 @@ PostgreSQL connections are checked before every use. A connection the database d
 
 The server is designed to run as several identical replicas behind one Service, sharing one PostgreSQL database and one S3 bucket. Terminating any replica, for example to drain a node, must have no client-visible effect:
 
-- Replicas keep no per-client state of their own. Upload sessions, memberships and users live in PostgreSQL, and blob contents live in S3. Any replica can serve any request, including different chunks of one upload and its commit. Caches (the OIDC key set, S3 credentials) are rebuilt by each replica on its own.
+- Replicas keep no per-client state of their own beyond open realtime connections, whose subscriptions a client re-creates when it reconnects anywhere. Upload sessions, memberships and users live in PostgreSQL, and blob contents live in S3. Any replica can serve any request, including different chunks of one upload and its commit. Caches (the OIDC key set, S3 credentials) are rebuilt by each replica on its own.
 - Background jobs run on every replica. They coordinate only through PostgreSQL, so concurrent runs have the same effect as one run.
 - A replica killed without warning (`SIGKILL`, a node crash) loses only its in-flight requests. Every RPC is safe to retry on another replica, and anything already acknowledged is kept.
 - During a rolling upgrade the previous release and the new one run side by side. The new release's migrations are backward-compatible with the previous release (SPEC.md §12), and an integration test runs both releases against one database.

@@ -63,6 +63,7 @@ func TestLoadDefaults(t *testing.T) {
 			MaxUploadsPerVault: 32,
 			UploadTTL:          24 * time.Hour,
 		},
+		Realtime: config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128},
 	}, cfg)
 }
 
@@ -269,6 +270,94 @@ func TestLoadBlobSettings(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, test.want, cfg.Blobs)
+		})
+	}
+}
+
+func TestLoadRealtimeSettings(t *testing.T) {
+	defaults := config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128}
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want config.RealtimeConfig
+		// wantProblems are substrings that must each appear in the error.
+		wantProblems []string
+	}{
+		{
+			name: "overrides",
+			env: map[string]string{
+				config.RealtimeMaxConnectionsEnv:        "500",
+				config.RealtimeMaxConnectionsPerUserEnv: "4",
+				config.RealtimeMaxSubscriptionsEnv:      "16",
+			},
+			want: config.RealtimeConfig{MaxConnections: 500, MaxConnectionsPerUser: 4, MaxSubscriptions: 16},
+		},
+		{
+			name: "upper bounds",
+			env: map[string]string{
+				config.RealtimeMaxConnectionsEnv:        "1000000",
+				config.RealtimeMaxConnectionsPerUserEnv: "10000",
+				config.RealtimeMaxSubscriptionsEnv:      "10000",
+			},
+			want: config.RealtimeConfig{MaxConnections: 1_000_000, MaxConnectionsPerUser: 10_000, MaxSubscriptions: 10_000},
+		},
+		{
+			name: "lower bounds",
+			env: map[string]string{
+				config.RealtimeMaxConnectionsEnv:        "1",
+				config.RealtimeMaxConnectionsPerUserEnv: "1",
+				config.RealtimeMaxSubscriptionsEnv:      "1",
+			},
+			want: config.RealtimeConfig{MaxConnections: 1, MaxConnectionsPerUser: 1, MaxSubscriptions: 1},
+		},
+		{name: "defaults", want: defaults},
+		{
+			name:         "connections above the bound",
+			env:          map[string]string{config.RealtimeMaxConnectionsEnv: "1000001"},
+			wantProblems: []string{config.RealtimeMaxConnectionsEnv},
+		},
+		{
+			name:         "connections per user above the bound",
+			env:          map[string]string{config.RealtimeMaxConnectionsPerUserEnv: "10001"},
+			wantProblems: []string{config.RealtimeMaxConnectionsPerUserEnv},
+		},
+		{
+			name:         "subscriptions above the bound",
+			env:          map[string]string{config.RealtimeMaxSubscriptionsEnv: "10001"},
+			wantProblems: []string{config.RealtimeMaxSubscriptionsEnv},
+		},
+		{
+			name: "zero",
+			env: map[string]string{
+				config.RealtimeMaxConnectionsEnv:        "0",
+				config.RealtimeMaxConnectionsPerUserEnv: "0",
+				config.RealtimeMaxSubscriptionsEnv:      "0",
+			},
+			wantProblems: []string{config.RealtimeMaxConnectionsEnv, config.RealtimeMaxConnectionsPerUserEnv, config.RealtimeMaxSubscriptionsEnv},
+		},
+		{
+			name:         "not a number",
+			env:          map[string]string{config.RealtimeMaxSubscriptionsEnv: "many"},
+			wantProblems: []string{config.RealtimeMaxSubscriptionsEnv},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(lookup(withRequired(test.env)))
+			if len(test.wantProblems) > 0 {
+				require.Error(t, err)
+
+				for _, problem := range test.wantProblems {
+					assert.Contains(t, err.Error(), problem)
+				}
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cfg.Realtime)
 		})
 	}
 }

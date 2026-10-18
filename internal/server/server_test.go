@@ -26,6 +26,7 @@ import (
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
@@ -151,6 +152,39 @@ func TestGetServerInfoRequiresNoAuthentication(t *testing.T) {
 	assert.Equal(t, version.String(), response.Msg.GetVersion())
 	assert.Equal(t, uint32(api.ProtocolVersion), response.Msg.GetProtocolVersion())
 	assert.Equal(t, uint32(1), response.Msg.GetProtocolVersion())
+}
+
+func TestGetServerInfoReportsTheRealtimeSubscriptionCap(t *testing.T) {
+	tests := []struct {
+		name    string
+		hub     *realtime.Hub
+		wantCap uint32
+	}{
+		{name: "realtime not served", wantCap: 0},
+		{name: "default cap", hub: realtime.NewHub(realtime.Options{}), wantCap: realtime.DefaultMaxSubscriptions},
+		{name: "configured cap", hub: realtime.NewHub(realtime.Options{Limits: realtime.Limits{MaxSubscriptions: 7}}), wantCap: 7},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			running := startServer(t, server.Options{Realtime: test.hub})
+
+			client := vaultsyncv1connect.NewServerInfoServiceClient(http.DefaultClient, running.apiURL())
+
+			response, err := client.GetServerInfo(t.Context(), connect.NewRequest(&vaultsyncv1.GetServerInfoRequest{}))
+			require.NoError(t, err)
+			assert.Equal(t, test.wantCap, response.Msg.GetMaxRealtimeSubscriptions())
+
+			// The upgrade endpoint is served only with a hub; without a
+			// token it is refused either way.
+			status, _ := get(t, running.apiURL()+realtime.Path)
+			if test.hub == nil {
+				assert.Equal(t, http.StatusNotFound, status)
+			} else {
+				assert.Equal(t, http.StatusUnauthorized, status)
+			}
+		})
+	}
 }
 
 func TestHealthz(t *testing.T) {

@@ -18,14 +18,20 @@ const ProtocolVersion = 1
 
 // ServerInfoService implements vaultsync.v1.ServerInfoService. It requires no
 // authentication and reveals nothing about vaults or users.
-type ServerInfoService struct{}
+type ServerInfoService struct {
+	// MaxRealtimeSubscriptions is the realtime channel's subscription cap
+	// per connection, or zero when the channel is not served.
+	MaxRealtimeSubscriptions uint32
+}
 
 var _ vaultsyncv1connect.ServerInfoServiceHandler = ServerInfoService{}
 
-// GetServerInfo returns the build version and protocol version.
-func (ServerInfoService) GetServerInfo(context.Context, *connect.Request[vaultsyncv1.GetServerInfoRequest]) (*connect.Response[vaultsyncv1.GetServerInfoResponse], error) {
+// GetServerInfo returns the build version, the protocol version and the
+// limits clients need to know.
+func (service ServerInfoService) GetServerInfo(context.Context, *connect.Request[vaultsyncv1.GetServerInfoRequest]) (*connect.Response[vaultsyncv1.GetServerInfoResponse], error) {
 	return connect.NewResponse(&vaultsyncv1.GetServerInfoResponse{
-		Version:         version.String(),
-		ProtocolVersion: ProtocolVersion,
+		Version:                  version.String(),
+		ProtocolVersion:          ProtocolVersion,
+		MaxRealtimeSubscriptions: service.MaxRealtimeSubscriptions,
 	}), nil
 }
