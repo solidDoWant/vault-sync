@@ -305,6 +305,9 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, errors.New("content_ref is not a complete blob in this vault; upload it first"))
 	case errors.Is(err, store.ErrPathKeyTaken):
 		return connect.NewError(connect.CodeAlreadyExists, errors.New("another live document has this path (ignoring case and Unicode normalization)"))
+	case errors.Is(err, store.ErrPathFolderTaken):
+		return connect.NewError(connect.CodeAlreadyExists,
+			errors.New("a live document's path is a folder of this path, or this path is a folder of a live document's (ignoring case and Unicode normalization)"))
 	case errors.Is(err, store.ErrDeviceNotFound):
 		return connect.NewError(connect.CodeNotFound, errors.New("device not found"))
 	case errors.Is(err, store.ErrRevisionConflict),

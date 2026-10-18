@@ -53,8 +53,11 @@ export interface RunContext {
   log: (entry: string) => void;
 }
 
-/** Paths clients choose from. Several collide once normalized (§5), so creates and renames race for path keys. */
-export const pathPool = ["a.md", "A.md", "b.md", "notes/c.md", "Notes/C.md", "straße.md", "STRASSE.md", "d.md", "e.md", "notes/f.md"] as const;
+/**
+ * Paths clients choose from. Several collide once normalized (§5), so creates and renames race for path keys, and the
+ * file `NOTES` names the folder of the `notes/` documents, so they race as file and folder.
+ */
+export const pathPool = ["a.md", "A.md", "b.md", "notes/c.md", "Notes/C.md", "straße.md", "STRASSE.md", "d.md", "e.md", "notes/f.md", "NOTES"] as const;
 
 /** Shared contents, so clients upload identical blobs (and share upload sessions). */
 const sharedContents = 6;
