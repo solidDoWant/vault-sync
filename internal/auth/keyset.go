@@ -166,7 +166,8 @@ func (keySet *remoteKeySet) checkFetchURL(target *url.URL) error {
 // checkRedirect allows a redirect only to the host first requested, without
 // a downgrade from https, and to a URL checkFetchURL allows.
 func (keySet *remoteKeySet) checkRedirect(request *http.Request, via []*http.Request) error {
-	if len(via) >= maxRedirects {
+	// via holds the requests already made, so this is redirect len(via).
+	if len(via) > maxRedirects {
 		return fmt.Errorf("stopped after %d redirects", maxRedirects)
 	}
 

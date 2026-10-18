@@ -5,6 +5,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -313,6 +314,152 @@ func TestVerifierAllowsCleartextOnlyForLoopbackIssuers(t *testing.T) {
 			for _, requested := range transport.requested() {
 				assert.NotContains(t, requested, "example.com", "a cleartext key set on a non-loopback host must not be fetched")
 			}
+		})
+	}
+}
+
+// redirectChain redirects every request to the same path, adding one hop per
+// redirect, until it has redirected hops times.
+func redirectChain(hops int) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+			hop, _ := strconv.Atoi(request.URL.Query().Get("hop"))
+			if hop < hops {
+				http.Redirect(writer, request, request.URL.Path+"?hop="+strconv.Itoa(hop+1), http.StatusFound)
+
+				return
+			}
+
+			next.ServeHTTP(writer, request)
+		})
+	}
+}
+
+func TestVerifierFollowsAtMostFiveRedirects(t *testing.T) {
+	tests := []struct {
+		hops        int
+		assertError require.ErrorAssertionFunc
+	}{
+		{hops: 1},
+		{hops: 5},
+		{hops: 6, assertError: requireUnauthenticated},
+		{hops: 10, assertError: requireUnauthenticated},
+	}
+
+	for _, test := range tests {
+		t.Run(strconv.Itoa(test.hops), func(t *testing.T) {
+			if test.assertError == nil {
+				test.assertError = require.NoError
+			}
+
+			issuer := authtest.NewTLSIssuer(t)
+			key := issuer.AddKey(t, jose.ES256)
+			issuer.SetMiddleware(redirectChain(test.hops))
+
+			clock := newClock()
+			client, _ := recordingClient(issuer)
+
+			_, err := newClientVerifier(issuer, clock, client).Verify(t.Context(), authtest.Sign(t, key, issuer.Claims("alice", clock.Now())))
+			test.assertError(t, err)
+		})
+	}
+}
+
+func TestVerifierRefusesDowngradeRedirectsForALoopbackHTTPIssuer(t *testing.T) {
+	// A loopback http issuer may have its keys fetched over loopback http,
+	// but a key host first reached over https must not redirect to http.
+	issuer := authtest.NewIssuer(t)
+	keyHost := authtest.NewTLSIssuer(t)
+	key := keyHost.AddKey(t, jose.RS256)
+	issuer.SetJWKSURI(keyHost.URL + "/jwks")
+	keyHost.SetMiddleware(redirect("/jwks", cleartextTarget))
+
+	clock := newClock()
+	client, transport := recordingClient(keyHost)
+
+	_, err := newClientVerifier(issuer, clock, client).Verify(t.Context(), authtest.Sign(t, key, issuer.Claims("alice", clock.Now())))
+	require.ErrorIs(t, err, auth.ErrUnauthenticated)
+
+	keyHostURL, err := url.Parse(keyHost.URL)
+	require.NoError(t, err)
+
+	for _, requested := range transport.cleartext() {
+		assert.NotContains(t, requested, keyHostURL.Host, "the https key host's redirect to http must not be followed")
+	}
+
+	assert.Contains(t, transport.requested(), keyHost.URL+"/jwks", "the key set was requested over https")
+}
+
+func TestIsLoopbackHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{host: "localhost", want: true},
+		{host: "127.0.0.1", want: true},
+		{host: "127.255.255.254", want: true},
+		{host: "::1", want: true},
+		{host: "::ffff:127.0.0.1", want: true},
+
+		{host: ""},
+		{host: "127.0.0.1.evil.com"},
+		{host: "localhost.evil.com"},
+		{host: "evil-localhost"},
+		{host: "localhost."},
+		// Matching is exact; callers pass url.URL.Hostname, which keeps case.
+		{host: "LOCALHOST"},
+		{host: "Localhost"},
+		{host: "0.0.0.0"},
+		{host: "::"},
+		{host: "127.1"},
+		{host: "2130706433"},
+		{host: "0x7f.0.0.1"},
+		{host: "0177.0.0.1"},
+		{host: "::1%eth0"},
+		{host: "127.0.0.1@evil.com"},
+		{host: "127.0.0.1:80"},
+		// The bracketed form is a URL host, not a host name; see below.
+		{host: "[::1]"},
+		{host: "10.0.0.1"},
+		{host: "::2"},
+		{host: "example.com"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.host, func(t *testing.T) {
+			assert.Equal(t, test.want, auth.IsLoopbackHost(test.host))
+		})
+	}
+}
+
+// TestIsLoopbackHostForURLs checks the host names callers derive from URLs
+// with url.URL.Hostname.
+func TestIsLoopbackHostForURLs(t *testing.T) {
+	tests := []struct {
+		url  string
+		want bool
+	}{
+		{url: "http://localhost:8080/", want: true},
+		{url: "http://127.0.0.1:8080/", want: true},
+		{url: "http://[::1]:8080/", want: true},
+		{url: "http://[::1]/", want: true},
+		{url: "http://[::ffff:127.0.0.1]/", want: true},
+
+		{url: "http://127.0.0.1@evil.com/"},
+		{url: "http://localhost@evil.com/"},
+		{url: "http://127.0.0.1.evil.com/"},
+		{url: "http://[::1%25eth0]/"},
+		{url: "http://0.0.0.0/"},
+		{url: "http://127.1/"},
+		{url: "http://2130706433/"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.url, func(t *testing.T) {
+			parsed, err := url.Parse(test.url)
+			require.NoError(t, err)
+
+			assert.Equal(t, test.want, auth.IsLoopbackHost(parsed.Hostname()))
 		})
 	}
 }
