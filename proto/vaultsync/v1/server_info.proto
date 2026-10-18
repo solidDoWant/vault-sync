@@ -1,0 +1,21 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// ServerInfoService exposes unauthenticated server metadata. It exists so the
+// code-generation pipeline (Go + TypeScript) is exercised from day one; the
+// sync API is defined by the Phase 1 issues.
+service ServerInfoService {
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse) {}
+}
+
+message GetServerInfoRequest {}
+
+message GetServerInfoResponse {
+  // Server build version.
+  string version = 1;
+  // Highest protocol version the server speaks.
+  uint32 protocol_version = 2;
+}

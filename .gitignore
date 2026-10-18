@@ -1,0 +1,15 @@
+bin/
+/result
+/result-*
+
+# Claude Code per-issue task scratch and project-manager state (local only)
+/.claude/tasks/
+/.pm/
+
+# Plugin build tooling and output
+/plugin/node_modules/
+/plugin/dist/
+/plugin/.wdio-obsidian-cache/
+/node_modules/
+
+.direnv/
