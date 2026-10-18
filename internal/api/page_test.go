@@ -19,9 +19,9 @@ import (
 )
 
 // Startup requires the send limit to be at least MinResponseLimitBytes, and
-// every page holds at least one revision, so a response with one revision
-// whose every field is at its largest must fit MinResponseLimitBytes in
-// every encoding the server sends.
+// every page holds at least one entry, so a response with one revision or
+// one vault whose every field is at its largest must fit
+// MinResponseLimitBytes in every encoding the server sends.
 func TestOneRevisionResponsesFitTheMinimumLimit(t *testing.T) {
 	id := strings.Repeat("f", 36)
 	// Every byte of a path may be a multi-byte character; as protobuf
@@ -57,6 +57,21 @@ func TestOneRevisionResponsesFitTheMinimumLimit(t *testing.T) {
 			},
 			Revisions: []*vaultsyncv1.Revision{revision},
 			// Tokens are 11 characters; leave ample room.
+			NextPageToken: strings.Repeat("A", 64),
+		},
+		"ListVaultsResponse": &vaultsyncv1.ListVaultsResponse{
+			Vaults: []*vaultsyncv1.Vault{{
+				Id: id,
+				// A quote is the printable ASCII character JSON expands
+				// most; multi-byte characters are no longer once encoded.
+				Name:       strings.Repeat(`"`, api.MaxVaultNameBytes),
+				Encryption: vaultsyncv1.VaultEncryption(math.MaxInt32),
+				Escrow:     true,
+				Role:       vaultsyncv1.VaultRole(math.MaxInt32),
+				HeadSeq:    math.MaxUint64,
+				CreateTime: timestamppb.New(time.Date(9999, 12, 31, 23, 59, 59, 999999999, time.UTC)),
+			}},
+			// Tokens are 22 characters; leave ample room.
 			NextPageToken: strings.Repeat("A", 64),
 		},
 	}

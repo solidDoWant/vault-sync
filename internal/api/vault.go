@@ -41,11 +41,20 @@ type VaultStore interface {
 	ListVaults(ctx context.Context, userID, after uuid.UUID, limit int) ([]store.Vault, error)
 }
 
+// VaultLimits bounds ListVaults responses.
+type VaultLimits struct {
+	// MaxResponseBytes bounds the encoded size of a ListVaults response
+	// (see pageBudget). The server sets it to its send limit; tests lower
+	// it. Zero leaves pages bounded by entry count only.
+	MaxResponseBytes int
+}
+
 // VaultService implements vaultsync.v1.VaultService for the authenticated
 // caller. Its procedures are not vault-scoped: CreateVault makes the caller
 // the new vault's owner, and ListVaults only returns the caller's vaults.
 type VaultService struct {
 	Vaults VaultStore
+	Limits VaultLimits
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
 }
@@ -140,14 +149,27 @@ func (service VaultService) ListVaults(ctx context.Context, request *connect.Req
 	}
 
 	response := &vaultsyncv1.ListVaultsResponse{}
+	hasMore := len(vaults) > pageSize
+	vaults = vaults[:min(len(vaults), pageSize)]
 
-	if len(vaults) > pageSize {
-		vaults = vaults[:pageSize]
-		response.NextPageToken = pageTokenEncoding.EncodeToString(vaults[pageSize-1].ID[:])
-	}
+	// The page also ends where its encoding would exceed the response
+	// limit; the token continues after the last vault returned.
+	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
 
 	for _, vault := range vaults {
-		response.Vaults = append(response.Vaults, vaultMessage(vault))
+		message := vaultMessage(vault)
+		if !budget.admit(message) {
+			hasMore = true
+
+			break
+		}
+
+		response.Vaults = append(response.Vaults, message)
+	}
+
+	if hasMore && len(response.Vaults) > 0 {
+		last := vaults[len(response.Vaults)-1].ID
+		response.NextPageToken = pageTokenEncoding.EncodeToString(last[:])
 	}
 
 	return connect.NewResponse(response), nil
