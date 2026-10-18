@@ -3,7 +3,18 @@ package blobstore
 import (
 	"context"
 	"time"
+
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 )
+
+// ComposeSlots exposes composeSlots to tests.
+const ComposeSlots = composeSlots
+
+// NewWithAttempts is New with the SDK making at most attempts attempts per
+// call, so tests of failing calls need not wait for the retries' backoff.
+func NewWithAttempts(cfg Config, attempts int) (*Objects, error) {
+	return newObjects(cfg, func(options *s3.Options) { options.RetryMaxAttempts = attempts })
+}
 
 // ParseBlobKey exposes parseBlobKey to tests.
 var ParseBlobKey = parseBlobKey
