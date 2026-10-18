@@ -15,7 +15,9 @@ export interface TokenManagerOptions {
   /**
    * Stores the refresh token (undefined removes it). It is called, and
    * awaited, before a new or rotated refresh token is used, so a token the
-   * provider rotated is never lost to a crash.
+   * provider rotated is never lost to a crash. Calls never overlap: each
+   * starts after the previous one settled, and a write for a session that a
+   * sign-in or sign-out has since replaced is skipped.
    */
   persist: (refreshToken: string | undefined) => Promise<void>;
   /** Called after every change of `state`. */
@@ -49,6 +51,8 @@ export class TokenManager {
   private refreshToken: string | undefined;
   private cached: CachedToken | undefined;
   private refreshing: Promise<string> | undefined;
+  /** The last queued persist call; the next one starts after it settles. */
+  private saving: Promise<void> = Promise.resolve();
   /** Bumped by every sign-in and sign-out, so a refresh that started before one never overwrites its result. */
   private generation = 0;
   private current: AuthState;
@@ -77,9 +81,10 @@ export class TokenManager {
     if (tokens.refreshToken === undefined) {
       throw new Error("the identity provider issued no refresh token; allow the offline_access scope for this client");
     }
-    this.generation++;
+    const generation = ++this.generation;
     this.refreshing = undefined;
-    await this.persist(tokens.refreshToken);
+    await this.save(generation, tokens.refreshToken);
+    if (generation !== this.generation) throw new Error("signed out, or signed in again, before the sign-in completed");
     this.refreshToken = tokens.refreshToken;
     this.cached = this.cache(tokens);
     this.setState("signed-in");
@@ -87,12 +92,12 @@ export class TokenManager {
 
   /** Forgets both tokens. */
   async signOut(): Promise<void> {
-    this.generation++;
+    const generation = ++this.generation;
     this.refreshing = undefined;
     this.refreshToken = undefined;
     this.cached = undefined;
-    await this.persist(undefined);
-    this.setState("signed-out");
+    await this.save(generation, undefined);
+    if (generation === this.generation) this.setState("signed-out");
   }
 
   /**
@@ -137,30 +142,46 @@ export class TokenManager {
       if (error instanceof SignInRequiredError && generation === this.generation) await this.requireSignIn();
       throw error;
     }
-    if (generation !== this.generation) {
-      // Signed out, or signed in again, while this refresh ran: its tokens
-      // belong to the old session and are dropped.
-      if (this.cached !== undefined) return this.cached.token;
-      throw new SignInRequiredError("not signed in");
-    }
+    if (generation !== this.generation) return this.superseded();
     if (tokens.refreshToken !== undefined && tokens.refreshToken !== refreshToken) {
       // Rotated: the provider may already refuse the old one, so the new
-      // one is stored before anything relies on it.
+      // one is stored before anything relies on it. A sign-in or sign-out
+      // while it is being stored wins: the write is skipped if it has not
+      // started, the sign-out's own write is queued behind it if it has,
+      // and these tokens are dropped either way.
+      await this.save(generation, tokens.refreshToken);
+      if (generation !== this.generation) return this.superseded();
       this.refreshToken = tokens.refreshToken;
-      await this.persist(tokens.refreshToken);
     }
     this.cached = this.cache(tokens);
     return tokens.accessToken;
   }
 
+  /** The result of a refresh that a sign-in or sign-out overtook: its tokens belong to the old session and are dropped. */
+  private superseded(): Promise<string> {
+    if (this.cached !== undefined) return Promise.resolve(this.cached.token);
+    return Promise.reject(new SignInRequiredError("not signed in"));
+  }
+
+  /**
+   * Queues a persist call for session `generation`. It starts after every
+   * earlier call settled, and only if no sign-in or sign-out replaced that
+   * session meanwhile, so the last write is always the current session's.
+   */
+  private save(generation: number, refreshToken: string | undefined): Promise<void> {
+    const run = this.saving.then(() => (generation === this.generation ? this.persist(refreshToken) : undefined));
+    this.saving = run.catch(() => undefined);
+    return run;
+  }
+
   /** The refresh token stopped working: forget it and wait for the user to sign in again. */
   private async requireSignIn(): Promise<void> {
-    this.generation++;
+    const generation = ++this.generation;
     this.refreshToken = undefined;
     this.cached = undefined;
     this.setState("sign-in-required");
     try {
-      await this.persist(undefined);
+      await this.save(generation, undefined);
     } catch {
       // A dead token left on disk is refused again on the next start; the
       // state change above is what pauses sync.

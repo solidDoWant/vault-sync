@@ -77,6 +77,24 @@ describe("discoverOidc", () => {
 
     await expect(discoverOidc(http, "https://idp.example/")).rejects.toThrow(/larger than/);
   });
+
+  it("bounds the response in UTF-8 bytes, not characters", async () => {
+    const configuration = (padding: string) =>
+      staticHttp(200, `{"issuer":"https://idp.example/","device_authorization_endpoint":"https://idp.example/d","token_endpoint":"https://idp.example/t","padding":"${padding}"}`);
+    const overhead = new TextEncoder().encode(
+      `{"issuer":"https://idp.example/","device_authorization_endpoint":"https://idp.example/d","token_endpoint":"https://idp.example/t","padding":""}`,
+    ).length;
+    const room = 64 * 1024 - overhead;
+    // "é" is one UTF-16 code unit but two UTF-8 bytes.
+    const exactlyFull = "x".repeat(room % 2) + "é".repeat(Math.floor(room / 2));
+    expect(new TextEncoder().encode(exactlyFull).length).toBe(room);
+
+    // Exactly 64 KiB is accepted, one byte more is not.
+    await expect(discoverOidc(configuration(exactlyFull), "https://idp.example/")).resolves.toMatchObject({ tokenEndpoint: "https://idp.example/t" });
+    await expect(discoverOidc(configuration(`${exactlyFull}x`), "https://idp.example/")).rejects.toThrow(/larger than 65536 bytes/);
+    // Far fewer characters than 64 Ki, but more bytes: a character count would let this through.
+    await expect(discoverOidc(configuration(`${exactlyFull}é`), "https://idp.example/")).rejects.toThrow(/larger than 65536 bytes/);
+  });
 });
 
 describe("device authorization", () => {

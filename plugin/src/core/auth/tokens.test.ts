@@ -198,4 +198,76 @@ describe("TokenManager", () => {
     expect(persisted).toEqual([undefined]);
     await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
   });
+
+  it("drops a refresh whose rotated refresh token was still being stored when the user signed out", async () => {
+    // What is on disk: each write lands when its persist call completes.
+    const disk: { token: string | undefined } = { token: undefined };
+    let releaseRotated: (() => void) | undefined;
+    const { manager, stored } = setup({
+      rotate: true,
+      manager: {
+        persist: (token) => {
+          if (releaseRotated !== undefined || token === undefined) {
+            disk.token = token;
+            return Promise.resolve();
+          }
+          return new Promise<void>((resolve) => {
+            releaseRotated = () => {
+              disk.token = token;
+              resolve();
+            };
+          });
+        },
+      },
+    });
+    disk.token = stored;
+
+    const pending = manager.accessToken();
+    await settle();
+    expect(releaseRotated).toBeDefined();
+    const signedOut = manager.signOut();
+    releaseRotated?.();
+    await signedOut;
+
+    await expect(pending).rejects.toBeInstanceOf(SignInRequiredError);
+    expect(manager.state).toBe("signed-out");
+    await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
+    // The sign-out's removal is the last write: the old session's rotated token is not left on disk.
+    expect(disk.token).toBeUndefined();
+  });
+
+  it("never stores the rotated refresh token of a refresh that a sign-out overtook", async () => {
+    const writes: (string | undefined)[] = [];
+    let releaseFirst: (() => void) | undefined;
+    const { manager, idp } = setup({
+      rotate: true,
+      manager: {
+        persist: (token) => {
+          writes.push(token);
+          if (writes.length === 1) return new Promise<void>((resolve) => (releaseFirst = resolve));
+          return Promise.resolve();
+        },
+      },
+    });
+    // A sign-in whose write is held; a refresh that starts meanwhile has to queue its write behind it.
+    const issued = idp.issue();
+    const signedIn = manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 });
+    const pending = manager.accessToken();
+    await settle();
+    expect(idp.refreshes).toBe(1);
+    const signedOut = manager.signOut();
+    releaseFirst?.();
+
+    await expect(signedIn).rejects.toThrow(/signed out/);
+    await signedOut;
+    await expect(pending).rejects.toBeInstanceOf(SignInRequiredError);
+    expect(writes).toEqual([issued.refreshToken, undefined]);
+    expect(manager.state).toBe("signed-out");
+    await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
+  });
 });
+
+/** Lets every pending promise callback run: the provider and persist fakes never wait on timers. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}

@@ -338,8 +338,14 @@ async function send(http: HttpClient, request: HttpRequest): Promise<HttpRespons
   } catch (error) {
     throw new IdentityProviderError(`could not reach the identity provider at ${new URL(request.url).origin}: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (response.text.length > maxResponseBytes) throw new IdentityProviderError(`the identity provider's response is larger than ${String(maxResponseBytes)} bytes`);
+  if (utf8Length(response.text) > maxResponseBytes) throw new IdentityProviderError(`the identity provider's response is larger than ${String(maxResponseBytes)} bytes`);
   return response;
+}
+
+/** The length of `text` in UTF-8 bytes. Every UTF-16 code unit takes at least one byte, so a text with more code units than the bound is refused without encoding it. */
+function utf8Length(text: string): number {
+  if (text.length > maxResponseBytes) return text.length;
+  return new TextEncoder().encode(text).length;
 }
 
 function parseObject(text: string, what: string): Record<string, unknown> {

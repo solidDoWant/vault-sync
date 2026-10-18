@@ -5,7 +5,7 @@ import { TokenManager, type AuthState } from "./core/auth/tokens";
 import type { PullSummary } from "./core/engine/engine";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import { isProtocolCompatible, PROTOCOL_VERSION } from "./core/version";
-import { oidcConfig, parsePluginData, serverBaseUrl, signInProblem, type PluginData } from "./obsidian/data";
+import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./obsidian/data";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { SyncSession, type SyncSessionOptions } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
@@ -37,18 +37,27 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     return this.tokens?.state ?? "signed-out";
   }
 
-  async saveSettings(): Promise<void> {
-    await this.saveData(this.data);
+  /** Saves the plugin data. Saves never overlap, so the last one called is the one left on disk. */
+  saveSettings(): Promise<void> {
+    return this.saveQueued();
   }
+
+  private readonly saveQueued = serialized(() => this.saveData(this.data));
 
   /**
    * Signs in with the OAuth device flow (SPEC.md §9.1): checks that the
    * server speaks a compatible protocol, shows the verification URL and user
    * code in a dialog, polls the identity provider, and stores the refresh
    * token in plugin data. Resolves whether the sign-in succeeded; closing the
-   * dialog cancels it.
+   * dialog cancels it and leaves the state as it was. A signed-in device must
+   * sign out first: that is what unlocks the server and identity provider
+   * settings.
    */
   async signIn(): Promise<boolean> {
+    if (this.authState === "signed-in") {
+      new Notice("Vault Sync: already signed in. Sign out first to sign in again.");
+      return false;
+    }
     const problem = signInProblem(this.data);
     if (problem !== undefined) {
       new Notice(`Vault Sync: ${problem}`);
@@ -64,16 +73,26 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
         throw new Error(`the server speaks protocol v${String(info.protocolVersion)}, but this plugin needs v${String(PROTOCOL_VERSION)} or later; update the server`);
       }
       modal.signal.throwIfAborted();
-      // The identity provider settings cannot change while signed in, so a
-      // manager made now refreshes against the provider that issues these tokens.
-      this.tokens = this.createTokenManager();
-      const tokens = await signInWithDeviceFlow(requestUrlHttpClient, oidcConfig(this.data), {
+      const config = oidcConfig(this.data);
+      const tokens = await signInWithDeviceFlow(requestUrlHttpClient, config, {
         signal: modal.signal,
         onAuthorization: (authorization) => {
           modal.showAuthorization(authorization);
         },
       });
-      await this.tokens.signIn(tokens);
+      // Another sign-in started meanwhile closes this one's dialog, so only one gets past here.
+      modal.signal.throwIfAborted();
+      // Only now, with the user's tokens in hand, is the manager replaced, so
+      // a cancelled or failed device flow leaves the state as it was. The
+      // replaced manager is signed out or needs a sign-in: it holds no
+      // refresh token and runs no refresh, so it never writes the plugin
+      // data again. It is replaced before the new tokens are stored, so a
+      // sign-out from here on reaches the new manager, which drops the
+      // sign-in. The new manager refreshes against the provider that issued
+      // these tokens (its settings are locked while signed in).
+      const manager = this.createTokenManager(config, { stored: false });
+      this.tokens = manager;
+      await manager.signIn(tokens);
       modal.close();
       new Notice("Vault Sync: signed in");
       return true;
@@ -133,10 +152,12 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.session = undefined;
   }
 
-  private createTokenManager(): TokenManager {
+  /** A token manager for `config`'s provider, starting from the stored refresh token unless `stored` is false. */
+  private createTokenManager(config = oidcConfig(this.data), options: { stored: boolean } = { stored: true }): TokenManager {
+    const stored = options.stored ? this.data.refreshToken : undefined;
     return new TokenManager({
-      ...(this.data.refreshToken === undefined ? {} : { refreshToken: this.data.refreshToken }),
-      refresh: oidcRefresher(requestUrlHttpClient, oidcConfig(this.data)),
+      ...(stored === undefined ? {} : { refreshToken: stored }),
+      refresh: oidcRefresher(requestUrlHttpClient, config),
       persist: async (refreshToken) => {
         if (refreshToken === undefined) delete this.data.refreshToken;
         else this.data.refreshToken = refreshToken;

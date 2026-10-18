@@ -34,6 +34,22 @@ export function parsePluginData(raw: unknown): PluginData {
   return data;
 }
 
+/**
+ * Wraps `task` so its runs never overlap: each call starts it after the
+ * previous run settled (even if that run failed) and resolves or rejects
+ * with its own run. Plugin data saves go through it, so two saves cannot
+ * finish out of order and leave older data, such as a refresh token from
+ * before a sign-out, on disk.
+ */
+export function serialized(task: () => Promise<void>): () => Promise<void> {
+  let last: Promise<void> = Promise.resolve();
+  return () => {
+    const run = last.then(task);
+    last = run.catch(() => undefined);
+    return run;
+  };
+}
+
 /** The server URL with surrounding whitespace and trailing slashes removed, as the transport wants it. */
 export function serverBaseUrl(data: PluginData): string {
   return data.serverUrl.trim().replace(/\/+$/, "");

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePluginData, serverBaseUrl, signInProblem, type PluginData } from "./data";
+import { parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
 
 const complete: PluginData = { serverUrl: "https://sync.example", oidcIssuer: "https://auth.example/o/vs/", oidcClientId: "vault-sync" };
 
@@ -46,3 +46,66 @@ describe("serverBaseUrl", () => {
     expect(serverBaseUrl({ ...complete, serverUrl: " https://sync.example/base// " })).toBe("https://sync.example/base");
   });
 });
+
+describe("serialized", () => {
+  /** A saveData stand-in: it snapshots the data when called, and the snapshot lands on disk when the test completes the write. */
+  function fakeStorage() {
+    const data: PluginData = { ...complete, refreshToken: "old-session" };
+    const disk: { stored: PluginData | undefined } = { stored: undefined };
+    const writes: { complete: () => void; fail: () => void }[] = [];
+    const saveData = (snapshot: PluginData) =>
+      new Promise<void>((resolve, reject) => {
+        writes.push({
+          complete: () => {
+            disk.stored = snapshot;
+            resolve();
+          },
+          fail: () => {
+            reject(new Error("disk full"));
+          },
+        });
+      });
+    return { data, disk, writes, save: serialized(() => saveData({ ...data })) };
+  }
+
+  it("starts a save only after the previous one finished, so the last data saved is what ends on disk", async () => {
+    const { data, disk, writes, save } = fakeStorage();
+
+    const first = save();
+    await settle();
+    delete data.refreshToken;
+    const second = save();
+    await settle();
+    // The sign-out's save waits for the earlier one instead of racing it.
+    expect(writes).toHaveLength(1);
+
+    writes[0]?.complete();
+    await first;
+    await settle();
+    expect(writes).toHaveLength(2);
+    writes[1]?.complete();
+    await second;
+
+    expect(disk.stored).toEqual(complete);
+  });
+
+  it("runs the next save after one fails, and reports each save's own outcome", async () => {
+    const { disk, writes, save } = fakeStorage();
+
+    const first = save();
+    const second = save();
+    await settle();
+    writes[0]?.fail();
+    await expect(first).rejects.toThrow(/disk full/);
+    await settle();
+    writes[1]?.complete();
+
+    await expect(second).resolves.toBeUndefined();
+    expect(disk.stored).toEqual({ ...complete, refreshToken: "old-session" });
+  });
+});
+
+/** Lets every pending promise callback run. */
+function settle(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}

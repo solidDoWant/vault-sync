@@ -22,24 +22,44 @@ export const requestUrlHttpClient: HttpClient = async (request) => {
 /**
  * A fetch for the ConnectRPC transport (createHttpTransport's `fetch`) on
  * requestUrl. Unary calls only need a whole request and a whole response,
- * which is all requestUrl offers; it cannot be aborted, so an aborted call's
- * response is dropped when it arrives.
+ * which is all requestUrl offers. requestUrl cannot be cancelled, so an
+ * aborted call (a Connect timeout or a cancelled request) rejects at once
+ * with the abort reason, and the HTTP exchange's eventual response is
+ * dropped.
  */
 export const requestUrlFetch: typeof globalThis.fetch = async (input, init) => {
+  const signal = init?.signal ?? undefined;
   const request = new Request(input, init);
-  init?.signal?.throwIfAborted();
+  signal?.throwIfAborted();
   const headers: Record<string, string> = {};
   request.headers.forEach((value, name) => {
     headers[name] = value;
   });
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
-  const response = await requestUrl({
+  signal?.throwIfAborted();
+  const sent = requestUrl({
     url: request.url,
     method: request.method,
     headers,
     ...(body === undefined ? {} : { body }),
     throw: false,
   });
-  init?.signal?.throwIfAborted();
+  const response = await (signal === undefined ? sent : untilAborted(Promise.resolve(sent), signal));
   return new Response(response.status === 204 ? null : response.arrayBuffer, { status: response.status, headers: response.headers });
 };
+
+/** Settles like `promise`, or rejects with `signal`'s reason as soon as it aborts, whichever comes first. */
+async function untilAborted<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  let onAbort: () => void = () => undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => {
+      reject(signal.reason as Error);
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  try {
+    return await Promise.race([promise, aborted]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
+}

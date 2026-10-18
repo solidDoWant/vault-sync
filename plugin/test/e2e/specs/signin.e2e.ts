@@ -60,6 +60,11 @@ function dialog() {
   });
 }
 
+/** Dismisses the sign-in dialog with Escape, as a user cancelling the sign-in does. */
+function closeDialog() {
+  return browser.keys("Escape");
+}
+
 function isDialogOpen() {
   return browser.executeObsidian(() => document.querySelector(".vault-sync-user-code, .vault-sync-sign-in-error") !== null);
 }
@@ -142,12 +147,33 @@ describe("signing in with the device flow", function () {
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
     expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false });
 
+    // Cancelling a sign-in leaves the device needing one.
+    await startSignIn();
+    await browser.waitUntil(async () => (await dialog()) !== null, { timeoutMsg: "the sign-in dialog never showed a user code" });
+    await closeDialog();
+    await browser.waitUntil(async () => (await signInResult()) !== null, { timeoutMsg: "the cancelled sign-in never finished" });
+    expect(await signInResult()).toBe(false);
+    expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false });
+
     await startSignIn();
     await browser.waitUntil(async () => (await dialog()) !== null, { timeoutMsg: "the sign-in dialog never showed a user code" });
     expect(await issuerPost("/device/approve", { user_code: (await dialog())?.userCode ?? "" })).toBe(204);
     await browser.waitUntil(async () => (await signInResult()) !== null, { timeoutMsg: "the sign-in never finished" });
 
     expect(await signInResult()).toBe(true);
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true });
+    expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
+  });
+
+  it("refuses another sign-in while signed in, keeping the current session", async function () {
+    // The last sign-in's dialog closes (on mobile after a closing animation).
+    await browser.waitUntil(async () => !(await isDialogOpen()), { timeoutMsg: "the previous sign-in dialog stayed open" });
+
+    await startSignIn();
+    await browser.waitUntil(async () => (await signInResult()) !== null, { timeoutMsg: "the refused sign-in never finished" });
+
+    expect(await signInResult()).toBe(false);
+    expect(await isDialogOpen()).toBe(false);
     expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
   });

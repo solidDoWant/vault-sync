@@ -18,12 +18,12 @@ The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-syn
 
 ## Signing in
 
-Click **Sign in** in the settings, or run the **Vault Sync: Sign in** command. The plugin signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628), which works the same on desktop and Android and needs no redirect back into Obsidian:
+Click **Sign in** in the settings, or run the **Vault Sync: Sign in** command. The plugin signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628), which works the same on desktop and Android and needs no redirect back into Obsidian. While signed in, **Sign in** is refused: sign out first. A sign-in goes like this:
 
 1. The plugin calls the server's `GetServerInfo` to check that the server speaks a compatible protocol.
 2. It discovers the identity provider's endpoints from `<issuer>/.well-known/openid-configuration` and asks for a device code with the scopes `openid offline_access`.
 3. A dialog shows a link to the verification page and a user code. Open the page in any browser, on this device or another one, sign in there and enter the code. **Copy code** and **Open page** help on mobile.
-4. The plugin polls the identity provider at the interval it asks for, and slows down when told to. Once you approve, it stores the refresh token in plugin data and closes the dialog. Closing the dialog cancels the sign-in. If you deny the request or the code expires, the dialog says so. Start again to get a new code.
+4. The plugin polls the identity provider at the interval it asks for, and slows down when told to. Once you approve, it stores the refresh token in plugin data and closes the dialog. Closing the dialog cancels the sign-in and leaves the device as it was (for example still needing a sign-in). If you deny the request or the code expires, the dialog says so. Start again to get a new code.
 
 Access tokens are kept in memory only, never on disk. The plugin refreshes the access token with the refresh token before it expires: a minute before `exp`, or halfway through the token's lifetime if that is shorter. Concurrent requests share one refresh. If the server still refuses a token as unauthenticated (it expired early, or the device clock is off), the plugin refreshes and sends the request once more, unchanged. A retried commit keeps its revision id, so a commit whose first attempt was applied is not duplicated. When the identity provider rotates refresh tokens, the new one is saved before it is used.
 
