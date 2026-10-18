@@ -5,8 +5,9 @@ import { callHarness, reloadPlugin } from "../obsidian";
 
 // Disabling and re-enabling vault-sync resumes sync from the journal instead
 // of starting over. The harness drives vault-sync's sync session against an
-// in-memory server, with a journal that outlives the plugin's
-// disable/enable cycle, as the durable journal (#21) does.
+// in-memory server, over the open vault's IndexedDB journal, opened through
+// a new connection for each start: only what it stored survives the
+// plugin's disable/enable cycle.
 
 function fileText(path: string) {
   return browser.executeObsidian(async ({ app }, filePath) => {
