@@ -82,6 +82,7 @@ After the schedule, the run heals every fault, delivers everything still in flig
 | `history` | Every acknowledged revision is in history, stored exactly as acknowledged. |
 | `seq` | The vault's `seq` values are exactly `1..head_seq`: gapless, unique and monotonic. |
 | `path-key` | No two live documents share a `path_key`. This is checked directly, not only through the unique index. |
+| `path-folder` | No live document's `path_key` is a folder (a proper prefix ending before a `/`) of another live document's (SPEC.md §5). |
 | `stale-base` | Each document's revisions, in `seq` order, form one chain, each based on the previous head. A commit accepted against a stale base forks the chain. |
 | `document-head` | Each document row mirrors its head revision (`head_rev_id`, `deleted`, `path_key`). |
 

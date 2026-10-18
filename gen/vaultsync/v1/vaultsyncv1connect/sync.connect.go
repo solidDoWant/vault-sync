@@ -82,7 +82,9 @@ type SyncServiceClient interface {
 	//     content_ref names a blob that is not complete in this vault, and for
 	//     end-to-end encrypted vaults until they are supported.
 	//   - ALREADY_EXISTS: path_key collides with another live document in the
-	//     vault (SPEC.md §6.3).
+	//     vault, or the path names the folder of another live document's path,
+	//     or lies under a folder another live document's path names as a file
+	//     (SPEC.md §5, §6.3).
 	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
 	//     content_ref.size differing from the stored blob's size, document_id or
 	//     revision_id already in use outside this vault, or revision_id reused
@@ -202,7 +204,9 @@ type SyncServiceHandler interface {
 	//     content_ref names a blob that is not complete in this vault, and for
 	//     end-to-end encrypted vaults until they are supported.
 	//   - ALREADY_EXISTS: path_key collides with another live document in the
-	//     vault (SPEC.md §6.3).
+	//     vault, or the path names the folder of another live document's path,
+	//     or lies under a folder another live document's path names as a file
+	//     (SPEC.md §5, §6.3).
 	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
 	//     content_ref.size differing from the stored blob's size, document_id or
 	//     revision_id already in use outside this vault, or revision_id reused

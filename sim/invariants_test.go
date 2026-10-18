@@ -24,6 +24,9 @@ const (
 	invariantSeq = "seq"
 	// invariantPathKey: two live documents share a path_key.
 	invariantPathKey = "path-key"
+	// invariantPathFolder: a live document's path_key is a folder (a
+	// proper prefix ending before a "/") of another live document's.
+	invariantPathFolder = "path-folder"
 	// invariantStaleBase: a commit succeeded against a base other than the
 	// document's head at that moment, so the document's history forks (or
 	// has a second root).
@@ -218,8 +221,9 @@ func checkChains(revisions []storedRevision, report reporter) {
 	}
 }
 
-// checkDocuments: each document mirrors its head revision, and no two live
-// documents share a path_key.
+// checkDocuments: each document mirrors its head revision, no two live
+// documents share a path_key, and no live document's path_key is a folder of
+// another's.
 func checkDocuments(documents []storedDocument, revisions []storedRevision, report reporter) {
 	latest := map[uuid.UUID]storedRevision{}
 	for _, revision := range revisions {
@@ -254,5 +258,17 @@ func checkDocuments(documents []storedDocument, revisions []storedRevision, repo
 		}
 
 		live[document.pathKey] = document.id
+	}
+
+	for key, document := range live {
+		for end := range len(key) {
+			if key[end] != '/' {
+				continue
+			}
+
+			if folder, taken := live[key[:end]]; taken {
+				report(invariantPathFolder, "live document %s has path_key %q, a folder of live document %s's %q", folder, key[:end], document, key)
+			}
+		}
 	}
 }

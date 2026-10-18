@@ -34,6 +34,10 @@ var (
 	ErrBlobSizeMismatch = errors.New("content size differs from the stored blob's size")
 	// ErrPathKeyTaken: another live document in the vault has the path key.
 	ErrPathKeyTaken = errors.New("path_key is taken by another live document")
+	// ErrPathFolderTaken: another live document's path_key is a folder of
+	// the path key, or the path key is a folder of another live
+	// document's (SPEC.md §5): a file and a folder cannot share a name.
+	ErrPathFolderTaken = errors.New("path_key is a folder of another live document's, or lies under one")
 	// ErrInvalidPath: the path or path key is empty, longer than the
 	// schema allows (SPEC.md §5), or text PostgreSQL cannot store.
 	ErrInvalidPath = errors.New("path or path_key is empty, too long, or not valid UTF-8 without NUL")
@@ -122,9 +126,9 @@ func (vault *VaultStore) CommitRevision(ctx context.Context, revision NewRevisio
 func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision NewRevision) (Revision, error) {
 	// NO KEY UPDATE, like BeginBlobUpload: inserts referencing the vault
 	// take KEY SHARE locks on it and must not be blocked.
-	var headSeq int64
+	var encryption Encryption
 
-	err := tx.QueryRow(ctx, `SELECT head_seq FROM vaults WHERE id = $1 FOR NO KEY UPDATE`, vault.vaultID).Scan(&headSeq)
+	err := tx.QueryRow(ctx, `SELECT encryption FROM vaults WHERE id = $1 FOR NO KEY UPDATE`, vault.vaultID).Scan(&encryption)
 	if err != nil {
 		return Revision{}, notFound(err, "lock vault")
 	}
@@ -214,6 +218,22 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		return Revision{}, fmt.Errorf("write document: %w", err)
 	}
 
+	// File/folder collisions (SPEC.md §5). After the document write, so
+	// the schema has already bounded the path key and refused an equal
+	// live one, and the document's own row holds its new key: a document
+	// may move into or out of the folder its old path named. Under the
+	// vault row lock, so no concurrent commit to this vault, on any
+	// replica, can add the other side of a collision until this one
+	// commits. An E2EE path_key is an HMAC, not a path, so it has no
+	// folders to compare. A revision that keeps its live path key is not
+	// checked again, so this never refuses an edit or a delete.
+	pathKeyChanged := isNew || document.Deleted || document.PathKey != revision.PathKey
+	if !revision.Deleted && pathKeyChanged && encryption == EncryptionNone {
+		if err := vault.checkPathFolders(ctx, tx, revision); err != nil {
+			return Revision{}, err
+		}
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO revisions (id, document_id, vault_id, seq, parent_rev_id, content_ref, path, deleted, device_id)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -230,6 +250,51 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	}
 
 	return vault.revision(ctx, tx, revision.ID)
+}
+
+// Folder collision probes for a path key ($2) in a vault ($1), each
+// selecting the live documents it collides with (migration 0004).
+const (
+	// folderIsLiveQuery: a live document's key is a folder of the key.
+	// One probe of documents_live_path_key_idx per folder of the key.
+	folderIsLiveQuery = `
+		SELECT 1 FROM documents
+		WHERE vault_id = $1 AND NOT deleted
+			AND documents_path_key_digest(path_key) = ANY (ARRAY(
+				SELECT documents_path_key_digest(folder) FROM unnest(documents_path_key_folders($2)) AS folder))`
+	// isLiveFolderQuery: the key is a folder of a live document's key. One
+	// probe of the GIN index documents_live_folder_idx, whose digests
+	// already cover the vault id. The vault filter sits outside an
+	// OFFSET 0 fence so the planner cannot answer the query by walking
+	// every live document of the vault through the vault_id btree.
+	isLiveFolderQuery = `
+		SELECT 1 FROM (
+			SELECT vault_id FROM documents
+			WHERE NOT deleted AND documents_folder_digests(vault_id, path_key) @> ARRAY[documents_folder_digest($1, $2)]
+			OFFSET 0
+		) AS candidates
+		WHERE vault_id = $1`
+)
+
+// checkPathFolders returns ErrPathFolderTaken if a live document's path_key
+// is a folder of revision's (a proper prefix ending before a "/"), or
+// revision's is a folder of a live document's. A key is never a folder of
+// itself, so the document's own row cannot match. Both directions are index
+// probes, bounded by the number of folders in one key.
+func (vault *VaultStore) checkPathFolders(ctx context.Context, tx pgx.Tx, revision NewRevision) error {
+	var taken bool
+
+	err := tx.QueryRow(ctx, `SELECT EXISTS (`+folderIsLiveQuery+`) OR EXISTS (`+isLiveFolderQuery+`)`,
+		vault.vaultID, revision.PathKey).Scan(&taken)
+	if err != nil {
+		return fmt.Errorf("check path folders: %w", err)
+	}
+
+	if taken {
+		return ErrPathFolderTaken
+	}
+
+	return nil
 }
 
 // sameRevision reports whether a retried commit matches the revision its

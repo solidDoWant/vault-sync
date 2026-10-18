@@ -1,0 +1,53 @@
+{
+  "name": "seed-3",
+  "seed": 3,
+  "clients": 3,
+  "violations": [
+    {
+      "invariant": "path-folder",
+      "detail": "live document c0.d1 has path_key \"notes\", a folder of live document c2.d1's \"notes/c.md\""
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "pull",
+      "arg": 2719654887
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 2168946858
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "delete",
+      "arg": 2120559345
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 4227113789
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 892164520
+    }
+  ]
+}
