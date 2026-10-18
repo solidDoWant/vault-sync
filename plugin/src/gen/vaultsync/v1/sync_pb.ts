@@ -417,7 +417,10 @@ export const SyncService: GenService<{
   },
   /**
    * GetDocumentHistory lists a document's retained revisions, newest first
-   * (SPEC.md §11). Restoring a revision is a new CommitRevision.
+   * (SPEC.md §11). The head is always retained, including a tombstone, so a
+   * deleted document's history is never empty. Restoring a revision is a
+   * new CommitRevision with the revision's content_ref (and deleted false),
+   * based on the current head.
    *
    * Errors: NOT_FOUND if the vault or document does not exist, or the caller
    * is not a member.

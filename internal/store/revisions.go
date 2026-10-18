@@ -151,7 +151,12 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	existing, err := vault.revision(ctx, tx, revision.ID)
 	switch {
 	case err == nil:
-		if !sameRevision(existing, revision) {
+		same, err := vault.sameRevision(ctx, tx, existing, revision)
+		if err != nil {
+			return Revision{}, err
+		}
+
+		if !same {
 			return Revision{}, ErrRevisionConflict
 		}
 
@@ -299,9 +304,42 @@ func (vault *VaultStore) checkPathFolders(ctx context.Context, tx pgx.Tx, revisi
 
 // sameRevision reports whether a retried commit matches the revision its
 // first attempt committed.
-func sameRevision(existing Revision, revision NewRevision) bool {
+//
+// The parent is the one field that can change after a commit: when
+// retention purges the parent, the revision is re-parented onto the nearest
+// retained ancestor (PurgeRevisions). A retry still names the purged
+// revision as its base, so a base that no longer exists anywhere matches
+// whatever parent the revision has now. The first attempt was accepted, so
+// its base existed then.
+func (vault *VaultStore) sameRevision(ctx context.Context, tx pgx.Tx, existing Revision, revision NewRevision) (bool, error) {
+	if !sameRevisionFields(existing, revision) {
+		return false, nil
+	}
+
+	if existing.ParentRevID == revision.BaseRevID {
+		return true, nil
+	}
+
+	if !revision.BaseRevID.Valid {
+		return false, nil
+	}
+
+	// Not scoped to the vault: an id that exists in another vault was never
+	// this vault's purged revision.
+	var exists bool
+
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM revisions WHERE id = $1)`, revision.BaseRevID.UUID).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("look up base revision: %w", err)
+	}
+
+	return !exists, nil
+}
+
+// sameRevisionFields compares every field of a retried commit with the
+// revision its first attempt committed, except the parent.
+func sameRevisionFields(existing Revision, revision NewRevision) bool {
 	return existing.DocumentID == revision.DocumentID &&
-		existing.ParentRevID == revision.BaseRevID &&
 		existing.Kind == revision.Kind &&
 		bytes.Equal(existing.ContentRef, revision.ContentRef) &&
 		existing.ContentSize == revision.ContentSize &&

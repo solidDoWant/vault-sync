@@ -14,6 +14,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
+	"github.com/solidDoWant/vault-sync/internal/retention"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
@@ -139,8 +140,8 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 const s3CheckTimeout = 30 * time.Second
 
 // startBlobs connects to the object store, checks that the bucket is
-// reachable and starts the upload cleanup routine, which stops with ctx. It
-// returns nil when no object store is configured.
+// reachable and starts the upload cleanup routine and the retention job,
+// which stop with ctx. It returns nil when no object store is configured.
 func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, logger *slog.Logger) (*api.BlobService, error) {
 	if cfg.S3 == nil {
 		logger.WarnContext(ctx, "no S3 object store is configured (VAULT_SYNC_S3_*); blob uploads and downloads are disabled")
@@ -162,6 +163,17 @@ func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, lo
 
 	cleaner := &blobstore.Cleaner{Store: queries, Objects: objects, TTL: cfg.Blobs.UploadTTL, Logger: logger}
 	go cleaner.Run(ctx, blobstore.DefaultCleanupInterval)
+
+	// Every revision references a complete blob, so without an object
+	// store there is nothing to retain or collect.
+	job := &retention.Job{
+		Store:   queries,
+		Objects: objects,
+		Policy:  store.RetentionPolicy{KeepAll: cfg.Retention.KeepAll, KeepDaily: cfg.Retention.KeepDaily},
+		Grace:   cfg.Retention.BlobGrace,
+		Logger:  logger,
+	}
+	go job.Run(ctx, retention.DefaultInterval)
 
 	return &api.BlobService{
 		Store:   queries,
