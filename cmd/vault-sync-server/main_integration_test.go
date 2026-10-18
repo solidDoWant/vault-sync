@@ -80,6 +80,10 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 		config.ListenAddressEnv + "=" + apiAddress,
 		config.MetricsListenAddressEnv + "=" + metricsAddress,
 		config.ShutdownTimeoutEnv + "=20s",
+		// The issuer is contacted only to authenticate a request, so an
+		// unreachable one does not prevent startup.
+		config.OIDCIssuerURLEnv + "=http://127.0.0.1:1/",
+		config.OIDCAudienceEnv + "=vault-sync",
 	}
 	command.Stdout = &logs
 	command.Stderr = &logs

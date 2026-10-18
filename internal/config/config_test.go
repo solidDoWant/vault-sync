@@ -22,8 +22,18 @@ func lookup(env map[string]string) func(string) (string, bool) {
 	}
 }
 
-func withDatabase(env map[string]string) map[string]string {
-	merged := map[string]string{config.DatabaseURLEnv: testDSN}
+const (
+	testIssuer   = "https://auth.example/application/o/vault-sync/"
+	testAudience = "vault-sync"
+)
+
+// withRequired adds every required variable to env.
+func withRequired(env map[string]string) map[string]string {
+	merged := map[string]string{
+		config.DatabaseURLEnv:   testDSN,
+		config.OIDCIssuerURLEnv: testIssuer,
+		config.OIDCAudienceEnv:  testAudience,
+	}
 	for name, value := range env {
 		merged[name] = value
 	}
@@ -32,13 +42,14 @@ func withDatabase(env map[string]string) map[string]string {
 }
 
 func TestLoadDefaults(t *testing.T) {
-	cfg, err := config.Load(lookup(withDatabase(nil)))
+	cfg, err := config.Load(lookup(withRequired(nil)))
 	require.NoError(t, err)
 
 	assert.Equal(t, config.Config{
 		ListenAddress:        ":8080",
 		MetricsListenAddress: ":9090",
 		Database:             store.Config{DSN: testDSN},
+		OIDC:                 config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience},
 		MaxRequestBytes:      1 << 20,
 		ShutdownTimeout:      30 * time.Second,
 		LogLevel:             slog.LevelInfo,
@@ -46,7 +57,7 @@ func TestLoadDefaults(t *testing.T) {
 }
 
 func TestLoadOverrides(t *testing.T) {
-	cfg, err := config.Load(lookup(withDatabase(map[string]string{
+	cfg, err := config.Load(lookup(withRequired(map[string]string{
 		config.ListenAddressEnv:        "127.0.0.1:8443",
 		config.MetricsListenAddressEnv: "127.0.0.1:9443",
 		config.MaxRequestBytesEnv:      "2097152",
@@ -86,31 +97,31 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		},
 		{
 			name: "client certificate without key",
-			env: withDatabase(map[string]string{
+			env: withRequired(map[string]string{
 				config.DatabaseTLSCertFileEnv: "/nonexistent/tls.crt",
 			}),
 			wantProblems: []string{config.DatabaseTLSCertFileEnv, config.DatabaseTLSKeyFileEnv},
 		},
 		{
 			name: "unreadable CA file",
-			env: withDatabase(map[string]string{
+			env: withRequired(map[string]string{
 				config.DatabaseTLSCAFileEnv: "/nonexistent/ca.crt",
 			}),
 			wantProblems: []string{config.DatabaseTLSCAFileEnv},
 		},
 		{
 			name:         "listen address without port",
-			env:          withDatabase(map[string]string{config.ListenAddressEnv: "localhost"}),
+			env:          withRequired(map[string]string{config.ListenAddressEnv: "localhost"}),
 			wantProblems: []string{config.ListenAddressEnv},
 		},
 		{
 			name:         "metrics listen address with bad port",
-			env:          withDatabase(map[string]string{config.MetricsListenAddressEnv: ":http-alt"}),
+			env:          withRequired(map[string]string{config.MetricsListenAddressEnv: ":http-alt"}),
 			wantProblems: []string{config.MetricsListenAddressEnv},
 		},
 		{
 			name: "metrics port equals API port",
-			env: withDatabase(map[string]string{
+			env: withRequired(map[string]string{
 				config.ListenAddressEnv:        ":8080",
 				config.MetricsListenAddressEnv: ":8080",
 			}),
@@ -118,32 +129,32 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		},
 		{
 			name:         "max request bytes not a number",
-			env:          withDatabase(map[string]string{config.MaxRequestBytesEnv: "1MiB"}),
+			env:          withRequired(map[string]string{config.MaxRequestBytesEnv: "1MiB"}),
 			wantProblems: []string{config.MaxRequestBytesEnv},
 		},
 		{
 			name:         "max request bytes too small",
-			env:          withDatabase(map[string]string{config.MaxRequestBytesEnv: "100"}),
+			env:          withRequired(map[string]string{config.MaxRequestBytesEnv: "100"}),
 			wantProblems: []string{config.MaxRequestBytesEnv},
 		},
 		{
 			name:         "max request bytes too large",
-			env:          withDatabase(map[string]string{config.MaxRequestBytesEnv: "1073741824"}),
+			env:          withRequired(map[string]string{config.MaxRequestBytesEnv: "1073741824"}),
 			wantProblems: []string{config.MaxRequestBytesEnv},
 		},
 		{
 			name:         "shutdown timeout not a duration",
-			env:          withDatabase(map[string]string{config.ShutdownTimeoutEnv: "30"}),
+			env:          withRequired(map[string]string{config.ShutdownTimeoutEnv: "30"}),
 			wantProblems: []string{config.ShutdownTimeoutEnv},
 		},
 		{
 			name:         "shutdown timeout not positive",
-			env:          withDatabase(map[string]string{config.ShutdownTimeoutEnv: "0s"}),
+			env:          withRequired(map[string]string{config.ShutdownTimeoutEnv: "0s"}),
 			wantProblems: []string{config.ShutdownTimeoutEnv},
 		},
 		{
 			name:         "unknown log level",
-			env:          withDatabase(map[string]string{config.LogLevelEnv: "verbose"}),
+			env:          withRequired(map[string]string{config.LogLevelEnv: "verbose"}),
 			wantProblems: []string{config.LogLevelEnv},
 		},
 		{
@@ -182,4 +193,61 @@ func TestLoadNeverEchoesDatabasePassword(t *testing.T) {
 	}))
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "hunter2-secret")
+}
+
+func TestLoadOIDCSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+		// wantProblems are substrings that must each appear in the error;
+		// none means the configuration is valid.
+		wantProblems []string
+	}{
+		{
+			name:         "missing issuer and audience",
+			env:          map[string]string{config.DatabaseURLEnv: testDSN},
+			wantProblems: []string{config.OIDCIssuerURLEnv + " is required", config.OIDCAudienceEnv + " is required"},
+		},
+		{
+			name:         "issuer is not a URL",
+			env:          withRequired(map[string]string{config.OIDCIssuerURLEnv: "auth.example"}),
+			wantProblems: []string{config.OIDCIssuerURLEnv},
+		},
+		{
+			name:         "plain HTTP issuer",
+			env:          withRequired(map[string]string{config.OIDCIssuerURLEnv: "http://auth.example/"}),
+			wantProblems: []string{config.OIDCIssuerURLEnv + ": must use https"},
+		},
+		{
+			name:         "issuer with a query",
+			env:          withRequired(map[string]string{config.OIDCIssuerURLEnv: "https://auth.example/?tenant=a"}),
+			wantProblems: []string{config.OIDCIssuerURLEnv},
+		},
+		{
+			name: "plain HTTP issuer on loopback is allowed for development",
+			env:  withRequired(map[string]string{config.OIDCIssuerURLEnv: "http://127.0.0.1:9000/"}),
+		},
+		{
+			name: "localhost issuer is allowed for development",
+			env:  withRequired(map[string]string{config.OIDCIssuerURLEnv: "http://localhost:9000/"}),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(lookup(test.env))
+			if len(test.wantProblems) == 0 {
+				require.NoError(t, err)
+				assert.Equal(t, test.env[config.OIDCIssuerURLEnv], cfg.OIDC.IssuerURL)
+
+				return
+			}
+
+			require.Error(t, err)
+
+			for _, problem := range test.wantProblems {
+				assert.Contains(t, err.Error(), problem)
+			}
+		})
+	}
 }

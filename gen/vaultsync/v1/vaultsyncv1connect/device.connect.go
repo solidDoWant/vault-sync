@@ -43,8 +43,8 @@ type DeviceServiceClient interface {
 	// RegisterDevice registers a new device for the caller. Each plugin
 	// installation registers once and sends the returned id with every commit.
 	//
-	// Errors: INVALID_ARGUMENT for an empty or over-long name;
-	// RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+	// Errors: INVALID_ARGUMENT for an empty or over-long name or a public key
+	// that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
 	RegisterDevice(context.Context, *connect.Request[v1.RegisterDeviceRequest]) (*connect.Response[v1.RegisterDeviceResponse], error)
 }
 
@@ -83,8 +83,8 @@ type DeviceServiceHandler interface {
 	// RegisterDevice registers a new device for the caller. Each plugin
 	// installation registers once and sends the returned id with every commit.
 	//
-	// Errors: INVALID_ARGUMENT for an empty or over-long name;
-	// RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+	// Errors: INVALID_ARGUMENT for an empty or over-long name or a public key
+	// that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
 	RegisterDevice(context.Context, *connect.Request[v1.RegisterDeviceRequest]) (*connect.Response[v1.RegisterDeviceResponse], error)
 }
 
