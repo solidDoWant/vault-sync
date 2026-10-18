@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/coder/websocket"
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
@@ -26,6 +27,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
@@ -109,6 +111,7 @@ func TestResponsesOverTheSendLimitAreRejected(t *testing.T) {
 	client := vaultsyncv1connect.NewVaultServiceClient(http.DefaultClient, fixture.running.apiURL())
 
 	vaults.nameLength.Store(1)
+
 	template, err := client.ListVaults(t.Context(), authorized(&vaultsyncv1.ListVaultsRequest{}, token))
 	require.NoError(t, err)
 
@@ -215,6 +218,7 @@ type slowDatabase struct {
 	maxInFlight int
 	calls       int
 	overlapped  chan struct{}
+	overlap     bool
 	// healthy makes pings succeed at once.
 	healthy atomic.Bool
 }
@@ -233,7 +237,8 @@ func (database *slowDatabase) Ping(ctx context.Context) error {
 	database.calls++
 	database.maxInFlight = max(database.maxInFlight, database.inFlight)
 
-	if database.inFlight == 2 {
+	if database.inFlight > 1 && !database.overlap {
+		database.overlap = true
 		close(database.overlapped)
 	}
 	database.mu.Unlock()
@@ -307,4 +312,102 @@ func TestReadyzHoldsAtMostOneDatabaseConnection(t *testing.T) {
 
 	status, _ := get(t, running.metricsURL()+"/readyz")
 	assert.Equal(t, http.StatusOK, status)
+}
+
+// idleRealtimeStore is a realtime store in which every caller owns every
+// vault and no commits happen.
+type idleRealtimeStore struct{}
+
+func (idleRealtimeStore) VaultRole(context.Context, uuid.UUID, uuid.UUID) (store.Role, error) {
+	return store.RoleOwner, nil
+}
+
+func (idleRealtimeStore) MemberHeadSeq(context.Context, uuid.UUID, uuid.UUID) (store.Role, int64, error) {
+	return store.RoleOwner, 0, nil
+}
+
+func (idleRealtimeStore) HeadSeqs(context.Context, []uuid.UUID) (map[uuid.UUID]int64, error) {
+	return map[uuid.UUID]int64{}, nil
+}
+
+func (idleRealtimeStore) ListenVaultChanges(ctx context.Context, options store.ListenOptions) error {
+	options.Ready(ctx)
+	<-ctx.Done()
+
+	return nil
+}
+
+func TestRealtimeWebSocketOutlivesTheWriteTimeout(t *testing.T) {
+	const writeTimeout = 300 * time.Millisecond
+
+	issuer := authtest.NewIssuer(t)
+	key := issuer.AddKey(t, jose.RS256)
+	logger := slog.New(slog.DiscardHandler)
+	authenticator := auth.NewAuthenticator(auth.NewVerifier(auth.VerifierOptions{
+		IssuerURL: issuer.URL,
+		Audience:  authtest.DefaultAudience,
+		Logger:    logger,
+	}), newMemoryStore())
+
+	hub := realtime.NewHub(realtime.Options{
+		Authenticator:  authenticator,
+		Store:          idleRealtimeStore{},
+		AllowedOrigins: server.AllowedOrigins,
+		Logger:         logger,
+	})
+
+	hubCtx, stopHub := context.WithCancel(t.Context())
+	hubDone := make(chan struct{})
+
+	go func() {
+		defer close(hubDone)
+
+		hub.Run(hubCtx)
+	}()
+
+	t.Cleanup(func() {
+		stopHub()
+		<-hubDone
+	})
+
+	running := startServer(t, server.Options{
+		WriteTimeout:  writeTimeout,
+		Authenticator: authenticator,
+		Realtime:      hub,
+		Logger:        logger,
+	})
+
+	dialCtx, cancelDial := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelDial()
+
+	token := authtest.Sign(t, key, issuer.Claims("idle-user", time.Now()))
+	conn, response, err := websocket.Dial(dialCtx, "ws://"+running.apiAddress+realtime.Path, &websocket.DialOptions{
+		Subprotocols: []string{realtime.Subprotocol, realtime.BearerSubprotocolPrefix + token},
+		HTTPHeader:   http.Header{"Origin": {"app://obsidian.md"}},
+	})
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSwitchingProtocols, response.StatusCode)
+	t.Cleanup(func() { _ = conn.CloseNow() })
+
+	// Idle well past the API write timeout, which must not apply to the
+	// long-lived WebSocket.
+	time.Sleep(3 * writeTimeout)
+
+	data, err := proto.Marshal(&vaultsyncv1.ClientFrame{RequestId: 1, Frame: &vaultsyncv1.ClientFrame_Subscribe{
+		Subscribe: &vaultsyncv1.Subscribe{VaultId: uuid.NewString()},
+	}})
+	require.NoError(t, err)
+
+	ioCtx, cancelIO := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancelIO()
+
+	require.NoError(t, conn.Write(ioCtx, websocket.MessageBinary, data))
+
+	_, reply, err := conn.Read(ioCtx)
+	require.NoError(t, err, "the server must still write to an idle WebSocket after the write timeout")
+
+	var frame vaultsyncv1.ServerFrame
+	require.NoError(t, proto.Unmarshal(reply, &frame))
+	assert.Equal(t, uint64(1), frame.GetRequestId())
+	assert.NotNil(t, frame.GetSubscribed(), "expected subscribed, got %v", &frame)
 }

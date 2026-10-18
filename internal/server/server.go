@@ -61,9 +61,9 @@ type Options struct {
 	MaxRequestBytes int64
 	// WriteTimeout bounds how long after it arrives an API request may take
 	// to be handled and its response written, so a client that stops
-	// reading cannot hold a connection and handler indefinitely. Handlers
-	// owning long-lived connections (the realtime WebSocket) clear the write
-	// deadline themselves. Zero means config.DefaultWriteTimeout.
+	// reading cannot hold a connection and handler indefinitely. It does
+	// not apply to the realtime WebSocket once upgraded. Zero means
+	// config.DefaultWriteTimeout.
 	WriteTimeout time.Duration
 	// ShutdownDelay is how long, once shutdown starts, /readyz fails while
 	// the API still serves new connections, so load balancers stop routing
@@ -297,11 +297,10 @@ func limitResponseSize(limit int) connect.UnaryInterceptorFunc {
 // reading blocks the response write only until the deadline; the write then
 // fails and the connection is closed.
 //
-// It applies to every route, so routes added later are bounded too.
-// Handlers that hijack a long-lived connection (the realtime WebSocket)
-// clear the deadlines on it and detach from the request context themselves.
-// A server-wide http.Server.WriteTimeout is deliberately not used, because
-// it cannot be lifted per route.
+// It applies to every route, so routes added later are bounded too. The
+// realtime WebSocket is exempt by construction: net/http clears a hijacked
+// connection's deadlines, and the hub detaches each connection from the
+// request context (TestRealtimeWebSocketOutlivesTheWriteTimeout).
 func limitRequestTime(timeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		deadline := time.Now().Add(timeout)

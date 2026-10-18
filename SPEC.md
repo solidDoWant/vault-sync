@@ -215,7 +215,7 @@ The v1 protocol includes the hooks for this from the start: stable document ids,
   - **Database connection resets** (a PostgreSQL restart or switchover) are tolerated: connections are checked before use and replaced, and a request that fails mid-query is retried by the client. Managing PostgreSQL failover is the operator's concern (CloudNativePG).
   - **Rolling upgrades.** The previous and the new release serve side by side during a rollout. This is why migrations must be backward-compatible with the previous release (below). An integration test runs both releases against one database.
   - The recommended deployment (at least 2 replicas, a PodDisruptionBudget, readiness and termination-grace ordering) is documented in `docs/configuration.md`.
-- Bounded resource use: max request size, max chunk size, decompression limits, pagination caps, per-user rate limits.
+- Bounded resource use: max request size, max chunk size, decompression limits, pagination caps, per-user rate limits. Responses are bounded by the same size as requests (the message and the bytes sent). Every API request has a deadline from its arrival until its response is written (`VAULT_SYNC_WRITE_TIMEOUT`), so a client that stops reading releases its connection. The upgraded realtime WebSocket is exempt and bounded by its own pings and send queue (§6.4). Concurrent `/readyz` checks share one database ping.
 - The plugin is distributed through GitHub releases (installable with BRAT); publishing to the Obsidian community catalog is a non-goal for now.
 
 ## 13. Testing strategy
