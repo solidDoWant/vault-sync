@@ -54,6 +54,7 @@ func TestLoadDefaults(t *testing.T) {
 		Database:             store.Config{DSN: testDSN},
 		OIDC:                 config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience},
 		MaxRequestBytes:      1 << 20,
+		WriteTimeout:         2 * time.Minute,
 		ShutdownDelay:        5 * time.Second,
 		ShutdownTimeout:      30 * time.Second,
 		LogLevel:             slog.LevelInfo,
@@ -367,6 +368,7 @@ func TestLoadOverrides(t *testing.T) {
 		config.ListenAddressEnv:        "127.0.0.1:8443",
 		config.MetricsListenAddressEnv: "127.0.0.1:9443",
 		config.MaxRequestBytesEnv:      "2097152",
+		config.WriteTimeoutEnv:         "5m",
 		config.ShutdownDelayEnv:        "10s",
 		config.ShutdownTimeoutEnv:      "45s",
 		config.LogLevelEnv:             "DEBUG",
@@ -376,9 +378,21 @@ func TestLoadOverrides(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:8443", cfg.ListenAddress)
 	assert.Equal(t, "127.0.0.1:9443", cfg.MetricsListenAddress)
 	assert.Equal(t, int64(2<<20), cfg.MaxRequestBytes)
+	assert.Equal(t, 5*time.Minute, cfg.WriteTimeout)
 	assert.Equal(t, 10*time.Second, cfg.ShutdownDelay)
 	assert.Equal(t, 45*time.Second, cfg.ShutdownTimeout)
 	assert.Equal(t, slog.LevelDebug, cfg.LogLevel)
+}
+
+func TestLoadAcceptsWriteTimeoutBounds(t *testing.T) {
+	for _, timeout := range []time.Duration{time.Second, time.Hour} {
+		t.Run(timeout.String(), func(t *testing.T) {
+			cfg, err := config.Load(lookup(withRequired(map[string]string{config.WriteTimeoutEnv: timeout.String()})))
+			require.NoError(t, err)
+
+			assert.Equal(t, timeout, cfg.WriteTimeout)
+		})
+	}
 }
 
 func TestLoadAllowsNoShutdownDelay(t *testing.T) {
@@ -456,6 +470,21 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 			name:         "max request bytes too large",
 			env:          withRequired(map[string]string{config.MaxRequestBytesEnv: "1073741824"}),
 			wantProblems: []string{config.MaxRequestBytesEnv},
+		},
+		{
+			name:         "write timeout not a duration",
+			env:          withRequired(map[string]string{config.WriteTimeoutEnv: "120"}),
+			wantProblems: []string{config.WriteTimeoutEnv},
+		},
+		{
+			name:         "write timeout too short",
+			env:          withRequired(map[string]string{config.WriteTimeoutEnv: "999ms"}),
+			wantProblems: []string{config.WriteTimeoutEnv},
+		},
+		{
+			name:         "write timeout too long",
+			env:          withRequired(map[string]string{config.WriteTimeoutEnv: "1h0m0.001s"}),
+			wantProblems: []string{config.WriteTimeoutEnv},
 		},
 		{
 			name:         "shutdown timeout not a duration",
