@@ -1,11 +1,12 @@
-import type { App } from "obsidian";
-
-import { SyncEngine, type PullSummary } from "../core/engine/engine";
+import { SyncEngine, type PullSummary, type PushSummary } from "../core/engine/engine";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
 import type { Journal } from "../core/journal/journal";
-import type { VaultEvent } from "../core/vault/adapter";
-import { ObsidianVaultAdapter } from "./vault-adapter";
+import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
+import { errorMessage, isOffline } from "./status";
+
+// No Obsidian import: the plugin passes the Obsidian adapter and its
+// layout-ready signal, and the unit tests pass in-memory ones.
 
 export interface SyncSessionOptions {
   vaultId: string;
@@ -17,54 +18,295 @@ export interface SyncSessionOptions {
   /**
    * The device's durable journal for this vault and server vault
    * (`openVaultJournal`, ./journal.ts); it is what lets a restarted session
-   * resume. The caller owns it and closes it after `stop`.
+   * resume. The caller owns it and closes it once `stop()` has resolved.
    */
   journal: Journal;
+  /** The open vault (ObsidianVaultAdapter in the plugin). */
+  vault: VaultAdapter;
+  /** Resolves once the vault may be synced: in Obsidian, when the workspace layout is ready, after startup indexing. */
+  ready?: () => Promise<void>;
   merge?: MergeHook;
   /** The user's vault changes, to be pushed (SPEC.md §8). */
   onLocalChange?: (event: VaultEvent) => void;
+  /** How long after the last local change of a burst the engine pushes (SyncEngineOptions.pushDebounceMs); null turns that off. */
+  pushDebounceMs: number | null;
+  /**
+   * How often to push (which pulls first) on a timer, in milliseconds, so
+   * remote changes arrive and a pending operation is retried without waiting
+   * for the user's next edit; null turns the timer off.
+   */
+  syncIntervalMs: number | null;
+  /** Receives every change of the session's status. */
+  onStatus?: (status: SessionStatus) => void;
+}
+
+export interface SessionStatus {
+  state: "syncing" | "idle" | "offline" | "error";
+  /** Local changes waiting in the journal. */
+  pending: number;
+  /** Unresolved conflicts (see SyncStatus.conflicts). */
+  conflicts: number;
+  message?: string;
+}
+
+/** What a stopped session's engine gets for every vault, journal and server call it makes after the stop. */
+export class SessionStoppedError extends Error {
+  override readonly name = "SessionStoppedError";
+  constructor() {
+    super("the sync session was stopped");
+  }
 }
 
 /**
- * One running sync of the open vault: the Obsidian adapter and the sync
- * engine over the device's journal, tied to the plugin's lifecycle. It
- * starts once the workspace layout is ready (after Obsidian's startup
- * indexing) and resumes from the journal's cursor, so disabling and
- * re-enabling the plugin, or restarting Obsidian, never starts a full resync.
+ * One running sync of the open vault: the vault adapter and the sync engine
+ * over the device's journal. It starts once `ready` resolves, resumes from
+ * the journal's cursor (so disabling and re-enabling the plugin, or
+ * restarting Obsidian, never starts a full resync), pulls, and pushes. It
+ * then pushes after local changes (debounced) and on a timer.
+ *
+ * Stopping never loses a local change: an edit the session had not pushed
+ * yet stays on disk, and the next session's first push scans the whole vault
+ * (the engine does that after every start), so it is found and pushed then.
  */
 export class SyncSession {
   private engine: SyncEngine | undefined;
   private stopped = false;
+  private stopping: Promise<void> | undefined;
+  private starting: Promise<unknown> = Promise.resolve();
+  private readonly abort = new AbortController();
+  private timer: ReturnType<typeof setInterval> | undefined;
+  private timerRun: Promise<unknown> | undefined;
+  private busy = false;
+  /** The last pull or push's failure; undefined after a success. */
+  private failure: unknown;
+  private rejected = 0;
+  private counts = { pending: 0, conflicts: 0 };
+  /** Bumped by every report, so only the latest one's counts are kept. */
+  private reports = 0;
+  private readonly onStatus: (status: SessionStatus) => void;
 
-  constructor(
-    private readonly app: App,
-    private readonly options: SyncSessionOptions,
-  ) {}
-
-  /** Starts syncing and resolves with the first pull's summary, or undefined if stopped before it began. */
-  async start(): Promise<PullSummary | undefined> {
-    await new Promise<void>((resolve) => {
-      this.app.workspace.onLayoutReady(resolve);
-    });
-    if (this.stopped) return undefined;
-    this.engine = new SyncEngine({
-      vaultId: this.options.vaultId,
-      deviceId: this.options.deviceId,
-      ...(this.options.deviceName === undefined ? {} : { deviceName: this.options.deviceName }),
-      api: this.options.api,
-      vault: new ObsidianVaultAdapter(this.app),
-      journal: this.options.journal,
-      ...(this.options.merge === undefined ? {} : { merge: this.options.merge }),
-      ...(this.options.onLocalChange === undefined ? {} : { onLocalChange: this.options.onLocalChange }),
-      // No automatic pushes until login, settings and push triggers are wired (#25).
-      pushDebounceMs: null,
-    });
-    return this.engine.pull();
+  constructor(private readonly options: SyncSessionOptions) {
+    this.onStatus = options.onStatus ?? (() => undefined);
   }
 
-  /** Stops watching the vault. An in-flight pull finishes its current step; the journal keeps the progress. */
-  stop(): void {
+  /**
+   * Starts syncing: pulls, then pushes every local change since the last
+   * session. Resolves with the pull's summary, or undefined if the session
+   * was stopped first or the pull failed (the status says why, and the timer
+   * tries again).
+   */
+  start(): Promise<PullSummary | undefined> {
+    const run = this.run();
+    this.starting = run.catch(() => undefined);
+    return run;
+  }
+
+  /** Pulls and pushes now, unless the session is stopped. Resolves with the push's summary, or undefined if it failed. */
+  async syncNow(): Promise<PushSummary | undefined> {
+    const engine = this.engine;
+    if (engine === undefined || this.stopped) return undefined;
+    return this.attempt(() => engine.push());
+  }
+
+  /**
+   * Stops the session and resolves once its engine has settled: from then on
+   * it neither touches the vault or the journal nor calls the server, so a new
+   * session can start over the same journal. A call still waiting for the
+   * server is not waited for; its response is dropped. A scheduled push is
+   * cancelled; what it would have pushed is found by the next session's scan.
+   */
+  stop(): Promise<void> {
+    if (this.stopping !== undefined) return this.stopping;
     this.stopped = true;
+    this.abort.abort(new SessionStoppedError());
+    if (this.timer !== undefined) clearInterval(this.timer);
     this.engine?.dispose();
+    this.stopping = (async () => {
+      await this.starting;
+      await this.engine?.settled();
+    })();
+    return this.stopping;
+  }
+
+  private async run(): Promise<PullSummary | undefined> {
+    const stoppedFirst = new Promise<void>((resolve) => {
+      this.abort.signal.addEventListener("abort", () => {
+        resolve();
+      });
+    });
+    await Promise.race([this.options.ready?.() ?? Promise.resolve(), stoppedFirst]);
+    if (this.stopped) return undefined;
+    const { options } = this;
+    const engine = new SyncEngine({
+      vaultId: options.vaultId,
+      deviceId: options.deviceId,
+      ...(options.deviceName === undefined ? {} : { deviceName: options.deviceName }),
+      api: {
+        sync: this.gateNetwork(options.api.sync),
+        blobs: this.gateNetwork(options.api.blobs),
+      },
+      vault: this.gateLocal(options.vault, ["list", "read", "write", "rename", "delete", "stat"]),
+      journal: this.gateLocal(options.journal),
+      ...(options.merge === undefined ? {} : { merge: options.merge }),
+      ...(options.onLocalChange === undefined ? {} : { onLocalChange: options.onLocalChange }),
+      pushDebounceMs: options.pushDebounceMs,
+      onBusyChange: (busy) => {
+        this.busy = busy;
+        void this.report();
+      },
+      onPushComplete: (summary) => {
+        this.succeeded(summary);
+      },
+      onPushError: (error) => {
+        this.failed(error);
+      },
+    });
+    this.engine = engine;
+    const pulled = await this.attempt(() => engine.pull());
+    if (this.isStopped()) return undefined;
+    // Push at startup too: a pending operation (one left after its commit
+    // retries ran out, say) must not wait for the user's next edit.
+    await this.attempt(() => engine.push());
+    if (this.isStopped()) return undefined;
+    if (options.syncIntervalMs !== null) {
+      this.timer = setInterval(() => {
+        // One timer push at a time: on a slow network ticks never pile up.
+        if (this.timerRun !== undefined) return;
+        this.timerRun = this.attempt(() => engine.push()).finally(() => {
+          this.timerRun = undefined;
+        });
+      }, options.syncIntervalMs);
+    }
+    return pulled;
+  }
+
+  /** Read through a call, so a check after an await is not narrowed away by the one before it. */
+  private isStopped(): boolean {
+    return this.stopped;
+  }
+
+  /** Runs a pull or push, recording its outcome for the status. */
+  private async attempt<T extends PullSummary | PushSummary>(task: () => Promise<T>): Promise<T | undefined> {
+    try {
+      const result = await task();
+      this.succeeded(result);
+      return result;
+    } catch (error) {
+      this.failed(error);
+      return undefined;
+    }
+  }
+
+  private succeeded(result: PullSummary | PushSummary): void {
+    if (this.stopped) return;
+    this.failure = undefined;
+    // A pull says nothing about refused operations; a push does.
+    if ("rejected" in result) this.rejected = result.rejected.length;
+    void this.report();
+  }
+
+  private failed(error: unknown): void {
+    if (this.stopped) return;
+    this.failure = error;
+    void this.report();
+  }
+
+  /** Emits the current status, with the journal's counts as they are now. */
+  private async report(): Promise<void> {
+    if (this.stopped) return;
+    const report = ++this.reports;
+    if (this.busy) {
+      this.onStatus({ state: "syncing", ...this.counts });
+      return;
+    }
+    try {
+      const counts = await this.countJournal();
+      if (report === this.reports) this.counts = counts;
+    } catch {
+      // Stopped, or the journal is gone; keep the last counts.
+    }
+    if (this.isStopped() || report !== this.reports) return;
+    this.onStatus(this.status());
+  }
+
+  private status(): SessionStatus {
+    if (this.busy) return { state: "syncing", ...this.counts };
+    if (this.failure !== undefined) {
+      return {
+        state: isOffline(this.failure) ? "offline" : "error",
+        ...this.counts,
+        message: errorMessage(this.failure),
+      };
+    }
+    if (this.rejected > 0) {
+      const message = `The server refused ${String(this.rejected)} local ${this.rejected === 1 ? "change" : "changes"}; ${this.rejected === 1 ? "it stays" : "they stay"} pending.`;
+      return { state: "error", ...this.counts, message };
+    }
+    return { state: "idle", ...this.counts };
+  }
+
+  private async countJournal(): Promise<{
+    pending: number;
+    conflicts: number;
+  }> {
+    const { journal, vault } = this.options;
+    const pending = (await journal.listPending()).length;
+    let conflicts = 0;
+    for (const conflict of await journal.listConflicts()) {
+      // Resolved once the user deletes (or renames) the copy. A conflict
+      // without a copy is open while its remote revision still waits.
+      const open = conflict.copyPath === null ? (await journal.getDeferred(conflict.documentId)) !== undefined : (await vault.stat(conflict.copyPath)) !== null;
+      if (open) conflicts++;
+    }
+    return { pending, conflicts };
+  }
+
+  /**
+   * `target` with every method in `methods` (all methods if omitted) refused
+   * once the session stopped. Calls already running finish: vault and journal
+   * steps are short and atomic, and stop() waits for them.
+   */
+  private gateLocal<T extends object>(target: T, methods?: readonly string[]): T {
+    return new Proxy(target, {
+      get: (object, property, receiver) => {
+        const value: unknown = Reflect.get(object, property, receiver);
+        if (typeof value !== "function" || (methods !== undefined && !methods.includes(String(property)))) return value;
+        return (...args: unknown[]) => {
+          if (this.stopped) return Promise.reject(new SessionStoppedError());
+          return (value as (...values: unknown[]) => unknown).apply(object, args);
+        };
+      },
+    });
+  }
+
+  /**
+   * A server client whose calls are refused once the session stopped, and
+   * whose calls in flight reject at the stop instead of keeping the engine
+   * waiting on the network (requestUrl cannot be cancelled; the late response
+   * is dropped). The engine is crash-safe at every step, so an abandoned call
+   * is resumed by the next session like an interrupted one.
+   */
+  private gateNetwork<T extends object>(client: T): T {
+    const signal = this.abort.signal;
+    return new Proxy(client, {
+      get: (object, property, receiver) => {
+        const value: unknown = Reflect.get(object, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (signal.aborted) return Promise.reject(new SessionStoppedError());
+          const call = Promise.resolve((value as (...values: unknown[]) => unknown).apply(object, args));
+          call.catch(() => undefined);
+          return new Promise((resolve, reject) => {
+            const onAbort = () => {
+              reject(new SessionStoppedError());
+            };
+            signal.addEventListener("abort", onAbort, { once: true });
+            call.then(resolve, reject).finally(() => {
+              signal.removeEventListener("abort", onAbort);
+            });
+          });
+        };
+      },
+    });
   }
 }

@@ -5,6 +5,7 @@ import {
   discoverOidc,
   IdentityProviderError,
   jwtExpiry,
+  jwtSubject,
   OAuthError,
   oidcRefresher,
   pollDeviceAuthorization,
@@ -344,5 +345,18 @@ describe("jwtExpiry", () => {
     expect(jwtExpiry("opaque")).toBeUndefined();
     expect(jwtExpiry("a.!!!.c")).toBeUndefined();
     expect(jwtExpiry(`e30.${btoa(JSON.stringify({ exp: "soon" }))}.sig`)).toBeUndefined();
+  });
+});
+
+describe("jwtSubject", () => {
+  it("reads sub from a JWT payload", () => {
+    const payload = btoa(JSON.stringify({ sub: "user-42", exp: 1 })).replace(/=+$/, "");
+    expect(jwtSubject(`e30.${payload}.sig`)).toBe("user-42");
+  });
+
+  it("returns undefined for a token without a usable sub", () => {
+    expect(jwtSubject("opaque")).toBeUndefined();
+    expect(jwtSubject(`e30.${btoa(JSON.stringify({ sub: "" }))}.sig`)).toBeUndefined();
+    expect(jwtSubject(`e30.${btoa(JSON.stringify({ sub: 42 }))}.sig`)).toBeUndefined();
   });
 });
