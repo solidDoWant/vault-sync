@@ -47,7 +47,7 @@ The script exports these variables; set them yourself to point the tests at othe
 1. creates a database with `testinfra.PostgresConfig` (so it skips without Docker, like the other tests);
 2. starts a fake OIDC issuer (`internal/auth/authtest`) on a loopback port and mints a valid access token and one signed by a key the issuer never published;
 3. builds the server binary and starts it on ephemeral loopback ports, pointed at the database and the fake issuer;
-4. runs `npx vitest run --config vitest.integration.config.ts` in `plugin/`, passing the server URL and tokens in `VAULT_SYNC_IT_SERVER_URL`, `VAULT_SYNC_IT_TOKEN` and `VAULT_SYNC_IT_FOREIGN_TOKEN`, and fails unless every test in that suite ran and passed.
+4. runs the locally installed `node_modules/.bin/vitest run --config vitest.integration.config.ts` in `plugin/` (not `npx`, so it never fetches a package), passing the server URL and tokens in `VAULT_SYNC_IT_SERVER_URL`, `VAULT_SYNC_IT_TOKEN` and `VAULT_SYNC_IT_FOREIGN_TOKEN`, and fails unless every test in that suite ran and passed.
 
 The vitest suite (`plugin/test/integration/*.integration.test.ts`) skips itself when those variables are unset, and `plugin/vitest.config.ts` excludes it, so `make test` and plain `npm test` never touch the network. `make test-integration` installs the plugin's npm dependencies first, since the Go test needs `vitest`. To run only this test: `./scripts/test-integration.sh -run TestPluginProtocolClient -v ./cmd/vault-sync-server/`.
 
@@ -56,3 +56,4 @@ The vitest suite (`plugin/test/integration/*.integration.test.ts`) skips itself 
 - Start the file with `//go:build integration`.
 - Use `internal/testinfra`: `testinfra.PostgresConfig(t)` creates an empty database for the test (dropped at cleanup) and returns a `store.Config`; `testinfra.S3(t)` returns the object store's connection details. Both skip the test when their variables are unset.
 - Apply the schema with `store.Migrate` on the test's own database; never share databases between tests.
+- Start child processes (the server binary, node) with `newChild` in `cmd/vault-sync-server/process_integration_test.go`, not bare `exec.Command`. `go test -timeout` panics without running `t.Cleanup`, so a plain child, and anything it spawned, would outlive the test. A `newChild` process is SIGKILLed shortly before the test binary's deadline and at cleanup. On Linux this kill reaches its whole process group, so grandchildren die too, and the kernel also kills the child if the test binary dies first (`Pdeathsig`).

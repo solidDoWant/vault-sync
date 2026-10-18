@@ -36,13 +36,17 @@ const (
 func TestPluginProtocolClient(t *testing.T) {
 	database := testinfra.PostgresConfig(t)
 
-	npx, err := exec.LookPath("npx")
-	require.NoError(t, err, "npx (Node.js) is required to run the plugin integration suite; use `nix develop`")
+	// vitest's launcher runs `#!/usr/bin/env node`.
+	_, err := exec.LookPath("node")
+	require.NoError(t, err, "Node.js is required to run the plugin integration suite; use `nix develop`")
 
 	pluginDir, err := filepath.Abs(filepath.Join("..", "..", "plugin"))
 	require.NoError(t, err)
 
-	_, err = os.Stat(filepath.Join(pluginDir, "node_modules", ".bin", "vitest"))
+	// The locally installed vitest, run directly: unlike `npx vitest`, this
+	// can never fall back to fetching a package from the network.
+	vitest := filepath.Join(pluginDir, "node_modules", ".bin", "vitest")
+	_, err = os.Stat(vitest)
 	require.NoError(t, err, "plugin dependencies are not installed; run `make test-integration`, which installs them")
 
 	issuer := authtest.NewIssuer(t)
@@ -57,26 +61,26 @@ func TestPluginProtocolClient(t *testing.T) {
 
 	var logs bytes.Buffer
 
-	server := exec.CommandContext(t.Context(), binary)
-	server.Env = []string{
+	server := newChild(t, binary)
+	server.Command.Env = []string{
 		config.DatabaseURLEnv + "=" + database.DSN,
 		config.ListenAddressEnv + "=" + apiAddress,
 		config.MetricsListenAddressEnv + "=" + metricsAddress,
 		config.OIDCIssuerURLEnv + "=" + issuer.URL,
 		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 	}
-	server.Stdout = &logs
-	server.Stderr = &logs
-	require.NoError(t, server.Start())
+	server.Command.Stdout = &logs
+	server.Command.Stderr = &logs
 
+	// Registered before the server's cleanup, so it runs after the server
+	// has been stopped and its output collected.
 	t.Cleanup(func() {
-		_ = server.Process.Kill()
-		_ = server.Wait()
-
 		if t.Failed() {
 			t.Logf("server logs:\n%s", logs.String())
 		}
 	})
+
+	server.Start(t)
 
 	require.Eventually(t, func() bool {
 		status, err := httpGet("http://" + metricsAddress + "/readyz")
@@ -86,21 +90,28 @@ func TestPluginProtocolClient(t *testing.T) {
 
 	report := filepath.Join(t.TempDir(), "report.json")
 
-	suite := exec.CommandContext(t.Context(), npx, "vitest", "run",
+	suite := newChild(t, vitest, "run",
 		"--config", "vitest.integration.config.ts",
 		"--reporter", "default", "--reporter", "json", "--outputFile.json", report,
 	)
-	suite.Dir = pluginDir
+	suite.Command.Dir = pluginDir
 
-	suite.Env = append(os.Environ(),
+	suite.Command.Env = append(os.Environ(),
 		clientServerURLEnv+"=http://"+apiAddress,
 		clientTokenEnv+"="+token,
 		clientForeignTokenEnv+"="+foreignToken,
 		"CI=1", // no watch mode, no interactive output
 	)
-	output, err := suite.CombinedOutput()
-	require.NoError(t, err, "plugin integration suite failed:\n%s", output)
-	t.Logf("plugin integration suite:\n%s", output)
+
+	var output bytes.Buffer
+
+	suite.Command.Stdout = &output
+	suite.Command.Stderr = &output
+	suite.Start(t)
+
+	err = suite.Wait()
+	require.NoError(t, err, "plugin integration suite failed:\n%s", output.String())
+	t.Logf("plugin integration suite:\n%s", output.String())
 
 	// The suite skips itself when it is not configured; make sure it ran.
 	var summary struct {
