@@ -271,6 +271,32 @@ describe("package imports from the src/core program", () => {
   });
 });
 
+// sim/ has no package.json: it resolves packages through the committed
+// symlink sim/node_modules -> ../plugin/node_modules, and its imports are
+// checked against plugin/package.json like src/core's.
+describe("package imports from sim/", () => {
+  const simProbe = path.join(pluginDir, "..", "sim", "zz-probe.ts");
+  const check = (source: string) => checkCoreProgram([], new Map([[simProbe, source]]));
+
+  it("resolves declared dependencies through the plugin's node_modules", () => {
+    const source =
+      'import { Code, type Transport } from "@connectrpc/connect";\n' +
+      'import { sha256 } from "@noble/hashes/sha2.js";\n' +
+      'import { describe } from "vitest";\n' +
+      "export const all = [Code.Unavailable, sha256, describe];\n" +
+      "export type T = Transport;\n";
+    expect(check(source)).toEqual([]);
+  }, 60_000);
+
+  it.each([
+    ["obsidian", 'import type { App } from "obsidian";\nexport type A = App;\n', /\.\.\/sim\/zz-probe\.ts: import "obsidian" is not allowed/],
+    ["moment (an undeclared obsidian dependency)", 'import moment from "moment";\nexport const m = moment();\n', /\.\.\/sim\/zz-probe\.ts: import "moment" is not a declared dependency/],
+    ["a Node built-in", 'import { readFileSync } from "node:fs";\nexport const r = readFileSync;\n', /\.\.\/sim\/zz-probe\.ts: import "node:fs" is not a declared dependency/],
+  ])("fails on an import of %s", (_name, source, problem) => {
+    expect(check(source)).toContainEqual(expect.stringMatching(problem));
+  }, 60_000);
+});
+
 // Real files on disk: the directory scan is about files that are not part of
 // the program, so they cannot be served from memory as program roots.
 describe("files on disk under src/core", () => {

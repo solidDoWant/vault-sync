@@ -1,0 +1,324 @@
+//go:build sim
+
+// Package sim_test is the driver of the sync simulation (SPEC.md §13): it
+// starts a real vault-sync-server against PostgreSQL and the S3-compatible
+// store, serves the harness's control endpoint, and runs the TypeScript
+// harness in this directory with vitest. Run it with `make test-sim`
+// (scripts/test-sim.sh), which starts the dependencies and sets the `sim`
+// build tag.
+package sim_test
+
+import (
+	"bytes"
+	"debug/buildinfo"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	jose "github.com/go-jose/go-jose/v4"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
+	"github.com/solidDoWant/vault-sync/internal/config"
+	"github.com/solidDoWant/vault-sync/internal/testinfra"
+)
+
+// Environment variables through which the driver hands the server and the
+// control endpoint to plugin/vitest.sim.config.ts.
+const (
+	serverURLEnv  = "VAULT_SYNC_SIM_SERVER_URL"
+	controlURLEnv = "VAULT_SYNC_SIM_CONTROL_URL"
+	suitesEnv     = "VAULT_SYNC_SIM_SUITES"
+	shrinkRunsEnv = "SIM_SHRINK_RUNS"
+	// regressionDirEnv overrides where failing seeds are written
+	// (default: sim/regressions, so they can be committed).
+	regressionDirEnv = "SIM_REGRESSION_DIR"
+
+	// brokenShrinkRuns bounds minimization in the broken-server check,
+	// which only needs to show that minimization works.
+	brokenShrinkRuns = 40
+)
+
+// brokenSchedule is the schedule the broken-server check always runs: the
+// short run CI does on every pull request (SIM_SEEDS=5, SIM_STEPS=1000, the
+// default three clients). It is pinned, not taken from the SIM_* tuning
+// variables, so that replaying one seed or running shorter schedules locally
+// cannot make the check fail, and so that it proves the CI run catches the
+// broken server.
+var brokenSchedule = []string{
+	"SIM_SEED=",
+	"SIM_FIRST_SEED=1",
+	"SIM_SEEDS=5",
+	"SIM_STEPS=1000",
+	"SIM_CLIENTS=3",
+}
+
+// simulation is a running server plus control endpoint.
+type simulation struct {
+	serverURL     string
+	controlURL    string
+	control       *control
+	regressionDir string
+}
+
+// startSimulation builds the server with the given build tags and starts it
+// against a fresh database and bucket, plus the control endpoint.
+func startSimulation(t *testing.T, regressionDir string, tags ...string) *simulation {
+	t.Helper()
+
+	database := testinfra.PostgresConfig(t)
+	bucket := testinfra.S3Bucket(t)
+
+	repoRoot, err := filepath.Abs("..")
+	require.NoError(t, err)
+
+	binary := testinfra.BuildServer(t, repoRoot, tags...)
+	requireBuildTags(t, binary, tags)
+
+	issuer := authtest.NewIssuer(t)
+	key := issuer.AddKey(t, jose.ES256)
+
+	apiAddress := testinfra.FreeAddress(t)
+	metricsAddress := testinfra.FreeAddress(t)
+
+	logs := &bytes.Buffer{}
+	server := testinfra.NewChild(t, binary)
+	server.Command.Env = []string{
+		config.DatabaseURLEnv + "=" + database.DSN,
+		config.ListenAddressEnv + "=" + apiAddress,
+		config.MetricsListenAddressEnv + "=" + metricsAddress,
+		config.OIDCIssuerURLEnv + "=" + issuer.URL,
+		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
+		config.S3EndpointEnv + "=" + bucket.Endpoint,
+		config.S3RegionEnv + "=" + bucket.Region,
+		config.S3BucketEnv + "=" + bucket.Bucket,
+		config.S3AccessKeyIDFileEnv + "=" + bucket.AccessKeyIDFile,
+		config.S3SecretAccessKeyFileEnv + "=" + bucket.SecretAccessKeyFile,
+		config.S3ForcePathStyleEnv + "=true",
+		// The smallest chunk size the server allows, so the occasional
+		// large content is uploaded in several chunks.
+		config.BlobMaxChunkBytesEnv + "=65536",
+		// Clients that crash or give up abandon upload sessions; a long
+		// run must not hit the per-vault session limit.
+		config.BlobMaxUploadsPerVaultEnv + "=10000",
+		config.LogLevelEnv + "=warn",
+		// Stop at once when the test ends (#96).
+		"VAULT_SYNC_SHUTDOWN_DELAY=0s",
+	}
+	server.Command.Stdout = logs
+	server.Command.Stderr = logs
+
+	t.Cleanup(func() {
+		if t.Failed() {
+			t.Logf("server logs:\n%s", logs.String())
+		}
+	})
+
+	server.Start(t)
+
+	require.Eventually(t, func() bool {
+		response, err := http.Get("http://" + metricsAddress + "/readyz")
+		if err != nil {
+			return false
+		}
+
+		defer func() { _ = response.Body.Close() }()
+
+		_, _ = io.Copy(io.Discard, response.Body)
+
+		return response.StatusCode == http.StatusOK
+	}, 60*time.Second, 50*time.Millisecond, "server must become ready")
+
+	db, err := pgxpool.New(t.Context(), database.DSN)
+	require.NoError(t, err)
+	t.Cleanup(db.Close)
+
+	ctl := &control{db: db, issuer: issuer, key: key, regressionDir: regressionDir}
+	controlServer := httptest.NewServer(ctl.handler())
+	t.Cleanup(controlServer.Close)
+
+	return &simulation{serverURL: "http://" + apiAddress, controlURL: controlServer.URL, control: ctl, regressionDir: regressionDir}
+}
+
+// requireBuildTags checks the binary was built with exactly the requested
+// tags, so the simulation never runs the broken build by accident (or the
+// broken-server check the correct one).
+func requireBuildTags(t *testing.T, binary string, tags []string) {
+	t.Helper()
+
+	info, err := buildinfo.ReadFile(binary)
+	require.NoError(t, err)
+
+	built := ""
+
+	for _, setting := range info.Settings {
+		if setting.Key == "-tags" {
+			built = setting.Value
+		}
+	}
+
+	require.Equal(t, strings.Join(tags, ","), built, "server build tags")
+}
+
+// suiteResult is the outcome of one vitest run of the harness.
+type suiteResult struct {
+	err    error
+	output string
+	total  int
+	passed int
+}
+
+// runSuite runs the harness's networked vitest suite against the
+// simulation. Output is streamed to stdout when stream is set.
+func (simulation *simulation) runSuite(t *testing.T, stream bool, extraEnv []string, extraArguments ...string) suiteResult {
+	t.Helper()
+
+	_, err := exec.LookPath("node")
+	require.NoError(t, err, "Node.js is required to run the simulation; use `nix develop`")
+
+	pluginDir, err := filepath.Abs(filepath.Join("..", "plugin"))
+	require.NoError(t, err)
+
+	// The locally installed vitest, never a package fetched by npx.
+	vitest := filepath.Join(pluginDir, "node_modules", ".bin", "vitest")
+	_, err = os.Stat(vitest)
+	require.NoError(t, err, "plugin dependencies are not installed; run `make test-sim`, which installs them")
+
+	report := filepath.Join(t.TempDir(), "report.json")
+
+	arguments := append([]string{
+		"run", "--config", "vitest.sim.config.ts",
+		"--reporter", "default", "--reporter", "json", "--outputFile.json", report,
+	}, extraArguments...)
+
+	suite := testinfra.NewChild(t, vitest, arguments...)
+	suite.Command.Dir = pluginDir
+
+	suite.Command.Env = append(append(os.Environ(),
+		serverURLEnv+"="+simulation.serverURL,
+		controlURLEnv+"="+simulation.controlURL,
+		regressionDirEnv+"="+simulation.regressionDir,
+		"CI=1", // no watch mode, no interactive output
+	), extraEnv...)
+
+	var output bytes.Buffer
+
+	writer := io.Writer(&output)
+	if stream {
+		writer = io.MultiWriter(&output, os.Stdout)
+	}
+
+	suite.Command.Stdout = writer
+	suite.Command.Stderr = writer
+	suite.Start(t)
+
+	result := suiteResult{err: suite.Wait()}
+	result.output = output.String()
+
+	var summary struct {
+		NumTotalTests  int `json:"numTotalTests"`
+		NumPassedTests int `json:"numPassedTests"`
+	}
+
+	if raw, err := os.ReadFile(report); err == nil && json.Unmarshal(raw, &summary) == nil {
+		result.total = summary.NumTotalTests
+		result.passed = summary.NumPassedTests
+	}
+
+	return result
+}
+
+// TestSimulation runs the seeded schedules (SIM_SEEDS, SIM_STEPS,
+// SIM_CLIENTS), the committed regression cases, the scripted scenarios and
+// the determinism check against the real server. A failing seed is
+// minimized and written to sim/regressions/ (or SIM_REGRESSION_DIR), and the
+// test fails naming it.
+func TestSimulation(t *testing.T) {
+	regressionDir := os.Getenv(regressionDirEnv)
+	if regressionDir == "" {
+		regressionDir = "regressions"
+	}
+
+	regressionDir, err := filepath.Abs(regressionDir)
+	require.NoError(t, err)
+
+	simulation := startSimulation(t, regressionDir)
+	result := simulation.runSuite(t, true, nil)
+
+	for _, regression := range simulation.control.recorded() {
+		t.Errorf("SIM FAILURE: seed %d violated %v; minimized to %s", regression.Seed, invariantsOf(regression.Violations),
+			filepath.Join(regressionDir, regression.Name+".json"))
+	}
+
+	require.NoError(t, result.err, "simulation suite failed (see its output above)")
+	require.Positive(t, result.total, "the simulation suite ran no tests")
+	require.Equal(t, result.total, result.passed, "every simulation test must run and pass, none skipped")
+}
+
+// TestSimulationDetectsBrokenServer proves the harness has teeth (issue
+// #15): against a server built with the `simfault` tag, which accepts
+// commits against a stale base, the seeds of CI's short run (brokenSchedule)
+// must report a stale-base violation.
+func TestSimulationDetectsBrokenServer(t *testing.T) {
+	simulation := startSimulation(t, t.TempDir(), "simfault")
+
+	shrinkRuns := brokenShrinkRuns
+
+	if raw := os.Getenv(shrinkRunsEnv); raw != "" {
+		configured, err := strconv.Atoi(raw)
+		require.NoError(t, err, shrinkRunsEnv)
+
+		shrinkRuns = min(shrinkRuns, configured)
+	}
+
+	result := simulation.runSuite(t, false, append([]string{
+		suitesEnv + "=seeds",
+		shrinkRunsEnv + "=" + strconv.Itoa(shrinkRuns),
+	}, brokenSchedule...), "--bail", "1")
+
+	require.Error(t, result.err, "the simulation passed against a server that skips the base-revision check:\n%s", result.output)
+
+	reports := simulation.control.recorded()
+	require.NotEmpty(t, reports, "the suite failed without reporting a violating seed:\n%s", result.output)
+
+	detected := false
+
+	for _, regression := range reports {
+		var steps []json.RawMessage
+		assert.NoError(t, json.Unmarshal(regression.Steps, &steps))
+		t.Logf("seed %d against the simfault server: %v, minimized to %d steps", regression.Seed, invariantsOf(regression.Violations), len(steps))
+
+		for _, found := range regression.Violations {
+			detected = detected || found.Invariant == invariantStaleBase
+		}
+	}
+
+	require.True(t, detected, "no stale-base violation was reported:\n%s", result.output)
+
+	// The minimized case it wrote must reproduce the violation when replayed
+	// as a committed regression case.
+	replay := simulation.runSuite(t, false, []string{suitesEnv + "=regressions"})
+	require.Error(t, replay.err, "the recorded regression case passed against the simfault server:\n%s", replay.output)
+	require.Contains(t, replay.output, invariantStaleBase, "the regression case failed for another reason:\n%s", replay.output)
+	require.Positive(t, replay.total, "no regression case was replayed:\n%s", replay.output)
+}
+
+func invariantsOf(violations []violation) []string {
+	var invariants []string
+
+	for _, found := range violations {
+		invariants = append(invariants, found.Invariant)
+	}
+
+	return invariants
+}
