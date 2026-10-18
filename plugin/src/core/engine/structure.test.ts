@@ -1,5 +1,5 @@
 import { Code, ConnectError } from "@connectrpc/connect";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { VaultEvent } from "../vault/adapter";
 import { copyOf, files, harness, syncedOnBoth, twoDevices, type Harness } from "./testing";
@@ -371,6 +371,105 @@ describe("SyncEngine structural operations (SPEC.md §6.3)", () => {
       await h.engine.push();
       expect(h.server.liveDocuments()).toEqual(new Map([["b.md", "a"]]));
       expect(await files(h.vault)).toEqual(new Map([["b.md", lines("one (remote)")]]));
+    });
+
+    it("pushes an untracked file renamed off a path the merge path holds", async () => {
+      let ready = false;
+      const h = harness({
+        merge: async (request) => {
+          if (!ready) return { status: "deferred" };
+          return { status: "merged", path: request.remote.path, content: (await request.readRemoteContent()) ?? new Uint8Array() };
+        },
+      });
+      h.server.commit({ documentId: "d", path: "a.md", content: lines("one") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("one (local)")));
+      await h.vault.write("p.md", bytes(lines("untracked")));
+      // The server moves d onto p.md; the hook defers, so p.md is the merge path's.
+      h.server.commit({ documentId: "d", path: "p.md", content: lines("one") });
+      await h.engine.push();
+      await h.vault.rename("p.md", "z.md");
+
+      await h.engine.push();
+
+      // z.md belongs to no document, so nothing makes it wait.
+      expect(h.server.liveFiles().get("z.md")).toBe(lines("untracked"));
+      ready = true;
+      await h.engine.push();
+      await h.engine.push();
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["p.md", lines("one")],
+          ["z.md", lines("untracked")],
+        ]),
+      );
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    });
+
+    describe("given the document's operation is still pending", () => {
+      /**
+       * d synced at a.md, edited, and renamed to b.md while the edit's commit
+       * stays pending (the server refused it as invalid), so the rename waits.
+       */
+      async function renameWaitingForPendingEdit(h: Harness): Promise<void> {
+        h.server.commit({ documentId: "d", path: "a.md", content: lines("one") });
+        await h.engine.pull();
+        await h.vault.write("a.md", bytes(lines("two")));
+        h.server.interceptor = (method) => {
+          if (method === "CommitRevision") throw new ConnectError("refused", Code.InvalidArgument);
+        };
+        await h.engine.push();
+        await h.vault.rename("a.md", "b.md");
+        await h.engine.push();
+        expect(h.server.liveFiles()).toEqual(new Map([["a.md", lines("one")]]));
+        h.server.interceptor = undefined;
+      }
+
+      it("pushes the waiting rename's new path as a new file when a file is created at its old path meanwhile", async () => {
+        const h = harness({ merge: "default" });
+        await renameWaitingForPendingEdit(h);
+        await h.vault.write("a.md", bytes(lines("new note")));
+
+        await h.engine.push();
+        await h.engine.push();
+
+        // The rename no longer qualifies (a.md holds a new file), so d keeps
+        // a.md and b.md is a file of its own: nothing is left unsynced.
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["a.md", lines("new note")],
+            ["b.md", lines("two")],
+          ]),
+        );
+        expect(h.server.liveDocuments().get("a.md")).toBe("d");
+      });
+
+      it("pushes the waiting rename once a pull acknowledges the pending edit, without another local change", async () => {
+        vi.useFakeTimers();
+        try {
+          const h = harness({ merge: "default", pushDebounceMs: 1000 });
+          await renameWaitingForPendingEdit(h);
+          // The edit's commit lands, but its response is lost: still pending.
+          h.server.responseInterceptor = (method) => {
+            if (method === "CommitRevision") throw new ConnectError("lost", Code.InvalidArgument);
+          };
+          await h.engine.push();
+          h.server.responseInterceptor = undefined;
+          expect(await h.journal.listPending()).toHaveLength(1);
+          expect(h.server.liveFiles()).toEqual(new Map([["a.md", lines("two")]]));
+
+          // A pull alone (as a realtime notification would start) acknowledges it.
+          await h.engine.pull();
+          await vi.advanceTimersByTimeAsync(1000);
+          await h.engine.settled();
+
+          expect(h.server.liveDocuments()).toEqual(new Map([["b.md", "d"]]));
+          expect(h.server.liveFiles()).toEqual(new Map([["b.md", lines("two")]]));
+          expect(await h.journal.listPending()).toEqual([]);
+        } finally {
+          vi.useRealTimers();
+        }
+      });
     });
 
     it("ends with one document when two devices rename it to different names", async () => {

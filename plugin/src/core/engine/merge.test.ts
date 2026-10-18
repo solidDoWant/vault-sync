@@ -853,6 +853,82 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
       expect(await h.journal.listDeferred()).toEqual([]);
       expect(await h.journal.listConflicts()).toEqual([]);
     });
+
+    it("ends, keeping both local edits, when a remote swap meets two held documents", async () => {
+      // Each document arrives at the other's path, so resolving either first
+      // asks to resolve the other first.
+      const h = harness({ server: new InMemoryServer({ maxPageSize: 10, maxDownloadBytes: 1000 }) });
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("a") });
+      h.server.commit({ documentId: "b", path: "b.md", content: lines("b") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("a (local)")));
+      await h.vault.write("b.md", bytes(lines("b (local)")));
+      h.server.commit({ documentId: "a", path: "t.md" });
+      h.server.commit({ documentId: "b", path: "a.md" });
+      h.server.commit({ documentId: "a", path: "b.md" });
+
+      await h.engine.pull();
+      await h.engine.push();
+
+      // The hook defers both: nothing is moved or written, and both wait.
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["a.md", lines("a (local)")],
+          ["b.md", lines("b (local)")],
+        ]),
+      );
+      expect((await h.journal.listDeferred()).map((deferred) => deferred.revision.documentId).sort()).toEqual(["a", "b"]);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["a.md", "b"],
+          ["b.md", "a"],
+        ]),
+      );
+    });
+  });
+
+  describe("given a move aside interrupted after its name was logged", () => {
+    it("does not reuse the logged name for a file created there since", async () => {
+      // d's rename to c.md is pending when b's rename to c.md arrives; the
+      // engine logs d's conflict-copy name, then stops before moving the file.
+      let crash = true;
+      class StopAfterLogging extends InMemoryJournal {
+        override async putConflict(conflict: ConflictRecord): Promise<void> {
+          await super.putConflict(conflict);
+          if (crash && conflict.reason === "path-taken") {
+            crash = false;
+            throw new Crash("stopped after logging the move aside");
+          }
+        }
+      }
+      const h = harness({ merge: "default", journal: new StopAfterLogging() });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
+      h.server.commit({ documentId: "d", path: "d.md", content: lines("d") });
+      await h.engine.pull();
+      await h.vault.rename("d.md", "c.md");
+      moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "b", path: "c.md" }));
+      await expect(h.engine.push()).rejects.toThrow(Crash);
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "d", reason: "path-taken", copyPath: copyOf("c", ".md") }]);
+      // The user creates a file at exactly that name before the engine restarts.
+      await h.vault.write(copyOf("c", ".md"), bytes(lines("the user's own note")));
+
+      h.restart();
+      await h.engine.push();
+      await h.engine.push();
+
+      expect(text(await h.vault.read(copyOf("c", ".md")))).toBe(lines("the user's own note"));
+      const live = h.server.liveDocuments();
+      expect(live.get("c.md")).toBe("b");
+      expect(live.get(copyOf("c", ".md"))).not.toBe("d");
+      // d keeps its identity and content at another conflict-copy name.
+      const dPath = [...live].find(([, documentId]) => documentId === "d")?.[0];
+      expect(dPath).toBeDefined();
+      expect(dPath).not.toBe(copyOf("c", ".md"));
+      expect(h.server.liveFiles().get(dPath ?? "")).toBe(lines("d"));
+      expect([...h.server.liveFiles().values()].sort()).toEqual([lines("b"), lines("d"), lines("the user's own note")]);
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+      expect(await h.journal.listPending()).toEqual([]);
+    });
   });
 
   describe("given a merge interrupted after it was recorded", () => {

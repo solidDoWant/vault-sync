@@ -216,6 +216,8 @@ describe.runIf(suites.has("scenarios"))("scripted structural scenarios (#19)", (
       [`${stamped("topics")}/y.md`, lines("y")],
       ["ideas/a.md", lines("a")],
       [stamped("ideas"), lines("a file named like the folder")],
+      ["held/p.md", lines("held", "note (edited)")],
+      ["held/z.md", lines("untracked")],
     ]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
@@ -229,11 +231,14 @@ describe.runIf(suites.has("scenarios"))("scripted structural scenarios (#19)", (
       ["chain/C.md", "chain/A.md"],
       ["rotate/b.md", "rotate/a.md"],
       ["rotate/c.md", "rotate/b.md"],
+      ["held/p.md", "held/d.md"],
     ]);
     for (const [path, origin] of identity) expect(result.documents.get(path), `${path} is the document that was ${origin}`).toBe(result.before.get(origin));
     expect(result.documents.size, trace).toBe(expected.size);
     // The folder rename moved no content: renames only.
     expect(result.folderRenameTransfers, trace).toEqual({ uploads: 0, downloads: 0 });
+    // The file renamed off the held path was pushed while the hook still held the document.
+    expect(result.heldPhaseFiles, trace).toContain("held/z.md");
     expect(result.conflicts[0], trace).toEqual([]);
     expect(result.conflicts[1], trace).toEqual([
       { reason: "concurrent-create", path: "inbox/same.md", copyPath: copy },

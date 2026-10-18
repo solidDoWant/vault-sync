@@ -285,6 +285,10 @@ export class SyncEngine {
       // holds it, or a newer local edit, which the next push sends on top.
       if (state?.revisionId !== remote.revisionId) await this.journal.putDocument(syncedState(remote));
       await this.journal.removePending(remote.revisionId);
+      // Changes left for after the operation (a newer edit, a rename that
+      // waited for it) are pushed now, as after an acknowledged commit.
+      this.changes.paths.add(remote.path);
+      this.schedulePush();
       return "applied";
     }
     const deferred = await this.journal.getDeferred(remote.documentId);
@@ -490,10 +494,17 @@ export class SyncEngine {
     const content = await this.readOrNull(path);
     if (content === null) return true;
     const hash = sha256Hex(content);
-    const logged = (await this.journal.listConflicts()).find(
-      (record) => record.reason === "path-taken" && record.documentId === documentId && record.path === path && record.copyHash === hash && record.copyPath !== null,
-    );
-    let copyPath = logged?.copyPath ?? null;
+    // A logged name is reused only while it is free or already holds the
+    // file: a file created there since (after a crash) is not this one.
+    let copyPath: string | null = null;
+    for (const record of await this.journal.listConflicts()) {
+      if (record.reason !== "path-taken" || record.documentId !== documentId || record.path !== path || record.copyHash !== hash || record.copyPath === null) continue;
+      const there = await this.readOrNull(record.copyPath);
+      if (there === null || sha256Hex(there) === hash) {
+        copyPath = record.copyPath;
+        break;
+      }
+    }
     if (copyPath === null) {
       copyPath = await this.freeConflictPath(path);
       if (copyPath === null) return false;
@@ -895,10 +906,14 @@ export class SyncEngine {
     for (const [to, from] of changes.renames) {
       const state = await this.journal.findDocumentByPath(from);
       if (busyPaths.has(from) || busyPaths.has(to) || (state !== undefined && busyDocuments.has(state.documentId))) {
+        // Not a known document's rename (an untracked file, or a create still
+        // pending): the path loop below sees its new path as usual.
+        if (state === undefined) continue;
         // The merge path or a pending operation has the document: the rename
         // waits for a later push, rather than its new path becoming a new
-        // document and its old one a delete.
-        if (state !== undefined && !this.changes.renames.has(to)) this.changes.renames.set(to, from);
+        // document and its old one a delete. The push after whatever frees the
+        // document (a merge or a commit, which both queue one) sees it again.
+        if (!this.changes.renames.has(to)) this.changes.renames.set(to, from);
         handled.add(from);
         handled.add(to);
         continue;
@@ -915,7 +930,9 @@ export class SyncEngine {
     }
     edits.push(...dependencyOrder(renames, (operation) => changes.renames.get(operation.path)));
 
-    const paths = new Set(changes.paths);
+    // A rename's paths are looked at even when the rename waited for this
+    // push: if it no longer qualifies, its new path is a file like any other.
+    const paths = new Set([...changes.paths, ...[...changes.renames].flat()]);
     const tombstones = new Map<string, DocumentState>();
     const documents = await this.journal.listDocuments();
     for (const state of documents) {

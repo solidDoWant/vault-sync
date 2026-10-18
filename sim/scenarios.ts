@@ -439,6 +439,8 @@ export interface StructuralOperationsResult extends RunResult {
   before: Map<string, string>;
   /** Content transfers during the folder rename: blob uploads by the renaming engine, downloads by the other. */
   folderRenameTransfers: { uploads: number; downloads: number };
+  /** The server's live paths while the second engine's merge hook still held the document of phase 11. */
+  heldPhaseFiles: string[];
 }
 
 /**
@@ -465,6 +467,10 @@ export interface StructuralOperationsResult extends RunResult {
  *    notes (the server refuses file/folder collisions, #134): the notes move
  *    into a conflict-named folder.
  * 10. The reverse: the file gets the conflict name.
+ * 11. While the second engine's merge hook holds a document whose remote
+ *     rename targets a path an untracked file holds, its user renames that
+ *     file away: the file is pushed under its new name right away (review of
+ *     #196), and the held document lands once the hook merges it.
  */
 export async function structuralOperations(endpoints: SimEndpoints): Promise<StructuralOperationsResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2 });
@@ -530,6 +536,7 @@ export async function structuralOperations(endpoints: SimEndpoints): Promise<Str
     ["chain/A.md", textLines("chained")],
     ["rotate/a.md", textLines("note x")],
     ["rotate/b.md", textLines("note y")],
+    ["held/d.md", textLines("held", "note")],
   ];
   for (const [path, content] of synced) log(await first.edit(path, encoder.encode(content)));
   await sync();
@@ -597,6 +604,26 @@ export async function structuralOperations(endpoints: SimEndpoints): Promise<Str
   log(await second.edit("ideas", encoder.encode(textLines("a file named like the folder"))));
   await race("folder where the other created a file");
 
+  // 11. An untracked file renamed off a path the merge path holds.
+  log("phase: untracked file renamed off a held path");
+  log(await first.move("held/d.md", "held/p.md"));
+  log(first.startPush());
+  await drain(first.index);
+  log(await second.edit("held/d.md", encoder.encode(textLines("held", "note (edited)"))));
+  log(await second.edit("held/p.md", encoder.encode(textLines("untracked"))));
+  second.merge = () => Promise.resolve({ status: "deferred" });
+  log(second.startPush());
+  await drain(second.index);
+  log(await second.move("held/p.md", "held/z.md"));
+  log(second.startPush());
+  await drain(second.index);
+  const heldPhaseFiles = await liveFiles(run);
+  second.merge = undefined;
+  log(second.startPush());
+  await drain(second.index);
+  log(first.startPull());
+  await drain(first.index);
+
   const result = await run.finish();
   const vaults = await Promise.all(
     [first, second].map(async (engine) => {
@@ -606,7 +633,12 @@ export async function structuralOperations(endpoints: SimEndpoints): Promise<Str
     }),
   );
   const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
-  return { ...result, vaults, conflicts, refused, documents: await liveDocuments(run), before, folderRenameTransfers };
+  return { ...result, vaults, conflicts, refused, documents: await liveDocuments(run), before, folderRenameTransfers, heldPhaseFiles };
+}
+
+/** The server's live paths, sorted. */
+async function liveFiles(run: SimRun): Promise<string[]> {
+  return [...(await liveDocuments(run)).keys()].sort();
 }
 
 /** The server's live documents, read without faults from the change feed: path to document label. */
