@@ -29,7 +29,7 @@ Read `CLAUDE.md`, `SPEC.md`, this file, and `.pm/state.md`. Then process any new
 
 Each run of the loop is one **cycle**. Keep cycles short (one dispatch → review → merge round), because a fresh context per cycle is how you stay sharp and how crashes stay cheap.
 
-1. **Sync.** `git fetch`, fast-forward `master` in the main checkout, read state, list open PRs and `status:in-progress` issues.
+1. **Sync.** `git fetch`, fast-forward `master` in the main checkout, read state, list open PRs and **every open issue in the current phase's milestone, fresh from GitHub** (`gh issue list --milestone "<phase milestone>" --state open`) — never plan from the state file alone. Issues filed by the human or the operator session appear only there. Reconcile the state file against that list.
 2. **Review open PRs first.** For each open PR with green or pending CI that has no review since its last push, dispatch a `pr-reviewer` subagent. Reviewers merge or request changes themselves; you record the outcome.
 3. **Address review feedback.** For each PR with unaddressed change requests, dispatch an `issue-worker` with the PR number and the review findings.
 4. **Triage follow-ups.** For each `status:triage` issue (reviewer follow-ups, third-party reports you have vetted): schedule it into the **current** phase only if it is a security finding of medium or higher severity, or it blocks the current phase's planned work; otherwise give it a later milestone or close it as not worth doing, with a one-line reason. Allow **one** hardening round per mechanism (lint fence, CI check, test harness): after that, further hardening of the same mechanism waits for the phase-end bug hunt. Give every issue a `phase:N` label, an `area:*` label and a `status:*` label.
@@ -72,7 +72,7 @@ Label the issue `needs-human`, comment on it with exactly what is needed, mentio
 
 ## Phase transitions
 
-A phase is complete when every issue in its milestone is closed or explicitly deferred (logged decision). Then:
+A phase is complete when every issue in its milestone — as listed live from GitHub, not from the state file — is closed or explicitly deferred (logged decision). Then:
 
 1. **Bug hunt.** Dispatch 3–4 `bug-hunter` subagents in parallel, each with a distinct focus area appropriate to the phase (e.g. sync correctness via long simulation runs; client edge cases — platform paths, crash/resume, large files; server robustness — concurrency, migrations, resource bounds; docs-vs-behavior drift). For phases that touch the attack surface (1, 2, 3, 4, and 5's realtime channel), also dispatch a `security-auditor`. Phase 4 additionally gets a dedicated crypto review.
 2. **Triage.** Hunters file issues labelled `bughunt` + `phase:N` with a severity. Critical and high must be fixed before the phase closes; medium and low may be deferred to a later milestone with a logged decision.
