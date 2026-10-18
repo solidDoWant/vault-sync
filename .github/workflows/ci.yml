@@ -80,8 +80,9 @@ jobs:
         run: nix develop -c make test-e2e
 
       # Windows and macOS: no Nix (Windows) and no Linux containers, so the
-      # toolchain comes from setup-* actions and PostgreSQL runs natively.
-      # The server runs without an object store, which it does not need yet.
+      # toolchain comes from setup-* actions, PostgreSQL runs natively, and
+      # scripts/with-native-s3.sh runs the pinned versitygw release natively
+      # as the S3-compatible store.
       - if: runner.os != 'Linux'
         uses: actions/setup-go@v5
         with:
@@ -107,4 +108,4 @@ jobs:
         name: Plugin e2e
         env:
           VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
-        run: go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
+        run: ./scripts/with-native-s3.sh go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
