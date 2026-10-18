@@ -120,8 +120,7 @@ const (
 	DefaultMaxRequestBytes = 1 << 20
 	DefaultShutdownTimeout = 30 * time.Second
 	// DefaultWriteTimeout lets a maximum-size (1 MiB) response reach a
-	// client on a slow mobile link (about 100 kbit/s), with room for the
-	// handler's own database and object store calls.
+	// client on a slow mobile link (about 100 kbit/s).
 	DefaultWriteTimeout = 2 * time.Minute
 	MinWriteTimeout     = time.Second
 	MaxWriteTimeout     = time.Hour
@@ -147,9 +146,10 @@ type Config struct {
 	OIDC OIDCConfig
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
-	// WriteTimeout bounds how long an API request may take, from its
-	// arrival until its response is written, so clients that stop reading
-	// release their connection. The realtime WebSocket is exempt.
+	// WriteTimeout bounds how long writing an API response may take, from
+	// its first byte, so clients that stop reading release their
+	// connection. It does not bound the handler's work before the response
+	// starts. The realtime WebSocket is exempt.
 	WriteTimeout time.Duration
 	// ShutdownDelay is how long after a shutdown signal /readyz fails while
 	// the API still accepts requests, before draining starts.

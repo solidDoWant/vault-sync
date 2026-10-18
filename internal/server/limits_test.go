@@ -202,6 +202,7 @@ func TestServerReleasesConnectionsOfClientsThatDoNotRead(t *testing.T) {
 	reader := bufio.NewReader(conn)
 
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
+
 	_, err = reader.Peek(1)
 	require.NoError(t, err, "the server must start the response")
 
