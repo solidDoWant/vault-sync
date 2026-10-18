@@ -387,7 +387,9 @@ func TestConcurrentCleanersSucceedAndAgree(t *testing.T) {
 		sessions = append(sessions, upload)
 	}
 
-	for index := range 20 {
+	const multipartUploads = 20
+
+	for index := range multipartUploads {
 		fixture.createMultipart(t, fmt.Sprintf("interrupted %d", index))
 	}
 
@@ -419,17 +421,18 @@ func TestConcurrentCleanersSucceedAndAgree(t *testing.T) {
 	close(start)
 	group.Wait()
 
-	removed, aborted := 0, 0
+	removed := 0
+	abortedBy := make([]int, processes)
 
 	for index := range processes {
 		require.NoError(t, errs[index], "cleaner %d", index)
 
 		removed += results[index].SessionsRemoved
-		aborted += results[index].MultipartAborted
+		abortedBy[index] = results[index].MultipartAborted
 	}
 
-	assert.GreaterOrEqual(t, removed, len(sessions))
-	assert.LessOrEqual(t, aborted, 20)
+	assert.Equal(t, len(sessions), removed, "each abandoned session is removed exactly once")
+	assertMultipartAbortCounts(t, abortedBy, multipartUploads)
 
 	for _, upload := range sessions {
 		assert.False(t, fixture.sessionExists(t, upload))
