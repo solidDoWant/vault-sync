@@ -9,6 +9,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -355,12 +357,19 @@ func (idleRealtimeStore) ListenVaultChanges(ctx context.Context, options store.L
 	return nil
 }
 
-func TestRealtimeWebSocketOutlivesTheWriteTimeout(t *testing.T) {
-	const writeTimeout = 300 * time.Millisecond
+// idleHub is a running realtime hub over idleRealtimeStore, with the
+// authenticator it checks upgrades against and a token it accepts.
+type idleHub struct {
+	hub           *realtime.Hub
+	authenticator *auth.Authenticator
+	token         string
+}
+
+func startIdleHub(t *testing.T, logger *slog.Logger) idleHub {
+	t.Helper()
 
 	issuer := authtest.NewIssuer(t)
 	key := issuer.AddKey(t, jose.RS256)
-	logger := slog.New(slog.DiscardHandler)
 	authenticator := auth.NewAuthenticator(auth.NewVerifier(auth.VerifierOptions{
 		IssuerURL: issuer.URL,
 		Audience:  authtest.DefaultAudience,
@@ -388,19 +397,31 @@ func TestRealtimeWebSocketOutlivesTheWriteTimeout(t *testing.T) {
 		<-hubDone
 	})
 
+	return idleHub{
+		hub:           hub,
+		authenticator: authenticator,
+		token:         authtest.Sign(t, key, issuer.Claims("idle-user", time.Now())),
+	}
+}
+
+func TestRealtimeWebSocketOutlivesTheWriteTimeout(t *testing.T) {
+	const writeTimeout = 300 * time.Millisecond
+
+	logger := slog.New(slog.DiscardHandler)
+	idle := startIdleHub(t, logger)
+
 	running := startServer(t, server.Options{
 		WriteTimeout:  writeTimeout,
-		Authenticator: authenticator,
-		Realtime:      hub,
+		Authenticator: idle.authenticator,
+		Realtime:      idle.hub,
 		Logger:        logger,
 	})
 
 	dialCtx, cancelDial := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancelDial()
 
-	token := authtest.Sign(t, key, issuer.Claims("idle-user", time.Now()))
 	conn, response, err := websocket.Dial(dialCtx, "ws://"+running.apiAddress+realtime.Path, &websocket.DialOptions{
-		Subprotocols: []string{realtime.Subprotocol, realtime.BearerSubprotocolPrefix + token},
+		Subprotocols: []string{realtime.Subprotocol, realtime.BearerSubprotocolPrefix + idle.token},
 		HTTPHeader:   http.Header{"Origin": {"app://obsidian.md"}},
 	})
 	require.NoError(t, err)
@@ -428,4 +449,104 @@ func TestRealtimeWebSocketOutlivesTheWriteTimeout(t *testing.T) {
 	require.NoError(t, proto.Unmarshal(reply, &frame))
 	assert.Equal(t, uint64(1), frame.GetRequestId())
 	assert.NotNil(t, frame.GetSubscribed(), "expected subscribed, got %v", &frame)
+}
+
+// hijackRecorder is a response writer standing in for the HTTP server's
+// connection, so that the write deadlines the API handler sets are
+// observable. Hijack hands over one end of an in-memory pipe.
+type hijackRecorder struct {
+	header   http.Header
+	conn     net.Conn
+	hijacked chan struct{}
+
+	mu sync.Mutex
+	// deadlines are the non-zero write deadlines set after the hijack.
+	deadlines []time.Time
+	isHijack  bool
+}
+
+func newHijackRecorder(conn net.Conn) *hijackRecorder {
+	return &hijackRecorder{header: http.Header{}, conn: conn, hijacked: make(chan struct{})}
+}
+
+func (recorder *hijackRecorder) Header() http.Header { return recorder.header }
+
+func (recorder *hijackRecorder) Write(data []byte) (int, error) { return len(data), nil }
+
+func (recorder *hijackRecorder) WriteHeader(int) {}
+
+func (recorder *hijackRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	recorder.mu.Lock()
+	recorder.isHijack = true
+	recorder.mu.Unlock()
+	close(recorder.hijacked)
+
+	return recorder.conn, bufio.NewReadWriter(bufio.NewReader(recorder.conn), bufio.NewWriter(recorder.conn)), nil
+}
+
+func (recorder *hijackRecorder) SetReadDeadline(time.Time) error { return nil }
+
+func (recorder *hijackRecorder) SetWriteDeadline(deadline time.Time) error {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+
+	if recorder.isHijack && !deadline.IsZero() {
+		recorder.deadlines = append(recorder.deadlines, deadline)
+	}
+
+	return nil
+}
+
+func (recorder *hijackRecorder) deadlinesAfterHijack() []time.Time {
+	recorder.mu.Lock()
+	defer recorder.mu.Unlock()
+
+	return slices.Clone(recorder.deadlines)
+}
+
+func TestHijackedConnectionsGetNoWriteDeadline(t *testing.T) {
+	logger := slog.New(slog.DiscardHandler)
+	idle := startIdleHub(t, logger)
+	handler := server.New(testOptions(server.Options{
+		Authenticator: idle.authenticator,
+		Realtime:      idle.hub,
+		Logger:        logger,
+	})).Handler()
+
+	serverEnd, clientEnd := net.Pipe()
+
+	t.Cleanup(func() { _ = serverEnd.Close() })
+
+	request := httptest.NewRequestWithContext(t.Context(), http.MethodGet, realtime.Path, nil)
+	request.Header.Set("Connection", "Upgrade")
+	request.Header.Set("Upgrade", "websocket")
+	request.Header.Set("Sec-WebSocket-Version", "13")
+	request.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	request.Header.Set("Sec-WebSocket-Protocol", realtime.Subprotocol+", "+realtime.BearerSubprotocolPrefix+idle.token)
+	request.Header.Set("Origin", "app://obsidian.md")
+
+	recorder := newHijackRecorder(serverEnd)
+	served := make(chan struct{})
+
+	go func() {
+		defer close(served)
+
+		handler.ServeHTTP(recorder, request)
+	}()
+
+	// The upgrade takes over the connection; the client then goes away,
+	// which ends the WebSocket and its handler.
+	select {
+	case <-recorder.hijacked:
+	case <-served:
+		require.FailNow(t, "the upgrade must hijack the connection")
+	}
+
+	require.NoError(t, clientEnd.Close())
+	<-served
+
+	// A deadline set once the handler returns would apply to a connection
+	// the HTTP server no longer owns: a hijacking handler that hands its
+	// connection on and returns would see it cut off.
+	assert.Empty(t, recorder.deadlinesAfterHijack(), "no write deadline may be set on a hijacked connection")
 }
