@@ -8,12 +8,12 @@ Server integration tests run against a real PostgreSQL and a real S3-compatible 
 make test-integration
 ```
 
-This runs `scripts/test-integration.sh`, which:
+This runs `scripts/test-integration.sh`, which uses `scripts/with-test-stack.sh` (shared with `make test-sim`, see `simulation.md`) to:
 
-1. starts the stack in `deploy/compose/compose.test.yaml` under a compose project name unique to the run, waiting until every service is healthy;
-2. exports the connection details below;
-3. runs `go test -race -count=1 -tags integration ./...`;
-4. removes the containers, network, and volumes on exit, whether the tests passed, failed, or were interrupted.
+1. start the stack in `deploy/compose/compose.test.yaml` under a compose project name unique to the run, waiting until every service is healthy;
+2. export the connection details below;
+3. run `go test -race -count=1 -tags integration ./...`;
+4. remove the containers, network, and volumes on exit, whether the tests passed, failed, or were interrupted.
 
 To run a subset, call the script with `go test` arguments, for example `./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`.
 
@@ -64,4 +64,4 @@ The high-availability requirement (SPEC.md §12) is proven by tests that run sev
 - Start the file with `//go:build integration`.
 - Use `internal/testinfra`: `testinfra.PostgresConfig(t)` creates an empty database for the test (dropped at cleanup) and returns a `store.Config`; `testinfra.S3(t)` returns the object store's connection details. Both skip the test when their variables are unset.
 - Apply the schema with `store.Migrate` on the test's own database; never share databases between tests.
-- Start child processes (the server binary, node) with `newChild` in `cmd/vault-sync-server/process_integration_test.go`, not bare `exec.Command`. `go test -timeout` panics without running `t.Cleanup`, so a plain child, and anything it spawned, would outlive the test. A `newChild` process is SIGKILLed shortly before the test binary's deadline and at cleanup. On Linux this kill reaches its whole process group, so grandchildren die too, and the kernel also kills the child if the test binary dies first (`Pdeathsig`).
+- Start child processes (the server binary, node) with `newChild` in `cmd/vault-sync-server/process_integration_test.go` (or its exported twin `testinfra.NewChild`, which tests outside that package use), not bare `exec.Command`. `go test -timeout` panics without running `t.Cleanup`, so a plain child, and anything it spawned, would outlive the test. A `newChild` process is SIGKILLed shortly before the test binary's deadline and at cleanup. On Linux this kill reaches its whole process group, so grandchildren die too, and the kernel also kills the child if the test binary dies first (`Pdeathsig`).

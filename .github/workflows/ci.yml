@@ -31,6 +31,12 @@ jobs:
         run: nix develop -c make test
       - name: Integration tests
         run: nix develop -c make test-integration
+      # A short sync simulation (docs/testing/simulation.md): a few seeds
+      # against the real server, plus the check that the harness catches a
+      # deliberately broken server (issue #15: under 5 minutes).
+      - name: Simulation
+        run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
+        timeout-minutes: 10
       - name: Generated code is current
         run: nix develop -c make check-generate
       - name: Build
