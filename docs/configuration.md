@@ -13,6 +13,7 @@
 | `VAULT_SYNC_LISTEN_ADDRESS` | `:8080` | `host:port` for the API listener (ConnectRPC). This is the port to expose through the ingress. |
 | `VAULT_SYNC_METRICS_LISTEN_ADDRESS` | `:9090` | `host:port` for the metrics and health listener (`/metrics`, `/healthz`, `/readyz`). Must differ from `VAULT_SYNC_LISTEN_ADDRESS`. Do not expose it to the internet. |
 | `VAULT_SYNC_MAX_REQUEST_BYTES` | `1048576` (1 MiB) | Maximum size of a request body in bytes, applied both to the bytes on the wire and to the decompressed message. Allowed range: 16384 to 67108864 (a response carrying one revision with a maximum-length path must fit; the chunk size check below requires more in practice). The default matches the 1 MiB inspected-body limit of the WAF in front of the server. Request bodies are read and decoded before the bearer token is checked, so unauthenticated callers can make the server read up to this many bytes per request; keep the limit low. |
+| `VAULT_SYNC_WRITE_TIMEOUT` | `2m` | How long writing an API response may take, counted from its first byte until the whole response is written. A response the client has not finished reading by then is cut off and the connection closed, so a client that sends a request and then stops reading cannot hold a connection open. The timeout does not limit how long the server works on a request before it starts the response: a long `CommitBlob` (composing a large blob in the object store) is not cut short. The default lets a 1 MiB response reach a client on a link of about 100 kbit/s. Raise it if you raise `VAULT_SYNC_MAX_REQUEST_BYTES` for slow clients. The timeout does not apply to the realtime WebSocket once it is open. A Go duration from `1s` to `1h`. |
 | `VAULT_SYNC_SHUTDOWN_DELAY` | `5s` | How long after `SIGTERM` or `SIGINT` `/readyz` fails while the API keeps serving, so load balancers stop sending traffic before any connection is refused (see [Startup and shutdown](#startup-and-shutdown)). A Go duration from `0s` to `5m`. |
 | `VAULT_SYNC_SHUTDOWN_TIMEOUT` | `30s` | The drain timeout: how long in-flight requests may finish after `VAULT_SYNC_SHUTDOWN_DELAY` before the remaining connections are closed. A Go duration (`30s`, `1m`); must be positive. Keep the delay plus the timeout below the pod's `terminationGracePeriodSeconds`. |
 | `VAULT_SYNC_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn` or `error`. |
@@ -61,7 +62,7 @@ File contents are stored in the S3 bucket as one object per blob at `vaults/<vau
 
 Every 5 minutes a cleanup routine removes upload sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_TTL` (deleting their staged objects) and aborts multipart uploads under `vaults/` older than the TTL whose blob has no upload session active within the TTL, which an interrupted commit leaves behind and which S3 would otherwise keep, invisibly, forever. Every replica runs the cleanup on the same schedule; concurrent runs are safe, and an upload or object another replica already removed is not an error. Each run removes at most 100 sessions and 10,000 objects, so a backlog is worked off over several runs. Blobs no longer referenced by any revision are not deleted yet.
 
-Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
+Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A response is measured by the bytes sent, after compression when the client accepts it, and one over the limit fails with `RESOURCE_EXHAUSTED`. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
 
 ### Revisions and the change feed
 
@@ -98,7 +99,7 @@ The metrics listener serves:
 | Path | Meaning |
 |---|---|
 | `/healthz` | Liveness. Returns 200 while the process is serving. |
-| `/readyz` | Readiness. Returns 200 when PostgreSQL answers a ping within 2 seconds, and 503 when it does not or while the server is shutting down. |
+| `/readyz` | Readiness. Returns 200 when PostgreSQL answers a ping within 2 seconds, and 503 when it does not or while the server is shutting down. Concurrent checks share one ping, so a burst of probes against a slow database holds at most one pool connection. No result is reused after its ping ends, and each replica checks only its own connection pool. |
 | `/metrics` | Prometheus metrics. |
 
 ## Metrics
