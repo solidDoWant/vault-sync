@@ -62,16 +62,28 @@ export function kindValue(kind: DocumentKindName): DocumentKind {
   }
 }
 
-/** Extensions classified as `text` by default (SPEC.md §7); everything else is a `blob`. */
-const textExtensions = new Set(["md", "txt", "css", "js"]);
+/** Extensions (without the dot, lower case) classified as `text` by default (SPEC.md §7); everything else is a `blob`. */
+export const defaultTextExtensions: readonly string[] = ["md", "txt", "css", "js"];
+
+/**
+ * A classification of new documents by extension (SPEC.md §7): `text` for
+ * the given extensions (without the dot, compared case-insensitively), which
+ * then get three-way merges, `blob` for everything else, whose concurrent
+ * edits become conflict copies. Pass it as the engine's `classify` option. A
+ * document keeps the kind it was created with.
+ */
+export function classifyByExtensions(textExtensions: Iterable<string>): (path: string) => DocumentKindName {
+  const extensions = new Set([...textExtensions].map((extension) => extension.replace(/^\./, "").toLowerCase()));
+  return (path) => {
+    const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+    const dot = name.lastIndexOf(".");
+    if (dot <= 0) return "blob";
+    return extensions.has(name.slice(dot + 1).toLowerCase()) ? "text" : "blob";
+  };
+}
 
 /** The default classification of a new document by its path's extension (SPEC.md §7). */
-export function classifyByExtension(path: string): DocumentKindName {
-  const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
-  const dot = name.lastIndexOf(".");
-  if (dot <= 0) return "blob";
-  return textExtensions.has(name.slice(dot + 1).toLowerCase()) ? "text" : "blob";
-}
+export const classifyByExtension: (path: string) => DocumentKindName = classifyByExtensions(defaultTextExtensions);
 
 function kindName(kind: DocumentKind): DocumentKindName {
   switch (kind) {

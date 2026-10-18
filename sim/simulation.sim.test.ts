@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, lostResponseAfterHeadMoved } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -117,6 +117,69 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
     // The restarted engine resumed the upload where the server's session stood.
     expect(result.chunksBeforeCrash, trace).toEqual(["0"]);
     expect(result.chunksAfterCrash, trace).toEqual(["65536", "131072"]);
+  });
+
+  it("merges two engines' concurrent edits, keeping overlapping and binary ones as conflict copies", async () => {
+    const result = await enginesEditConcurrently(environment);
+    const trace = tail(result.trace, 200);
+
+    // Convergence, no lost acknowledged writes, no deferral left, no echo reported (engine-* and server invariants).
+    expect(result.violations, trace).toEqual([]);
+    // Every phase really raced: the second engine's first commit was refused.
+    expect(result.refused, trace).toEqual([
+      "non-overlapping edits",
+      "overlapping edits",
+      "binary edits",
+      "line endings",
+      "creates at one path",
+      "creates at case-colliding paths",
+    ]);
+    const [first, second] = result.vaults;
+    expect(second, trace).toEqual(first);
+    const copy = (name: string, extension: string) => `${name} (conflict e2 2026-01-02 030405)${extension}`;
+    const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
+    const note = (overrides: Record<number, string>, eol = "\n") =>
+      Array.from({ length: 10 }, (_, index) => `${overrides[index] ?? `line ${String(index + 1)}`}${eol}`).join("");
+    expect(first, trace).toEqual(
+      new Map([
+        // Phases 1, 2 and 4: both non-overlapping edits, the first engine's overlapping one, the CRLF conversion.
+        ["notes/plan.md", note({ 0: "line 1 (first engine)", 1: "line 2 (first engine)", 4: "line 5 (first engine)", 8: "line 9 (second engine)" }, "\r\n")],
+        // Phase 2: the second engine's overlapping edit, whole and without conflict markers.
+        [`notes/${copy("plan", ".md")}`, note({ 1: "line 2 (first engine)", 4: "line 5 (second engine)", 8: "line 9 (second engine)" })],
+        // Phase 3.
+        ["attachments/image.png", "89504e4702"],
+        [`attachments/${copy("image", ".png")}`, "89504e4703"],
+        // Phase 5.
+        ["inbox/new.md", lines("created by the first engine")],
+        [`inbox/${copy("new", ".md")}`, lines("created by the second engine")],
+        // Phase 6.
+        ["Todo.md", lines("first engine's list")],
+        [copy("todo", ".md"), lines("second engine's list")],
+      ]),
+    );
+    expect(result.conflicts[0], trace).toEqual([]);
+    expect(result.conflicts[1], trace).toEqual([
+      { reason: "overlapping-edits", path: "notes/plan.md", copyPath: `notes/${copy("plan", ".md")}` },
+      { reason: "binary", path: "attachments/image.png", copyPath: `attachments/${copy("image", ".png")}` },
+      { reason: "concurrent-create", path: "inbox/new.md", copyPath: `inbox/${copy("new", ".md")}` },
+      { reason: "path-taken", path: "todo.md", copyPath: copy("todo", ".md") },
+    ]);
+  });
+
+  it("keeps an unsynced local file whose path a remote rename takes as a conflict copy, never merged into the renamed note", async () => {
+    const result = await remoteRenameOntoUnsyncedFile(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const copy = "notes/c (conflict e2 2026-01-02 030405).md";
+    const expected = new Map([
+      ["notes/c.md", "b line\nappended remotely\n"],
+      [copy, "my own new note\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.conflicts[0], trace).toEqual([]);
+    expect(result.conflicts[1], trace).toEqual([{ reason: "concurrent-create", path: "notes/c.md", copyPath: copy }]);
   });
 });
 

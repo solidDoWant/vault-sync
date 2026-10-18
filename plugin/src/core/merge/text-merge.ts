@@ -1,5 +1,7 @@
-// Line-level three-way merge for editor-safe writes. Pure: no Obsidian
-// imports, so vitest covers it directly.
+// Line-level three-way merge: the one merge both the sync engine's text
+// merge (SPEC.md §7) and the Obsidian adapter's editor-safe writes (§8) use,
+// so a change one refuses as overlapping the other refuses too. Pure, so
+// vitest covers it directly.
 
 /** A replacement of `local[from, to)` by `insert`, in character offsets of the local text. */
 export interface TextChange {
@@ -64,6 +66,60 @@ export function mergeUnsaved(base: string, local: string, remote: string): Unsav
     changes.push({ from: offsetAt(localOffsets, fromLine), to: offsetAt(localOffsets, toLine), insert: hunk.lines.join("") });
   }
   return { merged: applyChanges(local, changes), changes };
+}
+
+/**
+ * Three-way merge of two concurrent versions of a text document (SPEC.md §7):
+ * the merged text, or null if the edits overlap (a line changed on both sides,
+ * or both sides inserted at the same place), in which case the caller keeps
+ * both versions whole. Never produces conflict markers.
+ *
+ * If only one side changed, that side is returned byte for byte. Otherwise
+ * lines are compared without their terminators, so a side that only converted
+ * line endings (CRLF and LF) or only added or removed the final newline does
+ * not conflict with an edit on the other side. The line-ending style and the
+ * final newline are each merged as one field: a side that changed it from the
+ * base wins, the local side first.
+ */
+export function mergeText(base: string, local: string, remote: string): string | null {
+  if (local === base || local === remote) return remote;
+  if (remote === base) return local;
+  const [baseText, localText, remoteText] = [base, local, remote].map(analyzeText) as [AnalyzedText, AnalyzedText, AnalyzedText];
+  const merged = mergeUnsaved(baseText.lines, localText.lines, remoteText.lines);
+  if (merged === null) return null;
+  const eol = mergeField(baseText.eol, localText.eol, remoteText.eol) ?? "\n";
+  const finalNewline = mergeField(baseText.finalNewline, localText.finalNewline, remoteText.finalNewline);
+  const body = finalNewline ? merged.merged : merged.merged.slice(0, -1);
+  return eol === "\n" ? body : body.replaceAll("\n", eol);
+}
+
+interface AnalyzedText {
+  /** Every line terminated by "\n", whatever its terminator was and whether or not the last one had one. */
+  lines: string;
+  /** The text's prevailing line terminator; null if it has none. */
+  eol: "\n" | "\r\n" | null;
+  finalNewline: boolean;
+}
+
+function analyzeText(text: string): AnalyzedText {
+  if (text === "") return { lines: "", eol: null, finalNewline: false };
+  const crlf = text.split("\r\n").length - 1;
+  const lf = text.split("\n").length - 1 - crlf;
+  const finalNewline = text.endsWith("\n");
+  const lines = text.split(/\r?\n/);
+  if (finalNewline) lines.pop();
+  return {
+    lines: lines.map((line) => `${line}\n`).join(""),
+    eol: crlf === 0 && lf === 0 ? null : crlf > lf ? "\r\n" : "\n",
+    finalNewline,
+  };
+}
+
+/** Three-way merge of one field: the side that changed it wins, local first; null (unknown) never counts as a change. */
+function mergeField<T>(base: T | null, local: T | null, remote: T | null): T | null {
+  if (local !== null && local !== base && base !== null) return local;
+  if (remote !== null && remote !== base && base !== null) return remote;
+  return base ?? local ?? remote;
 }
 
 /** Applies ascending, non-overlapping changes to `text`. */

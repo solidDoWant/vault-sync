@@ -11,6 +11,8 @@ export interface SyncSessionOptions {
   vaultId: string;
   /** This install's registered device, recorded with every commit. */
   deviceId: string;
+  /** The device's name in conflict-copy names (SPEC.md §7); the engine falls back to the device id. */
+  deviceName?: string;
   api: PullApi;
   /** The device's durable journal for this vault (#21); it is what lets a restarted session resume. */
   journal: Journal;
@@ -44,6 +46,7 @@ export class SyncSession {
     this.engine = new SyncEngine({
       vaultId: this.options.vaultId,
       deviceId: this.options.deviceId,
+      ...(this.options.deviceName === undefined ? {} : { deviceName: this.options.deviceName }),
       api: this.options.api,
       vault: new ObsidianVaultAdapter(this.app),
       journal: this.options.journal,
