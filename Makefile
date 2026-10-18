@@ -40,8 +40,8 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest.
 	go test -race -count=1 ./...
 
 .PHONY: test-integration
-test-integration: ## TODO(phase 1): server tests against real PostgreSQL + S3 via docker compose.
-	@echo "test-integration: not yet implemented" >&2; exit 1
+test-integration: ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker).
+	./scripts/test-integration.sh
 
 .PHONY: test-sim
 test-sim: ## TODO(phase 1): multi-client sync simulation (SIM_SEEDS, SIM_STEPS).
