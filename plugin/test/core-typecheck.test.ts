@@ -6,9 +6,9 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 
 import ts from "typescript";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 
-import { checkCoreProgram, coreConfig, createProgram, parseConfig, pluginDir } from "../scripts/check-core-program";
+import { checkCoreProgram, coreConfig, createProgram, isDeclaredImport, packageOf, parseConfig, pluginDir } from "../scripts/check-core-program";
 
 // Type-checks probe sources placed under src/core with the real tsconfig files
 // and the real check that `make lint` (npm run typecheck) runs. The probes are
@@ -203,6 +203,100 @@ describe("unfenced code and global declarations in the src/core program", () => 
       expect(checkCoreProgram([], virtualFiles)).toContainEqual(expect.stringMatching(problem));
     }, 60_000);
   }
+});
+
+// Packages that are only installed as dependencies of other packages (mostly
+// of obsidian) are not part of core's declared dependency set.
+describe("package imports from the src/core program", () => {
+  const check = (source: string) => checkCoreProgram([], new Map([[path.join(coreDir, "zz", "probe.ts"), source]]));
+  const undeclared: Record<string, { source: string; problem: RegExp }> = {
+    "@codemirror/view (an obsidian dependency, DOM-only)": {
+      source: 'import type { EditorView } from "@codemirror/view";\nexport type E = EditorView;\n',
+      problem: /src\/core\/zz\/probe\.ts: import "@codemirror\/view" is not a declared dependency/,
+    },
+    "moment (re-exported by obsidian)": {
+      source: 'import moment from "moment";\nexport const m = moment();\n',
+      problem: /src\/core\/zz\/probe\.ts: import "moment" is not a declared dependency/,
+    },
+    "codemirror (types only from an undeclared @types package)": {
+      source: 'import type { Editor } from "codemirror";\nexport type E = Editor;\n',
+      problem: /src\/core\/zz\/probe\.ts: import "codemirror" is not a declared dependency/,
+    },
+    "obsidian (declared, but only for the adapter)": {
+      source: 'import type { App } from "obsidian";\nexport type A = App;\n',
+      problem: /src\/core\/zz\/probe\.ts: import "obsidian" is not allowed/,
+    },
+  };
+
+  for (const [name, { source, problem }] of Object.entries(undeclared)) {
+    it(`fails on an import of ${name}`, () => {
+      expect(check(source)).toContainEqual(expect.stringMatching(problem));
+    }, 60_000);
+  }
+
+  // These also pull in declaration files of their own undeclared transitive
+  // dependencies (e.g. vitest's types import @vitest/* and chai); only direct
+  // imports from src/core and sim/ must be declared.
+  it("accepts imports of declared dependencies, including deep and scoped ones", () => {
+    const source =
+      'import { sha256 } from "@noble/hashes/sha2.js";\n' +
+      'import { create } from "@bufbuild/protobuf";\n' +
+      'import { createClient } from "@connectrpc/connect";\n' +
+      'import { createConnectTransport } from "@connectrpc/connect-web";\n' +
+      'import { expect } from "vitest";\n' +
+      "export const all = [sha256, create, createClient, createConnectTransport, expect];\n";
+    expect(check(source)).toEqual([]);
+  }, 60_000);
+
+  it.each([
+    ["@noble/hashes/sha2.js", "@noble/hashes"],
+    ["@noble/hashes", "@noble/hashes"],
+    ["vitest/config", "vitest"],
+    ["moment", "moment"],
+    ["./local", undefined],
+    ["../up", undefined],
+    ["/abs/path", undefined],
+  ])("reads the package of %s as %s", (specifier, expected) => {
+    expect(packageOf(specifier)).toBe(expected);
+  });
+
+  it.each([
+    ["foo", ["foo"], true],
+    ["foo/deep", ["@types/foo"], true],
+    ["@scope/foo", ["@types/scope__foo"], true],
+    ["foo", ["@types/bar", "foobar"], false],
+    ["@scope/foo", ["@scope/foobar", "@types/foo"], false],
+  ])("treats %s as declared by %j: %s", (specifier, declared, expected) => {
+    expect(isDeclaredImport(specifier, new Set(declared))).toBe(expected);
+  });
+});
+
+// Real files on disk: the directory scan is about files that are not part of
+// the program, so they cannot be served from memory as program roots.
+describe("files on disk under src/core", () => {
+  let strayDir = "";
+  beforeEach(() => {
+    strayDir = mkdtempSync(path.join(coreDir, "__stray__"));
+  });
+  afterEach(() => {
+    rmSync(strayDir, { recursive: true, force: true });
+  });
+  const strayProblem = (name: string) =>
+    new RegExp(`^src/core/${path.basename(strayDir)}/${name.replace(/[.~]/g, "\\$&")}: src/core may only contain \\.ts modules`);
+
+  it.each([".DS_Store", "hash.ts~", ".hash.ts.swp", "README.md", "notes.txt", "data.json"])("ignores the inert file %s", (name) => {
+    writeFileSync(path.join(strayDir, name), "");
+    expect(checkCoreProgram()).toEqual([]);
+  }, 60_000);
+
+  it.each(["evil.js", "evil.mjs", "evil.cjs", "evil.jsx", "evil.mts", "evil.cts", "evil.tsx", "evil.d.ts", "evil.d.mts", "evil.d.cts"])(
+    "fails on the code file %s",
+    (name) => {
+      writeFileSync(path.join(strayDir, name), "export {};\n");
+      expect(checkCoreProgram()).toContainEqual(expect.stringMatching(strayProblem(name)));
+    },
+    60_000,
+  );
 });
 
 describe("scripts/check-core-program.ts", () => {
