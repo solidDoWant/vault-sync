@@ -230,8 +230,10 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 			fmt.Errorf("only %d of %d bytes were received", upload.ReceivedSize, upload.Size))
 	}
 
-	// ActiveBlobUpload recorded activity, so the session is not reaped while
-	// it is composed (the upload TTL comfortably exceeds a commit).
+	// ActiveBlobUpload recorded activity, and composing records activity
+	// again after every part, so no server process's cleanup routine reaps
+	// the session, or aborts its multipart upload, while it is composed,
+	// however long that takes.
 	sources, err := service.sources(ctx, vault, upload)
 	if err != nil {
 		return nil, service.internal(ctx, "cannot commit blob", err)
@@ -257,7 +259,9 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		}
 	}
 
-	err = service.Objects.Compose(ctx, blobstore.BlobKey(upload.VaultID, blobID), sources, upload.Size, verify)
+	progress := func(ctx context.Context) error { return vault.TouchBlobUpload(ctx, upload.ID) }
+
+	err = service.Objects.Compose(ctx, blobstore.BlobKey(upload.VaultID, blobID), sources, upload.Size, verify, progress)
 	if errors.Is(err, blobstore.ErrHashMismatch) {
 		if err := vault.FinishBlobUpload(ctx, upload.ID); err != nil {
 			return nil, service.internal(ctx, "cannot discard blob upload", err)
@@ -276,6 +280,13 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 			return response, nil
 		} else if completeErr != nil {
 			return nil, completeErr
+		}
+
+		if errors.Is(err, store.ErrBlobUploadConflict) {
+			// Discarded or reaped meanwhile, which only happens to a
+			// session idle for longer than the upload TTL.
+			return nil, connect.NewError(connect.CodeFailedPrecondition,
+				errors.New("the upload is no longer in progress; call BeginBlob"))
 		}
 
 		return nil, service.internal(ctx, "cannot compose blob", err)

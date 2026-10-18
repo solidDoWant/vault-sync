@@ -9,11 +9,15 @@ import (
 	"fmt"
 	"hash"
 	"io"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 	"github.com/google/uuid"
 )
 
@@ -37,6 +41,11 @@ const (
 	composeSlots = 4
 	// deleteBatch is S3's limit on keys per DeleteObjects request.
 	deleteBatch = 1000
+	// ProgressInterval is how often Compose reports progress while it waits
+	// for a compose slot. Together with a report after every part, it keeps
+	// a commit's upload session active far more often than the shortest
+	// upload TTL (10 minutes) requires.
+	ProgressInterval = time.Minute
 )
 
 // ErrHashMismatch is returned by Compose when the composed content does not
@@ -52,6 +61,10 @@ type Objects struct {
 	client  *s3.Client
 	bucket  string
 	compose chan struct{}
+
+	// afterPart, if set (by tests only), runs after each multipart part is
+	// uploaded and before progress is reported.
+	afterPart func(ctx context.Context, number int32)
 }
 
 // New returns an Objects for cfg. It does not contact the store.
@@ -123,7 +136,7 @@ func (objects *Objects) Put(ctx context.Context, key string, data []byte) error 
 // Delete removes key. Removing a missing key succeeds.
 func (objects *Objects) Delete(ctx context.Context, key string) error {
 	_, err := objects.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(objects.bucket), Key: aws.String(key)})
-	if err != nil {
+	if err != nil && !isNotFound(err, "NoSuchKey") {
 		return fmt.Errorf("delete object: %w", err)
 	}
 
@@ -162,32 +175,68 @@ type Part struct {
 	Length int64
 }
 
+// Progress is called by Compose as it makes progress: at least every
+// ProgressInterval while it waits for a compose slot, once it has one, after
+// every part it uploads, and right before it makes the object visible. An
+// error stops the composition, and nothing becomes visible at the key.
+type Progress func(ctx context.Context) error
+
 // Compose concatenates sources, which total size bytes, into the object at
 // key. It hashes the content with SHA-256 and passes the digest to verify
 // before anything becomes visible at key: if verify (or anything else)
-// fails, key is not written. A nil verify accepts any content.
-func (objects *Objects) Compose(ctx context.Context, key string, sources []Part, size int64, verify func(sum []byte) error) error {
+// fails, key is not written. A nil verify accepts any content; a nil
+// progress is not called.
+func (objects *Objects) Compose(ctx context.Context, key string, sources []Part, size int64, verify func(sum []byte) error, progress Progress) error {
 	if size > MaxBlobBytes {
 		return fmt.Errorf("blob of %d bytes exceeds the composable maximum of %d", size, int64(MaxBlobBytes))
 	}
 
-	select {
-	case objects.compose <- struct{}{}:
-		defer func() { <-objects.compose }()
-	case <-ctx.Done():
-		return ctx.Err()
+	if progress == nil {
+		progress = func(context.Context) error { return nil }
 	}
+
+	if err := objects.acquireComposeSlot(ctx, progress); err != nil {
+		return err
+	}
+
+	defer func() { <-objects.compose }()
 
 	reader := &sourceReader{ctx: ctx, objects: objects, sources: sources, hash: sha256.New()}
 
 	if size <= PartSize {
-		return objects.composeSingle(ctx, key, reader, size, verify)
+		return objects.composeSingle(ctx, key, reader, size, verify, progress)
 	}
 
-	return objects.composeMultipart(ctx, key, reader, size, verify)
+	return objects.composeMultipart(ctx, key, reader, size, verify, progress)
 }
 
-func (objects *Objects) composeSingle(ctx context.Context, key string, reader *sourceReader, size int64, verify func([]byte) error) error {
+// acquireComposeSlot waits for a compose slot, reporting progress while it
+// waits: a commit queued behind others is still in progress.
+func (objects *Objects) acquireComposeSlot(ctx context.Context, progress Progress) error {
+	ticker := time.NewTicker(ProgressInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case objects.compose <- struct{}{}:
+			if err := progress(ctx); err != nil {
+				<-objects.compose
+
+				return err
+			}
+
+			return nil
+		case <-ticker.C:
+			if err := progress(ctx); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (objects *Objects) composeSingle(ctx context.Context, key string, reader *sourceReader, size int64, verify func([]byte) error, progress Progress) error {
 	data := make([]byte, size)
 	if _, err := io.ReadFull(reader, data); err != nil {
 		return err
@@ -197,10 +246,14 @@ func (objects *Objects) composeSingle(ctx context.Context, key string, reader *s
 		return err
 	}
 
+	if err := progress(ctx); err != nil {
+		return err
+	}
+
 	return objects.Put(ctx, key, data)
 }
 
-func (objects *Objects) composeMultipart(ctx context.Context, key string, reader *sourceReader, size int64, verify func([]byte) error) (err error) {
+func (objects *Objects) composeMultipart(ctx context.Context, key string, reader *sourceReader, size int64, verify func([]byte) error, progress Progress) (err error) {
 	created, err := objects.client.CreateMultipartUpload(ctx, &s3.CreateMultipartUploadInput{
 		Bucket: aws.String(objects.bucket),
 		Key:    aws.String(key),
@@ -251,9 +304,21 @@ func (objects *Objects) composeMultipart(ctx context.Context, key string, reader
 
 		completed = append(completed, types.CompletedPart{ETag: uploaded.ETag, PartNumber: aws.Int32(number)})
 		remaining -= int64(len(part))
+
+		if objects.afterPart != nil {
+			objects.afterPart(ctx, number)
+		}
+
+		if err := progress(ctx); err != nil {
+			return err
+		}
 	}
 
 	if err := reader.finish(verify); err != nil {
+		return err
+	}
+
+	if err := progress(ctx); err != nil {
 		return err
 	}
 
@@ -384,8 +449,18 @@ func (objects *Objects) DeletePrefix(ctx context.Context, prefix string, budget 
 			return deleted, false, fmt.Errorf("delete objects: %w", err)
 		}
 
-		if len(output.Errors) > 0 {
-			return deleted, false, fmt.Errorf("delete objects: %d failed, first: %s", len(output.Errors), aws.ToString(output.Errors[0].Message))
+		// A key another process deleted meanwhile is gone, as wanted.
+		var failed []types.Error
+
+		for _, problem := range output.Errors {
+			if aws.ToString(problem.Code) != "NoSuchKey" {
+				failed = append(failed, problem)
+			}
+		}
+
+		if len(failed) > 0 {
+			return deleted, false, fmt.Errorf("delete objects: %d failed, first: %s: %s", len(failed),
+				aws.ToString(failed[0].Code), aws.ToString(failed[0].Message))
 		}
 
 		deleted += len(identifiers)
@@ -405,11 +480,17 @@ type multipartCursor struct {
 }
 
 // abortStaleMultipartUploads aborts multipart uploads under prefix that were
-// initiated before cutoff, listing at most pages pages from cursor. It
-// returns how many it aborted and where to continue (zero cursor: the
-// listing wrapped around).
-func (objects *Objects) abortStaleMultipartUploads(ctx context.Context, prefix string, cutoff time.Time, cursor multipartCursor, pages int) (int, multipartCursor, error) {
+// initiated before cutoff and that spare (if not nil) does not keep, listing
+// at most pages pages from cursor. It returns how many it aborted and where
+// to continue (zero cursor: the listing wrapped around).
+//
+// Other processes may abort the same uploads concurrently: an upload that is
+// already gone counts as done. A failure to check or abort one upload does
+// not stop the others; the failures are returned together.
+func (objects *Objects) abortStaleMultipartUploads(ctx context.Context, prefix string, cutoff time.Time, cursor multipartCursor, pages int, spare func(ctx context.Context, key string) (bool, error)) (int, multipartCursor, error) {
 	aborted := 0
+
+	var problems []error
 
 	for range pages {
 		listed, err := objects.client.ListMultipartUploads(ctx, &s3.ListMultipartUploadsInput{
@@ -419,7 +500,9 @@ func (objects *Objects) abortStaleMultipartUploads(ctx context.Context, prefix s
 			UploadIdMarker: cursor.uploadIDMarker,
 		})
 		if err != nil {
-			return aborted, cursor, fmt.Errorf("list multipart uploads: %w", err)
+			problems = append(problems, fmt.Errorf("list multipart uploads: %w", err))
+
+			return aborted, cursor, errors.Join(problems...)
 		}
 
 		for _, upload := range listed.Uploads {
@@ -427,22 +510,94 @@ func (objects *Objects) abortStaleMultipartUploads(ctx context.Context, prefix s
 				continue
 			}
 
-			_, err := objects.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
-				Bucket: aws.String(objects.bucket), Key: upload.Key, UploadId: upload.UploadId,
-			})
-			if err != nil {
-				return aborted, cursor, fmt.Errorf("abort multipart upload: %w", err)
+			if spare != nil {
+				spared, err := spare(ctx, aws.ToString(upload.Key))
+				if err != nil {
+					// Keep an upload whose status is unknown.
+					problems = append(problems, err)
+
+					continue
+				}
+
+				if spared {
+					continue
+				}
 			}
 
-			aborted++
+			done, err := objects.abortMultipart(ctx, aws.ToString(upload.Key), aws.ToString(upload.UploadId))
+			if err != nil {
+				problems = append(problems, err)
+
+				continue
+			}
+
+			if done {
+				aborted++
+			}
 		}
 
 		if !aws.ToBool(listed.IsTruncated) {
-			return aborted, multipartCursor{}, nil
+			return aborted, multipartCursor{}, errors.Join(problems...)
 		}
 
 		cursor = multipartCursor{keyMarker: listed.NextKeyMarker, uploadIDMarker: listed.NextUploadIdMarker}
 	}
 
-	return aborted, cursor, nil
+	return aborted, cursor, errors.Join(problems...)
+}
+
+// abortMultipart aborts one multipart upload. It reports false, without an
+// error, if the upload was already gone (another process aborted or
+// completed it).
+func (objects *Objects) abortMultipart(ctx context.Context, key, uploadID string) (bool, error) {
+	_, err := objects.client.AbortMultipartUpload(ctx, &s3.AbortMultipartUploadInput{
+		Bucket: aws.String(objects.bucket), Key: aws.String(key), UploadId: aws.String(uploadID),
+	})
+
+	switch {
+	case err == nil:
+		return true, nil
+	case isNotFound(err, "NoSuchUpload"):
+		return false, nil
+	default:
+		return false, fmt.Errorf("abort multipart upload: %w", err)
+	}
+}
+
+// isNotFound reports whether err is the S3 error code, or any 404 response.
+func isNotFound(err error, code string) bool {
+	var apiError smithy.APIError
+	if errors.As(err, &apiError) && apiError.ErrorCode() == code {
+		return true
+	}
+
+	var response *awshttp.ResponseError
+
+	return errors.As(err, &response) && response.HTTPStatusCode() == http.StatusNotFound
+}
+
+// parseBlobKey returns the vault and blob id named by a blob object key
+// (see BlobKey), or false if key is not one.
+func parseBlobKey(key string) (uuid.UUID, []byte, bool) {
+	rest, ok := strings.CutPrefix(key, "vaults/")
+	if !ok {
+		return uuid.Nil, nil, false
+	}
+
+	vault, blob, ok := strings.Cut(rest, "/blobs/")
+	if !ok {
+		return uuid.Nil, nil, false
+	}
+
+	vaultID, err := uuid.Parse(vault)
+	if err != nil || vaultID.String() != vault {
+		return uuid.Nil, nil, false
+	}
+
+	blobID, err := hex.DecodeString(blob)
+	if err != nil || hex.EncodeToString(blobID) != blob || len(blobID) == 0 {
+		return uuid.Nil, nil, false
+	}
+
+	return vaultID, blobID, true
 }

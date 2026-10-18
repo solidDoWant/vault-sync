@@ -354,3 +354,41 @@ func (store *Store) ReapableBlobUploads(ctx context.Context, ttl time.Duration, 
 
 	return refs, nil
 }
+
+// TouchBlobUpload records activity on the active session uploadID, so the
+// cleanup routine leaves it alone for another upload TTL. It returns
+// ErrBlobUploadConflict if the session is no longer active (it was
+// finished, or claimed for removal after being idle for longer than the
+// TTL).
+func (vault *VaultStore) TouchBlobUpload(ctx context.Context, uploadID uuid.UUID) error {
+	tag, err := vault.store.pool.Exec(ctx, `
+		UPDATE blob_uploads SET updated_at = now()
+		WHERE vault_id = $1 AND id = $2 AND state = 'uploading'`, vault.vaultID, uploadID)
+	if err != nil {
+		return fmt.Errorf("touch blob upload: %w", err)
+	}
+
+	if tag.RowsAffected() != 1 {
+		return ErrBlobUploadConflict
+	}
+
+	return nil
+}
+
+// BlobUploadActiveWithin reports whether blobID has an active session that
+// saw activity within ttl, measured by the database clock.
+func (vault *VaultStore) BlobUploadActiveWithin(ctx context.Context, blobID []byte, ttl time.Duration) (bool, error) {
+	var active bool
+
+	err := vault.store.pool.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM blob_uploads
+			WHERE vault_id = $1 AND blob_id = $2 AND state = 'uploading'
+				AND updated_at >= now() - $3 * interval '1 microsecond')`,
+		vault.vaultID, blobID, ttl.Microseconds()).Scan(&active)
+	if err != nil {
+		return false, fmt.Errorf("check blob upload activity: %w", err)
+	}
+
+	return active, nil
+}

@@ -29,13 +29,19 @@ const (
 // TTL, and finished sessions whose staged objects could not be removed right
 // away. It deletes a session's staged objects first and its row last, so a
 // failure part-way is retried by the next run. It also aborts S3 multipart
-// uploads (left by an interrupted commit) that are older than TTL: they are
-// invisible and would otherwise leak storage.
+// uploads (left by an interrupted commit) that are older than TTL and whose
+// blob has no session active within TTL: they are invisible and would
+// otherwise leak storage.
+//
+// Every server process runs a Cleaner, at the same time: every step is
+// idempotent and a session is claimed atomically, so concurrent cleaners
+// (and a commit's own cleanup) do not get in each other's way.
 type Cleaner struct {
 	Store   *store.Store
 	Objects *Objects
 	// TTL is how long an upload session may be idle before it is removed.
-	// It must comfortably exceed the time a commit takes.
+	// A commit in progress records activity after every part it composes,
+	// so it is never idle for longer than one part takes.
 	TTL time.Duration
 	// Per-run bounds; zero selects the defaults.
 	SessionsPerRun       int
@@ -44,6 +50,9 @@ type Cleaner struct {
 	Logger               *slog.Logger
 
 	multipart multipartCursor
+	// now, if set (by tests only), replaces time.Now for the multipart
+	// sweep, which compares it with the object store's timestamps.
+	now func() time.Time
 }
 
 // CleanupResult reports one run's work.
@@ -104,8 +113,8 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context) (CleanupResult, error) {
 		}
 	}
 
-	aborted, cursor, err := cleaner.Objects.abortStaleMultipartUploads(ctx, "vaults/", time.Now().Add(-cleaner.TTL),
-		cleaner.multipart, orDefault(cleaner.MultipartPagesPerRun, DefaultMultipartPagesPerRun))
+	aborted, cursor, err := cleaner.Objects.abortStaleMultipartUploads(ctx, "vaults/", cleaner.clock().Add(-cleaner.TTL),
+		cleaner.multipart, orDefault(cleaner.MultipartPagesPerRun, DefaultMultipartPagesPerRun), cleaner.commitInProgress)
 	result.MultipartAborted = aborted
 	cleaner.multipart = cursor
 
@@ -171,4 +180,34 @@ func orDefault(value, fallback int) int {
 	}
 
 	return value
+}
+
+// commitInProgress reports whether the multipart upload at key may belong to
+// a commit still in progress, in this or another server process: its blob
+// has an upload session that was active within the TTL. A commit records
+// activity after every part, so its multipart upload is never aborted
+// however long the commit takes. This uses the database clock, as session
+// activity does, so it does not depend on the server's clock agreeing with
+// the object store's.
+func (cleaner *Cleaner) commitInProgress(ctx context.Context, key string) (bool, error) {
+	vaultID, blobID, ok := parseBlobKey(key)
+	if !ok {
+		// Not a blob object; no commit writes it.
+		return false, nil
+	}
+
+	active, err := cleaner.Store.InVault(vaultID).BlobUploadActiveWithin(ctx, blobID, cleaner.TTL)
+	if err != nil {
+		return false, err
+	}
+
+	return active, nil
+}
+
+func (cleaner *Cleaner) clock() time.Time {
+	if cleaner.now != nil {
+		return cleaner.now()
+	}
+
+	return time.Now()
 }

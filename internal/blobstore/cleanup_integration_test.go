@@ -3,10 +3,13 @@
 package blobstore_test
 
 import (
+	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -23,10 +26,11 @@ import (
 )
 
 type cleanupFixture struct {
-	pool    *pgxpool.Pool
-	store   *store.Store
-	objects *blobstore.Objects
-	vault   *store.VaultStore
+	pool          *pgxpool.Pool
+	store         *store.Store
+	objects       *blobstore.Objects
+	objectsConfig blobstore.Config
+	vault         *store.VaultStore
 }
 
 func newCleanupFixture(t *testing.T) *cleanupFixture {
@@ -39,7 +43,9 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 	_, err = store.Migrate(t.Context(), pool, slog.New(slog.DiscardHandler))
 	require.NoError(t, err)
 
-	objects, err := blobstore.New(testinfra.S3Bucket(t))
+	objectsConfig := testinfra.S3Bucket(t)
+
+	objects, err := blobstore.New(objectsConfig)
 	require.NoError(t, err)
 
 	queries := store.New(pool)
@@ -50,7 +56,7 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 	vault, err := queries.CreateVault(t.Context(), userID, store.NewVault{Name: "Notes", Encryption: store.EncryptionNone}, 10)
 	require.NoError(t, err)
 
-	return &cleanupFixture{pool: pool, store: queries, objects: objects, vault: queries.InVault(vault.ID)}
+	return &cleanupFixture{pool: pool, store: queries, objects: objects, objectsConfig: objectsConfig, vault: queries.InVault(vault.ID)}
 }
 
 // startUpload opens an upload session with chunks staged chunks of 10 bytes
@@ -271,4 +277,164 @@ func TestCredentialsAreReReadFromTheirFiles(t *testing.T) {
 	// ...and rotated back, they succeed, with the same client.
 	require.NoError(t, os.WriteFile(cfg.SecretAccessKeyFile, secret, 0o600))
 	assert.Eventually(t, func() bool { return objects.Check(t.Context()) == nil }, 5*time.Second, 20*time.Millisecond)
+}
+
+// createMultipart starts a multipart upload of the blob object for name, as
+// an interrupted commit leaves behind, and returns its key.
+func (fixture *cleanupFixture) createMultipart(t *testing.T, name string) string {
+	t.Helper()
+
+	sum := sha256.Sum256([]byte(name))
+	key := blobstore.BlobKey(fixture.vault.VaultID(), sum[:])
+
+	_, err := fixture.objects.Client().CreateMultipartUpload(t.Context(), &s3.CreateMultipartUploadInput{
+		Bucket: aws.String(fixture.objects.Bucket()),
+		Key:    aws.String(key),
+	})
+	require.NoError(t, err)
+
+	return key
+}
+
+// abortAll aborts every multipart upload at key, as another server
+// process's cleaner would.
+func (fixture *cleanupFixture) abortAll(t *testing.T, key string) {
+	t.Helper()
+
+	listed, err := fixture.objects.Client().ListMultipartUploads(t.Context(), &s3.ListMultipartUploadsInput{
+		Bucket: aws.String(fixture.objects.Bucket()),
+		Prefix: aws.String(key),
+	})
+	require.NoError(t, err)
+
+	for _, upload := range listed.Uploads {
+		_, err := fixture.objects.Client().AbortMultipartUpload(t.Context(), &s3.AbortMultipartUploadInput{
+			Bucket: aws.String(fixture.objects.Bucket()), Key: upload.Key, UploadId: upload.UploadId,
+		})
+		require.NoError(t, err)
+	}
+}
+
+// Several server processes run the cleaner at the same time, so one often
+// tries to abort a multipart upload another has just aborted. That is not a
+// failure, and it does not stop the rest of the sweep.
+func TestAbortingAMultipartUploadAnotherProcessAbortedSucceeds(t *testing.T) {
+	fixture := newCleanupFixture(t)
+
+	first := fixture.createMultipart(t, "first")
+	fixture.createMultipart(t, "second")
+	fixture.createMultipart(t, "third")
+
+	var checked []string
+
+	// Between this sweep's listing and its abort, another process aborts
+	// the first upload.
+	spare := func(_ context.Context, key string) (bool, error) {
+		checked = append(checked, key)
+
+		if key == first {
+			fixture.abortAll(t, key)
+		}
+
+		return false, nil
+	}
+
+	aborted, err := blobstore.AbortStaleMultipartUploads(t.Context(), fixture.objects, time.Now().Add(time.Minute), 1, spare)
+	require.NoError(t, err)
+
+	assert.Len(t, checked, 3)
+	assert.Equal(t, 2, aborted, "the upload the other process aborted is not counted")
+	assert.Zero(t, fixture.multipartUploads(t))
+}
+
+// A failure on one upload does not stop the sweep from handling the others,
+// and is reported.
+func TestMultipartSweepContinuesPastAFailure(t *testing.T) {
+	fixture := newCleanupFixture(t)
+
+	failing := fixture.createMultipart(t, "first")
+	fixture.createMultipart(t, "second")
+	fixture.createMultipart(t, "third")
+
+	problem := errors.New("cannot check upload")
+
+	spare := func(_ context.Context, key string) (bool, error) {
+		if key == failing {
+			return false, problem
+		}
+
+		return false, nil
+	}
+
+	aborted, err := blobstore.AbortStaleMultipartUploads(t.Context(), fixture.objects, time.Now().Add(time.Minute), 1, spare)
+	require.ErrorIs(t, err, problem)
+
+	assert.Equal(t, 2, aborted)
+	assert.Equal(t, 1, fixture.multipartUploads(t), "an upload whose status is unknown is kept")
+}
+
+// Cleaners running concurrently in several server processes over the same
+// abandoned sessions and multipart uploads all succeed, and together leave
+// the same end state as one cleaner would.
+func TestConcurrentCleanersSucceedAndAgree(t *testing.T) {
+	fixture := newCleanupFixture(t)
+
+	var sessions []uuid.UUID
+
+	for index := range 5 {
+		upload := fixture.startUpload(t, fmt.Sprintf("abandoned %d", index), 3)
+		fixture.idle(t, upload, 2*time.Hour)
+		sessions = append(sessions, upload)
+	}
+
+	for index := range 20 {
+		fixture.createMultipart(t, fmt.Sprintf("interrupted %d", index))
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	const processes = 4
+
+	results := make([]blobstore.CleanupResult, processes)
+	errs := make([]error, processes)
+
+	var group sync.WaitGroup
+
+	start := make(chan struct{})
+
+	for index := range processes {
+		// Each process has its own object-store client.
+		objects, err := blobstore.New(fixture.objectsConfig)
+		require.NoError(t, err)
+
+		cleaner := &blobstore.Cleaner{Store: fixture.store, Objects: objects, TTL: 10 * time.Millisecond}
+
+		group.Go(func() {
+			<-start
+
+			results[index], errs[index] = cleaner.RunOnce(t.Context())
+		})
+	}
+
+	close(start)
+	group.Wait()
+
+	removed, aborted := 0, 0
+
+	for index := range processes {
+		require.NoError(t, errs[index], "cleaner %d", index)
+
+		removed += results[index].SessionsRemoved
+		aborted += results[index].MultipartAborted
+	}
+
+	assert.GreaterOrEqual(t, removed, len(sessions))
+	assert.LessOrEqual(t, aborted, 20)
+
+	for _, upload := range sessions {
+		assert.False(t, fixture.sessionExists(t, upload))
+		assert.Zero(t, fixture.stagedObjects(t, upload))
+	}
+
+	assert.Zero(t, fixture.multipartUploads(t))
 }

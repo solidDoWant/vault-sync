@@ -27,7 +27,7 @@
 | `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES` | `786432` (768 KiB) | Largest upload chunk, and the largest range one `DownloadBlob` returns. At least 65536. It plus 1024 bytes of request framing must not exceed `VAULT_SYNC_MAX_REQUEST_BYTES`, or the server refuses to start. |
 | `VAULT_SYNC_BLOB_MAX_SIZE_BYTES` | `1073741824` (1 GiB) | Largest blob (file) that can be uploaded. At most 83886080000 (80 GiB). |
 | `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT` | `32` | Upload sessions that may be in progress at once in one vault (1 to 10000). Further `BeginBlob` calls get `resource_exhausted` until one completes or expires. |
-| `VAULT_SYNC_BLOB_UPLOAD_TTL` | `24h` | How long an upload session may be idle before the cleanup routine removes it. A Go duration of at least `10m`; keep it well above the time a commit of the largest blob takes. |
+| `VAULT_SYNC_BLOB_UPLOAD_TTL` | `24h` | How long an upload session may be idle before the cleanup routine removes it. A Go duration of at least `10m`. A commit in progress records activity after every 8 MiB part it composes, so it is never removed, however long it takes. |
 
 ### Authentication
 
@@ -55,7 +55,7 @@ A user becomes a vault's `owner` by creating it. A user may own at most 100 vaul
 
 File contents are stored in the S3 bucket as one object per blob at `vaults/<vault_id>/blobs/<hex(blob_id)>`. Uploads arrive in chunks of at most `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES`, so no request exceeds the WAF's body limit; each chunk is staged as its own object under `vaults/<vault_id>/uploads/<upload_id>/` and `CommitBlob` streams the chunks into the blob's object, verifying the SHA-256 for plaintext vaults before anything becomes visible. Every chunk but the last must be at least 64 KiB. The server needs `s3:GetObject`, `s3:PutObject`, `s3:DeleteObject`, `s3:ListBucket`, `s3:ListBucketMultipartUploads` and `s3:AbortMultipartUpload` on the bucket. At startup it checks that the bucket is reachable (`HeadBucket`, 30 seconds) and exits with status 1 if not.
 
-Every 5 minutes a cleanup routine removes upload sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_TTL` (deleting their staged objects) and aborts multipart uploads under `vaults/` older than the TTL, which an interrupted commit leaves behind and which S3 would otherwise keep, invisibly, forever. Each run removes at most 100 sessions and 10,000 objects, so a backlog is worked off over several runs. Blobs no longer referenced by any revision are not deleted yet.
+Every 5 minutes a cleanup routine removes upload sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_TTL` (deleting their staged objects) and aborts multipart uploads under `vaults/` older than the TTL whose blob has no upload session active within the TTL, which an interrupted commit leaves behind and which S3 would otherwise keep, invisibly, forever. Every replica runs the cleanup on the same schedule; concurrent runs are safe, and an upload or object another replica already removed is not an error. Each run removes at most 100 sessions and 10,000 objects, so a backlog is worked off over several runs. Blobs no longer referenced by any revision are not deleted yet.
 
 Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
 
