@@ -1,6 +1,6 @@
 # Sync simulation
 
-The simulation harness (`sim/`, SPEC.md §13) checks sync correctness with seeded, multi-client schedules and fault injection, run against a real `vault-sync-server` backed by real PostgreSQL and S3. In Phase 1 the clients are scripted protocol clients and the invariants are server-side. Phase 2 plugs the real `plugin/src/core` engine in and adds engine-level invariants such as convergence.
+The simulation harness (`sim/`, SPEC.md §13) checks sync correctness with seeded, multi-client schedules and fault injection, run against a real `vault-sync-server` backed by real PostgreSQL and S3. In Phase 1 the clients are scripted protocol clients and the invariants are server-side. Phase 2 plugs the real `plugin/src/core` engine in. Its pull side already runs as the engine observer (below), with convergence invariants. The full engine-level invariants are #22.
 
 ## Running
 
@@ -58,6 +58,20 @@ The scripted clients (`sim/client.ts`) follow the protocol's commit discipline (
 - On `ALREADY_EXISTS` they retry under a conflict path.
 
 Paths come from a small pool with case and Unicode collisions (`a.md`/`A.md`, `straße.md`/`STRASSE.md`). Contents are often shared between clients, so clients upload identical blobs, and a content is occasionally larger than one chunk. The harness, not the clients, records every revision the server acknowledged, so acknowledgements survive crashes.
+
+## The engine observer
+
+Each run also has one client driven by the real sync engine (`sim/engine-observer.ts`, the pull side from #16). It is labelled `e<N>`, where N is the number of scripted clients, and it reaches the server through the same simulated network, so drops, reordering and delays hit its `ListChanges`, `DownloadBlob` and `GetRevision` calls too. It starts a pull whenever a schedule step asks any client to pull (if it is idle), and it crashes whenever client 0 crashes. A crash discards the engine and its in-flight calls but keeps its in-memory vault and journal, as a killed app keeps its disk. It never edits locally. Adding it did not change the schedule format, so committed regression cases replay unchanged, though their traces now include its calls.
+
+At the end of the run it pulls once more without faults, and the harness checks it against the server's live heads, which it reads itself with fault-free `ListChanges` calls, independently of the engine:
+
+| Invariant | Check |
+|---|---|
+| `engine-convergence` | The observer's vault holds exactly the live documents' paths with their head content (by hash), and its cursor is the feed's last `seq`. |
+| `engine-deferred` | It deferred no revision. It has no local changes, so every deferral would be a bug. |
+| `engine-echo` | It reported none of its own writes, renames or deletes as local changes. |
+
+An `engine` violation means one of its pulls failed with something other than a network fault.
 
 ## Invariants
 

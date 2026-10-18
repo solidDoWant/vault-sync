@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 
-import type { DocumentState, PendingOperation } from "./journal";
+import type { DeferredRevision, DocumentState, PendingOperation } from "./journal";
 import { InMemoryJournal } from "./memory";
 
 const doc = (overrides: Partial<DocumentState> = {}): DocumentState => ({
   documentId: "doc-1",
   path: "note.md",
   revisionId: "rev-1",
+  seq: 1n,
   baseHash: "aa",
   deleted: false,
   ...overrides,
@@ -22,6 +23,21 @@ const op = (overrides: Partial<PendingOperation> = {}): PendingOperation => ({
   ...overrides,
 });
 
+const deferred = (documentId: string, revisionId: string): DeferredRevision => ({
+  reason: "local-changes",
+  revision: {
+    revisionId,
+    documentId,
+    seq: 7n,
+    parentRevisionId: "rev-1",
+    kind: "text",
+    path: "note.md",
+    deleted: false,
+    contentHash: "cc",
+    size: 3n,
+  },
+});
+
 describe("InMemoryJournal", () => {
   describe("cursor", () => {
     it("starts at zero", async () => {
@@ -34,6 +50,13 @@ describe("InMemoryJournal", () => {
       await journal.setCursor(5n);
       await expect(journal.setCursor(4n)).rejects.toThrow(RangeError);
       expect(await journal.getCursor()).toBe(5n);
+    });
+
+    it("moves backwards only through an explicit reset", async () => {
+      const journal = new InMemoryJournal();
+      await journal.setCursor(9n);
+      await journal.resetCursor(3n);
+      expect(await journal.getCursor()).toBe(3n);
     });
   });
 
@@ -60,6 +83,24 @@ describe("InMemoryJournal", () => {
       if (read !== undefined) read.revisionId = "mutated";
       expect(await journal.getDocument("doc-1")).toEqual(doc());
     });
+
+    // Regression for #129: the lookup returned whichever document was stored first, tombstones included.
+    it.each([
+      ["tombstone first", ["old", "new"]],
+      ["live document first", ["new", "old"]],
+    ])("finds the live document when a tombstone shares its path (%s)", async (_order, ids) => {
+      const journal = new InMemoryJournal();
+      for (const id of ids) {
+        await journal.putDocument(doc({ documentId: id, path: "a.md", revisionId: `r-${id}`, deleted: id === "old" }));
+      }
+      expect((await journal.findDocumentByPath("a.md"))?.documentId).toBe("new");
+    });
+
+    it("never returns a tombstone, even when it is the only document at the path", async () => {
+      const journal = new InMemoryJournal();
+      await journal.putDocument(doc({ path: "a.md", deleted: true }));
+      expect(await journal.findDocumentByPath("a.md")).toBeUndefined();
+    });
   });
 
   describe("pending operations", () => {
@@ -79,6 +120,33 @@ describe("InMemoryJournal", () => {
       await journal.addPending(op());
       await expect(journal.addPending(op({ path: "other.md" }))).rejects.toThrow();
       expect(await journal.listPending()).toEqual([op()]);
+    });
+  });
+
+  describe("deferred remote revisions", () => {
+    it("keeps the newest deferred revision per document until it is removed", async () => {
+      const journal = new InMemoryJournal();
+      await journal.putDeferred(deferred("doc-1", "r2"));
+      await journal.putDeferred(deferred("doc-2", "r3"));
+      await journal.putDeferred(deferred("doc-1", "r4"));
+
+      expect(await journal.getDeferred("doc-1")).toEqual(deferred("doc-1", "r4"));
+      expect((await journal.listDeferred()).map((entry) => entry.revision.revisionId).sort()).toEqual(["r3", "r4"]);
+
+      await journal.removeDeferred("doc-1");
+      await journal.removeDeferred("doc-1");
+      expect(await journal.getDeferred("doc-1")).toBeUndefined();
+      expect(await journal.listDeferred()).toEqual([deferred("doc-2", "r3")]);
+    });
+
+    it("does not let callers mutate stored deferred revisions", async () => {
+      const journal = new InMemoryJournal();
+      const entry = deferred("doc-1", "r2");
+      await journal.putDeferred(entry);
+      entry.revision.path = "mutated.md";
+      const read = await journal.getDeferred("doc-1");
+      if (read !== undefined) read.revision.revisionId = "mutated";
+      expect(await journal.getDeferred("doc-1")).toEqual(deferred("doc-1", "r2"));
     });
   });
 });
