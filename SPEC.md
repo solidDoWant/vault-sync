@@ -67,7 +67,7 @@ All identifiers are UUIDv7 unless stated. Every table below is scoped by `vault_
 | `devices` | `id`, `user_id`, `name`, `public_key` (X25519), `last_seen` | One per plugin install. |
 | `vaults` | `id`, `name`, `encryption` (`none` \| `e2ee`), `escrow` (bool), `head_seq` | `head_seq` is the vault-wide change counter. |
 | `vault_members` | `vault_id`, `user_id`, `role` (`owner` \| `editor` \| `viewer`) | Authorization source of truth. |
-| `documents` | `id`, `vault_id`, `kind` (`blob` \| `text` \| `yjs`), `head_rev_id`, `path_key` | Stable identity across renames. `path_key` unique per vault among live documents. |
+| `documents` | `id`, `vault_id`, `kind` (`blob` \| `text` \| `yjs`), `head_rev_id`, `path_key`, `deleted` | Stable identity across renames. `deleted` mirrors the head revision's tombstone flag. `path_key` unique per vault among live (`deleted = false`) documents, enforced by a unique partial index. |
 | `revisions` | `id`, `document_id`, `vault_id`, `seq`, `parent_rev_id`, `content_ref`, `path`, `deleted`, `device_id`, `created_at` | Append-only. `seq` is assigned from `vaults.head_seq` in the same transaction. |
 | `blobs` | `vault_id`, `blob_id`, `size`, `state` (`uploading` \| `complete`) | Content-addressed per vault; bytes live in S3 at `vaults/{vault_id}/blobs/{blob_id}`. |
 | `key_slots` | `vault_id`, `epoch`, `recipient_kind` (`user` \| `escrow`), `recipient_id`, `wrapped_key` | E2EE only (§9). |
@@ -174,7 +174,7 @@ The v1 protocol includes the hooks for this from the start: stable document ids,
 - Configuration by environment variables, documented in `docs/configuration.md`.
 - **JSON structured logs** (`log/slog`), Prometheus metrics on a separate port, `/healthz` and `/readyz`.
 - PostgreSQL client certificates and S3 credentials are re-read from disk on change.
-- Schema migrations are embedded and run on startup behind an advisory lock; migrations are forward-only and must be backward-compatible with the previous release.
+- Schema migrations are embedded (`internal/store/migrations`) and run on startup behind a PostgreSQL advisory lock, each in its own transaction, recorded in `schema_migrations`; migrations are forward-only and must be backward-compatible with the previous release. Released migrations are never edited (the runner rejects a changed name for an applied version).
 - Bounded resource use: max request size, max chunk size, decompression limits, pagination caps, per-user rate limits.
 - The plugin is distributed through GitHub releases (installable with BRAT); publishing to the Obsidian community catalog is a non-goal for now.
 
@@ -204,6 +204,7 @@ plugin/                  Obsidian plugin (npm project; nested empty go.mod fence
 sim/                     sync simulation harness (TS, drives src/core against the Go server)
 testdata/crypto/         cross-language crypto test vectors
 deploy/charts/           Helm chart(s)
+deploy/compose/          docker compose stack for integration tests (PostgreSQL + S3-compatible store)
 docs/                    operator + design docs; docs/agents/ holds the agent playbooks
 nix/                     Nix package/image definitions
 .claude/                 agent definitions and slash commands
