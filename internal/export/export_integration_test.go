@@ -467,3 +467,75 @@ func TestInterruptedExportAgainstPostgreSQLAndS3LeavesThePreviousExport(t *testi
 	assert.Equal(t, export.StatusFailed, summary.Status)
 	assert.Equal(t, previous, snapshot(t, space.output))
 }
+
+// committingSource runs commit once, before the second page of documents is
+// read.
+type committingSource struct {
+	*export.StoreSource
+	commit func()
+	pages  *int
+}
+
+func (source committingSource) Documents(ctx context.Context, vaultID uuid.UUID, seq int64, after uuid.UUID, limit int) ([]store.LiveDocument, error) {
+	*source.pages++
+	if *source.pages == 2 {
+		source.commit()
+	}
+
+	return source.StoreSource.Documents(ctx, vaultID, seq, after, limit)
+}
+
+func TestExportIsAPointInTimeViewAgainstPostgreSQLAndS3(t *testing.T) {
+	deployment := newDeployment(t)
+	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
+
+	// Document ids grow in creation order, so pages follow it.
+	first := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "first.md", []byte("first"))
+	edited := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "edited.md", []byte("before the edit"))
+	renamed := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "renamed.md", []byte("renamed"))
+	deleted := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "deleted.md", []byte("deleted"))
+
+	var listed int64
+	require.NoError(t, deployment.pool.QueryRow(t.Context(), `SELECT head_seq FROM vaults WHERE id = $1`, notes).Scan(&listed))
+
+	pages := 0
+	source := committingSource{
+		StoreSource: &export.StoreSource{Store: deployment.store, Objects: deployment.objects},
+		pages:       &pages,
+		commit: func() {
+			deployment.commit(t, notes, edited.DocumentID, &edited, "edited.md", []byte("after the edit"))
+			deployment.commit(t, notes, renamed.DocumentID, &renamed, "elsewhere/renamed.md", []byte("renamed"))
+			deployment.commit(t, notes, deleted.DocumentID, &deleted, "deleted.md", nil)
+			deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "new.md", []byte("new"))
+		},
+	}
+
+	output := filepath.Join(t.TempDir(), "export")
+
+	summary, err := export.Run(t.Context(), export.Options{
+		Output:   output,
+		Source:   source,
+		Logger:   slog.New(slog.DiscardHandler),
+		PageSize: 1,
+	})
+	require.NoError(t, err)
+	require.Greater(t, pages, 2, "the commits happened during the export")
+
+	assert.Equal(t, export.StatusOK, summary.Status)
+	require.Len(t, summary.VaultDetails, 1)
+	assert.Equal(t, listed, summary.VaultDetails[0].HeadSeq)
+
+	assert.Equal(t, map[string]string{
+		notes.String() + "/first.md":   "first",
+		notes.String() + "/edited.md":  "before the edit",
+		notes.String() + "/renamed.md": "renamed",
+		notes.String() + "/deleted.md": "deleted",
+	}, files(t, output), "the tree is the vault at the listed head_seq")
+
+	documents := verifyManifests(t, output)[notes].byID()
+	require.Len(t, documents, 4)
+	assert.Equal(t, first.ID, documents[first.DocumentID].RevisionID)
+	assert.Equal(t, edited.ID, documents[edited.DocumentID].RevisionID)
+	assert.Equal(t, renamed.ID, documents[renamed.DocumentID].RevisionID)
+	assert.Equal(t, deleted.ID, documents[deleted.DocumentID].RevisionID)
+}
