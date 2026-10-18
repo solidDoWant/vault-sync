@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
-	"strings"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -21,6 +20,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/textcheck"
+	"github.com/solidDoWant/vault-sync/internal/vaultpath"
 )
 
 // Sync bounds.
@@ -398,8 +398,8 @@ func parseClientID(value string) (uuid.UUID, error) {
 }
 
 // checkPath validates a plaintext vault-relative path: 1 to MaxPathBytes
-// bytes of UTF-8 without control characters, "/"-separated segments that
-// are neither empty nor "." or "..".
+// bytes of UTF-8 without control characters that is vault-relative on every
+// client platform (vaultpath.Check: "/" and "\" are both separators).
 func checkPath(path []byte) (string, error) {
 	if len(path) == 0 || len(path) > MaxPathBytes {
 		return "", invalidArgument("path must be 1 to %d bytes", MaxPathBytes)
@@ -410,10 +410,8 @@ func checkPath(path []byte) (string, error) {
 		return "", invalidArgument("path must be valid UTF-8 without control characters")
 	}
 
-	for segment := range strings.SplitSeq(text, "/") {
-		if segment == "" || segment == "." || segment == ".." {
-			return "", invalidArgument(`path must be relative, with no empty, "." or ".." segments`)
-		}
+	if err := vaultpath.Check(text); err != nil {
+		return "", connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	return text, nil
