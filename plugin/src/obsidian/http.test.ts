@@ -1,4 +1,7 @@
+import { Code } from "@connectrpc/connect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { createHttpTransport, createProtocolClient } from "../core/protocol/client";
 
 // requestUrl is Obsidian's; here each call waits until the test answers it.
 interface PendingRequest {
@@ -89,5 +92,18 @@ describe("requestUrlFetch", () => {
     pending[0]?.reject(new Error("net::ERR_CONNECTION_REFUSED"));
 
     await expect(response).rejects.toThrow(/ERR_CONNECTION_REFUSED/);
+  });
+
+  it("reports a request that never reached the server as UNAVAILABLE, through a Connect client too", async () => {
+    const response = requestUrlFetch("https://sync.example/rpc", { method: "POST", body: "x" });
+    await settle();
+    pending[0]?.reject(new Error("net::ERR_INTERNET_DISCONNECTED"));
+    await expect(response).rejects.toMatchObject({ code: Code.Unavailable });
+
+    const client = createProtocolClient({ transport: createHttpTransport("https://sync.example", { fetch: requestUrlFetch }) });
+    const call = client.serverInfo.getServerInfo({});
+    await settle();
+    pending[1]?.reject(new Error("net::ERR_NAME_NOT_RESOLVED"));
+    await expect(call).rejects.toMatchObject({ code: Code.Unavailable });
   });
 });

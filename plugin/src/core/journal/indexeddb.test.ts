@@ -396,6 +396,36 @@ describe("IndexedDbJournal", () => {
       return before;
     }
 
+    it("reports an upgrade blocked by a connection that does not step aside, and finishes once it closes", async () => {
+      const factory = new FakeIDBFactory();
+      await populate(factory, v1Migrations);
+      // A connection that ignores versionchange, as a stale one from other code would.
+      const stale = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = factory.open(name);
+        request.onsuccess = () => {
+          resolve(request.result);
+        };
+        request.onerror = () => {
+          reject(request.error ?? new Error("open failed"));
+        };
+      });
+      let blocked = 0;
+      let opened = false;
+      const opening = IndexedDbJournal.open(factory, name, journalMigrations, { onBlocked: () => blocked++ }).then((journal) => {
+        opened = true;
+        return journal;
+      });
+
+      await expect.poll(() => blocked).toBe(1);
+      expect(opened).toBe(false);
+      stale.close();
+
+      const upgraded = await opening;
+      expect(await upgraded.getCursor()).toBe(42n);
+      expect(blocked).toBe(1);
+      upgraded.close();
+    });
+
     it("upgrades a v1 journal to the current schema with the conflict log, keeping its data", async () => {
       const factory = new FakeIDBFactory();
       const before = await populate(factory, v1Migrations);

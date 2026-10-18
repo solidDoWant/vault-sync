@@ -3,6 +3,7 @@ import { browser, expect } from "@wdio/globals";
 import type VaultSyncPlugin from "../../../src/main";
 import { e2eEnvironment, pluginId } from "../environment";
 import { reloadPlugin } from "../obsidian";
+import { configure, dialog, isDialogOpen, issuerPost, signInResult, startSignIn } from "../signin";
 
 // Signing in with the OAuth device flow inside real Obsidian (SPEC.md §9.1),
 // against the harness-started server and the driver's fake OIDC issuer:
@@ -17,56 +18,9 @@ type CallResult = { ok: true; vaults: number } | { ok: false; code: number | nul
 /** Connect's code for UNAUTHENTICATED. */
 const unauthenticated = 16;
 
-function configure(serverUrl: string, issuer: string, clientId: string) {
-  return browser.executeObsidian(
-    async ({ app }, id, values) => {
-      const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
-      if (plugin === undefined) throw new Error("vault-sync is not loaded");
-      plugin.data.serverUrl = values.serverUrl;
-      plugin.data.oidcIssuer = values.issuer;
-      plugin.data.oidcClientId = values.clientId;
-      await plugin.saveSettings();
-    },
-    pluginId,
-    { serverUrl, issuer, clientId },
-  );
-}
-
-/** Starts a sign-in without waiting for it; its result lands in window.vaultSyncSignIn. */
-function startSignIn() {
-  return browser.executeObsidian(({ app }, id) => {
-    const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
-    if (plugin === undefined) throw new Error("vault-sync is not loaded");
-    const state = window as unknown as { vaultSyncSignIn?: boolean | string };
-    delete state.vaultSyncSignIn;
-    plugin.signIn().then(
-      (result) => (state.vaultSyncSignIn = result),
-      (error: unknown) => (state.vaultSyncSignIn = String(error)),
-    );
-  }, pluginId);
-}
-
-function signInResult() {
-  return browser.executeObsidian(() => (window as unknown as { vaultSyncSignIn?: boolean | string }).vaultSyncSignIn ?? null);
-}
-
-/** What the sign-in dialog shows, or null while it shows no code. */
-function dialog() {
-  return browser.executeObsidian(() => {
-    const code = document.querySelector(".vault-sync-user-code");
-    const link = document.querySelector<HTMLAnchorElement>(".vault-sync-verification-uri");
-    if (code === null || link === null) return null;
-    return { userCode: code.textContent, linkText: link.textContent, href: link.getAttribute("href") };
-  });
-}
-
 /** Dismisses the sign-in dialog with Escape, as a user cancelling the sign-in does. */
 function closeDialog() {
   return browser.keys("Escape");
-}
-
-function isDialogOpen() {
-  return browser.executeObsidian(() => document.querySelector(".vault-sync-user-code, .vault-sync-sign-in-error") !== null);
 }
 
 function pluginStatus() {
@@ -93,11 +47,6 @@ async function listVaults(): Promise<CallResult> {
     }
   }, pluginId);
   return result as CallResult;
-}
-
-async function issuerPost(path: string, form: Record<string, string> = {}): Promise<number> {
-  const response = await fetch(`${e2eEnvironment.issuerUrl}${path}`, { method: "POST", body: new URLSearchParams(form) });
-  return response.status;
 }
 
 describe("signing in with the device flow", function () {
