@@ -49,7 +49,8 @@ const encoder = new TextEncoder();
  * follows the protocol's paging, ranging, upload and commit rules (SPEC.md
  * §6.1, §6.2): resumable sequential chunks, hash verification, optimistic
  * concurrency with the head as a Document detail, idempotent retries by
- * revision id, and path-key uniqueness among live documents.
+ * revision id, and path-key uniqueness among live documents, including the
+ * file/folder rule (a live document never at or under another's folder).
  */
 export class InMemoryServer {
   readonly vaultId: string;
@@ -255,6 +256,13 @@ export class InMemoryServer {
   }
 
   /** Every revision of `documentId`, oldest first. */
+  /** Path to document id of every live document at its head: which document holds each path. */
+  liveDocuments(): Map<string, string> {
+    const documents = new Map<string, string>();
+    for (const [documentId, revision] of this.liveHeads()) documents.set(new TextDecoder().decode(revision.path), documentId);
+    return documents;
+  }
+
   history(documentId: string): Revision[] {
     return this.revisions.filter((revision) => revision.documentId === documentId);
   }
@@ -300,9 +308,17 @@ export class InMemoryServer {
     if (!isVaultRelativePath(path)) throw new ConnectError("path is not vault-relative", Code.InvalidArgument);
     if (!request.deleted) {
       const key = pathKey(path);
+      // Only a new live path key can collide: a create, rename or
+      // resurrection. An edit that keeps its live path key is never refused,
+      // as the server does not refuse one (#134).
+      const newKey = head === undefined || head.deleted || pathKey(new TextDecoder().decode(head.path)) !== key;
       for (const [documentId, live] of this.liveHeads()) {
-        if (documentId !== request.documentId && pathKey(new TextDecoder().decode(live.path)) === key) {
-          throw new ConnectError("another live document has this path", Code.AlreadyExists);
+        if (documentId === request.documentId) continue;
+        const other = pathKey(new TextDecoder().decode(live.path));
+        if (other === key) throw new ConnectError("another live document has this path", Code.AlreadyExists);
+        // File/folder rule (SPEC.md §6.3): no live document at, or under, the folder another one's path names.
+        if (newKey && (other.startsWith(`${key}/`) || key.startsWith(`${other}/`))) {
+          throw new ConnectError("another live document's path is a folder of this one, or this one of it", Code.AlreadyExists);
         }
       }
     }
