@@ -85,10 +85,18 @@ export function mergeText(base: string, local: string, remote: string): string |
   if (local === base || local === remote) return remote;
   if (remote === base) return local;
   const [baseText, localText, remoteText] = [base, local, remote].map(analyzeText) as [AnalyzedText, AnalyzedText, AnalyzedText];
+  // Neither side converted the line endings: merged as they are, so every
+  // line keeps the terminator it has (a note with mixed line endings stays
+  // mixed). Falls back to comparing lines without their terminators if that
+  // finds an overlap, which a terminator-only change can cause.
+  if (!changedField(baseText.eol, localText.eol) && !changedField(baseText.eol, remoteText.eol)) {
+    const exact = mergeUnsaved(base, local, remote);
+    if (exact !== null) return exact.merged;
+  }
   const merged = mergeUnsaved(baseText.lines, localText.lines, remoteText.lines);
   if (merged === null) return null;
   const eol = mergeField(baseText.eol, localText.eol, remoteText.eol) ?? "\n";
-  const finalNewline = mergeField(baseText.finalNewline, localText.finalNewline, remoteText.finalNewline);
+  const finalNewline = mergeField(baseText.finalNewline, localText.finalNewline, remoteText.finalNewline) === true;
   const body = finalNewline ? merged.merged : merged.merged.slice(0, -1);
   return eol === "\n" ? body : body.replaceAll("\n", eol);
 }
@@ -98,11 +106,17 @@ interface AnalyzedText {
   lines: string;
   /** The text's prevailing line terminator; null if it has none. */
   eol: "\n" | "\r\n" | null;
-  finalNewline: boolean;
+  /** Whether the text ends with a line terminator; null (unknown) for an empty text, which has no last line to end. */
+  finalNewline: boolean | null;
+}
+
+/** Whether a side changed a field from the base; null (unknown) never counts as a change. */
+function changedField<T>(base: T | null, side: T | null): boolean {
+  return base !== null && side !== null && side !== base;
 }
 
 function analyzeText(text: string): AnalyzedText {
-  if (text === "") return { lines: "", eol: null, finalNewline: false };
+  if (text === "") return { lines: "", eol: null, finalNewline: null };
   const crlf = text.split("\r\n").length - 1;
   const lf = text.split("\n").length - 1 - crlf;
   const finalNewline = text.endsWith("\n");

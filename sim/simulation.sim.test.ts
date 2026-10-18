@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, structuralOperations } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -180,6 +180,67 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.conflicts[0], trace).toEqual([]);
     expect(result.conflicts[1], trace).toEqual([{ reason: "concurrent-create", path: "notes/c.md", copyPath: copy }]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted structural scenarios (#19)", () => {
+  it("syncs renames, deletes, same-path creates, folder renames and rename chains between two engines without losing or duplicating a document", async () => {
+    const result = await structuralOperations(environment);
+    const trace = tail(result.trace, 200);
+
+    // Convergence, no lost acknowledged writes, no deferral left, no echo reported (engine-* and server invariants).
+    expect(result.violations, trace).toEqual([]);
+    // Every raced phase really raced: the second engine's first commit was refused.
+    expect(result.refused, trace).toEqual([
+      "rename vs edit", "delete vs edit", "edit vs delete", "creates at one path", "folder rename vs edit", "rename chain on one engine",
+      "file where the other created a folder",
+      "folder where the other created a file",
+    ]);
+    const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
+    const archived = Array.from({ length: 12 }, (_, index) => [`archive/file ${String(index)}.md`, lines(`projects/file ${String(index)}.md`)] as const);
+    const stamped = (name: string) => `${name} (conflict e2 2026-01-02 030405)`;
+    const copy = `inbox/${stamped("same")}.md`;
+    const expected = new Map<string, string>([
+      ["notes/renamed.md", lines("one", "two (edited)", "three")],
+      ["notes/delete-me.md", lines("kept by the edit", "edited")],
+      ["notes/edit-me.md", lines("kept by the edit too", "edited")],
+      ["inbox/same.md", lines("created by the first engine")],
+      [copy, lines("created by the second engine")],
+      ...archived,
+      ["moved/inside.md", lines("one", "two (edited)")],
+      ["chain/C.md", lines("chained")],
+      ["rotate/b.md", lines("note x", "edited")],
+      ["rotate/c.md", lines("note y", "edited")],
+      ["topics", lines("a file named like the folder")],
+      [`${stamped("topics")}/x.md`, lines("x")],
+      [`${stamped("topics")}/y.md`, lines("y")],
+      ["ideas/a.md", lines("a")],
+      [stamped("ideas"), lines("a file named like the folder")],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    // Each document kept its identity through its renames, delete and edits: nothing re-created.
+    const identity = new Map<string, string>([
+      ["notes/renamed.md", "notes/rename-me.md"],
+      ["notes/delete-me.md", "notes/delete-me.md"],
+      ["notes/edit-me.md", "notes/edit-me.md"],
+      ...archived.map(([path]) => [path, path.replace("archive/", "projects/")] as [string, string]),
+      ["moved/inside.md", "shared/inside.md"],
+      ["chain/C.md", "chain/A.md"],
+      ["rotate/b.md", "rotate/a.md"],
+      ["rotate/c.md", "rotate/b.md"],
+    ]);
+    for (const [path, origin] of identity) expect(result.documents.get(path), `${path} is the document that was ${origin}`).toBe(result.before.get(origin));
+    expect(result.documents.size, trace).toBe(expected.size);
+    // The folder rename moved no content: renames only.
+    expect(result.folderRenameTransfers, trace).toEqual({ uploads: 0, downloads: 0 });
+    expect(result.conflicts[0], trace).toEqual([]);
+    expect(result.conflicts[1], trace).toEqual([
+      { reason: "concurrent-create", path: "inbox/same.md", copyPath: copy },
+      { reason: "path-taken", path: "topics/x.md", copyPath: `${stamped("topics")}/x.md` },
+      { reason: "path-taken", path: "topics/y.md", copyPath: `${stamped("topics")}/y.md` },
+      { reason: "path-taken", path: "ideas", copyPath: stamped("ideas") },
+    ]);
   });
 });
 

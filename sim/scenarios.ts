@@ -425,3 +425,203 @@ export async function remoteRenameOntoUnsyncedFile(endpoints: SimEndpoints): Pro
   const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
   return { ...result, vaults, conflicts };
 }
+
+export interface StructuralOperationsResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** Each engine's conflict log: reason, path and copy path of every entry. */
+  conflicts: { reason: string; path: string; copyPath: string | null }[][];
+  /** Phases whose refused commit the second engine merged and committed again, by name. */
+  refused: string[];
+  /** The server's live documents after the run: path to document label. */
+  documents: Map<string, string>;
+  /** Document labels by path before the structural changes, for the identity checks. */
+  before: Map<string, string>;
+  /** Content transfers during the folder rename: blob uploads by the renaming engine, downloads by the other. */
+  folderRenameTransfers: { uploads: number; downloads: number };
+}
+
+/**
+ * Structural operations across two real engines (#19, SPEC.md §6.3), each
+ * phase raced as in enginesEditConcurrently: the second engine's push gets as
+ * far as its CommitRevision, the first engine's push commits, and only then
+ * does the second engine's commit reach the server. Faults: the second engine
+ * crashes after one refused commit, before it pushes again, and a merged
+ * commit's response is lost once.
+ *
+ * 1. Rename on one engine, edit on the other: the document has the new name
+ *    and the edit.
+ * 2. Delete on one engine, edit on the other: the edit wins.
+ * 3. Edit on one engine, delete on the other: the edit wins.
+ * 4. Both create a file at the same path: both kept, one as a conflict copy.
+ * 5. A folder of many files renamed: synced as renames, with no content
+ *    uploaded or downloaded.
+ * 6. A folder renamed while the other engine edits a file in it: the edit
+ *    lands in the renamed folder.
+ * 7. A rename chain across engines (A to B on one, then B to C on the other).
+ * 8. A rename chain on one engine (b to c, then a to b) while the other edits
+ *    both documents: each keeps its identity and its edit.
+ * 9. A file on one engine at the path where the other created a folder of
+ *    notes (the server refuses file/folder collisions, #134): the notes move
+ *    into a conflict-named folder.
+ * 10. The reverse: the file gets the conflict name.
+ */
+export async function structuralOperations(endpoints: SimEndpoints): Promise<StructuralOperationsResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2 });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+  const deliverUntil = async (engine: number, method: string) => {
+    for (let delivery = 0; run.context.network.pendingRequest(engine) !== method; delivery++) {
+      if (delivery > 800) throw new Error(`e${String(engine)} never sent ${method}`);
+      await run.step({ kind: "deliver-request", client: engine });
+      await run.step({ kind: "deliver-response", client: engine });
+    }
+  };
+  const sync = async () => {
+    log(first.startPush());
+    await drain(first.index);
+    log(second.startPull());
+    await drain(second.index);
+  };
+  const refused: string[] = [];
+  /** As enginesEditConcurrently's race: the second engine's commit reaches the server after the first engine's. */
+  const race = async (phase: string, fault?: () => Promise<void>) => {
+    log(`phase: ${phase}`);
+    log(second.startPush());
+    await deliverUntil(second.index, "CommitRevision");
+    log(first.startPush());
+    await drain(first.index);
+    const traceAt = run.trace.length;
+    await run.step({ kind: "deliver-request", client: second.index });
+    await run.step({ kind: "deliver-response", client: second.index });
+    if (run.trace.slice(traceAt).some((line) => / -> (FailedPrecondition|AlreadyExists)/.test(line))) refused.push(phase);
+    if (fault !== undefined) await fault();
+    await drain(second.index);
+    log(second.startPush());
+    await drain(second.index);
+    log(first.startPull());
+    await drain(first.index);
+  };
+  const crashAfterRefusal = async () => {
+    log(second.crash());
+    log(second.startPush());
+  };
+  const loseMergedCommitResponse = async () => {
+    await deliverUntil(second.index, "CommitRevision");
+    await run.step({ kind: "deliver-request", client: second.index });
+    await run.step({ kind: "drop-response", pick: 0 });
+  };
+
+  // Setup: every document both engines start from, synced.
+  const files = Array.from({ length: 12 }, (_, index) => `projects/file ${String(index)}.md`);
+  const synced: [string, string][] = [
+    ["notes/rename-me.md", textLines("one", "two", "three")],
+    ["notes/delete-me.md", textLines("kept by the edit")],
+    ["notes/edit-me.md", textLines("kept by the edit too")],
+    ...files.map((path) => [path, textLines(path)] as [string, string]),
+    ["shared/inside.md", textLines("one", "two")],
+    ["chain/A.md", textLines("chained")],
+    ["rotate/a.md", textLines("note x")],
+    ["rotate/b.md", textLines("note y")],
+  ];
+  for (const [path, content] of synced) log(await first.edit(path, encoder.encode(content)));
+  await sync();
+  const before = await liveDocuments(run);
+
+  // 1. Rename vs edit.
+  log(await first.move("notes/rename-me.md", "notes/renamed.md"));
+  log(await second.edit("notes/rename-me.md", encoder.encode(textLines("one", "two (edited)", "three"))));
+  await race("rename vs edit", loseMergedCommitResponse);
+
+  // 2. Delete vs edit.
+  log(await first.remove("notes/delete-me.md"));
+  log(await second.edit("notes/delete-me.md", encoder.encode(textLines("kept by the edit", "edited"))));
+  await race("delete vs edit", crashAfterRefusal);
+
+  // 3. Edit vs delete.
+  log(await first.edit("notes/edit-me.md", encoder.encode(textLines("kept by the edit too", "edited"))));
+  log(await second.remove("notes/edit-me.md"));
+  await race("edit vs delete");
+
+  // 4. Creates at one path.
+  log(await first.edit("inbox/same.md", encoder.encode(textLines("created by the first engine"))));
+  log(await second.edit("inbox/same.md", encoder.encode(textLines("created by the second engine"))));
+  await race("creates at one path", crashAfterRefusal);
+
+  // 5. A folder rename, nothing else.
+  log("phase: folder rename");
+  const folderAt = run.trace.length;
+  log(await first.moveFolder("projects", "archive"));
+  await sync();
+  const folderTrace = run.trace.slice(folderAt);
+  const count = (engine: number, methods: string) => folderTrace.filter((line) => new RegExp(`c${String(engine)} (${methods})\\(?.* -> `).test(line)).length;
+  const folderRenameTransfers = { uploads: count(first.index, "BeginBlob|PutBlobChunk|CommitBlob"), downloads: count(second.index, "DownloadBlob|GetRevision") };
+
+  // 6. A folder rename while the other engine edits a file in it.
+  log(await first.moveFolder("shared", "moved"));
+  log(await second.edit("shared/inside.md", encoder.encode(textLines("one", "two (edited)"))));
+  await race("folder rename vs edit");
+
+  // 7. A rename chain across engines.
+  log("phase: rename chain across engines");
+  log(await first.move("chain/A.md", "chain/B.md"));
+  await sync();
+  log(await second.move("chain/B.md", "chain/C.md"));
+  log(second.startPush());
+  await drain(second.index);
+  log(first.startPull());
+  await drain(first.index);
+
+  // 8. A rename chain on one engine, while the other edits both documents.
+  log(await first.move("rotate/b.md", "rotate/c.md"));
+  log(await first.move("rotate/a.md", "rotate/b.md"));
+  log(await second.edit("rotate/a.md", encoder.encode(textLines("note x", "edited"))));
+  log(await second.edit("rotate/b.md", encoder.encode(textLines("note y", "edited"))));
+  await race("rename chain on one engine");
+
+  // 9. A file on one engine where the other created a folder of notes (#134).
+  log(await first.edit("topics", encoder.encode(textLines("a file named like the folder"))));
+  log(await second.edit("topics/x.md", encoder.encode(textLines("x"))));
+  log(await second.edit("topics/y.md", encoder.encode(textLines("y"))));
+  await race("file where the other created a folder");
+
+  // 10. A folder of notes on one engine where the other created a file.
+  log(await first.edit("ideas/a.md", encoder.encode(textLines("a"))));
+  log(await second.edit("ideas", encoder.encode(textLines("a file named like the folder"))));
+  await race("folder where the other created a file");
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
+  return { ...result, vaults, conflicts, refused, documents: await liveDocuments(run), before, folderRenameTransfers };
+}
+
+/** The server's live documents, read without faults from the change feed: path to document label. */
+async function liveDocuments(run: SimRun): Promise<Map<string, string>> {
+  const heads = new Map<string, { path: string; deleted: boolean }>();
+  let since = 0n;
+  for (;;) {
+    const response = await run.direct.sync.listChanges({ vaultId: run.context.vaultId, sinceSeq: since, pageSize: 1000 });
+    for (const revision of response.revisions) {
+      heads.set(revision.documentId, { path: decoder.decode(revision.path), deleted: revision.deleted });
+      since = revision.seq;
+    }
+    if (!response.hasMore) break;
+  }
+  const documents = new Map<string, string>();
+  for (const [documentId, head] of heads) if (!head.deleted) documents.set(head.path, run.context.ids.label(documentId));
+  return documents;
+}
