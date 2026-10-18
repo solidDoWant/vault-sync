@@ -181,6 +181,16 @@ func TestInvariantChecksDetectEachViolation(t *testing.T) {
 			expected: []string{invariantPathKey},
 		},
 		{
+			name: "a live document's path_key is a folder of another's",
+			corrupt: func(t *testing.T, fixture *invariantFixture) []acknowledgement {
+				exec(t, `UPDATE documents SET path_key = 'a.md/b.md' WHERE id = $1`, fixture.b)
+				exec(t, `UPDATE revisions SET path = 'A.md/b.md' WHERE id = $1`, fixture.b1)
+
+				return nil
+			},
+			expected: []string{invariantPathFolder},
+		},
+		{
 			name: "commit accepted against a stale base",
 			corrupt: func(t *testing.T, fixture *invariantFixture) []acknowledgement {
 				stale := uuid.Must(uuid.NewV7())
