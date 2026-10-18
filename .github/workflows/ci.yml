@@ -150,7 +150,7 @@ jobs:
       - if: runner.os == 'Linux'
         uses: ./.github/actions/nix-dev-shell
       - if: runner.os == 'Linux'
-        name: Plugin e2e
+        name: Plugin e2e (Linux, Nix dev shell)
         run: nix develop -c make test-e2e
 
       # Windows and macOS: no Nix (Windows) and no Linux containers, so the
@@ -179,7 +179,7 @@ jobs:
           npm run build
           cp manifest.json dist/
       - if: runner.os != 'Linux'
-        name: Plugin e2e
+        name: Plugin e2e (native)
         env:
           VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
         run: ./scripts/with-native-s3.sh go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
