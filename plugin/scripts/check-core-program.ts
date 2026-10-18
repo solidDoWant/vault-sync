@@ -12,10 +12,19 @@
 //   fence, no declaration files, no triple-slash directives, no
 //   `declare global`, and no imports that resolve to JavaScript (which the
 //   bundler would ship without any of these checks).
+// - Packages imported by src/core and sim/ must be declared in package.json
+//   (dependencies or devDependencies, or their @types package), and never be
+//   obsidian: node_modules also holds obsidian's own dependencies, such as
+//   @codemirror/view and moment, whose APIs are DOM- or Obsidian-only. Only
+//   these direct imports are checked; declaration files a declared package
+//   pulls in from its own dependencies are fine.
+// - Files on disk under src/core with a code extension other than a plain
+//   `.ts` module fail even when nothing imports them; other files (.DS_Store,
+//   editor backups, README.md) are inert and ignored.
 //
 // Usage: node scripts/check-core-program.ts [extra-root-file ...]
 // Run by `npm run typecheck` (and so by `make lint`).
-import { readdirSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -81,6 +90,35 @@ function hasAllowedExtension(fileName: string): boolean {
   return fileName.endsWith(".json") || (fileName.endsWith(".ts") && !fileName.endsWith(".d.ts"));
 }
 
+/** Code that is not a plain `.ts` module: JavaScript, .mts/.cts/.tsx and declaration files (including .d.mts/.d.cts). */
+function isOtherCode(fileName: string): boolean {
+  return /\.(?:[cm]?jsx?|[cm]?tsx|[cm]ts|d\.ts)$/.test(fileName);
+}
+
+/** Packages declared in package.json `dependencies` and `devDependencies`. */
+function declaredPackages(): Set<string> {
+  const manifest = JSON.parse(readFileSync(path.join(pluginDir, "package.json"), "utf8")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  return new Set([...Object.keys(manifest.dependencies ?? {}), ...Object.keys(manifest.devDependencies ?? {})]);
+}
+
+/** The package a bare import specifier names (`@scope/name` or `name`), or undefined for a relative or absolute path. */
+export function packageOf(specifier: string): string | undefined {
+  if (specifier.startsWith(".") || specifier.startsWith("/")) return undefined;
+  const segments = specifier.split("/");
+  return segments[0]?.startsWith("@") ? segments.slice(0, 2).join("/") : segments[0];
+}
+
+/** Whether `specifier`'s package, or the `@types` package that types it, is in `declared`. */
+export function isDeclaredImport(specifier: string, declared: ReadonlySet<string>): boolean {
+  const name = packageOf(specifier);
+  if (name === undefined) return true;
+  const typesName = `@types/${name.startsWith("@") ? name.slice(1).replace("/", "__") : name}`;
+  return declared.has(name) || declared.has(typesName);
+}
+
 /** Source files of the program that belong to Obsidian or the plugin shell, relative to plugin/. */
 export function obsidianFiles(program: ts.Program): string[] {
   return program
@@ -95,7 +133,7 @@ function hasGlobalAugmentation(node: ts.Node): boolean {
 }
 
 /** Problems with one policed source file of the program. */
-function ownedFileProblems(sourceFile: ts.SourceFile, program: ts.Program, host: ts.CompilerHost): string[] {
+function ownedFileProblems(sourceFile: ts.SourceFile, program: ts.Program, host: ts.CompilerHost, declared: ReadonlySet<string>): string[] {
   const fileName = relative(sourceFile.fileName);
   if (!hasAllowedExtension(fileName)) {
     return [`${fileName}: only .ts modules may be part of the src/core program (no other extensions, no declaration files).`];
@@ -113,6 +151,11 @@ function ownedFileProblems(sourceFile: ts.SourceFile, program: ts.Program, host:
   }
   const options = program.getCompilerOptions();
   for (const imported of ts.preProcessFile(sourceFile.text, true, true).importedFiles) {
+    if (packageOf(imported.fileName) === "obsidian") {
+      problems.push(`${fileName}: import "${imported.fileName}" is not allowed; src/core and sim/ must not depend on Obsidian.`);
+    } else if (!isDeclaredImport(imported.fileName, declared)) {
+      problems.push(`${fileName}: import "${imported.fileName}" is not a declared dependency; add it to package.json dependencies or devDependencies.`);
+    }
     const resolved = ts.resolveModuleName(imported.fileName, sourceFile.fileName, options, host).resolvedModule;
     if (resolved === undefined) {
       problems.push(`${fileName}: import "${imported.fileName}" does not resolve.`);
@@ -123,7 +166,7 @@ function ownedFileProblems(sourceFile: ts.SourceFile, program: ts.Program, host:
   return problems;
 }
 
-/** Files on disk under src/core (plus virtual ones) that are not plain `.ts` modules. */
+/** Code files on disk under src/core (plus virtual ones) that are not plain `.ts` modules. */
 function coreDirectoryProblems(virtualFiles: ReadonlyMap<string, string>): string[] {
   const coreDir = path.join(pluginDir, "src", "core");
   const onDisk = readdirSync(coreDir, { recursive: true, encoding: "utf8" })
@@ -131,7 +174,7 @@ function coreDirectoryProblems(virtualFiles: ReadonlyMap<string, string>): strin
     .filter((fileName) => statSync(fileName).isFile());
   const files = new Set([...onDisk, ...virtualFiles.keys()].map(relative).filter((fileName) => fileName.startsWith("src/core/")));
   return [...files]
-    .filter((fileName) => !hasAllowedExtension(fileName))
+    .filter(isOtherCode)
     .map((fileName) => `${fileName}: src/core may only contain .ts modules (no other extensions, no declaration files).`);
 }
 
@@ -152,10 +195,11 @@ export function checkCoreProgram(extraRootFiles: readonly string[] = [], virtual
       `${coreConfig}: ${fileName} is part of the src/core program; something in src/core references obsidian, src/main.ts or src/obsidian (directly or transitively).`,
     );
   }
+  const declared = declaredPackages();
   for (const sourceFile of program.getSourceFiles()) {
     const fileName = relative(sourceFile.fileName);
     if (isOwned(fileName)) {
-      problems.push(...ownedFileProblems(sourceFile, program, host));
+      problems.push(...ownedFileProblems(sourceFile, program, host, declared));
     } else if (!leaked.has(fileName) && !dependencyDirs.some((dir) => fileName.startsWith(dir)) && !fileName.endsWith(".json")) {
       problems.push(`${coreConfig}: ${fileName} is part of the src/core program but outside src/core, sim/, src/gen and dependencies, so it is not fenced.`);
     }
