@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -58,10 +59,11 @@ type Pinger interface {
 type Options struct {
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
-	// WriteTimeout bounds how long after it arrives an API request may take
-	// to be handled and its response written, so a client that stops
-	// reading cannot hold a connection and handler indefinitely. It does
-	// not apply to the realtime WebSocket once upgraded. Zero means
+	// WriteTimeout bounds how long writing an API response may take,
+	// counted from its first byte, so a client that stops reading cannot
+	// hold a connection and handler indefinitely. It does not bound how
+	// long the handler runs before it responds, and it does not apply to
+	// the realtime WebSocket once upgraded. Zero means
 	// config.DefaultWriteTimeout.
 	WriteTimeout time.Duration
 	// ShutdownDelay is how long, once shutdown starts, /readyz fails while
@@ -260,32 +262,84 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		MaxAge:         corsMaxAgeSeconds,
 	})
 
-	return limitRequestTime(options.WriteTimeout, corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, mux)))
+	return limitResponseTime(options.WriteTimeout, corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, mux)))
 }
 
-// limitRequestTime gives every API request timeout from its arrival to be
-// handled and its response written: the connection's write deadline and the
-// request context's deadline. A client that sends a request and then stops
-// reading blocks the response write only until the deadline; the write then
-// fails and the connection is closed.
+// limitResponseTime bounds how long writing each API response may take:
+// the connection's write deadline is set to timeout from the response's
+// first byte (its status line, body or flush), so a client that sends a
+// request and then stops reading blocks the write only until the deadline;
+// the write then fails and the connection is closed. The handler itself is
+// not bounded and its context carries no deadline, so long work such as a
+// blob commit's compose (SPEC §6.2) runs to completion however long it
+// takes.
 //
 // It applies to every route, so routes added later are bounded too. The
-// realtime WebSocket is exempt by construction: net/http clears a hijacked
-// connection's deadlines, and the hub detaches each connection from the
-// request context (TestRealtimeWebSocketOutlivesTheWriteTimeout).
-func limitRequestTime(timeout time.Duration, next http.Handler) http.Handler {
+// realtime WebSocket is exempt: its 101 response is informational and
+// starts no deadline, and once the connection is hijacked none is set
+// (TestRealtimeWebSocketOutlivesTheWriteTimeout).
+func limitResponseTime(timeout time.Duration, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		deadline := time.Now().Add(timeout)
-
-		// It fails only for writers without deadlines (test recorders),
-		// where the context deadline still applies.
-		_ = http.NewResponseController(writer).SetWriteDeadline(deadline)
-
-		ctx, cancel := context.WithDeadline(request.Context(), deadline)
-		defer cancel()
-
-		next.ServeHTTP(writer, request.WithContext(ctx))
+		limited := &deadlineWriter{ResponseWriter: writer, timeout: timeout}
+		next.ServeHTTP(limited, request)
+		// A handler that wrote nothing gets its response written by
+		// net/http after it returns; bound that write too.
+		limited.start()
 	})
+}
+
+// deadlineWriter sets the connection's write deadline when the response
+// starts. Flush, Hijack and Unwrap keep streaming, the WebSocket upgrade and
+// http.ResponseController working through the wrapper.
+type deadlineWriter struct {
+	http.ResponseWriter
+	timeout time.Duration
+	started bool
+}
+
+func (writer *deadlineWriter) start() {
+	if writer.started {
+		return
+	}
+
+	writer.started = true
+	// It fails only for writers without deadlines (test recorders), which
+	// have no connection to bound.
+	_ = http.NewResponseController(writer.ResponseWriter).SetWriteDeadline(time.Now().Add(writer.timeout))
+}
+
+func (writer *deadlineWriter) WriteHeader(status int) {
+	// Informational responses (101 Switching Protocols before a WebSocket
+	// hijack) do not start the final response.
+	if status >= http.StatusOK {
+		writer.start()
+	}
+
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *deadlineWriter) Write(data []byte) (int, error) {
+	writer.start()
+
+	return writer.ResponseWriter.Write(data)
+}
+
+func (writer *deadlineWriter) Flush() {
+	writer.start()
+
+	_ = http.NewResponseController(writer.ResponseWriter).Flush()
+}
+
+// Hijack hands the connection to the caller (the realtime WebSocket), after
+// which no HTTP response follows and no deadline may be set on it.
+func (writer *deadlineWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	writer.started = true
+
+	return http.NewResponseController(writer.ResponseWriter).Hijack() //nolint:wrapcheck // passed through unchanged
+}
+
+func (writer *deadlineWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
 }
 
 // limitRequestBody rejects bodies declared larger than limit outright and

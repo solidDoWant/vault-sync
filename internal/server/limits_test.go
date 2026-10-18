@@ -38,17 +38,22 @@ import (
 // a stand-in for any handler producing a large response.
 type largeVaults struct {
 	nameLength atomic.Int64
-	// listed receives a value each time ListVaults is called, if not nil.
-	listed chan struct{}
+	// delay is how long ListVaults takes before it returns. It ends early,
+	// with the context's error, if the request context ends first.
+	delay time.Duration
 }
 
 func (vaults *largeVaults) CreateVault(context.Context, uuid.UUID, store.NewVault, int) (store.Vault, error) {
 	return store.Vault{}, errors.New("not supported")
 }
 
-func (vaults *largeVaults) ListVaults(context.Context, uuid.UUID, uuid.UUID, int) ([]store.Vault, error) {
-	if vaults.listed != nil {
-		vaults.listed <- struct{}{}
+func (vaults *largeVaults) ListVaults(ctx context.Context, _, _ uuid.UUID, _ int) ([]store.Vault, error) {
+	if vaults.delay > 0 {
+		select {
+		case <-time.After(vaults.delay):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
 	return []store.Vault{{
@@ -148,6 +153,25 @@ func TestResponsesOverTheSendLimitAreRejected(t *testing.T) {
 	}
 }
 
+func TestHandlersMayRunLongerThanTheWriteTimeout(t *testing.T) {
+	const writeTimeout = 200 * time.Millisecond
+
+	// The handler takes several write timeouts (a long blob commit, say),
+	// then writes a small response, which must reach the client: the
+	// timeout bounds writing the response, not producing it.
+	vaults := &largeVaults{delay: 5 * writeTimeout}
+	vaults.nameLength.Store(16)
+	fixture, token := newLargeResponseFixture(t, vaults, server.Options{WriteTimeout: writeTimeout})
+	client := vaultsyncv1connect.NewVaultServiceClient(http.DefaultClient, fixture.running.apiURL())
+
+	started := time.Now()
+	response, err := client.ListVaults(t.Context(), authorized(&vaultsyncv1.ListVaultsRequest{}, token))
+	require.NoError(t, err, "a handler that runs longer than the write timeout must still deliver its response")
+	require.GreaterOrEqual(t, time.Since(started), vaults.delay)
+	require.Len(t, response.Msg.GetVaults(), 1)
+	assert.Equal(t, strings.Repeat("a", 16), response.Msg.GetVaults()[0].GetName())
+}
+
 func TestServerReleasesConnectionsOfClientsThatDoNotRead(t *testing.T) {
 	const (
 		writeTimeout = 300 * time.Millisecond
@@ -156,7 +180,7 @@ func TestServerReleasesConnectionsOfClientsThatDoNotRead(t *testing.T) {
 		responseBytes = 24 << 20
 	)
 
-	vaults := &largeVaults{listed: make(chan struct{}, 1)}
+	vaults := &largeVaults{}
 	vaults.nameLength.Store(responseBytes)
 	fixture, token := newLargeResponseFixture(t, vaults, server.Options{
 		MaxRequestBytes: 32 << 20,
@@ -171,36 +195,31 @@ func TestServerReleasesConnectionsOfClientsThatDoNotRead(t *testing.T) {
 		"Authorization: Bearer %s\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", token)
 	require.NoError(t, err)
 
-	select {
-	case <-vaults.listed:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the request did not reach the handler")
-	}
+	// Wait for the response's first bytes (the read deadline only keeps a
+	// broken server from hanging the test). The server set its write
+	// deadline before writing them, so it has passed once the client then
+	// stays idle for longer than writeTimeout.
+	reader := bufio.NewReader(conn)
 
-	// The write deadline was set before the handler ran, so it has passed
-	// once the client has not read for writeTimeout since.
-	time.Sleep(writeTimeout)
+	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
+	_, err = reader.Peek(1)
+	require.NoError(t, err, "the server must start the response")
+
+	time.Sleep(3 * writeTimeout)
 
 	// Reading now gets what the kernel buffered, then the closed connection
-	// instead of the rest of the response. The read deadline only keeps a
-	// broken server from hanging the test.
-	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
+	// instead of the rest of the response.
+	response, err := http.ReadResponse(reader, nil)
+	require.NoError(t, err)
 
-	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	if err == nil {
-		defer func() { _ = response.Body.Close() }()
+	defer func() { _ = response.Body.Close() }()
 
-		require.Equal(t, http.StatusOK, response.StatusCode)
+	require.Equal(t, http.StatusOK, response.StatusCode)
 
-		var read int64
+	read, err := io.Copy(io.Discard, response.Body)
+	require.Error(t, err, "the server must not deliver the whole response to a client that stopped reading")
+	assert.Less(t, read, int64(responseBytes))
 
-		read, err = io.Copy(io.Discard, response.Body)
-		require.Error(t, err, "the server must not deliver the whole response to a client that stopped reading")
-		assert.Less(t, read, int64(responseBytes))
-	}
-
-	// On a slow machine the deadline can pass before the handler wrote
-	// anything; the connection is then closed before the status line.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		assert.False(t, netErr.Timeout(), "the server must close the connection, not leave it open")
