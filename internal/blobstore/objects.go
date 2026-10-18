@@ -169,6 +169,25 @@ func (objects *Objects) ReadRange(ctx context.Context, key string, offset, lengt
 	return data, nil
 }
 
+// ErrNoObject is returned by Open when key does not exist.
+var ErrNoObject = errors.New("object does not exist")
+
+// Open returns a reader streaming the whole object at key, so callers never
+// hold more than their own buffer in memory. The caller closes it and bounds
+// how much it reads.
+func (objects *Objects) Open(ctx context.Context, key string) (io.ReadCloser, error) {
+	output, err := objects.client.GetObject(ctx, &s3.GetObjectInput{Bucket: aws.String(objects.bucket), Key: aws.String(key)})
+	if isNotFound(err, "NoSuchKey") {
+		return nil, ErrNoObject
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("get object: %w", err)
+	}
+
+	return output.Body, nil
+}
+
 // Part is one staged object to compose, of a known length.
 type Part struct {
 	Key    string
