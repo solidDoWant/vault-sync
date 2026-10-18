@@ -66,7 +66,7 @@ export class EngineObserver {
         },
         (error: unknown) => {
           if (errorCode(error) === Code.Unavailable) {
-            this.context.log(`${this.name} pull interrupted: Unavailable`);
+            this.context.log(`${this.name} engine pull interrupted: Unavailable`);
           } else {
             this.violation("engine", `${this.name} pull failed: ${error instanceof Error ? error.message : String(error)}`);
           }

@@ -34,7 +34,7 @@ function summarize(trace: readonly string[]): string {
     ["partitions", " partitioned for "],
     ["crashes", " crashed and restarted"],
     ["engine pulls completed", " deferred"],
-    ["engine pulls interrupted", "pull interrupted"],
+    ["engine pulls interrupted", "engine pull interrupted"],
     ["engine crashes", "restarted with its vault and journal"],
   ];
   return events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`).join(", ");
