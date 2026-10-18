@@ -1,0 +1,44 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+  description: "Groups, then the digest-only group that overrides them",
+  packageRules: [
+    {
+      description: "Go modules: one PR",
+      groupName: "go modules",
+      matchManagers: ["gomod"],
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      group: { commitMessageTopic: "{{{groupName}}} group" },
+    },
+    {
+      description: "Plugin npm packages: one PR. Protobuf runtime/generator are grouped separately",
+      groupName: "plugin npm",
+      matchManagers: ["npm"],
+      matchUpdateTypes: ["minor", "patch"],
+      matchPackageNames: ["!@bufbuild/**", "!@connectrpc/**"],
+      group: { commitMessageTopic: "{{{groupName}}} group" },
+    },
+    {
+      description: "Protobuf/ConnectRPC runtimes and generators move together (generated code must be regenerated)",
+      groupName: "protobuf",
+      matchPackageNames: ["@bufbuild/**", "@connectrpc/**", "google.golang.org/protobuf", "connectrpc.com/connect"],
+      group: { commitMessageTopic: "{{{groupName}}} group" },
+    },
+    {
+      description: "GitHub Actions: one PR",
+      groupName: "github actions",
+      matchManagers: ["github-actions"],
+      group: { commitMessageTopic: "{{{groupName}}} group" },
+    },
+
+    // After every group rule, so it takes image digest-only updates out of their groups.
+    {
+      description: "Image digest-only updates (same tag, new digest): one PR, held for Dashboard approval",
+      matchDatasources: ["docker"],
+      matchUpdateTypes: ["digest"],
+      groupName: "digest updates",
+      groupSlug: "digest-updates",
+      group: { commitMessageTopic: "digests" },
+      dependencyDashboardApproval: true,
+    },
+  ],
+}

@@ -1,0 +1,10 @@
+{
+  "id": "vault-sync",
+  "name": "Vault Sync",
+  "version": "0.0.1",
+  "minAppVersion": "1.8.0",
+  "description": "Self-hosted vault synchronization backed by PostgreSQL and S3.",
+  "author": "solidDoWant",
+  "authorUrl": "https://github.com/solidDoWant",
+  "isDesktopOnly": false
+}
