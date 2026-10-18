@@ -1,0 +1,384 @@
+//go:build integration && linux
+
+package export_test
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
+	"github.com/solidDoWant/vault-sync/internal/config"
+	"github.com/solidDoWant/vault-sync/internal/export"
+	"github.com/solidDoWant/vault-sync/internal/store"
+	"github.com/solidDoWant/vault-sync/internal/testinfra"
+)
+
+// deployment is a migrated database and a bucket, as a server leaves them.
+type deployment struct {
+	database store.Config
+	bucket   blobstore.Config
+	pool     *pgxpool.Pool
+	store    *store.Store
+	objects  *blobstore.Objects
+	user     uuid.UUID
+	device   uuid.UUID
+}
+
+func newDeployment(t *testing.T) *deployment {
+	t.Helper()
+
+	database := testinfra.PostgresConfig(t)
+	bucket := testinfra.S3Bucket(t)
+
+	pool, err := store.Open(t.Context(), database)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	_, err = store.Migrate(t.Context(), pool, slog.New(slog.DiscardHandler))
+	require.NoError(t, err)
+
+	objects, err := blobstore.New(bucket)
+	require.NoError(t, err)
+
+	queries := store.New(pool)
+
+	user, err := queries.UpsertUser(t.Context(), "https://auth.example/", "alice")
+	require.NoError(t, err)
+
+	device, err := queries.RegisterDevice(t.Context(), user, "laptop", nil, 10)
+	require.NoError(t, err)
+
+	return &deployment{database: database, bucket: bucket, pool: pool, store: queries, objects: objects, user: user, device: device.ID}
+}
+
+func (deployment *deployment) env() map[string]string {
+	return map[string]string{
+		config.DatabaseURLEnv:           deployment.database.DSN,
+		config.S3EndpointEnv:            deployment.bucket.Endpoint,
+		config.S3RegionEnv:              deployment.bucket.Region,
+		config.S3BucketEnv:              deployment.bucket.Bucket,
+		config.S3AccessKeyIDFileEnv:     deployment.bucket.AccessKeyIDFile,
+		config.S3SecretAccessKeyFileEnv: deployment.bucket.SecretAccessKeyFile,
+		config.S3ForcePathStyleEnv:      "true",
+	}
+}
+
+func (deployment *deployment) createVault(t *testing.T, name string, encryption store.Encryption) uuid.UUID {
+	t.Helper()
+
+	vault, err := deployment.store.CreateVault(t.Context(), deployment.user, store.NewVault{Name: name, Encryption: encryption}, 100)
+	require.NoError(t, err)
+
+	return vault.ID
+}
+
+// putBlob stores content as a complete blob of the vault, as CommitBlob
+// leaves it, and returns its id.
+func (deployment *deployment) putBlob(t *testing.T, vaultID uuid.UUID, content []byte) []byte {
+	t.Helper()
+
+	sum := sha256.Sum256(content)
+	require.NoError(t, deployment.objects.Put(t.Context(), blobstore.BlobKey(vaultID, sum[:]), content))
+
+	_, err := deployment.pool.Exec(t.Context(), `
+		INSERT INTO blobs (vault_id, blob_id, size, state) VALUES ($1, $2, $3, 'complete')
+		ON CONFLICT DO NOTHING`, vaultID, sum[:], len(content))
+	require.NoError(t, err)
+
+	return sum[:]
+}
+
+// commit commits a revision of document (a new one if base is nil) and
+// returns it. A nil content makes a tombstone.
+func (deployment *deployment) commit(t *testing.T, vaultID, document uuid.UUID, base *store.Revision, path string, content []byte) store.Revision {
+	t.Helper()
+
+	deleted := content == nil
+	if deleted {
+		content = []byte("tombstone")
+	}
+
+	revision := store.NewRevision{
+		ID:          uuid.Must(uuid.NewV7()),
+		DocumentID:  document,
+		Kind:        "blob",
+		ContentRef:  deployment.putBlob(t, vaultID, content),
+		ContentSize: int64(len(content)),
+		Path:        path,
+		PathKey:     strings.ToLower(path),
+		Deleted:     deleted,
+		DeviceID:    deployment.device,
+		UserID:      deployment.user,
+	}
+
+	if base != nil {
+		revision.BaseRevID = uuid.NullUUID{UUID: base.ID, Valid: true}
+	}
+
+	committed, err := deployment.store.InVault(vaultID).CommitRevision(t.Context(), revision)
+	require.NoError(t, err)
+
+	return committed
+}
+
+// insertRawDocument writes a live document straight into the database,
+// bypassing CommitRevision's path validation, as a corrupted or tampered
+// database could hold it.
+func (deployment *deployment) insertRawDocument(t *testing.T, vaultID uuid.UUID, path string, content []byte) uuid.UUID {
+	t.Helper()
+
+	blobID := deployment.putBlob(t, vaultID, content)
+	document, revision := uuid.Must(uuid.NewV7()), uuid.Must(uuid.NewV7())
+
+	err := pgx.BeginFunc(t.Context(), deployment.pool, func(tx pgx.Tx) error {
+		var seq int64
+		if err := tx.QueryRow(t.Context(), `UPDATE vaults SET head_seq = head_seq + 1 WHERE id = $1 RETURNING head_seq`, vaultID).Scan(&seq); err != nil {
+			return err
+		}
+
+		if _, err := tx.Exec(t.Context(), `INSERT INTO documents (id, vault_id, kind, head_rev_id, path_key) VALUES ($1, $2, 'blob', $3, $4)`,
+			document, vaultID, revision, "raw-"+document.String()); err != nil {
+			return err
+		}
+
+		_, err := tx.Exec(t.Context(), `
+			INSERT INTO revisions (id, document_id, vault_id, seq, content_ref, path, device_id)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)`, revision, document, vaultID, seq, blobID, path, deployment.device)
+
+		return err
+	})
+	require.NoError(t, err)
+
+	return document
+}
+
+// state is everything the export must leave unchanged.
+func (deployment *deployment) state(t *testing.T) string {
+	t.Helper()
+
+	var database string
+
+	err := deployment.pool.QueryRow(t.Context(), `SELECT json_build_object(
+		'vaults', (SELECT json_agg(v ORDER BY id) FROM vaults v),
+		'documents', (SELECT json_agg(d ORDER BY id) FROM documents d),
+		'revisions', (SELECT json_agg(r ORDER BY id) FROM revisions r),
+		'blobs', (SELECT json_agg(b ORDER BY vault_id, blob_id) FROM blobs b),
+		'blob_uploads', (SELECT json_agg(u ORDER BY id) FROM blob_uploads u),
+		'users', (SELECT json_agg(u ORDER BY id) FROM users u),
+		'devices', (SELECT json_agg(d ORDER BY id) FROM devices d)
+	)::text`).Scan(&database)
+	require.NoError(t, err)
+
+	var objects strings.Builder
+
+	paginator := s3.NewListObjectsV2Paginator(deployment.objects.Client(), &s3.ListObjectsV2Input{Bucket: aws.String(deployment.bucket.Bucket)})
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(t.Context())
+		require.NoError(t, err)
+
+		for _, object := range page.Contents {
+			objects.WriteString(aws.ToString(object.Key) + " " + aws.ToString(object.ETag) + "\n")
+		}
+	}
+
+	return database + "\n" + objects.String()
+}
+
+func runMain(t *testing.T, ctx context.Context, env map[string]string, output string) (int, export.Summary) {
+	t.Helper()
+
+	var stdout, stderr bytes.Buffer
+
+	code := export.Main(ctx, []string{"-out", output}, func(name string) (string, bool) {
+		value, ok := env[name]
+
+		return value, ok
+	}, &stdout, &stderr)
+
+	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
+	require.Len(t, lines, 1, "stdout is one JSON summary line; stderr: %s", stderr.String())
+
+	var summary export.Summary
+	require.NoError(t, json.Unmarshal([]byte(lines[0]), &summary))
+
+	return code, summary
+}
+
+func TestExportAgainstPostgreSQLAndS3(t *testing.T) {
+	deployment := newDeployment(t)
+
+	large := make([]byte, blobstore.PartSize+12345)
+	_, err := rand.Read(large)
+	require.NoError(t, err)
+
+	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
+
+	edited := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "draft.md", []byte("first draft"))
+	edited = deployment.commit(t, notes, edited.DocumentID, &edited, "draft.md", []byte("second draft"))
+	deployment.commit(t, notes, edited.DocumentID, &edited, "final/essay.md", []byte("final"))
+
+	deleted := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "trash.md", []byte("trash"))
+	deployment.commit(t, notes, deleted.DocumentID, &deleted, "trash.md", nil)
+
+	deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "attachments/video.bin", large)
+	deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "same-content.md", []byte("final"))
+
+	// More documents than one page holds.
+	want := map[string]string{
+		notes.String() + "/final/essay.md":        "final",
+		notes.String() + "/attachments/video.bin": string(large),
+		notes.String() + "/same-content.md":       "final",
+	}
+
+	for range export.DefaultPageSize + 1 {
+		path := filepath.Join("many", uuid.Must(uuid.NewV7()).String()+".md")
+		deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, path, []byte(path))
+		want[notes.String()+"/"+path] = path
+	}
+
+	work := deployment.createVault(t, "Notes", store.EncryptionNone)
+	deployment.commit(t, work, uuid.Must(uuid.NewV7()), nil, "a.md", []byte("work"))
+	want[work.String()+"/a.md"] = "work"
+
+	secret := deployment.createVault(t, "Secret", store.EncryptionE2EE)
+
+	before := deployment.state(t)
+	output := filepath.Join(t.TempDir(), "export")
+
+	code, summary := runMain(t, t.Context(), deployment.env(), output)
+
+	assert.Equal(t, 0, code)
+	assert.Equal(t, export.StatusOK, summary.Status, summary.Error)
+	assert.Equal(t, want, files(t, output))
+	assert.Equal(t, before, deployment.state(t), "the export changes nothing in PostgreSQL or S3")
+
+	assert.Equal(t, 2, summary.Vaults)
+	assert.Equal(t, 1, summary.SkippedVaults)
+	assert.EqualValues(t, len(want), summary.Files)
+
+	var total int64
+	for _, content := range want {
+		total += int64(len(content))
+	}
+
+	assert.Equal(t, total, summary.Bytes)
+	require.Len(t, summary.VaultDetails, 3)
+	assert.Equal(t, export.VaultSummary{ID: secret, Name: "Secret", Encryption: "e2ee", Skipped: export.SkippedE2EE}, summary.VaultDetails[2])
+	assert.Equal(t, "Notes", summary.VaultDetails[0].Name)
+	assert.Equal(t, int64(export.DefaultPageSize+1+7), summary.VaultDetails[0].HeadSeq)
+}
+
+func TestExportRefusesDatabasePathsOutsideTheVault(t *testing.T) {
+	deployment := newDeployment(t)
+	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
+
+	deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "ok.md", []byte("ok"))
+
+	refused := map[uuid.UUID]bool{}
+	for _, path := range []string{"../escape.md", "a/../../escape.md", "/tmp/escape.md", `..\escape.md`, `C:\escape.md`, `\\server\share\escape.md`} {
+		refused[deployment.insertRawDocument(t, notes, path, []byte("escape"))] = true
+	}
+
+	root := t.TempDir()
+	output := filepath.Join(root, "export")
+
+	code, summary := runMain(t, t.Context(), deployment.env(), output)
+
+	assert.Equal(t, 1, code, "left-out documents fail the run for alerting")
+	assert.Equal(t, export.StatusPartial, summary.Status)
+	assert.Equal(t, len(refused), summary.DocumentErrors)
+
+	for document, reason := range documentErrors(summary) {
+		assert.True(t, refused[document])
+		assert.Equal(t, "path is not vault-relative", reason)
+	}
+
+	assert.Equal(t, map[string]string{notes.String() + "/ok.md": "ok"}, files(t, output))
+	assert.Equal(t, []string{".export.lock", "export"}, workspace{root: root}.siblings(t))
+}
+
+func TestExportReportsMissingContent(t *testing.T) {
+	deployment := newDeployment(t)
+	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
+
+	lost := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "lost.md", []byte("lost"))
+	deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "kept.md", []byte("kept"))
+
+	require.NoError(t, deployment.objects.Delete(t.Context(), blobstore.BlobKey(notes, lost.ContentRef)))
+
+	output := filepath.Join(t.TempDir(), "export")
+
+	code, summary := runMain(t, t.Context(), deployment.env(), output)
+
+	assert.Equal(t, 1, code)
+	assert.Equal(t, map[uuid.UUID]string{lost.DocumentID: "stored content is missing"}, documentErrors(summary))
+	assert.Equal(t, map[string]string{notes.String() + "/kept.md": "kept"}, files(t, output))
+}
+
+// cancelingSource cancels the export after its first content read.
+type cancelingSource struct {
+	*export.StoreSource
+	cancel context.CancelFunc
+}
+
+func (source cancelingSource) Content(ctx context.Context, vaultID uuid.UUID, blobID []byte) (io.ReadCloser, error) {
+	source.cancel()
+
+	return source.StoreSource.Content(ctx, vaultID, blobID)
+}
+
+func TestInterruptedExportAgainstPostgreSQLAndS3LeavesThePreviousExport(t *testing.T) {
+	deployment := newDeployment(t)
+	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
+
+	first := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "a.md", []byte("version 1"))
+	deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "b.md", []byte("version 1"))
+
+	space := newWorkspace(t)
+
+	code, _ := runMain(t, t.Context(), deployment.env(), space.output)
+	require.Equal(t, 0, code)
+
+	previous := snapshot(t, space.output)
+
+	deployment.commit(t, notes, first.DocumentID, &first, "a.md", []byte("version 2"))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	summary, err := export.Run(ctx, export.Options{
+		Output: space.output,
+		Source: cancelingSource{StoreSource: &export.StoreSource{Store: deployment.store, Objects: deployment.objects}, cancel: cancel},
+		Logger: slog.New(slog.DiscardHandler),
+	})
+	require.Error(t, err)
+
+	assert.Equal(t, export.StatusFailed, summary.Status)
+	assert.Equal(t, previous, snapshot(t, space.output))
+	assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t))
+
+	// A failure before the export starts (S3 unreachable) also leaves it.
+	env := deployment.env()
+	env[config.S3BucketEnv] = "no-such-bucket-" + uuid.NewString()
+
+	code, summary = runMain(t, t.Context(), env, space.output)
+	assert.Equal(t, 1, code)
+	assert.Equal(t, export.StatusFailed, summary.Status)
+	assert.Equal(t, previous, snapshot(t, space.output))
+}
