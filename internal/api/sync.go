@@ -310,7 +310,8 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 	case errors.Is(err, store.ErrRevisionConflict),
 		errors.Is(err, store.ErrIDInUse),
 		errors.Is(err, store.ErrKindMismatch),
-		errors.Is(err, store.ErrBlobSizeMismatch):
+		errors.Is(err, store.ErrBlobSizeMismatch),
+		errors.Is(err, store.ErrInvalidPath):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
 		return service.internal(ctx, "cannot commit revision", err)
