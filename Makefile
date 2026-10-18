@@ -50,8 +50,8 @@ test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client 
 	./scripts/test-sim.sh
 
 .PHONY: test-e2e
-test-e2e: ## TODO(phase 2): plugin e2e in real Obsidian via wdio-obsidian-service.
-	@echo "test-e2e: not yet implemented" >&2; exit 1
+test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wdio-obsidian-service; headless via xvfb) against a real server (docker compose; VAULT_SYNC_E2E_MOBILE=1 emulates mobile).
+	./scripts/test-e2e.sh
 
 .PHONY: vulncheck
 vulncheck: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Report known vulnerabilities in Go and npm dependencies.

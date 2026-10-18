@@ -9,19 +9,27 @@
     "dev": "node esbuild.config.mjs",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit && node scripts/check-core-program.ts"
+    "typecheck": "tsc --noEmit && tsc --noEmit -p test/e2e && node scripts/check-core-program.ts"
   },
   "license": "AGPL-3.0-only",
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.16.0",
     "@eslint/js": "^10.0.1",
+    "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.5",
+    "@wdio/cli": "^9.32.0",
+    "@wdio/globals": "^9.31.3",
+    "@wdio/local-runner": "^9.32.0",
+    "@wdio/mocha-framework": "^9.32.0",
     "esbuild": "^0.28.2",
     "eslint": "^10.13.0",
     "obsidian": "^1.14.4",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.71.2",
-    "vitest": "^5.0.5"
+    "vitest": "^5.0.5",
+    "wdio-obsidian-reporter": "^3.3.0",
+    "wdio-obsidian-service": "^3.3.0",
+    "webdriverio": "^9.32.0"
   },
   "dependencies": {
     "@bufbuild/protobuf": "^2.16.0",

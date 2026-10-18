@@ -44,7 +44,7 @@ Run `make help` for the full list (keep it and this section current as targets a
 - `make generate` / `make check-generate` — regenerate protobuf code / fail on drift.
 - `make test-integration` — `integration`-tagged Go tests against real PostgreSQL + S3 (`docker compose`, torn down afterwards; tests skip without Docker). Extra `go test` args: `./scripts/test-integration.sh -run X ./internal/store/`.
 - `make test-sim` — multi-client sync simulation against a real server on PostgreSQL + S3 (`docker compose`; `SIM_SEEDS`, `SIM_STEPS`, `SIM_CLIENTS` tune it, `SIM_SEED=N` replays one seed; see `docs/testing/simulation.md`).
-- `make test-e2e` — plugin e2e in real Obsidian via `wdio-obsidian-service` (headless via xvfb).
+- `make test-e2e` — plugin e2e in a pinned real Obsidian via `wdio-obsidian-service` (headless via xvfb) against a real server on PostgreSQL + S3 (`docker compose`); `VAULT_SYNC_E2E_MOBILE=1` uses Obsidian's emulated mobile mode. See `docs/testing/e2e.md`.
 
 ## Dev Tools
 

@@ -1,7 +1,8 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   // Managers: gomod (go.mod), npm (plugin/), github-actions, nix (flake.lock),
-  // docker-compose (deploy/compose/).
+  // docker-compose (deploy/compose/), and a regex manager for the Obsidian
+  // version of the plugin e2e suite (plugin/wdio.conf.mts).
   // Policy is split by topic under .github/renovate/.
   extends: [
     "config:recommended",
@@ -47,6 +48,17 @@
   lockFileMaintenance: { dependencyDashboardApproval: true },
 
   postUpdateOptions: ["gomodTidy"],
+
+  customManagers: [
+    {
+      customType: "regex",
+      description: "Obsidian version the plugin e2e suite runs (docs/testing/e2e.md)",
+      managerFilePatterns: ["/^plugin/wdio\\.conf\\.mts$/"],
+      matchStrings: ["// renovate: datasource=(?<datasource>\\S+) depName=(?<depName>\\S+)\\s+const \\w+ = \"(?<currentValue>[^\"]+)\""],
+      // Release tags are v-prefixed (v1.14.4).
+      extractVersionTemplate: "^v(?<version>.+)$",
+    },
+  ],
 
   packageRules: [
     // Last so it overrides any preset rule: every merge needs a reviewer.

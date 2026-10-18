@@ -10,6 +10,40 @@
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
+
+        # Shared libraries of the Obsidian (Electron) build and chromedriver
+        # that the plugin e2e suite downloads (make test-e2e). They are
+        # generic Linux binaries, so on NixOS they run through nix-ld, which
+        # loads them with NIX_LD and resolves their libraries from
+        # NIX_LD_LIBRARY_PATH; on other Linux distributions the system's own
+        # loader and libraries are used and both are ignored.
+        electronLibraries = with pkgs; [
+          alsa-lib
+          at-spi2-atk
+          at-spi2-core
+          cairo
+          cups
+          dbus
+          expat
+          glib
+          gtk3
+          libdrm
+          libgbm
+          libGL
+          libxkbcommon
+          nspr
+          nss
+          pango
+          systemd
+          libx11
+          libxcomposite
+          libxdamage
+          libxext
+          libxfixes
+          libxrandr
+          libxcb
+          libxshmfence
+        ];
       in
       {
         # Package and OCI image derivations (nix/*.nix) are added by the
@@ -52,6 +86,13 @@
 
             pkgs.kubernetes-helm
           ];
+
+          # The loader comes from the same nixpkgs as the libraries, so that
+          # they agree on the glibc version.
+          shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
+            export NIX_LD="${pkgs.stdenv.cc.bintools.dynamicLinker}"
+            export NIX_LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath electronLibraries}''${NIX_LD_LIBRARY_PATH:+:$NIX_LD_LIBRARY_PATH}"
+          '';
         };
       });
 }

@@ -17,7 +17,7 @@ const MAIN_SPECIFIER = "^((\\.\\./)+|(.*/)?src/)main(\\.[cm]?[jt]s)?$";
 const MAIN_MESSAGE = "src/core must not import the plugin entry point (src/main.ts); it pulls in Obsidian.";
 
 export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts", "vitest.integration.config.ts", "vitest.sim.config.ts"] },
+  { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts", "vitest.integration.config.ts", "vitest.sim.config.ts", "wdio.conf.mts", "test/e2e/harness/dist/"] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {

@@ -1,0 +1,9 @@
+{
+  "id": "vault-sync-e2e-harness",
+  "name": "Vault Sync e2e harness",
+  "version": "0.0.1",
+  "minAppVersion": "1.8.0",
+  "description": "Test-only plugin through which the e2e suite runs vault-sync code inside Obsidian. Never shipped.",
+  "author": "solidDoWant",
+  "isDesktopOnly": false
+}
