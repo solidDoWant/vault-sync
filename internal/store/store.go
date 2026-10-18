@@ -29,6 +29,11 @@ type Config struct {
 	// certificate chain and host name are always verified (verify-full),
 	// regardless of the DSN's sslmode.
 	TLSCAFile string
+
+	// ReadOnly makes every transaction on the pool's connections read-only
+	// (default_transaction_read_only), so PostgreSQL refuses any write. The
+	// export job uses it: it must never change the database.
+	ReadOnly bool
 }
 
 // NewPoolConfig parses cfg into a pgxpool configuration. Setting any TLS file
@@ -56,6 +61,10 @@ func NewPoolConfig(cfg Config) (*pgxpool.Config, error) {
 	// (SPEC.md §12). pgx's default pings only connections idle for over a
 	// second, which a busy pool's connections rarely are.
 	poolConfig.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
+
+	if cfg.ReadOnly {
+		poolConfig.ConnConfig.RuntimeParams["default_transaction_read_only"] = "on"
+	}
 
 	return poolConfig, nil
 }

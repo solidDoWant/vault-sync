@@ -343,6 +343,63 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	return cfg, nil
 }
 
+// ExportConfig is the configuration of the export subcommand (SPEC.md §4).
+// It reads the same database and object-store variables as the server.
+type ExportConfig struct {
+	// Database is the PostgreSQL connection configuration. Its pool is
+	// read-only.
+	Database store.Config
+	// S3 is the object store holding blob contents.
+	S3 blobstore.Config
+	// LogLevel is the minimum level logged.
+	LogLevel slog.Level
+}
+
+// LoadExport reads the export configuration through lookup, like Load. The
+// database and the object store are both required; the API, OIDC and limit
+// variables are ignored.
+func LoadExport(lookup func(string) (string, bool)) (ExportConfig, error) {
+	get := func(name string) string {
+		value, _ := lookup(name)
+
+		return strings.TrimSpace(value)
+	}
+
+	cfg := ExportConfig{
+		Database: store.Config{
+			DSN:         get(DatabaseURLEnv),
+			TLSCertFile: get(DatabaseTLSCertFileEnv),
+			TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
+			TLSCAFile:   get(DatabaseTLSCAFileEnv),
+			ReadOnly:    true,
+		},
+		LogLevel: slog.LevelInfo,
+	}
+
+	problems := []error{checkDatabase(cfg.Database)}
+
+	if raw := get(LogLevelEnv); raw != "" {
+		if err := cfg.LogLevel.UnmarshalText([]byte(raw)); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %q is not one of debug, info, warn, error", LogLevelEnv, raw))
+		}
+	}
+
+	s3, s3Problems := loadS3(get)
+	problems = append(problems, s3Problems...)
+
+	if s3 == nil {
+		problems = append(problems, fmt.Errorf("%s and the other VAULT_SYNC_S3_* variables are required: the export reads blob contents from S3", S3BucketEnv))
+	} else {
+		cfg.S3 = *s3
+	}
+
+	if err := errors.Join(problems...); err != nil {
+		return ExportConfig{}, err
+	}
+
+	return cfg, nil
+}
+
 // loadS3 returns the object-store configuration, or nil when no S3 variable
 // is set.
 func loadS3(get func(string) string) (*blobstore.Config, []error) {
