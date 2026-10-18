@@ -1,0 +1,20 @@
+{
+  // The sync engine (src/core), its tests and the simulation harness, type-checked
+  // as their own program. tsconfig.json also covers src/main.ts, which imports
+  // `obsidian`; that package's `declare global` block (activeWindow, createEl,
+  // Array.prototype.contains, ...) then applies to every file in the program.
+  // Nothing here may reach `obsidian` (scripts/check-core-program.ts, run by
+  // `npm run typecheck`, fails if obsidian.d.ts, src/main.ts or src/obsidian
+  // end up in this program), so those globals do not exist here and core code
+  // that uses them fails `make lint` (test/core-typecheck.test.ts proves it).
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    // Core runs in Node (vitest, simulation harness), Electron and Android
+    // WebView. WebWorker is the standard lib closest to what all of them share
+    // (fetch, Headers, TextEncoder, crypto, URL, timers) without DOM-only
+    // globals such as window and document.
+    "lib": ["ES2022", "WebWorker"],
+    "types": []
+  },
+  "include": ["src/core/**/*.ts", "../sim/**/*.ts"]
+}
