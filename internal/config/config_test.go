@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -49,15 +50,16 @@ func TestLoadDefaults(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, config.Config{
-		ListenAddress:        ":8080",
-		MetricsListenAddress: ":9090",
-		Database:             store.Config{DSN: testDSN},
-		OIDC:                 config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience},
-		MaxRequestBytes:      1 << 20,
-		WriteTimeout:         2 * time.Minute,
-		ShutdownDelay:        5 * time.Second,
-		ShutdownTimeout:      30 * time.Second,
-		LogLevel:             slog.LevelInfo,
+		ListenAddress:            ":8080",
+		MetricsListenAddress:     ":9090",
+		Database:                 store.Config{DSN: testDSN},
+		OIDC:                     config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience},
+		MaxRequestBytes:          1 << 20,
+		WriteTimeout:             2 * time.Minute,
+		MaxConcurrentRPCsPerUser: 32,
+		ShutdownDelay:            5 * time.Second,
+		ShutdownTimeout:          30 * time.Second,
+		LogLevel:                 slog.LevelInfo,
 		Blobs: config.BlobConfig{
 			MaxChunkBytes:      768 << 10,
 			MaxSizeBytes:       1 << 30,
@@ -395,6 +397,17 @@ func TestLoadAcceptsWriteTimeoutBounds(t *testing.T) {
 	}
 }
 
+func TestLoadAcceptsMaxConcurrentRPCsPerUserBounds(t *testing.T) {
+	for _, limit := range []int{1, 10000} {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
+			cfg, err := config.Load(lookup(withRequired(map[string]string{config.MaxConcurrentRPCsPerUserEnv: strconv.Itoa(limit)})))
+			require.NoError(t, err)
+
+			assert.Equal(t, limit, cfg.MaxConcurrentRPCsPerUser)
+		})
+	}
+}
+
 func TestLoadAllowsNoShutdownDelay(t *testing.T) {
 	cfg, err := config.Load(lookup(withRequired(map[string]string{config.ShutdownDelayEnv: "0s"})))
 	require.NoError(t, err)
@@ -485,6 +498,21 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 			name:         "write timeout too long",
 			env:          withRequired(map[string]string{config.WriteTimeoutEnv: "1h0m0.001s"}),
 			wantProblems: []string{config.WriteTimeoutEnv},
+		},
+		{
+			name:         "max concurrent RPCs per user not a number",
+			env:          withRequired(map[string]string{config.MaxConcurrentRPCsPerUserEnv: "many"}),
+			wantProblems: []string{config.MaxConcurrentRPCsPerUserEnv},
+		},
+		{
+			name:         "max concurrent RPCs per user zero",
+			env:          withRequired(map[string]string{config.MaxConcurrentRPCsPerUserEnv: "0"}),
+			wantProblems: []string{config.MaxConcurrentRPCsPerUserEnv},
+		},
+		{
+			name:         "max concurrent RPCs per user too large",
+			env:          withRequired(map[string]string{config.MaxConcurrentRPCsPerUserEnv: "10001"}),
+			wantProblems: []string{config.MaxConcurrentRPCsPerUserEnv},
 		},
 		{
 			name:         "shutdown timeout not a duration",

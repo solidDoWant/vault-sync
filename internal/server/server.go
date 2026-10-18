@@ -66,6 +66,12 @@ type Options struct {
 	// the realtime WebSocket once upgraded. Zero means
 	// config.DefaultWriteTimeout.
 	WriteTimeout time.Duration
+	// MaxConcurrentRPCsPerUser bounds the authenticated RPCs one user may
+	// have in flight on this server, from authentication until the
+	// response is written. Further calls are rejected at once with
+	// RESOURCE_EXHAUSTED, before their handler runs. Zero means
+	// config.DefaultMaxConcurrentRPCsPerUser.
+	MaxConcurrentRPCsPerUser int
 	// ShutdownDelay is how long, once shutdown starts, /readyz fails while
 	// the API still serves new connections, so load balancers stop routing
 	// here before any connection is refused.
@@ -139,8 +145,15 @@ func New(options Options) *Server {
 		options.WriteTimeout = config.DefaultWriteTimeout
 	}
 
+	if options.MaxConcurrentRPCsPerUser <= 0 {
+		options.MaxConcurrentRPCsPerUser = config.DefaultMaxConcurrentRPCsPerUser
+	}
+
+	concurrency := newConcurrencyMetrics()
+	registry.MustRegister(concurrency.collectors()...)
+
 	srv := &Server{options: options}
-	srv.api = newAPIHandler(options, rpcMetrics)
+	srv.api = newAPIHandler(options, rpcMetrics, newUserLimiter(options.MaxConcurrentRPCsPerUser, concurrency))
 	srv.metrics = srv.newMetricsHandler(registry)
 
 	return srv
@@ -181,14 +194,17 @@ var VaultProcedures = map[string]authz.Access{
 	vaultsyncv1connect.BlobServiceCommitBlobProcedure:         authz.Write,
 }
 
-func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
+func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) http.Handler {
 	// One option set for every service. Interceptors run outermost first:
-	// metrics, then authentication, then vault authorization, so rejected
-	// calls are still counted and authorization always knows the caller.
+	// metrics, then authentication, then the per-user concurrency limit,
+	// then vault authorization, so rejected calls are still counted, the
+	// limit is keyed by the authenticated caller and checked before any
+	// database work, and authorization always knows the caller.
 	handlerOptions := []connect.HandlerOption{
 		connect.WithInterceptors(
 			metrics.interceptor(),
 			auth.NewInterceptor(options.Authenticator, PublicProcedures, options.Logger),
+			limiter.interceptor(),
 			authz.NewInterceptor(options.Memberships, VaultProcedures, options.Logger),
 		),
 		// Bounds the decoded (and decompressed) message size.
@@ -262,7 +278,9 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		MaxAge:         corsMaxAgeSeconds,
 	})
 
-	return limitResponseTime(options.WriteTimeout, corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, mux)))
+	// holdRPCSlots wraps the mux directly, so an RPC's slot is held until
+	// Connect has written its response.
+	return limitResponseTime(options.WriteTimeout, corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, holdRPCSlots(mux))))
 }
 
 // limitResponseTime bounds how long writing each API response may take:
