@@ -31,7 +31,9 @@ while true; do
   ts="$(date -u +%Y%m%dT%H%M%SZ)"
   log="$LOG_DIR/cycle-$ts.jsonl"
   start=$(date +%s)
-  nix develop "$REPO_DIR" --command claude -p "$PROMPT" \
+  # ~/.local/bin goes first again inside the dev shell so the coder gh wrapper
+  # (fresh GitHub token per call) wins over anything the shell puts on PATH.
+  nix develop "$REPO_DIR" --command env PATH="$HOME/.local/bin:$PATH" claude -p "$PROMPT" \
     --dangerously-skip-permissions \
     --model "$MODEL" \
     --output-format stream-json --verbose \

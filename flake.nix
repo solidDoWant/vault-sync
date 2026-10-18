@@ -22,7 +22,10 @@
             pkgs.golangci-lint
             pkgs.govulncheck
             pkgs.gnumake
-            pkgs.gh
+            # gh is deliberately NOT provided here: the coder VM ships a gh
+            # wrapper in ~/.local/bin that fetches a fresh (8h) GitHub App token
+            # per call, and a dev-shell gh would shadow it on PATH and fall back
+            # to a stale token.
             pkgs.jq
 
             # Protobuf/ConnectRPC code generation (make generate). The TS
