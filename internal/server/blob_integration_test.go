@@ -53,6 +53,14 @@ type blobFixture struct {
 func newBlobFixture(t *testing.T, limits api.BlobLimits) *blobFixture {
 	t.Helper()
 
+	return newBlobFixtureWithRequestLimit(t, limits, config.DefaultMaxRequestBytes)
+}
+
+// newBlobFixtureWithRequestLimit is newBlobFixture with another request (and
+// send) limit.
+func newBlobFixtureWithRequestLimit(t *testing.T, limits api.BlobLimits, maxRequestBytes int64) *blobFixture {
+	t.Helper()
+
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
@@ -66,7 +74,7 @@ func newBlobFixture(t *testing.T, limits api.BlobLimits) *blobFixture {
 	verifier := auth.NewVerifier(auth.VerifierOptions{IssuerURL: issuer.URL, Audience: authtest.DefaultAudience, Logger: logger})
 
 	fixture.running = startServer(t, server.Options{
-		MaxRequestBytes: config.DefaultMaxRequestBytes,
+		MaxRequestBytes: maxRequestBytes,
 		Database:        pool,
 		Authenticator:   auth.NewAuthenticator(verifier, queries),
 		Devices:         queries,
