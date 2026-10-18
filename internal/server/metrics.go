@@ -7,6 +7,8 @@ import (
 	"connectrpc.com/connect"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
+
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 )
 
 // rpcMetrics records per-procedure request counts and latencies. Procedures
@@ -17,10 +19,8 @@ type rpcMetrics struct {
 	duration *prometheus.HistogramVec
 }
 
-func newRegistry() (*prometheus.Registry, *rpcMetrics) {
-	registry := prometheus.NewRegistry()
-
-	metrics := &rpcMetrics{
+func newRPCMetrics() *rpcMetrics {
+	return &rpcMetrics{
 		requests: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "vault_sync_rpc_requests_total",
 			Help: "RPCs handled, by procedure and Connect status code.",
@@ -31,15 +31,35 @@ func newRegistry() (*prometheus.Registry, *rpcMetrics) {
 			Buckets: prometheus.DefBuckets,
 		}, []string{"procedure", "code"}),
 	}
+}
 
+func (metrics *rpcMetrics) collectors() []prometheus.Collector {
+	return []prometheus.Collector{metrics.requests, metrics.duration}
+}
+
+// serverCollectors returns every vault_sync_* collector the server
+// registers. Every such metric must be registered through this function:
+// the Metrics table in docs/configuration.md is checked against it.
+func serverCollectors(hub *realtime.Hub, rpc *rpcMetrics, concurrency *concurrencyMetrics) []prometheus.Collector {
+	collected := append(rpc.collectors(), concurrency.collectors()...)
+	if hub != nil {
+		collected = append(collected, hub.Collectors()...)
+	}
+
+	return collected
+}
+
+// newRegistry returns a registry holding the Go runtime and process
+// metrics and the given collectors.
+func newRegistry(collected []prometheus.Collector) *prometheus.Registry {
+	registry := prometheus.NewRegistry()
 	registry.MustRegister(
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
-		metrics.requests,
-		metrics.duration,
 	)
+	registry.MustRegister(collected...)
 
-	return registry, metrics
+	return registry
 }
 
 func (metrics *rpcMetrics) observe(procedure string, started time.Time, err error) {
