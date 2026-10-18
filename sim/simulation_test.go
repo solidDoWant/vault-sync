@@ -40,8 +40,9 @@ const (
 	controlURLEnv = "VAULT_SYNC_SIM_CONTROL_URL"
 	suitesEnv     = "VAULT_SYNC_SIM_SUITES"
 	shrinkRunsEnv = "SIM_SHRINK_RUNS"
-	// regressionDirEnv overrides where failing seeds are written
-	// (default: sim/regressions, so they can be committed).
+	// regressionDirEnv overrides where failing seeds are written and which
+	// regression cases are replayed (default: sim/regressions, so they can be
+	// committed). A relative value is relative to the repository root.
 	regressionDirEnv = "SIM_REGRESSION_DIR"
 
 	// brokenShrinkRuns bounds minimization in the broken-server check,
@@ -244,13 +245,10 @@ func (simulation *simulation) runSuite(t *testing.T, stream bool, extraEnv []str
 // minimized and written to sim/regressions/ (or SIM_REGRESSION_DIR), and the
 // test fails naming it.
 func TestSimulation(t *testing.T) {
-	regressionDir := os.Getenv(regressionDirEnv)
-	if regressionDir == "" {
-		regressionDir = "regressions"
-	}
-
-	regressionDir, err := filepath.Abs(regressionDir)
+	repoRoot, err := filepath.Abs("..")
 	require.NoError(t, err)
+
+	regressionDir := resolveRegressionDir(os.Getenv(regressionDirEnv), repoRoot)
 
 	simulation := startSimulation(t, regressionDir)
 	result := simulation.runSuite(t, true, nil)
