@@ -117,23 +117,31 @@ func NewVerifier(options VerifierOptions) *Verifier {
 // Verify validates token and returns the identity it asserts. Every
 // rejection wraps ErrUnauthenticated.
 func (verifier *Verifier) Verify(ctx context.Context, token string) (Identity, error) {
+	identity, _, err := verifier.VerifyExpiring(ctx, token)
+
+	return identity, err
+}
+
+// VerifyExpiring is Verify that also returns when the token expires (its exp
+// claim).
+func (verifier *Verifier) VerifyExpiring(ctx context.Context, token string) (Identity, time.Time, error) {
 	if token == "" {
-		return Identity{}, fmt.Errorf("%w: no token", ErrUnauthenticated)
+		return Identity{}, time.Time{}, fmt.Errorf("%w: no token", ErrUnauthenticated)
 	}
 
 	if len(token) > MaxTokenBytes {
-		return Identity{}, fmt.Errorf("%w: token exceeds %d bytes", ErrUnauthenticated, MaxTokenBytes)
+		return Identity{}, time.Time{}, fmt.Errorf("%w: token exceeds %d bytes", ErrUnauthenticated, MaxTokenBytes)
 	}
 
 	verified, err := verifier.verifier.Verify(ctx, token)
 	if err != nil {
 		var expired *oidc.TokenExpiredError
 		if errors.As(err, &expired) {
-			return Identity{}, fmt.Errorf("%w: token expired", ErrUnauthenticated)
+			return Identity{}, time.Time{}, fmt.Errorf("%w: token expired", ErrUnauthenticated)
 		}
 
 		// The underlying error can quote claims; it is not passed on.
-		return Identity{}, fmt.Errorf("%w: token failed verification", ErrUnauthenticated)
+		return Identity{}, time.Time{}, fmt.Errorf("%w: token failed verification", ErrUnauthenticated)
 	}
 
 	// go-oidc tolerates five minutes of nbf skew; enforce a tighter bound.
@@ -142,34 +150,40 @@ func (verifier *Verifier) Verify(ctx context.Context, token string) (Identity, e
 	}
 
 	if err := verified.Claims(&claims); err != nil {
-		return Identity{}, fmt.Errorf("%w: malformed claims", ErrUnauthenticated)
+		return Identity{}, time.Time{}, fmt.Errorf("%w: malformed claims", ErrUnauthenticated)
 	}
 
 	if claims.NotBefore != nil {
 		notBefore, err := claims.NotBefore.Float64()
 		if err != nil {
-			return Identity{}, fmt.Errorf("%w: malformed nbf claim", ErrUnauthenticated)
+			return Identity{}, time.Time{}, fmt.Errorf("%w: malformed nbf claim", ErrUnauthenticated)
 		}
 
 		if float64(verifier.now().Add(NotBeforeLeeway).Unix()) < notBefore {
-			return Identity{}, fmt.Errorf("%w: token not yet valid", ErrUnauthenticated)
+			return Identity{}, time.Time{}, fmt.Errorf("%w: token not yet valid", ErrUnauthenticated)
 		}
 	}
 
 	if verified.Subject == "" || len(verified.Subject) > MaxSubjectBytes {
-		return Identity{}, fmt.Errorf("%w: missing or over-long sub claim", ErrUnauthenticated)
+		return Identity{}, time.Time{}, fmt.Errorf("%w: missing or over-long sub claim", ErrUnauthenticated)
 	}
 
 	if !textcheck.Printable(verified.Subject) {
-		return Identity{}, fmt.Errorf("%w: sub claim contains control characters", ErrUnauthenticated)
+		return Identity{}, time.Time{}, fmt.Errorf("%w: sub claim contains control characters", ErrUnauthenticated)
 	}
 
-	return Identity{Issuer: verified.Issuer, Subject: verified.Subject}, nil
+	return Identity{Issuer: verified.Issuer, Subject: verified.Subject}, verified.Expiry, nil
 }
 
 // TokenVerifier validates a token. *Verifier implements it.
 type TokenVerifier interface {
 	Verify(ctx context.Context, token string) (Identity, error)
+}
+
+// expiringVerifier is a TokenVerifier that also reports when a token
+// expires. *Verifier implements it.
+type expiringVerifier interface {
+	VerifyExpiring(ctx context.Context, token string) (Identity, time.Time, error)
 }
 
 // UserStore provisions users. *store.Store implements it.
@@ -184,6 +198,10 @@ type UserStore interface {
 type User struct {
 	ID       uuid.UUID
 	Identity Identity
+	// TokenExpiry is when the token the user authenticated with expires,
+	// or zero if the verifier does not report it. Long-lived connections
+	// (the realtime WebSocket) end at this time.
+	TokenExpiry time.Time
 }
 
 // Authenticator turns bearer tokens into users. It is shared by the RPC
@@ -202,7 +220,18 @@ func NewAuthenticator(verifier TokenVerifier, users UserStore) *Authenticator {
 // on first sight. Token problems wrap ErrUnauthenticated; any other error
 // means the user could not be loaded.
 func (authenticator *Authenticator) AuthenticateToken(ctx context.Context, token string) (User, error) {
-	identity, err := authenticator.verifier.Verify(ctx, token)
+	var (
+		identity Identity
+		expiry   time.Time
+		err      error
+	)
+
+	if expiring, ok := authenticator.verifier.(expiringVerifier); ok {
+		identity, expiry, err = expiring.VerifyExpiring(ctx, token)
+	} else {
+		identity, err = authenticator.verifier.Verify(ctx, token)
+	}
+
 	if err != nil {
 		if !errors.Is(err, ErrUnauthenticated) {
 			err = fmt.Errorf("%w: %w", ErrUnauthenticated, err)
@@ -216,7 +245,7 @@ func (authenticator *Authenticator) AuthenticateToken(ctx context.Context, token
 		return User{}, fmt.Errorf("load user: %w", err)
 	}
 
-	return User{ID: id, Identity: identity}, nil
+	return User{ID: id, Identity: identity, TokenExpiry: expiry}, nil
 }
 
 // AuthenticateHeader authenticates the value of an HTTP Authorization header,
