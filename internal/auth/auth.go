@@ -56,7 +56,9 @@ type VerifierOptions struct {
 	// Audience must appear in tokens' aud.
 	Audience string
 	// HTTPClient fetches the discovery document and key set. Defaults to a
-	// client with a 10 second timeout.
+	// client with a 10 second timeout. The Verifier uses a copy whose
+	// redirect policy also refuses redirects to another host or from https
+	// to http.
 	HTTPClient *http.Client
 	// Now returns the current time. Defaults to time.Now.
 	Now func() time.Time
@@ -98,14 +100,7 @@ func NewVerifier(options VerifierOptions) *Verifier {
 		options.Logger = slog.New(slog.DiscardHandler)
 	}
 
-	keySet := &remoteKeySet{
-		issuer:             options.IssuerURL,
-		client:             options.HTTPClient,
-		now:                options.Now,
-		minRefreshInterval: options.MinRefreshInterval,
-		maxKeyAge:          options.MaxKeyAge,
-		logger:             options.Logger,
-	}
+	keySet := newRemoteKeySet(options)
 
 	return &Verifier{
 		verifier: oidc.NewVerifier(options.IssuerURL, keySet, &oidc.Config{
