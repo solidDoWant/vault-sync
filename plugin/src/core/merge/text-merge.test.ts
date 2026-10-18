@@ -177,4 +177,23 @@ describe("mergeText", () => {
     expect(mergeText("", "local\n", "remote\n")).toBeNull();
     expect(mergeText(lines("a", "b"), lines("a"), lines("b"))).toBe("");
   });
+
+  it("keeps the line terminators of lines neither side touched in a note with mixed line endings", () => {
+    const base = "a\r\nb\nc\r\nd\r\n";
+    expect(mergeText(base, "A\r\nb\nc\r\nd\r\n", "a\r\nb\nc\r\nD\r\n")).toBe("A\r\nb\nc\r\nD\r\n");
+    // An edited line keeps the terminator its side gave it.
+    expect(mergeText(base, "a\r\nB\r\nc\r\nd\r\n", "a\r\nb\nc\r\nD\r\n")).toBe("a\r\nB\r\nc\r\nD\r\n");
+  });
+
+  it("still converts a mixed note whole when one side converted its line endings", () => {
+    const base = "a\r\nb\nc\r\nd\r\n";
+    expect(mergeText(base, lines("a", "b", "c", "d"), "a\r\nb\nc\r\nD\r\n")).toBe(lines("a", "b", "c", "D"));
+  });
+
+  it("keeps the final newline of a remote append when the local side emptied the note", () => {
+    expect(mergeText(lines("a"), "", lines("a", "b"))).toBe(lines("b"));
+    expect(mergeText(lines("a"), lines("a", "b"), "")).toBe(lines("b"));
+    // Also when the other side converted the line endings as well.
+    expect(mergeText("a\r\n", "", lines("a", "b"))).toBe(lines("b"));
+  });
 });

@@ -106,6 +106,18 @@ export class EngineObserver {
     return `${this.name} user renames ${from} to ${to}`;
   }
 
+  /** Renames the folder `from` to `to` as its user would; reported as a rename of every file in it, as Obsidian reports it. */
+  async moveFolder(from: string, to: string): Promise<string> {
+    for (const path of await this.vault.list()) {
+      if (!path.startsWith(`${from}/`)) continue;
+      this.userEdited.add(path);
+      this.userEdited.add(`${to}/${path.slice(from.length + 1)}`);
+    }
+    await this.vault.renameFolder(from, to);
+    await this.engine.settled();
+    return `${this.name} user renames folder ${from} to ${to}`;
+  }
+
   /** Deletes `path` from the observer's vault as its user would. */
   async remove(path: string): Promise<string> {
     this.userEdited.add(path);
