@@ -1,0 +1,95 @@
+/**
+ * The sync engine's only view of a vault (SPEC.md §4). The Obsidian adapter
+ * (src/obsidian) implements it on top of Obsidian's Vault API; InMemoryVault
+ * implements it for unit tests and the simulation harness. Every
+ * implementation must pass the conformance suite in ./conformance.ts.
+ *
+ * Paths are vault-relative, "/"-separated, without a leading or trailing
+ * slash, and case-sensitive as given (collision handling is the engine's job,
+ * via path keys). Only files are modelled; folders exist implicitly as the
+ * ancestors of files.
+ */
+export interface VaultAdapter {
+  /** Lists the paths of all files in the vault, in no particular order. */
+  list(): Promise<string[]>;
+
+  /** Reads a file's bytes. Rejects with VaultError "not-found" if it does not exist. */
+  read(path: string): Promise<Uint8Array>;
+
+  /**
+   * Creates or overwrites a file, creating missing parent folders. Rejects
+   * with VaultError "path-conflict" if the path or one of its ancestors is
+   * occupied by the other kind of entry (a folder where the file should go, or
+   * a file where a folder should go).
+   */
+  write(path: string, data: Uint8Array): Promise<void>;
+
+  /**
+   * Moves a file. Rejects with "not-found" if `from` does not exist,
+   * "already-exists" if a different file already exists at `to`, and
+   * "path-conflict" as for write. A rename that changes only letter case is
+   * allowed.
+   */
+  rename(from: string, to: string): Promise<void>;
+
+  /** Deletes a file. Rejects with "not-found" if it does not exist. */
+  delete(path: string): Promise<void>;
+
+  /** Returns a file's metadata, or null if it does not exist. */
+  stat(path: string): Promise<FileStat | null>;
+
+  /**
+   * Subscribes to file changes (folders are not reported) made through this adapter or by anything else
+   * (the user, other plugins). Engine-initiated writes are reported too; echo
+   * suppression is the engine's job (SPEC.md §8). Returns an unsubscribe
+   * function. Events may be delivered synchronously or asynchronously, but in
+   * the order the changes happened.
+   */
+  watch(listener: VaultListener): () => void;
+}
+
+export interface FileStat {
+  /** Size in bytes. */
+  size: number;
+  /**
+   * Last-modified time in milliseconds since the epoch. Informational only:
+   * change detection must use content hashes, never mtimes (SPEC.md §8).
+   */
+  mtime: number;
+}
+
+export type VaultEvent =
+  | { type: "create"; path: string }
+  | { type: "modify"; path: string }
+  | { type: "delete"; path: string }
+  | { type: "rename"; path: string; oldPath: string };
+
+export type VaultListener = (event: VaultEvent) => void;
+
+export type VaultErrorCode = "not-found" | "already-exists" | "path-conflict";
+
+/** The error every VaultAdapter rejects with for the documented failure cases. */
+export class VaultError extends Error {
+  override readonly name = "VaultError";
+
+  constructor(
+    readonly code: VaultErrorCode,
+    readonly path: string,
+  ) {
+    super(`${code}: ${path}`);
+  }
+}
+
+/**
+ * Reports whether `error` is a VaultError (optionally with the given code).
+ * Duck-typed so it also recognizes errors from another bundle or realm, e.g.
+ * when the conformance suite runs inside Obsidian.
+ */
+export function isVaultError(error: unknown, code?: VaultErrorCode): error is VaultError {
+  return (
+    error instanceof Error &&
+    error.name === "VaultError" &&
+    "code" in error &&
+    (code === undefined || error.code === code)
+  );
+}
