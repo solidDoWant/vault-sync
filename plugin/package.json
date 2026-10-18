@@ -9,7 +9,7 @@
     "dev": "node esbuild.config.mjs",
     "test": "vitest run",
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.core.json"
+    "typecheck": "tsc --noEmit && node scripts/check-core-program.ts"
   },
   "license": "AGPL-3.0-only",
   "devDependencies": {

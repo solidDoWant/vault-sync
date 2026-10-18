@@ -1,49 +1,30 @@
+
 /// <reference types="node" />
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { checkCoreProgram, coreConfig, createProgram, parseConfig, pluginDir } from "../scripts/check-core-program";
 
 // Type-checks probe sources placed under src/core with the real tsconfig files
-// that `make lint` (npm run typecheck) uses. The probes are virtual: they are
-// added to each program's root files through the compiler host and never
+// and the real check that `make lint` (npm run typecheck) runs. The probes are
+// virtual: they are served from memory through the compiler host and never
 // touch the disk.
-const pluginDir = fileURLToPath(new URL("..", import.meta.url));
 const coreDir = path.join(pluginDir, "src", "core");
-
-function parseConfig(configName: string): ts.ParsedCommandLine {
-  const configPath = path.join(pluginDir, configName);
-  const parsed = ts.getParsedCommandLineOfConfigFile(configPath, {}, {
-    ...ts.sys,
-    onUnRecoverableConfigFileDiagnostic: (diagnostic) => {
-      throw new Error(ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"));
-    },
-  });
-  if (parsed === undefined) throw new Error(`cannot parse ${configName}`);
-  expect(parsed.errors).toEqual([]);
-  return parsed;
-}
+const scriptPath = path.join(pluginDir, "scripts", "check-core-program.ts");
+const obsidianTypes = path.join(pluginDir, "node_modules", "obsidian", "obsidian.d.ts");
 
 /** Builds one program from a tsconfig plus virtual probe files; returns each probe's error messages. */
 function typeErrors(configName: string, probes: Record<string, string>): Record<string, string[]> {
-  const config = parseConfig(configName);
-  const probePaths = new Map(Object.entries(probes).map(([name, source], index) => [path.join(coreDir, "__probe__", `probe${String(index)}.ts`), { name, source }]));
-  const host = ts.createCompilerHost(config.options);
-  const getSourceFile = host.getSourceFile.bind(host);
-  const fileExists = host.fileExists.bind(host);
-  host.getSourceFile = (fileName, languageVersion, ...rest) => {
-    const probe = probePaths.get(path.resolve(fileName));
-    if (probe !== undefined) return ts.createSourceFile(fileName, probe.source, languageVersion, true);
-    return getSourceFile(fileName, languageVersion, ...rest);
-  };
-  host.fileExists = (fileName) => probePaths.has(path.resolve(fileName)) || fileExists(fileName);
-
-  const program = ts.createProgram([...config.fileNames, ...probePaths.keys()], config.options, host);
+  const probeFiles = Object.entries(probes).map(([name, source], index) => ({ name, source, file: path.join(coreDir, "__probe__", `probe${String(index)}.ts`) }));
+  const { program } = createProgram(configName, [], new Map(probeFiles.map(({ file, source }) => [file, source])));
   const result: Record<string, string[]> = {};
-  for (const [probePath, { name }] of probePaths) {
-    const sourceFile = program.getSourceFile(probePath);
+  for (const { name, file } of probeFiles) {
+    const sourceFile = program.getSourceFile(file);
     if (sourceFile === undefined) throw new Error(`probe ${name} not in program`);
     result[name] = [...program.getSyntacticDiagnostics(sourceFile), ...program.getSemanticDiagnostics(sourceFile)].map((diagnostic) =>
       ts.flattenDiagnosticMessageText(diagnostic.messageText, "\n"),
@@ -122,7 +103,79 @@ describe("src/core type-check program (tsconfig.core.json)", () => {
   });
 
   it("is run by npm run typecheck", () => {
-    const pkg = JSON.parse(readFileSync(path.join(pluginDir, "package.json"), "utf8")) as { scripts: Record<string, string> };
-    expect(pkg.scripts.typecheck).toMatch(/tsc --noEmit -p tsconfig\.core\.json/);
+    const pkg = JSON.parse(readFileSync(path.join(pluginDir, "package.json"), "utf8")) as { scripts: Record<string, string | undefined> };
+    const typecheck = pkg.scripts.typecheck ?? "";
+    // Every step must be able to fail the script.
+    expect(typecheck).not.toMatch(/\|\||;/);
+    expect(typecheck.split("&&").map((step) => step.trim())).toContain("node scripts/check-core-program.ts");
   });
+});
+
+// Each leak gets its own program: once obsidian.d.ts is in a program, its
+// globals apply to every file in it, so `user` below type-checks there.
+describe("Obsidian leaking into the src/core program", () => {
+  const user = "export const w = activeWindow;\n";
+  const relativeObsidianTypes = path.relative(path.join(coreDir, "zz"), obsidianTypes).split(path.sep).join("/");
+  const leaks: Record<string, Record<string, string>> = {
+    "a triple-slash types reference to obsidian": { "zz/leak.ts": '/// <reference types="obsidian" />\nexport {};\n' },
+    "a triple-slash path reference to obsidian.d.ts": {
+      "zz/leak.ts": `/// <reference path=${JSON.stringify(relativeObsidianTypes)} />\nexport {};\n`,
+    },
+    "a type import from src/main.ts": { "zz/leak.ts": 'import type VaultSyncPlugin from "../../main";\nexport type P = VaultSyncPlugin;\n' },
+    "a value import from src/main.ts": { "leak.ts": 'import VaultSyncPlugin from "../main";\nexport const P = VaultSyncPlugin;\n' },
+    "a transitive import through src/obsidian": {
+      "zz/leak.ts": 'export { adapter } from "./helper";\n',
+      "zz/helper.ts": 'export { adapter } from "../../obsidian/adapter";\n',
+      "../obsidian/adapter.ts": 'import type { App } from "obsidian";\nexport const adapter: App | null = null;\n',
+    },
+  };
+
+  for (const [name, files] of Object.entries(leaks)) {
+    it(`fails on ${name}`, () => {
+      const virtualFiles = new Map(Object.entries({ ...files, "zz/user.ts": user }).map(([file, source]) => [path.join(coreDir, file), source]));
+      const problems = checkCoreProgram([], virtualFiles);
+      expect(problems).toContainEqual(expect.stringMatching(/node_modules\/obsidian\/obsidian\.d\.ts is part of the src\/core program/));
+    }, 60_000);
+  }
+
+  it("finds nothing in the committed src/core program", () => {
+    expect(checkCoreProgram()).toEqual([]);
+  }, 60_000);
+});
+
+describe("scripts/check-core-program.ts", () => {
+  let tempDir = "";
+  beforeAll(() => {
+    tempDir = mkdtempSync(path.join(tmpdir(), "core-program-"));
+  });
+  afterAll(() => {
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function run(probeName?: string, source?: string): { status: number | null; stderr: string } {
+    const args = [scriptPath];
+    if (probeName !== undefined && source !== undefined) {
+      const probe = path.join(tempDir, probeName);
+      writeFileSync(probe, source);
+      args.push(probe);
+    }
+    const result = spawnSync(process.execPath, args, { cwd: pluginDir, encoding: "utf8" });
+    return { status: result.status, stderr: result.stderr };
+  }
+
+  it(`exits 0 for the committed ${coreConfig} program`, () => {
+    expect(run()).toEqual({ status: 0, stderr: "" });
+  }, 60_000);
+
+  it("exits non-zero on a type error", () => {
+    const result = run("type-error.ts", "export const w = activeWindow;\n");
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/Cannot find name 'activeWindow'/);
+  }, 60_000);
+
+  it("exits non-zero when Obsidian reaches the program", () => {
+    const result = run("leak.ts", `/// <reference path=${JSON.stringify(obsidianTypes)} />\nexport {};\n`);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toMatch(/obsidian\.d\.ts is part of the src\/core program/);
+  }, 60_000);
 });

@@ -15,13 +15,15 @@ const eslint = new ESLint({
   overrideConfig: [{ files: ["**/*.ts"], ...tseslint.configs.disableTypeChecked }],
 });
 
+const fenceRules = new Set(["no-restricted-imports", "no-restricted-syntax", "@typescript-eslint/triple-slash-reference"]);
+
 async function fenceViolations(filePath: string, source: string): Promise<string[]> {
   const [result] = await eslint.lintText(source, { filePath });
   if (result === undefined) throw new Error("eslint returned no result");
   const fatal = result.messages.filter((message) => message.fatal === true);
   expect(fatal).toEqual([]);
   return result.messages
-    .filter((message) => message.ruleId === "no-restricted-imports" || message.ruleId === "no-restricted-syntax")
+    .filter((message) => message.ruleId !== null && fenceRules.has(message.ruleId))
     .map((message) => message.message);
 }
 
@@ -58,6 +60,13 @@ describe("src/core import fence", () => {
       'declare const window: { require?: (id: string) => unknown };\nexport const o = window.require?.("obsidian");\n',
     "a member require of the adapter":
       'declare const window: { require: (id: string) => unknown };\nexport const o = window.require("../obsidian/adapter");\n',
+    "a triple-slash types reference to obsidian": '/// <reference types="obsidian" />\nexport {};\n',
+    "a triple-slash path reference": '/// <reference path="../../node_modules/obsidian/obsidian.d.ts" />\nexport {};\n',
+    "a triple-slash lib reference": '/// <reference lib="dom" />\nexport {};\n',
+    "a type import from the plugin entry point": 'import type P from "../main";\nexport type Q = P;\n',
+    "a value import from the plugin entry point": 'import P from "../../main.ts";\nexport const Q = P;\n',
+    "a re-export from the plugin entry point": 'export { default } from "../main";\n',
+    "the plugin entry point by src-rooted path": 'import type P from "src/main";\nexport type Q = P;\n',
     "a member require via a template literal":
       "declare const window: { require: (id: string) => unknown };\nexport const o = window.require(`obsidian`);\n",
   };
@@ -71,6 +80,11 @@ describe("src/core import fence", () => {
 
   it("allows core-internal modules whose names merely contain 'obsidian'", async () => {
     const source = 'import { a } from "./obsidian-names";\nexport const b = a;\n';
+    expect(await fenceViolations("src/core/probe.ts", source)).toEqual([]);
+  });
+
+  it("allows core-internal modules named main", async () => {
+    const source = 'import { a } from "./main";\nimport { b } from "./engine/main";\nexport const c = [a, b];\n';
     expect(await fenceViolations("src/core/probe.ts", source)).toEqual([]);
   });
 

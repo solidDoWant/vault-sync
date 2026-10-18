@@ -10,6 +10,11 @@ const OBSIDIAN_SELECTOR_REGEX = `/${OBSIDIAN_SPECIFIER.replaceAll("/", "\\u002F"
 // (window.require, globalThis.require, module.require, x["require"]).
 const REQUIRE_CALLEE = ":matches([callee.name='require'], [callee.property.name='require'], [callee.property.value='require'])";
 const OBSIDIAN_MESSAGE = "src/core must not depend on Obsidian or src/obsidian; go through VaultAdapter.";
+// The plugin entry point src/main.ts, reached by climbing out of src/core
+// (`../main`, `../../main.ts`) or by a src-rooted path. scripts/check-core-program.ts
+// catches every other route into the core program.
+const MAIN_SPECIFIER = "^((\\.\\./)+|(.*/)?src/)main(\\.[cm]?[jt]s)?$";
+const MAIN_MESSAGE = "src/core must not import the plugin entry point (src/main.ts); it pulls in Obsidian.";
 
 export default tseslint.config(
   { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts"] },
@@ -30,7 +35,20 @@ export default tseslint.config(
     files: ["src/core/**/*.ts"],
     rules: {
       // Static imports, re-exports and `import x = require(...)`.
-      "no-restricted-imports": ["error", { patterns: [{ regex: OBSIDIAN_SPECIFIER, message: OBSIDIAN_MESSAGE }] }],
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            { regex: OBSIDIAN_SPECIFIER, message: OBSIDIAN_MESSAGE },
+            // src/main.ts imports obsidian, so importing it (even for types)
+            // brings Obsidian's globals into the core program.
+            { regex: MAIN_SPECIFIER, message: MAIN_MESSAGE },
+          ],
+        },
+      ],
+      // `/// <reference types="obsidian" />` (or a path/lib reference) adds
+      // declarations to the whole core program without an import.
+      "@typescript-eslint/triple-slash-reference": ["error", { lib: "never", path: "never", types: "never" }],
       // Forms no-restricted-imports does not see.
       "no-restricted-syntax": [
         "error",
