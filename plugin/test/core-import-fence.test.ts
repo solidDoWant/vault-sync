@@ -12,7 +12,7 @@ import { describe, expect, it } from "vitest";
 const pluginDir = fileURLToPath(new URL("..", import.meta.url));
 const eslint = new ESLint({
   cwd: pluginDir,
-  overrideConfig: [{ files: ["**/*.ts"], ...tseslint.configs.disableTypeChecked }],
+  overrideConfig: [tseslint.configs.disableTypeChecked],
 });
 
 const fenceRules = new Set(["no-restricted-imports", "no-restricted-syntax", "@typescript-eslint/triple-slash-reference"]);
@@ -71,10 +71,35 @@ describe("src/core import fence", () => {
       "declare const window: { require: (id: string) => unknown };\nexport const o = window.require(`obsidian`);\n",
   };
 
+  // Every TypeScript extension the core program can pull in (an .mts or .cts
+  // file is reachable from a .ts import).
   for (const [name, source] of Object.entries(forbidden)) {
-    it(`rejects ${name}`, async () => {
-      expect(await fenceViolations("src/core/probe.ts", source)).not.toEqual([]);
-      expect(await fenceViolations("src/core/nested/probe.ts", source)).not.toEqual([]);
+    for (const extension of [".ts", ".mts", ".cts", ".tsx"]) {
+      it(`rejects ${name} in a ${extension} file`, async () => {
+        expect(await fenceViolations(`src/core/probe${extension}`, source)).not.toEqual([]);
+        expect(await fenceViolations(`src/core/nested/probe${extension}`, source)).not.toEqual([]);
+      });
+    }
+  }
+
+  const forbiddenDeclarations: Record<string, string> = {
+    "a declare global block": "declare global {\n  var activeWindow: Window;\n}\nexport {};\n",
+    "a declare global block nested in a module declaration": 'declare module "x" {\n  global {\n    var activeWindow: Window;\n  }\n}\nexport {};\n',
+    "a triple-slash lib reference": '/// <reference lib="dom" />\nexport {};\n',
+    "a triple-slash types reference": '/// <reference types="obsidian" />\nexport {};\n',
+  };
+
+  for (const [name, source] of Object.entries(forbiddenDeclarations)) {
+    for (const fileName of ["probe.ts", "probe.mts", "probe.cts", "probe.d.ts", "probe.d.mts", "probe.d.cts"]) {
+      it(`rejects ${name} in ${fileName}`, async () => {
+        expect(await fenceViolations(`src/core/${fileName}`, source)).not.toEqual([]);
+      });
+    }
+  }
+
+  for (const extension of [".js", ".mjs", ".cjs"]) {
+    it(`rejects a window.require of obsidian in a ${extension} file`, async () => {
+      expect(await fenceViolations(`src/core/probe${extension}`, 'export const o = window.require("obsidian");\n')).not.toEqual([]);
     });
   }
 

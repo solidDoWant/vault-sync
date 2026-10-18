@@ -143,6 +143,68 @@ describe("Obsidian leaking into the src/core program", () => {
   }, 60_000);
 });
 
+// Code the eslint fence would not see, or declarations that add globals to
+// the whole program without reaching obsidian.d.ts.
+describe("unfenced code and global declarations in the src/core program", () => {
+  const importer = (target: string) => `export * from "${target}";\n`;
+  const cases: Record<string, { files: Record<string, string>; problem: RegExp }> = {
+    "an .mts module imported from core": {
+      files: { "zz/a.ts": importer("./b.mjs"), "zz/b.mts": "export const b = 1;\n" },
+      problem: /src\/core\/zz\/b\.mts: only \.ts modules/,
+    },
+    "a .cts module imported from core": {
+      files: { "zz/a.ts": importer("./b.cjs"), "zz/b.cts": "export const b = 1;\n" },
+      problem: /src\/core\/zz\/b\.cts: only \.ts modules/,
+    },
+    "a .tsx module imported from core": {
+      files: { "zz/a.ts": importer("./b"), "zz/b.tsx": "export const b = 1;\n" },
+      problem: /src\/core\/zz\/b\.tsx: only \.ts modules/,
+    },
+    "a declaration file that declares globals": {
+      files: { "zz/globals.d.ts": "declare var activeWindow: Window;\n", "zz/user.ts": "export const w = activeWindow;\n" },
+      problem: /src\/core\/zz\/globals\.d\.ts: only \.ts modules/,
+    },
+    "a .d.mts declaration file": {
+      files: { "zz/a.ts": importer("./b.mjs"), "zz/b.d.mts": "export declare const b: number;\n" },
+      problem: /src\/core\/zz\/b\.d\.mts: only \.ts modules/,
+    },
+    "a declare global block": {
+      files: { "zz/g.ts": "declare global {\n  var activeWindow: Window;\n}\nexport {};\n", "zz/user.ts": "export const w = activeWindow;\n" },
+      problem: /src\/core\/zz\/g\.ts: `declare global` is not allowed/,
+    },
+    "a script file whose declarations are global": {
+      files: { "zz/s.ts": "declare var activeWindow: Window;\n", "zz/user.ts": "export const w = activeWindow;\n" },
+      problem: /src\/core\/zz\/s\.ts: must be a module/,
+    },
+    "a triple-slash lib reference": {
+      files: { "zz/l.ts": '/// <reference lib="dom" />\nexport const t = document.title;\n' },
+      problem: /src\/core\/zz\/l\.ts: triple-slash directives are not allowed/,
+    },
+    "an import of JavaScript hidden behind @ts-expect-error": {
+      files: {
+        "zz/a.ts": '// @ts-expect-error: no declarations\nexport * from "./evil.js";\n',
+        "zz/evil.js": 'export const o = window.require("obsidian");\n',
+      },
+      problem: /src\/core\/zz\/a\.ts: import "\.\/evil\.js" (does not resolve|resolves to JavaScript)/,
+    },
+    "a JavaScript file in src/core": {
+      files: { "zz/evil.js": 'export const o = window.require("obsidian");\n' },
+      problem: /src\/core\/zz\/evil\.js: src\/core may only contain \.ts modules/,
+    },
+    "a module outside src/core imported from core": {
+      files: { "zz/a.ts": importer("../../shared/util"), "../shared/util.ts": "export const u = 1;\n" },
+      problem: /src\/shared\/util\.ts is part of the src\/core program but outside/,
+    },
+  };
+
+  for (const [name, { files, problem }] of Object.entries(cases)) {
+    it(`fails on ${name}`, () => {
+      const virtualFiles = new Map(Object.entries(files).map(([file, source]) => [path.join(coreDir, file), source]));
+      expect(checkCoreProgram([], virtualFiles)).toContainEqual(expect.stringMatching(problem));
+    }, 60_000);
+  }
+});
+
 describe("scripts/check-core-program.ts", () => {
   let tempDir = "";
   beforeAll(() => {

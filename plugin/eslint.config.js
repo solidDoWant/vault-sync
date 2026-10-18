@@ -32,7 +32,11 @@ export default tseslint.config(
     // The sync engine must stay platform-independent so the simulation
     // harness can drive it against an in-memory vault (SPEC.md §4).
     // test/core-import-fence.test.ts proves each form below is rejected.
-    files: ["src/core/**/*.ts"],
+    // `src/core/**` (rather than an extension list) applies the fence to
+    // every file eslint lints there, whatever its extension (.ts, .mts, .cts,
+    // .tsx, .d.ts, .js, ...). scripts/check-core-program.ts additionally
+    // rejects any src/core file that is not a plain .ts module.
+    files: ["src/core/**"],
     rules: {
       // Static imports, re-exports and `import x = require(...)`.
       "no-restricted-imports": [
@@ -64,6 +68,12 @@ export default tseslint.config(
           // type T = import("obsidian").App
           `TSImportType[source.value=${OBSIDIAN_SELECTOR_REGEX}]`,
         ].map((selector) => ({ selector, message: OBSIDIAN_MESSAGE })),
+        {
+          // `declare global { ... }` (also nested in `declare module`) adds
+          // globals such as activeWindow to the whole core program.
+          selector: "TSModuleDeclaration[kind='global']",
+          message: "src/core must not declare globals; they would apply to the whole core program.",
+        },
       ],
     },
   },
