@@ -61,6 +61,7 @@ DIR/
 - Each vault's directory is named by its id, not its name, because names are mutable, can collide and are chosen by users. The summary and the manifest map ids to names.
 - A vault's directory holds its live documents, as of the vault's `head_seq` when its export started, each at its path. File contents are the documents' head revisions, byte for byte.
 - The unplaced tree and the manifest sit next to the vault's directory, never inside it. No document path can be mistaken for them: a user file named `<vault-id>.manifest.jsonl` or `.vault-sync-export` is exported unchanged inside the vault's directory. Vault ids are UUIDs, so the suffixes cannot collide with another vault's directory.
+- Every directory inside a vault's directory or unplaced tree holds at least one exported file: a document that ends up unplaced or `missing` leaves no empty directory behind. The vault's directory itself exists even when it holds no file.
 - Only `/` separates directories. A `\` in a document path is written as part of the file name.
 - Directories are created with mode `0750` and files (manifests included) with `0640`, less the process umask. Plaintext notes and paths are never readable by others.
 - End-to-end encrypted vaults get no directory and no manifest (they are listed in the summary with `"skipped": "e2ee"`).
@@ -125,7 +126,7 @@ jq -r 'select(.type == "document" and .location) | "\(.sha256)  \(.location)"' .
 
 ### Atomic replacement
 
-The export writes the new tree to a staging directory beside `DIR` (`.<name>.staging-<random>` in `DIR`'s parent). Once the whole tree is written and flushed to disk (`syncfs`), it atomically exchanges the staging directory with `DIR` (`renameat2` with `RENAME_EXCHANGE`) and then removes the previous tree. At every instant `DIR` holds one complete export: a run that fails, is killed or loses power part-way leaves the previous export untouched. On the first run `DIR` is created by a plain rename.
+The export writes the new tree to a staging directory beside `DIR` (`.<name>.staging-<number>` in `DIR`'s parent). Once the whole tree is written and flushed to disk (`syncfs`), it atomically exchanges the staging directory with `DIR` (`renameat2` with `RENAME_EXCHANGE`) and then removes the previous tree and flushes the rename to disk. If only that last flush fails, the new export is already in place: the run reports `ok` or `partial` as usual and logs a warning that the swap may not survive a power loss. At every instant `DIR` holds one complete export: a run that fails, is killed or loses power part-way leaves the previous export untouched. On the first run `DIR` is created by a plain rename.
 
 This requires that:
 
@@ -135,7 +136,7 @@ This requires that:
 - `DIR`, if it exists and is not empty, holds a previous export (its `.vault-sync-export` marker). The export refuses to replace any other directory, so a mistyped `-out` cannot destroy unrelated data;
 - the volume has room for two full exports while a run is in progress.
 
-A lock file (`.<name>.lock` in the parent) makes a second concurrent run against the same `DIR` fail at once. A run removes staging directories left by interrupted runs before it starts.
+A lock file (`.<name>.lock` in the parent) makes a second concurrent run against the same `DIR` fail at once. A run removes staging directories left by interrupted runs before it starts: only entries named exactly `.<name>.staging-` followed by digits, so the lock file and staging directories of an export to a sibling directory (for example `-out /backup/out.staging-1`) are left alone.
 
 Archival tooling should read `DIR` while no export runs, or tolerate the tree being swapped between two reads.
 

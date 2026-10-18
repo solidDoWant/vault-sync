@@ -15,6 +15,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -944,4 +945,236 @@ func TestExportFailureOnTheExportDiskNamesNoDocumentPath(t *testing.T) {
 	assert.Equal(t, export.StatusFailed, summary.Status)
 	assert.NotContains(t, summary.Error, "secret-project")
 	assert.Equal(t, before, snapshot(t, space.output), "the previous export is untouched")
+}
+
+func TestExportReadsEveryPageAtTheListedHeadSeq(t *testing.T) {
+	space := newWorkspace(t)
+	source := newFakeSource()
+	notes := source.addVault("Notes", store.EncryptionNone)
+	work := source.addVault("Work", store.EncryptionNone)
+	source.vaults[0].HeadSeq = 7
+	source.vaults[1].HeadSeq = 9
+
+	for index := range 5 {
+		source.addDocument(notes, fmt.Sprintf("note-%d.md", index), []byte("note"))
+		source.addDocument(work, fmt.Sprintf("work-%d.md", index), []byte("work"))
+	}
+
+	summary, err := space.run(t, t.Context(), source)
+	require.NoError(t, err)
+
+	// Five documents at page size 2 take three pages per vault.
+	assert.Equal(t, map[uuid.UUID][]int64{notes: {7, 7, 7}, work: {9, 9, 9}}, source.seqs)
+
+	require.Len(t, summary.VaultDetails, 2)
+	assert.Equal(t, int64(7), summary.VaultDetails[0].HeadSeq)
+	assert.Equal(t, int64(9), summary.VaultDetails[1].HeadSeq)
+}
+
+func TestExportRemovesOnlyItsOwnStagingLeftovers(t *testing.T) {
+	space := newWorkspace(t)
+	source := newFakeSource()
+	notes := source.addVault("Notes", store.EncryptionNone)
+	source.addDocument(notes, "a.md", []byte("a"))
+
+	// Leftovers of interrupted runs against out: os.MkdirTemp's suffix is
+	// a decimal number.
+	for _, name := range []string{".out.staging-0", ".out.staging-4294967295"} {
+		require.NoError(t, os.Mkdir(filepath.Join(space.root, name), 0o700))
+	}
+
+	// Entries of exports to siblings such as out.staging-foo and
+	// out.staging-1, and other names that merely share the prefix.
+	kept := []string{
+		".out.staging-",
+		".out.staging-1.lock",
+		".out.staging-1.staging-2",
+		".out.staging-12a",
+		".out.staging-foo.lock",
+		".out.staging-foo.staging-3",
+		".out.staging--1",
+		".out.staging-+1",
+	}
+	for _, name := range kept {
+		require.NoError(t, os.Mkdir(filepath.Join(space.root, name), 0o700))
+	}
+
+	_, err := space.run(t, t.Context(), source)
+	require.NoError(t, err)
+
+	want := append([]string{".out.lock", "out"}, kept...)
+	slices.Sort(want)
+
+	assert.Equal(t, want, space.siblings(t))
+}
+
+func TestExportReportsASwapThatHappenedWhenSyncingItFails(t *testing.T) {
+	tests := []struct {
+		name       string
+		missing    bool
+		wantStatus string
+	}{
+		{name: "every document exported", wantStatus: export.StatusOK},
+		{name: "a document's content missing", missing: true, wantStatus: export.StatusPartial},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			space := newWorkspace(t)
+			source := newFakeSource()
+			notes := source.addVault("Notes", store.EncryptionNone)
+			source.addDocument(notes, "a.md", []byte("version 1"))
+
+			_, err := space.run(t, t.Context(), source)
+			require.NoError(t, err)
+
+			source.documents[notes] = nil
+			source.addDocument(notes, "a.md", []byte("version 2"))
+
+			lost := source.addDocument(notes, "lost.md", []byte("lost"))
+			if test.missing {
+				delete(source.content, hex.EncodeToString(source.documents[notes][1].ContentRef))
+			} else {
+				source.documents[notes] = source.documents[notes][:1]
+			}
+
+			synced := 0
+
+			export.SetSyncAfterSwapForTest(t, func(string) error {
+				synced++
+
+				return errors.New("injected sync failure")
+			})
+
+			var logs bytes.Buffer
+
+			summary, err := export.Run(t.Context(), export.Options{
+				Output:   space.output,
+				Source:   source,
+				Logger:   slog.New(slog.NewJSONHandler(&logs, nil)),
+				PageSize: 2,
+			})
+			require.NoError(t, err, "the new export is in place")
+
+			assert.Equal(t, 1, synced)
+			assert.Equal(t, test.wantStatus, summary.Status)
+			assert.Empty(t, summary.Error)
+			assert.Equal(t, map[string]string{notes.String() + "/a.md": "version 2"}, files(t, space.output))
+			assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t))
+
+			if test.missing {
+				assert.Equal(t, map[uuid.UUID]string{lost: "stored content is missing"}, documentErrors(summary))
+			}
+
+			assert.Contains(t, logs.String(), `"level":"WARN"`)
+			assert.Contains(t, logs.String(), "injected sync failure")
+			assert.NotContains(t, logs.String(), "untouched")
+		})
+	}
+}
+
+func TestExportLeavesNoEmptyDirectoryForARefusedDocument(t *testing.T) {
+	segment256 := strings.Repeat("y", 253) + ".md"
+
+	type document struct {
+		path    string
+		content string
+		missing bool
+	}
+
+	tests := []struct {
+		name      string
+		documents []document
+		// want is the files in the vault tree by path, and in the unplaced
+		// tree by "unplaced/" and their content.
+		want map[string]string
+	}{
+		{
+			name:      "a name over 255 bytes in new folders",
+			documents: []document{{path: "a/b/" + segment256, content: "too long"}},
+			want:      map[string]string{"unplaced/too long": "too long"},
+		},
+		{
+			name:      "a folder name over 255 bytes",
+			documents: []document{{path: "a/" + segment256 + "/note.md", content: "too long"}},
+			want:      map[string]string{"unplaced/too long": "too long"},
+		},
+		{
+			name:      "missing content in new folders",
+			documents: []document{{path: "a/b/gone.md", content: "gone", missing: true}},
+			want:      map[string]string{},
+		},
+		{
+			name: "missing content beside another document",
+			documents: []document{
+				{path: "shared/kept.md", content: "kept"},
+				{path: "shared/sub/gone.md", content: "gone", missing: true},
+				{path: "shared/" + segment256, content: "too long"},
+			},
+			want: map[string]string{"shared/kept.md": "kept", "unplaced/too long": "too long"},
+		},
+		{
+			name: "a later document in a removed folder",
+			documents: []document{
+				{path: "a/b/gone.md", content: "gone", missing: true},
+				{path: "a/" + segment256, content: "too long"},
+				{path: "a/b/kept.md", content: "kept"},
+			},
+			want: map[string]string{"a/b/kept.md": "kept", "unplaced/too long": "too long"},
+		},
+		{
+			name: "missing content of a document that cannot be placed",
+			documents: []document{
+				{path: "f", content: "a file"},
+				{path: "f/gone.md", content: "gone", missing: true},
+			},
+			want: map[string]string{"f": "a file"},
+		},
+		{
+			name: "an unplaced document after a removed unplaced folder",
+			documents: []document{
+				{path: "f", content: "a file"},
+				{path: "f/gone.md", content: "gone", missing: true},
+				{path: "f/kept.md", content: "kept"},
+			},
+			want: map[string]string{"f": "a file", "unplaced/kept": "kept"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			space := newWorkspace(t)
+			source := newFakeSource()
+			notes := source.addVault("Notes", store.EncryptionNone)
+
+			for _, document := range test.documents {
+				source.addDocument(notes, document.path, []byte(document.content))
+
+				if document.missing {
+					added := source.documents[notes][len(source.documents[notes])-1]
+					delete(source.content, hex.EncodeToString(added.ContentRef))
+				}
+			}
+
+			_, err := space.run(t, t.Context(), source)
+			require.NoError(t, err)
+
+			got := map[string]string{}
+
+			for path, content := range files(t, space.output) {
+				if relative, found := strings.CutPrefix(path, notes.String()+"/"); found {
+					got[relative] = content
+				} else {
+					got["unplaced/"+content] = content
+				}
+			}
+
+			assert.Equal(t, test.want, got)
+
+			// The vault's own directory exists even when it holds nothing.
+			empty := slices.DeleteFunc(emptyDirectories(t, space.output), func(path string) bool { return path == notes.String() })
+			assert.Empty(t, empty)
+			verifyManifests(t, space.output)
+		})
+	}
 }
