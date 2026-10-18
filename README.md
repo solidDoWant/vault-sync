@@ -22,6 +22,8 @@ make help
 make lint test
 ```
 
+Always evaluate the flake as a git flake: run `nix develop` inside the checkout or worktree, and in Nix expressions use `builtins.getFlake "git+file://${toString ./.}"`, not `builtins.getFlake (toString ./.)`. A path flake (`path:...`, or a bare path passed to `builtins.getFlake`) makes Nix copy the whole directory into the store, including gitignored caches such as `plugin/node_modules` and `plugin/.wdio-obsidian-cache` (over 1 GB). The dev shell refuses to evaluate from such a source, and `scripts/flake-source_test.sh` (part of `make test`) checks this.
+
 ## License
 
 [AGPL-3.0](LICENSE)
