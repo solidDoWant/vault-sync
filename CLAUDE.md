@@ -42,7 +42,7 @@ Run `make help` for the full list (keep it and this section current as targets a
 - `make fmt` / `make vet` / `make lint` (`lint-fix`) — format, vet, lint (Go + plugin).
 - `make test` — Go unit tests with `-race` + plugin vitest.
 - `make generate` / `make check-generate` — regenerate protobuf code / fail on drift.
-- `make test-integration` — server tests against real PostgreSQL + S3 (`docker compose`).
+- `make test-integration` — `integration`-tagged Go tests against real PostgreSQL + S3 (`docker compose`, torn down afterwards; tests skip without Docker). Extra `go test` args: `./scripts/test-integration.sh -run X ./internal/store/`.
 - `make test-sim` — multi-client sync simulation (`SIM_SEEDS`, `SIM_STEPS` tune it).
 - `make test-e2e` — plugin e2e in real Obsidian via `wdio-obsidian-service` (headless via xvfb).
 

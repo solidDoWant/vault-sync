@@ -1,6 +1,7 @@
 {
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
-  // Managers: gomod (go.mod), npm (plugin/), github-actions, nix (flake.lock).
+  // Managers: gomod (go.mod), npm (plugin/), github-actions, nix (flake.lock),
+  // docker-compose (deploy/compose/).
   // Policy is split by topic under .github/renovate/.
   extends: [
     "config:recommended",

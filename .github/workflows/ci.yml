@@ -25,6 +25,8 @@ jobs:
         run: nix develop -c make lint
       - name: Unit tests
         run: nix develop -c make test
+      - name: Integration tests
+        run: nix develop -c make test-integration
       - name: Generated code is current
         run: nix develop -c make check-generate
       - name: Build
