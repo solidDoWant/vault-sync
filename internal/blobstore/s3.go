@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/retry"
 	v4 "github.com/aws/aws-sdk-go-v2/aws/signer/v4"
 	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -217,6 +218,7 @@ func newClient(cfg Config, optFns ...func(*s3.Options)) *s3.Client {
 		UsePathStyle: cfg.ForcePathStyle,
 		HTTPClient:   httpClient,
 		HTTPSignerV4: &rotatingSigner{},
+		Retryer:      newRetryer(),
 		// Only send and check checksums the API requires: several
 		// S3-compatible stores reject the SDK's default extra checksums.
 		RequestChecksumCalculation: aws.RequestChecksumCalculationWhenRequired,
@@ -228,6 +230,33 @@ func newClient(cfg Config, optFns ...func(*s3.Options)) *s3.Client {
 	}
 
 	return s3.New(options, optFns...)
+}
+
+// newRetryer is the SDK's standard retryer, except that a certificate
+// verification failure is never retried: a misconfigured or impersonated
+// endpoint presents the same certificate on every attempt, so retrying would
+// only delay the error by the whole backoff budget.
+func newRetryer() aws.Retryer {
+	return retry.NewStandard(func(options *retry.StandardOptions) {
+		options.Retryables = append([]retry.IsErrorRetryable{retry.IsErrorRetryableFunc(certificateErrorRetryable)}, options.Retryables...)
+	})
+}
+
+// certificateErrorRetryable reports a certificate verification error, from
+// the CA-file check or the standard one, as not retryable, and leaves every
+// other error to the SDK's checks.
+func certificateErrorRetryable(err error) aws.Ternary {
+	var hostnameError x509.HostnameError
+
+	var unknownAuthority x509.UnknownAuthorityError
+
+	var invalid x509.CertificateInvalidError
+
+	if errors.As(err, &hostnameError) || errors.As(err, &unknownAuthority) || errors.As(err, &invalid) {
+		return aws.FalseTernary
+	}
+
+	return aws.UnknownTernary
 }
 
 // rotatingSigner is the S3 SigV4 signer, replaced whenever the secret key

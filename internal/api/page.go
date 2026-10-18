@@ -11,10 +11,11 @@ import (
 
 // MinResponseLimitBytes is the smallest send limit the server may run with:
 // a ListChanges or GetDocumentHistory response carrying one revision, with
-// a MaxPathBytes path and every other field at its largest, fits it in
-// either encoding (binary protobuf or JSON), compressed or not. Every page
-// holds at least one revision, so a smaller limit could make a page that
-// cannot be sent and a client that can never advance its cursor. The
+// a MaxPathBytes path and every other field at its largest, and a
+// ListVaults response carrying one vault, with a MaxVaultNameBytes name,
+// fit it in either encoding (binary protobuf or JSON), compressed or not.
+// Every page holds at least one entry, so a smaller limit could make a page
+// that cannot be sent and a client that can never advance its cursor. The
 // configuration rejects smaller limits at startup.
 const MinResponseLimitBytes = 16 << 10
 
@@ -23,10 +24,10 @@ const MinResponseLimitBytes = 16 << 10
 // separators and gzip framing.
 const pageReserveBytes = 1 << 10
 
-// pageBudget fills a page of revisions up to a byte budget below the
-// response limit, measuring each revision as the request's codec encodes
-// it. The first revision is always admitted, so every page makes progress;
-// MinResponseLimitBytes guarantees that one revision fits the limit.
+// pageBudget fills a page of entries (revisions or vaults) up to a byte
+// budget below the response limit, measuring each entry as the request's
+// codec encodes it. The first entry is always admitted, so every page makes
+// progress; MinResponseLimitBytes guarantees that one entry fits the limit.
 type pageBudget struct {
 	// remaining is the budget left; unbounded when limited is false.
 	remaining int

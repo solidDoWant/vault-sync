@@ -1,6 +1,7 @@
 package blobstore_test
 
 import (
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -23,6 +24,7 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awshttp "github.com/aws/aws-sdk-go-v2/aws/transport/http"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/stretchr/testify/require"
 
@@ -69,6 +71,13 @@ func newTestCA(t *testing.T, name string) *testCA {
 func (ca *testCA) issue(t *testing.T, dnsNames []string, ipAddresses []net.IP) *tls.Certificate {
 	t.Helper()
 
+	return ca.issueValidUntil(t, dnsNames, ipAddresses, time.Now().Add(time.Hour))
+}
+
+// issueValidUntil is issue with a certificate that expires at notAfter.
+func (ca *testCA) issueValidUntil(t *testing.T, dnsNames []string, ipAddresses []net.IP, notAfter time.Time) *tls.Certificate {
+	t.Helper()
+
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
 
@@ -77,8 +86,8 @@ func (ca *testCA) issue(t *testing.T, dnsNames []string, ipAddresses []net.IP) *
 		Subject:      pkix.Name{CommonName: "s3"},
 		DNSNames:     dnsNames,
 		IPAddresses:  ipAddresses,
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
+		NotBefore:    time.Now().Add(-2 * time.Hour),
+		NotAfter:     notAfter,
 		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
@@ -90,10 +99,12 @@ func (ca *testCA) issue(t *testing.T, dnsNames []string, ipAddresses []net.IP) *
 }
 
 // fakeS3 is a TLS server on 127.0.0.1 that answers every request with 200
-// and presents whatever certificate is currently stored.
+// and presents whatever certificate is currently stored. It counts the TLS
+// handshakes clients start.
 type fakeS3 struct {
 	server      *httptest.Server
 	certificate atomic.Pointer[tls.Certificate]
+	handshakes  atomic.Int64
 }
 
 func newFakeS3(t *testing.T, certificate *tls.Certificate) *fakeS3 {
@@ -108,6 +119,8 @@ func newFakeS3(t *testing.T, certificate *tls.Certificate) *fakeS3 {
 		// GetConfigForClient runs for every handshake; GetCertificate would
 		// be skipped without SNI, which clients never send to an IP address.
 		GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
+			fake.handshakes.Add(1)
+
 			return &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{*fake.certificate.Load()}}, nil
 		},
 	}
@@ -144,6 +157,12 @@ func writeTestFile(t *testing.T, path string, contents []byte) {
 func newTLSObjects(t *testing.T, endpoint, caFile string) *blobstore.Objects {
 	t.Helper()
 
+	return newTLSObjectsWithAddressing(t, endpoint, caFile, true)
+}
+
+func newTLSObjectsWithAddressing(t *testing.T, endpoint, caFile string, forcePathStyle bool) *blobstore.Objects {
+	t.Helper()
+
 	credentialsFile := filepath.Join(t.TempDir(), "credential")
 	writeTestFile(t, credentialsFile, []byte("value"))
 
@@ -152,7 +171,7 @@ func newTLSObjects(t *testing.T, endpoint, caFile string) *blobstore.Objects {
 		Bucket:              "vault-sync",
 		AccessKeyIDFile:     credentialsFile,
 		SecretAccessKeyFile: credentialsFile,
-		ForcePathStyle:      true,
+		ForcePathStyle:      forcePathStyle,
 		TLSCAFile:           caFile,
 	})
 	require.NoError(t, err)
@@ -173,19 +192,40 @@ func requireCertificateRejected(t require.TestingT, err error, _ ...any) {
 
 	var unknownAuthority x509.UnknownAuthorityError
 
-	require.True(t, errors.As(err, &hostnameError) || errors.As(err, &unknownAuthority),
+	var invalid x509.CertificateInvalidError
+
+	require.True(t, errors.As(err, &hostnameError) || errors.As(err, &unknownAuthority) || errors.As(err, &invalid),
 		"want a certificate verification error, got %v", err)
 }
 
 // headBucket sends one HeadBucket request through the client blobstore built,
-// without the SDK's retries, so a rejected handshake fails fast.
-func headBucket(t *testing.T, objects *blobstore.Objects) error {
+// with its default retry settings (a rejected handshake is not retried).
+func headBucket(t *testing.T, objects *blobstore.Objects, optFns ...func(*s3.Options)) error {
 	t.Helper()
 
-	_, err := objects.Client().HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String(objects.Bucket())},
-		func(options *s3.Options) { options.RetryMaxAttempts = 1 })
+	_, err := objects.Client().HeadBucket(t.Context(), &s3.HeadBucketInput{Bucket: aws.String(objects.Bucket())}, optFns...)
 
 	return err
+}
+
+// dialing returns a per-operation option making every connection of the
+// request reach fake, whatever host it is addressed to, while keeping the
+// client's TLS configuration (and so its SNI and certificate checks).
+func dialing(t *testing.T, fake *fakeS3) func(*s3.Options) {
+	t.Helper()
+
+	address := fake.server.Listener.Addr().String()
+
+	return func(options *s3.Options) {
+		client, ok := options.HTTPClient.(*awshttp.BuildableClient)
+		require.True(t, ok, "blobstore no longer builds an awshttp.BuildableClient")
+
+		options.HTTPClient = client.WithTransportOptions(func(transport *http.Transport) {
+			transport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return (&net.Dialer{}).DialContext(ctx, network, address)
+			}
+		})
+	}
 }
 
 var loopback = net.IPv4(127, 0, 0, 1)
@@ -255,6 +295,129 @@ func TestCAFileVerifiesTheEndpointHost(t *testing.T) {
 				test.wantErr(t, headBucket(t, objects))
 			}
 		})
+	}
+}
+
+func TestCAFileVerifiesTheBucketHostWithVirtualHostedAddressing(t *testing.T) {
+	ca := newTestCA(t, "s3-ca")
+
+	// s3.test never resolves: the dialing option sends the connection to the
+	// fake server, while the client still addresses (and verifies) the
+	// virtual-hosted name vault-sync.s3.test.
+	const endpointHost = "s3.test"
+
+	tests := []struct {
+		name        string
+		certificate *tls.Certificate
+		wantErr     require.ErrorAssertionFunc
+	}{
+		{
+			name:        "certificate naming the bucket host",
+			certificate: ca.issue(t, []string{"vault-sync." + endpointHost}, nil),
+		},
+		{
+			name:        "certificate naming only the endpoint host",
+			certificate: ca.issue(t, []string{endpointHost}, nil),
+			wantErr:     requireCertificateRejected,
+		},
+		{
+			name:        "certificate naming another bucket's host",
+			certificate: ca.issue(t, []string{"other." + endpointHost}, nil),
+			wantErr:     requireCertificateRejected,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.wantErr == nil {
+				test.wantErr = require.NoError
+			}
+
+			server := newFakeS3(t, test.certificate)
+
+			caFile := filepath.Join(t.TempDir(), "ca.pem")
+			writeTestFile(t, caFile, ca.pem)
+
+			objects := newTLSObjectsWithAddressing(t, server.endpoint(t, endpointHost), caFile, false)
+
+			for range 2 {
+				test.wantErr(t, headBucket(t, objects, dialing(t, server)))
+			}
+		})
+	}
+}
+
+func TestCertificateVerificationErrorsAreNotRetried(t *testing.T) {
+	ca := newTestCA(t, "s3-ca")
+	otherCA := newTestCA(t, "other-ca")
+
+	tests := []struct {
+		name        string
+		certificate *tls.Certificate
+		// withoutCAFile verifies against the system roots instead.
+		withoutCAFile bool
+	}{
+		{
+			name:        "certificate for another host",
+			certificate: ca.issue(t, nil, []net.IP{net.IPv4(192, 0, 2, 1)}),
+		},
+		{
+			name:        "certificate from an untrusted CA",
+			certificate: otherCA.issue(t, nil, []net.IP{loopback}),
+		},
+		{
+			name:        "expired certificate",
+			certificate: ca.issueValidUntil(t, nil, []net.IP{loopback}, time.Now().Add(-time.Hour)),
+		},
+		{
+			name:          "system roots, certificate from an untrusted CA",
+			certificate:   ca.issue(t, nil, []net.IP{loopback}),
+			withoutCAFile: true,
+		},
+	}
+
+	requests := []struct {
+		name string
+		send func(t *testing.T, objects *blobstore.Objects) error
+	}{
+		{
+			name: "Check",
+			send: func(t *testing.T, objects *blobstore.Objects) error {
+				t.Helper()
+
+				return objects.Check(t.Context())
+			},
+		},
+		{
+			name: "ReadRange",
+			send: func(t *testing.T, objects *blobstore.Objects) error {
+				t.Helper()
+
+				_, err := objects.ReadRange(t.Context(), "vaults/key", 0, 1)
+
+				return err
+			},
+		},
+	}
+
+	for _, test := range tests {
+		for _, request := range requests {
+			t.Run(test.name+"/"+request.name, func(t *testing.T) {
+				server := newFakeS3(t, test.certificate)
+
+				caFile := ""
+				if !test.withoutCAFile {
+					caFile = filepath.Join(t.TempDir(), "ca.pem")
+					writeTestFile(t, caFile, ca.pem)
+				}
+
+				// Default retry settings: no per-operation override.
+				objects := newTLSObjects(t, server.endpoint(t, "127.0.0.1"), caFile)
+
+				requireCertificateRejected(t, request.send(t, objects))
+				require.Equal(t, int64(1), server.handshakes.Load(), "handshakes attempted")
+			})
+		}
 	}
 }
 

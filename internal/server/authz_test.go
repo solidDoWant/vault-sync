@@ -124,6 +124,14 @@ type vaultBackend interface {
 func newVaultFixture(t *testing.T, users authStore, vaults vaultBackend, database server.Pinger) *authFixture {
 	t.Helper()
 
+	return newVaultFixtureWithLimit(t, users, vaults, database, 0)
+}
+
+// newVaultFixtureWithLimit is newVaultFixture with a request and send
+// limit of maxRequestBytes (zero: the test default).
+func newVaultFixtureWithLimit(t *testing.T, users authStore, vaults vaultBackend, database server.Pinger, maxRequestBytes int64) *authFixture {
+	t.Helper()
+
 	issuer := authtest.NewIssuer(t)
 	fixture := &authFixture{issuer: issuer, key: issuer.AddKey(t, jose.RS256), logs: &syncBuffer{}}
 	logger := slog.New(slog.NewJSONHandler(fixture.logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
@@ -135,12 +143,13 @@ func newVaultFixture(t *testing.T, users authStore, vaults vaultBackend, databas
 	})
 
 	fixture.running = startServer(t, server.Options{
-		Database:      database,
-		Authenticator: auth.NewAuthenticator(verifier, users),
-		Devices:       users,
-		Vaults:        vaults,
-		Memberships:   vaults,
-		Logger:        logger,
+		MaxRequestBytes: maxRequestBytes,
+		Database:        database,
+		Authenticator:   auth.NewAuthenticator(verifier, users),
+		Devices:         users,
+		Vaults:          vaults,
+		Memberships:     vaults,
+		Logger:          logger,
 	})
 
 	return fixture
@@ -562,7 +571,9 @@ func TestListVaultsPaginates(t *testing.T) {
 
 func TestListVaultsCapsThePageSize(t *testing.T) {
 	vaults := newMemoryVaults()
-	fixture := newVaultFixture(t, newMemoryStore(), vaults, nil)
+	// At the default send limit (1 MiB) a full page fits; smaller limits
+	// cut pages shorter (TestVaultPagesFitTheSmallestSendLimit).
+	fixture := newVaultFixtureWithLimit(t, newMemoryStore(), vaults, nil, 1<<20)
 	token := fixture.token(t, "alice")
 	owned := fixture.createVault(t, token, "First")
 	aliceID := ownerOf(t, vaults, owned.GetId())
