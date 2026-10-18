@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -56,6 +58,12 @@ func (service DeviceService) RegisterDevice(ctx context.Context, request *connec
 
 	if len(name) > MaxDeviceNameBytes {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxDeviceNameBytes))
+	}
+
+	// PostgreSQL text cannot hold U+0000, and no control character belongs
+	// in a display name.
+	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control characters"))
 	}
 
 	publicKey := request.Msg.GetPublicKey()

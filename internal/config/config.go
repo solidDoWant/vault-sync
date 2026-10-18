@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -36,6 +37,12 @@ const (
 	DefaultMetricsListenAddress = ":9090"
 	// DefaultMaxRequestBytes matches the 1 MiB inspected-body limit of the
 	// WAF in front of the server (SPEC.md §3).
+	//
+	// connect-go reads and decodes a unary request body, up to this limit
+	// after decompression, before interceptors run, so unauthenticated
+	// callers get a full body read and decode per request. Revisit that
+	// (for example by authenticating in HTTP middleware before the body is
+	// read) before any service raises its read limit (blobs, streaming).
 	DefaultMaxRequestBytes = 1 << 20
 	DefaultShutdownTimeout = 30 * time.Second
 
@@ -200,8 +207,7 @@ func checkIssuerURL(issuer string) error {
 	case "https":
 		return nil
 	case "http":
-		host := parsed.Hostname()
-		if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
+		if auth.IsLoopbackHost(parsed.Hostname()) {
 			return nil
 		}
 	}

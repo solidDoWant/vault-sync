@@ -48,21 +48,47 @@ type Issuer struct {
 	server       *httptest.Server
 	jwksRequests atomic.Int64
 
-	mu        sync.Mutex
-	published []Key
+	mu         sync.Mutex
+	published  []Key
+	jwksURI    string
+	middleware func(http.Handler) http.Handler
 }
 
-// NewIssuer starts a fake issuer that is stopped when the test ends.
+// NewIssuer starts a fake issuer serving plain http on loopback that is
+// stopped when the test ends.
 func NewIssuer(t testing.TB) *Issuer {
+	t.Helper()
+
+	return newIssuer(t, httptest.NewServer)
+}
+
+// NewTLSIssuer starts a fake issuer serving https on loopback that is stopped
+// when the test ends. Only the client returned by Client trusts its
+// certificate.
+func NewTLSIssuer(t testing.TB) *Issuer {
+	t.Helper()
+
+	return newIssuer(t, httptest.NewTLSServer)
+}
+
+func newIssuer(t testing.TB, start func(http.Handler) *httptest.Server) *Issuer {
 	t.Helper()
 
 	issuer := &Issuer{}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(writer http.ResponseWriter, _ *http.Request) {
+		issuer.mu.Lock()
+		jwksURI := issuer.jwksURI
+		issuer.mu.Unlock()
+
+		if jwksURI == "" {
+			jwksURI = issuer.URL + "/jwks"
+		}
+
 		writeJSON(writer, map[string]any{
 			"issuer":                                issuer.URL,
-			"jwks_uri":                              issuer.URL + "/jwks",
+			"jwks_uri":                              jwksURI,
 			"id_token_signing_alg_values_supported": []string{"RS256", "ES256", "EdDSA"},
 		})
 	})
@@ -80,11 +106,47 @@ func NewIssuer(t testing.TB) *Issuer {
 		writeJSON(writer, set)
 	})
 
-	issuer.server = httptest.NewServer(mux)
+	issuer.server = start(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		issuer.mu.Lock()
+		middleware := issuer.middleware
+		issuer.mu.Unlock()
+
+		if middleware == nil {
+			mux.ServeHTTP(writer, request)
+
+			return
+		}
+
+		middleware(mux).ServeHTTP(writer, request)
+	}))
 	issuer.URL = issuer.server.URL
 	t.Cleanup(issuer.server.Close)
 
 	return issuer
+}
+
+// Client returns an HTTP client for the issuer that trusts its certificate
+// (for a TLS issuer).
+func (issuer *Issuer) Client() *http.Client {
+	return issuer.server.Client()
+}
+
+// SetJWKSURI makes the discovery document advertise uri as the jwks_uri
+// instead of the issuer's own /jwks.
+func (issuer *Issuer) SetJWKSURI(uri string) {
+	issuer.mu.Lock()
+	defer issuer.mu.Unlock()
+
+	issuer.jwksURI = uri
+}
+
+// SetMiddleware wraps every later request to the issuer with middleware (for
+// example to redirect or stall a path); nil removes it.
+func (issuer *Issuer) SetMiddleware(middleware func(next http.Handler) http.Handler) {
+	issuer.mu.Lock()
+	defer issuer.mu.Unlock()
+
+	issuer.middleware = middleware
 }
 
 func writeJSON(writer http.ResponseWriter, value any) {
