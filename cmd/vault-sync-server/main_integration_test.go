@@ -63,8 +63,9 @@ func httpGet(url string) (int, error) {
 }
 
 // TestServerDrainsOnSIGTERM runs the real binary against PostgreSQL, holds
-// a request in flight, sends SIGTERM, and checks that the server stops
-// accepting connections, finishes the request, and exits 0.
+// a request in flight, sends SIGTERM, and checks that the server fails
+// /readyz while it still accepts connections, then stops accepting them,
+// finishes the request, and exits 0.
 func TestServerDrainsOnSIGTERM(t *testing.T) {
 	database := testinfra.PostgresConfig(t)
 	binary := buildServer(t)
@@ -79,6 +80,7 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 		config.DatabaseURLEnv + "=" + database.DSN,
 		config.ListenAddressEnv + "=" + apiAddress,
 		config.MetricsListenAddressEnv + "=" + metricsAddress,
+		config.ShutdownDelayEnv + "=2s",
 		config.ShutdownTimeoutEnv + "=20s",
 		// The issuer is contacted only to authenticate a request, so an
 		// unreachable one does not prevent startup.
@@ -129,6 +131,18 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	require.Equal(t, "\r\n", line)
 
 	require.NoError(t, server.Command.Process.Signal(syscall.SIGTERM))
+
+	// Readiness fails first, while the API still accepts connections.
+	require.Eventually(t, func() bool {
+		status, err := httpGet("http://" + metricsAddress + "/readyz")
+
+		return err == nil && status == http.StatusServiceUnavailable
+	}, 10*time.Second, 10*time.Millisecond, "/readyz must fail after SIGTERM")
+
+	probe, err := net.DialTimeout("tcp", apiAddress, time.Second)
+	require.NoError(t, err, "the API must still accept connections during the shutdown delay")
+
+	_ = probe.Close()
 
 	require.Eventually(t, func() bool {
 		probe, err := net.DialTimeout("tcp", apiAddress, time.Second)

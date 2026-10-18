@@ -13,7 +13,8 @@
 | `VAULT_SYNC_LISTEN_ADDRESS` | `:8080` | `host:port` for the API listener (ConnectRPC). This is the port to expose through the ingress. |
 | `VAULT_SYNC_METRICS_LISTEN_ADDRESS` | `:9090` | `host:port` for the metrics and health listener (`/metrics`, `/healthz`, `/readyz`). Must differ from `VAULT_SYNC_LISTEN_ADDRESS`. Do not expose it to the internet. |
 | `VAULT_SYNC_MAX_REQUEST_BYTES` | `1048576` (1 MiB) | Maximum size of a request body in bytes, applied both to the bytes on the wire and to the decompressed message. Allowed range: 1024 to 67108864. The default matches the 1 MiB inspected-body limit of the WAF in front of the server. Request bodies are read and decoded before the bearer token is checked, so unauthenticated callers can make the server read up to this many bytes per request; keep the limit low. |
-| `VAULT_SYNC_SHUTDOWN_TIMEOUT` | `30s` | How long in-flight requests may finish after `SIGTERM` or `SIGINT` before the remaining connections are closed. A Go duration (`30s`, `1m`); must be positive. Keep it below the pod's `terminationGracePeriodSeconds`. |
+| `VAULT_SYNC_SHUTDOWN_DELAY` | `5s` | How long after `SIGTERM` or `SIGINT` `/readyz` fails while the API keeps serving, so load balancers stop sending traffic before any connection is refused (see [Startup and shutdown](#startup-and-shutdown)). A Go duration from `0s` to `5m`. |
+| `VAULT_SYNC_SHUTDOWN_TIMEOUT` | `30s` | The drain timeout: how long in-flight requests may finish after `VAULT_SYNC_SHUTDOWN_DELAY` before the remaining connections are closed. A Go duration (`30s`, `1m`); must be positive. Keep the delay plus the timeout below the pod's `terminationGracePeriodSeconds`. |
 | `VAULT_SYNC_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn` or `error`. |
 | `VAULT_SYNC_OIDC_ISSUER_URL` | (required) | OIDC issuer identifier, for example `https://auth.example.com/application/o/vault-sync/` for Authentik. Access tokens' `iss` claim must equal it exactly (including any trailing slash). The signing keys are discovered from `<issuer>/.well-known/openid-configuration`. Must be `https`; plain `http` is accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) for local development. |
 | `VAULT_SYNC_OIDC_AUDIENCE` | (required) | Audience that access tokens' `aud` claim must contain; for Authentik, the client ID of the vault-sync provider. |
@@ -100,4 +101,32 @@ Calls rejected for authentication are counted with code `unauthenticated`. Reque
 
 ## Startup and shutdown
 
-On startup the server connects to PostgreSQL (exiting with status 1 if it cannot), applies any pending schema migrations, and, if an object store is configured, checks that its bucket is reachable before it starts listening. On `SIGTERM` or `SIGINT` it stops accepting connections, reports not ready on `/readyz`, and waits up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` for in-flight requests. It exits with status 0 after a clean drain and status 1 if the timeout forced connections closed.
+On startup the server connects to PostgreSQL (exiting with status 1 if it cannot), applies any pending schema migrations, and, if an object store is configured, checks that its bucket is reachable before it starts listening.
+
+On `SIGTERM` or `SIGINT` it shuts down in this order:
+
+1. `/readyz` starts returning 503 immediately.
+2. For `VAULT_SYNC_SHUTDOWN_DELAY` the API keeps accepting and serving requests, but every response closes its connection, so clients and proxies reconnect, through the load balancer, to another replica.
+3. The API stops accepting connections, and in-flight requests get up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` to finish. Once the realtime channel ships, its open WebSockets will be closed at this step with close code 1001 ("going away"), so clients reconnect elsewhere.
+4. The process exits with status 0 after a clean drain, or status 1 if the timeout forced connections closed.
+
+Background jobs (the blob upload cleanup) stop at the signal. Work they leave half-done is finished by the next run on any replica.
+
+PostgreSQL connections are checked before every use. A connection the database dropped while it sat idle (a restart, a CloudNativePG switchover) is replaced without the request noticing. A request whose query was already running when its connection broke fails, and the client retries it. Failing over the database itself is the operator's concern.
+
+## High-availability deployment
+
+The server is designed to run as several identical replicas behind one Service, sharing one PostgreSQL database and one S3 bucket. Terminating any replica, for example to drain a node, must have no client-visible effect:
+
+- Replicas keep no per-client state of their own. Upload sessions, memberships and users live in PostgreSQL, and blob contents live in S3. Any replica can serve any request, including different chunks of one upload and its commit. Caches (the OIDC key set, S3 credentials) are rebuilt by each replica on its own.
+- Background jobs run on every replica. They coordinate only through PostgreSQL, so concurrent runs have the same effect as one run.
+- A replica killed without warning (`SIGKILL`, a node crash) loses only its in-flight requests. Every RPC is safe to retry on another replica, and anything already acknowledged is kept.
+- During a rolling upgrade the previous release and the new one run side by side. The new release's migrations are backward-compatible with the previous release (SPEC.md §12), and an integration test runs both releases against one database.
+
+Recommended Kubernetes settings (the Helm chart will adopt these):
+
+- **At least 2 replicas** (`replicas: 2` or more), spread across nodes, for example with `topologySpreadConstraints` on `kubernetes.io/hostname`.
+- **A PodDisruptionBudget** with `maxUnavailable: 1` (or `minAvailable: 1`), so a node drain never evicts every replica at once.
+- **Readiness before termination.** Point the readiness probe at `/readyz` on the metrics port, with a short `periodSeconds` (for example 2). `VAULT_SYNC_SHUTDOWN_DELAY` keeps serving while endpoints and proxies (Istio) catch up with the pod's removal, so no `preStop` hook is needed. If you add a `preStop` sleep anyway, it runs before the signal and adds to the delay. Point the liveness probe at `/healthz`, never at `/readyz`.
+- **`terminationGracePeriodSeconds`** above `VAULT_SYNC_SHUTDOWN_DELAY` + `VAULT_SYNC_SHUTDOWN_TIMEOUT` plus a margin. With the defaults (5 s + 30 s), use at least `45`.
+- A rolling-update strategy with `maxUnavailable: 0` and `maxSurge: 1`, so a new pod is ready before an old one is told to stop.

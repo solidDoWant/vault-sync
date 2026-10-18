@@ -57,7 +57,7 @@ type Cleaner struct {
 
 // CleanupResult reports one run's work.
 type CleanupResult struct {
-	// SessionsRemoved counts sessions whose objects and row are gone.
+	// SessionsRemoved counts sessions this run removed (objects and row).
 	SessionsRemoved int
 	// ObjectsDeleted counts staged objects deleted.
 	ObjectsDeleted int
@@ -156,7 +156,9 @@ func (cleaner *Cleaner) Run(ctx context.Context, interval time.Duration) {
 
 // RemoveFinishedUpload deletes up to budget staged objects of the finished
 // session uploadID and, once none remain, the session itself. It reports how
-// many objects it deleted and whether the session is gone.
+// many objects it deleted and whether this call removed the session: when
+// several server processes remove the same session at once, every step is
+// idempotent and exactly one of them reports removing it.
 func RemoveFinishedUpload(ctx context.Context, vault *store.VaultStore, objects *Objects, uploadID uuid.UUID, budget int) (int, bool, error) {
 	deleted, empty, err := objects.DeletePrefix(ctx, UploadPrefix(vault.VaultID(), uploadID), budget)
 	if err != nil {
@@ -167,11 +169,12 @@ func RemoveFinishedUpload(ctx context.Context, vault *store.VaultStore, objects 
 		return deleted, false, nil
 	}
 
-	if err := vault.DeleteBlobUpload(ctx, uploadID); err != nil {
+	removed, err := vault.DeleteBlobUpload(ctx, uploadID)
+	if err != nil {
 		return deleted, false, err
 	}
 
-	return deleted, true, nil
+	return deleted, removed, nil
 }
 
 func orDefault(value, fallback int) int {

@@ -80,6 +80,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 
 	srv := New(Options{
 		MaxRequestBytes: cfg.MaxRequestBytes,
+		ShutdownDelay:   cfg.ShutdownDelay,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Database:        pool,
 		Authenticator:   auth.NewAuthenticator(verifier, queries),

@@ -49,6 +49,14 @@ func NewPoolConfig(cfg Config) (*pgxpool.Config, error) {
 		return nil, err
 	}
 
+	// Check every connection before handing it out. A connection that
+	// PostgreSQL reset while it sat idle in the pool (a restart, a
+	// failover, an idle reaper) then fails its ping instead of the caller's
+	// query, and the pool retries with another, or a new, connection
+	// (SPEC.md §12). pgx's default pings only connections idle for over a
+	// second, which a busy pool's connections rarely are.
+	poolConfig.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
+
 	return poolConfig, nil
 }
 

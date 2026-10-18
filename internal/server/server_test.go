@@ -503,3 +503,160 @@ func TestShutdownGivesUpAfterTimeout(t *testing.T) {
 		assert.False(t, netErr.Timeout(), "connection must be closed, not left open")
 	}
 }
+
+func TestShutdownFailsReadinessBeforeRefusingConnections(t *testing.T) {
+	const shutdownDelay = 500 * time.Millisecond
+
+	running := startServer(t, server.Options{ShutdownDelay: shutdownDelay})
+
+	status, _ := get(t, running.metricsURL()+"/readyz")
+	require.Equal(t, http.StatusOK, status)
+
+	started := time.Now()
+
+	running.stop()
+
+	require.Eventually(t, func() bool {
+		status, _ := get(t, running.metricsURL()+"/readyz")
+
+		return status == http.StatusServiceUnavailable
+	}, 5*time.Second, 10*time.Millisecond, "readiness must fail as soon as shutdown starts")
+
+	// Readiness fails while the API still serves new connections, so load
+	// balancers stop routing here before any request is refused. Responses
+	// close their connection, so clients reconnect elsewhere.
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, running.apiURL()+getServerInfoPath, strings.NewReader("{}"))
+	require.NoError(t, err)
+	request.Header.Set("Content-Type", "application/json")
+
+	response, err := (&http.Client{Transport: &http.Transport{}}).Do(request)
+	require.NoError(t, err, "the API must accept requests during the shutdown delay")
+
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	assert.True(t, response.Close, "responses during the shutdown delay must close their connection")
+	assert.Less(t, time.Since(started), shutdownDelay, "the request must have been served during the delay")
+
+	requireRefusesConnections(t, running.apiAddress)
+	assert.GreaterOrEqual(t, time.Since(started), shutdownDelay)
+
+	select {
+	case <-running.done:
+		require.NoError(t, running.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop")
+	}
+}
+
+// fakeDrainer stands in for an owner of long-lived connections (the
+// realtime hub's WebSockets).
+type fakeDrainer struct {
+	metricsURL func() string
+	// readiness is the /readyz status seen when Drain was called.
+	readiness atomic.Int32
+	// hasDeadline reports whether Drain's context had a deadline.
+	hasDeadline atomic.Bool
+	called      chan struct{}
+	release     chan struct{}
+	err         error
+}
+
+func newFakeDrainer() *fakeDrainer {
+	return &fakeDrainer{called: make(chan struct{}), release: make(chan struct{})}
+}
+
+func (drainer *fakeDrainer) Drain(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, drainer.metricsURL()+"/readyz", nil)
+	if err == nil {
+		if response, err := http.DefaultClient.Do(request); err == nil {
+			drainer.readiness.Store(int32(response.StatusCode))
+			_ = response.Body.Close()
+		}
+	}
+
+	_, ok := ctx.Deadline()
+	drainer.hasDeadline.Store(ok)
+	close(drainer.called)
+
+	select {
+	case <-drainer.release:
+		return drainer.err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestShutdownDrainsLongLivedConnectionsAfterReadinessFails(t *testing.T) {
+	drainer := newFakeDrainer()
+
+	running := startServer(t, server.Options{Drainers: []server.Drainer{drainer}})
+	drainer.metricsURL = running.metricsURL
+
+	running.stop()
+
+	select {
+	case <-drainer.called:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drainer was not called on shutdown")
+	}
+
+	assert.Equal(t, int32(http.StatusServiceUnavailable), drainer.readiness.Load(), "readiness must fail before connections are drained")
+	assert.True(t, drainer.hasDeadline.Load(), "draining must be bounded by the shutdown timeout")
+
+	select {
+	case <-running.done:
+		t.Fatal("server stopped before the drainer finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(drainer.release)
+
+	select {
+	case <-running.done:
+		require.NoError(t, running.err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("server did not stop after draining")
+	}
+}
+
+func TestShutdownReportsDrainerFailures(t *testing.T) {
+	failure := errors.New("close failed")
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		release bool
+		err     error
+		want    error
+	}{
+		{name: "drainer fails", timeout: 10 * time.Second, release: true, err: failure, want: failure},
+		{name: "drainer exceeds the shutdown timeout", timeout: 200 * time.Millisecond, want: context.DeadlineExceeded},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			drainer := newFakeDrainer()
+			drainer.err = test.err
+
+			running := startServer(t, server.Options{ShutdownTimeout: test.timeout, Drainers: []server.Drainer{drainer}})
+			drainer.metricsURL = running.metricsURL
+
+			running.stop()
+			<-drainer.called
+
+			if test.release {
+				close(drainer.release)
+			}
+
+			select {
+			case <-running.done:
+			case <-time.After(5 * time.Second):
+				t.Fatal("server did not stop")
+			}
+
+			require.ErrorIs(t, running.err, test.want)
+		})
+	}
+}

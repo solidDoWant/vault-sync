@@ -51,6 +51,14 @@ The script exports these variables; set them yourself to point the tests at othe
 
 The vitest suite (`plugin/test/integration/*.integration.test.ts`) skips itself when those variables are unset, and `plugin/vitest.config.ts` excludes it, so `make test` and plain `npm test` never touch the network. `make test-integration` installs the plugin's npm dependencies first, since the Go test needs `vitest`. To run only this test: `./scripts/test-integration.sh -run TestPluginProtocolClient -v ./cmd/vault-sync-server/`.
 
+## Multi-instance and rolling-upgrade tests
+
+The high-availability requirement (SPEC.md §12) is proven by tests that run several server processes against one test database and one test bucket. The helpers live in `cmd/vault-sync-server/instances_integration_test.go`.
+
+- `ha_integration_test.go` covers three cases. In the first, consecutive requests, including the chunks and commit of one upload, alternate between instances. In the second, an instance is `SIGKILL`ed mid-chunk and another mid-commit, and the client retries on a third. In the third, an instance receives `SIGTERM` while a client alternates between it and another instance.
+- `upgrade_integration_test.go` (`TestRollingUpgrade`) builds the **previous release** from git history (`git archive` of that revision, then `go build`). It runs that build beside this one on one database: the previous release migrates first, then the new one migrates while the previous one is serving. Both then serve mixed traffic, and the previous release is restarted on the newer schema. A migration that the previous release cannot run against fails this test. The previous release is the merge base of `HEAD` and `origin/master`, or `HEAD^` when `HEAD` is on master. Set `VAULT_SYNC_TEST_PREVIOUS_RELEASE` to any git revision to override it. Without the needed git history the test skips locally and fails in CI (`CI` set), which is why the workflow checks out with `fetch-depth: 0`.
+- `internal/blobstore/ha_integration_test.go` runs the upload cleaner of four simulated instances at once. It checks that every abandoned session is removed exactly once and that no instance logs a warning or an error.
+
 ## Writing integration tests
 
 - Start the file with `//go:build integration`.

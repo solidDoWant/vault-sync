@@ -27,6 +27,7 @@ const (
 	DatabaseTLSKeyFileEnv   = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
 	DatabaseTLSCAFileEnv    = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
 	MaxRequestBytesEnv      = "VAULT_SYNC_MAX_REQUEST_BYTES"
+	ShutdownDelayEnv        = "VAULT_SYNC_SHUTDOWN_DELAY"
 	ShutdownTimeoutEnv      = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
 	LogLevelEnv             = "VAULT_SYNC_LOG_LEVEL"
 	OIDCIssuerURLEnv        = "VAULT_SYNC_OIDC_ISSUER_URL"
@@ -93,6 +94,10 @@ const (
 	// read) before any service raises its read limit (blobs, streaming).
 	DefaultMaxRequestBytes = 1 << 20
 	DefaultShutdownTimeout = 30 * time.Second
+	// DefaultShutdownDelay covers typical load-balancer and Kubernetes
+	// endpoint propagation after /readyz starts failing.
+	DefaultShutdownDelay = 5 * time.Second
+	MaxShutdownDelay     = 5 * time.Minute
 
 	MinMaxRequestBytes = 1 << 10
 	MaxMaxRequestBytes = 64 << 20
@@ -111,8 +116,11 @@ type Config struct {
 	OIDC OIDCConfig
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
-	// ShutdownTimeout bounds how long in-flight requests may drain after a
-	// shutdown signal.
+	// ShutdownDelay is how long after a shutdown signal /readyz fails while
+	// the API still accepts requests, before draining starts.
+	ShutdownDelay time.Duration
+	// ShutdownTimeout bounds how long in-flight requests may drain after
+	// ShutdownDelay.
 	ShutdownTimeout time.Duration
 	// LogLevel is the minimum level logged.
 	LogLevel slog.Level
@@ -160,6 +168,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			Audience:  get(OIDCAudienceEnv),
 		},
 		MaxRequestBytes: DefaultMaxRequestBytes,
+		ShutdownDelay:   DefaultShutdownDelay,
 		ShutdownTimeout: DefaultShutdownTimeout,
 		LogLevel:        slog.LevelInfo,
 		Blobs: BlobConfig{
@@ -208,6 +217,19 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			problems = append(problems, fmt.Errorf("%s: must be positive, got %s", ShutdownTimeoutEnv, raw))
 		default:
 			cfg.ShutdownTimeout = value
+		}
+	}
+
+	if raw := get(ShutdownDelayEnv); raw != "" {
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 5s)", ShutdownDelayEnv, raw))
+		case value < 0 || value > MaxShutdownDelay:
+			problems = append(problems, fmt.Errorf("%s: %s is outside the allowed range 0s to %s", ShutdownDelayEnv, raw, MaxShutdownDelay))
+		default:
+			cfg.ShutdownDelay = value
 		}
 	}
 
