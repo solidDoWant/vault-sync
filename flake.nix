@@ -27,6 +27,8 @@
             # per call, and a dev-shell gh would shadow it on PATH and fall back
             # to a stale token.
             pkgs.jq
+            # Agents reach for python3 for ad-hoc scripting; the VM image has none.
+            pkgs.python3
 
             # Protobuf/ConnectRPC code generation (make generate). The TS
             # generator (protoc-gen-es) comes from plugin/node_modules so it

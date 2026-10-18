@@ -50,6 +50,16 @@ Run `make help` for the full list (keep it and this section current as targets a
 
 Provisioned via `flake.nix` (`direnv` loads it via `.envrc`); run `nix develop` if something is missing. In this isolated coder VM you may install or update tools directly without asking. Docker is available for integration dependencies. Keep concurrency modest: the VM has 16 GiB RAM and no swap — never launch more than a few parallel builds/test suites.
 
+## Shell Hygiene (agents)
+
+The worktree-isolation guard rejects many compound shell commands, and failed tool calls waste time. In this VM:
+
+- Run one simple command per Bash call, from inside your worktree (`cd` into it first). Don't chain git commands with pipes, loops, or `bash -c`.
+- Put multi-step logic in a script file under your worktree (or `/tmp`) and run that.
+- Prefix toolchain commands with `nix develop -c` (`go`, `node`, `npm`, `buf`, `golangci-lint` are not on the bare PATH). `python3` is available inside the dev shell only.
+- Don't `sleep` to wait; use `gh pr checks --watch`, `gh run watch`, or the Monitor tool (load it with ToolSearch first).
+- A branch can be checked out in only one worktree. If git says it is in use, check it out detached or report to the project manager — never delete another agent's worktree.
+
 ## Acceptance Criteria Rules
 
 - Criteria are Given/When/Then describing **observable behavior only** — no implementation details.
@@ -61,6 +71,7 @@ Provisioned via `flake.nix` (`direnv` loads it via `.envrc`); run `nix develop` 
 
 - **Go:** `testify` (`require` + `assert`), table-driven tests with a `require.ErrorAssertionFunc` field defaulting to `require.NoError`. Loop variables are full singular words (`revision`, not `rev`). Always `t.Context()`, never `context.Background()`. Integration tests use `//go:build integration` and skip when their dependencies are absent.
 - **TypeScript:** vitest; `describe`/`it` named by behavior. No network in unit tests — use the in-memory transport and vault.
+- **Timing and concurrency.** Tests must not depend on wall-clock speed, per-response headers, or scheduling order; anything timing-sensitive must pass `-count=50 -race` locally. The VM and CI runners are shared and loaded.
 - **Sync bugs get a simulation regression.** Any bug in sync behavior is reproduced as a committed simulation seed or scripted scenario before it is fixed.
 
 ## Security Rules
