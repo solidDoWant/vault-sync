@@ -17,6 +17,11 @@ LOG_DIR="${PM_LOG_DIR:-$HOME/.pm-logs}"
 MODEL="${PM_MODEL:-opus}"
 PROMPT='You are the vault-sync project manager. Read docs/agents/project-manager.md and follow it exactly: resume from .pm/state.md, run one cycle, record progress, then exit.'
 
+# Headless `claude -p` only waits 10 minutes for background tasks (subagents)
+# after the PM's last turn, then kills them -- which is what killed the cycle-2
+# and cycle-7 workers. Wait up to 3 hours instead; a cycle is still bounded.
+export CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS="${CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS:-10800000}"
+
 mkdir -p "$LOG_DIR" "$REPO_DIR/.pm"
 cd "$REPO_DIR"
 
