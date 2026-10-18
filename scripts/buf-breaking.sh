@@ -17,10 +17,14 @@
 #   - Shallow pull_request CI checkouts: HEAD is the PR merge commit GitHub
 #     built on top of some master commit, its first parent. master may have
 #     moved on since, and comparing against the newer tip would report
-#     master's additions as deletions. So when the repository is shallow, HEAD
-#     is a merge commit and BUF_BREAKING_AGAINST is unset, the first parent is
-#     the base (fetched by SHA from the remote if missing). If it cannot be
+#     master's additions as deletions. So when GITHUB_EVENT_NAME is
+#     pull_request (set by GitHub Actions), the repository is shallow, HEAD is
+#     a merge commit and BUF_BREAKING_AGAINST is unset, the first parent is the
+#     base (fetched by SHA from the remote if missing). If it cannot be
 #     fetched, the master tip is used as above, which can only fail closed.
+#     Anywhere else a merge commit's first parent need not be master (merging
+#     master into a feature branch makes it the feature branch's previous
+#     commit, hiding that branch's earlier changes), so the rule is not used.
 #
 # The base schema is extracted with `git archive` into a temporary directory,
 # so buf never needs to clone the (possibly shallow) repository itself.
@@ -43,7 +47,10 @@ resolve() { git rev-parse --verify --quiet "$1^{commit}" 2>/dev/null; }
 # shallow_merge_first_parent prints the first parent of HEAD when the
 # repository is shallow and HEAD is a merge commit, fetching it from the
 # remote if it is missing. Prints nothing otherwise, or if it cannot be had.
+# Only used on pull_request runs, where HEAD is GitHub's refs/pull/N/merge and
+# its first parent is the base branch.
 shallow_merge_first_parent() {
+	[[ "${GITHUB_EVENT_NAME:-}" == pull_request ]] || return 0
 	[[ "$(git rev-parse --is-shallow-repository)" == true ]] || return 0
 	# Read the parents from the raw commit header: a shallow clone grafts HEAD
 	# to have none, so HEAD^1 does not resolve.

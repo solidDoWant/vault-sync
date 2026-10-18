@@ -9,7 +9,8 @@
 # global and system config (commit.gpgsign, core.hooksPath, ...) and any
 # config, repository or index exported through the environment (e.g. when
 # `make test` runs from a git hook) are ignored. The last case re-runs the
-# suite with a hostile config and GIT_DIR to prove it.
+# suite with a hostile config and a GIT_DIR naming a decoy repository to
+# prove it.
 set -euo pipefail
 
 # `git rev-parse --local-env-vars` lists every repository-local variable
@@ -17,6 +18,10 @@ set -euo pipefail
 # shellcheck disable=SC2046 # one variable name per word
 unset $(git rev-parse --local-env-vars)
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# The check applies its PR merge-commit rule only on pull_request runs, which
+# GitHub Actions signals through GITHUB_EVENT_NAME. Drop any inherited value
+# so the cases behave the same in CI and locally; the PR cases set it.
+unset GITHUB_EVENT_NAME
 # No automatic `git maintenance run --auto --detach` after commit, fetch,
 # merge or push. Since git 2.55 the detached daemon holds
 # objects/maintenance.lock after the command returns. If it removes the lock
@@ -234,7 +239,7 @@ new_repo "$repo"
 sed -i -E "${field_line_number}i\\  // Comment-only change on the PR branch." "$repo/$target_file"
 commit_all "$repo" "comment-only change"
 shallow_pr_merge "$repo" "$work/pr-merge-clone"
-run_check "$work/pr-merge-clone"
+GITHUB_EVENT_NAME=pull_request run_check "$work/pr-merge-clone"
 if [[ $status -eq 0 ]]; then
 	pass "shallow PR merge commit is compared against its first parent, not a newer master"
 else
@@ -247,12 +252,43 @@ new_repo "$repo"
 sed -i "${field_line_number}d" "$repo/$target_file"
 commit_all "$repo" "remove a field"
 shallow_pr_merge "$repo" "$work/pr-merge-remove-clone"
-run_check "$work/pr-merge-remove-clone"
+GITHUB_EVENT_NAME=pull_request run_check "$work/pr-merge-remove-clone"
 if [[ $status -ne 0 && "$output" == *FIELD_NO_DELETE* ]]; then
 	pass "shallow PR merge commit that removes a field fails"
 else
 	fail "shallow PR merge commit that removes a field fails (status $status): $output"
 fi
+
+# Case: outside a pull_request run, a shallow clone whose HEAD merges master
+# into a feature branch that removed a field in an earlier commit still fails.
+# The merge's first parent is the feature branch, not master, so it must not
+# be used as the base there.
+repo="$work/feature-merge"
+new_repo "$repo"
+sed -i "${field_line_number}d" "$repo/$target_file"
+commit_all "$repo" "remove a field"
+add_field_on_master "$repo"
+git_quiet -C "$repo" fetch origin
+git_quiet -C "$repo" -c user.name=test -c user.email=test@example.com merge --no-ff --no-edit origin/master
+git_quiet -C "$repo" push origin feature
+shallow="$work/feature-merge-clone"
+git_quiet clone --depth=1 --branch feature "file://$repo.origin.git" "$shallow"
+git_quiet -C "$shallow" update-ref -d refs/remotes/origin/master
+if [[ "$(git -C "$shallow" rev-parse --is-shallow-repository)" != true || "$(git -C "$shallow" cat-file commit HEAD | grep -c '^parent ')" -ne 2 ]]; then
+	fail "feature-merge setup: HEAD is not a shallow merge commit"
+fi
+for event in "" push; do
+	if [[ -z "$event" ]]; then
+		run_check "$shallow"
+	else
+		GITHUB_EVENT_NAME="$event" run_check "$shallow"
+	fi
+	if [[ $status -ne 0 && "$output" == *FIELD_NO_DELETE* ]]; then
+		pass "shallow merge of master into a field-removing branch fails outside pull_request (GITHUB_EVENT_NAME='$event')"
+	else
+		fail "shallow merge of master into a field-removing branch fails outside pull_request (GITHUB_EVENT_NAME='$event', status $status): $output"
+	fi
+done
 
 # Case: the base is unreachable (no remote at all): fail loudly, never skip.
 repo="$work/unreachable"
@@ -273,7 +309,7 @@ sed -i -E "${field_line_number}i\\  // Comment-only change on the PR branch." "$
 commit_all "$repo" "comment-only change"
 shallow_pr_merge "$repo" "$work/pr-merge-unreachable-clone"
 git_quiet -C "$work/pr-merge-unreachable-clone" remote remove origin
-run_check "$work/pr-merge-unreachable-clone"
+GITHUB_EVENT_NAME=pull_request run_check "$work/pr-merge-unreachable-clone"
 if [[ $status -ne 0 && "$output" == *"cannot resolve the base"* ]]; then
 	pass "shallow PR merge commit with an unreachable base fails with a clear message"
 else
@@ -344,8 +380,12 @@ fi
 # Case: the suite is isolated from the developer's git setup. Re-run it once
 # with a global config that signs commits with a failing program and installs
 # a failing hook, a config set through the environment, and an exported
-# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE (as when `make test` runs from a git
-# hook). Without the isolation above, every commit in the suite would fail.
+# GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE pointing at a real decoy repository (as
+# when `make test` runs from a git hook). Without the isolation above, every
+# commit in the suite would fail, and git commands would read from and write
+# to the decoy; its files must be byte-for-byte unchanged afterwards.
+# GIT_CONFIG_NOSYSTEM is not exercised: faking a hostile system config needs
+# root, so it rests on git's documented behaviour.
 # GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0 are overwritten by the maintenance.auto
 # export whether or not the `unset` drops them, so GIT_CONFIG_PARAMETERS (which
 # nothing re-exports) and GIT_DIR are what prove the `unset` itself works.
@@ -362,13 +402,26 @@ if [[ -z "${BUF_BREAKING_TEST_NESTED:-}" ]]; then
 [core]
 	hooksPath = $hostile/hooks
 EOF
+	decoy="$work/decoy"
+	mkdir -p "$decoy"
+	echo "decoy" >"$decoy/README"
+	git_quiet -C "$decoy" init
+	git_quiet -C "$decoy" add README
+	git_quiet -C "$decoy" -c user.name=test -c user.email=test@example.com commit -m decoy
+	git_quiet -C "$decoy" status
+	# snapshot_decoy: every path in the decoy with its type and, for files,
+	# a content hash. Modification times are left out on purpose.
+	snapshot_decoy() {
+		(cd "$decoy" && find . -printf '%y %p\n' | LC_ALL=C sort && find . -type f -exec sha256sum {} + | LC_ALL=C sort -k 2)
+	}
+	decoy_before="$(snapshot_decoy)"
 	set +e
 	output="$(
 		BUF_BREAKING_TEST_NESTED=1 \
 			GIT_CONFIG_GLOBAL="$hostile/gitconfig" \
 			GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=true \
 			GIT_CONFIG_PARAMETERS="'commit.gpgsign'='true' 'gpg.program'='false'" \
-			GIT_DIR="$hostile/not-a-repo.git" GIT_WORK_TREE="$hostile" GIT_INDEX_FILE="$hostile/index" \
+			GIT_DIR="$decoy/.git" GIT_WORK_TREE="$decoy" GIT_INDEX_FILE="$decoy/.git/index" \
 			"$repo_root/scripts/buf-breaking_test.sh" 2>&1
 	)"
 	status=$?
@@ -377,6 +430,12 @@ EOF
 		pass "suite passes with a hostile global git config and an exported GIT_DIR"
 	else
 		fail "suite passes with a hostile global git config and an exported GIT_DIR (status $status): $output"
+	fi
+	decoy_after="$(snapshot_decoy)"
+	if [[ "$decoy_after" == "$decoy_before" ]]; then
+		pass "suite leaves the repository named by an exported GIT_DIR unchanged"
+	else
+		fail "suite leaves the repository named by an exported GIT_DIR unchanged: $(diff <(echo "$decoy_before") <(echo "$decoy_after"))"
 	fi
 fi
 
