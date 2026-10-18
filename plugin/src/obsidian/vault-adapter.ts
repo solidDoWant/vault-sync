@@ -1,7 +1,7 @@
 import { EditableFileView, MarkdownView, normalizePath, TextFileView, TFile, TFolder, type App, type EventRef, type TAbstractFile } from "obsidian";
 
 import { VaultError, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener } from "../core/vault/adapter";
-import { mergeUnsaved } from "./text-merge";
+import { mergeUnsaved } from "../core/merge/text-merge";
 
 /**
  * A remote write reached a file open in a view with unsaved state it could

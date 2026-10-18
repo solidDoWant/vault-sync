@@ -59,6 +59,15 @@ export interface Journal {
   listDeferred(): Promise<DeferredRevision[]>;
   /** Removes a document's deferred revision once it is resolved. Removing an unknown id is a no-op. */
   removeDeferred(documentId: string): Promise<void>;
+
+  /**
+   * Records a conflict in the conflict log (SPEC.md §7), or replaces the
+   * record with the same id. The engine records a conflict before it writes
+   * the conflict copy, so an interrupted copy is finished under the same name.
+   */
+  putConflict(conflict: ConflictRecord): Promise<void>;
+  /** The conflict log, oldest first: what the UI's conflict view reads. */
+  listConflicts(): Promise<ConflictRecord[]>;
 }
 
 /** What the client last synced for one document. */
@@ -125,4 +134,46 @@ export type DeferReason = "local-changes" | "invalid-path" | "path-conflict";
 export interface DeferredRevision {
   revision: RemoteRevision;
   reason: DeferReason;
+  /**
+   * Set while the engine writes a merge result for `revision`: recorded
+   * before the disk changes, so a merge interrupted after them is recognized
+   * (the file at `path` hashes to `contentHash`, null for a deleted result)
+   * and finished without asking the merge hook again.
+   */
+  merging?: { path: string; contentHash: string | null };
+}
+
+/**
+ * Why the engine kept two versions of a document instead of merging them (SPEC.md §7):
+ * - `overlapping-edits`: concurrent edits of a text document changed the same lines.
+ * - `binary`: concurrent edits of a document that is not merged as text.
+ * - `concurrent-create`: two documents were created at the same path, with no common base.
+ * - `path-taken`: the server refused a local create (or rename) because another
+ *   document holds the path (ALREADY_EXISTS, SPEC.md §6.3); the local document
+ *   itself moved to the conflict copy's path.
+ */
+export type ConflictReason = "overlapping-edits" | "binary" | "concurrent-create" | "path-taken";
+
+/** One entry of the conflict log. */
+export interface ConflictRecord {
+  id: string;
+  /** The document whose version stayed in place (for `path-taken`, the local document that moved). */
+  documentId: string;
+  /** Where the conflict happened: the path both versions wanted. */
+  path: string;
+  reason: ConflictReason;
+  /**
+   * Where the local version was kept, as an ordinary file the engine pushes
+   * as a document of its own (for `path-taken`, the local document's new
+   * path). null if no conflict-copy name fits the path limits: the local
+   * version then stays where it is, untouched and unsynced, until the user
+   * renames it.
+   */
+  copyPath: string | null;
+  /** Content hash of the local version that was kept. */
+  copyHash: string;
+  /** The remote revision that stayed in place; empty for `path-taken`. */
+  remoteRevisionId: string;
+  /** When the conflict was recorded, in milliseconds since the epoch. */
+  at: number;
 }

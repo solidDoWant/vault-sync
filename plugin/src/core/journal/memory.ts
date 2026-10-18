@@ -1,4 +1,4 @@
-import type { DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
 
 /** A non-durable Journal for unit tests and the simulation harness. */
 export class InMemoryJournal implements Journal {
@@ -6,6 +6,7 @@ export class InMemoryJournal implements Journal {
   private readonly documents = new Map<string, DocumentState>();
   private readonly pending = new Map<string, PendingOperation>();
   private readonly deferred = new Map<string, DeferredRevision>();
+  private readonly conflicts = new Map<string, ConflictRecord>();
 
   getCursor(): Promise<bigint> {
     return Promise.resolve(this.cursor);
@@ -80,8 +81,19 @@ export class InMemoryJournal implements Journal {
     this.deferred.delete(documentId);
     return Promise.resolve();
   }
+
+  putConflict(conflict: ConflictRecord): Promise<void> {
+    this.conflicts.set(conflict.id, { ...conflict });
+    return Promise.resolve();
+  }
+
+  listConflicts(): Promise<ConflictRecord[]> {
+    return Promise.resolve([...this.conflicts.values()].map((conflict) => ({ ...conflict })));
+  }
 }
 
 function copyDeferred(deferred: DeferredRevision): DeferredRevision {
-  return { reason: deferred.reason, revision: { ...deferred.revision } };
+  const copy: DeferredRevision = { reason: deferred.reason, revision: { ...deferred.revision } };
+  if (deferred.merging !== undefined) copy.merging = { ...deferred.merging };
+  return copy;
 }

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { sha256Hex } from "../hash";
 import { InMemoryJournal } from "../journal/memory";
 import { InMemoryVault } from "../vault/memory";
+import { deferMerge } from "./merge";
 import { RemoteContentError } from "./remote";
 import { InMemoryServer } from "./memory-server";
 import { Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, LateEventsVault, text, type Harness } from "./testing";
@@ -218,8 +219,8 @@ describe("SyncEngine pull", () => {
       expect(summary).toMatchObject({ deferred: 1, cursor: remote.seq });
     });
 
-    it("by default leaves the local file untouched and keeps the remote revision pending in the journal", async () => {
-      const h = await syncedThenEdited({ merge: "default" });
+    it("with a deferring merge hook leaves the local file untouched and keeps the remote revision pending in the journal", async () => {
+      const h = await syncedThenEdited({ merge: deferMerge });
       const remote = h.server.commit({ documentId: "a", path: "a.md", content: "remote edit" });
 
       await h.engine.pull();
