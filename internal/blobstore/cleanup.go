@@ -61,7 +61,11 @@ type CleanupResult struct {
 	SessionsRemoved int
 	// ObjectsDeleted counts staged objects deleted.
 	ObjectsDeleted int
-	// MultipartAborted counts aborted multipart uploads.
+	// MultipartAborted counts multipart uploads whose abort the object store
+	// acknowledged. When several server processes abort the same upload at
+	// the same moment, the store may acknowledge more than one of them
+	// (aborting is idempotent), so the counts of concurrent processes can
+	// add up to more than the number of uploads.
 	MultipartAborted int
 }
 
