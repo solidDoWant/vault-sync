@@ -8,6 +8,11 @@ import { isVaultError, type VaultAdapter, type VaultErrorCode, type VaultEvent }
  */
 export interface VaultAdapterHarness {
   adapter: VaultAdapter;
+  /**
+   * Renames a folder the way the user does, outside the adapter (VaultAdapter
+   * models files only). The case that needs it fails without it.
+   */
+  renameFolder?: (from: string, to: string) => Promise<void>;
   /** Releases the vault after the case. */
   dispose?: () => Promise<void> | void;
 }
@@ -25,7 +30,7 @@ export interface ConformanceOptions {
 
 export interface ConformanceCase {
   name: string;
-  run: (adapter: VaultAdapter, options: Required<ConformanceOptions>) => Promise<void>;
+  run: (adapter: VaultAdapter, options: Required<ConformanceOptions>, harness: VaultAdapterHarness) => Promise<void>;
 }
 
 /** Runs one case against a fresh vault from `factory`, disposing it afterwards. */
@@ -36,10 +41,14 @@ export async function runConformanceCase(
 ): Promise<void> {
   const harness = await factory();
   try {
-    await testCase.run(harness.adapter, {
-      eventTimeoutMs: options.eventTimeoutMs ?? 1000,
-      quietPeriodMs: options.quietPeriodMs ?? 50,
-    });
+    await testCase.run(
+      harness.adapter,
+      {
+        eventTimeoutMs: options.eventTimeoutMs ?? 1000,
+        quietPeriodMs: options.quietPeriodMs ?? 50,
+      },
+      harness,
+    );
   } finally {
     await harness.dispose?.();
   }
@@ -93,6 +102,15 @@ class EventRecorder {
     while (this.events.length < expected.length && Date.now() < deadline) await sleep(5);
     await sleep(options.quietPeriodMs); // catch unexpected extra events
     assertEqual(this.events, expected, what);
+  }
+
+  /** As expect, in any order. */
+  async expectUnordered(expected: VaultEvent[], options: Required<ConformanceOptions>, what: string): Promise<void> {
+    const deadline = Date.now() + options.eventTimeoutMs;
+    while (this.events.length < expected.length && Date.now() < deadline) await sleep(5);
+    await sleep(options.quietPeriodMs);
+    const sorted = (events: VaultEvent[]) => events.map((event) => JSON.stringify(event)).sort();
+    assertEqual(sorted(this.events), sorted(expected), what);
   }
 }
 
@@ -261,6 +279,33 @@ export const vaultAdapterConformance: readonly ConformanceCase[] = [
       } finally {
         recorder.stop();
       }
+    },
+  },
+  {
+    // The sync engine sees a folder rename only through these events, and
+    // syncs it as renames of its documents (SPEC.md §6.3).
+    name: "a folder rename is reported as a rename of every file in it",
+    run: async (adapter, options, harness) => {
+      if (harness.renameFolder === undefined) throw new ConformanceFailure("the harness cannot rename folders");
+      await adapter.write("dir/a.md", bytes("a"));
+      await adapter.write("dir/sub/b.md", bytes("b"));
+      await adapter.write("other.md", bytes("other"));
+      const recorder = new EventRecorder(adapter);
+      try {
+        await harness.renameFolder("dir", "moved");
+        await recorder.expectUnordered(
+          [
+            { type: "rename", path: "moved/a.md", oldPath: "dir/a.md" },
+            { type: "rename", path: "moved/sub/b.md", oldPath: "dir/sub/b.md" },
+          ],
+          options,
+          "events",
+        );
+      } finally {
+        recorder.stop();
+      }
+      assertEqual(await sortedList(adapter), ["moved/a.md", "moved/sub/b.md", "other.md"], "list()");
+      assertEqual(await adapter.read("moved/sub/b.md"), bytes("b"), "read() at the new path");
     },
   },
   {

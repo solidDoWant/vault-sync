@@ -52,6 +52,8 @@ type Issuer struct {
 	published  []Key
 	jwksURI    string
 	middleware func(http.Handler) http.Handler
+	mux        *http.ServeMux
+	deviceFlow *DeviceFlow
 }
 
 // NewIssuer starts a fake issuer serving plain http on loopback that is
@@ -77,20 +79,29 @@ func newIssuer(t testing.TB, start func(http.Handler) *httptest.Server) *Issuer 
 	issuer := &Issuer{}
 
 	mux := http.NewServeMux()
+	issuer.mux = mux
 	mux.HandleFunc("GET /.well-known/openid-configuration", func(writer http.ResponseWriter, _ *http.Request) {
 		issuer.mu.Lock()
 		jwksURI := issuer.jwksURI
+		deviceFlow := issuer.deviceFlow != nil
 		issuer.mu.Unlock()
 
 		if jwksURI == "" {
 			jwksURI = issuer.URL + "/jwks"
 		}
 
-		writeJSON(writer, map[string]any{
+		document := map[string]any{
 			"issuer":                                issuer.URL,
 			"jwks_uri":                              jwksURI,
 			"id_token_signing_alg_values_supported": []string{"RS256", "ES256", "EdDSA"},
-		})
+		}
+
+		if deviceFlow {
+			document["device_authorization_endpoint"] = issuer.URL + deviceAuthorizationPath
+			document["token_endpoint"] = issuer.URL + tokenPath
+		}
+
+		writeJSON(writer, document)
 	})
 	mux.HandleFunc("GET /jwks", func(writer http.ResponseWriter, _ *http.Request) {
 		issuer.jwksRequests.Add(1)

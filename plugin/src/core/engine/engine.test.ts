@@ -171,6 +171,31 @@ describe("SyncEngine pull", () => {
       expect(await h.journal.getCursor()).toBe(h.server.currentHeadSeq);
     });
 
+    it("drops a refused-path deferral that a newer applied revision of its document already superseded", async () => {
+      // A local folder y.md is in the way of d's move to y.md, so that move is deferred.
+      const h = harness();
+      h.server.commit({ documentId: "d", path: "x.md", content: "d1" });
+      await h.engine.pull();
+      await h.vault.write("y.md/child.md", bytes("in the way"));
+      h.server.commit({ documentId: "d", path: "y.md" });
+      await h.engine.pull();
+      const stale = await h.journal.getDeferred("d");
+      expect(stale?.reason).toBe("path-conflict");
+      // d moves on to z.md; a deferral of the older move left behind (as an
+      // interrupted clean-up could leave it) is stale, and the folder goes away.
+      h.server.commit({ documentId: "d", path: "z.md" });
+      await h.engine.pull();
+      if (stale !== undefined) await h.journal.putDeferred(stale);
+      await h.vault.delete("y.md/child.md");
+
+      h.restart();
+      await h.engine.push();
+
+      expect(await files(h.vault)).toEqual(new Map([["z.md", "d1"]]));
+      expect(await h.journal.listDeferred()).toEqual([]);
+      expect(await h.journal.getDocument("d")).toMatchObject({ path: "z.md" });
+    });
+
     it("never writes a path that is not valid UTF-8", async () => {
       const h = harness();
       h.server.commitRawPath("x", new Uint8Array([0x61, 0xff, 0x2e, 0x6d, 0x64]), "evil");

@@ -1,4 +1,4 @@
-import { FileView, MarkdownView, Plugin, TextFileView, TFile, type App } from "obsidian";
+import { FileView, MarkdownView, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
 import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
@@ -64,7 +64,16 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** The adapter the conformance spec runs inside Obsidian, over the emptied open vault. */
   readonly adapterUnderTest: VaultAdapterFactory = async () => {
     await emptyVault(this.app);
-    return { adapter: new ObsidianVaultAdapter(this.app), dispose: () => emptyVault(this.app) };
+    return {
+      adapter: new ObsidianVaultAdapter(this.app),
+      // As the file explorer does: Obsidian moves the folder and everything in it.
+      renameFolder: async (from, to) => {
+        const folder = this.app.vault.getAbstractFileByPath(from);
+        if (!(folder instanceof TFolder)) throw new Error(`no folder ${from}`);
+        await this.app.vault.rename(folder, to);
+      },
+      dispose: () => emptyVault(this.app),
+    };
   };
 
   /** Events an Obsidian adapter watched from onload on, i.e. through Obsidian's startup indexing. */

@@ -2,47 +2,17 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { ConflictRecord } from "../journal/journal";
-import type { MergeHook } from "./merge";
+import type { ConflictRecord, DeferredRevision, DocumentState } from "../journal/journal";
+import { InMemoryJournal } from "../journal/memory";
+import { threeWayMerge, type MergeHook } from "./merge";
 import { InMemoryServer } from "./memory-server";
 import { classifyByExtensions } from "./remote";
-import { Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, testStamp, text, type Harness, type HarnessOptions } from "./testing";
+import { copyOf, Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, moveHeadBeforeCommit, syncedOnBoth, testStamp, text, twoDevices, type Harness } from "./testing";
 
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value);
 const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
 const crlf = (...values: string[]) => values.map((value) => `${value}\r\n`).join("");
-
-/** The conflict-copy name a harness device gives `name` + `extension`. */
-const copyOf = (name: string, extension: string, device = "laptop") => `${name} (conflict ${device} ${testStamp})${extension}`;
-
-/** Two devices with their own vaults and journals over one server, each with the default (three-way) merge hook. */
-function twoDevices(options: Partial<HarnessOptions> = {}): { server: InMemoryServer; a: Harness; b: Harness } {
-  const server = new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 });
-  const a = harness({ merge: "default", ...options, server, idPrefix: "a", deviceName: "device-a" });
-  const b = harness({ merge: "default", ...options, server, idPrefix: "b", deviceName: "device-b" });
-  return { server, a, b };
-}
-
-/** Both devices hold `content` at `path`, synced. */
-async function syncedOnBoth(devices: { a: Harness; b: Harness }, path: string, content: Uint8Array | string): Promise<void> {
-  await devices.a.vault.write(path, typeof content === "string" ? bytes(content) : content);
-  await devices.a.engine.push();
-  await devices.b.engine.pull();
-}
-
-/** Makes another device commit `content` to document `documentId` just before this device's next CommitRevision reaches the server. */
-function moveHeadBeforeCommit(h: Harness, commit: () => void): void {
-  let moved = false;
-  const previous = h.server.interceptor;
-  h.server.interceptor = (method, request) => {
-    previous?.(method, request);
-    if (method === "CommitRevision" && !moved) {
-      moved = true;
-      commit();
-    }
-  };
-}
 
 const conflictMarkers = /^(<{7}|={7}|>{7})/m;
 
@@ -158,6 +128,26 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
       expect(text(await h.vault.read(`a (conflict laptop ${testStamp} 2).md`))).toBe(lines("local"));
       expect(text(await h.vault.read(copyOf("a", ".md")))).toBe("unrelated");
       expect(text(await h.vault.read("a.md"))).toBe(lines("remote"));
+    });
+
+    it("numbers the copy when a folder already has the copy's name", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("x") });
+      await h.engine.pull();
+      await h.vault.write(`${copyOf("a", ".md")}/inside.md`, bytes("in a folder"));
+      await h.vault.write("a.md", bytes(lines("local")));
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("remote") });
+
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["a.md", lines("remote")],
+          [`a (conflict laptop ${testStamp} 2).md`, lines("local")],
+          [`${copyOf("a", ".md")}/inside.md`, "in a folder"],
+        ]),
+      );
+      expect(await h.journal.listDeferred()).toEqual([]);
     });
 
     it("leaves the local version in place, logged, when no conflict-copy name fits the path limits", async () => {
@@ -512,7 +502,7 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
       expect(await h.journal.listDocuments()).toMatchObject([{ documentId: "b", path: "a.md" }, { documentId: "d", path: "c.md" }]);
     });
 
-    it("never moves aside a document's file that a local rename not yet pushed put at the remote rename's target", async () => {
+    it("moves a document's file that a local rename not yet pushed put at the remote rename's target aside as that document's", async () => {
       const h = harness({ merge: "default" });
       h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
       h.server.commit({ documentId: "d", path: "d.md", content: lines("d") });
@@ -522,25 +512,44 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
       h.server.commit({ documentId: "b", path: "c.md" });
 
       await h.engine.pull();
+      await h.engine.push();
 
-      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("b")], ["c.md", lines("d")]]));
-      expect(await h.journal.listConflicts()).toEqual([]);
+      const expected = new Map([
+        ["c.md", lines("b")],
+        [copyOf("c", ".md"), lines("d")],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["c.md", "b"],
+          [copyOf("c", ".md"), "d"],
+        ]),
+      );
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "d", reason: "path-taken", path: "c.md", copyPath: copyOf("c", ".md") }]);
     });
 
-    it("never moves aside a document's file that a pending rename put at the remote rename's target", async () => {
+    it("moves a document's file that a pending rename put at the remote rename's target aside as that document's", async () => {
       const h = harness({ merge: "default" });
       h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
       h.server.commit({ documentId: "d", path: "d.md", content: lines("d") });
       await h.engine.pull();
       await h.vault.rename("d.md", "c.md");
-      // b's rename to c.md lands first, so d's rename is refused and stays pending.
+      // b's rename to c.md lands first, so d's rename is refused.
       moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "b", path: "c.md" }));
 
       await h.engine.push();
+      await h.engine.push();
 
-      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("b")], ["c.md", lines("d")]]));
-      expect(await h.journal.listConflicts()).toEqual([]);
-      expect(await h.journal.listPending()).toMatchObject([{ documentId: "d", path: "c.md" }]);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["c.md", "b"],
+          [copyOf("c", ".md"), "d"],
+        ]),
+      );
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+      expect(await h.journal.listPending()).toEqual([]);
+      expect(await h.journal.listDeferred()).toEqual([]);
     });
 
     it("does not hand the merge hook a file created where a renamed document was as that document's local version", async () => {
@@ -758,11 +767,256 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
     });
   });
 
+  describe("given a local rename onto the path a remote create takes", () => {
+    // The file at the path is a known document's, moved there locally: it is
+    // not the remote document's local version, and not a new file. It moves
+    // on to a conflict-copy path under its own id, like a refused create (SPEC.md §6.3).
+    it("moves the renamed document to a conflict-copy path under its own id when the remote create arrives first", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "x.md", content: lines("b") });
+      await h.engine.pull();
+      await h.vault.rename("x.md", "p.md");
+      await h.engine.settled();
+      h.server.commit({ documentId: "r", path: "p.md", content: lines("r") });
+
+      await h.engine.push();
+
+      const expected = new Map([
+        ["p.md", lines("r")],
+        [copyOf("p", ".md"), lines("b")],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["p.md", "r"],
+          [copyOf("p", ".md"), "b"],
+        ]),
+      );
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "b", reason: "path-taken", path: "p.md", copyPath: copyOf("p", ".md") }]);
+      expect(await h.journal.listPending()).toEqual([]);
+      expect(await h.journal.listDeferred()).toEqual([]);
+    });
+
+    it("moves the renamed document to a conflict-copy path under its own id when its pushed rename was refused", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "x.md", content: lines("b") });
+      await h.engine.pull();
+      await h.vault.rename("x.md", "p.md");
+      moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "r", path: "p.md", content: lines("r") }));
+
+      await h.engine.push();
+      await h.engine.push();
+
+      const expected = new Map([
+        ["p.md", lines("r")],
+        [copyOf("p", ".md"), lines("b")],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["p.md", "r"],
+          [copyOf("p", ".md"), "b"],
+        ]),
+      );
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(await h.journal.listPending()).toEqual([]);
+    });
+  });
+
+  describe("given a remote document arriving at the path of a document the merge path holds", () => {
+    it("resolves the held document first, so neither waits", async () => {
+      // The hook defers b's move once, as a hook waiting for the user would.
+      let deferred = false;
+      const merge: MergeHook = (request) => {
+        if (request.remote.documentId === "b" && !deferred) {
+          deferred = true;
+          return Promise.resolve({ status: "deferred" });
+        }
+        return threeWayMerge(request);
+      };
+      const h = harness({ merge });
+      h.server.commit({ documentId: "b", path: "p.md", content: lines("one", "two") });
+      await h.engine.pull();
+      await h.vault.write("p.md", bytes(lines("one (local)", "two")));
+      h.server.commit({ documentId: "b", path: "q.md", content: lines("one", "two (remote)") });
+      h.server.commit({ documentId: "r", path: "p.md", content: lines("r") });
+
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["p.md", lines("r")],
+          ["q.md", lines("one (local)", "two (remote)")],
+        ]),
+      );
+      expect(await h.journal.listDeferred()).toEqual([]);
+      expect(await h.journal.listConflicts()).toEqual([]);
+    });
+
+    it("ends, keeping both local edits, when a remote swap meets two held documents", async () => {
+      // Each document arrives at the other's path, so resolving either first
+      // asks to resolve the other first.
+      const h = harness({ server: new InMemoryServer({ maxPageSize: 10, maxDownloadBytes: 1000 }) });
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("a") });
+      h.server.commit({ documentId: "b", path: "b.md", content: lines("b") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("a (local)")));
+      await h.vault.write("b.md", bytes(lines("b (local)")));
+      h.server.commit({ documentId: "a", path: "t.md" });
+      h.server.commit({ documentId: "b", path: "a.md" });
+      h.server.commit({ documentId: "a", path: "b.md" });
+
+      await h.engine.pull();
+      await h.engine.push();
+
+      // The hook defers both: nothing is moved or written, and both wait.
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["a.md", lines("a (local)")],
+          ["b.md", lines("b (local)")],
+        ]),
+      );
+      expect((await h.journal.listDeferred()).map((deferred) => deferred.revision.documentId).sort()).toEqual(["a", "b"]);
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["a.md", "b"],
+          ["b.md", "a"],
+        ]),
+      );
+    });
+  });
+
+  describe("given a move aside interrupted after its name was logged", () => {
+    it("does not reuse the logged name for a file created there since", async () => {
+      // d's rename to c.md is pending when b's rename to c.md arrives; the
+      // engine logs d's conflict-copy name, then stops before moving the file.
+      let crash = true;
+      class StopAfterLogging extends InMemoryJournal {
+        override async putConflict(conflict: ConflictRecord): Promise<void> {
+          await super.putConflict(conflict);
+          if (crash && conflict.reason === "path-taken") {
+            crash = false;
+            throw new Crash("stopped after logging the move aside");
+          }
+        }
+      }
+      const h = harness({ merge: "default", journal: new StopAfterLogging() });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
+      h.server.commit({ documentId: "d", path: "d.md", content: lines("d") });
+      await h.engine.pull();
+      await h.vault.rename("d.md", "c.md");
+      moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "b", path: "c.md" }));
+      await expect(h.engine.push()).rejects.toThrow(Crash);
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "d", reason: "path-taken", copyPath: copyOf("c", ".md") }]);
+      // The user creates a file at exactly that name before the engine restarts.
+      await h.vault.write(copyOf("c", ".md"), bytes(lines("the user's own note")));
+
+      h.restart();
+      await h.engine.push();
+      await h.engine.push();
+
+      expect(text(await h.vault.read(copyOf("c", ".md")))).toBe(lines("the user's own note"));
+      const live = h.server.liveDocuments();
+      expect(live.get("c.md")).toBe("b");
+      expect(live.get(copyOf("c", ".md"))).not.toBe("d");
+      // d keeps its identity and content at another conflict-copy name.
+      const dPath = [...live].find(([, documentId]) => documentId === "d")?.[0];
+      expect(dPath).toBeDefined();
+      expect(dPath).not.toBe(copyOf("c", ".md"));
+      expect(h.server.liveFiles().get(dPath ?? "")).toBe(lines("d"));
+      expect([...h.server.liveFiles().values()].sort()).toEqual([lines("b"), lines("d"), lines("the user's own note")]);
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+      expect(await h.journal.listPending()).toEqual([]);
+    });
+  });
+
+  describe("given a merge interrupted after it was recorded", () => {
+    it("does not take a file created at the merge's target before the document moved there for the document's local version", async () => {
+      let crashed = false;
+      class CrashAfterMergeRecord extends InMemoryJournal {
+        override async putDeferred(deferred: DeferredRevision): Promise<void> {
+          await super.putDeferred(deferred);
+          if (deferred.merging !== undefined && !crashed) {
+            crashed = true;
+            throw new Crash("after the merge record");
+          }
+        }
+      }
+      const h = harness({ merge: "default", journal: new CrashAfterMergeRecord() });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("one", "two") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("one (local)", "two")));
+      h.server.commit({ documentId: "b", path: "c.md", content: lines("one", "two (remote)") });
+      await expect(h.engine.pull()).rejects.toThrow(Crash);
+      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("one (local)", "two")]]));
+      await h.vault.write("c.md", bytes(lines("unrelated new note")));
+      h.restart();
+
+      await h.engine.push();
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("one (local)", "two (remote)")],
+        [copyOf("c", ".md"), lines("unrelated new note")],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(h.server.liveDocuments().get("c.md")).toBe("b");
+      expect((await h.journal.listConflicts()).map((conflict) => [conflict.reason, conflict.copyPath])).toEqual([["concurrent-create", copyOf("c", ".md")]]);
+    });
+
+    it("finishes the recorded merge before merging a newer remote revision based on it", async () => {
+      // The merge of r1 reached the disk; the crash came before the rebase,
+      // and r2 (made on top of r1) arrived before the merge resumed.
+      let deferredOnce = false;
+      const merge: MergeHook = (request) => {
+        if (!deferredOnce) {
+          deferredOnce = true;
+          return Promise.resolve({ status: "deferred" });
+        }
+        return threeWayMerge(request);
+      };
+      class CrashBeforeRebase extends InMemoryJournal {
+        crashBefore: string | undefined;
+        override async putDocument(state: DocumentState): Promise<void> {
+          if (state.revisionId === this.crashBefore) {
+            this.crashBefore = undefined;
+            throw new Crash("before the rebase");
+          }
+          await super.putDocument(state);
+        }
+      }
+      const journal = new CrashBeforeRebase();
+      const h = harness({ merge, journal });
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one", "two", "three") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("one (local)", "two", "three")));
+      const r1 = h.server.commit({ documentId: "a", path: "a.md", content: lines("one", "two (remote)", "three") });
+      await h.engine.pull();
+      expect(await h.journal.listDeferred()).toHaveLength(1);
+      journal.crashBefore = r1.id;
+      await expect(h.engine.push()).rejects.toThrow(Crash);
+      expect(text(await h.vault.read("a.md"))).toBe(lines("one (local)", "two (remote)", "three"));
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one", "two (remote)", "three (remote 2)") });
+      h.restart();
+
+      await h.engine.push();
+
+      const expected = new Map([["a.md", lines("one (local)", "two (remote)", "three (remote 2)")]]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(await h.journal.listConflicts()).toEqual([]);
+    });
+  });
+
   describe("given a crash at any point", () => {
     interface Scenario {
       name: string;
       /** Prepares the device (and the server); the push under test follows. */
       prepare(h: Harness): Promise<void>;
+      /** The server; defaults to the harness's. */
+      server?: () => InMemoryServer;
       /** At least this many crash points are exercised. */
       crashes: number;
     }
@@ -880,14 +1134,53 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
           moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "theirs", path: "NEW.md", content: "theirs" }));
         },
       },
+      {
+        name: "a local rename refused because a remote create took its path",
+        crashes: 5,
+        prepare: async (h) => {
+          h.server.commit({ documentId: "b", path: "x.md", content: lines("b") });
+          await h.engine.pull();
+          await h.vault.rename("x.md", "p.md");
+          moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "r", path: "p.md", content: lines("r") }));
+        },
+      },
+      {
+        name: "a rename chain on one device",
+        crashes: 3,
+        prepare: async (h) => {
+          h.server.commit({ documentId: "x", path: "a.md", content: lines("x") });
+          h.server.commit({ documentId: "y", path: "b.md", content: lines("y") });
+          await h.engine.pull();
+          await h.vault.rename("b.md", "c.md");
+          await h.vault.rename("a.md", "b.md");
+        },
+      },
+      {
+        name: "a create refused because another document is a file where it needs a folder",
+        crashes: 5,
+        server: () => new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 }),
+        prepare: async (h) => {
+          await h.vault.write("notes/c.md", bytes("mine"));
+          moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "theirs", path: "notes", content: "theirs" }));
+        },
+      },
+      {
+        name: "a create refused because another document needs its path as a folder",
+        crashes: 5,
+        server: () => new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 }),
+        prepare: async (h) => {
+          await h.vault.write("notes", bytes("mine"));
+          moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "theirs", path: "notes/c.md", content: "theirs" }));
+        },
+      },
     ];
 
     it.each(scenarios)("reaches the same state after $name", async (scenario) => {
       const setup = async (points: CrashPoints | undefined) => {
         const h =
           points === undefined
-            ? harness({ merge: "default" })
-            : harness({ merge: "default", journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
+            ? harness({ merge: "default", server: scenario.server?.() })
+            : harness({ merge: "default", server: scenario.server?.(), journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
         await scenario.prepare(h);
         return h;
       };
