@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
+	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
 )
@@ -257,4 +258,195 @@ func TestSIGTERMHasNoClientVisibleImpact(t *testing.T) {
 	}
 
 	client.requireStored(t, other)
+}
+
+// Issue #102, criterion 1: revisions committed through one instance are
+// listed, fetched and paged through identically by another, with the
+// optimistic-concurrency and idempotency behavior of a single instance.
+func TestRevisionsAreConsistentAcrossInstances(t *testing.T) {
+	cluster := newDeployment(t)
+	binary := buildServer(t)
+
+	first := cluster.start(t, "first", binary)
+	second := cluster.start(t, "second", binary)
+
+	token := cluster.token(t, "alice")
+	vault := createVault(t, first, token, "Notes")
+	client := newSyncClient(t, second, token, vault.GetId())
+
+	draft := client.content(t, first, "first draft")
+	edited := client.content(t, second, "edited")
+	other := client.content(t, first, "another note")
+
+	// Consecutive commits alternate between the instances.
+	created := client.mustCommit(t, first, client.create(t, "note.md", draft))
+	editRequest := client.next(t, created, "note.md", edited, false)
+	edit := client.mustCommit(t, second, editRequest)
+
+	// A commit on a stale base is refused by the other instance, which
+	// reports the current head.
+	_, err := client.commit(t, first, client.next(t, created, "note.md", other, false))
+	assert.Equal(t, edit.GetId(), headMovedTo(t, err), "the other instance reports the head committed on the first")
+
+	renamed := client.mustCommit(t, first, client.next(t, edit, "renamed.md", edited, false))
+	another := client.mustCommit(t, second, client.create(t, "other.md", other))
+	deleted := client.mustCommit(t, second, client.next(t, renamed, "renamed.md", edited, true))
+
+	// A retry of a commit on the instance that did not handle it returns the
+	// committed revision, although the head has moved since.
+	retried := client.mustCommit(t, first, editRequest)
+	assert.Truef(t, proto.Equal(edit, retried), "the retry returns the committed revision:\nwant %v\ngot  %v", edit, retried)
+
+	committed := []*vaultsyncv1.Revision{created, edit, renamed, another, deleted}
+	history := []*vaultsyncv1.Revision{deleted, renamed, edit, created}
+
+	for _, server := range []*instance{first, second} {
+		changes, headSeq := client.changes(t, 0, server)
+		requireSameRevisions(t, committed, changes, "changes listed by %s", server.name)
+		requireGapless(t, changes, headSeq)
+		assert.Equal(t, uint64(len(committed)), client.headSeq(t, server), "head_seq listed by %s", server.name)
+
+		for _, revision := range committed {
+			requireSameRevisions(t, []*vaultsyncv1.Revision{revision}, []*vaultsyncv1.Revision{client.revision(t, server, revision.GetId())},
+				"revision fetched from %s", server.name)
+		}
+
+		requireSameRevisions(t, history, client.history(t, created.GetDocumentId(), 0, server), "history from %s", server.name)
+	}
+
+	// Pages of one listing may come from different instances.
+	changes, headSeq := client.changes(t, 2, second, first)
+	requireSameRevisions(t, committed, changes, "changes paged across instances")
+	requireGapless(t, changes, headSeq)
+
+	requireSameRevisions(t, history, client.history(t, created.GetDocumentId(), 1, first, second), "history paged across instances")
+}
+
+// gateLockKey is the advisory lock (in the two-key form, which the server's
+// own advisory locks do not use) that holdRevisionCommits holds commits back
+// with.
+const gateLockKey = "102, 0"
+
+// holdRevisionCommits makes every transaction that inserts a revision wait at
+// COMMIT, after all its writes, until release is called. It returns the pid
+// of the session holding the commits back.
+func holdRevisionCommits(t *testing.T, cluster *deployment) (uint32, func()) {
+	t.Helper()
+
+	gate := cluster.connectDatabase(t)
+
+	_, err := gate.Exec(t.Context(), `SELECT pg_advisory_lock(`+gateLockKey+`)`)
+	require.NoError(t, err)
+
+	// A deferred constraint trigger runs while its transaction commits.
+	_, err = gate.Exec(t.Context(), `
+		CREATE FUNCTION test_hold_commit() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			PERFORM pg_advisory_xact_lock_shared(`+gateLockKey+`);
+			RETURN NULL;
+		END $$`)
+	require.NoError(t, err)
+
+	_, err = gate.Exec(t.Context(), `
+		CREATE CONSTRAINT TRIGGER test_hold_commit AFTER INSERT ON revisions
+		DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION test_hold_commit()`)
+	require.NoError(t, err)
+
+	release := func() {
+		_, err := gate.Exec(t.Context(), `SELECT pg_advisory_unlock(`+gateLockKey+`)`)
+		require.NoError(t, err)
+	}
+
+	return backendPID(t, gate), release
+}
+
+// Issue #102, criterion 2: an instance SIGKILLed while it handles
+// CommitRevision leaves a state from which the client's retry of the same
+// revision_id on another instance succeeds, with exactly one revision
+// committed, seqs gapless and head_seq advanced once. The kill lands at a
+// point the test controls, in each possible outcome: before the commit wrote
+// anything, and while its transaction commits, after every write.
+func TestCommitRetryOnAnotherInstanceAfterSIGKILLMidCommit(t *testing.T) {
+	cluster := newDeployment(t)
+	binary := buildServer(t)
+
+	survivor := cluster.start(t, "survivor", binary)
+	notApplied := cluster.start(t, "killed-before-writing", binary)
+	applied := cluster.start(t, "killed-while-committing", binary)
+
+	token := cluster.token(t, "alice")
+	vault := createVault(t, survivor, token, "Notes")
+	client := newSyncClient(t, survivor, token, vault.GetId())
+
+	draft := client.content(t, survivor, "first draft")
+	edited := client.content(t, survivor, "edited")
+
+	created := client.mustCommit(t, survivor, client.create(t, "note.md", draft))
+	database := cluster.connectDatabase(t)
+
+	// Killed before writing: the commit waits for the vault's row lock,
+	// which the test holds.
+	locker := cluster.connectDatabase(t)
+
+	transaction, err := locker.Begin(t.Context())
+	require.NoError(t, err)
+
+	_, err = transaction.Exec(t.Context(), `SELECT 1 FROM vaults WHERE id = $1 FOR UPDATE`, vault.GetId())
+	require.NoError(t, err)
+
+	request := client.next(t, created, "note.md", edited, false)
+	conn := sendCommit(t, notApplied, token, request)
+	backend := blockedBackend(t, database, backendPID(t, locker))
+
+	notApplied.kill(t)
+	requireNoAnswer(t, conn)
+
+	require.NoError(t, transaction.Rollback(t.Context()))
+	waitBackendGone(t, database, backend)
+
+	changes, headSeq := client.changes(t, 0, survivor)
+	requireSameRevisions(t, []*vaultsyncv1.Revision{created}, changes, "the commit killed before writing is not applied")
+	require.Equal(t, uint64(1), headSeq)
+
+	edit, err := client.commit(t, survivor, request)
+	require.NoError(t, err, "the retry of a commit that was not applied succeeds on another instance")
+	assert.Equal(t, request.GetRevisionId(), edit.GetId())
+
+	// Killed while committing: every write is done and the transaction
+	// waits at COMMIT, which completes after the instance died.
+	blocker, release := holdRevisionCommits(t, cluster)
+
+	request = client.next(t, edit, "renamed.md", edited, false)
+	conn = sendCommit(t, applied, token, request)
+	backend = blockedBackend(t, database, blocker)
+
+	applied.kill(t)
+	requireNoAnswer(t, conn)
+
+	release()
+	waitBackendGone(t, database, backend)
+
+	changes, headSeq = client.changes(t, 0, survivor)
+	require.Equal(t, []string{created.GetId(), edit.GetId(), request.GetRevisionId()}, revisionIDs(changes),
+		"the commit killed while committing is applied")
+	requireGapless(t, changes, headSeq)
+
+	renamed := changes[2]
+
+	// Another commit moves the head before the client retries; the retry
+	// still returns the revision its first attempt committed.
+	moved := client.mustCommit(t, survivor, client.next(t, renamed, "renamed.md", draft, false))
+
+	retried, err := client.commit(t, survivor, request)
+	require.NoError(t, err, "the retry of a commit that was applied succeeds on another instance")
+	assert.Truef(t, proto.Equal(renamed, retried), "the retry returns the committed revision:\nwant %v\ngot  %v", renamed, retried)
+
+	// Each revision exists exactly once, and each acknowledged commit
+	// advanced head_seq once.
+	changes, headSeq = client.changes(t, 0, survivor)
+	requireSameRevisions(t, []*vaultsyncv1.Revision{created, edit, renamed, moved}, changes, "the change feed after the retries")
+	requireGapless(t, changes, headSeq)
+	assert.Equal(t, uint64(4), client.headSeq(t, survivor))
+	requireSameRevisions(t, []*vaultsyncv1.Revision{moved, renamed, edit, created}, client.history(t, created.GetDocumentId(), 0, survivor),
+		"the document's history after the retries")
 }
