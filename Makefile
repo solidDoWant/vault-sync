@@ -37,9 +37,10 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
+	./scripts/flake-source_test.sh
 
 .PHONY: test-integration
 test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker), incl. the plugin protocol client vs the real server.
