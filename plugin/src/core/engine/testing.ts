@@ -9,7 +9,7 @@ import type { FileStat, VaultAdapter, VaultEvent, VaultListener } from "../vault
 import { InMemoryVault } from "../vault/memory";
 import { SyncEngine } from "./engine";
 import type { MergeHook, MergeRequest } from "./merge";
-import { InMemoryServer } from "./memory-server";
+import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
 
 /** Thrown by a crash point: the engine "dies" there. */
 export class Crash extends Error {
@@ -252,4 +252,35 @@ export async function files(vault: VaultAdapter): Promise<Map<string, string>> {
 
 export function text(content: Uint8Array | null): string | null {
   return content === null ? null : decoder.decode(content);
+}
+
+/** The conflict-copy name a harness device gives `name` + `extension`. */
+export const copyOf = (name: string, extension: string, device = testDeviceName) => `${name} (conflict ${device} ${testStamp})${extension}`;
+
+/** Two devices with their own vaults and journals over one server, each with the default (three-way) merge hook. */
+export function twoDevices(options: Partial<HarnessOptions> = {}, serverOptions: InMemoryServerOptions = {}): { server: InMemoryServer; a: Harness; b: Harness } {
+  const server = new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5, ...serverOptions });
+  const a = harness({ merge: "default", ...options, server, idPrefix: "a", deviceName: "device-a" });
+  const b = harness({ merge: "default", ...options, server, idPrefix: "b", deviceName: "device-b" });
+  return { server, a, b };
+}
+
+/** Both devices hold `content` at `path`, synced. */
+export async function syncedOnBoth(devices: { a: Harness; b: Harness }, path: string, content: Uint8Array | string): Promise<void> {
+  await devices.a.vault.write(path, typeof content === "string" ? new TextEncoder().encode(content) : content);
+  await devices.a.engine.push();
+  await devices.b.engine.pull();
+}
+
+/** Runs `commit` (another device's commit) just before this device's next CommitRevision reaches the server. */
+export function moveHeadBeforeCommit(h: Harness, commit: () => void): void {
+  let moved = false;
+  const previous = h.server.interceptor;
+  h.server.interceptor = (method, request) => {
+    previous?.(method, request);
+    if (method === "CommitRevision" && !moved) {
+      moved = true;
+      commit();
+    }
+  };
 }

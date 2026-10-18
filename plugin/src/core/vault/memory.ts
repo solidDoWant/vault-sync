@@ -66,6 +66,29 @@ export class InMemoryVault implements VaultAdapter {
     return Promise.resolve();
   }
 
+  /**
+   * Renames the folder `from` to `to` as a user would in Obsidian's file
+   * explorer (not part of VaultAdapter, which models files only): every file
+   * in it moves, and each move is reported as a rename, as Obsidian reports
+   * them. Rejects, moving nothing, with "not-found" if no file is in `from`,
+   * "already-exists" if a file would land on another, and "path-conflict" if
+   * `to` is a file or under one.
+   */
+  renameFolder(from: string, to: string): Promise<void> {
+    const prefix = `${from}/`;
+    const moves = [...this.files.keys()].filter((path) => path.startsWith(prefix)).map((path) => [path, `${to}/${path.slice(prefix.length)}`] as const);
+    if (moves.length === 0) return Promise.reject(new VaultError("not-found", from));
+    const moving = new Set(moves.map(([path]) => path));
+    const clash = moves.find(([, target]) => this.files.has(target) && !moving.has(target));
+    if (clash !== undefined) return Promise.reject(new VaultError("already-exists", clash[1]));
+    if ([...this.files.keys()].some((path) => !moving.has(path) && (path === to || to.startsWith(`${path}/`)))) return Promise.reject(new VaultError("path-conflict", to));
+    const files = moves.map(([path, target]) => [path, target, this.files.get(path)] as const);
+    for (const [path] of files) this.files.delete(path);
+    for (const [, target, file] of files) if (file !== undefined) this.files.set(target, file);
+    for (const [path, target] of files) this.emit({ type: "rename", path: target, oldPath: path });
+    return Promise.resolve();
+  }
+
   delete(path: string): Promise<void> {
     if (!this.files.delete(path)) return Promise.reject(new VaultError("not-found", path));
     this.emit({ type: "delete", path });
