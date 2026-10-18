@@ -1,0 +1,163 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+import "vaultsync/v1/types.proto";
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// SyncService pulls and pushes document revisions (SPEC.md §6).
+//
+// Every RPC resolves the caller's role in vault_id first: a non-member gets
+// NOT_FOUND (existence is never leaked); a viewer calling a write RPC gets
+// PERMISSION_DENIED.
+service SyncService {
+  // ListChanges returns revisions with seq > since_seq in ascending seq order
+  // (SPEC.md §6.1). Clients page by passing the seq of the last revision
+  // received as the next since_seq until has_more is false.
+  //
+  // Revisions purged by retention (SPEC.md §11) are skipped, so seq values may
+  // have gaps; a document's head revision is never purged.
+  //
+  // Errors: NOT_FOUND if the vault does not exist or the caller is not a
+  // member.
+  rpc ListChanges(ListChangesRequest) returns (ListChangesResponse) {}
+
+  // GetRevision fetches a single revision, including its content reference.
+  // Clients use it to fetch the base of a three-way merge (SPEC.md §8).
+  //
+  // Errors: NOT_FOUND if the vault or revision does not exist (or was purged
+  // by retention), or the caller is not a member.
+  rpc GetRevision(GetRevisionRequest) returns (GetRevisionResponse) {}
+
+  // CommitRevision appends a revision to a document with optimistic
+  // concurrency (SPEC.md §6.2). The server accepts it only if base_rev_id is
+  // the document's current head, or the document does not exist yet and
+  // base_rev_id is empty. On success it assigns seq, advances the vault's
+  // head_seq, and broadcasts vault_changed on the realtime channel. A
+  // revision is acknowledged only when this RPC returns success.
+  //
+  // Commits are idempotent by revision_id: retrying a commit whose response
+  // was lost with identical fields returns the already-committed revision.
+  //
+  // Errors:
+  // - FAILED_PRECONDITION: base_rev_id is not the current head (the head
+  //   moved; pull, merge, and retry), or content_ref names a blob that is not
+  //   complete.
+  // - ALREADY_EXISTS: path_key collides with another live document in the
+  //   vault (SPEC.md §6.3).
+  // - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch, or
+  //   revision_id reused with different fields.
+  // - PERMISSION_DENIED: the caller is a viewer.
+  // - NOT_FOUND: the vault does not exist, the caller is not a member, or
+  //   device_id is not one of the caller's devices.
+  rpc CommitRevision(CommitRevisionRequest) returns (CommitRevisionResponse) {}
+
+  // GetDocumentHistory lists a document's retained revisions, newest first
+  // (SPEC.md §11). Restoring a revision is a new CommitRevision.
+  //
+  // Errors: NOT_FOUND if the vault or document does not exist, or the caller
+  // is not a member.
+  rpc GetDocumentHistory(GetDocumentHistoryRequest) returns (GetDocumentHistoryResponse) {}
+}
+
+// ListChangesRequest asks for revisions after a vault-wide cursor.
+message ListChangesRequest {
+  // Vault to read.
+  string vault_id = 1;
+  // Exclusive lower bound: only revisions with seq > since_seq are returned.
+  // Zero returns the vault from the beginning.
+  uint64 since_seq = 2;
+  // Maximum number of revisions to return. Zero selects the server default;
+  // the server caps larger values.
+  uint32 page_size = 3;
+}
+
+// ListChangesResponse is one page of revisions.
+message ListChangesResponse {
+  // Revisions in strictly ascending seq order.
+  repeated Revision revisions = 1;
+  // Whether revisions with a higher seq than the last one returned exist.
+  bool has_more = 2;
+  // The vault's head_seq when the page was read.
+  uint64 head_seq = 3;
+}
+
+// GetRevisionRequest identifies a revision.
+message GetRevisionRequest {
+  // Vault the revision belongs to.
+  string vault_id = 1;
+  // Revision to fetch.
+  string revision_id = 2;
+}
+
+// GetRevisionResponse returns the revision.
+message GetRevisionResponse {
+  // The revision, including its content reference.
+  Revision revision = 1;
+}
+
+// CommitRevisionRequest is a new revision for a (possibly new) document.
+message CommitRevisionRequest {
+  // Vault to write.
+  string vault_id = 1;
+  // Document to append to. For a new document the client generates a fresh
+  // UUIDv7.
+  string document_id = 2;
+  // Id for the new revision, a client-generated UUIDv7. Makes the commit
+  // idempotent across retries.
+  string revision_id = 3;
+  // The head revision this commit is based on. Empty if and only if the
+  // document is new.
+  string base_rev_id = 4;
+  // Document kind. Required for a new document; for an existing document it
+  // must equal the document's kind (kind changes are not part of v1).
+  DocumentKind kind = 5;
+  // Content of the document at this revision. Must name a complete blob in
+  // this vault (see BlobService). Required, including for tombstones, where
+  // it is the content being deleted.
+  ContentRef content_ref = 6;
+  // Vault-relative path using "/" separators. UTF-8 bytes for plaintext
+  // vaults; suite-versioned ciphertext for E2EE vaults. The server bounds its
+  // length.
+  bytes path = 7;
+  // Uniqueness key for path (SPEC.md §5 "Paths"). Must be empty for
+  // plaintext vaults, where the server derives it from path (Unicode NFC,
+  // then case-folded). Required for E2EE vaults:
+  // HMAC-SHA256(path_key_secret, normalize(path)), 32 bytes.
+  bytes path_key = 8;
+  // Whether this revision deletes the document (a tombstone).
+  bool deleted = 9;
+  // The caller's device committing the revision (from RegisterDevice).
+  string device_id = 10;
+}
+
+// CommitRevisionResponse returns the accepted revision.
+message CommitRevisionResponse {
+  // The committed revision, with its server-assigned seq.
+  Revision revision = 1;
+}
+
+// GetDocumentHistoryRequest pages through a document's revisions.
+message GetDocumentHistoryRequest {
+  // Vault the document belongs to.
+  string vault_id = 1;
+  // Document whose history to list.
+  string document_id = 2;
+  // Maximum number of revisions to return. Zero selects the server default;
+  // the server caps larger values.
+  uint32 page_size = 3;
+  // Opaque token from a previous GetDocumentHistoryResponse. Empty for the
+  // first page.
+  string page_token = 4;
+}
+
+// GetDocumentHistoryResponse is one page of a document's history.
+message GetDocumentHistoryResponse {
+  // The document, including its kind and current head.
+  Document document = 1;
+  // Revisions, newest (highest seq) first.
+  repeated Revision revisions = 2;
+  // Token for the next (older) page. Empty when there are no more revisions.
+  string next_page_token = 3;
+}
