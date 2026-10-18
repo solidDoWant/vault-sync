@@ -224,7 +224,13 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 
 	var vaults vaultsyncv1connect.VaultServiceHandler = vaultsyncv1connect.UnimplementedVaultServiceHandler{}
 	if options.Vaults != nil {
-		vaults = api.VaultService{Vaults: options.Vaults, Logger: options.Logger}
+		// Pages of vaults are cut to fit the send limit, so a client can
+		// always list all of its vaults.
+		vaults = api.VaultService{
+			Vaults: options.Vaults,
+			Limits: api.VaultLimits{MaxResponseBytes: int(options.MaxRequestBytes)},
+			Logger: options.Logger,
+		}
 	}
 
 	var syncHandler vaultsyncv1connect.SyncServiceHandler = vaultsyncv1connect.UnimplementedSyncServiceHandler{}

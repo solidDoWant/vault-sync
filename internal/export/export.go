@@ -262,14 +262,20 @@ func (run *run) run(ctx context.Context) error {
 		}
 	}
 
-	if err := syncDirectory(parent); err != nil {
-		return err
+	// The new export is in place whatever happens now, so the run must not
+	// report that the previous one is untouched.
+	if err := syncAfterSwap(parent); err != nil {
+		run.options.Logger.WarnContext(ctx, "the new export is in place, but the swap may not survive a power loss", "error", err)
 	}
 
 	return nil
 }
 
-// removeStale removes staging directories left by interrupted runs.
+// removeStale removes staging directories left by interrupted runs: the
+// entries named prefix followed by the decimal number os.MkdirTemp appends.
+// Anything else sharing the prefix, such as the lock file or staging
+// directories of an export to a sibling named like "<base>.staging-foo", is
+// left alone.
 func (run *run) removeStale(ctx context.Context, parent, prefix string) error {
 	entries, err := os.ReadDir(parent)
 	if err != nil {
@@ -277,7 +283,8 @@ func (run *run) removeStale(ctx context.Context, parent, prefix string) error {
 	}
 
 	for _, entry := range entries {
-		if !strings.HasPrefix(entry.Name(), prefix) {
+		suffix, found := strings.CutPrefix(entry.Name(), prefix)
+		if !found || !isDecimal(suffix) {
 			continue
 		}
 
@@ -290,6 +297,21 @@ func (run *run) removeStale(ctx context.Context, parent, prefix string) error {
 	}
 
 	return nil
+}
+
+// isDecimal reports whether s is a non-empty string of ASCII digits.
+func isDecimal(s string) bool {
+	if s == "" {
+		return false
+	}
+
+	for _, char := range s {
+		if char < '0' || char > '9' {
+			return false
+		}
+	}
+
+	return true
 }
 
 // checkOutput reports whether the output directory exists, and refuses one
@@ -343,6 +365,9 @@ func writeMarker(staging string, startedAt time.Time) error {
 
 	return nil
 }
+
+// syncAfterSwap makes the swap durable; tests replace it.
+var syncAfterSwap = syncDirectory
 
 // syncDirectory makes a rename within directory durable.
 func syncDirectory(directory string) error {
