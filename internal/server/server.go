@@ -20,7 +20,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
 	"golang.org/x/sync/singleflight"
-	"google.golang.org/protobuf/proto"
 
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
@@ -189,14 +188,12 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 			metrics.interceptor(),
 			auth.NewInterceptor(options.Authenticator, PublicProcedures, options.Logger),
 			authz.NewInterceptor(options.Memberships, VaultProcedures, options.Logger),
-			limitResponseSize(int(options.MaxRequestBytes)),
 		),
 		// Bounds the decoded (and decompressed) message size.
 		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
-		// Bounds every response message the same way: limitResponseSize
-		// bounds the message, this the bytes sent (after compression, or
-		// in the JSON encoding). DownloadBlob caps its ranges at the chunk
-		// size, which fits within this limit.
+		// Bounds every response message by the bytes sent (after
+		// compression, when the client accepts it). DownloadBlob caps its
+		// ranges at the chunk size, which fits within this limit.
 		connect.WithSendMaxBytes(int(options.MaxRequestBytes)),
 	}
 
@@ -264,31 +261,6 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 	})
 
 	return limitRequestTime(options.WriteTimeout, corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, mux)))
-}
-
-// limitResponseSize fails a call with RESOURCE_EXHAUSTED when its response
-// message is larger than limit bytes in the binary protobuf encoding.
-// connect.WithSendMaxBytes alone measures the bytes sent, so it lets a
-// response through that compresses below the limit; a client bounding its
-// reads by the same limit could then not decode it.
-func limitResponseSize(limit int) connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
-			response, err := next(ctx, request)
-			if err != nil || response == nil {
-				return response, err
-			}
-
-			if message, ok := response.Any().(proto.Message); ok {
-				if size := proto.Size(message); size > limit {
-					return nil, connect.NewError(connect.CodeResourceExhausted,
-						fmt.Errorf("response message size %d exceeds the limit of %d bytes", size, limit))
-				}
-			}
-
-			return response, nil
-		}
-	}
 }
 
 // limitRequestTime gives every API request timeout from its arrival to be

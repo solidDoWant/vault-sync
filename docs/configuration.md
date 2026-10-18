@@ -62,7 +62,7 @@ File contents are stored in the S3 bucket as one object per blob at `vaults/<vau
 
 Every 5 minutes a cleanup routine removes upload sessions idle for longer than `VAULT_SYNC_BLOB_UPLOAD_TTL` (deleting their staged objects) and aborts multipart uploads under `vaults/` older than the TTL whose blob has no upload session active within the TTL, which an interrupted commit leaves behind and which S3 would otherwise keep, invisibly, forever. Every replica runs the cleanup on the same schedule; concurrent runs are safe, and an upload or object another replica already removed is not an error. Each run removes at most 100 sessions and 10,000 objects, so a backlog is worked off over several runs. Blobs no longer referenced by any revision are not deleted yet.
 
-Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. The limit applies both to the message itself and to the bytes sent. A response larger than the limit fails with `RESOURCE_EXHAUSTED`, even when it would compress below the limit. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
+Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A response is measured by the bytes sent, after compression when the client accepts it, and one over the limit fails with `RESOURCE_EXHAUSTED`. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
 
 ### Revisions and the change feed
 

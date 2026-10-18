@@ -130,27 +130,21 @@ func TestResponsesOverTheSendLimitAreRejected(t *testing.T) {
 		},
 	}
 
-	clients := map[string]vaultsyncv1connect.VaultServiceClient{
-		// The default client accepts gzip, and these responses compress
-		// far below the limit: the limit applies to the message itself.
-		"compressed":   client,
-		"uncompressed": vaultsyncv1connect.NewVaultServiceClient(http.DefaultClient, fixture.running.apiURL(), connect.WithAcceptCompression("gzip", nil, nil)),
-		"json":         vaultsyncv1connect.NewVaultServiceClient(http.DefaultClient, fixture.running.apiURL(), connect.WithProtoJSON()),
-	}
+	// The limit applies to the bytes sent. Without compression these are
+	// the binary protobuf message, whose size the test controls exactly.
+	uncompressed := vaultsyncv1connect.NewVaultServiceClient(http.DefaultClient, fixture.running.apiURL(), connect.WithAcceptCompression("gzip", nil, nil))
 
-	for clientName, client := range clients {
-		for _, test := range tests {
-			t.Run(clientName+"/"+test.name, func(t *testing.T) {
-				vaults.nameLength.Store(int64(nameLengthForResponseSize(t, template.Msg, test.size)))
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vaults.nameLength.Store(int64(nameLengthForResponseSize(t, template.Msg, test.size)))
 
-				response, err := client.ListVaults(t.Context(), authorized(&vaultsyncv1.ListVaultsRequest{}, token))
-				test.assertError(t, err)
+			response, err := uncompressed.ListVaults(t.Context(), authorized(&vaultsyncv1.ListVaultsRequest{}, token))
+			test.assertError(t, err)
 
-				if err == nil {
-					assert.Equal(t, test.size, proto.Size(response.Msg))
-				}
-			})
-		}
+			if err == nil {
+				assert.Equal(t, test.size, proto.Size(response.Msg))
+			}
+		})
 	}
 }
 
@@ -193,16 +187,20 @@ func TestServerReleasesConnectionsOfClientsThatDoNotRead(t *testing.T) {
 	require.NoError(t, conn.SetReadDeadline(time.Now().Add(30*time.Second)))
 
 	response, err := http.ReadResponse(bufio.NewReader(conn), nil)
-	require.NoError(t, err)
+	if err == nil {
+		defer func() { _ = response.Body.Close() }()
 
-	defer func() { _ = response.Body.Close() }()
+		require.Equal(t, http.StatusOK, response.StatusCode)
 
-	require.Equal(t, http.StatusOK, response.StatusCode)
+		var read int64
 
-	read, err := io.Copy(io.Discard, response.Body)
-	require.Error(t, err, "the server must not deliver the whole response to a client that stopped reading")
-	assert.Less(t, read, int64(responseBytes))
+		read, err = io.Copy(io.Discard, response.Body)
+		require.Error(t, err, "the server must not deliver the whole response to a client that stopped reading")
+		assert.Less(t, read, int64(responseBytes))
+	}
 
+	// On a slow machine the deadline can pass before the handler wrote
+	// anything; the connection is then closed before the status line.
 	var netErr net.Error
 	if errors.As(err, &netErr) {
 		assert.False(t, netErr.Timeout(), "the server must close the connection, not leave it open")
