@@ -74,6 +74,8 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Database:        pool,
 		Authenticator:   auth.NewAuthenticator(verifier, queries),
 		Devices:         queries,
+		Vaults:          queries,
+		Memberships:     queries,
 		Logger:          logger,
 	})
 

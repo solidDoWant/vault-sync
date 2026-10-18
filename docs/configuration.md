@@ -32,6 +32,12 @@ The issuer's key set is fetched on the first authenticated request, not at start
 
 The first authenticated request of a new `(issuer, subject)` pair creates its user.
 
+### Authorization
+
+Every RPC whose request names a `vault_id` is authorized against the caller's membership in that vault before it runs. There is no administrator bypass. A caller who is not a member gets `not_found` (HTTP 404), the same response as for a vault that does not exist. A `viewer` calling a write RPC (committing revisions, uploading blobs) gets `permission_denied` (HTTP 403). A malformed `vault_id` (not a lowercase hyphenated UUID) gets `invalid_argument`.
+
+A user becomes a vault's `owner` by creating it. A user may own at most 100 vaults, and vault names are at most 256 bytes. Inviting other members comes in a later release.
+
 ### PostgreSQL TLS
 
 TLS is enabled with the DSN's `sslmode`; use `require`, `verify-ca` or `verify-full`. Setting any of the TLS file variables with a DSN whose first connection attempt is plaintext (`sslmode=disable` or `allow`) is rejected at startup. With `sslmode=prefer` (the libpq default when `sslmode` is omitted) and a TLS file set, the plaintext fallback is removed, so the connection never silently downgrades.

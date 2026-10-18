@@ -143,6 +143,13 @@ Server-side details (decision):
 
 Every RPC and every WebSocket message resolves `(user, vault_id)` to a `vault_members` role before touching data. `viewer` can read; `editor` can read and write; `owner` can also manage members and vault settings. There is no admin bypass in the API.
 
+Server-side details (decision):
+
+- Authorization is **central and runs before the handler**: one interceptor, after authentication, on every ConnectRPC service. A single table (`server.VaultProcedures`) classifies every vault-scoped procedure — every procedure whose request carries `vault_id` — as read or write. A request carrying a `vault_id` for an unclassified procedure is rejected, and a test derived from the schema descriptors fails if any such procedure is missing from the table.
+- `vault_id` must be a canonical lowercase UUID (`INVALID_ARGUMENT` otherwise) and is checked before any query. The role is then resolved with one `vault_members` lookup: a vault that does not exist and a vault the caller is not a member of take the same path and return the same `NOT_FOUND` error. A `viewer` calling a write procedure gets `PERMISSION_DENIED`.
+- Handlers take the authorized vault from the interceptor, never from the request, and query through a vault-scoped store handle whose every query filters by that vault, so ids from another vault (documents, revisions, blobs) are simply not found.
+- `CreateVault` makes the caller the `owner` (a user may own at most 100 vaults); `ListVaults` returns only vaults the caller is a member of, with the caller's role. Vault names are non-blank and at most 256 bytes.
+
 ### 9.3 End-to-end encryption (opt-in per vault)
 
 Envelope encryption with multiple recipients:
