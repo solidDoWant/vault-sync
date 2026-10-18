@@ -74,8 +74,8 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 
 	var logs bytes.Buffer
 
-	command := exec.CommandContext(t.Context(), binary)
-	command.Env = []string{
+	server := newChild(t, binary)
+	server.Command.Env = []string{
 		config.DatabaseURLEnv + "=" + database.DSN,
 		config.ListenAddressEnv + "=" + apiAddress,
 		config.MetricsListenAddressEnv + "=" + metricsAddress,
@@ -85,21 +85,18 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 		config.OIDCIssuerURLEnv + "=http://127.0.0.1:1/",
 		config.OIDCAudienceEnv + "=vault-sync",
 	}
-	command.Stdout = &logs
-	command.Stderr = &logs
-	require.NoError(t, command.Start())
+	server.Command.Stdout = &logs
+	server.Command.Stderr = &logs
 
-	exited := make(chan error, 1)
-
-	go func() { exited <- command.Wait() }()
-
+	// Registered before the server's cleanup, so it runs after the server
+	// has been stopped and its output collected.
 	t.Cleanup(func() {
-		_ = command.Process.Kill()
-
 		if t.Failed() {
 			t.Logf("server logs:\n%s", logs.String())
 		}
 	})
+
+	server.Start(t)
 
 	require.Eventually(t, func() bool {
 		status, err := httpGet("http://" + metricsAddress + "/readyz")
@@ -131,7 +128,7 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "\r\n", line)
 
-	require.NoError(t, command.Process.Signal(syscall.SIGTERM))
+	require.NoError(t, server.Command.Process.Signal(syscall.SIGTERM))
 
 	require.Eventually(t, func() bool {
 		probe, err := net.DialTimeout("tcp", apiAddress, time.Second)
@@ -145,8 +142,8 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	}, 10*time.Second, 10*time.Millisecond, "server must stop accepting connections after SIGTERM")
 
 	select {
-	case err := <-exited:
-		t.Fatalf("server exited before the in-flight request finished: %v", err)
+	case <-server.Exited():
+		t.Fatalf("server exited before the in-flight request finished: %v", server.Err())
 	default:
 	}
 
@@ -161,8 +158,8 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	assert.Equal(t, http.StatusOK, response.StatusCode)
 
 	select {
-	case err := <-exited:
-		require.NoError(t, err, "server must exit 0 after draining")
+	case <-server.Exited():
+		require.NoError(t, server.Err(), "server must exit 0 after draining")
 	case <-time.After(15 * time.Second):
 		t.Fatal("server did not exit after draining")
 	}
