@@ -1,0 +1,214 @@
+// Test support for the engine's unit tests: a wired-up engine over the
+// in-memory server, vault and journal, plus fault-injecting wrappers that
+// "crash" the engine after a chosen number of durable changes.
+
+import { createProtocolClient } from "../protocol/client";
+import type { DeferredRevision, DocumentState } from "../journal/journal";
+import { InMemoryJournal } from "../journal/memory";
+import type { FileStat, VaultAdapter, VaultEvent, VaultListener } from "../vault/adapter";
+import { InMemoryVault } from "../vault/memory";
+import { SyncEngine } from "./engine";
+import type { MergeHook, MergeRequest } from "./merge";
+import { InMemoryServer } from "./memory-server";
+
+/** Thrown by a crash point: the engine "dies" there. */
+export class Crash extends Error {
+  override readonly name = "Crash";
+}
+
+/** Counts durable changes (vault writes, renames, deletes; journal updates) and throws Crash right after the `crashAfter`-th. */
+export class CrashPoints {
+  /** 0 disables crashing. */
+  crashAfter = 0;
+  count = 0;
+
+  /** Runs a durable change, then crashes if this was the chosen one. */
+  async durable<T>(change: () => Promise<T>): Promise<T> {
+    const result = await change();
+    this.count++;
+    if (this.crashAfter !== 0 && this.count === this.crashAfter) throw new Crash(`crash after durable change ${String(this.count)}`);
+    return result;
+  }
+}
+
+/** A VaultAdapter whose mutations are crash points. */
+export class CrashingVault implements VaultAdapter {
+  constructor(
+    readonly inner: VaultAdapter,
+    private readonly points: CrashPoints,
+  ) {}
+
+  list(): Promise<string[]> {
+    return this.inner.list();
+  }
+  read(path: string): Promise<Uint8Array> {
+    return this.inner.read(path);
+  }
+  stat(path: string): Promise<FileStat | null> {
+    return this.inner.stat(path);
+  }
+  watch(listener: VaultListener): () => void {
+    return this.inner.watch(listener);
+  }
+  write(path: string, data: Uint8Array): Promise<void> {
+    return this.points.durable(() => this.inner.write(path, data));
+  }
+  rename(from: string, to: string): Promise<void> {
+    return this.points.durable(() => this.inner.rename(from, to));
+  }
+  delete(path: string): Promise<void> {
+    return this.points.durable(() => this.inner.delete(path));
+  }
+}
+
+/**
+ * A VaultAdapter that holds back vault events until flush(), as a platform
+ * whose file watcher reports changes late may. With `coalesce`, a create or
+ * modify of a path whose previous held event was a create or modify of the
+ * same path is folded into it, as a debouncing watcher does.
+ */
+export class LateEventsVault implements VaultAdapter {
+  private held: VaultEvent[] = [];
+  private readonly listeners = new Set<VaultListener>();
+
+  constructor(
+    readonly inner: VaultAdapter,
+    private readonly coalesce = false,
+  ) {
+    inner.watch((event) => {
+      const previous = this.held.at(-1);
+      const folds = previous !== undefined && previous.path === event.path && previous.type !== "delete" && previous.type !== "rename";
+      if (this.coalesce && folds && (event.type === "create" || event.type === "modify")) return;
+      this.held.push(event);
+    });
+  }
+
+  flush(): void {
+    const events = this.held;
+    this.held = [];
+    for (const event of events) for (const listener of this.listeners) listener(event);
+  }
+
+  list(): Promise<string[]> {
+    return this.inner.list();
+  }
+  read(path: string): Promise<Uint8Array> {
+    return this.inner.read(path);
+  }
+  stat(path: string): Promise<FileStat | null> {
+    return this.inner.stat(path);
+  }
+  watch(listener: VaultListener): () => void {
+    const subscription: VaultListener = (event) => {
+      listener(event);
+    };
+    this.listeners.add(subscription);
+    return () => {
+      this.listeners.delete(subscription);
+    };
+  }
+  write(path: string, data: Uint8Array): Promise<void> {
+    return this.inner.write(path, data);
+  }
+  rename(from: string, to: string): Promise<void> {
+    return this.inner.rename(from, to);
+  }
+  delete(path: string): Promise<void> {
+    return this.inner.delete(path);
+  }
+}
+
+/** An InMemoryJournal whose updates are crash points. */
+export class CrashingJournal extends InMemoryJournal {
+  constructor(private readonly points: CrashPoints) {
+    super();
+  }
+  override setCursor(seq: bigint): Promise<void> {
+    return this.points.durable(() => super.setCursor(seq));
+  }
+  override resetCursor(seq: bigint): Promise<void> {
+    return this.points.durable(() => super.resetCursor(seq));
+  }
+  override putDocument(state: DocumentState): Promise<void> {
+    return this.points.durable(() => super.putDocument(state));
+  }
+  override putDeferred(deferred: DeferredRevision): Promise<void> {
+    return this.points.durable(() => super.putDeferred(deferred));
+  }
+  override removeDeferred(documentId: string): Promise<void> {
+    return this.points.durable(() => super.removeDeferred(documentId));
+  }
+}
+
+export interface Harness {
+  server: InMemoryServer;
+  vault: InMemoryVault;
+  journal: InMemoryJournal;
+  engine: SyncEngine;
+  /** Every request the merge hook received. */
+  merges: MergeRequest[];
+  /** Every vault event the engine reported as a local change. */
+  localChanges: VaultEvent[];
+  /** Replaces the engine with a fresh one over the same vault and journal (a restart). */
+  restart(): SyncEngine;
+}
+
+export interface HarnessOptions {
+  server?: InMemoryServer;
+  vault?: InMemoryVault;
+  journal?: InMemoryJournal;
+  /** Wraps the vault the engine sees. */
+  wrapVault?: (vault: InMemoryVault) => VaultAdapter;
+  /** Omit to record requests and defer; pass "default" to use the engine's default hook. */
+  merge?: MergeHook | "default";
+  pageSize?: number;
+}
+
+export function harness(options: HarnessOptions = {}): Harness {
+  const server = options.server ?? new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 });
+  const vault = options.vault ?? new InMemoryVault();
+  const journal = options.journal ?? new InMemoryJournal();
+  const merges: MergeRequest[] = [];
+  const localChanges: VaultEvent[] = [];
+  const recordingMerge: MergeHook = (request) => {
+    merges.push(request);
+    return Promise.resolve({ status: "deferred" });
+  };
+  const create = () =>
+    new SyncEngine({
+      vaultId: server.vaultId,
+      api: createProtocolClient({ transport: server.transport }),
+      vault: options.wrapVault === undefined ? vault : options.wrapVault(vault),
+      journal,
+      ...(options.merge === "default" ? {} : { merge: options.merge ?? recordingMerge }),
+      onLocalChange: (event) => localChanges.push(event),
+      pageSize: options.pageSize ?? 2,
+    });
+  const result: Harness = {
+    server,
+    vault,
+    journal,
+    engine: create(),
+    merges,
+    localChanges,
+    restart: () => {
+      result.engine.dispose();
+      result.engine = create();
+      return result.engine;
+    },
+  };
+  return result;
+}
+
+const decoder = new TextDecoder();
+
+/** Path to text content of every file in `vault`. */
+export async function files(vault: VaultAdapter): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  for (const path of (await vault.list()).sort()) result.set(path, decoder.decode(await vault.read(path)));
+  return result;
+}
+
+export function text(content: Uint8Array | null): string | null {
+  return content === null ? null : decoder.decode(content);
+}

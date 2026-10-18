@@ -1,10 +1,11 @@
-import type { DocumentState, Journal, PendingOperation } from "./journal";
+import type { DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
 
 /** A non-durable Journal for unit tests and the simulation harness. */
 export class InMemoryJournal implements Journal {
   private cursor = 0n;
   private readonly documents = new Map<string, DocumentState>();
   private readonly pending = new Map<string, PendingOperation>();
+  private readonly deferred = new Map<string, DeferredRevision>();
 
   getCursor(): Promise<bigint> {
     return Promise.resolve(this.cursor);
@@ -18,6 +19,11 @@ export class InMemoryJournal implements Journal {
     return Promise.resolve();
   }
 
+  resetCursor(seq: bigint): Promise<void> {
+    this.cursor = seq;
+    return Promise.resolve();
+  }
+
   getDocument(documentId: string): Promise<DocumentState | undefined> {
     const state = this.documents.get(documentId);
     return Promise.resolve(state === undefined ? undefined : { ...state });
@@ -25,7 +31,7 @@ export class InMemoryJournal implements Journal {
 
   findDocumentByPath(path: string): Promise<DocumentState | undefined> {
     for (const state of this.documents.values()) {
-      if (state.path === path) return Promise.resolve({ ...state });
+      if (state.path === path && !state.deleted) return Promise.resolve({ ...state });
     }
     return Promise.resolve(undefined);
   }
@@ -55,4 +61,27 @@ export class InMemoryJournal implements Journal {
     this.pending.delete(revisionId);
     return Promise.resolve();
   }
+
+  putDeferred(deferred: DeferredRevision): Promise<void> {
+    this.deferred.set(deferred.revision.documentId, copyDeferred(deferred));
+    return Promise.resolve();
+  }
+
+  getDeferred(documentId: string): Promise<DeferredRevision | undefined> {
+    const deferred = this.deferred.get(documentId);
+    return Promise.resolve(deferred === undefined ? undefined : copyDeferred(deferred));
+  }
+
+  listDeferred(): Promise<DeferredRevision[]> {
+    return Promise.resolve([...this.deferred.values()].map(copyDeferred));
+  }
+
+  removeDeferred(documentId: string): Promise<void> {
+    this.deferred.delete(documentId);
+    return Promise.resolve();
+  }
+}
+
+function copyDeferred(deferred: DeferredRevision): DeferredRevision {
+  return { reason: deferred.reason, revision: { ...deferred.revision } };
 }
