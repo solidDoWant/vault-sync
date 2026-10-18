@@ -17,6 +17,14 @@ set -euo pipefail
 # shellcheck disable=SC2046 # one variable name per word
 unset $(git rev-parse --local-env-vars)
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+# No automatic `git maintenance run --auto --detach` after commit, fetch,
+# merge or push. Since git 2.55 the detached daemon holds
+# objects/maintenance.lock after the command returns. If it removes the lock
+# while a following local `git clone` copies objects/, the clone dies with
+# status 128 ("failed to copy file to .../objects/maintenance.lock"). Set through
+# the environment so the check under test and the nested run inherit it; the
+# bare origins also get it in their config (see new_repo).
+export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=maintenance.auto GIT_CONFIG_VALUE_0=false
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 check="$repo_root/scripts/buf-breaking.sh"
@@ -31,7 +39,17 @@ fail() {
 	failures=$((failures + 1))
 }
 
-git_quiet() { git -c init.defaultBranch=master -c advice.detachedHead=false "$@" >/dev/null 2>&1; }
+# git_quiet ARGS...: runs git, hiding its output unless it fails. On failure
+# the command, its exit status and its combined output go to stderr, so a CI
+# log shows why the suite stopped (set -e then exits with git's status).
+git_quiet() {
+	local git_output git_status=0
+	git_output="$(git -c init.defaultBranch=master -c advice.detachedHead=false "$@" 2>&1)" || git_status=$?
+	if [[ $git_status -ne 0 ]]; then
+		printf 'git command failed (status %d): git %s\n%s\n' "$git_status" "$*" "$git_output" >&2
+	fi
+	return "$git_status"
+}
 
 # new_repo DIR: a clone of a bare origin whose master holds the committed
 # schema, checked out on a feature branch.
@@ -44,6 +62,8 @@ new_repo() {
 	git_quiet -C "$seed" -c user.name=test -c user.email=test@example.com add buf.yaml proto
 	git_quiet -C "$seed" -c user.name=test -c user.email=test@example.com commit -m base
 	git_quiet clone --bare "$seed" "$dir.origin.git"
+	# Pushes run receive-pack without the GIT_CONFIG_* environment.
+	git_quiet -C "$dir.origin.git" config maintenance.auto false
 	git_quiet clone "$dir.origin.git" "$dir"
 	git_quiet -C "$dir" checkout -b feature
 }
@@ -293,6 +313,32 @@ if [[ $status -eq 0 ]]; then
 	pass "documented RESERVED_MESSAGE_NO_DELETE exception allows the Phase 5 change"
 else
 	fail "documented RESERVED_MESSAGE_NO_DELETE exception allows the Phase 5 change (status $status): $output"
+fi
+
+# Case: a failing git command names itself and shows its stderr, so a CI log
+# says why the suite stopped.
+set +e
+output="$(git_quiet -C "$work/does-not-exist" status 2>&1)"
+status=$?
+set -e
+if [[ $status -eq 128 && "$output" == *"git command failed (status 128): git -C $work/does-not-exist status"* && "$output" == *"cannot change to '$work/does-not-exist'"* ]]; then
+	pass "a failing git command is reported with its stderr"
+else
+	fail "a failing git command is reported with its stderr (status $status): $output"
+fi
+
+# Case: commits and pushes start no detached `git maintenance run --auto`, whose
+# lock file would race the local clones in new_repo.
+trace="$work/maintenance.trace"
+repo="$work/no-maintenance"
+GIT_TRACE="$trace" new_repo "$repo"
+sed -i "${field_line_number}d" "$repo/$target_file"
+GIT_TRACE="$trace" commit_all "$repo" "remove a field"
+GIT_TRACE="$trace" git_quiet -C "$repo" push origin feature
+if grep -q 'built-in: git receive-pack' "$trace" && ! grep -q 'git maintenance run --auto' "$trace"; then
+	pass "commits and pushes start no background maintenance"
+else
+	fail "commits and pushes start no background maintenance: $(grep 'maintenance run' "$trace")"
 fi
 
 # Case: the suite is isolated from the developer's git setup. Re-run it once
