@@ -44,10 +44,11 @@ const (
 type VaultServiceClient interface {
 	// CreateVault creates a vault owned by the caller.
 	//
-	// Errors: INVALID_ARGUMENT for an empty or over-long name, an unspecified
-	// encryption mode, or escrow requested for a plaintext vault;
-	// FAILED_PRECONDITION for VAULT_ENCRYPTION_E2EE until the server supports
-	// end-to-end encryption (SPEC.md §15, Phase 4).
+	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
+	// a control character (such as U+0000), an unspecified encryption mode, or
+	// escrow requested for a plaintext vault; FAILED_PRECONDITION for
+	// VAULT_ENCRYPTION_E2EE until the server supports end-to-end encryption
+	// (SPEC.md §15, Phase 4).
 	CreateVault(context.Context, *connect.Request[v1.CreateVaultRequest]) (*connect.Response[v1.CreateVaultResponse], error)
 	// ListVaults lists the vaults the caller is a member of.
 	ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error)
@@ -99,10 +100,11 @@ func (c *vaultServiceClient) ListVaults(ctx context.Context, req *connect.Reques
 type VaultServiceHandler interface {
 	// CreateVault creates a vault owned by the caller.
 	//
-	// Errors: INVALID_ARGUMENT for an empty or over-long name, an unspecified
-	// encryption mode, or escrow requested for a plaintext vault;
-	// FAILED_PRECONDITION for VAULT_ENCRYPTION_E2EE until the server supports
-	// end-to-end encryption (SPEC.md §15, Phase 4).
+	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
+	// a control character (such as U+0000), an unspecified encryption mode, or
+	// escrow requested for a plaintext vault; FAILED_PRECONDITION for
+	// VAULT_ENCRYPTION_E2EE until the server supports end-to-end encryption
+	// (SPEC.md §15, Phase 4).
 	CreateVault(context.Context, *connect.Request[v1.CreateVaultRequest]) (*connect.Response[v1.CreateVaultResponse], error)
 	// ListVaults lists the vaults the caller is a member of.
 	ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error)

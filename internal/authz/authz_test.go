@@ -24,12 +24,15 @@ const (
 	writeProcedure        = "/test.v1.Test/Write"
 	unclassifiedProcedure = "/test.v1.Test/Unclassified"
 	unscopedProcedure     = "/test.v1.Test/Unscoped"
+	streamProcedure       = "/test.v1.Test/Stream"
+	unscopedStream        = "/test.v1.Test/UnscopedStream"
 	userHeader            = "Test-User"
 )
 
 var procedures = map[string]authz.Access{
-	readProcedure:  authz.Read,
-	writeProcedure: authz.Write,
+	readProcedure:   authz.Read,
+	writeProcedure:  authz.Write,
+	streamProcedure: authz.Read,
 }
 
 // memberships is an in-memory MembershipStore.
@@ -104,6 +107,16 @@ func newFixture(t *testing.T, members authz.MembershipStore) *fixture {
 	}
 
 	mux.Handle(unscopedProcedure, connect.NewUnaryHandler(unscopedProcedure, unscoped, options))
+
+	stream := func(_ context.Context, _ *connect.Request[vaultsyncv1.GetRevisionRequest], stream *connect.ServerStream[vaultsyncv1.GetRevisionResponse]) error {
+		fixture.reached.Add(1)
+
+		return stream.Send(&vaultsyncv1.GetRevisionResponse{})
+	}
+
+	for _, procedure := range []string{streamProcedure, unscopedStream} {
+		mux.Handle(procedure, connect.NewServerStreamHandler(procedure, stream, options))
+	}
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
@@ -302,6 +315,47 @@ func TestInterceptorFailsClosed(t *testing.T) {
 		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 		assert.Zero(t, fixture.reached.Load())
 	})
+}
+
+// TestInterceptorRejectsStreamingVaultScopedProcedures checks that a
+// classified procedure served as a stream never reaches its handler: its
+// messages arrive after the handler starts, so it cannot be authorized first.
+func TestInterceptorRejectsStreamingVaultScopedProcedures(t *testing.T) {
+	vault := uuid.Must(uuid.NewV7())
+	owner := uuid.New()
+	members := &memberships{roles: map[[2]uuid.UUID]store.Role{{vault, owner}: store.RoleOwner}}
+	fixture := newFixture(t, members)
+
+	callStream := func(procedure string) (int, error) {
+		client := connect.NewClient[vaultsyncv1.GetRevisionRequest, vaultsyncv1.GetRevisionResponse](http.DefaultClient, fixture.url+procedure)
+		request := connect.NewRequest(&vaultsyncv1.GetRevisionRequest{VaultId: vault.String()})
+		request.Header().Set(userHeader, owner.String())
+
+		stream, err := client.CallServerStream(t.Context(), request)
+		require.NoError(t, err)
+
+		defer func() { _ = stream.Close() }()
+
+		received := 0
+		for stream.Receive() {
+			received++
+		}
+
+		return received, stream.Err()
+	}
+
+	received, err := callStream(streamProcedure)
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
+	assert.Zero(t, received)
+	assert.Zero(t, fixture.reached.Load(), "the handler must not run")
+	assert.Zero(t, members.lookups.Load())
+
+	// A stream that is not vault-scoped is left alone.
+	received, err = callStream(unscopedStream)
+	require.NoError(t, err)
+	assert.Equal(t, 1, received)
+	assert.Equal(t, int64(1), fixture.reached.Load())
 }
 
 func TestInterceptorPassesProceduresWithoutVault(t *testing.T) {

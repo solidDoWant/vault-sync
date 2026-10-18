@@ -266,6 +266,38 @@ func vaultScopedProcedures(t *testing.T) []string {
 	return scoped
 }
 
+// expectedAccess is this test suite's own read/write classification of every
+// vault-scoped procedure. It is deliberately independent of
+// server.VaultProcedures (the table under test): the role tests derive their
+// expected outcomes from it, so misclassifying a write as a read in the
+// server table fails them. A new vault-scoped procedure must be added here
+// too.
+var expectedAccess = map[string]authz.Access{
+	"/vaultsync.v1.SyncService/ListChanges":        authz.Read,
+	"/vaultsync.v1.SyncService/GetRevision":        authz.Read,
+	"/vaultsync.v1.SyncService/GetDocumentHistory": authz.Read,
+	"/vaultsync.v1.BlobService/DownloadBlob":       authz.Read,
+	"/vaultsync.v1.SyncService/CommitRevision":     authz.Write,
+	"/vaultsync.v1.BlobService/BeginBlob":          authz.Write,
+	"/vaultsync.v1.BlobService/PutBlobChunk":       authz.Write,
+	"/vaultsync.v1.BlobService/CommitBlob":         authz.Write,
+}
+
+// expectedAccessOf returns the independent expected classification of
+// procedure.
+func expectedAccessOf(t *testing.T, procedure string) authz.Access {
+	t.Helper()
+
+	access, ok := expectedAccess[procedure]
+	require.True(t, ok, "%s is vault-scoped: add its expected access to expectedAccess", procedure)
+
+	return access
+}
+
+func TestVaultProceduresMatchTheExpectedClassification(t *testing.T) {
+	assert.Equal(t, expectedAccess, server.VaultProcedures)
+}
+
 // TestEveryVaultScopedProcedureIsClassified fails when a procedure whose
 // request carries a vault_id is added to the schema without being classified
 // as a read or a write.
@@ -310,7 +342,7 @@ func TestVaultScopedProceduresEnforceRoles(t *testing.T) {
 	}
 
 	for _, procedure := range vaultScopedProcedures(t) {
-		access := server.VaultProcedures[procedure]
+		access := expectedAccessOf(t, procedure)
 
 		for _, role := range []store.Role{store.RoleOwner, store.RoleEditor, store.RoleViewer, "non-member"} {
 			t.Run(procedure+" as "+string(role), func(t *testing.T) {
@@ -417,6 +449,12 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 		{name: "empty name", request: &vaultsyncv1.CreateVaultRequest{Encryption: none}, wantCode: connect.CodeInvalidArgument},
 		{name: "blank name", request: &vaultsyncv1.CreateVaultRequest{Name: " \t\n", Encryption: none}, wantCode: connect.CodeInvalidArgument},
 		{name: "over-long name", request: &vaultsyncv1.CreateVaultRequest{Name: strings.Repeat("n", api.MaxVaultNameBytes+1), Encryption: none}, wantCode: connect.CodeInvalidArgument},
+		{name: "NUL in name", request: &vaultsyncv1.CreateVaultRequest{Name: "a\x00b", Encryption: none}, wantCode: connect.CodeInvalidArgument},
+		{name: "C0 control in name", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes\x1b", Encryption: none}, wantCode: connect.CodeInvalidArgument},
+		{name: "newline in name", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes\nmore", Encryption: none}, wantCode: connect.CodeInvalidArgument},
+		{name: "DEL in name", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes\x7f", Encryption: none}, wantCode: connect.CodeInvalidArgument},
+		{name: "C1 control in name", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes\u0085", Encryption: none}, wantCode: connect.CodeInvalidArgument},
+		{name: "non-ASCII name", request: &vaultsyncv1.CreateVaultRequest{Name: "Notizen für Straße 📓", Encryption: none}},
 		{name: "unspecified encryption", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes"}, wantCode: connect.CodeInvalidArgument},
 		{name: "unknown encryption", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes", Encryption: 99}, wantCode: connect.CodeInvalidArgument},
 		{name: "escrow without e2ee", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes", Encryption: none, Escrow: true}, wantCode: connect.CodeInvalidArgument},

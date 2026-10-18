@@ -6,13 +6,13 @@ import (
 	"net/http"
 	"testing"
 
+	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/authz"
-	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -52,7 +52,7 @@ func TestVaultAuthorizationAgainstPostgres(t *testing.T) {
 	missing := uuid.Must(uuid.NewV7()).String()
 
 	for _, procedure := range vaultScopedProcedures(t) {
-		access := server.VaultProcedures[procedure]
+		access := expectedAccessOf(t, procedure)
 		body := map[string]string{"vault_id": created.GetId()}
 
 		t.Run(procedure, func(t *testing.T) {
@@ -79,4 +79,28 @@ func TestVaultAuthorizationAgainstPostgres(t *testing.T) {
 			assert.Equal(t, string(nonexistent.body), string(notMember.body))
 		})
 	}
+}
+
+// TestCreateVaultRejectsControlCharactersAgainstPostgres covers issue #86:
+// PostgreSQL text cannot hold U+0000, so such names must be rejected as bad
+// input before they reach the database.
+func TestCreateVaultRejectsControlCharactersAgainstPostgres(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+	fixture := newVaultFixture(t, queries, queries, pool)
+	token := fixture.token(t, "alice")
+
+	for _, name := range []string{"a\x00b", "\x00", "Notes\x1b", "Notes\u0085"} {
+		_, err := fixture.vaultClient().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
+			Name: name, Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_NONE,
+		}, token))
+		require.Error(t, err, "%q", name)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "%q", name)
+	}
+
+	var vaults int
+
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM vaults`).Scan(&vaults))
+	assert.Zero(t, vaults, "no vault is created")
+	assert.NotContains(t, fixture.logs.String(), `"level":"ERROR"`, "bad input is not an internal error")
 }

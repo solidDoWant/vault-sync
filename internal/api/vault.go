@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -65,6 +67,12 @@ func (service VaultService) CreateVault(ctx context.Context, request *connect.Re
 
 	if len(name) > MaxVaultNameBytes {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxVaultNameBytes))
+	}
+
+	// PostgreSQL text cannot hold U+0000, and no control character (Unicode
+	// category Cc) belongs in a display name.
+	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control characters"))
 	}
 
 	var encryption store.Encryption
