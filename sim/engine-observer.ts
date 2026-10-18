@@ -4,7 +4,8 @@
 // (#16): it never edits locally, so after the run its vault must equal the
 // server's live heads, it must report no local changes (echo suppression), and
 // it must have deferred nothing. Scripted scenarios also edit its vault and
-// push (#17); random engine edits are #22. Its vault and journal survive a
+// push (#17), with several engines editing concurrently (#18); random engine
+// edits are #22. Its vault and journal survive a
 // crash (they are a device's disk), while the engine itself, and everything it
 // had in flight, does not.
 
@@ -13,8 +14,9 @@ import { Code } from "@connectrpc/connect";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { SyncEngine, type PushSummary } from "../plugin/src/core/engine/engine";
-import { deferMerge, type MergeHook } from "../plugin/src/core/engine/merge";
+import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { sha256Hex } from "../plugin/src/core/hash";
+import type { ConflictRecord } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { VaultEvent } from "../plugin/src/core/vault/adapter";
@@ -24,6 +26,8 @@ import { errorCode } from "./network";
 
 /** Revisions per ListChanges page; small, so pulls page. */
 const pageSize = 7;
+/** The engines' clock, fixed so conflict-copy names (and with them traces) replay identically. */
+export const simDate = new Date(Date.UTC(2026, 0, 2, 3, 4, 5));
 
 /** What a converged vault holds: path to content hash of every live document, and the last seq. */
 export interface ServerHeads {
@@ -39,7 +43,7 @@ export class EngineObserver {
   private readonly localChanges: VaultEvent[] = [];
   /** Paths the scenario edited as the user: their events are expected local changes. */
   private readonly userEdited = new Set<string>();
-  /** The merge hook of the engine (and of the engines after a crash); the default defers. */
+  /** The merge hook of the engine (and of the engines after a crash); the default is the engine's, threeWayMerge. */
   merge: MergeHook | undefined;
 
   constructor(
@@ -91,6 +95,28 @@ export class EngineObserver {
     await this.vault.write(path, content);
     await this.engine.settled();
     return `${this.name} user writes ${path} (${String(content.length)} B)`;
+  }
+
+  /** Renames `from` to `to` in the observer's vault as its user would. */
+  async move(from: string, to: string): Promise<string> {
+    this.userEdited.add(from);
+    this.userEdited.add(to);
+    await this.vault.rename(from, to);
+    await this.engine.settled();
+    return `${this.name} user renames ${from} to ${to}`;
+  }
+
+  /** Deletes `path` from the observer's vault as its user would. */
+  async remove(path: string): Promise<string> {
+    this.userEdited.add(path);
+    await this.vault.delete(path);
+    await this.engine.settled();
+    return `${this.name} user deletes ${path}`;
+  }
+
+  /** The engine's conflict log. */
+  conflicts(): Promise<ConflictRecord[]> {
+    return this.journal.listConflicts();
   }
 
   /** The paths in the observer's vault, sorted. */
@@ -186,7 +212,9 @@ export class EngineObserver {
         });
         this.context.log(`${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`);
       },
-      merge: (request) => (this.merge ?? deferMerge)(request),
+      merge: (request) => (this.merge ?? threeWayMerge)(request),
+      deviceName: this.name,
+      now: () => simDate,
       // The simulation decides when the engine pushes.
       pushDebounceMs: null,
       newId: () => this.context.ids.generate(`${this.name}.x`),

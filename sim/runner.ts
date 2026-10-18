@@ -25,6 +25,12 @@ export interface RunOptions {
   /** Names the vault; also recorded with regression cases. */
   seed: number;
   clients: number;
+  /**
+   * Engine-driven clients (EngineObserver), after the scripted ones; 1 by
+   * default. Seeded schedules use one; scripted scenarios may add more, to
+   * make real engines edit concurrently.
+   */
+  engines?: number;
 }
 
 export interface RunResult {
@@ -44,8 +50,8 @@ export class SimRun {
   private constructor(
     readonly context: RunContext,
     readonly clients: ScriptedClient[],
-    /** The real engine's pull side, behind the same faulty network. */
-    readonly observer: EngineObserver,
+    /** The real engines, behind the same faulty network. */
+    readonly observers: EngineObserver[],
     private readonly control: Control,
     /** Fault-free access for the harness's own checks. */
     readonly direct: ProtocolClient,
@@ -80,13 +86,23 @@ export class SimRun {
       const transport: Transport = network.transport(index, http);
       clients.push(new ScriptedClient(index, createProtocolClient({ transport, token: () => token }), device.id, context));
     }
-    const observerIndex = options.clients;
-    const observerDevice = (await setup.devices.registerDevice({ name: "sim engine" })).device;
-    if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
-    const observer = new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context);
-    const simRun = new SimRun(context, clients, observer, control, setup, trace);
+    const observers: EngineObserver[] = [];
+    for (let engine = 0; engine < (options.engines ?? 1); engine++) {
+      const observerIndex = options.clients + engine;
+      const observerDevice = (await setup.devices.registerDevice({ name: `sim engine ${String(engine)}` })).device;
+      if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
+      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context));
+    }
+    const simRun = new SimRun(context, clients, observers, control, setup, trace);
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
+  }
+
+  /** The first engine: the one seeded schedules drive, which crashes with client 0. */
+  get observer(): EngineObserver {
+    const observer = this.observers[0];
+    if (observer === undefined) throw new Error("the run has no engine");
+    return observer;
   }
 
   /** Executes one schedule step and lets the clients react to it. */
@@ -104,7 +120,7 @@ export class SimRun {
    * still apply; call heal first to lift them.
    */
   async drain(client?: number): Promise<void> {
-    const everyone: { index: number; idle: boolean }[] = [...this.clients, this.observer];
+    const everyone: { index: number; idle: boolean }[] = [...this.clients, ...this.observers];
     const clients = client === undefined ? everyone : everyone.filter((candidate) => candidate.index === client);
     for (let delivery = 0; delivery < maxDrainDeliveries; delivery++) {
       this.context.network.now = this.stepNumber;
@@ -131,10 +147,11 @@ export class SimRun {
     await settle();
     await this.drain();
     // Every commit has landed, so one more fault-free pull must converge.
-    this.context.log(this.observer.startPull());
+    for (const observer of this.observers) this.context.log(observer.startPull());
     await settle();
     await this.drain();
-    this.context.violations.push(...(await this.observer.check(await serverHeads(this.direct, this.context.vaultId))));
+    const heads = await serverHeads(this.direct, this.context.vaultId);
+    for (const observer of this.observers) this.context.violations.push(...(await observer.check(heads)));
     const violations = await this.control.check(this.context.vaultId, this.context.acknowledged);
     for (const violation of violations) {
       this.context.violations.push({ invariant: violation.invariant, detail: this.context.ids.relabel(violation.detail) });
@@ -149,8 +166,8 @@ export class SimRun {
     switch (step.kind) {
       case "operation": {
         const entry = this.client(step.client).start(step.operation, step.arg);
-        // The engine pulls whenever the schedule asks any client to pull.
-        return step.operation === "pull" ? `${entry}; ${this.observer.startPull()}` : entry;
+        // The engines pull whenever the schedule asks any client to pull.
+        return step.operation === "pull" ? [entry, ...this.observers.map((observer) => observer.startPull())].join("; ") : entry;
       }
       case "deliver-request":
         return nothing("deliverable request")(await network.deliverRequest(step.client));

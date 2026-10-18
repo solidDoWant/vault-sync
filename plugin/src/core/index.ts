@@ -1,10 +1,12 @@
 // Public surface of the platform-independent sync engine (SPEC.md §4). It
 // must never import `obsidian` or src/obsidian (lint-enforced).
 export { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type SyncEngineOptions } from "./engine/engine";
-export { deferMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
-export { classifyByExtension, RemoteContentError, type PullApi } from "./engine/remote";
+export { deferMerge, threeWayMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
+export { classifyByExtension, classifyByExtensions, defaultTextExtensions, RemoteContentError, type PullApi } from "./engine/remote";
 export { sha256Hex } from "./hash";
 export type {
+  ConflictReason,
+  ConflictRecord,
   DeferReason,
   DeferredRevision,
   DocumentKindName,
@@ -14,6 +16,8 @@ export type {
   RemoteRevision,
 } from "./journal/journal";
 export { InMemoryJournal } from "./journal/memory";
+export { conflictCopyPath } from "./merge/conflict-name";
+export { mergeText } from "./merge/text-merge";
 export { pathKey } from "./pathkey/pathkey";
 export {
   createHttpTransport,
