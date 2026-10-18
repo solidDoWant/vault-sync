@@ -400,3 +400,20 @@ func TestAuthenticateHeaderRequiresBearerScheme(t *testing.T) {
 	_, err := authenticator.AuthenticateHeader(t.Context(), "bearer "+token)
 	require.NoError(t, err, "the scheme is case-insensitive")
 }
+
+func TestAuthenticatorReportsWhenTheTokenExpires(t *testing.T) {
+	issuer := authtest.NewIssuer(t)
+	key := issuer.AddKey(t, jose.RS256)
+	clock := newClock()
+	users := &memoryUsers{users: map[auth.Identity]uuid.UUID{}}
+	authenticator := auth.NewAuthenticator(newVerifier(issuer, clock), users)
+
+	claims := issuer.Claims(randomSubject(), clock.Now())
+	expiry := clock.Now().Add(17 * time.Minute)
+	claims["exp"] = expiry.Unix()
+
+	user, err := authenticator.AuthenticateToken(t.Context(), authtest.Sign(t, key, claims))
+	require.NoError(t, err)
+
+	assert.True(t, user.TokenExpiry.Equal(expiry), "token expiry %s, want %s", user.TokenExpiry, expiry)
+}

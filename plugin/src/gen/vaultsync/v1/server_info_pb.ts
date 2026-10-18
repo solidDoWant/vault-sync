@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/server_info.proto.
  */
 export const file_vaultsync_v1_server_info: GenFile = /*@__PURE__*/
-  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCJCChVHZXRTZXJ2ZXJJbmZvUmVzcG9uc2USDwoHdmVyc2lvbhgBIAEoCRIYChBwcm90b2NvbF92ZXJzaW9uGAIgASgNMm8KEVNlcnZlckluZm9TZXJ2aWNlEloKDUdldFNlcnZlckluZm8SIi52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1JlcXVlc3QaIy52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw");
+  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCJmChVHZXRTZXJ2ZXJJbmZvUmVzcG9uc2USDwoHdmVyc2lvbhgBIAEoCRIYChBwcm90b2NvbF92ZXJzaW9uGAIgASgNEiIKGm1heF9yZWFsdGltZV9zdWJzY3JpcHRpb25zGAMgASgNMm8KEVNlcnZlckluZm9TZXJ2aWNlEloKDUdldFNlcnZlckluZm8SIi52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1JlcXVlc3QaIy52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw");
 
 /**
  * GetServerInfoRequest has no parameters.
@@ -47,6 +47,15 @@ export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"
    * @generated from field: uint32 protocol_version = 2;
    */
   protocolVersion: number;
+
+  /**
+   * Maximum number of vaults one realtime WebSocket connection may
+   * subscribe to (SPEC.md §6.4). Zero means the server does not offer the
+   * realtime channel.
+   *
+   * @generated from field: uint32 max_realtime_subscriptions = 3;
+   */
+  maxRealtimeSubscriptions: number;
 };
 
 /**

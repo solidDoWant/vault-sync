@@ -66,8 +66,12 @@ type GetServerInfoResponse struct {
 	// Highest protocol version the server speaks. The vaultsync.v1 schema is
 	// protocol version 1.
 	ProtocolVersion uint32 `protobuf:"varint,2,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	// Maximum number of vaults one realtime WebSocket connection may
+	// subscribe to (SPEC.md §6.4). Zero means the server does not offer the
+	// realtime channel.
+	MaxRealtimeSubscriptions uint32 `protobuf:"varint,3,opt,name=max_realtime_subscriptions,json=maxRealtimeSubscriptions,proto3" json:"max_realtime_subscriptions,omitempty"`
+	unknownFields            protoimpl.UnknownFields
+	sizeCache                protoimpl.SizeCache
 }
 
 func (x *GetServerInfoResponse) Reset() {
@@ -114,15 +118,23 @@ func (x *GetServerInfoResponse) GetProtocolVersion() uint32 {
 	return 0
 }
 
+func (x *GetServerInfoResponse) GetMaxRealtimeSubscriptions() uint32 {
+	if x != nil {
+		return x.MaxRealtimeSubscriptions
+	}
+	return 0
+}
+
 var File_vaultsync_v1_server_info_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_server_info_proto_rawDesc = "" +
 	"\n" +
 	"\x1evaultsync/v1/server_info.proto\x12\fvaultsync.v1\"\x16\n" +
-	"\x14GetServerInfoRequest\"\\\n" +
+	"\x14GetServerInfoRequest\"\x9a\x01\n" +
 	"\x15GetServerInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12)\n" +
-	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion2o\n" +
+	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x12<\n" +
+	"\x1amax_realtime_subscriptions\x18\x03 \x01(\rR\x18maxRealtimeSubscriptions2o\n" +
 	"\x11ServerInfoService\x12Z\n" +
 	"\rGetServerInfo\x12\".vaultsync.v1.GetServerInfoRequest\x1a#.vaultsync.v1.GetServerInfoResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
