@@ -81,12 +81,12 @@ All identifiers are UUIDv7 unless stated. Every table below is scoped by `vault_
 
 ### 6.1 Pull
 
-`ListChanges(vault_id, since_seq, limit)` returns revisions with `seq > since_seq` in `seq` order, paginated. A client's durable cursor is the highest `seq` it has fully applied to disk. Clients pull on startup, on a realtime `vault_changed{seq}` notification, and on a timer as a fallback.
+`ListChanges(vault_id, since_seq, page_size)` returns revisions with `seq > since_seq` in `seq` order, paginated (the client passes the last `seq` it received as the next `since_seq` until `has_more` is false). A client's durable cursor is the highest `seq` it has fully applied to disk. Clients pull on startup, on a realtime `vault_changed{seq}` notification, and on a timer as a fallback.
 
 ### 6.2 Push (optimistic concurrency)
 
-1. Upload content: `BeginBlob` → `PutBlobChunk`* → `CommitBlob`. Idempotent: an already-complete `blob_id` short-circuits. Chunks are at most the configured size (§3). The server verifies the content hash on commit for plaintext vaults.
-2. `CommitRevision(document_id, base_rev_id, content_ref, path, deleted)`. The server accepts only if `base_rev_id` equals the document's current head (or the document is new and `base_rev_id` is empty). It assigns `seq`, advances `head_seq`, and broadcasts `vault_changed`.
+1. Upload content: `BeginBlob` → `PutBlobChunk`* → `CommitBlob`. Idempotent: an already-complete `blob_id` short-circuits. Resumable: `BeginBlob` reports the bytes already received, and chunks are appended strictly sequentially by offset. Chunks are at most the configured size (§3). The server verifies the content hash on commit for plaintext vaults. Downloads are ranged (`DownloadBlob(offset, length)`), each response bounded by the server.
+2. `CommitRevision(document_id, revision_id, base_rev_id, kind, content_ref, path, path_key, deleted, device_id)`. The server accepts only if `base_rev_id` equals the document's current head (or the document is new and `base_rev_id` is empty). It assigns `seq`, advances `head_seq`, and broadcasts `vault_changed`. Document and revision ids are client-generated UUIDv7s; retrying a commit with the same `revision_id` and identical fields returns the already-committed revision, so a lost response does not turn into a spurious head-moved conflict. `path_key` is sent only for E2EE vaults (§5); for plaintext vaults the server derives it from `path`.
 3. On `FAILED_PRECONDITION` (head moved), the client pulls the new head, merges (§7) against the common base, and retries with the new head as base.
 
 A revision is **acknowledged** only when `CommitRevision` returns success. Principle 1 applies from that moment.
@@ -101,7 +101,7 @@ A revision is **acknowledged** only when `CommitRevision` returns success. Princ
 
 ### 6.4 Realtime channel
 
-One WebSocket per open vault per device, authenticated with the same bearer token. Server → client: `vault_changed{seq}`, membership/key-epoch changes. Phase 5 adds Yjs subscribe/update/awareness messages multiplexed by `document_id`. The channel is a latency optimization only; correctness never depends on receiving a notification.
+One WebSocket per open vault per device, authenticated with the same bearer token. Each binary WebSocket message is one protobuf frame (`ClientFrame` / `ServerFrame` in `proto/vaultsync/v1/realtime.proto`, each a `oneof` envelope). Client → server: `subscribe{vault_id}`, `unsubscribe{vault_id}`. Server → client: `subscribed{vault_id, head_seq}`, `vault_changed{vault_id, seq}`, `error`, and later membership/key-epoch changes. Field numbers 100–199 of both envelopes are reserved for the Phase 5 Yjs frames. Phase 5 adds Yjs subscribe/update/awareness messages multiplexed by `document_id`. The channel is a latency optimization only; correctness never depends on receiving a notification.
 
 ## 7. Merge rules (client side)
 
