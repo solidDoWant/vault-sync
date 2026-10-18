@@ -46,6 +46,14 @@ export interface SyncEngineOptions {
   pushDebounceMs?: number | null;
   /** Receives the error of an automatic push. Its operations stay pending and are retried by the next push. */
   onPushError?: (error: unknown) => void;
+  /** Receives the summary of an automatic push that succeeded. */
+  onPushComplete?: (summary: PushSummary) => void;
+  /**
+   * Called with true when a pull or push is queued while none is queued or
+   * running, and with false once the last one has settled (just before its
+   * caller sees the outcome), so a status display can show sync in progress.
+   */
+  onBusyChange?: (busy: boolean) => void;
   /** Called for every revision of this device the server acknowledged (SPEC.md §6.2). */
   onAcknowledged?: (revision: RemoteRevision) => void;
   /** The kind of a new document, by path (SPEC.md §7). Defaults to classifyByExtension. */
@@ -149,6 +157,10 @@ export class SyncEngine {
   private readonly pageSize: number;
   private readonly pushDebounceMs: number | null;
   private readonly onPushError: (error: unknown) => void;
+  private readonly onPushComplete: (summary: PushSummary) => void;
+  private readonly onBusyChange: (busy: boolean) => void;
+  /** Pulls and pushes queued or running. */
+  private queued = 0;
   private readonly onAcknowledged: (revision: RemoteRevision) => void;
   private readonly classify: (path: string) => DocumentKindName;
   private readonly newId: () => string;
@@ -185,6 +197,8 @@ export class SyncEngine {
           throw error;
         });
       });
+    this.onPushComplete = options.onPushComplete ?? (() => undefined);
+    this.onBusyChange = options.onBusyChange ?? (() => undefined);
     this.onAcknowledged = options.onAcknowledged ?? (() => undefined);
     this.classify = options.classify ?? classifyByExtension;
     this.newId = options.newId ?? (() => uuidv7());
@@ -238,7 +252,10 @@ export class SyncEngine {
   }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.work.then(task);
+    if (this.queued++ === 0) this.onBusyChange(true);
+    const run = this.work.then(task).finally(() => {
+      if (--this.queued === 0) this.onBusyChange(false);
+    });
     this.work = run.catch(() => undefined);
     return run;
   }
@@ -1216,9 +1233,14 @@ export class SyncEngine {
     this.cancelScheduledPush();
     this.pushTimer = setTimeout(() => {
       this.pushTimer = undefined;
-      this.push().catch((error: unknown) => {
-        this.onPushError(error);
-      });
+      this.push().then(
+        (summary) => {
+          this.onPushComplete(summary);
+        },
+        (error: unknown) => {
+          this.onPushError(error);
+        },
+      );
     }, this.pushDebounceMs);
   }
 

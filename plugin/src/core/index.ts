@@ -24,6 +24,7 @@ export {
   discoverOidc,
   IdentityProviderError,
   jwtExpiry,
+  jwtSubject,
   OAuthError,
   oidcRefresher,
   pollDeviceAuthorization,

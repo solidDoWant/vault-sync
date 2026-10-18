@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { requestUrl } from "obsidian";
 
 import type { HttpClient } from "../core/auth/oidc";
@@ -37,14 +38,21 @@ export const requestUrlFetch: typeof globalThis.fetch = async (input, init) => {
   });
   const body = request.method === "GET" || request.method === "HEAD" ? undefined : await request.arrayBuffer();
   signal?.throwIfAborted();
-  const sent = requestUrl({
-    url: request.url,
-    method: request.method,
-    headers,
-    ...(body === undefined ? {} : { body }),
-    throw: false,
+  // With `throw: false` every HTTP status resolves, so a rejection means the
+  // server was never reached (offline, DNS, refused, TLS): UNAVAILABLE, which
+  // the status bar shows as offline.
+  const sent = Promise.resolve(
+    requestUrl({
+      url: request.url,
+      method: request.method,
+      headers,
+      ...(body === undefined ? {} : { body }),
+      throw: false,
+    }),
+  ).catch((error: unknown) => {
+    throw new ConnectError(`network error: ${error instanceof Error ? error.message : String(error)}`, Code.Unavailable, undefined, undefined, error);
   });
-  const response = await (signal === undefined ? sent : untilAborted(Promise.resolve(sent), signal));
+  const response = await (signal === undefined ? sent : untilAborted(sent, signal));
   return new Response(response.status === 204 ? null : response.arrayBuffer, { status: response.status, headers: response.headers });
 };
 

@@ -35,8 +35,17 @@ export class IndexedDbJournal implements Journal {
    * `migrations` is the schema history; production code uses the default.
    * A database written by a newer schema than `migrations` knows is refused
    * with JournalVersionError and left untouched.
+   *
+   * If another connection holds the database open and does not step aside
+   * for the upgrade, the open waits for it and calls `options.onBlocked`, so
+   * the caller can tell the user why sync has not started.
    */
-  static open(factory: IDBFactory, name: string, migrations: readonly JournalMigration[] = journalMigrations): Promise<IndexedDbJournal> {
+  static open(
+    factory: IDBFactory,
+    name: string,
+    migrations: readonly JournalMigration[] = journalMigrations,
+    options: JournalOpenOptions = {},
+  ): Promise<IndexedDbJournal> {
     const version = migrations.length;
     return new Promise((resolve, reject) => {
       let request: IDBOpenDBRequest;
@@ -77,8 +86,12 @@ export class IndexedDbJournal implements Journal {
         reject(asError(error));
       };
       // Another connection (an older vault-sync in another window) holds the
-      // database open. The upgrade proceeds once that one closes; keep waiting.
-      request.onblocked = () => undefined;
+      // database open. The upgrade proceeds once that one closes; keep
+      // waiting, but say so: a connection that never closes would otherwise
+      // make the open hang with no sign.
+      request.onblocked = () => {
+        options.onBlocked?.();
+      };
     });
   }
 
@@ -288,6 +301,11 @@ export class IndexedDbJournal implements Journal {
 
 /** One step of the journal's schema history: upgrades the database from version `index` to `index + 1`, inside the versionchange transaction. */
 export type JournalMigration = (transaction: IDBTransaction) => void;
+
+export interface JournalOpenOptions {
+  /** Called when the open has to wait for another connection that keeps the database open. The open still completes once that connection closes. */
+  onBlocked?: () => void;
+}
 
 type StoreName = "meta" | "documents" | "pending" | "deferred" | "conflicts";
 

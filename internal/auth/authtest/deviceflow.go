@@ -26,7 +26,8 @@ type DeviceFlowOptions struct {
 	// ClientID is the only client the grant accepts. Defaults to
 	// DefaultAudience (as with Authentik, the client id is the tokens' aud).
 	ClientID string
-	// Subject is the sub of every access token. Defaults to "device-flow-user".
+	// Subject is the sub of the access tokens of an authorization approved
+	// without a subject of its own. Defaults to "device-flow-user".
 	Subject string
 	// AccessTokenLifetime defaults to an hour.
 	AccessTokenLifetime time.Duration
@@ -49,7 +50,8 @@ type DeviceFlow struct {
 
 	mu            sync.Mutex
 	devices       map[string]*deviceGrant
-	refreshTokens map[string]bool
+	// refreshTokens maps each live refresh token to the subject it was issued to.
+	refreshTokens map[string]string
 	refreshes     int
 }
 
@@ -57,6 +59,7 @@ type deviceGrant struct {
 	userCode  string
 	expiresAt time.Time
 	approved  bool
+	subject   string
 	redeemed  bool
 }
 
@@ -81,7 +84,7 @@ func (issuer *Issuer) EnableDeviceFlow(t testing.TB, key Key, options DeviceFlow
 		options.Interval = 1
 	}
 
-	flow := &DeviceFlow{issuer: issuer, key: key, options: options, devices: map[string]*deviceGrant{}, refreshTokens: map[string]bool{}}
+	flow := &DeviceFlow{issuer: issuer, key: key, options: options, devices: map[string]*deviceGrant{}, refreshTokens: map[string]string{}}
 
 	issuer.mu.Lock()
 	issuer.deviceFlow = flow
@@ -101,12 +104,25 @@ func (issuer *Issuer) EnableDeviceFlow(t testing.TB, key Key, options DeviceFlow
 // Approve approves the pending device authorization showing userCode, as the
 // user would in a browser. It reports whether there was one.
 func (flow *DeviceFlow) Approve(userCode string) bool {
+	return flow.ApproveAs(userCode, "")
+}
+
+// ApproveAs approves the pending device authorization showing userCode as
+// the user subject, so tests can sign in several users. An empty subject is
+// DeviceFlowOptions.Subject. It reports whether there was such an
+// authorization.
+func (flow *DeviceFlow) ApproveAs(userCode, subject string) bool {
 	flow.mu.Lock()
 	defer flow.mu.Unlock()
+
+	if subject == "" {
+		subject = flow.options.Subject
+	}
 
 	for _, grant := range flow.devices {
 		if grant.userCode == userCode && !grant.redeemed {
 			grant.approved = true
+			grant.subject = subject
 
 			return true
 		}
@@ -156,7 +172,7 @@ func (flow *DeviceFlow) authorize(writer http.ResponseWriter, request *http.Requ
 }
 
 func (flow *DeviceFlow) approveRequest(writer http.ResponseWriter, request *http.Request) {
-	if !flow.Approve(request.PostFormValue("user_code")) {
+	if !flow.ApproveAs(request.PostFormValue("user_code"), request.PostFormValue("subject")) {
 		http.Error(writer, "no pending authorization with this user code", http.StatusNotFound)
 
 		return
@@ -186,7 +202,10 @@ func (flow *DeviceFlow) redeemDevice(writer http.ResponseWriter, deviceCode stri
 	flow.mu.Lock()
 	grant, ok := flow.devices[deviceCode]
 
-	var problem string
+	var (
+		problem string
+		subject string
+	)
 
 	switch {
 	case !ok || grant.redeemed:
@@ -197,6 +216,7 @@ func (flow *DeviceFlow) redeemDevice(writer http.ResponseWriter, deviceCode stri
 		problem = "authorization_pending"
 	default:
 		grant.redeemed = true
+		subject = grant.subject
 	}
 	flow.mu.Unlock()
 
@@ -206,13 +226,13 @@ func (flow *DeviceFlow) redeemDevice(writer http.ResponseWriter, deviceCode stri
 		return
 	}
 
-	flow.issueTokens(writer)
+	flow.issueTokens(writer, subject)
 }
 
 func (flow *DeviceFlow) redeemRefresh(writer http.ResponseWriter, refreshToken string) {
 	flow.mu.Lock()
 	flow.refreshes++
-	valid := flow.refreshTokens[refreshToken]
+	subject, valid := flow.refreshTokens[refreshToken]
 	flow.mu.Unlock()
 
 	if !valid {
@@ -221,12 +241,12 @@ func (flow *DeviceFlow) redeemRefresh(writer http.ResponseWriter, refreshToken s
 		return
 	}
 
-	flow.issueTokens(writer)
+	flow.issueTokens(writer, subject)
 }
 
-func (flow *DeviceFlow) issueTokens(writer http.ResponseWriter) {
+func (flow *DeviceFlow) issueTokens(writer http.ResponseWriter, subject string) {
 	now := time.Now()
-	claims := flow.issuer.Claims(flow.options.Subject, now)
+	claims := flow.issuer.Claims(subject, now)
 	claims["exp"] = now.Add(flow.options.AccessTokenLifetime).Unix()
 
 	accessToken, err := signClaims(flow.key, claims)
@@ -239,7 +259,7 @@ func (flow *DeviceFlow) issueTokens(writer http.ResponseWriter) {
 	refreshToken := randomHex(16)
 
 	flow.mu.Lock()
-	flow.refreshTokens[refreshToken] = true
+	flow.refreshTokens[refreshToken] = subject
 	flow.mu.Unlock()
 
 	writeJSON(writer, map[string]any{
