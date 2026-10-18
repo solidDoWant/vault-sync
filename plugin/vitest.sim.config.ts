@@ -2,7 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
 
-import { loadRegressionCases, regressionDirEnv, resolveRegressionDir } from "./scripts/sim-regressions";
+import { loadRegressionCases, regressionDirEnv, resolveRegressionDir } from "./scripts/sim-regressions.ts";
 
 // The networked simulation suite (../sim/*.sim.test.ts, SPEC.md §13). `make
 // test-sim` runs it through the `sim`-tagged Go driver (sim/simulation_test.go),
