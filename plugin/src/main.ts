@@ -1,10 +1,11 @@
-import { Notice, Platform, Plugin } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, type App } from "obsidian";
 
 import { VaultEncryption, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
 import { TokenManager, type AuthState } from "./core/auth/tokens";
 import type { PullSummary } from "./core/engine/engine";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
+import type { PathRules } from "./core/vaultpath/platform";
 import { isProtocolCompatible, PROTOCOL_VERSION } from "./core/version";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
 import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
@@ -53,6 +54,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       ready: () => this.layoutReady(),
       pushDebounceMs,
       syncIntervalMs,
+      pathRules: localPathRules(this.app),
       onStatus: (status) => {
         this.showStatus(status);
       },
@@ -262,7 +264,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    */
   async startSync(options: Omit<SyncSessionOptions, "vault" | "ready" | "pushDebounceMs" | "syncIntervalMs"> & Partial<SyncSessionOptions>): Promise<PullSummary | undefined> {
     await this.stopSync();
-    const session = new SyncSession({ vault: new ObsidianVaultAdapter(this.app), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, ...options });
+    const session = new SyncSession({ vault: new ObsidianVaultAdapter(this.app), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, pathRules: localPathRules(this.app), ...options });
     this.session = session;
     return session.start();
   }
@@ -330,4 +332,15 @@ function platformName(): string {
   if (Platform.isWin) return "Windows";
   if (Platform.isLinux) return "Linux";
   return "Obsidian";
+}
+
+/**
+ * The file-name rules of the device Obsidian runs on (SPEC.md §8), with the
+ * vault folder's absolute path where Obsidian exposes it (desktop), so the
+ * length limits count it. Android follows the POSIX rules.
+ */
+function localPathRules(app: App): PathRules {
+  const platform = Platform.isWin ? "windows" : Platform.isMacOS || Platform.isIosApp ? "macos" : "posix";
+  const adapter = app.vault.adapter;
+  return adapter instanceof FileSystemAdapter ? { platform, root: adapter.getBasePath() } : { platform };
 }

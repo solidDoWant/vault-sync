@@ -1,3 +1,5 @@
+import type { UnmaterializableCause } from "../vaultpath/platform";
+
 /**
  * The client's single durable journal (SPEC.md §2 principle 2, §8): the bridge
  * between the server's revision log and the local vault. The production
@@ -128,8 +130,13 @@ export interface RemoteRevision {
  * - `invalid-path`: the path is not vault-relative (SPEC.md §6.2), so it must
  *   not touch the disk.
  * - `path-conflict`: the vault refused the path (a folder or file is in the way).
+ * - `unmaterializable`: the local platform cannot hold the path (SPEC.md §8,
+ *   platform path rules), e.g. a Windows reserved name. The document is
+ *   tracked, never dropped or renamed on the server, and its local changes
+ *   wait until a later revision gives it a path the platform can hold. A
+ *   file it already had is removed if unchanged, and kept if edited.
  */
-export type DeferReason = "local-changes" | "invalid-path" | "path-conflict";
+export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable";
 
 export interface DeferredRevision {
   revision: RemoteRevision;
@@ -141,6 +148,8 @@ export interface DeferredRevision {
    * and finished without asking the merge hook again.
    */
   merging?: { path: string; contentHash: string | null };
+  /** For `unmaterializable`: why the platform cannot hold the path. */
+  unmaterializable?: UnmaterializableCause;
 }
 
 /**

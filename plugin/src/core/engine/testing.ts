@@ -7,7 +7,8 @@ import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState,
 import { InMemoryJournal } from "../journal/memory";
 import type { FileStat, VaultAdapter, VaultEvent, VaultListener } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
-import { SyncEngine } from "./engine";
+import type { PathRules } from "../vaultpath/platform";
+import { SyncEngine, type UnmaterializableDocument } from "./engine";
 import type { MergeHook, MergeRequest } from "./merge";
 import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
 
@@ -184,6 +185,9 @@ export interface HarnessOptions {
   idPrefix?: string;
   /** The engine's classification of new documents. */
   classify?: (path: string) => DocumentKindName;
+  /** The engine's platform path rules, and the in-memory vault's unless `vault` is given. Defaults to POSIX. */
+  pathRules?: PathRules;
+  onUnmaterializable?: (document: UnmaterializableDocument) => void;
 }
 
 /** The device id the harness's engine commits with. */
@@ -196,7 +200,7 @@ export const testStamp = "2026-10-18 040506";
 
 export function harness(options: HarnessOptions = {}): Harness {
   const server = options.server ?? new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 });
-  const vault = options.vault ?? new InMemoryVault();
+  const vault = options.vault ?? new InMemoryVault(options.pathRules === undefined ? {} : { pathRules: options.pathRules });
   const journal = options.journal ?? new InMemoryJournal();
   const merges: MergeRequest[] = [];
   const localChanges: VaultEvent[] = [];
@@ -223,6 +227,8 @@ export function harness(options: HarnessOptions = {}): Harness {
       ...(options.onPushError === undefined ? {} : { onPushError: options.onPushError }),
       newId: () => `${options.idPrefix ?? "id"}-${String(++ids)}`,
       ...(options.classify === undefined ? {} : { classify: options.classify }),
+      ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
+      ...(options.onUnmaterializable === undefined ? {} : { onUnmaterializable: options.onUnmaterializable }),
     });
   const result: Harness = {
     server,
