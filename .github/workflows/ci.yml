@@ -166,11 +166,13 @@ jobs:
           VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
         run: ./scripts/with-native-s3.sh go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
 
-  # The single required status check. It always runs, so docs-only changes
+  # The single required status check (it also covers the plugin-e2e matrix,
+  # whose per-OS check names are not reported when the job is skipped). It
+  # always runs, so docs-only changes
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, simulation]
+    needs: [changes, lint, unit, integration, simulation, plugin-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:
