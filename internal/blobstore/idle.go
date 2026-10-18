@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 )
 
@@ -59,6 +60,10 @@ func boundIdleConnections(transport *http.Transport, timeout time.Duration) {
 type idleConn struct {
 	net.Conn
 	timeout time.Duration
+	// timedOut is set once a read or write hit the deadline. The transport
+	// then closes the connection, so the operation in the other direction
+	// fails with a "closed connection" error that the timeout caused.
+	timedOut atomic.Bool
 }
 
 func (conn *idleConn) extend() {
@@ -93,18 +98,25 @@ func (conn *idleConn) Write(buffer []byte) (int, error) {
 	return written, nil
 }
 
-// explain names the idle timeout in a deadline error, which then shows in
+// explain names the idle timeout in an error it caused, which then shows in
 // the logs of the failed call.
 func (conn *idleConn) explain(err error) error {
-	if err == nil || !errors.Is(err, os.ErrDeadlineExceeded) {
+	if err == nil {
+		return nil
+	}
+
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		conn.timedOut.Store(true)
+	} else if !conn.timedOut.Load() {
 		return err
 	}
 
 	return &idleTimeoutError{timeout: conn.timeout, err: err}
 }
 
-// idleTimeoutError is a connection's idle timeout. Its Timeout method reports
-// true, so the SDK retries the attempt.
+// idleTimeoutError is a failure caused by a connection's idle timeout. It
+// matches os.ErrDeadlineExceeded, and its Timeout method reports true, so
+// the SDK retries the attempt.
 type idleTimeoutError struct {
 	timeout time.Duration
 	err     error
@@ -114,7 +126,7 @@ func (err *idleTimeoutError) Error() string {
 	return fmt.Sprintf("object store connection made no progress for %s: %v", err.timeout, err.err)
 }
 
-func (err *idleTimeoutError) Unwrap() error { return err.err }
+func (err *idleTimeoutError) Unwrap() []error { return []error{os.ErrDeadlineExceeded, err.err} }
 
 // Timeout reports that the error is a timeout, as net.Error does.
 func (*idleTimeoutError) Timeout() bool { return true }

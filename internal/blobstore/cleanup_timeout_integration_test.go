@@ -73,8 +73,10 @@ func TestCleanerStartsTheNextRunOnTimeWhenOneIsStuck(t *testing.T) {
 	objects, err := blobstore.New(cfg)
 	require.NoError(t, err)
 
+	const interval = 200 * time.Millisecond
+
 	logged := make(warnings, 10)
-	cleaner := &blobstore.Cleaner{Store: fixture.store, Objects: objects, TTL: 10 * time.Minute, Logger: slog.New(logged)}
+	cleaner := &blobstore.Cleaner{Store: fixture.store, Objects: objects, TTL: 10 * time.Minute, RunTimeout: interval, Logger: slog.New(logged)}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	stopped := make(chan struct{})
@@ -82,7 +84,7 @@ func TestCleanerStartsTheNextRunOnTimeWhenOneIsStuck(t *testing.T) {
 	go func() {
 		defer close(stopped)
 
-		cleaner.Run(ctx, 200*time.Millisecond)
+		cleaner.Run(ctx, interval)
 	}()
 
 	t.Cleanup(func() {

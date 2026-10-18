@@ -16,6 +16,9 @@ import (
 // off over several runs instead of in one long burst.
 const (
 	DefaultCleanupInterval = 5 * time.Minute
+	// DefaultRunTimeout bounds one run started by Run: with the default
+	// interval, a stuck run ends when the next one is due.
+	DefaultRunTimeout = DefaultCleanupInterval
 	// DefaultSessionsPerRun bounds how many upload sessions one run removes.
 	DefaultSessionsPerRun = 100
 	// DefaultObjectsPerRun bounds how many staged objects one run deletes.
@@ -47,7 +50,10 @@ type Cleaner struct {
 	SessionsPerRun       int
 	ObjectsPerRun        int
 	MultipartPagesPerRun int
-	Logger               *slog.Logger
+	// RunTimeout bounds each run started by Run; zero selects
+	// DefaultRunTimeout.
+	RunTimeout time.Duration
+	Logger     *slog.Logger
 
 	multipart multipartCursor
 	// now, if set (by tests only), replaces time.Now for the multipart
@@ -130,21 +136,27 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context) (CleanupResult, error) {
 }
 
 // Run calls RunOnce every interval until ctx is canceled, logging failures.
-// Each run is cut short when the next one is due, so a run that is stuck
-// (for example behind an object store that stopped answering) fails and is
-// logged instead of holding up every later run. Cutting a run short is safe:
-// every step is idempotent and a session claimed for removal stays reapable.
+// Each run is cut short after RunTimeout, so a run that is stuck (for
+// example behind an object store that stopped answering) fails and is
+// logged instead of holding up every later run; with the defaults, it ends
+// when the next run is due. Cutting a run short is safe: every step is
+// idempotent and a session claimed for removal stays reapable.
 func (cleaner *Cleaner) Run(ctx context.Context, interval time.Duration) {
 	logger := cleaner.Logger
 	if logger == nil {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
+	runTimeout := cleaner.RunTimeout
+	if runTimeout <= 0 {
+		runTimeout = DefaultRunTimeout
+	}
+
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		runCtx, cancel := context.WithTimeout(ctx, interval)
+		runCtx, cancel := context.WithTimeout(ctx, runTimeout)
 		result, err := cleaner.RunOnce(runCtx)
 
 		cancel()
