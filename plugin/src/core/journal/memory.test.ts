@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import type { DeferredRevision, DocumentState, PendingOperation } from "./journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, PendingOperation } from "./journal";
 import { InMemoryJournal } from "./memory";
 
 const doc = (overrides: Partial<DocumentState> = {}): DocumentState => ({
@@ -151,6 +151,48 @@ describe("InMemoryJournal", () => {
       const read = await journal.getDeferred("doc-1");
       if (read !== undefined) read.revision.revisionId = "mutated";
       expect(await journal.getDeferred("doc-1")).toEqual(deferred("doc-1", "r2"));
+    });
+
+    it("keeps the merge-in-progress marker with the deferred revision, copied", async () => {
+      const journal = new InMemoryJournal();
+      const entry: DeferredRevision = { ...deferred("doc-1", "r2"), merging: { path: "note.md", contentHash: "dd" } };
+      await journal.putDeferred(entry);
+      if (entry.merging !== undefined) entry.merging.path = "mutated.md";
+      expect((await journal.getDeferred("doc-1"))?.merging).toEqual({ path: "note.md", contentHash: "dd" });
+      expect((await journal.listDeferred())[0]?.merging).toEqual({ path: "note.md", contentHash: "dd" });
+    });
+  });
+
+  describe("conflict log", () => {
+    const conflict = (id: string, overrides: Partial<ConflictRecord> = {}): ConflictRecord => ({
+      id,
+      documentId: "doc-1",
+      path: "note.md",
+      reason: "overlapping-edits",
+      copyPath: "note (conflict laptop 2026-10-18 040506).md",
+      copyHash: "ee",
+      remoteRevisionId: "rev-3",
+      at: 1,
+      ...overrides,
+    });
+
+    it("lists conflicts oldest first and replaces a record with the same id in place", async () => {
+      const journal = new InMemoryJournal();
+      await journal.putConflict(conflict("c1"));
+      await journal.putConflict(conflict("c2", { reason: "binary" }));
+      await journal.putConflict(conflict("c1", { copyPath: null }));
+
+      expect(await journal.listConflicts()).toEqual([conflict("c1", { copyPath: null }), conflict("c2", { reason: "binary" })]);
+    });
+
+    it("does not let callers mutate stored conflicts", async () => {
+      const journal = new InMemoryJournal();
+      const entry = conflict("c1");
+      await journal.putConflict(entry);
+      entry.path = "mutated.md";
+      const [read] = await journal.listConflicts();
+      if (read !== undefined) read.copyHash = "mutated";
+      expect(await journal.listConflicts()).toEqual([conflict("c1")]);
     });
   });
 });

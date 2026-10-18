@@ -5,7 +5,7 @@ import type { PutBlobChunkRequest } from "../../gen/vaultsync/v1/blob_pb";
 import type { CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
 import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
-import type { MergeHook, MergeRequest } from "./merge";
+import { deferMerge, type MergeHook, type MergeRequest } from "./merge";
 import { InMemoryServer } from "./memory-server";
 import { Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, testDeviceId, text } from "./testing";
 
@@ -182,7 +182,7 @@ describe("SyncEngine push", () => {
     });
 
     it("leaves a document whose remote revision is deferred alone, so nothing local is overwritten", async () => {
-      const h = harness({ merge: "default" });
+      const h = harness({ merge: deferMerge });
       h.server.commit({ documentId: "a", path: "a.md", content: "a1" });
       await h.engine.pull();
       await h.vault.write("a.md", bytes("local"));
@@ -322,8 +322,8 @@ describe("SyncEngine push", () => {
       expect(h.localChanges.map((event) => event.type)).toEqual(["modify"]);
     });
 
-    it("with the default merge hook keeps the local edit on disk and pending, and overwrites nothing", async () => {
-      const h = harness({ merge: "default" });
+    it("with a deferring merge hook keeps the local edit on disk and pending, and overwrites nothing", async () => {
+      const h = harness({ merge: deferMerge });
       h.server.commit({ documentId: "a", path: "a.md", content: "base" });
       await h.engine.pull();
       await h.vault.write("a.md", bytes("local"));

@@ -3,7 +3,7 @@
 // "crash" the engine after a chosen number of durable changes.
 
 import { createProtocolClient } from "../protocol/client";
-import type { DeferredRevision, DocumentState, PendingOperation, RemoteRevision } from "../journal/journal";
+import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState, PendingOperation, RemoteRevision } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import type { FileStat, VaultAdapter, VaultEvent, VaultListener } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
@@ -144,6 +144,9 @@ export class CrashingJournal extends InMemoryJournal {
   override removePending(revisionId: string): Promise<void> {
     return this.points.durable(() => super.removePending(revisionId));
   }
+  override putConflict(conflict: ConflictRecord): Promise<void> {
+    return this.points.durable(() => super.putConflict(conflict));
+  }
 }
 
 export interface Harness {
@@ -173,10 +176,23 @@ export interface HarnessOptions {
   /** Automatic push delay; null (the default here) turns automatic pushes off. */
   pushDebounceMs?: number | null;
   onPushError?: (error: unknown) => void;
+  /** The engine's clock; defaults to a fixed time, so conflict-copy names are predictable. */
+  now?: () => Date;
+  /** The engine's device name in conflict-copy names; defaults to testDeviceName. */
+  deviceName?: string;
+  /** Prefix of the ids the engine generates, so engines of several devices over one server do not collide. Defaults to "id". */
+  idPrefix?: string;
+  /** The engine's classification of new documents. */
+  classify?: (path: string) => DocumentKindName;
 }
 
 /** The device id the harness's engine commits with. */
 export const testDeviceId = "device-1";
+/** The device name in the harness engine's conflict-copy names. */
+export const testDeviceName = "laptop";
+/** The harness engine's default clock reading, as it appears in conflict-copy names. */
+export const testDate = new Date(Date.UTC(2026, 9, 18, 4, 5, 6));
+export const testStamp = "2026-10-18 040506";
 
 export function harness(options: HarnessOptions = {}): Harness {
   const server = options.server ?? new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 });
@@ -194,6 +210,8 @@ export function harness(options: HarnessOptions = {}): Harness {
     new SyncEngine({
       vaultId: server.vaultId,
       deviceId: testDeviceId,
+      deviceName: options.deviceName ?? testDeviceName,
+      now: options.now ?? (() => testDate),
       api: createProtocolClient({ transport: server.transport }),
       vault: options.wrapVault === undefined ? vault : options.wrapVault(vault),
       journal,
@@ -203,7 +221,8 @@ export function harness(options: HarnessOptions = {}): Harness {
       pageSize: options.pageSize ?? 2,
       pushDebounceMs: options.pushDebounceMs ?? null,
       ...(options.onPushError === undefined ? {} : { onPushError: options.onPushError }),
-      newId: () => `id-${String(++ids)}`,
+      newId: () => `${options.idPrefix ?? "id"}-${String(++ids)}`,
+      ...(options.classify === undefined ? {} : { classify: options.classify }),
     });
   const result: Harness = {
     server,

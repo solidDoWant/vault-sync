@@ -216,3 +216,212 @@ async function downloadBlob(run: SimRun, hash: string): Promise<Uint8Array> {
   const response = await run.direct.blobs.downloadBlob({ vaultId: run.context.vaultId, blobId: hexToBytes(hash), offset: 0n, length: 0 });
   return response.data;
 }
+
+export interface ConcurrentEditsResult extends RunResult {
+  /** Each engine's vault after the run: path to content (binary content as hex). */
+  vaults: Map<string, string>[];
+  /** Each engine's conflict log: reason, path and copy path of every entry. */
+  conflicts: { reason: string; path: string; copyPath: string | null }[][];
+  /** Phases whose refused commit the second engine retried with a new base, by name. */
+  refused: string[];
+}
+
+const textLines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
+const crlfLines = (...values: string[]) => values.map((value) => `${value}\r\n`).join("");
+/** The note both engines edit: ten lines, so edits of lines 2 and 9 do not overlap. */
+const noteLines = Array.from({ length: 10 }, (_, index) => `line ${String(index + 1)}`);
+const withLine = (lines: readonly string[], index: number, value: string) => lines.map((line, at) => (at === index ? value : line));
+
+/**
+ * Two real engines edit the same documents concurrently through the
+ * simulated network (#18, SPEC.md §7). In every phase both engines change
+ * their vaults, the second engine's push gets as far as its CommitRevision,
+ * the first engine's push commits, and only then does the second engine's
+ * commit reach the server, so it is refused (head moved, or path taken) and
+ * the second engine pulls, merges and commits again. Faults: the merged
+ * commit's response is lost once, and the second engine crashes once after a
+ * conflict was resolved locally, before it pushed the result.
+ *
+ * 1. Non-overlapping edits of a note: merged, no conflict copy.
+ * 2. Overlapping edits: the first engine's version in place, the second's as
+ *    a conflict copy, logged.
+ * 3. Concurrent edits of a binary file: a conflict copy.
+ * 4. One engine only converts the note's line endings to CRLF while the
+ *    other edits a line: merged, no conflict copy.
+ * 5. Both create a file at the same path: a conflict copy.
+ * 6. Both create a file at paths that differ only by case: the second
+ *    engine's document moves to a conflict-copy path.
+ */
+export async function enginesEditConcurrently(endpoints: SimEndpoints): Promise<ConcurrentEditsResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2 });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+  /** Delivers `engine`'s calls until `method` is the next one it sends. */
+  const deliverUntil = async (engine: number, method: string) => {
+    for (let delivery = 0; run.context.network.pendingRequest(engine) !== method; delivery++) {
+      if (delivery > 400) throw new Error(`e${String(engine)} never sent ${method}`);
+      await run.step({ kind: "deliver-request", client: engine });
+      await run.step({ kind: "deliver-response", client: engine });
+    }
+  };
+  const refused: string[] = [];
+  /**
+   * The second engine's commit reaches the server after the first engine's.
+   * `fault` runs once the second engine's refused commit has been answered.
+   */
+  const race = async (phase: string, fault?: () => Promise<void>) => {
+    log(`phase: ${phase}`);
+    log(second.startPush());
+    await deliverUntil(second.index, "CommitRevision");
+    log(first.startPush());
+    await drain(first.index);
+    const traceAt = run.trace.length;
+    await run.step({ kind: "deliver-request", client: second.index });
+    await run.step({ kind: "deliver-response", client: second.index });
+    if (run.trace.slice(traceAt).some((line) => / -> (FailedPrecondition|AlreadyExists)/.test(line))) refused.push(phase);
+    if (fault !== undefined) await fault();
+    await drain(second.index);
+    log(first.startPull());
+    await drain(first.index);
+    log(second.startPull());
+    await drain(second.index);
+  };
+  /** Loses the response of the second engine's next CommitRevision: its retry must return the same revision. */
+  const loseMergedCommitResponse = async () => {
+    await deliverUntil(second.index, "CommitRevision");
+    await run.step({ kind: "deliver-request", client: second.index });
+    await run.step({ kind: "drop-response", pick: 0 });
+  };
+  /** Crashes the second engine once its merge is on disk, before it uploads the result. */
+  const crashBeforeUpload = async () => {
+    await deliverUntil(second.index, "BeginBlob");
+    log(second.crash());
+    log(second.startPush());
+  };
+
+  const note = "notes/plan.md";
+  log(await first.edit(note, encoder.encode(textLines(...noteLines))));
+  log(first.startPush());
+  await drain(first.index);
+  log(second.startPull());
+  await drain(second.index);
+
+  // 1. Non-overlapping edits.
+  const firstEdit = withLine(noteLines, 1, "line 2 (first engine)");
+  log(await first.edit(note, encoder.encode(textLines(...firstEdit))));
+  log(await second.edit(note, encoder.encode(textLines(...withLine(noteLines, 8, "line 9 (second engine)")))));
+  await race("non-overlapping edits", loseMergedCommitResponse);
+  const merged = withLine(firstEdit, 8, "line 9 (second engine)");
+
+  // 2. Overlapping edits.
+  log(await first.edit(note, encoder.encode(textLines(...withLine(merged, 4, "line 5 (first engine)")))));
+  log(await second.edit(note, encoder.encode(textLines(...withLine(merged, 4, "line 5 (second engine)")))));
+  await race("overlapping edits", crashBeforeUpload);
+
+  // 3. A binary file.
+  const image = "attachments/image.png";
+  log(await first.edit(image, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 1])));
+  log(first.startPush());
+  await drain(first.index);
+  log(second.startPull());
+  await drain(second.index);
+  log(await first.edit(image, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 2])));
+  log(await second.edit(image, new Uint8Array([0x89, 0x50, 0x4e, 0x47, 3])));
+  await race("binary edits");
+
+  // 4. Line endings: the second engine only converts the note to CRLF.
+  const current = await second.read(note);
+  const currentLines = decoder.decode(current ?? new Uint8Array()).split("\n").slice(0, -1);
+  log(await first.edit(note, encoder.encode(textLines(...withLine(currentLines, 0, "line 1 (first engine)")))));
+  log(await second.edit(note, encoder.encode(crlfLines(...currentLines))));
+  await race("line endings");
+
+  // 5. Creates at the same path.
+  log(await first.edit("inbox/new.md", encoder.encode("created by the first engine\n")));
+  log(await second.edit("inbox/new.md", encoder.encode("created by the second engine\n")));
+  await race("creates at one path");
+
+  // 6. Creates at paths that differ only by case.
+  log(await first.edit("Todo.md", encoder.encode("first engine's list\n")));
+  log(await second.edit("todo.md", encoder.encode("second engine's list\n")));
+  await race("creates at case-colliding paths");
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) {
+        const content = (await engine.read(path)) ?? new Uint8Array();
+        contents.set(path, path.endsWith(".png") ? Array.from(content, (value) => value.toString(16).padStart(2, "0")).join("") : decoder.decode(content));
+      }
+      return contents;
+    }),
+  );
+  const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
+  return { ...result, vaults, conflicts, refused };
+}
+
+export interface RenameOntoUnsyncedFileResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** Each engine's conflict log: reason, path and copy path of every entry. */
+  conflicts: { reason: string; path: string; copyPath: string | null }[][];
+}
+
+/**
+ * A remote rename onto a path an unsynced local file holds (#173 review): the
+ * first engine renames a note and appends to it, while the second engine has
+ * created an unrelated note of its own at the new path and not pushed it yet.
+ * The second engine's pull must not take its own note for the renamed one:
+ * the renamed document lands at the path, and the local note is kept whole as
+ * a logged conflict copy. Fault: the second engine crashes after the pull,
+ * before it pushes the copy, so the copy is found by the start-up scan.
+ */
+export async function remoteRenameOntoUnsyncedFile(endpoints: SimEndpoints): Promise<RenameOntoUnsyncedFileResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2 });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+
+  log(await first.edit("notes/a.md", encoder.encode("b line\n")));
+  log(first.startPush());
+  await drain(first.index);
+  log(second.startPull());
+  await drain(second.index);
+
+  log(await second.edit("notes/c.md", encoder.encode("my own new note\n")));
+  log(await first.move("notes/a.md", "notes/c.md"));
+  log(await first.edit("notes/c.md", encoder.encode("b line\nappended remotely\n")));
+  log(first.startPush());
+  await drain(first.index);
+
+  log(second.startPull());
+  await drain(second.index);
+  log(second.crash());
+  log(second.startPush());
+  await drain(second.index);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
+  return { ...result, vaults, conflicts };
+}

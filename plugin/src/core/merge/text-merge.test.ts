@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { applyChanges, mergeUnsaved } from "./text-merge";
+import { applyChanges, mergeText, mergeUnsaved } from "./text-merge";
 
 const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
 
@@ -118,5 +118,63 @@ describe("mergeUnsaved", () => {
     const remote = Array.from({ length: 6000 }, (_, index) => `r${String(index)}\n`).join("");
     expect(mergeUnsaved(base, base, remote)?.merged).toBe(remote);
     expect(mergeUnsaved(base, base.replace("b3000\n", "typed\n"), remote)).toBeNull();
+  });
+});
+
+describe("mergeText", () => {
+  const crlf = (...values: string[]) => values.map((value) => `${value}\r\n`).join("");
+
+  it("keeps both sides of non-overlapping edits", () => {
+    const base = lines("one", "two", "three", "four", "five");
+    const local = lines("one", "two (local)", "three", "four", "five");
+    const remote = lines("one", "two", "three", "four (remote)", "five");
+    expect(mergeText(base, local, remote)).toBe(lines("one", "two (local)", "three", "four (remote)", "five"));
+  });
+
+  it("refuses overlapping edits instead of choosing a side or inserting markers", () => {
+    const base = lines("one", "two", "three");
+    expect(mergeText(base, lines("one", "two (local)", "three"), lines("one", "two (remote)", "three"))).toBeNull();
+    expect(mergeText(base, lines("one", "local", "two", "three"), lines("one", "remote", "two", "three"))).toBeNull();
+  });
+
+  it("returns the changed side byte for byte when only one side changed", () => {
+    const base = "a\r\nb\nc";
+    const changed = "a\r\nB\nc";
+    expect(mergeText(base, base, changed)).toBe(changed);
+    expect(mergeText(base, changed, base)).toBe(changed);
+    expect(mergeText(base, changed, changed)).toBe(changed);
+  });
+
+  it("does not conflict when one side only converted LF to CRLF", () => {
+    const base = lines("one", "two", "three");
+    const converted = crlf("one", "two", "three");
+    const edited = lines("one", "two (edited)", "three");
+    // The line-ending change survives, and so does the edit.
+    expect(mergeText(base, converted, edited)).toBe(crlf("one", "two (edited)", "three"));
+    expect(mergeText(base, edited, converted)).toBe(crlf("one", "two (edited)", "three"));
+  });
+
+  it("merges edits of a CRLF note made on an LF device", () => {
+    const base = crlf("one", "two", "three");
+    const local = crlf("one (local)", "two", "three");
+    const remote = lines("one", "two", "three (remote)");
+    expect(mergeText(base, local, remote)).toBe(lines("one (local)", "two", "three (remote)"));
+  });
+
+  it("does not conflict when one side only added or removed the trailing newline", () => {
+    expect(mergeText("one\ntwo\nthree", "one\ntwo\nthree\n", "one\ntwo\nthree (remote)")).toBe("one\ntwo\nthree (remote)\n");
+    expect(mergeText("one\ntwo\nthree\n", "one\ntwo\nthree", "one\ntwo\nthree (remote)\n")).toBe("one\ntwo\nthree (remote)");
+    expect(mergeText("one\ntwo\nthree", "one (local)\ntwo\nthree", "one\ntwo\nthree\n")).toBe("one (local)\ntwo\nthree\n");
+  });
+
+  it("keeps a change made identically on both sides once", () => {
+    const base = lines("a", "b", "c");
+    expect(mergeText(base, lines("a", "B", "c", "local"), lines("remote", "a", "B", "c"))).toBe(lines("remote", "a", "B", "c", "local"));
+  });
+
+  it("merges into and out of empty notes", () => {
+    expect(mergeText("", "", "new\n")).toBe("new\n");
+    expect(mergeText("", "local\n", "remote\n")).toBeNull();
+    expect(mergeText(lines("a", "b"), lines("a"), lines("b"))).toBe("");
   });
 });
