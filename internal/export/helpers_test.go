@@ -3,6 +3,7 @@
 package export_test
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -18,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/solidDoWant/vault-sync/internal/export"
@@ -55,7 +57,7 @@ func (source *fakeSource) addDocument(vaultID uuid.UUID, path string, content []
 
 	id := uuid.Must(uuid.NewV7())
 	source.documents[vaultID] = append(source.documents[vaultID], store.LiveDocument{
-		ID: id, RevisionID: uuid.Must(uuid.NewV7()), Path: path, ContentRef: sum[:], Size: int64(len(content)),
+		ID: id, Kind: "text", RevisionID: uuid.Must(uuid.NewV7()), Path: path, ContentRef: sum[:], Size: int64(len(content)),
 	})
 
 	return id
@@ -200,8 +202,10 @@ func snapshot(t *testing.T, directory string) map[string]entry {
 	return entries
 }
 
-// files returns the regular files under directory and their contents, by
-// slash-separated relative path, leaving out the export marker.
+// files returns the regular files in the vault directories and unplaced
+// trees under directory and their contents, by slash-separated relative
+// path. Files directly in directory (the marker and the manifests) are left
+// out.
 func files(t *testing.T, directory string) map[string]string {
 	t.Helper()
 
@@ -210,12 +214,176 @@ func files(t *testing.T, directory string) map[string]string {
 	for path, recorded := range snapshot(t, directory) {
 		require.Zero(t, recorded.Mode&fs.ModeSymlink, "unexpected symbolic link %s", path)
 
-		if recorded.Mode.IsRegular() && path != export.MarkerName {
+		if recorded.Mode.IsRegular() && strings.Contains(path, "/") {
 			contents[path] = recorded.Content
 		}
 	}
 
 	return contents
+}
+
+// manifestDocument is a document line of a vault manifest, decoded with the
+// field names docs/export.md specifies.
+type manifestDocument struct {
+	Type       string    `json:"type"`
+	DocumentID uuid.UUID `json:"document_id"`
+	Path       string    `json:"path"`
+	PathBase64 string    `json:"path_base64"`
+	Kind       string    `json:"kind"`
+	RevisionID uuid.UUID `json:"revision_id"`
+	Size       int64     `json:"size"`
+	SHA256     string    `json:"sha256"`
+	Status     string    `json:"status"`
+	Location   string    `json:"location"`
+	Reason     string    `json:"reason"`
+}
+
+// manifest is one vault's decoded manifest.
+type manifest struct {
+	Vault struct {
+		Type       string    `json:"type"`
+		Format     int       `json:"format"`
+		VaultID    uuid.UUID `json:"vault_id"`
+		Name       string    `json:"name"`
+		Encryption string    `json:"encryption"`
+		HeadSeq    int64     `json:"head_seq"`
+	}
+	Documents []manifestDocument
+	End       struct {
+		Type      string `json:"type"`
+		Documents int    `json:"documents"`
+		Placed    int    `json:"placed"`
+		Unplaced  int    `json:"unplaced"`
+		Missing   int    `json:"missing"`
+	}
+}
+
+// byID returns the manifest's documents by id.
+func (vault manifest) byID() map[uuid.UUID]manifestDocument {
+	documents := map[uuid.UUID]manifestDocument{}
+	for _, document := range vault.Documents {
+		documents[document.DocumentID] = document
+	}
+
+	return documents
+}
+
+// verifyManifests checks an export against its manifests the way a restore
+// would, and returns them by vault id: every manifest is complete (a vault
+// line, document lines, and an end line whose counts match), every exported
+// document's file is at its location with its size and SHA-256, a missing
+// document has no location, and every file in the export is either the
+// marker, a manifest, or some document's location.
+func verifyManifests(t *testing.T, output string) map[uuid.UUID]manifest {
+	t.Helper()
+
+	manifests := map[uuid.UUID]manifest{}
+	locations := map[string]bool{}
+
+	entries, err := os.ReadDir(output)
+	require.NoError(t, err)
+
+	for _, dirEntry := range entries {
+		name, found := strings.CutSuffix(dirEntry.Name(), ".manifest.jsonl")
+		if !found {
+			continue
+		}
+
+		vault := readManifest(t, filepath.Join(output, dirEntry.Name()))
+		require.Equal(t, name, vault.Vault.VaultID.String(), "a manifest is named by its vault id")
+
+		counts := map[string]int{}
+
+		for _, document := range vault.Documents {
+			counts[document.Status]++
+
+			if document.Status == "missing" {
+				assert.Empty(t, document.Location, "a missing document has no bytes in the export")
+				assert.NotEmpty(t, document.Reason)
+
+				continue
+			}
+
+			require.Contains(t, []string{"placed", "unplaced"}, document.Status)
+			require.False(t, locations[document.Location], "two documents at %s", document.Location)
+			locations[document.Location] = true
+
+			content, err := os.ReadFile(filepath.Join(output, filepath.FromSlash(document.Location)))
+			require.NoError(t, err, "document %s is at its location", document.DocumentID)
+
+			sum := sha256.Sum256(content)
+			assert.Equal(t, document.Size, int64(len(content)), "document %s size", document.DocumentID)
+			assert.Equal(t, document.SHA256, hex.EncodeToString(sum[:]), "document %s hash", document.DocumentID)
+		}
+
+		assert.Equal(t, len(vault.Documents), vault.End.Documents)
+		assert.Equal(t, counts["placed"], vault.End.Placed)
+		assert.Equal(t, counts["unplaced"], vault.End.Unplaced)
+		assert.Equal(t, counts["missing"], vault.End.Missing)
+
+		manifests[vault.Vault.VaultID] = vault
+	}
+
+	for path, recorded := range snapshot(t, output) {
+		if !recorded.Mode.IsRegular() || path == export.MarkerName || strings.HasSuffix(path, ".manifest.jsonl") && !strings.Contains(path, "/") {
+			continue
+		}
+
+		assert.True(t, locations[path], "file %s is listed in a manifest", path)
+	}
+
+	return manifests
+}
+
+func readManifest(t *testing.T, path string) manifest {
+	t.Helper()
+
+	file, err := os.Open(path)
+	require.NoError(t, err)
+
+	defer func() { _ = file.Close() }()
+
+	var vault manifest
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 64<<10), 1<<20)
+
+	line := 0
+	ended := false
+
+	for scanner.Scan() {
+		require.False(t, ended, "nothing follows the end line")
+
+		var record struct {
+			Type string `json:"type"`
+		}
+
+		require.NoError(t, json.Unmarshal(scanner.Bytes(), &record))
+
+		switch {
+		case line == 0:
+			require.Equal(t, "vault", record.Type, "the first line describes the vault")
+			require.NoError(t, json.Unmarshal(scanner.Bytes(), &vault.Vault))
+			require.Equal(t, 2, vault.Vault.Format)
+		case record.Type == "document":
+			var document manifestDocument
+			require.NoError(t, json.Unmarshal(scanner.Bytes(), &document))
+			vault.Documents = append(vault.Documents, document)
+		case record.Type == "end":
+			require.NoError(t, json.Unmarshal(scanner.Bytes(), &vault.End))
+
+			ended = true
+		default:
+			t.Fatalf("unexpected manifest line %q", scanner.Text())
+		}
+
+		line++
+	}
+
+	require.NoError(t, scanner.Err())
+	require.True(t, ended, "the manifest ends with an end line")
+
+	return vault
 }
 
 // siblings returns the names in the workspace root.

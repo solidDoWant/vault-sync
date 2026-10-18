@@ -1,8 +1,8 @@
 /**
  * The client's single durable journal (SPEC.md §2 principle 2, §8): the bridge
  * between the server's revision log and the local vault. The production
- * implementation will be IndexedDB-backed; InMemoryJournal serves tests and
- * the simulation.
+ * implementation is IndexedDbJournal (./indexeddb.ts); InMemoryJournal serves
+ * tests and the simulation. Both pass the shared suite in ./conformance.ts.
  *
  * Every method's effect must be durable when its promise resolves: the sync
  * engine orders its disk writes and journal updates so that a crash between

@@ -18,7 +18,8 @@ export default class VaultSyncPlugin extends Plugin {
   /**
    * Starts syncing the open vault, replacing any running session, and
    * resolves with the first pull's summary. Called once the device is signed
-   * in and has its journal (#25, #21); nothing starts sync before that.
+   * in (#25) and has opened its journal (`openVaultJournal`); nothing starts
+   * sync before that.
    */
   startSync(options: SyncSessionOptions): Promise<PullSummary | undefined> {
     this.stopSync();
