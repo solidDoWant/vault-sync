@@ -62,10 +62,10 @@ func TestMigrateCreatesSchemaOnEmptyDatabase(t *testing.T) {
 	require.NoError(t, err)
 
 	// SPEC.md §5 minus the Phase 4 (key_slots) and Phase 5 (yjs_updates)
-	// tables, plus the migration ledger.
+	// tables, plus blob upload sessions and the migration ledger.
 	assert.ElementsMatch(t, []string{
 		"users", "devices", "vaults", "vault_members", "documents", "revisions", "blobs",
-		"schema_migrations",
+		"blob_uploads", "blob_upload_chunks", "schema_migrations",
 	}, tables)
 }
 
