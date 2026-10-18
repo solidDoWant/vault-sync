@@ -351,8 +351,10 @@ export class SyncEngine {
     }
     if (!baseOnDisk) return { kind: "dirty", path: basePath, content: baseContent };
     if (targetContent === null) return { kind: "clean", source: basePath, sourceHash: baseHash };
-    // Something else holds the target path; never overwrite it.
-    return { kind: "dirty", path: target, content: targetContent };
+    // Another file holds the target path. It is not this document's (that is
+    // at basePath), so the merge path gets this document's own file, and
+    // applyMerge decides about the file in the way.
+    return { kind: "dirty", path: basePath, content: baseContent };
   }
 
   /** Makes the disk show `remote`, given a clean inspection. Every change is registered for echo suppression first. */
@@ -409,12 +411,16 @@ export class SyncEngine {
    * remote revision, so that the next push commits the result with the remote
    * revision as its base (SPEC.md §6.2 step 3). Returns false, writing
    * nothing, if the local file no longer holds what the merge hook was given
-   * (the user changed it meanwhile), if it belongs to another document, or if
-   * a conflict copy has no name that fits the path limits; and false, keeping
-   * whatever it already wrote, if a file is in the way.
+   * (the user changed it meanwhile), if it or the file at the result's new
+   * path belongs to another document, or if a conflict copy has no name that
+   * fits the path limits; and false, keeping whatever it already wrote, if the
+   * vault refuses a path. A file at the result's new path that is no
+   * document's is first kept as a conflict copy and removed.
    *
    * Crash-safe, journal before act, whether the merge came from a pull or a
-   * push: the result's path and hash are first recorded on the document's
+   * push: a file in the way at the result's new path is cleared (logged and
+   * copied first, as below), so a file found there after a crash is this
+   * document's; then the result's path and hash are recorded on the document's
    * deferral; then a conflict, if any, is recorded in the conflict log and its
    * copy written; then the result is written; then the superseded pending
    * operations are dropped, the base moves to the remote revision, and the
@@ -439,16 +445,39 @@ export class SyncEngine {
     // Another document's file is not this merge's to replace.
     const holder = await this.journal.findDocumentByPath(local.path);
     if (holder !== undefined && holder.documentId !== remote.documentId) return false;
-    await this.journal.putDeferred({
-      revision: remote,
-      reason: "local-changes",
-      merging: { path: outcome.path, contentHash: outcome.content === null ? null : sha256Hex(outcome.content) },
-    });
-    let copyPath: string | null = null;
+    const copyPaths: string[] = [];
     try {
+      // A file in the way at the result's new path. If it is no document's, it
+      // was created here concurrently with the remote document's move there:
+      // the remote document takes the path and the file is kept as a conflict
+      // copy. Cleared before the merge is recorded, so a file at the recorded
+      // path is always this document's (see followRename).
+      if (outcome.content !== null && outcome.path !== local.path) {
+        const occupant = await this.readOrNull(outcome.path);
+        if (occupant !== null && !sameContent(occupant, outcome.content)) {
+          if (await this.belongsToDocument(outcome.path)) return false;
+          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: occupant });
+          if (copyPath === null) return false;
+          copyPaths.push(copyPath);
+          this.changes.paths.add(copyPath);
+          // The copy now holds the file's content, so its unacknowledged
+          // operations (a create not yet committed) are superseded. They go
+          // before the file does, so none is ever left pointing at the merged
+          // document's file.
+          await this.dropOperationsAt(outcome.path, remote.documentId);
+          if (!sameContent(await this.readOrNull(outcome.path), occupant)) return false;
+          await this.echoed(this.echoes.expectDelete(outcome.path), () => this.vault.delete(outcome.path));
+        }
+      }
+      await this.journal.putDeferred({
+        revision: remote,
+        reason: "local-changes",
+        merging: { path: outcome.path, contentHash: outcome.content === null ? null : sha256Hex(outcome.content) },
+      });
       if (outcome.conflict !== undefined) {
-        copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict);
+        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict);
         if (copyPath === null) return false;
+        copyPaths.push(copyPath);
       }
       if (outcome.content === null) {
         if (current !== null) await this.echoed(this.echoes.expectDelete(local.path), () => this.vault.delete(local.path));
@@ -479,19 +508,40 @@ export class SyncEngine {
     // based on an older head is still pending.
     const ownFile = state !== undefined && !state.deleted;
     for (const operation of await this.journal.listPending()) {
-      const occupant = !ownFile && operation.documentId !== remote.documentId && operation.path === local.path && !operation.deleted;
-      if (operation.documentId === remote.documentId || occupant) await this.journal.removePending(operation.revisionId);
+      if (operation.documentId === remote.documentId) await this.journal.removePending(operation.revisionId);
     }
+    if (!ownFile) await this.dropOperationsAt(local.path, remote.documentId);
     await this.journal.putDocument(syncedState(remote));
     await this.journal.removeDeferred(remote.documentId);
     this.changes.paths.add(local.path);
     this.changes.paths.add(outcome.path);
-    if (copyPath !== null) this.changes.paths.add(copyPath);
+    for (const copyPath of copyPaths) this.changes.paths.add(copyPath);
     // A local rename the merge kept is pushed as a rename of the document.
     if (outcome.content !== null && !remote.deleted && outcome.path !== remote.path) this.changes.renames.set(outcome.path, remote.path);
     // A merge made by a pull is pushed like a local edit.
     this.schedulePush();
     return true;
+  }
+
+  /** Drops the unacknowledged operations of other documents that put a file at `path`; deletes stay. */
+  private async dropOperationsAt(path: string, documentId: string): Promise<void> {
+    for (const operation of await this.journal.listPending()) {
+      if (operation.documentId !== documentId && operation.path === path && !operation.deleted) await this.journal.removePending(operation.revisionId);
+    }
+  }
+
+  /**
+   * Whether the file at `path` is a document's: the journal has a document
+   * there, a pending operation of a document the journal knows put it there,
+   * or a local rename of a document not yet pushed did.
+   */
+  private async belongsToDocument(path: string): Promise<boolean> {
+    if ((await this.journal.findDocumentByPath(path)) !== undefined) return true;
+    for (const operation of await this.journal.listPending()) {
+      if (operation.path === path && !operation.deleted && (await this.journal.getDocument(operation.documentId)) !== undefined) return true;
+    }
+    const from = this.changes.renames.get(path);
+    return from !== undefined && (await this.journal.findDocumentByPath(from)) !== undefined;
   }
 
   /**
@@ -565,14 +615,23 @@ export class SyncEngine {
   }
 
   /**
-   * Where the document's file went if it is gone from its synced path: the
+   * Where the document's file went if it was moved from its synced path: the
    * path of a pending rename, or of a rename event not yet pushed, if a file
-   * is there. Otherwise `local` as it is (a local delete).
+   * is there. A file at the synced path is then another one, created after the
+   * move, unless it still holds the synced content. Otherwise `local` as it is
+   * (the document's file, or a local delete).
    */
   private async followRename(state: DocumentState | undefined, local: { path: string; content: Uint8Array | null }): Promise<{ path: string; content: Uint8Array | null }> {
-    if (local.content !== null || state === undefined || state.deleted || local.path !== state.path) return local;
+    if (state === undefined || state.deleted || local.path !== state.path) return local;
+    if (local.content !== null && sha256Hex(local.content) === state.baseHash) return local;
+    const merging = (await this.journal.getDeferred(state.documentId))?.merging;
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId && !operation.deleted && operation.path !== state.path);
-    const candidates = [...pending.map((operation) => operation.path).reverse(), ...[...this.changes.renames].filter(([, from]) => from === state.path).map(([to]) => to)];
+    const candidates = [
+      // An interrupted merge that moved the file there.
+      ...(merging !== undefined && merging.contentHash !== null && merging.path !== state.path ? [merging.path] : []),
+      ...pending.map((operation) => operation.path).reverse(),
+      ...[...this.changes.renames].filter(([, from]) => from === state.path).map(([to]) => to),
+    ];
     for (const path of candidates) {
       const content = await this.readOrNull(path);
       if (content !== null) return { path, content };

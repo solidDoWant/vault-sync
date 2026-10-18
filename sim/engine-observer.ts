@@ -97,6 +97,15 @@ export class EngineObserver {
     return `${this.name} user writes ${path} (${String(content.length)} B)`;
   }
 
+  /** Renames `from` to `to` in the observer's vault as its user would. */
+  async move(from: string, to: string): Promise<string> {
+    this.userEdited.add(from);
+    this.userEdited.add(to);
+    await this.vault.rename(from, to);
+    await this.engine.settled();
+    return `${this.name} user renames ${from} to ${to}`;
+  }
+
   /** Deletes `path` from the observer's vault as its user would. */
   async remove(path: string): Promise<string> {
     this.userEdited.add(path);

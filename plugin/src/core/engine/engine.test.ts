@@ -259,11 +259,14 @@ describe("SyncEngine pull", () => {
       expect(h.merges[0]?.local).toEqual({ path: "a.md", content: null });
     });
 
+    // The merge hook gets the document's own file as its local version: for a
+    // remote create, the file in the way; for a renamed document, its file at
+    // its synced path, never the unrelated file at the new path.
     it.each([
-      ["a remote create", { documentId: "new", path: "local.md", content: "remote" }],
-      ["a remote rename", { documentId: "other", path: "local.md" }],
-      ["a remote rename with an edit", { documentId: "other", path: "local.md", content: "remote 2" }],
-    ])("never overwrites an unsynced local file whose path %s takes", async (_name, change) => {
+      ["a remote create", { documentId: "new", path: "local.md", content: "remote" }, { path: "local.md", content: "unsynced local note" }],
+      ["a remote rename", { documentId: "other", path: "local.md" }, { path: "other.md", content: "remote" }],
+      ["a remote rename with an edit", { documentId: "other", path: "local.md", content: "remote 2" }, { path: "other.md", content: "remote" }],
+    ])("never overwrites an unsynced local file whose path %s takes", async (_name, change, local) => {
       const h = harness();
       h.server.commit({ documentId: "other", path: "other.md", content: "remote" });
       await h.engine.pull();
@@ -274,7 +277,7 @@ describe("SyncEngine pull", () => {
 
       expect(text(await h.vault.read("local.md"))).toBe("unsynced local note");
       expect(h.merges).toHaveLength(1);
-      expect(text(h.merges[0]?.local.content ?? null)).toBe("unsynced local note");
+      expect({ path: h.merges[0]?.local.path, content: text(h.merges[0]?.local.content ?? null) }).toEqual(local);
     });
 
     it("keeps handing later remote revisions of the document to the merge hook", async () => {

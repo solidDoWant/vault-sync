@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
@@ -321,6 +322,328 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
     });
   });
 
+  describe("given a remote rename onto a path an unsynced local file holds", () => {
+    // The local file is not the renamed document's: it is a concurrent create
+    // at the rename's target. The remote document lands in place and the local
+    // file is kept as a logged conflict copy (SPEC.md §7).
+    const mine = lines("my own new note");
+
+    it("keeps the local file whole as a logged conflict copy and the renamed document in place", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+      await h.engine.pull();
+      await h.vault.write("c.md", bytes(mine));
+      const remote = h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
+
+      await h.engine.pull();
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("b line", "appended remotely")],
+        [copyOf("c", ".md"), mine],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      // The renamed document keeps its id and the other device's revision is its head.
+      expect(h.server.head("b")?.id).toBe(remote.id);
+      expect(await h.journal.listConflicts()).toMatchObject([
+        { documentId: "b", path: "c.md", reason: "concurrent-create", copyPath: copyOf("c", ".md"), copyHash: sha256Hex(bytes(mine)), remoteRevisionId: remote.id },
+      ]);
+      expect(await h.journal.listPending()).toEqual([]);
+      expect(await h.journal.listDeferred()).toEqual([]);
+    });
+
+    it("keeps the local file when the remote rename does not change the content", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+      await h.engine.pull();
+      await h.vault.write("c.md", bytes(mine));
+      h.server.commit({ documentId: "b", path: "c.md" });
+
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("b line")],
+        [copyOf("c", ".md"), mine],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(h.server.history("b")).toHaveLength(2);
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "b", reason: "concurrent-create", copyHash: sha256Hex(bytes(mine)) }]);
+    });
+
+    it("keeps the local file when the renamed document was also edited locally", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("one", "two") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("one (local)", "two")));
+      await h.vault.write("c.md", bytes(mine));
+      h.server.commit({ documentId: "b", path: "c.md", content: lines("one", "two (remote)") });
+
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("one (local)", "two (remote)")],
+        [copyOf("c", ".md"), mine],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "b", reason: "concurrent-create", copyHash: sha256Hex(bytes(mine)) }]);
+    });
+
+    it("keeps the local file when the renamed document was deleted locally", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+      await h.engine.pull();
+      await h.vault.delete("a.md");
+      await h.vault.write("c.md", bytes(mine));
+      h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
+
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("b line", "appended remotely")],
+        [copyOf("c", ".md"), mine],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "b", reason: "concurrent-create", copyHash: sha256Hex(bytes(mine)) }]);
+    });
+
+    it("keeps the local file when its create was pushed but not yet committed", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+      await h.engine.pull();
+      await h.vault.write("c.md", bytes(mine));
+      h.server.interceptor = (method) => {
+        if (method === "CommitRevision") throw new ConnectError("down", Code.Internal);
+      };
+      await expect(h.engine.push()).rejects.toThrow();
+      h.server.interceptor = undefined;
+      expect(await h.journal.listPending()).toMatchObject([{ path: "c.md" }]);
+      h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
+
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("b line", "appended remotely")],
+        [copyOf("c", ".md"), mine],
+      ]);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+      expect(await h.journal.listPending()).toEqual([]);
+    });
+
+    it("keeps an edit the user makes to the local file while it is being copied", async () => {
+      let edited = false;
+      const h = harness({
+        merge: "default",
+        wrapVault: (vault) =>
+          new Proxy(vault, {
+            get(target, property, receiver) {
+              if (property === "write") {
+                return async (path: string, data: Uint8Array) => {
+                  await target.write(path, data);
+                  if (path === copyOf("c", ".md") && !edited) {
+                    edited = true;
+                    await target.write("c.md", bytes(lines("my own new note", "typed meanwhile")));
+                  }
+                };
+              }
+              const value: unknown = Reflect.get(target, property, receiver);
+              return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+            },
+          }),
+      });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+      await h.engine.pull();
+      await h.vault.write("c.md", bytes(mine));
+      h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
+
+      await h.engine.pull();
+      await h.engine.push();
+
+      const expected = new Map([
+        ["c.md", lines("b line", "appended remotely")],
+        [copyOf("c", ".md"), mine],
+        [`c (conflict laptop ${testStamp} 2).md`, lines("my own new note", "typed meanwhile")],
+      ]);
+      expect(edited).toBe(true);
+      expect(await files(h.vault)).toEqual(expected);
+      expect(h.server.liveFiles()).toEqual(expected);
+    });
+  });
+
+  describe("given another document's file or pending operation in the merge's way", () => {
+    it("never replaces the edited file of another document with a remote create at its path", async () => {
+      // d's move to y.md is held back (a local folder is in the way), so d's
+      // edited file still stands at x.md when e is created there remotely.
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "d", path: "x.md", content: lines("d") });
+      await h.engine.pull();
+      await h.vault.write("y.md/child.md", bytes("blocks y.md"));
+      await h.vault.write("x.md", bytes(lines("d", "local edit")));
+      h.server.commit({ documentId: "d", path: "y.md" });
+      h.server.commit({ documentId: "e", path: "x.md", content: lines("e") });
+
+      await h.engine.pull();
+
+      expect(text(await h.vault.read("x.md"))).toBe(lines("d", "local edit"));
+      expect(await files(h.vault)).toEqual(new Map([["x.md", lines("d", "local edit")], ["y.md/child.md", "blocks y.md"]]));
+      expect(await h.journal.listConflicts()).toEqual([]);
+      expect((await h.journal.listDeferred()).map((deferred) => deferred.revision.documentId).sort()).toEqual(["d", "e"]);
+    });
+
+    it("never moves another document's file aside for a remote rename onto its path", async () => {
+      // d's move away from c.md is held back (a local folder is in the way),
+      // so d's file still stands at c.md when b is renamed there remotely.
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
+      h.server.commit({ documentId: "d", path: "c.md", content: lines("d") });
+      await h.engine.pull();
+      await h.vault.write("y.md/child.md", bytes("blocks y.md"));
+      h.server.commit({ documentId: "d", path: "y.md" });
+      h.server.commit({ documentId: "b", path: "c.md" });
+
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("b")], ["c.md", lines("d")], ["y.md/child.md", "blocks y.md"]]));
+      expect(await h.journal.listConflicts()).toEqual([]);
+      expect(await h.journal.listDocuments()).toMatchObject([{ documentId: "b", path: "a.md" }, { documentId: "d", path: "c.md" }]);
+    });
+
+    it("never moves aside a document's file that a local rename not yet pushed put at the remote rename's target", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
+      h.server.commit({ documentId: "d", path: "d.md", content: lines("d") });
+      await h.engine.pull();
+      await h.vault.rename("d.md", "c.md");
+      await h.engine.settled();
+      h.server.commit({ documentId: "b", path: "c.md" });
+
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("b")], ["c.md", lines("d")]]));
+      expect(await h.journal.listConflicts()).toEqual([]);
+    });
+
+    it("never moves aside a document's file that a pending rename put at the remote rename's target", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("b") });
+      h.server.commit({ documentId: "d", path: "d.md", content: lines("d") });
+      await h.engine.pull();
+      await h.vault.rename("d.md", "c.md");
+      // b's rename to c.md lands first, so d's rename is refused and stays pending.
+      moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "b", path: "c.md" }));
+
+      await h.engine.push();
+
+      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("b")], ["c.md", lines("d")]]));
+      expect(await h.journal.listConflicts()).toEqual([]);
+      expect(await h.journal.listPending()).toMatchObject([{ documentId: "d", path: "c.md" }]);
+    });
+
+    it("does not hand the merge hook a file created where a renamed document was as that document's local version", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("one", "two") });
+      await h.engine.pull();
+      await h.vault.rename("a.md", "b2.md");
+      // b's rename is recorded as pending, but its commit fails.
+      h.server.interceptor = (method) => {
+        if (method === "CommitRevision") throw new ConnectError("down", Code.Internal);
+      };
+      await expect(h.engine.push()).rejects.toThrow();
+      h.server.interceptor = undefined;
+      await h.vault.write("a.md", bytes(lines("a new note")));
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("one", "two (remote)") });
+
+      await h.engine.pull();
+
+      expect(text(await h.vault.read("b2.md"))).toBe(lines("one", "two (remote)"));
+      expect(text(await h.vault.read("a.md"))).toBe(lines("a new note"));
+      expect(await h.journal.listConflicts()).toEqual([]);
+    });
+
+    it("does not drop another document's pending operation at the path of a document it merges", async () => {
+      // x's create at b2.md was uploaded but not committed; the user then
+      // deleted x and renamed b onto b2.md. Merging b does not decide x's operation.
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("one", "two") });
+      await h.engine.pull();
+      await h.vault.write("b2.md", bytes(lines("x")));
+      h.server.interceptor = (method) => {
+        if (method === "CommitRevision") throw new ConnectError("down", Code.Internal);
+      };
+      await expect(h.engine.push()).rejects.toThrow();
+      h.server.interceptor = undefined;
+      const [created] = await h.journal.listPending();
+      await h.vault.delete("b2.md");
+      await h.vault.rename("a.md", "b2.md");
+      await h.engine.settled();
+      h.server.commit({ documentId: "b", path: "a.md", content: lines("one", "two (remote)") });
+
+      await h.engine.pull();
+
+      expect(text(await h.vault.read("b2.md"))).toBe(lines("one", "two (remote)"));
+      expect(await h.journal.listPending()).toEqual([created]);
+    });
+
+    it("does not reuse a logged copy's name once the file there has changed", async () => {
+      // Crashes right after the copy is written, before the merge result is.
+      const points = new CrashPoints();
+      const h = harness({ merge: "default", journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("one (local)")));
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one (remote)") });
+      h.vault.watch((event) => {
+        if (event.path === copyOf("a", ".md") && points.crashAfter === 0) points.crashAfter = points.count + 1;
+      });
+      points.count = 0;
+      await expect(h.engine.pull()).rejects.toThrow(Crash);
+      points.crashAfter = -1;
+      await h.engine.settled();
+      expect(text(await h.vault.read(copyOf("a", ".md")))).toBe(lines("one (local)"));
+      expect(text(await h.vault.read("a.md"))).toBe(lines("one (local)"));
+      // The user edits the copy before the engine runs again.
+      await h.vault.write(copyOf("a", ".md"), bytes(lines("one (local)", "copy edited")));
+      h.restart();
+
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["a.md", lines("one (remote)")],
+          [copyOf("a", ".md"), lines("one (local)", "copy edited")],
+          [`a (conflict laptop ${testStamp} 2).md`, lines("one (local)")],
+        ]),
+      );
+    });
+
+    it("does not give a new conflict copy a name the conflict log already gave another", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one") });
+      await h.engine.pull();
+      await h.vault.write("a.md", bytes(lines("one (local)")));
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one (remote)") });
+      await h.engine.pull();
+      // The user discards the first copy before it is pushed.
+      await h.vault.delete(copyOf("a", ".md"));
+      await h.vault.write("a.md", bytes(lines("one (local 2)")));
+      h.server.commit({ documentId: "a", path: "a.md", content: lines("one (remote 2)") });
+
+      await h.engine.pull();
+
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["a.md", lines("one (remote 2)")],
+          [`a (conflict laptop ${testStamp} 2).md`, lines("one (local 2)")],
+        ]),
+      );
+      expect((await h.journal.listConflicts()).map((conflict) => conflict.copyPath)).toEqual([copyOf("a", ".md"), `a (conflict laptop ${testStamp} 2).md`]);
+    });
+  });
+
   describe("given two devices create a file at the same path", () => {
     it("keeps the other device's file in place and the local one as a conflict copy, when the local commit is refused", async () => {
       const h = harness({ merge: "default" });
@@ -503,6 +826,42 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
           await h.engine.pull();
           await h.vault.rename("a.md", "renamed.md");
           moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "a", path: "a.md", content: lines("one", "remote") }));
+        },
+      },
+      {
+        name: "a remote rename onto a path an unsynced local file holds",
+        crashes: 6,
+        prepare: async (h) => {
+          h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+          await h.engine.pull();
+          await h.vault.write("c.md", bytes(lines("my own new note")));
+          h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
+        },
+      },
+      {
+        name: "a remote rename onto a path a local create not yet committed holds",
+        crashes: 6,
+        prepare: async (h) => {
+          h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+          await h.engine.pull();
+          await h.vault.write("c.md", bytes(lines("my own new note")));
+          h.server.interceptor = (method) => {
+            if (method === "CommitRevision") throw new ConnectError("down", Code.Internal);
+          };
+          await expect(h.engine.push()).rejects.toThrow();
+          h.server.interceptor = undefined;
+          h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
+        },
+      },
+      {
+        name: "a remote rename onto a path an unsynced local file holds, of a document deleted locally",
+        crashes: 6,
+        prepare: async (h) => {
+          h.server.commit({ documentId: "b", path: "a.md", content: lines("b line") });
+          await h.engine.pull();
+          await h.vault.delete("a.md");
+          await h.vault.write("c.md", bytes(lines("my own new note")));
+          h.server.commit({ documentId: "b", path: "c.md", content: lines("b line", "appended remotely") });
         },
       },
       {

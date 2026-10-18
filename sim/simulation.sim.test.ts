@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -164,6 +164,22 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
       { reason: "concurrent-create", path: "inbox/new.md", copyPath: `inbox/${copy("new", ".md")}` },
       { reason: "path-taken", path: "todo.md", copyPath: copy("todo", ".md") },
     ]);
+  });
+
+  it("keeps an unsynced local file whose path a remote rename takes as a conflict copy, never merged into the renamed note", async () => {
+    const result = await remoteRenameOntoUnsyncedFile(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const copy = "notes/c (conflict e2 2026-01-02 030405).md";
+    const expected = new Map([
+      ["notes/c.md", "b line\nappended remotely\n"],
+      [copy, "my own new note\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.conflicts[0], trace).toEqual([]);
+    expect(result.conflicts[1], trace).toEqual([{ reason: "concurrent-create", path: "notes/c.md", copyPath: copy }]);
   });
 });
 

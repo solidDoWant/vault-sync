@@ -15,10 +15,12 @@ export interface MergeRequest {
    */
   base: DocumentState | undefined;
   /**
-   * The local file in the way: the document's own file (where a pending
-   * rename moved it, if it did), or whatever occupies the remote revision's
-   * path. `content` is null if no file is there (it was deleted or moved
-   * locally).
+   * The document's local version: its own file (where a local rename moved
+   * it, if one did), or, if this device has no file of it (no base, or a
+   * deleted base), whatever occupies the remote revision's path. A file at a
+   * renamed document's new path is never handed over as the document's own:
+   * the engine keeps it apart (SPEC.md §7). `content` is null if no file is
+   * there (it was deleted or moved locally).
    */
   local: { path: string; content: Uint8Array | null };
   /** Downloads the remote revision's content (verified against its hash); null for a tombstone. */
@@ -44,7 +46,9 @@ export interface MergeRequest {
  *   the remote revision and drops the unacknowledged local operations it
  *   replaces. It then pushes the result as a new revision based on the remote
  *   one (SPEC.md §6.2 step 3). If the local file changed in the meantime, the
- *   engine defers instead and asks again later.
+ *   engine defers instead and asks again later. A file that is no document's
+ *   in the way at a new `path` is kept as a `concurrent-create` conflict copy
+ *   and removed first; if it is another document's, the engine defers.
  *
  *   The result must contain the local changes, or `conflict` must: then the
  *   engine first writes `conflict.content` (the local version) as a conflict

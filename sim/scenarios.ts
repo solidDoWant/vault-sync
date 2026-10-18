@@ -367,3 +367,61 @@ export async function enginesEditConcurrently(endpoints: SimEndpoints): Promise<
   const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
   return { ...result, vaults, conflicts, refused };
 }
+
+export interface RenameOntoUnsyncedFileResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** Each engine's conflict log: reason, path and copy path of every entry. */
+  conflicts: { reason: string; path: string; copyPath: string | null }[][];
+}
+
+/**
+ * A remote rename onto a path an unsynced local file holds (#173 review): the
+ * first engine renames a note and appends to it, while the second engine has
+ * created an unrelated note of its own at the new path and not pushed it yet.
+ * The second engine's pull must not take its own note for the renamed one:
+ * the renamed document lands at the path, and the local note is kept whole as
+ * a logged conflict copy. Fault: the second engine crashes after the pull,
+ * before it pushes the copy, so the copy is found by the start-up scan.
+ */
+export async function remoteRenameOntoUnsyncedFile(endpoints: SimEndpoints): Promise<RenameOntoUnsyncedFileResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2 });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+
+  log(await first.edit("notes/a.md", encoder.encode("b line\n")));
+  log(first.startPush());
+  await drain(first.index);
+  log(second.startPull());
+  await drain(second.index);
+
+  log(await second.edit("notes/c.md", encoder.encode("my own new note\n")));
+  log(await first.move("notes/a.md", "notes/c.md"));
+  log(await first.edit("notes/c.md", encoder.encode("b line\nappended remotely\n")));
+  log(first.startPush());
+  await drain(first.index);
+
+  log(second.startPull());
+  await drain(second.index);
+  log(second.crash());
+  log(second.startPush());
+  await drain(second.index);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
+  return { ...result, vaults, conflicts };
+}
