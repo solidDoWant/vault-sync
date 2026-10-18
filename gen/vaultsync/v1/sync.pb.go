@@ -275,7 +275,8 @@ type CommitRevisionRequest struct {
 	ContentRef *ContentRef `protobuf:"bytes,6,opt,name=content_ref,json=contentRef,proto3" json:"content_ref,omitempty"`
 	// Vault-relative path using "/" separators. UTF-8 bytes for plaintext
 	// vaults; suite-versioned ciphertext for E2EE vaults. The server bounds its
-	// length.
+	// length. A plaintext path must be valid UTF-8 without control characters,
+	// and none of its "/"-separated segments may be empty, "." or "..".
 	Path []byte `protobuf:"bytes,7,opt,name=path,proto3" json:"path,omitempty"`
 	// Uniqueness key for path (SPEC.md §5 "Paths"). Must be empty for
 	// plaintext vaults, where the server derives it from path (Unicode NFC,

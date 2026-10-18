@@ -71,16 +71,22 @@ type SyncServiceClient interface {
 	// revision is acknowledged only when this RPC returns success.
 	//
 	// Commits are idempotent by revision_id: retrying a commit whose response
-	// was lost with identical fields returns the already-committed revision.
+	// was lost with identical fields returns the already-committed revision,
+	// even if the document's head has moved since.
 	//
 	// Errors:
 	//   - FAILED_PRECONDITION: base_rev_id is not the current head (the head
-	//     moved; pull, merge, and retry), or content_ref names a blob that is not
-	//     complete.
+	//     moved; pull, merge, and retry); the error then carries the document,
+	//     with its current head_rev_id, as a Document error detail. Also when
+	//     base_rev_id is set but the document does not exist in the vault, when
+	//     content_ref names a blob that is not complete in this vault, and for
+	//     end-to-end encrypted vaults until they are supported.
 	//   - ALREADY_EXISTS: path_key collides with another live document in the
 	//     vault (SPEC.md §6.3).
-	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch, or
-	//     revision_id reused with different fields.
+	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
+	//     content_ref.size differing from the stored blob's size, document_id or
+	//     revision_id already in use outside this vault, or revision_id reused
+	//     with different fields.
 	//   - PERMISSION_DENIED: the caller is a viewer.
 	//   - NOT_FOUND: the vault does not exist, the caller is not a member, or
 	//     device_id is not one of the caller's devices.
@@ -185,16 +191,22 @@ type SyncServiceHandler interface {
 	// revision is acknowledged only when this RPC returns success.
 	//
 	// Commits are idempotent by revision_id: retrying a commit whose response
-	// was lost with identical fields returns the already-committed revision.
+	// was lost with identical fields returns the already-committed revision,
+	// even if the document's head has moved since.
 	//
 	// Errors:
 	//   - FAILED_PRECONDITION: base_rev_id is not the current head (the head
-	//     moved; pull, merge, and retry), or content_ref names a blob that is not
-	//     complete.
+	//     moved; pull, merge, and retry); the error then carries the document,
+	//     with its current head_rev_id, as a Document error detail. Also when
+	//     base_rev_id is set but the document does not exist in the vault, when
+	//     content_ref names a blob that is not complete in this vault, and for
+	//     end-to-end encrypted vaults until they are supported.
 	//   - ALREADY_EXISTS: path_key collides with another live document in the
 	//     vault (SPEC.md §6.3).
-	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch, or
-	//     revision_id reused with different fields.
+	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
+	//     content_ref.size differing from the stored blob's size, document_id or
+	//     revision_id already in use outside this vault, or revision_id reused
+	//     with different fields.
 	//   - PERMISSION_DENIED: the caller is a viewer.
 	//   - NOT_FOUND: the vault does not exist, the caller is not a member, or
 	//     device_id is not one of the caller's devices.

@@ -59,6 +59,16 @@ Every 5 minutes a cleanup routine removes upload sessions idle for longer than `
 
 Requests and responses are bounded by `VAULT_SYNC_MAX_REQUEST_BYTES` in both directions. A maximum-size chunk fits only in the binary protobuf encoding, which the plugin uses; a client using the Connect JSON encoding (base64 bytes, a third larger) must send smaller chunks and request smaller download ranges.
 
+### Revisions and the change feed
+
+`SyncService` stores document revisions in PostgreSQL. It needs no configuration beyond the database; revisions name their content by blob id, so committing one requires that blob to have been uploaded completely to the same vault first (`failed_precondition` otherwise). The fixed bounds are:
+
+- A path is at most 4096 bytes of UTF-8 without control characters, relative, with no empty, `.` or `..` segments, and at most 8192 bytes once normalized (Unicode normalization and case folding can lengthen it). Anything else gets `invalid_argument`.
+- `ListChanges` returns at most 1000 revisions per call (500 if the client does not ask for a page size); `GetDocumentHistory` at most 1000 (default 100). Larger page sizes are reduced, not rejected.
+- Paths are unique per vault ignoring case and Unicode normalization, among documents that are not deleted: creating or renaming a document onto a path that differs from a live document's only in case or normalization gets `already_exists`.
+
+Commits to a vault are serialized by a PostgreSQL row lock on the vault, held for the duration of one short transaction, so any number of server replicas can accept commits for the same vault concurrently: each revision gets the vault's next sequence number with no gaps, and a revision is never visible in the change feed before one with a lower number. Revisions of end-to-end encrypted vaults are rejected (`failed_precondition`), like creating such a vault.
+
 ### PostgreSQL TLS
 
 TLS is enabled with the DSN's `sslmode`; use `require`, `verify-ca` or `verify-full`. Setting any of the TLS file variables with a DSN whose first connection attempt is plaintext (`sslmode=disable` or `allow`) is rejected at startup. With `sslmode=prefer` (the libpq default when `sslmode` is omitted) and a TLS file set, the plaintext fallback is removed, so the connection never silently downgrades.
