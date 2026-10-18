@@ -109,6 +109,31 @@ func TestRegisterDeviceRejectsControlCharactersBeforeTheDatabase(t *testing.T) {
 	assert.Zero(t, devices)
 }
 
+func TestControlCharactersInTheSubjectAreRejectedBeforeTheDatabase(t *testing.T) {
+	pool := migratedPool(t)
+	fixture := newAuthFixture(t, store.New(pool), pool)
+
+	// PostgreSQL text cannot hold U+0000; a validly signed token carrying one
+	// must be rejected as unauthenticated, not surface as an internal error.
+	for _, subject := range []string{"ali\x00ce", "\x00", "alice\x1b[2J", "alice\u0085"} {
+		_, err := fixture.registerDevice(t, fixture.token(t, subject), &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop"})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err), "%q", subject)
+	}
+
+	assert.NotContains(t, fixture.logs.String(), `"level":"ERROR"`)
+
+	var users int
+
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM users`).Scan(&users))
+	assert.Zero(t, users)
+
+	// A normal subject is still provisioned.
+	_, err := fixture.registerDevice(t, fixture.token(t, "alice"), &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop"})
+	require.NoError(t, err)
+	userID(t, pool, fixture.issuer.URL, "alice")
+}
+
 func TestRegisterDeviceLimit(t *testing.T) {
 	pool := migratedPool(t)
 	fixture := newAuthFixture(t, store.New(pool), pool)
