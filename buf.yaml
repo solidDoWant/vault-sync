@@ -5,6 +5,21 @@ lint:
   use:
     - STANDARD
     - COMMENTS
+# `make lint` runs `buf breaking` against master (scripts/buf-breaking.sh;
+# see docs/testing/proto-compatibility.md). FILE is the strictest rule set:
+# besides wire and JSON compatibility it keeps every type in the file that
+# declared it, which the generated Go and TypeScript code depend on.
+#
+# Deliberate exceptions: do not weaken `use`. Add a narrowly scoped
+# `ignore_only` entry (rule ID -> file paths relative to this file) in the PR
+# that needs it, explain why in the PR description, and remove the entry in a
+# follow-up PR once the change is on master. Known planned case: Phase 5
+# (Yjs realtime frames) takes field numbers out of `reserved 100 to 199` in
+# both realtime envelopes, which trips RESERVED_MESSAGE_NO_DELETE:
+#
+#   ignore_only:
+#     RESERVED_MESSAGE_NO_DELETE:
+#       - proto/vaultsync/v1/realtime.proto
 breaking:
   use:
     - FILE
