@@ -231,7 +231,7 @@ func TestExportAgainstPostgreSQLAndS3(t *testing.T) {
 
 	edited := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "draft.md", []byte("first draft"))
 	edited = deployment.commit(t, notes, edited.DocumentID, &edited, "draft.md", []byte("second draft"))
-	deployment.commit(t, notes, edited.DocumentID, &edited, "final/essay.md", []byte("final"))
+	final := deployment.commit(t, notes, edited.DocumentID, &edited, "final/essay.md", []byte("final"))
 
 	deleted := deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "trash.md", []byte("trash"))
 	deployment.commit(t, notes, deleted.DocumentID, &deleted, "trash.md", nil)
@@ -268,6 +268,16 @@ func TestExportAgainstPostgreSQLAndS3(t *testing.T) {
 	assert.Equal(t, want, files(t, output))
 	assert.Equal(t, before, deployment.state(t), "the export changes nothing in PostgreSQL or S3")
 
+	manifests := verifyManifests(t, output)
+	require.Len(t, manifests, 2, "one manifest per exported vault")
+
+	essay := manifests[notes].byID()[edited.DocumentID]
+	assert.Equal(t, "final/essay.md", essay.Path)
+	assert.Equal(t, "blob", essay.Kind)
+	assert.Equal(t, "placed", essay.Status)
+	assert.Equal(t, final.ID, essay.RevisionID, "the head revision")
+	assert.Len(t, manifests[notes].Documents, 3+export.DefaultPageSize+1, "tombstoned documents are not listed")
+
 	assert.Equal(t, 2, summary.Vaults)
 	assert.Equal(t, 1, summary.SkippedVaults)
 	assert.EqualValues(t, len(want), summary.Files)
@@ -284,15 +294,15 @@ func TestExportAgainstPostgreSQLAndS3(t *testing.T) {
 	assert.Equal(t, int64(export.DefaultPageSize+1+7), summary.VaultDetails[0].HeadSeq)
 }
 
-func TestExportRefusesDatabasePathsOutsideTheVault(t *testing.T) {
+func TestExportKeepsDatabasePathsOutsideTheVaultOutOfItsTree(t *testing.T) {
 	deployment := newDeployment(t)
 	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
 
 	deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, "ok.md", []byte("ok"))
 
-	refused := map[uuid.UUID]bool{}
+	unplaced := map[uuid.UUID]string{}
 	for _, path := range []string{"../escape.md", "a/../../escape.md", "/tmp/escape.md", `..\escape.md`, `C:\escape.md`, `\\server\share\escape.md`} {
-		refused[deployment.insertRawDocument(t, notes, path, []byte("escape"))] = true
+		unplaced[deployment.insertRawDocument(t, notes, path, []byte("escape "+path))] = path
 	}
 
 	root := t.TempDir()
@@ -300,17 +310,84 @@ func TestExportRefusesDatabasePathsOutsideTheVault(t *testing.T) {
 
 	code, summary := runMain(t, t.Context(), deployment.env(), output)
 
-	assert.Equal(t, 1, code, "left-out documents fail the run for alerting")
-	assert.Equal(t, export.StatusPartial, summary.Status)
-	assert.Equal(t, len(refused), summary.DocumentErrors)
+	assert.Equal(t, 0, code, "every document is in the export")
+	assert.Equal(t, export.StatusOK, summary.Status)
+	assert.Zero(t, summary.DocumentErrors)
+	assert.EqualValues(t, len(unplaced), summary.Unplaced)
 
-	for document, reason := range documentErrors(summary) {
-		assert.True(t, refused[document])
-		assert.Equal(t, "path is not vault-relative", reason)
+	want := map[string]string{notes.String() + "/ok.md": "ok"}
+	for document, path := range unplaced {
+		want[notes.String()+".unplaced/"+document.String()] = "escape " + path
 	}
 
-	assert.Equal(t, map[string]string{notes.String() + "/ok.md": "ok"}, files(t, output))
+	assert.Equal(t, want, files(t, output))
 	assert.Equal(t, []string{".export.lock", "export"}, workspace{root: root}.siblings(t))
+
+	documents := verifyManifests(t, output)[notes].byID()
+	for document, path := range unplaced {
+		assert.Equal(t, path, documents[document].Path)
+		assert.Equal(t, "unplaced", documents[document].Status)
+		assert.Equal(t, "path is not vault-relative", documents[document].Reason)
+	}
+}
+
+func TestExportKeepsDocumentsWhosePathsCannotCoexistAgainstPostgreSQLAndS3(t *testing.T) {
+	deployment := newDeployment(t)
+	notes := deployment.createVault(t, "Notes", store.EncryptionNone)
+
+	// Written straight to the database: the server may refuse to commit
+	// such paths, but existing data can still hold them.
+	file := deployment.insertRawDocument(t, notes, "a", []byte("a file"))
+	underFile := deployment.insertRawDocument(t, notes, "a/b.md", []byte("a file under a file"))
+	tooLong := deployment.insertRawDocument(t, notes, "folder/"+strings.Repeat("n", 256)+".md", []byte("a name over 255 bytes"))
+
+	// User files named like the export's own files.
+	lookalikes := map[string]string{
+		notes.String() + ".unplaced/" + underFile.String(): "looks like the unplaced copy",
+		notes.String() + ".manifest.jsonl":                 "looks like the manifest",
+		".vault-sync-export":                               "looks like the marker",
+	}
+
+	lookalikeIDs := map[string]uuid.UUID{}
+	for path, content := range lookalikes {
+		lookalikeIDs[path] = deployment.commit(t, notes, uuid.Must(uuid.NewV7()), nil, path, []byte(content)).DocumentID
+	}
+
+	output := filepath.Join(t.TempDir(), "export")
+
+	code, summary := runMain(t, t.Context(), deployment.env(), output)
+
+	assert.Equal(t, 0, code)
+	assert.Equal(t, export.StatusOK, summary.Status, summary.Error)
+	assert.EqualValues(t, 2, summary.Unplaced)
+
+	want := map[string]string{
+		notes.String() + "/a":                              "a file",
+		notes.String() + ".unplaced/" + underFile.String(): "a file under a file",
+		notes.String() + ".unplaced/" + tooLong.String():   "a name over 255 bytes",
+	}
+	for path, content := range lookalikes {
+		want[notes.String()+"/"+path] = content
+	}
+
+	assert.Equal(t, want, files(t, output), "every document's bytes are in the export")
+
+	documents := verifyManifests(t, output)[notes].byID()
+	require.Len(t, documents, 3+len(lookalikes))
+
+	assert.Equal(t, "placed", documents[file].Status)
+	assert.Equal(t, "blob", documents[file].Kind)
+	assert.Equal(t, "unplaced", documents[underFile].Status)
+	assert.Equal(t, "a/b.md", documents[underFile].Path)
+	assert.Equal(t, "path conflicts with another document's file or directory", documents[underFile].Reason)
+	assert.Equal(t, "unplaced", documents[tooLong].Status)
+	assert.Equal(t, "folder/"+strings.Repeat("n", 256)+".md", documents[tooLong].Path)
+	assert.Equal(t, "path cannot be created on this filesystem", documents[tooLong].Reason)
+
+	for path, id := range lookalikeIDs {
+		assert.Equal(t, "placed", documents[id].Status, path)
+		assert.Equal(t, notes.String()+"/"+path, documents[id].Location, path)
+	}
 }
 
 func TestExportReportsMissingContent(t *testing.T) {
@@ -327,8 +404,16 @@ func TestExportReportsMissingContent(t *testing.T) {
 	code, summary := runMain(t, t.Context(), deployment.env(), output)
 
 	assert.Equal(t, 1, code)
+	assert.Equal(t, export.StatusPartial, summary.Status)
 	assert.Equal(t, map[uuid.UUID]string{lost.DocumentID: "stored content is missing"}, documentErrors(summary))
 	assert.Equal(t, map[string]string{notes.String() + "/kept.md": "kept"}, files(t, output))
+
+	documents := verifyManifests(t, output)[notes].byID()
+	require.Len(t, documents, 2)
+	assert.Equal(t, "missing", documents[lost.DocumentID].Status)
+	assert.Equal(t, "lost.md", documents[lost.DocumentID].Path)
+	assert.Equal(t, lost.ID, documents[lost.DocumentID].RevisionID)
+	assert.Empty(t, documents[lost.DocumentID].Location)
 }
 
 // cancelingSource cancels the export after its first content read.

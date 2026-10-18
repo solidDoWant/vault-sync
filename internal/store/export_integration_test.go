@@ -126,6 +126,7 @@ func TestLiveDocumentsAtIsAPointInTimeView(t *testing.T) {
 			require.NoError(t, err)
 
 			for _, document := range page {
+				assert.Equal(t, "text", document.Kind, "the document's kind")
 				got = append(got, live{document.ID, document.Path, document.ContentRef, document.Size})
 			}
 
