@@ -300,13 +300,27 @@ func TestCORSActualRequestFromObsidian(t *testing.T) {
 	assert.Equal(t, "app://obsidian.md", recorder.Header().Get("Access-Control-Allow-Origin"))
 }
 
-// countingReader yields an endless stream of zero bytes, counting how many
-// were read.
+// errReadPastCap is returned by a countingReader read past its cap.
+var errReadPastCap = errors.New("test body read past its cap")
+
+// countingReader yields a stream of zero bytes, counting how many were read.
+// After cap bytes (when cap is positive) it fails instead, so a server that
+// reads without bound fails the test at once instead of hanging it.
 type countingReader struct {
+	cap  int64
 	read atomic.Int64
 }
 
 func (reader *countingReader) Read(buffer []byte) (int, error) {
+	if reader.cap > 0 {
+		remaining := reader.cap - reader.read.Load()
+		if remaining <= 0 {
+			return 0, errReadPastCap
+		}
+
+		buffer = buffer[:min(int64(len(buffer)), remaining)]
+	}
+
 	clear(buffer)
 	reader.read.Add(int64(len(buffer)))
 
@@ -327,7 +341,12 @@ func connectErrorCode(t *testing.T, body []byte) string {
 }
 
 func TestRequestBodyLimit(t *testing.T) {
-	const maxRequestBytes = 64 << 10
+	const (
+		maxRequestBytes = 64 << 10
+		// bodyCap is far more than a bounded server reads, but small enough
+		// that an unbounded one reaches it at once.
+		bodyCap = 16 * maxRequestBytes
+	)
 
 	handler := server.New(testOptions(server.Options{MaxRequestBytes: maxRequestBytes})).Handler()
 
@@ -339,7 +358,7 @@ func TestRequestBodyLimit(t *testing.T) {
 	}
 
 	t.Run("declared length over the limit is rejected without reading", func(t *testing.T) {
-		body := &countingReader{}
+		body := &countingReader{cap: bodyCap}
 		request := newRequest(t, body)
 		request.ContentLength = maxRequestBytes + 1
 
@@ -351,16 +370,16 @@ func TestRequestBodyLimit(t *testing.T) {
 	})
 
 	t.Run("streamed body over the limit is rejected after reading about the limit", func(t *testing.T) {
-		body := &countingReader{}
+		body := &countingReader{cap: bodyCap}
 		request := newRequest(t, body)
 		require.Equal(t, int64(-1), request.ContentLength)
 
 		recorder := httptest.NewRecorder()
 		handler.ServeHTTP(recorder, request)
 
-		assert.Equal(t, "resource_exhausted", connectErrorCode(t, recorder.Body.Bytes()))
 		// Readers may over-read by a buffer, but never buffer the whole body.
-		assert.LessOrEqual(t, body.read.Load(), int64(maxRequestBytes+64<<10))
+		require.LessOrEqual(t, body.read.Load(), int64(maxRequestBytes+64<<10))
+		assert.Equal(t, "resource_exhausted", connectErrorCode(t, recorder.Body.Bytes()))
 	})
 
 	t.Run("compressed body that inflates over the limit is rejected", func(t *testing.T) {

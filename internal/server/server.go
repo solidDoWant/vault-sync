@@ -3,6 +3,7 @@
 package server
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -19,11 +20,13 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
+	"golang.org/x/sync/singleflight"
 
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/authz"
+	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
 )
 
@@ -37,9 +40,13 @@ const (
 	readHeaderTimeout = 10 * time.Second
 	readTimeout       = time.Minute
 	idleTimeout       = 2 * time.Minute
-	maxHeaderBytes    = 64 << 10
-	readinessTimeout  = 2 * time.Second
-	corsMaxAgeSeconds = 2 * 60 * 60
+	// metricsWriteTimeout bounds metrics, health and readiness responses.
+	// The metrics listener serves no long-lived connections, so a plain
+	// http.Server WriteTimeout applies there.
+	metricsWriteTimeout = time.Minute
+	maxHeaderBytes      = 64 << 10
+	readinessTimeout    = 2 * time.Second
+	corsMaxAgeSeconds   = 2 * 60 * 60
 )
 
 // Pinger reports whether the database is reachable. *pgxpool.Pool
@@ -52,6 +59,13 @@ type Pinger interface {
 type Options struct {
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
+	// WriteTimeout bounds how long writing an API response may take,
+	// counted from its first byte, so a client that stops reading cannot
+	// hold a connection and handler indefinitely. It does not bound how
+	// long the handler runs before it responds, and it does not apply to
+	// the realtime WebSocket once upgraded. Zero means
+	// config.DefaultWriteTimeout.
+	WriteTimeout time.Duration
 	// ShutdownDelay is how long, once shutdown starts, /readyz fails while
 	// the API still serves new connections, so load balancers stop routing
 	// here before any connection is refused.
@@ -106,6 +120,8 @@ type Server struct {
 	api      http.Handler
 	metrics  http.Handler
 	draining atomic.Bool
+	// readiness shares one database ping among concurrent /readyz calls.
+	readiness singleflight.Group
 }
 
 // New builds a Server.
@@ -117,6 +133,10 @@ func New(options Options) *Server {
 
 		// The hub's WebSockets outlive the HTTP server's own drain.
 		options.Drainers = append(slices.Clip(options.Drainers), options.Realtime)
+	}
+
+	if options.WriteTimeout <= 0 {
+		options.WriteTimeout = config.DefaultWriteTimeout
 	}
 
 	srv := &Server{options: options}
@@ -173,8 +193,9 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		),
 		// Bounds the decoded (and decompressed) message size.
 		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
-		// Bounds every response message the same way. DownloadBlob caps
-		// its ranges at the chunk size, which fits within this limit.
+		// Bounds every response message by the bytes sent (after
+		// compression, when the client accepts it). DownloadBlob caps its
+		// ranges at the chunk size, which fits within this limit.
 		connect.WithSendMaxBytes(int(options.MaxRequestBytes)),
 	}
 
@@ -241,7 +262,84 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		MaxAge:         corsMaxAgeSeconds,
 	})
 
-	return corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, mux))
+	return limitResponseTime(options.WriteTimeout, corsHandler.Handler(limitRequestBody(options.MaxRequestBytes, mux)))
+}
+
+// limitResponseTime bounds how long writing each API response may take:
+// the connection's write deadline is set to timeout from the response's
+// first byte (its status line, body or flush), so a client that sends a
+// request and then stops reading blocks the write only until the deadline;
+// the write then fails and the connection is closed. The handler itself is
+// not bounded and its context carries no deadline, so long work such as a
+// blob commit's compose (SPEC §6.2) runs to completion however long it
+// takes.
+//
+// It applies to every route, so routes added later are bounded too. The
+// realtime WebSocket is exempt: its 101 response is informational and
+// starts no deadline, and once the connection is hijacked none is set
+// (TestRealtimeWebSocketOutlivesTheWriteTimeout).
+func limitResponseTime(timeout time.Duration, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		limited := &deadlineWriter{ResponseWriter: writer, timeout: timeout}
+		next.ServeHTTP(limited, request)
+		// A handler that wrote nothing gets its response written by
+		// net/http after it returns; bound that write too.
+		limited.start()
+	})
+}
+
+// deadlineWriter sets the connection's write deadline when the response
+// starts. Flush, Hijack and Unwrap keep streaming, the WebSocket upgrade and
+// http.ResponseController working through the wrapper.
+type deadlineWriter struct {
+	http.ResponseWriter
+	timeout time.Duration
+	started bool
+}
+
+func (writer *deadlineWriter) start() {
+	if writer.started {
+		return
+	}
+
+	writer.started = true
+	// It fails only for writers without deadlines (test recorders), which
+	// have no connection to bound.
+	_ = http.NewResponseController(writer.ResponseWriter).SetWriteDeadline(time.Now().Add(writer.timeout))
+}
+
+func (writer *deadlineWriter) WriteHeader(status int) {
+	// Informational responses (101 Switching Protocols before a WebSocket
+	// hijack) do not start the final response.
+	if status >= http.StatusOK {
+		writer.start()
+	}
+
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *deadlineWriter) Write(data []byte) (int, error) {
+	writer.start()
+
+	return writer.ResponseWriter.Write(data)
+}
+
+func (writer *deadlineWriter) Flush() {
+	writer.start()
+
+	_ = http.NewResponseController(writer.ResponseWriter).Flush()
+}
+
+// Hijack hands the connection to the caller (the realtime WebSocket), after
+// which no HTTP response follows and no deadline may be set on it.
+func (writer *deadlineWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	writer.started = true
+
+	return http.NewResponseController(writer.ResponseWriter).Hijack() //nolint:wrapcheck // passed through unchanged
+}
+
+func (writer *deadlineWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
 }
 
 // limitRequestBody rejects bodies declared larger than limit outright and
@@ -278,17 +376,39 @@ func (srv *Server) readyz(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(request.Context(), readinessTimeout)
-	defer cancel()
-
-	if err := srv.options.Database.Ping(ctx); err != nil {
-		srv.options.Logger.WarnContext(ctx, "readiness check failed: database unreachable", "error", err)
+	if err := srv.pingDatabase(request.Context()); err != nil {
 		http.Error(writer, "database unreachable", http.StatusServiceUnavailable)
 
 		return
 	}
 
 	_, _ = writer.Write([]byte("ok\n"))
+}
+
+// pingDatabase pings the database, sharing one ping among concurrent calls,
+// so a burst of readiness checks against a slow database holds at most one
+// pool connection. The ping is bounded by readinessTimeout and does not end
+// when the caller that started it goes away. No result outlives its ping,
+// so every check reflects this replica's pool now.
+func (srv *Server) pingDatabase(ctx context.Context) error {
+	results := srv.readiness.DoChan("database", func() (any, error) {
+		pingCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), readinessTimeout)
+		defer cancel()
+
+		err := srv.options.Database.Ping(pingCtx)
+		if err != nil {
+			srv.options.Logger.WarnContext(pingCtx, "readiness check failed: database unreachable", "error", err)
+		}
+
+		return nil, err
+	})
+
+	select {
+	case result := <-results:
+		return result.Err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ListenAndServe listens on the API and metrics addresses and serves until
@@ -336,6 +456,7 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 		Handler:           srv.metrics,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
+		WriteTimeout:      metricsWriteTimeout,
 		IdleTimeout:       idleTimeout,
 		MaxHeaderBytes:    maxHeaderBytes,
 		ErrorLog:          errorLog,

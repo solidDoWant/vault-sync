@@ -111,6 +111,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 
 	srv := New(Options{
 		MaxRequestBytes: cfg.MaxRequestBytes,
+		WriteTimeout:    cfg.WriteTimeout,
 		ShutdownDelay:   cfg.ShutdownDelay,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Database:        pool,

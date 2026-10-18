@@ -29,6 +29,7 @@ const (
 	DatabaseTLSKeyFileEnv   = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
 	DatabaseTLSCAFileEnv    = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
 	MaxRequestBytesEnv      = "VAULT_SYNC_MAX_REQUEST_BYTES"
+	WriteTimeoutEnv         = "VAULT_SYNC_WRITE_TIMEOUT"
 	ShutdownDelayEnv        = "VAULT_SYNC_SHUTDOWN_DELAY"
 	ShutdownTimeoutEnv      = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
 	LogLevelEnv             = "VAULT_SYNC_LOG_LEVEL"
@@ -118,6 +119,11 @@ const (
 	// read) before any service raises its read limit (blobs, streaming).
 	DefaultMaxRequestBytes = 1 << 20
 	DefaultShutdownTimeout = 30 * time.Second
+	// DefaultWriteTimeout lets a maximum-size (1 MiB) response reach a
+	// client on a slow mobile link (about 100 kbit/s).
+	DefaultWriteTimeout = 2 * time.Minute
+	MinWriteTimeout     = time.Second
+	MaxWriteTimeout     = time.Hour
 	// DefaultShutdownDelay covers typical load-balancer and Kubernetes
 	// endpoint propagation after /readyz starts failing.
 	DefaultShutdownDelay = 5 * time.Second
@@ -140,6 +146,11 @@ type Config struct {
 	OIDC OIDCConfig
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
+	// WriteTimeout bounds how long writing an API response may take, from
+	// its first byte, so clients that stop reading release their
+	// connection. It does not bound the handler's work before the response
+	// starts. The realtime WebSocket is exempt.
+	WriteTimeout time.Duration
 	// ShutdownDelay is how long after a shutdown signal /readyz fails while
 	// the API still accepts requests, before draining starts.
 	ShutdownDelay time.Duration
@@ -194,6 +205,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			Audience:  get(OIDCAudienceEnv),
 		},
 		MaxRequestBytes: DefaultMaxRequestBytes,
+		WriteTimeout:    DefaultWriteTimeout,
 		ShutdownDelay:   DefaultShutdownDelay,
 		ShutdownTimeout: DefaultShutdownTimeout,
 		LogLevel:        slog.LevelInfo,
@@ -241,6 +253,19 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 				MaxRequestBytesEnv, value, api.MinResponseLimitBytes))
 		default:
 			cfg.MaxRequestBytes = value
+		}
+	}
+
+	if raw := get(WriteTimeoutEnv); raw != "" {
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 2m)", WriteTimeoutEnv, raw))
+		case value < MinWriteTimeout || value > MaxWriteTimeout:
+			problems = append(problems, fmt.Errorf("%s: %s is outside the allowed range %s to %s", WriteTimeoutEnv, raw, MinWriteTimeout, MaxWriteTimeout))
+		default:
+			cfg.WriteTimeout = value
 		}
 	}
 
