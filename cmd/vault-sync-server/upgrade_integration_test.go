@@ -11,14 +11,18 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
 	"time"
 
+	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
+	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
 )
@@ -204,11 +208,22 @@ func TestRollingUpgrade(t *testing.T) {
 	// An upload is in progress when the new release rolls out.
 	received := early.sendChunks(t, 0, 3, previous)
 
+	// The previous release has committed revisions when the new release
+	// rolls out.
+	var revisions *upgradeRevisions
+	if previousHasRevisions(t, previous, token, before.GetId()) {
+		revisions = commitBeforeUpgrade(t, previous, token, before.GetId())
+	}
+
 	// The new release starts beside it and migrates the database.
 	current := cluster.start(t, "current", currentBinary)
 
 	// Both serve requests on the newer schema, whichever gets each one.
 	assert.ElementsMatch(t, []string{before.GetId()}, listVaultIDs(t, current, token))
+
+	if revisions != nil {
+		revisions.commitDuringUpgrade(t, previous, current)
+	}
 
 	after := createVault(t, current, token, "After the upgrade")
 	alongside := createVault(t, previous, token, "Created by the previous release on the newer schema")
@@ -258,4 +273,130 @@ func TestRollingUpgrade(t *testing.T) {
 	assert.ElementsMatch(t, vaults, listVaultIDs(t, current, token))
 	early.requireStored(t, restarted)
 	late.requireStored(t, restarted, current)
+
+	if revisions != nil {
+		revisions.commitAfterRestart(t, restarted, current)
+	}
+}
+
+// previousHasRevisions reports whether the previous release serves revision
+// commits and the change feed (SPEC.md §6). Every release since revisions
+// were added does; only an older release selected with previousReleaseEnv
+// may not, and then the rolling upgrade is tested without them.
+func previousHasRevisions(t *testing.T, previous *instance, token, vaultID string) bool {
+	t.Helper()
+
+	_, err := previous.sync().ListChanges(t.Context(), authorized(&vaultsyncv1.ListChangesRequest{VaultId: vaultID}, token))
+	if connect.CodeOf(err) != connect.CodeUnimplemented {
+		require.NoError(t, err, "list changes on the previous release")
+
+		return true
+	}
+
+	require.NotEmpty(t, os.Getenv(previousReleaseEnv),
+		"the previous release must serve revisions unless %s selects an older one", previousReleaseEnv)
+	t.Logf("the previous release (%s) predates revisions; testing the upgrade without them", os.Getenv(previousReleaseEnv))
+
+	return false
+}
+
+// upgradeRevisions is one client's revisions of one document, committed
+// through both releases during a rolling upgrade.
+type upgradeRevisions struct {
+	client    *syncClient
+	content   *vaultsyncv1.ContentRef
+	committed []*vaultsyncv1.Revision
+}
+
+// commitBeforeUpgrade commits a document's first revision on the previous
+// release, before the new release starts.
+func commitBeforeUpgrade(t *testing.T, previous *instance, token, vaultID string) *upgradeRevisions {
+	t.Helper()
+
+	client := newSyncClient(t, previous, token, vaultID)
+	content := client.content(t, previous, "written before the upgrade")
+
+	revisions := &upgradeRevisions{client: client, content: content}
+	revisions.commit(t, previous, client.create(t, "note.md", content))
+	revisions.requireListed(t, previous)
+
+	return revisions
+}
+
+// commitDuringUpgrade commits on both releases on the newer schema, and
+// retries a commit of one release on the other.
+func (revisions *upgradeRevisions) commitDuringUpgrade(t *testing.T, previous, current *instance) {
+	t.Helper()
+
+	revisions.requireListed(t, current, previous)
+
+	revisions.commit(t, current, revisions.next(t, "edited on the current release"))
+
+	request := revisions.next(t, "edited on the previous release")
+	committed := revisions.commit(t, previous, request)
+
+	retried := revisions.client.mustCommit(t, current, request)
+	assert.Truef(t, proto.Equal(committed, retried), "a commit of the previous release retried on the current one returns it:\nwant %v\ngot  %v",
+		committed, retried)
+
+	revisions.requireListed(t, previous, current)
+}
+
+// commitAfterRestart commits on a restarted previous release and the current
+// release.
+func (revisions *upgradeRevisions) commitAfterRestart(t *testing.T, restarted, current *instance) {
+	t.Helper()
+
+	revisions.requireListed(t, restarted, current)
+
+	request := revisions.next(t, "edited after the restart")
+	committed := revisions.commit(t, restarted, request)
+
+	retried := revisions.client.mustCommit(t, current, request)
+	assert.Truef(t, proto.Equal(committed, retried), "a commit of the restarted release retried on the current one returns it:\nwant %v\ngot  %v",
+		committed, retried)
+
+	revisions.commit(t, current, revisions.next(t, "edited on the current release after the restart"))
+	revisions.requireListed(t, current, restarted)
+}
+
+// next returns a request for a revision on top of the document's head that
+// moves it to path.
+func (revisions *upgradeRevisions) next(t *testing.T, path string) *vaultsyncv1.CommitRevisionRequest {
+	t.Helper()
+
+	head := revisions.committed[len(revisions.committed)-1]
+
+	return revisions.client.next(t, head, path+".md", revisions.content, false)
+}
+
+func (revisions *upgradeRevisions) commit(t *testing.T, server *instance, request *vaultsyncv1.CommitRevisionRequest) *vaultsyncv1.Revision {
+	t.Helper()
+
+	committed := revisions.client.mustCommit(t, server, request)
+	revisions.committed = append(revisions.committed, committed)
+
+	return committed
+}
+
+// requireListed checks that each of servers lists exactly the committed
+// revisions, alone and in pages alternating over servers, and that each
+// reports the document's history.
+func (revisions *upgradeRevisions) requireListed(t *testing.T, servers ...*instance) {
+	t.Helper()
+
+	history := slices.Clone(revisions.committed)
+	slices.Reverse(history)
+
+	for _, server := range servers {
+		changes, headSeq := revisions.client.changes(t, 0, server)
+		requireSameRevisions(t, revisions.committed, changes, "changes listed by %s", server.name)
+		requireGapless(t, changes, headSeq)
+
+		requireSameRevisions(t, history, revisions.client.history(t, history[0].GetDocumentId(), 0, server), "history from %s", server.name)
+	}
+
+	changes, headSeq := revisions.client.changes(t, 1, servers...)
+	requireSameRevisions(t, revisions.committed, changes, "changes paged across releases")
+	requireGapless(t, changes, headSeq)
 }
