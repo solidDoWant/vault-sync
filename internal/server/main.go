@@ -110,19 +110,20 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	}()
 
 	srv := New(Options{
-		MaxRequestBytes: cfg.MaxRequestBytes,
-		WriteTimeout:    cfg.WriteTimeout,
-		ShutdownDelay:   cfg.ShutdownDelay,
-		ShutdownTimeout: cfg.ShutdownTimeout,
-		Database:        pool,
-		Authenticator:   authenticator,
-		Devices:         queries,
-		Vaults:          queries,
-		Memberships:     queries,
-		Sync:            &api.SyncService{Store: queries, Logger: logger},
-		Blobs:           blobs,
-		Realtime:        hub,
-		Logger:          logger,
+		MaxRequestBytes:          cfg.MaxRequestBytes,
+		WriteTimeout:             cfg.WriteTimeout,
+		MaxConcurrentRPCsPerUser: cfg.MaxConcurrentRPCsPerUser,
+		ShutdownDelay:            cfg.ShutdownDelay,
+		ShutdownTimeout:          cfg.ShutdownTimeout,
+		Database:                 pool,
+		Authenticator:            authenticator,
+		Devices:                  queries,
+		Vaults:                   queries,
+		Memberships:              queries,
+		Sync:                     &api.SyncService{Store: queries, Logger: logger},
+		Blobs:                    blobs,
+		Realtime:                 hub,
+		Logger:                   logger,
 	})
 
 	if err := srv.ListenAndServe(ctx, cfg.ListenAddress, cfg.MetricsListenAddress); err != nil {

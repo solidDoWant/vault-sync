@@ -22,19 +22,20 @@ import (
 
 // Environment variable names.
 const (
-	ListenAddressEnv        = "VAULT_SYNC_LISTEN_ADDRESS"
-	MetricsListenAddressEnv = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
-	DatabaseURLEnv          = "VAULT_SYNC_DATABASE_URL"
-	DatabaseTLSCertFileEnv  = "VAULT_SYNC_DATABASE_TLS_CERT_FILE"
-	DatabaseTLSKeyFileEnv   = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
-	DatabaseTLSCAFileEnv    = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
-	MaxRequestBytesEnv      = "VAULT_SYNC_MAX_REQUEST_BYTES"
-	WriteTimeoutEnv         = "VAULT_SYNC_WRITE_TIMEOUT"
-	ShutdownDelayEnv        = "VAULT_SYNC_SHUTDOWN_DELAY"
-	ShutdownTimeoutEnv      = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
-	LogLevelEnv             = "VAULT_SYNC_LOG_LEVEL"
-	OIDCIssuerURLEnv        = "VAULT_SYNC_OIDC_ISSUER_URL"
-	OIDCAudienceEnv         = "VAULT_SYNC_OIDC_AUDIENCE"
+	ListenAddressEnv            = "VAULT_SYNC_LISTEN_ADDRESS"
+	MetricsListenAddressEnv     = "VAULT_SYNC_METRICS_LISTEN_ADDRESS"
+	DatabaseURLEnv              = "VAULT_SYNC_DATABASE_URL"
+	DatabaseTLSCertFileEnv      = "VAULT_SYNC_DATABASE_TLS_CERT_FILE"
+	DatabaseTLSKeyFileEnv       = "VAULT_SYNC_DATABASE_TLS_KEY_FILE"
+	DatabaseTLSCAFileEnv        = "VAULT_SYNC_DATABASE_TLS_CA_FILE"
+	MaxRequestBytesEnv          = "VAULT_SYNC_MAX_REQUEST_BYTES"
+	WriteTimeoutEnv             = "VAULT_SYNC_WRITE_TIMEOUT"
+	MaxConcurrentRPCsPerUserEnv = "VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER"
+	ShutdownDelayEnv            = "VAULT_SYNC_SHUTDOWN_DELAY"
+	ShutdownTimeoutEnv          = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
+	LogLevelEnv                 = "VAULT_SYNC_LOG_LEVEL"
+	OIDCIssuerURLEnv            = "VAULT_SYNC_OIDC_ISSUER_URL"
+	OIDCAudienceEnv             = "VAULT_SYNC_OIDC_AUDIENCE"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
@@ -131,6 +132,15 @@ const (
 
 	MinMaxRequestBytes = 1 << 10
 	MaxMaxRequestBytes = 64 << 20
+
+	// DefaultMaxConcurrentRPCsPerUser bounds one user's in-flight
+	// authenticated RPCs on one replica. A device makes one RPC at a time,
+	// so this admits as many devices syncing at once as the realtime
+	// channel admits connections per user, while one user's stalled
+	// responses hold at most this many response buffers (up to
+	// MaxRequestBytes each).
+	DefaultMaxConcurrentRPCsPerUser = 32
+	MaxMaxConcurrentRPCsPerUser     = 10_000
 )
 
 // Config is the server configuration.
@@ -146,6 +156,10 @@ type Config struct {
 	OIDC OIDCConfig
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
+	// MaxConcurrentRPCsPerUser bounds one user's in-flight authenticated
+	// RPCs on this replica; further calls are rejected at once with
+	// RESOURCE_EXHAUSTED.
+	MaxConcurrentRPCsPerUser int
 	// WriteTimeout bounds how long writing an API response may take, from
 	// its first byte, so clients that stop reading release their
 	// connection. It does not bound the handler's work before the response
@@ -204,11 +218,12 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			IssuerURL: get(OIDCIssuerURLEnv),
 			Audience:  get(OIDCAudienceEnv),
 		},
-		MaxRequestBytes: DefaultMaxRequestBytes,
-		WriteTimeout:    DefaultWriteTimeout,
-		ShutdownDelay:   DefaultShutdownDelay,
-		ShutdownTimeout: DefaultShutdownTimeout,
-		LogLevel:        slog.LevelInfo,
+		MaxRequestBytes:          DefaultMaxRequestBytes,
+		WriteTimeout:             DefaultWriteTimeout,
+		MaxConcurrentRPCsPerUser: DefaultMaxConcurrentRPCsPerUser,
+		ShutdownDelay:            DefaultShutdownDelay,
+		ShutdownTimeout:          DefaultShutdownTimeout,
+		LogLevel:                 slog.LevelInfo,
 		Blobs: BlobConfig{
 			MaxChunkBytes:      DefaultBlobMaxChunkBytes,
 			MaxSizeBytes:       DefaultBlobMaxSizeBytes,
@@ -266,6 +281,19 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			problems = append(problems, fmt.Errorf("%s: %s is outside the allowed range %s to %s", WriteTimeoutEnv, raw, MinWriteTimeout, MaxWriteTimeout))
 		default:
 			cfg.WriteTimeout = value
+		}
+	}
+
+	if raw := get(MaxConcurrentRPCsPerUserEnv); raw != "" {
+		value, err := strconv.Atoi(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not an integer", MaxConcurrentRPCsPerUserEnv, raw))
+		case value < 1 || value > MaxMaxConcurrentRPCsPerUser:
+			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range 1 to %d", MaxConcurrentRPCsPerUserEnv, value, MaxMaxConcurrentRPCsPerUser))
+		default:
+			cfg.MaxConcurrentRPCsPerUser = value
 		}
 	}
 
