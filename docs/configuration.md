@@ -2,6 +2,8 @@
 
 `vault-sync-server` is configured entirely by environment variables. An empty variable is treated as unset. On startup the server validates every variable and, if any is missing or invalid, exits with status 1 after logging one `invalid configuration` record whose `problems` field names each offending variable. Secret values (such as the database password) are never echoed.
 
+The `vault-sync-server export` subcommand reads the database, S3 and log-level variables below and ignores the rest; see [export.md](export.md).
+
 ## Environment variables
 
 | Variable | Default | Description |

@@ -6,10 +6,11 @@ import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { createHttpTransport, createProtocolClient } from "../plugin/src/core/protocol/client";
+import { createHttpTransport, createProtocolClient, type ProtocolClient } from "../plugin/src/core/protocol/client";
 import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
 import { ScriptedClient, type Acknowledgement, type RunContext, type Violation } from "./client";
 import { Control } from "./control";
+import { EngineObserver, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
 import { settle, SimNetwork, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
@@ -43,7 +44,11 @@ export class SimRun {
   private constructor(
     readonly context: RunContext,
     readonly clients: ScriptedClient[],
+    /** The real engine's pull side, behind the same faulty network. */
+    readonly observer: EngineObserver,
     private readonly control: Control,
+    /** Fault-free access for the harness's own checks. */
+    private readonly direct: ProtocolClient,
     readonly trace: string[],
   ) {}
 
@@ -75,7 +80,9 @@ export class SimRun {
       const transport: Transport = network.transport(index, http);
       clients.push(new ScriptedClient(index, createProtocolClient({ transport, token: () => token }), device.id, context));
     }
-    const simRun = new SimRun(context, clients, control, trace);
+    const observerIndex = options.clients;
+    const observer = new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), context);
+    const simRun = new SimRun(context, clients, observer, control, setup, trace);
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
   }
@@ -95,7 +102,8 @@ export class SimRun {
    * still apply; call heal first to lift them.
    */
   async drain(client?: number): Promise<void> {
-    const clients = client === undefined ? this.clients : this.clients.filter((candidate) => candidate.index === client);
+    const everyone: { index: number; idle: boolean }[] = [...this.clients, this.observer];
+    const clients = client === undefined ? everyone : everyone.filter((candidate) => candidate.index === client);
     for (let delivery = 0; delivery < maxDrainDeliveries; delivery++) {
       this.context.network.now = this.stepNumber;
       const entry = this.context.network.deliverResponse(client) ?? (await this.context.network.deliverRequest(client));
@@ -120,6 +128,11 @@ export class SimRun {
     for (const client of this.clients) this.context.log(client.start("pull", 0));
     await settle();
     await this.drain();
+    // Every commit has landed, so one more fault-free pull must converge.
+    this.context.log(this.observer.startPull());
+    await settle();
+    await this.drain();
+    this.context.violations.push(...(await this.observer.check(await serverHeads(this.direct, this.context.vaultId))));
     const violations = await this.control.check(this.context.vaultId, this.context.acknowledged);
     for (const violation of violations) {
       this.context.violations.push({ invariant: violation.invariant, detail: this.context.ids.relabel(violation.detail) });
@@ -132,8 +145,11 @@ export class SimRun {
     const network = this.context.network;
     const nothing = (what: string) => (entry: string | undefined) => entry ?? `${step.kind}: no ${what}`;
     switch (step.kind) {
-      case "operation":
-        return this.client(step.client).start(step.operation, step.arg);
+      case "operation": {
+        const entry = this.client(step.client).start(step.operation, step.arg);
+        // The engine pulls whenever the schedule asks any client to pull.
+        return step.operation === "pull" ? `${entry}; ${this.observer.startPull()}` : entry;
+      }
       case "deliver-request":
         return nothing("deliverable request")(await network.deliverRequest(step.client));
       case "deliver-response":
@@ -148,9 +164,13 @@ export class SimRun {
         return nothing("response in flight")(network.dropResponse(step.pick));
       case "partition":
         return network.partition(this.client(step.client).index, step.steps);
-      case "crash":
-        this.client(step.client).crash();
-        return `c${String(step.client)} crashed and restarted with empty memory`;
+      case "crash": {
+        const client = this.client(step.client);
+        client.crash();
+        const entry = `c${String(step.client)} crashed and restarted with empty memory`;
+        // The engine shares its device's fate with client 0.
+        return client.index === 0 ? `${entry}; ${this.observer.crash()}` : entry;
+      }
     }
   }
 
