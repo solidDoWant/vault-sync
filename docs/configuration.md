@@ -123,6 +123,8 @@ Calls rejected for authentication are counted with code `unauthenticated`. Reque
 
 On startup the server connects to PostgreSQL (exiting with status 1 if it cannot), applies any pending schema migrations, and, if an object store is configured, checks that its bucket is reachable before it starts listening.
 
+The server requires **PostgreSQL 14 or newer**; on older versions the schema migrations fail and the server exits. Upgrading to the release that adds migration 0003 rebuilds the unique index on live document paths while holding an exclusive lock on the `documents` table, so commits and reads of documents briefly block on every replica until the migration finishes (the time grows with the number of documents).
+
 On `SIGTERM` or `SIGINT` it shuts down in this order:
 
 1. `/readyz` starts returning 503 immediately.
