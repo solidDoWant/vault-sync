@@ -90,7 +90,7 @@
           # The loader comes from the same nixpkgs as the libraries, so that
           # they agree on the glibc version.
           shellHook = pkgs.lib.optionalString pkgs.stdenv.hostPlatform.isLinux ''
-            export NIX_LD="${pkgs.lib.fileContents "${pkgs.stdenv.cc}/nix-support/dynamic-linker"}"
+            export NIX_LD="${pkgs.stdenv.cc.bintools.dynamicLinker}"
             export NIX_LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath electronLibraries}''${NIX_LD_LIBRARY_PATH:+:$NIX_LD_LIBRARY_PATH}"
           '';
         };

@@ -10,6 +10,8 @@ interface PluginRegistry {
   plugins: {
     enabledPlugins: Set<string>;
     plugins: Record<string, { _loaded?: boolean; manifest: { version: string } } | undefined>;
+    disablePlugin(id: string): Promise<void>;
+    enablePlugin(id: string): Promise<boolean>;
   };
 }
 
@@ -25,6 +27,24 @@ function pluginState() {
       loaded: plugin?._loaded === true,
       version: plugin?.manifest.version ?? null,
     };
+  }, pluginId);
+}
+
+/**
+ * Runs the plugin's load again through Obsidian's own enable path and reports
+ * whether it succeeded. The registry state alone cannot tell: Obsidian marks a
+ * plugin loaded before calling its `onload`, and when `onload` throws (or its
+ * promise rejects) it only logs "Plugin failure" and leaves the plugin
+ * registered and enabled. `enablePlugin` resolves only after `onload` has
+ * settled and resolves `false` when it failed, so this needs no waiting.
+ * `disablePlugin` first, because `enablePlugin` is a no-op for a plugin that is
+ * already registered; neither call changes the saved enabled-plugin list.
+ */
+function reloadPlugin() {
+  return browser.executeObsidian(async ({ app }, id) => {
+    const registry = (app as unknown as PluginRegistry).plugins;
+    await registry.disablePlugin(id);
+    return registry.enablePlugin(id);
   }, pluginId);
 }
 
@@ -66,6 +86,9 @@ describe("vault-sync in Obsidian", function () {
 
   it("loads and enables the built plugin", async function () {
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
+    // Its onload completes without throwing.
+    expect(await reloadPlugin()).toBe(true);
+    expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
   });
 
   it("opens a second vault, with the plugin loaded there too", async function () {
@@ -77,13 +100,16 @@ describe("vault-sync in Obsidian", function () {
     expect(obsidianPage.getVaultPath()).not.toBe(firstPath);
     expect(await vaultFiles()).toEqual(["Second vault.md"]);
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
+    expect(await reloadPlugin()).toBe(true);
     expect((await obsidianPage.getPlatform()).isMobile).toBe(e2eEnvironment.emulateMobile);
   });
 
   it("reaches the harness-started server with the test token", async function () {
     const authorized = await listVaults(e2eEnvironment.token);
     expect(authorized.status).toBe(200);
-    expect(JSON.parse(authorized.body)).toBeInstanceOf(Object);
+    // The test user is a member of no vault, so the decoded ListVaults
+    // response is empty (Connect JSON omits an empty list and page token).
+    expect(JSON.parse(authorized.body)).toEqual({});
 
     // The token is what gets the request in: without it the server refuses.
     const anonymous = await listVaults(null);
