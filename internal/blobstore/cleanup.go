@@ -130,6 +130,10 @@ func (cleaner *Cleaner) RunOnce(ctx context.Context) (CleanupResult, error) {
 }
 
 // Run calls RunOnce every interval until ctx is canceled, logging failures.
+// Each run is cut short when the next one is due, so a run that is stuck
+// (for example behind an object store that stopped answering) fails and is
+// logged instead of holding up every later run. Cutting a run short is safe:
+// every step is idempotent and a session claimed for removal stays reapable.
 func (cleaner *Cleaner) Run(ctx context.Context, interval time.Duration) {
 	logger := cleaner.Logger
 	if logger == nil {
@@ -140,7 +144,11 @@ func (cleaner *Cleaner) Run(ctx context.Context, interval time.Duration) {
 	defer ticker.Stop()
 
 	for {
-		result, err := cleaner.RunOnce(ctx)
+		runCtx, cancel := context.WithTimeout(ctx, interval)
+		result, err := cleaner.RunOnce(runCtx)
+
+		cancel()
+
 		if err != nil && ctx.Err() == nil {
 			logger.WarnContext(ctx, "blob upload cleanup failed; retrying next run", "error", err)
 		}
