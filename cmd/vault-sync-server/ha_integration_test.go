@@ -211,7 +211,10 @@ func TestSIGTERMHasNoClientVisibleImpact(t *testing.T) {
 	cluster := newDeployment(t)
 	binary := buildServer(t)
 
-	const shutdownDelay = 2 * time.Second
+	// The requests a load balancer still routes here after readiness fails
+	// must arrive within the delay, as an operator configures it to cover
+	// the balancer's reaction time. Generous, so they do on a loaded machine.
+	const shutdownDelay = 5 * time.Second
 
 	draining := cluster.start(t, "draining", binary, config.ShutdownDelayEnv+"="+shutdownDelay.String())
 	other := cluster.start(t, "other", binary)
