@@ -177,8 +177,17 @@ func newClient(cfg Config) *s3.Client {
 
 	if cfg.TLSCAFile != "" {
 		caFile := cfg.TLSCAFile
+		endpointHost := ""
+
+		if cfg.Endpoint != "" {
+			// Validate has already rejected unparsable endpoints.
+			if parsed, err := url.Parse(cfg.Endpoint); err == nil {
+				endpointHost = parsed.Hostname()
+			}
+		}
+
 		httpClient = httpClient.WithTransportOptions(func(transport *http.Transport) {
-			transport.TLSClientConfig = rotatingCATLSConfig(caFile)
+			transport.TLSClientConfig = rotatingCATLSConfig(caFile, endpointHost)
 		})
 	}
 
@@ -228,8 +237,9 @@ func (rotating *rotatingSigner) SignHTTP(ctx context.Context, credentials aws.Cr
 }
 
 // rotatingCATLSConfig verifies the server certificate against caFile, read
-// again for every handshake.
-func rotatingCATLSConfig(caFile string) *tls.Config {
+// again for every handshake, and against the host being connected to.
+// endpointHost is the configured endpoint's host (empty for AWS S3).
+func rotatingCATLSConfig(caFile, endpointHost string) *tls.Config {
 	return &tls.Config{
 		MinVersion: tls.VersionTLS12,
 		// The standard verification uses a fixed RootCAs pool, so it is
@@ -237,32 +247,53 @@ func rotatingCATLSConfig(caFile string) *tls.Config {
 		// both the chain and the host name.
 		InsecureSkipVerify: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
-			if len(state.PeerCertificates) == 0 {
-				return errors.New("S3 endpoint presented no certificate")
-			}
-
-			roots, err := loadCAPool(caFile)
-			if err != nil {
-				return err
-			}
-
-			intermediates := x509.NewCertPool()
-			for _, certificate := range state.PeerCertificates[1:] {
-				intermediates.AddCert(certificate)
-			}
-
-			_, err = state.PeerCertificates[0].Verify(x509.VerifyOptions{
-				DNSName:       state.ServerName,
-				Roots:         roots,
-				Intermediates: intermediates,
-			})
-			if err != nil {
-				return fmt.Errorf("verify S3 endpoint certificate: %w", err)
-			}
-
-			return nil
+			return verifyEndpointCertificate(state, caFile, endpointHost)
 		},
 	}
+}
+
+// verifyEndpointCertificate checks the certificate chain against caFile and
+// the leaf against the host the client dialed.
+//
+// For a host name, http.Transport sends it as SNI, and state.ServerName is
+// that name (bucket.endpoint for virtual-hosted addressing). TLS never
+// carries an IP address as SNI, so for an IP-literal endpoint ServerName is
+// empty; x509 would then skip the host check entirely, so the configured
+// endpoint IP is checked against the certificate's IP SANs instead.
+func verifyEndpointCertificate(state tls.ConnectionState, caFile, endpointHost string) error {
+	if len(state.PeerCertificates) == 0 {
+		return errors.New("S3 endpoint presented no certificate")
+	}
+
+	host := state.ServerName
+	if host == "" {
+		host = endpointHost
+	}
+
+	if host == "" {
+		return errors.New("verify S3 endpoint certificate: no host name to verify it against")
+	}
+
+	roots, err := loadCAPool(caFile)
+	if err != nil {
+		return err
+	}
+
+	intermediates := x509.NewCertPool()
+	for _, certificate := range state.PeerCertificates[1:] {
+		intermediates.AddCert(certificate)
+	}
+
+	_, err = state.PeerCertificates[0].Verify(x509.VerifyOptions{
+		DNSName:       host,
+		Roots:         roots,
+		Intermediates: intermediates,
+	})
+	if err != nil {
+		return fmt.Errorf("verify S3 endpoint certificate: %w", err)
+	}
+
+	return nil
 }
 
 func loadCAPool(caFile string) (*x509.CertPool, error) {
