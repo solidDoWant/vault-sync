@@ -1,0 +1,215 @@
+{
+  "description": "Shared path_key vectors (SPEC.md section 5). path_key = NFC(toCasefold(NFD(path))): Unicode canonical caseless matching with full, locale-independent case folding (CaseFolding.txt statuses C and F). Separators and whitespace are not altered. Both internal/pathkey (Go) and plugin/src/core (TypeScript) must produce path_key exactly for every vector.",
+  "vectors": [
+    {
+      "name": "empty path",
+      "path": "",
+      "path_key": ""
+    },
+    {
+      "name": "ascii lowercase is unchanged",
+      "path": "notes/daily.md",
+      "path_key": "notes/daily.md"
+    },
+    {
+      "name": "ascii uppercase folds",
+      "path": "Notes/Daily.MD",
+      "path_key": "notes/daily.md"
+    },
+    {
+      "name": "ascii I folds to i (not Turkic)",
+      "path": "IRMAK.md",
+      "path_key": "irmak.md"
+    },
+    {
+      "name": "precomposed e-acute (NFC input)",
+      "path": "caf\u00e9.md",
+      "path_key": "caf\u00e9.md"
+    },
+    {
+      "name": "decomposed e-acute (NFD input) composes",
+      "path": "cafe\u0301.md",
+      "path_key": "caf\u00e9.md"
+    },
+    {
+      "name": "decomposed uppercase E-acute folds and composes",
+      "path": "CAFE\u0301.md",
+      "path_key": "caf\u00e9.md"
+    },
+    {
+      "name": "precomposed uppercase E-acute",
+      "path": "CAF\u00c9.md",
+      "path_key": "caf\u00e9.md"
+    },
+    {
+      "name": "German sharp s full-folds to ss",
+      "path": "Stra\u00dfe.md",
+      "path_key": "strasse.md"
+    },
+    {
+      "name": "German capital sharp s full-folds to ss",
+      "path": "STRA\u1e9eE.md",
+      "path_key": "strasse.md"
+    },
+    {
+      "name": "ss spelling collides with sharp s",
+      "path": "STRASSE.md",
+      "path_key": "strasse.md"
+    },
+    {
+      "name": "Turkish capital dotted I full-folds to i + combining dot",
+      "path": "\u0130stanbul.md",
+      "path_key": "i\u0307stanbul.md"
+    },
+    {
+      "name": "Turkish dotless i has no default folding",
+      "path": "K\u0131rm\u0131z\u0131.md",
+      "path_key": "k\u0131rm\u0131z\u0131.md"
+    },
+    {
+      "name": "i + combining dot above stays decomposed",
+      "path": "i\u0307.md",
+      "path_key": "i\u0307.md"
+    },
+    {
+      "name": "Greek capital sigma",
+      "path": "\u039f\u0394\u039f\u03a3.md",
+      "path_key": "\u03bf\u03b4\u03bf\u03c3.md"
+    },
+    {
+      "name": "Greek final sigma folds to sigma",
+      "path": "\u03bf\u03b4\u03bf\u03c2.md",
+      "path_key": "\u03bf\u03b4\u03bf\u03c3.md"
+    },
+    {
+      "name": "Greek capital alpha with tonos",
+      "path": "\u0386.md",
+      "path_key": "\u03ac.md"
+    },
+    {
+      "name": "Greek decomposed capital alpha + tonos",
+      "path": "\u0391\u0301.md",
+      "path_key": "\u03ac.md"
+    },
+    {
+      "name": "Greek iota with dialytika and tonos stays composed",
+      "path": "\u0390.md",
+      "path_key": "\u0390.md"
+    },
+    {
+      "name": "Greek capital iota with dialytika + combining acute",
+      "path": "\u03aa\u0301.md",
+      "path_key": "\u0390.md"
+    },
+    {
+      "name": "Greek capital alpha with prosgegrammeni full-folds",
+      "path": "\u1fbc.md",
+      "path_key": "\u03b1\u03b9.md"
+    },
+    {
+      "name": "Greek alpha + combining ypogegrammeni",
+      "path": "\u0391\u0345.md",
+      "path_key": "\u03b1\u03b9.md"
+    },
+    {
+      "name": "Latin small ligature fi full-folds",
+      "path": "\ufb01le.md",
+      "path_key": "file.md"
+    },
+    {
+      "name": "Armenian ligature ech yiwn full-folds",
+      "path": "\u0587.md",
+      "path_key": "\u0565\u0582.md"
+    },
+    {
+      "name": "Cherokee small letter folds to capital",
+      "path": "\uab70.md",
+      "path_key": "\u13a0.md"
+    },
+    {
+      "name": "Cherokee capital letter is already folded",
+      "path": "\u13a0.md",
+      "path_key": "\u13a0.md"
+    },
+    {
+      "name": "Kelvin sign normalizes to k",
+      "path": "\u212a.md",
+      "path_key": "k.md"
+    },
+    {
+      "name": "Angstrom sign normalizes to a-ring",
+      "path": "\u212b.md",
+      "path_key": "\u00e5.md"
+    },
+    {
+      "name": "micro sign folds to Greek mu",
+      "path": "\u00b5m.md",
+      "path_key": "\u03bcm.md"
+    },
+    {
+      "name": "j-caron full-folds and recomposes",
+      "path": "\u01f0.md",
+      "path_key": "\u01f0.md"
+    },
+    {
+      "name": "capital J + combining caron",
+      "path": "J\u030c.md",
+      "path_key": "\u01f0.md"
+    },
+    {
+      "name": "Hangul conjoining jamo compose",
+      "path": "\u1100\u1161.md",
+      "path_key": "\uac00.md"
+    },
+    {
+      "name": "combining marks are canonically reordered (order 1)",
+      "path": "a\u0323\u0301.md",
+      "path_key": "\u1ea1\u0301.md"
+    },
+    {
+      "name": "combining marks are canonically reordered (order 2)",
+      "path": "a\u0301\u0323.md",
+      "path_key": "\u1ea1\u0301.md"
+    },
+    {
+      "name": "fullwidth letters fold but are not compatibility-normalized",
+      "path": "\uff21\uff22.md",
+      "path_key": "\uff41\uff42.md"
+    },
+    {
+      "name": "astral Deseret capital folds",
+      "path": "\ud801\udc00.md",
+      "path_key": "\ud801\udc28.md"
+    },
+    {
+      "name": "emoji is unchanged",
+      "path": "\ud83d\udcdd Notes.md",
+      "path_key": "\ud83d\udcdd notes.md"
+    },
+    {
+      "name": "backslash is preserved, not treated as a separator",
+      "path": "Folder\\Note.MD",
+      "path_key": "folder\\note.md"
+    },
+    {
+      "name": "mixed separators are preserved",
+      "path": "A/B\\C.md",
+      "path_key": "a/b\\c.md"
+    },
+    {
+      "name": "whitespace and dots are preserved",
+      "path": " Note . .MD ",
+      "path_key": " note . .md "
+    },
+    {
+      "name": "repeated slashes are preserved",
+      "path": "A//B.md",
+      "path_key": "a//b.md"
+    },
+    {
+      "name": "long path (decomposed umlauts and sharp s)",
+      "path": "U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308U\u0308/\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df\u00df/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/Deep/END.MD",
+      "path_key": "\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc\u00fc/ssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssssss/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/deep/end.md"
+    }
+  ]
+}
