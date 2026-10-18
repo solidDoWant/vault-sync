@@ -33,10 +33,10 @@ Each run of the loop is one **cycle**. Keep cycles short (one dispatch → revie
 2. **Review open PRs first.** For each open PR with green or pending CI that has no review since its last push, dispatch a `pr-reviewer` subagent. Reviewers merge or request changes themselves; you record the outcome.
 3. **Address review feedback.** For each PR with unaddressed change requests, dispatch an `issue-worker` with the PR number and the review findings.
 4. **Dispatch new work.** Pick ready issues in the current phase's milestone: `status:todo`, not blocked by an open issue (GitHub "blocked by" relationships), highest priority first. Dispatch up to **3 concurrent `issue-worker` subagents** in total (including step 3), each with `isolation: "worktree"`. Prefer issues that touch disjoint areas to reduce merge conflicts.
-5. **Wait for the batch.** Launch the subagents of a batch in a single message so they run in parallel, then process their results.
+5. **Wait for the batch.** Launch the subagents of a batch in a single message so they run in parallel, then process their results. **Never end your session while any subagent is still running** — background subagents die with the session and their work in progress is lost (seen in cycle 2: the #11 worker was killed when the cycle exited). Before exiting, confirm every subagent you launched has returned.
 6. **Record.** Update labels, `.pm/state.md`, and post the cycle summary on the `pm:status` issue.
 7. **Clean up** worktrees of merged/closed PRs (`git worktree remove`, `git worktree prune`) and delete their local branches.
-8. **Exit.** The loop restarts you for the next cycle. If there is genuinely nothing to do (everything is blocked on a human), write that to the state file and the status issue, then exit with the literal line `PM-IDLE` as your final output — the loop backs off.
+8. **Exit.** Aim for cycles of at most ~45 minutes: once the current batch has returned and been recorded, exit rather than starting another batch in the same session. The loop restarts you for the next cycle. If there is genuinely nothing to do (everything is blocked on a human), write that to the state file and the status issue, then exit with the literal line `PM-IDLE` as your final output — the loop backs off.
 
 ## Subagents
 
