@@ -38,7 +38,11 @@ func TestGeneratedTablesAreUpToDate(t *testing.T) {
 
 	committedTS, err := os.ReadFile(filepath.Join("..", "..", "..", "plugin", "src", "core", "pathkey", "casefold-table.ts"))
 	require.NoError(t, err)
-	assert.Equal(t, string(RenderTypeScript(mappings)), string(committedTS), "TypeScript table is stale: "+regenerate)
+	notice, err := os.ReadFile(LicenseFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(notice), "UNICODE LICENSE V3")
+
+	assert.Equal(t, string(RenderTypeScript(mappings, notice)), string(committedTS), "TypeScript table is stale: "+regenerate)
 }
 
 func TestParse(t *testing.T) {

@@ -40,6 +40,12 @@ describe("src/core import fence", () => {
     "the adapter from a nested core folder": 'import { a } from "../../obsidian/adapter";\nexport const b = a;\n',
     "the adapter by src-rooted path": 'import { a } from "src/obsidian/adapter";\nexport const b = a;\n',
     "a dynamic import of the adapter": 'export const load = () => import("../obsidian/adapter");\n',
+    "a dynamic import via a template literal": "export const load = () => import(`obsidian`);\n",
+    "a dynamic import of the adapter via a template literal": "export const load = () => import(`../obsidian/adapter`);\n",
+    "a require via a template literal": "declare const require: (id: string) => unknown;\nexport const o = require(`obsidian`);\n",
+    "an inline type import": 'export type A = import("obsidian").App;\n',
+    "an inline type import of the adapter": 'export type A = import("../obsidian/adapter").Adapter;\n',
+    "an import-equals require": 'import o = require("obsidian");\nexport const p = o;\n',
   };
 
   for (const [name, source] of Object.entries(forbidden)) {

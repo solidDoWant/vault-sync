@@ -15,7 +15,7 @@
 // testdata/paths/vectors.json is the shared conformance suite.
 package pathkey
 
-//go:generate go run ./gen -source gen/CaseFolding-17.0.0.txt -go-out casefold_table.go -ts-out ../../plugin/src/core/pathkey/casefold-table.ts
+//go:generate go run ./gen -source gen/CaseFolding-17.0.0.txt -license gen/LICENSE-UNICODE.txt -go-out casefold_table.go -ts-out ../../plugin/src/core/pathkey/casefold-table.ts
 
 import (
 	"strings"

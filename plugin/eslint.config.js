@@ -1,6 +1,13 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 
+// Matches any module specifier with an `obsidian` path segment: the `obsidian`
+// package (and subpaths) and the src/obsidian adapter. esquery regexes cannot
+// contain a literal slash, so the selector form spells it as a \u escape.
+const OBSIDIAN_SPECIFIER = "(^|/)obsidian(/|$)";
+const OBSIDIAN_SELECTOR_REGEX = `/${OBSIDIAN_SPECIFIER.replaceAll("/", "\\u002F")}/`;
+const OBSIDIAN_MESSAGE = "src/core must not depend on Obsidian or src/obsidian; go through VaultAdapter.";
+
 export default tseslint.config(
   { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts"] },
   js.configs.recommended,
@@ -16,33 +23,26 @@ export default tseslint.config(
   {
     // The sync engine must stay platform-independent so the simulation
     // harness can drive it against an in-memory vault (SPEC.md §4).
-    // Any specifier with an `obsidian` path segment is forbidden: the
-    // `obsidian` package (and subpaths) and the src/obsidian adapter.
-    // test/core-import-fence.test.ts proves each form is rejected.
+    // test/core-import-fence.test.ts proves each form below is rejected.
     files: ["src/core/**/*.ts"],
     rules: {
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            {
-              regex: "(^|/)obsidian(/|$)",
-              message: "src/core must not depend on Obsidian or src/obsidian; go through VaultAdapter.",
-            },
-          ],
-        },
-      ],
+      // Static imports, re-exports and `import x = require(...)`.
+      "no-restricted-imports": ["error", { patterns: [{ regex: OBSIDIAN_SPECIFIER, message: OBSIDIAN_MESSAGE }] }],
+      // Forms no-restricted-imports does not see.
       "no-restricted-syntax": [
         "error",
-        {
-          // esquery regexes cannot contain a literal "/", hence /.
-          selector: "ImportExpression[source.value=/(^|\\u002F)obsidian(\\u002F|$)/]",
-          message: "src/core must not depend on Obsidian or src/obsidian; go through VaultAdapter.",
-        },
-        {
-          selector: "CallExpression[callee.name='require'][arguments.0.value=/(^|\\u002F)obsidian(\\u002F|$)/]",
-          message: "src/core must not depend on Obsidian or src/obsidian; go through VaultAdapter.",
-        },
+        ...[
+          // import("obsidian")
+          `ImportExpression[source.value=${OBSIDIAN_SELECTOR_REGEX}]`,
+          // import(`obsidian`)
+          `ImportExpression > TemplateLiteral.source > TemplateElement[value.cooked=${OBSIDIAN_SELECTOR_REGEX}]`,
+          // require("obsidian")
+          `CallExpression[callee.name='require'][arguments.0.value=${OBSIDIAN_SELECTOR_REGEX}]`,
+          // require(`obsidian`)
+          `CallExpression[callee.name='require'] > TemplateLiteral.arguments > TemplateElement[value.cooked=${OBSIDIAN_SELECTOR_REGEX}]`,
+          // type T = import("obsidian").App
+          `TSImportType[argument.literal.value=${OBSIDIAN_SELECTOR_REGEX}]`,
+        ].map((selector) => ({ selector, message: OBSIDIAN_MESSAGE })),
       ],
     },
   },

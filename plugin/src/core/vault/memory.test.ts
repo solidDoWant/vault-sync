@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { VaultAdapter } from "./adapter";
-import { runConformanceCase, vaultAdapterConformance, type ConformanceCase } from "./conformance";
+import { ConformanceFailure, runConformanceCase, vaultAdapterConformance, type ConformanceCase } from "./conformance";
 import { InMemoryVault } from "./memory";
 
 const fast = { eventTimeoutMs: 200, quietPeriodMs: 10 };
@@ -99,7 +99,7 @@ describe("VaultAdapter conformance suite", () => {
       const testCase = vaultAdapterConformance.find((candidate: ConformanceCase) => candidate.name === caseName);
       expect(testCase).toBeDefined();
       if (testCase === undefined) return;
-      await expect(runConformanceCase(testCase, () => ({ adapter: create() }), fast)).rejects.toThrow();
+      await expect(runConformanceCase(testCase, () => ({ adapter: create() }), fast)).rejects.toBeInstanceOf(ConformanceFailure);
     });
   }
 });
