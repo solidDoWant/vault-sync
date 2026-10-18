@@ -23,7 +23,7 @@ The export reads the server's database and object-store variables (see [configur
 | `VAULT_SYNC_DATABASE_URL` | Required. As for the server. |
 | `VAULT_SYNC_DATABASE_TLS_CERT_FILE`, `VAULT_SYNC_DATABASE_TLS_KEY_FILE`, `VAULT_SYNC_DATABASE_TLS_CA_FILE` | As for the server. |
 | `VAULT_SYNC_S3_BUCKET`, `VAULT_SYNC_S3_ACCESS_KEY_ID_FILE`, `VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE` | Required: the export reads blob contents from S3. |
-| `VAULT_SYNC_S3_ENDPOINT`, `VAULT_SYNC_S3_REGION`, `VAULT_SYNC_S3_FORCE_PATH_STYLE`, `VAULT_SYNC_S3_TLS_CA_FILE` | As for the server. |
+| `VAULT_SYNC_S3_ENDPOINT`, `VAULT_SYNC_S3_REGION`, `VAULT_SYNC_S3_FORCE_PATH_STYLE`, `VAULT_SYNC_S3_TLS_CA_FILE`, `VAULT_SYNC_S3_IDLE_TIMEOUT` | As for the server. The idle timeout fails the export if the store stops answering; a long but progressing download of a large blob is not cut short. |
 | `VAULT_SYNC_LOG_LEVEL` | Minimum log level (`info` by default). |
 
 The export only reads. Every database session it opens sets `default_transaction_read_only`, so PostgreSQL refuses any write even if the role could make one. It never runs migrations: run it against a database the server has already migrated. It reads objects from S3 and never writes or deletes any. A database role with `SELECT` on `vaults`, `documents`, `revisions` and `blobs`, and S3 credentials with `s3:GetObject` and `s3:ListBucket` (for `HeadBucket`) on the bucket, are enough.

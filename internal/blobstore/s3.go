@@ -40,6 +40,10 @@ const DefaultCredentialsRefreshInterval = 10 * time.Second
 // DefaultRegion is used when no region is configured.
 const DefaultRegion = "us-east-1"
 
+// DefaultIdleTimeout is how long a connection to the object store may make
+// no progress before the request on it fails.
+const DefaultIdleTimeout = 2 * time.Minute
+
 // Config describes the S3-compatible object store.
 type Config struct {
 	// Endpoint is the store's base URL (for example https://rgw.example:443).
@@ -65,6 +69,11 @@ type Config struct {
 	// CredentialsRefreshInterval overrides
 	// DefaultCredentialsRefreshInterval.
 	CredentialsRefreshInterval time.Duration
+	// IdleTimeout overrides DefaultIdleTimeout: a request whose connection
+	// sends and receives nothing for this long fails (and the SDK retries
+	// it), so a store that stops answering cannot block a caller forever.
+	// A slow transfer that keeps making progress is never cut short.
+	IdleTimeout time.Duration
 }
 
 // Validate checks cfg without contacting the store. Its errors name settings
@@ -94,6 +103,10 @@ func (cfg Config) Validate() error {
 		if _, err := loadCAPool(cfg.TLSCAFile); err != nil {
 			problems = append(problems, err)
 		}
+	}
+
+	if cfg.IdleTimeout < 0 {
+		problems = append(problems, fmt.Errorf("idle timeout %s must not be negative", cfg.IdleTimeout))
 	}
 
 	return errors.Join(problems...)
@@ -161,8 +174,8 @@ func readSecretFile(path, what string) (string, error) {
 	return value, nil
 }
 
-// newClient builds an S3 client for cfg.
-func newClient(cfg Config) *s3.Client {
+// newClient builds an S3 client for cfg, with optFns applied last.
+func newClient(cfg Config, optFns ...func(*s3.Options)) *s3.Client {
 	lifetime := cfg.CredentialsRefreshInterval
 	if lifetime <= 0 {
 		lifetime = DefaultCredentialsRefreshInterval
@@ -173,7 +186,14 @@ func newClient(cfg Config) *s3.Client {
 		region = DefaultRegion
 	}
 
-	httpClient := awshttp.NewBuildableClient()
+	idleTimeout := cfg.IdleTimeout
+	if idleTimeout <= 0 {
+		idleTimeout = DefaultIdleTimeout
+	}
+
+	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(transport *http.Transport) {
+		boundIdleConnections(transport, idleTimeout)
+	})
 
 	if cfg.TLSCAFile != "" {
 		caFile := cfg.TLSCAFile
@@ -207,7 +227,7 @@ func newClient(cfg Config) *s3.Client {
 		options.BaseEndpoint = aws.String(cfg.Endpoint)
 	}
 
-	return s3.New(options)
+	return s3.New(options, optFns...)
 }
 
 // rotatingSigner is the S3 SigV4 signer, replaced whenever the secret key
