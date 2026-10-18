@@ -102,6 +102,10 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 		// limit cannot be overshot. The count must be a separate statement:
 		// under READ COMMITTED it then takes a snapshot after the lock was
 		// granted and sees the devices of registrations that held it before.
+		// The lock must stay the transaction's first statement: holding no
+		// other lock while waiting for it, the transaction cannot be part of
+		// a deadlock cycle, even with transactions whose FK checks hold the
+		// user row FOR KEY SHARE (which FOR UPDATE conflicts with).
 		var locked uuid.UUID
 
 		err := tx.QueryRow(ctx, `SELECT id FROM users WHERE id = $1 FOR UPDATE`, userID).Scan(&locked)
