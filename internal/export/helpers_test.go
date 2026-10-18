@@ -35,10 +35,13 @@ type fakeSource struct {
 
 	onDocuments func(ctx context.Context, vaultID uuid.UUID, after uuid.UUID) error
 	onContent   func(ctx context.Context, blobID []byte) (io.ReadCloser, error)
+
+	// seqs records the seq of every Documents call, by vault.
+	seqs map[uuid.UUID][]int64
 }
 
 func newFakeSource() *fakeSource {
-	return &fakeSource{documents: map[uuid.UUID][]store.LiveDocument{}, content: map[string][]byte{}}
+	return &fakeSource{documents: map[uuid.UUID][]store.LiveDocument{}, content: map[string][]byte{}, seqs: map[uuid.UUID][]int64{}}
 }
 
 // addVault adds a vault and returns its id.
@@ -82,6 +85,8 @@ func (source *fakeSource) Vaults(_ context.Context, after uuid.UUID, limit int) 
 }
 
 func (source *fakeSource) Documents(ctx context.Context, vaultID uuid.UUID, seq int64, after uuid.UUID, limit int) ([]store.LiveDocument, error) {
+	source.seqs[vaultID] = append(source.seqs[vaultID], seq)
+
 	if source.onDocuments != nil {
 		if err := source.onDocuments(ctx, vaultID, after); err != nil {
 			return nil, err
@@ -416,6 +421,31 @@ func (space workspace) stagingDirectories(t *testing.T) []string {
 	}
 
 	return staging
+}
+
+// emptyDirectories returns the empty directories under directory, by
+// slash-separated relative path.
+func emptyDirectories(t *testing.T, directory string) []string {
+	t.Helper()
+
+	var empty []string
+
+	for path, recorded := range snapshot(t, directory) {
+		if !recorded.Mode.IsDir() {
+			continue
+		}
+
+		entries, err := os.ReadDir(filepath.Join(directory, filepath.FromSlash(path)))
+		require.NoError(t, err)
+
+		if len(entries) == 0 {
+			empty = append(empty, path)
+		}
+	}
+
+	slices.Sort(empty)
+
+	return empty
 }
 
 // documentErrors returns the reasons listed in a summary, by document id.
