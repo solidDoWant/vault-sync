@@ -132,11 +132,7 @@ type Server struct {
 
 // New builds a Server.
 func New(options Options) *Server {
-	registry, rpcMetrics := newRegistry()
-
 	if options.Realtime != nil {
-		registry.MustRegister(options.Realtime.Collectors()...)
-
 		// The hub's WebSockets outlive the HTTP server's own drain.
 		options.Drainers = append(slices.Clip(options.Drainers), options.Realtime)
 	}
@@ -149,8 +145,9 @@ func New(options Options) *Server {
 		options.MaxConcurrentRPCsPerUser = config.DefaultMaxConcurrentRPCsPerUser
 	}
 
+	rpcMetrics := newRPCMetrics()
 	concurrency := newConcurrencyMetrics()
-	registry.MustRegister(concurrency.collectors()...)
+	registry := newRegistry(serverCollectors(options.Realtime, rpcMetrics, concurrency))
 
 	srv := &Server{options: options}
 	srv.api = newAPIHandler(options, rpcMetrics, newUserLimiter(options.MaxConcurrentRPCsPerUser, concurrency))
