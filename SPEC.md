@@ -143,7 +143,16 @@ Server-side details (decision):
 
 Every RPC and every WebSocket message resolves `(user, vault_id)` to a `vault_members` role before touching data. `viewer` can read; `editor` can read and write; `owner` can also manage members and vault settings. There is no admin bypass in the API.
 
+Server-side details (decision):
+
+- Authorization is **central and runs before the handler**: one interceptor, after authentication, on every ConnectRPC service. A single table (`server.VaultProcedures`) classifies every vault-scoped procedure — every procedure whose request carries `vault_id` — as read or write. A request carrying a `vault_id` for an unclassified procedure is rejected, and a test derived from the schema descriptors fails if any such procedure is missing from the table.
+- `vault_id` must be a canonical lowercase UUID (`INVALID_ARGUMENT` otherwise) and is checked before any query. The role is then resolved with one `vault_members` lookup: a vault that does not exist and a vault the caller is not a member of take the same path and return the same `NOT_FOUND` error. A `viewer` calling a write procedure gets `PERMISSION_DENIED`.
+- Handlers take the authorized vault from the interceptor, never from the request, and query through a vault-scoped store handle whose every query filters by that vault, so ids from another vault (documents, revisions, blobs) are simply not found.
+- `CreateVault` makes the caller the `owner` (a user may own at most 100 vaults); `ListVaults` returns only vaults the caller is a member of, with the caller's role. Vault names are non-blank, at most 256 bytes, and contain no control characters (Unicode category `Cc`, including U+0000, which PostgreSQL `text` cannot store); anything else is `INVALID_ARGUMENT` before the database is touched.
+
 ### 9.3 End-to-end encryption (opt-in per vault)
+
+Until Phase 4 (§15) delivers key management, the server rejects `CreateVault` for an E2EE vault (with or without escrow) with `FAILED_PRECONDITION` ("end-to-end encrypted vaults are not supported yet"), so that no client can commit plaintext into a vault marked as encrypted, whose `path_key` the server could not derive (§5; principle 1). Escrow on a plaintext vault is `INVALID_ARGUMENT`.
 
 Envelope encryption with multiple recipients:
 
@@ -226,7 +235,7 @@ Work is tracked as GitHub milestones and parent issues. Each phase ends with a b
 1. **Foundations** — protocol schema, server core (store, blobs, revisions, auth, authz), simulation harness skeleton, CI.
 2. **Single-user file sync** — plugin engine + adapter for desktop and Android, merge, conflicts, history/restore, export job, Helm chart. Dogfooding starts here.
 3. **Vault sharing** — membership management, invitations, roles in UI.
-4. **End-to-end encryption** — key hierarchy, escrow, export decryption, crypto vectors, independent crypto review.
+4. **End-to-end encryption** — key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
 5. **Live collaborative editing** — Yjs documents, conversion, editor binding, awareness, compaction.
 
 ## 16. Open questions
