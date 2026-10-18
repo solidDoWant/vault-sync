@@ -28,6 +28,18 @@ Without Docker the script prints a notice and still runs the tests; every test t
 
 Host ports are ephemeral and bound to `127.0.0.1`, so several runs can proceed in parallel. Renovate keeps the tags and digests current.
 
+## PostgreSQL 14, the minimum supported version
+
+The server supports PostgreSQL 14 or newer (`SPEC.md` §3, §12), but the stack above runs the newest PostgreSQL. So that a migration or query that needs a feature newer than 14 cannot slip in, the schema-dependent tests also run on PostgreSQL 14:
+
+```sh
+make test-integration-postgres14
+```
+
+This runs `scripts/test-integration-postgres14.sh`, which starts the stack with `VAULT_SYNC_TEST_POSTGRES_VERSION=14` and runs every test in `./internal/store/` (the migrations and all store queries) plus `TestRollingUpgrade` in `./cmd/vault-sync-server/` (the previous release's migrations, then this one's, on one database). The rest of the suite runs only on the default image, to keep CI time down. Unlike `make test-integration`, it fails without Docker. CI runs it as the `integration-postgres14` job, which the required `checks` job covers.
+
+`VAULT_SYNC_TEST_POSTGRES_VERSION` works with any script built on `scripts/with-test-stack.sh`, for example `VAULT_SYNC_TEST_POSTGRES_VERSION=14 ./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`. It applies the compose override `deploy/compose/compose.test-postgres<version>.yaml` (only `compose.test-postgres14.yaml` exists; it pins `postgres:14.24-alpine` by digest and changes nothing but the image), and the script fails if no such override exists or the running server reports a different major version. Renovate updates the override's minor version and digest but never proposes a new major version for it.
+
 ## Environment
 
 The script exports these variables; set them yourself to point the tests at other instances.

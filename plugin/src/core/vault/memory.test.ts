@@ -10,7 +10,14 @@ describe("InMemoryVault", () => {
   describe("VaultAdapter conformance", () => {
     for (const testCase of vaultAdapterConformance) {
       it(testCase.name, async () => {
-        await runConformanceCase(testCase, () => ({ adapter: new InMemoryVault() }), fast);
+        await runConformanceCase(
+          testCase,
+          () => {
+            const vault = new InMemoryVault();
+            return { adapter: vault, renameFolder: (from: string, to: string) => vault.renameFolder(from, to) };
+          },
+          fast,
+        );
       });
     }
   });
@@ -93,6 +100,23 @@ describe("VaultAdapter conformance suite", () => {
     ["an adapter that aliases caller buffers", () => new AliasingVault(), "stored content is isolated from caller buffers"],
     ["an adapter that mangles folder paths", () => new FlatVault(), "write creates missing parent folders"],
   ];
+
+  it("fails an adapter that reports a folder rename as creates and deletes", async () => {
+    // Moves each file by copying it, as a sync tool without rename support would.
+    class CopyingVault extends InMemoryVault {
+      override async renameFolder(from: string, to: string): Promise<void> {
+        for (const path of (await this.list()).filter((candidate) => candidate.startsWith(`${from}/`))) {
+          await this.write(`${to}/${path.slice(from.length + 1)}`, await this.read(path));
+          await this.delete(path);
+        }
+      }
+    }
+    const testCase = vaultAdapterConformance.find((candidate) => candidate.name === "a folder rename is reported as a rename of every file in it");
+    expect(testCase).toBeDefined();
+    if (testCase === undefined) return;
+    const vault = new CopyingVault();
+    await expect(runConformanceCase(testCase, () => ({ adapter: vault, renameFolder: (from, to) => vault.renameFolder(from, to) }), fast)).rejects.toBeInstanceOf(ConformanceFailure);
+  });
 
   for (const [name, create, caseName] of mutants) {
     it(`fails ${name}`, async () => {

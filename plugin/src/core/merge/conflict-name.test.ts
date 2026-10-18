@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { conflictCopyPath } from "./conflict-name";
+import { conflictCopyPath, conflictFolderPath } from "./conflict-name";
 
 const date = new Date(Date.UTC(2026, 9, 18, 4, 5, 6));
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -14,6 +14,20 @@ describe("conflictCopyPath", () => {
   it("treats a name without a dot, or with only a leading dot, as having no extension", () => {
     expect(conflictCopyPath("README", "laptop", date)).toBe("README (conflict laptop 2026-10-18 040506)");
     expect(conflictCopyPath("dir/.gitignore", "laptop", date)).toBe("dir/.gitignore (conflict laptop 2026-10-18 040506)");
+  });
+
+  it("names a folder as a conflict copy, without splitting an extension off its name, keeping the path inside it", () => {
+    expect(conflictFolderPath("notes", "c.md", "laptop", date)).toBe("notes (conflict laptop 2026-10-18 040506)/c.md");
+    expect(conflictFolderPath("a/v1.2", "sub/c.md", "laptop", date, 2)).toBe("a/v1.2 (conflict laptop 2026-10-18 040506 2)/sub/c.md");
+  });
+
+  it("shortens a folder's conflict name so the whole path fits, or gives up", () => {
+    const rest = `${"r".repeat(250)}/`.repeat(15) + "c.md";
+    const named = conflictFolderPath("f".repeat(200), rest, "laptop", date);
+    expect(named).not.toBeNull();
+    expect(bytes(named ?? "")).toBeLessThanOrEqual(4096);
+    expect(named?.endsWith(`/${rest}`)).toBe(true);
+    expect(conflictFolderPath("f", `${"r".repeat(250)}/`.repeat(16) + `${"c".repeat(60)}.md`, "laptop", date) === null).toBe(true);
   });
 
   it("adds a counter from the second attempt on", () => {
