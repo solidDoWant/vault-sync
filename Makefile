@@ -27,17 +27,19 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: lint
-lint: plugin-lint ## Run golangci-lint and buf lint (Go/proto) plus eslint + tsc (plugin).
+lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin).
 	golangci-lint run ./...
 	buf lint
+	./scripts/buf-breaking.sh
 
 .PHONY: lint-fix
 lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests.
 	go test -race -count=1 ./...
+	./scripts/buf-breaking_test.sh
 
 .PHONY: test-integration
 test-integration: ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker).

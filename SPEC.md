@@ -55,7 +55,7 @@ These are non-negotiable. When a trade-off arises, resolve it in favor of the pr
 
 The API is defined in **protobuf** under `proto/` and served with **ConnectRPC** (Connect protocol over HTTP/1.1 + JSON or binary) — one schema generates both the Go server stubs and the TypeScript client. Realtime traffic (change notifications now, Yjs updates and awareness later) uses a **WebSocket** carrying protobuf-framed messages, because browsers/Electron cannot do client-streaming over fetch. The server sets CORS headers for Obsidian's app origins (`app://obsidian.md`, `capacitor://localhost`, `http://localhost`) and validates `Origin` on WebSocket upgrade.
 
-Generated code is committed (`make generate` regenerates; CI fails on drift).
+Generated code is committed (`make generate` regenerates; CI fails on drift). Schema changes must stay backward compatible: `make lint` (and CI) runs `buf breaking` with the `FILE` rule set against `master`, and any deliberate exception is a narrowly scoped, temporary `ignore_only` entry in `buf.yaml` (`docs/testing/proto-compatibility.md`).
 
 ## 5. Data model
 
