@@ -158,7 +158,7 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	case isNew:
 	case err != nil:
 		return Revision{}, err
-	case !revision.BaseRevID.Valid || revision.BaseRevID.UUID != document.HeadRevID:
+	case !skipBaseRevisionCheck && (!revision.BaseRevID.Valid || revision.BaseRevID.UUID != document.HeadRevID):
 		return Revision{}, &HeadMovedError{Document: document}
 	case document.Kind != revision.Kind:
 		return Revision{}, ErrKindMismatch

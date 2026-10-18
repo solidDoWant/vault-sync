@@ -1,0 +1,85 @@
+{
+  "name": "simfault-stale-base",
+  "seed": 1,
+  "clients": 3,
+  "violations": [
+    {
+      "invariant": "stale-base",
+      "detail": "revision c2.r2 (seq 3) of document c2.d1 was accepted against stale base c2.r1; the head was c0.r1"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 2266772921
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 2064989866
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 4072898764
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "pull",
+      "arg": 788767260
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 731758584
+    }
+  ]
+}
