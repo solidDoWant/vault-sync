@@ -1,22 +1,17 @@
 package server_test
 
 import (
-	"log/slog"
 	"math/rand/v2"
 	"net/http"
 	"testing"
 
 	"connectrpc.com/connect"
-	jose "github.com/go-jose/go-jose/v4"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
-	"github.com/solidDoWant/vault-sync/internal/auth"
-	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
-	"github.com/solidDoWant/vault-sync/internal/server"
 )
 
 // vaultPageCodecs are the ways a client may encode ListVaults. Without
@@ -28,7 +23,7 @@ var vaultPageCodecs = map[string][]connect.ClientOption{
 	"JSON with gzip":   {connect.WithProtoJSON()},
 }
 
-// fullVaultsFixture is a server whose send limit is maxRequestBytes and a
+// fullVaultsFixture is a server with a send limit and a
 // user, alice, owning api.MaxOwnedVaultsPerUser vaults with
 // api.MaxVaultNameBytes names of pseudo-random letters (so that gzip does
 // not shrink them much).
@@ -42,23 +37,7 @@ type fullVaultsFixture struct {
 func newFullVaultsFixture(t *testing.T, maxRequestBytes int64) *fullVaultsFixture {
 	t.Helper()
 
-	users := newMemoryStore()
-	vaults := newMemoryVaults()
-
-	issuer := authtest.NewIssuer(t)
-	fixture := &authFixture{issuer: issuer, key: issuer.AddKey(t, jose.RS256), logs: &syncBuffer{}}
-	logger := slog.New(slog.NewJSONHandler(fixture.logs, nil))
-	verifier := auth.NewVerifier(auth.VerifierOptions{IssuerURL: issuer.URL, Audience: authtest.DefaultAudience, Logger: logger})
-
-	fixture.running = startServer(t, server.Options{
-		MaxRequestBytes: maxRequestBytes,
-		Database:        reachableDatabase{},
-		Authenticator:   auth.NewAuthenticator(verifier, users),
-		Devices:         users,
-		Vaults:          vaults,
-		Memberships:     vaults,
-		Logger:          logger,
-	})
+	fixture := newVaultFixtureWithLimit(t, newMemoryStore(), newMemoryVaults(), reachableDatabase{}, maxRequestBytes)
 
 	full := &fullVaultsFixture{fixture: fixture, token: fixture.token(t, "alice")}
 	random := rand.New(rand.NewChaCha8([32]byte{136})) //nolint:gosec // Test data, not secrets.
