@@ -88,6 +88,27 @@ func deviceIDStrings(devices []store.Device) []string {
 	return ids
 }
 
+func TestRegisterDeviceRejectsControlCharactersBeforeTheDatabase(t *testing.T) {
+	pool := migratedPool(t)
+	fixture := newAuthFixture(t, store.New(pool), pool)
+	token := fixture.token(t, "alice")
+
+	// PostgreSQL text cannot hold U+0000; the name must be rejected as the
+	// caller's mistake, not surface as an internal error.
+	for _, name := range []string{"Lap\x00top", "\x00", "Laptop\x1b[2J"} {
+		_, err := fixture.registerDevice(t, token, &vaultsyncv1.RegisterDeviceRequest{Name: name})
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "%q", name)
+	}
+
+	assert.NotContains(t, fixture.logs.String(), `"level":"ERROR"`)
+
+	var devices int
+
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT count(*) FROM devices`).Scan(&devices))
+	assert.Zero(t, devices)
+}
+
 func TestRegisterDeviceLimit(t *testing.T) {
 	pool := migratedPool(t)
 	fixture := newAuthFixture(t, store.New(pool), pool)

@@ -75,7 +75,8 @@ export const DeviceService: GenService<{
    * RegisterDevice registers a new device for the caller. Each plugin
    * installation registers once and sends the returned id with every commit.
    *
-   * Errors: INVALID_ARGUMENT for an empty or over-long name or a public key
+   * Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
+   * a control character (such as U+0000), or a public key
    * that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
    *
    * @generated from rpc vaultsync.v1.DeviceService.RegisterDevice
