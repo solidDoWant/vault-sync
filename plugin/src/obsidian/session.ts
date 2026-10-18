@@ -14,7 +14,11 @@ export interface SyncSessionOptions {
   /** The device's name in conflict-copy names (SPEC.md §7); the engine falls back to the device id. */
   deviceName?: string;
   api: PullApi;
-  /** The device's durable journal for this vault (#21); it is what lets a restarted session resume. */
+  /**
+   * The device's durable journal for this vault and server vault
+   * (`openVaultJournal`, ./journal.ts); it is what lets a restarted session
+   * resume. The caller owns it and closes it after `stop`.
+   */
   journal: Journal;
   merge?: MergeHook;
   /** The user's vault changes, to be pushed (SPEC.md §8). */
