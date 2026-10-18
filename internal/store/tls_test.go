@@ -208,18 +208,30 @@ func (server *fakePostgres) port() int {
 	return server.listener.Addr().(*net.TCPAddr).Port
 }
 
-// connect opens one connection with the store's configuration. It returns
-// the client certificate common name the server saw on that connection ("" if
-// the server completed no TLS handshake for it) and the client error. The
-// fake server hangs up after the handshake, so the client error is non-nil
-// even when the handshake completed.
-func (server *fakePostgres) connect(t *testing.T, cfg store.Config) (string, error) {
+// newConnConfig builds the store's connection configuration once, as the
+// server does at startup. Tests reuse it across connections so that anything
+// read from disk when it was built would be observed as stale.
+func newConnConfig(t *testing.T, cfg store.Config) *pgconn.Config {
 	t.Helper()
 
 	poolConfig, err := store.NewPoolConfig(cfg)
 	require.NoError(t, err)
 
-	connConfig := &poolConfig.ConnConfig.Config
+	return &poolConfig.ConnConfig.Config
+}
+
+// connect opens one connection with connConfig. It returns the client
+// certificate common name the server saw on that connection ("" if the server
+// completed no TLS handshake for it) and the client error. The fake server
+// hangs up after the handshake, so the client error is non-nil even when the
+// handshake completed.
+func (server *fakePostgres) connect(t *testing.T, connConfig *pgconn.Config) (string, error) {
+	t.Helper()
+
+	// Wrap the dialer on a copy so that connConfig stays untouched for later
+	// connections. The copy shares connConfig's TLS configuration, including
+	// its certificate callbacks and anything they captured when it was built.
+	connConfig = connConfig.Copy()
 
 	// When a connection breaks, pgx dials the server again from a background
 	// goroutine to send a cancel request, and that connection may complete a
@@ -318,9 +330,9 @@ func TestClientCertificateIsReReadForNewConnections(t *testing.T) {
 	writeFile(t, files.cert, certPEM)
 	writeFile(t, files.key, keyPEM)
 
-	cfg := files.config(server.port(), "verify-full")
+	connConfig := newConnConfig(t, files.config(server.port(), "verify-full"))
 
-	commonName, err := server.connect(t, cfg)
+	commonName, err := server.connect(t, connConfig)
 	require.Equal(t, "client-1", commonName, "client error: %v", err)
 
 	// Rotate the client certificate on disk; the same configuration must
@@ -329,7 +341,7 @@ func TestClientCertificateIsReReadForNewConnections(t *testing.T) {
 	writeFile(t, files.cert, certPEM)
 	writeFile(t, files.key, keyPEM)
 
-	commonName, err = server.connect(t, cfg)
+	commonName, err = server.connect(t, connConfig)
 	require.Equal(t, "client-2", commonName, "client error: %v", err)
 }
 
@@ -346,22 +358,24 @@ func TestServerCAIsReReadForNewConnections(t *testing.T) {
 	writeFile(t, files.cert, certPEM)
 	writeFile(t, files.key, keyPEM)
 
-	cfg := files.config(server.port(), "verify-full")
+	connConfig := newConnConfig(t, files.config(server.port(), "verify-full"))
 
-	commonName, err := server.connect(t, cfg)
+	commonName, err := server.connect(t, connConfig)
 	require.Equal(t, "client", commonName, "client error: %v", err)
 
-	// The server moves to a certificate from a new CA that the client does
-	// not trust yet: the handshake must fail.
-	server.serverCertificate.Store(newServerCA.serverCertificate(t, loopback))
-
-	commonName, err = server.connect(t, cfg)
-	requireRejected(t, commonName, err)
-
-	// Once the new CA bundle is on disk, new connections trust it.
+	// Revoke the server's CA by replacing the bundle on disk with one that
+	// no longer contains it: the same configuration must reject the server
+	// on the next connection, without a restart.
 	writeFile(t, files.ca, newServerCA.pem)
 
-	commonName, err = server.connect(t, cfg)
+	commonName, err = server.connect(t, connConfig)
+	requireRejected(t, commonName, err)
+
+	// Once the server presents a certificate from the CA now on disk, the
+	// same configuration trusts it again.
+	server.serverCertificate.Store(newServerCA.serverCertificate(t, loopback))
+
+	commonName, err = server.connect(t, connConfig)
 	require.Equal(t, "client", commonName, "client error: %v", err)
 }
 
@@ -380,7 +394,7 @@ func TestCAFileEnforcesHostNameVerification(t *testing.T) {
 
 	for _, sslmode := range []string{"require", "verify-ca", "verify-full"} {
 		t.Run(sslmode, func(t *testing.T) {
-			commonName, err := server.connect(t, files.config(server.port(), sslmode))
+			commonName, err := server.connect(t, newConnConfig(t, files.config(server.port(), sslmode)))
 			requireRejected(t, commonName, err)
 		})
 	}
