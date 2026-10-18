@@ -1,29 +1,22 @@
-// Command vault-sync-server runs the vault-sync API server. Subcommands (for
-// example the plaintext export job) are added as the project is implemented;
-// see SPEC.md §4.
+// Command vault-sync-server runs the vault-sync API server. It is configured
+// by environment variables (docs/configuration.md) and shuts down gracefully
+// on SIGTERM or SIGINT. Subcommands (for example the plaintext export job)
+// are added as the project is implemented; see SPEC.md §4.
 package main
 
 import (
-	"flag"
-	"fmt"
-	"log/slog"
+	"context"
 	"os"
+	"os/signal"
+	"syscall"
 
-	"github.com/solidDoWant/vault-sync/internal/version"
+	"github.com/solidDoWant/vault-sync/internal/server"
 )
 
 func main() {
-	showVersion := flag.Bool("version", false, "print the version and exit")
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
+	code := server.Main(ctx, os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)
 
-	flag.Parse()
-
-	if *showVersion {
-		fmt.Println(version.String())
-
-		return
-	}
-
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
-	logger.Error("server not implemented yet", "version", version.String())
-	os.Exit(1)
+	stop()
+	os.Exit(code)
 }
