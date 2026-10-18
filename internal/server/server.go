@@ -21,6 +21,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/authz"
 )
 
 // AllowedOrigins are the Obsidian app origins allowed to call the API from a
@@ -57,6 +58,11 @@ type Options struct {
 	Authenticator *auth.Authenticator
 	// Devices stores devices. When nil, DeviceService is unimplemented.
 	Devices api.DeviceStore
+	// Vaults stores vaults. When nil, VaultService is unimplemented.
+	Vaults api.VaultStore
+	// Memberships resolves callers' vault roles for every procedure in
+	// VaultProcedures. When nil, every caller is treated as a non-member.
+	Memberships authz.MembershipStore
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
@@ -99,13 +105,32 @@ var PublicProcedures = []string{
 	vaultsyncv1connect.ServerInfoServiceGetServerInfoProcedure,
 }
 
+// VaultProcedures classifies every vault-scoped procedure (every procedure
+// whose request carries a vault_id) as a read or a write (SPEC.md §9.2). The
+// authorization interceptor resolves the caller's role in the vault before
+// the handler runs: non-members get NOT_FOUND and viewers calling a write get
+// PERMISSION_DENIED. A request carrying a vault_id for a procedure missing
+// here is rejected.
+var VaultProcedures = map[string]authz.Access{
+	vaultsyncv1connect.SyncServiceListChangesProcedure:        authz.Read,
+	vaultsyncv1connect.SyncServiceGetRevisionProcedure:        authz.Read,
+	vaultsyncv1connect.SyncServiceGetDocumentHistoryProcedure: authz.Read,
+	vaultsyncv1connect.SyncServiceCommitRevisionProcedure:     authz.Write,
+	vaultsyncv1connect.BlobServiceDownloadBlobProcedure:       authz.Read,
+	vaultsyncv1connect.BlobServiceBeginBlobProcedure:          authz.Write,
+	vaultsyncv1connect.BlobServicePutBlobChunkProcedure:       authz.Write,
+	vaultsyncv1connect.BlobServiceCommitBlobProcedure:         authz.Write,
+}
+
 func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 	// One option set for every service. Interceptors run outermost first:
-	// metrics, then authentication, so rejected calls are still counted.
+	// metrics, then authentication, then vault authorization, so rejected
+	// calls are still counted and authorization always knows the caller.
 	handlerOptions := []connect.HandlerOption{
 		connect.WithInterceptors(
 			metrics.interceptor(),
 			auth.NewInterceptor(options.Authenticator, PublicProcedures, options.Logger),
+			authz.NewInterceptor(options.Memberships, VaultProcedures, options.Logger),
 		),
 		// Bounds the decoded (and decompressed) message size.
 		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
@@ -116,9 +141,14 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		devices = api.DeviceService{Devices: options.Devices, Logger: options.Logger}
 	}
 
+	var vaults vaultsyncv1connect.VaultServiceHandler = vaultsyncv1connect.UnimplementedVaultServiceHandler{}
+	if options.Vaults != nil {
+		vaults = api.VaultService{Vaults: options.Vaults, Logger: options.Logger}
+	}
+
 	mux := http.NewServeMux()
 	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(api.ServerInfoService{}, handlerOptions...))
-	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaultsyncv1connect.UnimplementedVaultServiceHandler{}, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaults, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(vaultsyncv1connect.UnimplementedSyncServiceHandler{}, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(vaultsyncv1connect.UnimplementedBlobServiceHandler{}, handlerOptions...))

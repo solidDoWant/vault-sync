@@ -34,6 +34,12 @@ The discovery document, the `jwks_uri` it names and every redirect are fetched o
 
 The first authenticated request of a new `(issuer, subject)` pair creates its user.
 
+### Authorization
+
+Every RPC whose request names a `vault_id` is authorized against the caller's membership in that vault before it runs. There is no administrator bypass. A caller who is not a member gets `not_found` (HTTP 404), the same response as for a vault that does not exist. A `viewer` calling a write RPC (committing revisions, uploading blobs) gets `permission_denied` (HTTP 403). A malformed `vault_id` (not a lowercase hyphenated UUID) gets `invalid_argument`.
+
+A user becomes a vault's `owner` by creating it. A user may own at most 100 vaults, and vault names are at most 256 bytes and may not contain control characters (Unicode category `Cc`, such as U+0000 or a newline); such names get `invalid_argument`. Creating an end-to-end encrypted vault is rejected with `failed_precondition` until end-to-end encryption is supported. Inviting other members comes in a later release.
+
 ### PostgreSQL TLS
 
 TLS is enabled with the DSN's `sslmode`; use `require`, `verify-ca` or `verify-full`. Setting any of the TLS file variables with a DSN whose first connection attempt is plaintext (`sslmode=disable` or `allow`) is rejected at startup. With `sslmode=prefer` (the libpq default when `sslmode` is omitted) and a TLS file set, the plaintext fallback is removed, so the connection never silently downgrades.
