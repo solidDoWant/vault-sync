@@ -5,6 +5,7 @@ run:
   build-tags:
     - integration
     - sim
+    - e2e
 
 linters:
   default: none

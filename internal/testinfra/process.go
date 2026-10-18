@@ -152,6 +152,10 @@ func BuildServer(t testing.TB, repoRoot string, tags ...string) string {
 	t.Helper()
 
 	binary := filepath.Join(t.TempDir(), "vault-sync-server")
+	if runtime.GOOS == "windows" {
+		// Windows only runs files with an executable extension.
+		binary += ".exe"
+	}
 
 	arguments := []string{"build", "-o", binary}
 	if len(tags) > 0 {

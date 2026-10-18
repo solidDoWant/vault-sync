@@ -5,7 +5,7 @@
 # command, and tears the stack down on exit, whether the command passes,
 # fails, or is interrupted. Requires Docker.
 #
-# Used by scripts/test-integration.sh and scripts/test-sim.sh.
+# Used by scripts/test-integration.sh, scripts/test-sim.sh and scripts/test-e2e.sh.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."

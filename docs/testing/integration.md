@@ -8,7 +8,7 @@ Server integration tests run against a real PostgreSQL and a real S3-compatible 
 make test-integration
 ```
 
-This runs `scripts/test-integration.sh`, which uses `scripts/with-test-stack.sh` (shared with `make test-sim`, see `simulation.md`) to:
+This runs `scripts/test-integration.sh`, which uses `scripts/with-test-stack.sh` (shared with `make test-sim` and `make test-e2e`, see `simulation.md` and `e2e.md`) to:
 
 1. start the stack in `deploy/compose/compose.test.yaml` under a compose project name unique to the run, waiting until every service is healthy;
 2. export the connection details below;

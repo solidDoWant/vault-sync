@@ -13,5 +13,7 @@
     "noEmit": true,
     "types": []
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"]
+  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/**/*.ts"],
+  // The e2e suite is its own program (test/e2e/tsconfig.json).
+  "exclude": ["test/e2e"]
 }

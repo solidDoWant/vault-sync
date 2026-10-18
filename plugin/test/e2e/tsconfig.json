@@ -1,0 +1,13 @@
+{
+  // The e2e suite (specs, harness plugin, wdio config) as its own program:
+  // its globals (mocha's describe/it, WebdriverIO's browser) must not leak
+  // into the plugin and unit-test program (../../tsconfig.json), which
+  // excludes this directory. Named tsconfig.json so that eslint's project
+  // service finds it for the files here.
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework", "wdio-obsidian-service"]
+  },
+  "include": ["**/*.ts", "../../wdio.conf.mts"],
+  "exclude": ["harness/dist"]
+}
