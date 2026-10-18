@@ -8,11 +8,13 @@ import (
 	"log/slog"
 	"net"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -29,7 +31,53 @@ const (
 	LogLevelEnv             = "VAULT_SYNC_LOG_LEVEL"
 	OIDCIssuerURLEnv        = "VAULT_SYNC_OIDC_ISSUER_URL"
 	OIDCAudienceEnv         = "VAULT_SYNC_OIDC_AUDIENCE"
+
+	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
+	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
+	S3BucketEnv              = "VAULT_SYNC_S3_BUCKET"
+	S3AccessKeyIDFileEnv     = "VAULT_SYNC_S3_ACCESS_KEY_ID_FILE"
+	S3SecretAccessKeyFileEnv = "VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE"
+	S3ForcePathStyleEnv      = "VAULT_SYNC_S3_FORCE_PATH_STYLE"
+	S3TLSCAFileEnv           = "VAULT_SYNC_S3_TLS_CA_FILE"
+
+	BlobMaxChunkBytesEnv      = "VAULT_SYNC_BLOB_MAX_CHUNK_BYTES"
+	BlobMaxSizeBytesEnv       = "VAULT_SYNC_BLOB_MAX_SIZE_BYTES"
+	BlobMaxUploadsPerVaultEnv = "VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT"
+	BlobUploadTTLEnv          = "VAULT_SYNC_BLOB_UPLOAD_TTL"
 )
+
+// Blob defaults and bounds.
+const (
+	// DefaultBlobMaxChunkBytes keeps a chunk upload, with its protobuf
+	// framing, below the WAF's 1 MiB inspected-body limit (SPEC.md §3).
+	DefaultBlobMaxChunkBytes      = 768 << 10
+	DefaultBlobMaxSizeBytes       = 1 << 30
+	DefaultBlobMaxUploadsPerVault = 32
+	DefaultBlobUploadTTL          = 24 * time.Hour
+
+	// ChunkRequestOverheadBytes is reserved in every request body for the
+	// fields of a PutBlobChunkRequest besides its data (binary protobuf: a
+	// vault id, a blob id, an offset and field framing take under 100
+	// bytes), so a maximum-size chunk always fits the body limit.
+	ChunkRequestOverheadBytes = 1 << 10
+
+	MaxBlobMaxUploadsPerVault = 10000
+	MinBlobUploadTTL          = 10 * time.Minute
+)
+
+// BlobConfig bounds blob uploads (SPEC.md §6.2).
+type BlobConfig struct {
+	// MaxChunkBytes is the largest upload chunk and the largest download
+	// range returned at once.
+	MaxChunkBytes int64
+	// MaxSizeBytes is the largest blob.
+	MaxSizeBytes int64
+	// MaxUploadsPerVault bounds the upload sessions in progress per vault.
+	MaxUploadsPerVault int
+	// UploadTTL is how long an upload session may be idle before it is
+	// removed.
+	UploadTTL time.Duration
+}
 
 // Defaults and bounds.
 const (
@@ -68,6 +116,11 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// LogLevel is the minimum level logged.
 	LogLevel slog.Level
+	// S3 is the object store holding blob contents, or nil when no S3
+	// variable is set; the blob RPCs are then unimplemented.
+	S3 *blobstore.Config
+	// Blobs bounds blob uploads.
+	Blobs BlobConfig
 }
 
 // OIDCConfig identifies the OIDC issuer whose access tokens the server
@@ -109,6 +162,12 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		MaxRequestBytes: DefaultMaxRequestBytes,
 		ShutdownTimeout: DefaultShutdownTimeout,
 		LogLevel:        slog.LevelInfo,
+		Blobs: BlobConfig{
+			MaxChunkBytes:      DefaultBlobMaxChunkBytes,
+			MaxSizeBytes:       DefaultBlobMaxSizeBytes,
+			MaxUploadsPerVault: DefaultBlobMaxUploadsPerVault,
+			UploadTTL:          DefaultBlobUploadTTL,
+		},
 	}
 
 	problems = append(problems, checkIssuerURL(cfg.OIDC.IssuerURL))
@@ -158,11 +217,121 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		}
 	}
 
+	var s3Problems []error
+
+	cfg.S3, s3Problems = loadS3(get)
+	problems = append(problems, s3Problems...)
+	problems = append(problems, loadBlobs(get, &cfg)...)
+
 	if err := errors.Join(problems...); err != nil {
 		return Config{}, err
 	}
 
 	return cfg, nil
+}
+
+// loadS3 returns the object-store configuration, or nil when no S3 variable
+// is set.
+func loadS3(get func(string) string) (*blobstore.Config, []error) {
+	names := []string{
+		S3EndpointEnv, S3RegionEnv, S3BucketEnv, S3AccessKeyIDFileEnv,
+		S3SecretAccessKeyFileEnv, S3ForcePathStyleEnv, S3TLSCAFileEnv,
+	}
+
+	if !slices.ContainsFunc(names, func(name string) bool { return get(name) != "" }) {
+		return nil, nil
+	}
+
+	s3 := &blobstore.Config{
+		Endpoint:            get(S3EndpointEnv),
+		Region:              stringOr(get(S3RegionEnv), blobstore.DefaultRegion),
+		Bucket:              get(S3BucketEnv),
+		AccessKeyIDFile:     get(S3AccessKeyIDFileEnv),
+		SecretAccessKeyFile: get(S3SecretAccessKeyFileEnv),
+		ForcePathStyle:      true,
+		TLSCAFile:           get(S3TLSCAFileEnv),
+	}
+
+	var problems []error
+
+	if raw := get(S3ForcePathStyleEnv); raw != "" {
+		value, err := strconv.ParseBool(raw)
+		if err != nil {
+			problems = append(problems, fmt.Errorf("%s: %q is not true or false", S3ForcePathStyleEnv, raw))
+		}
+
+		s3.ForcePathStyle = value
+	}
+
+	if s3.Bucket == "" {
+		problems = append(problems, fmt.Errorf("%s is required when any VAULT_SYNC_S3_* variable is set", S3BucketEnv))
+	}
+
+	if s3.AccessKeyIDFile == "" || s3.SecretAccessKeyFile == "" {
+		problems = append(problems, fmt.Errorf("%s and %s are required when any VAULT_SYNC_S3_* variable is set", S3AccessKeyIDFileEnv, S3SecretAccessKeyFileEnv))
+	}
+
+	if s3.Bucket != "" && s3.AccessKeyIDFile != "" && s3.SecretAccessKeyFile != "" {
+		// Validate reads the credential and CA files but never echoes
+		// their contents.
+		if err := s3.Validate(); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", strings.Join([]string{S3EndpointEnv, S3AccessKeyIDFileEnv, S3SecretAccessKeyFileEnv, S3TLSCAFileEnv}, ", "), err))
+		}
+	}
+
+	return s3, problems
+}
+
+func loadBlobs(get func(string) string, cfg *Config) []error {
+	var problems []error
+
+	parseInt := func(name string, minimum, maximum int64, target *int64) {
+		raw := get(name)
+		if raw == "" {
+			return
+		}
+
+		value, err := strconv.ParseInt(raw, 10, 64)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not an integer", name, raw))
+		case value < minimum || value > maximum:
+			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range %d to %d", name, value, minimum, maximum))
+		default:
+			*target = value
+		}
+	}
+
+	parseInt(BlobMaxChunkBytesEnv, blobstore.MinChunkBytes, MaxMaxRequestBytes, &cfg.Blobs.MaxChunkBytes)
+	parseInt(BlobMaxSizeBytesEnv, 1, blobstore.MaxBlobBytes, &cfg.Blobs.MaxSizeBytes)
+
+	uploads := int64(cfg.Blobs.MaxUploadsPerVault)
+	parseInt(BlobMaxUploadsPerVaultEnv, 1, MaxBlobMaxUploadsPerVault, &uploads)
+	cfg.Blobs.MaxUploadsPerVault = int(uploads)
+
+	if raw := get(BlobUploadTTLEnv); raw != "" {
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 24h)", BlobUploadTTLEnv, raw))
+		case value < MinBlobUploadTTL:
+			problems = append(problems, fmt.Errorf("%s: must be at least %s, got %s", BlobUploadTTLEnv, MinBlobUploadTTL, raw))
+		default:
+			cfg.Blobs.UploadTTL = value
+		}
+	}
+
+	// Every chunk upload must fit the request body limit (which matches the
+	// WAF's), framing included, or uploads could never succeed.
+	if cfg.Blobs.MaxChunkBytes+ChunkRequestOverheadBytes > cfg.MaxRequestBytes {
+		problems = append(problems, fmt.Errorf(
+			"%s (%d) plus %d bytes of request framing must not exceed %s (%d): lower the chunk size or raise the request limit",
+			BlobMaxChunkBytesEnv, cfg.Blobs.MaxChunkBytes, ChunkRequestOverheadBytes, MaxRequestBytesEnv, cfg.MaxRequestBytes))
+	}
+
+	return problems
 }
 
 func stringOr(value, fallback string) string {
