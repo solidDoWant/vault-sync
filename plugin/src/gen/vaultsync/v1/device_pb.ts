@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/device.proto.
  */
 export const file_vaultsync_v1_device: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiJQoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkiPgoWUmVnaXN0ZXJEZXZpY2VSZXNwb25zZRIkCgZkZXZpY2UYASABKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlMm4KDURldmljZVNlcnZpY2USXQoOUmVnaXN0ZXJEZXZpY2USIy52YXVsdHN5bmMudjEuUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0GiQudmF1bHRzeW5jLnYxLlJlZ2lzdGVyRGV2aWNlUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_vaultsync_v1_types]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiOQoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDCI+ChZSZWdpc3RlckRldmljZVJlc3BvbnNlEiQKBmRldmljZRgBIAEoCzIULnZhdWx0c3luYy52MS5EZXZpY2UybgoNRGV2aWNlU2VydmljZRJdCg5SZWdpc3RlckRldmljZRIjLnZhdWx0c3luYy52MS5SZWdpc3RlckRldmljZVJlcXVlc3QaJC52YXVsdHN5bmMudjEuUmVnaXN0ZXJEZXZpY2VSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
 
 /**
  * RegisterDeviceRequest describes the device to register.
@@ -27,6 +27,14 @@ export type RegisterDeviceRequest = Message<"vaultsync.v1.RegisterDeviceRequest"
    * @generated from field: string name = 1;
    */
   name: string;
+
+  /**
+   * The device's X25519 public key (SPEC.md §5): exactly 32 bytes, or empty
+   * for a device registered without one.
+   *
+   * @generated from field: bytes public_key = 2;
+   */
+  publicKey: Uint8Array;
 };
 
 /**
@@ -67,8 +75,8 @@ export const DeviceService: GenService<{
    * RegisterDevice registers a new device for the caller. Each plugin
    * installation registers once and sends the returned id with every commit.
    *
-   * Errors: INVALID_ARGUMENT for an empty or over-long name;
-   * RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+   * Errors: INVALID_ARGUMENT for an empty or over-long name or a public key
+   * that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
    *
    * @generated from rpc vaultsync.v1.DeviceService.RegisterDevice
    */

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,8 @@ const (
 	MaxRequestBytesEnv      = "VAULT_SYNC_MAX_REQUEST_BYTES"
 	ShutdownTimeoutEnv      = "VAULT_SYNC_SHUTDOWN_TIMEOUT"
 	LogLevelEnv             = "VAULT_SYNC_LOG_LEVEL"
+	OIDCIssuerURLEnv        = "VAULT_SYNC_OIDC_ISSUER_URL"
+	OIDCAudienceEnv         = "VAULT_SYNC_OIDC_AUDIENCE"
 )
 
 // Defaults and bounds.
@@ -49,6 +52,8 @@ type Config struct {
 	MetricsListenAddress string
 	// Database is the PostgreSQL connection configuration.
 	Database store.Config
+	// OIDC configures access-token validation (SPEC.md §9.1).
+	OIDC OIDCConfig
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
 	// ShutdownTimeout bounds how long in-flight requests may drain after a
@@ -56,6 +61,17 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// LogLevel is the minimum level logged.
 	LogLevel slog.Level
+}
+
+// OIDCConfig identifies the OIDC issuer whose access tokens the server
+// accepts.
+type OIDCConfig struct {
+	// IssuerURL is the issuer identifier. Tokens' iss claim must equal it
+	// exactly, and its key set is discovered from
+	// IssuerURL/.well-known/openid-configuration.
+	IssuerURL string
+	// Audience must appear in tokens' aud claim.
+	Audience string
 }
 
 // Load reads the configuration through lookup (os.LookupEnv in production).
@@ -79,9 +95,19 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
 			TLSCAFile:   get(DatabaseTLSCAFileEnv),
 		},
+		OIDC: OIDCConfig{
+			IssuerURL: get(OIDCIssuerURLEnv),
+			Audience:  get(OIDCAudienceEnv),
+		},
 		MaxRequestBytes: DefaultMaxRequestBytes,
 		ShutdownTimeout: DefaultShutdownTimeout,
 		LogLevel:        slog.LevelInfo,
+	}
+
+	problems = append(problems, checkIssuerURL(cfg.OIDC.IssuerURL))
+
+	if cfg.OIDC.Audience == "" {
+		problems = append(problems, fmt.Errorf("%s is required", OIDCAudienceEnv))
 	}
 
 	problems = append(problems, checkListenAddress(ListenAddressEnv, cfg.ListenAddress))
@@ -151,6 +177,36 @@ func checkListenAddress(name, address string) error {
 	}
 
 	return nil
+}
+
+// checkIssuerURL requires an absolute https URL without query or fragment
+// (OpenID Connect Discovery 1.0 §2). Plain http is accepted only for a
+// loopback host, for local development.
+func checkIssuerURL(issuer string) error {
+	if issuer == "" {
+		return fmt.Errorf("%s is required", OIDCIssuerURLEnv)
+	}
+
+	parsed, err := url.Parse(issuer)
+	if err != nil || !parsed.IsAbs() || parsed.Host == "" {
+		return fmt.Errorf("%s: %q is not an absolute URL", OIDCIssuerURLEnv, issuer)
+	}
+
+	if parsed.RawQuery != "" || parsed.Fragment != "" || parsed.User != nil {
+		return fmt.Errorf("%s: %q must not contain a query, fragment or credentials", OIDCIssuerURLEnv, issuer)
+	}
+
+	switch parsed.Scheme {
+	case "https":
+		return nil
+	case "http":
+		host := parsed.Hostname()
+		if ip := net.ParseIP(host); host == "localhost" || (ip != nil && ip.IsLoopback()) {
+			return nil
+		}
+	}
+
+	return fmt.Errorf("%s: must use https (plain http is allowed only for a loopback host), got %q", OIDCIssuerURLEnv, issuer)
 }
 
 func checkDatabase(database store.Config) error {

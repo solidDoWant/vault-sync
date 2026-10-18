@@ -196,7 +196,7 @@ func TestMetricsAreServedOnTheSeparateMetricsPort(t *testing.T) {
 	assert.Contains(t, body, "go_goroutines ")
 	assert.Contains(t, body, "go_memstats_alloc_bytes ")
 	assert.Contains(t, body, `vault_sync_rpc_requests_total{code="ok",procedure="/vaultsync.v1.ServerInfoService/GetServerInfo"} 1`)
-	assert.Contains(t, body, `vault_sync_rpc_requests_total{code="unimplemented",procedure="/vaultsync.v1.DeviceService/RegisterDevice"} 1`)
+	assert.Contains(t, body, `vault_sync_rpc_requests_total{code="unauthenticated",procedure="/vaultsync.v1.DeviceService/RegisterDevice"} 1`)
 	assert.Contains(t, body, `vault_sync_rpc_request_duration_seconds_count{code="ok",procedure="/vaultsync.v1.ServerInfoService/GetServerInfo"} 1`)
 
 	for _, path := range []string{"/metrics", "/healthz", "/readyz"} {

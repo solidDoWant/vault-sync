@@ -20,6 +20,7 @@ import (
 
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/auth"
 )
 
 // AllowedOrigins are the Obsidian app origins allowed to call the API from a
@@ -51,6 +52,11 @@ type Options struct {
 	ShutdownTimeout time.Duration
 	// Database is checked by /readyz.
 	Database Pinger
+	// Authenticator validates bearer tokens. When nil, every procedure not
+	// in PublicProcedures is rejected as unauthenticated.
+	Authenticator *auth.Authenticator
+	// Devices stores devices. When nil, DeviceService is unimplemented.
+	Devices api.DeviceStore
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
@@ -85,28 +91,37 @@ func (srv *Server) MetricsHandler() http.Handler {
 	return srv.metrics
 }
 
+// PublicProcedures are the only procedures served without authentication.
+// Every other procedure, including any added later, requires a valid bearer
+// token (SPEC.md §9.1): the authentication interceptor is installed on every
+// service and denies by default.
+var PublicProcedures = []string{
+	vaultsyncv1connect.ServerInfoServiceGetServerInfoProcedure,
+}
+
 func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
-	// Interceptors run outermost first. Options shared by every service:
-	common := []connect.HandlerOption{
-		connect.WithInterceptors(metrics.interceptor()),
+	// One option set for every service. Interceptors run outermost first:
+	// metrics, then authentication, so rejected calls are still counted.
+	handlerOptions := []connect.HandlerOption{
+		connect.WithInterceptors(
+			metrics.interceptor(),
+			auth.NewInterceptor(options.Authenticator, PublicProcedures, options.Logger),
+		),
 		// Bounds the decoded (and decompressed) message size.
 		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
 	}
 
-	// ServerInfoService is the only unauthenticated service.
-	public := common
-
-	// Every other service requires authentication. The authentication
-	// interceptor is appended here (after metrics, so rejected calls are
-	// still counted).
-	protected := append([]connect.HandlerOption{}, common...)
+	var devices vaultsyncv1connect.DeviceServiceHandler = vaultsyncv1connect.UnimplementedDeviceServiceHandler{}
+	if options.Devices != nil {
+		devices = api.DeviceService{Devices: options.Devices, Logger: options.Logger}
+	}
 
 	mux := http.NewServeMux()
-	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(api.ServerInfoService{}, public...))
-	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaultsyncv1connect.UnimplementedVaultServiceHandler{}, protected...))
-	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(vaultsyncv1connect.UnimplementedDeviceServiceHandler{}, protected...))
-	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(vaultsyncv1connect.UnimplementedSyncServiceHandler{}, protected...))
-	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(vaultsyncv1connect.UnimplementedBlobServiceHandler{}, protected...))
+	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(api.ServerInfoService{}, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaultsyncv1connect.UnimplementedVaultServiceHandler{}, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(vaultsyncv1connect.UnimplementedSyncServiceHandler{}, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(vaultsyncv1connect.UnimplementedBlobServiceHandler{}, handlerOptions...))
 
 	corsHandler := cors.New(cors.Options{
 		AllowedOrigins: AllowedOrigins,
