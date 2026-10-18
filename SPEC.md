@@ -228,7 +228,7 @@ The v1 protocol includes the hooks for this from the start: stable document ids,
 | **Sync simulation** | Seeded multi-client harness (`sim/`, TypeScript): N `core` engines over in-memory vaults against a real `vault-sync-server` process (real PostgreSQL + S3). Each client's transport is wrapped in a seeded fault injector (drop request, drop response after the server applied it, delay, reorder, partition, client crash/restart losing in-memory state). Operation schedules are derived from the seed so a failing seed replays the same client-side schedule. Invariants: convergence, no lost acknowledged writes, no resurrected deletes without a concurrent edit, no duplicate content. Failing seeds are minimized and committed as regression cases. Phase 1 (decision): scripted protocol clients stand in for the engines, and the invariants are server-side, checked by the Go driver directly in PostgreSQL. Every acknowledged revision is in history unchanged; `seq` is exactly `1..head_seq`; no two live documents share a `path_key`; and each document's revisions form one chain, so no commit succeeded against a stale base. Messages are delivered one at a time in logical (step) time, so a seed replays deterministically, and concurrency is modelled by interleaving. A server built with the `simfault` tag skips the base-revision check, and CI proves the harness catches it; no runtime switch exists. See `docs/testing/simulation.md`. | `make test-sim`, CI (short), nightly (long) |
 | Crypto vectors | shared `testdata/crypto/` vectors | Go + TS unit tests |
 | Path vectors | shared `testdata/paths/` vectors: `path_key` (`vectors.json`) and validity (`validity.json`) | Go + TS unit tests; validity also through `CommitRevision` (integration) |
-| Plugin e2e | `wdio-obsidian-service` (real Obsidian; emulated mobile mode) | Linux in the dev VM; Windows + macOS in GitHub Actions |
+| Plugin e2e | `wdio-obsidian-service`: the built plugin in a real Obsidian whose version is pinned (Renovate bumps it), driven by WebdriverIO against a real `vault-sync-server` that an `e2e`-tagged Go driver starts. Specs check that the plugin loads, that a second vault opens, that the server is reachable with a test token, and run the `VaultAdapter` conformance suite inside Obsidian through a test-only harness plugin. Also runs in emulated mobile mode. See `docs/testing/e2e.md`. | `make test-e2e` (Linux, headless via xvfb, in the dev VM); CI on Linux, Windows and macOS, plus emulated mobile |
 | Android | manual checklist in `docs/testing/android.md` until automated | human |
 
 ## 14. Repository layout
@@ -242,6 +242,7 @@ plugin/                  Obsidian plugin (npm project; nested empty go.mod fence
   src/core/              pure sync engine — no `obsidian` imports
   src/obsidian/          Obsidian adapter + UI
   src/gen/               generated TS protocol code (committed)
+  test/e2e/              e2e suite in real Obsidian (wdio specs, test-only harness plugin, fixture vaults)
 sim/                     sync simulation harness (TS, drives src/core against the Go server)
 testdata/crypto/         cross-language crypto test vectors
 testdata/paths/          cross-language path_key (§5) and path validity (§6.2) vectors

@@ -1,0 +1,51 @@
+# Plugin e2e tests
+
+The e2e suite (SPEC.md §13) runs the built plugin inside a real, pinned Obsidian, driven by [WebdriverIO](https://webdriver.io) through [`wdio-obsidian-service`](https://github.com/jesse-r-s-hines/wdio-obsidian-service), against a real `vault-sync-server` that the harness starts.
+
+## Running
+
+```sh
+make test-e2e                            # desktop UI
+VAULT_SYNC_E2E_MOBILE=1 make test-e2e    # Obsidian's emulated mobile UI
+```
+
+`make test-e2e` builds the plugin (`make plugin-build`) and runs `scripts/test-e2e.sh`. Docker is required, and the suite never skips. The first run downloads Obsidian and chromedriver into `plugin/.wdio-obsidian-cache` (gitignored, about 800 MB unpacked on Linux). After that a run takes well under a minute.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `VAULT_SYNC_E2E_MOBILE` | unset | `1` runs Obsidian with `emulateMobile` (the mobile UI on the desktop app, at a 390×844 viewport). This is not a real Android device. |
+| `VAULT_SYNC_E2E_CACHE_DIR` | `plugin/.wdio-obsidian-cache` | Where Obsidian downloads are cached. |
+| `E2E_TIMEOUT` | `20m` | `go test -timeout` for the whole run. |
+
+Extra arguments to `scripts/test-e2e.sh` are passed to `go test`.
+
+## How it fits together
+
+- **Driver** (`cmd/vault-sync-server/e2e_test.go`, Go, build tag `e2e`). `scripts/test-e2e.sh` starts the compose stack (`scripts/with-test-stack.sh`, shared with the integration tests and the simulation). It then runs `go test -tags e2e -run TestPluginE2E`, under `xvfb-run` on Linux when there is no `DISPLAY`. The driver creates a database, and a bucket when the S3 variables are set. It starts a fake OIDC issuer, signs a token for a test user, and builds and starts the server. Then it runs `node plugin/node_modules/@wdio/cli/bin/wdio.js run wdio.conf.mts` with `VAULT_SYNC_E2E_SERVER_URL` and `VAULT_SYNC_E2E_TOKEN` set, and fails if WebdriverIO fails. A run with no specs fails too.
+- **Configuration** (`plugin/wdio.conf.mts`). It pins the Obsidian version. It installs `plugin/dist` (the bundle users install) and the harness plugin into a copy of `plugin/test/e2e/vaults/primary`, and runs one Obsidian at a time.
+- **Specs** (`plugin/test/e2e/specs/*.e2e.ts`, mocha). They run in Node and reach into Obsidian with `browser.executeObsidian`. Each spec file gets a fresh Obsidian.
+  - `smoke.e2e.ts` checks that Obsidian is in the requested UI mode (desktop or emulated mobile) and that the vault-sync plugin is loaded and enabled. It opens a second vault (`vaults/second`) and checks that the plugin loads there too. Finally it calls `ListVaults` on the harness-started server from inside Obsidian (`requestUrl`): the call gets 200 with the test token and 401 without it. Syncing a file between the two vaults is added by #25, once sync is wired end to end.
+  - `conformance.e2e.ts` runs every case of the shared `VaultAdapter` conformance suite (`plugin/src/core/vault/conformance.ts`) inside Obsidian's renderer.
+- **Harness plugin** (`plugin/test/e2e/harness/`). This is a test-only Obsidian plugin (`vault-sync-e2e-harness`), bundled by `wdio.conf.mts` into `harness/dist` (gitignored) on every run and never shipped. It carries code that a stringified `executeObsidian` function cannot, such as the conformance suite. Its `adapterUnderTest` field is the adapter the conformance spec tests. It is the in-memory adapter until the Obsidian adapter lands (#24), which switches that one line.
+- **Types and lint.** `plugin/test/e2e/tsconfig.json` makes the e2e code its own TypeScript program, so mocha and WebdriverIO globals stay out of the plugin program. `make lint` type-checks and lints it.
+
+## Obsidian version
+
+`plugin/wdio.conf.mts` pins the Obsidian app version (`obsidianVersion`). The installer, i.e. the Electron binary, is the earliest one compatible with that app version, so the single pin fixes both. A Renovate regex manager (`.github/renovate.json5`, datasource `github-releases`, `obsidianmd/obsidian-releases`) bumps it. The CI download cache is keyed on that file.
+
+## Platforms
+
+| Where | How |
+|---|---|
+| Dev VM (NixOS) | `make test-e2e`. Obsidian and chromedriver are generic Linux binaries. The dev shell (`flake.nix`) points nix-ld at a matching loader and Electron's libraries (`NIX_LD`, `NIX_LD_LIBRARY_PATH`), and `xvfb-run` provides the display. |
+| CI `plugin-e2e (ubuntu-latest)`, `plugin-e2e (emulated-mobile)` | `nix develop -c make test-e2e`, with `VAULT_SYNC_E2E_MOBILE=1` for the mobile job. |
+| CI `plugin-e2e (windows-latest)`, `plugin-e2e (macos-latest)` | No Nix (Windows) and no Linux containers, so Go and Node come from `actions/setup-*` and PostgreSQL from `ikalnytskyi/action-setup-postgres`. The plugin is built with npm, and the driver runs directly with `go test -tags e2e`. The server runs without an object store, which nothing in the suite needs yet. Sync tests (#25) will need one there. |
+
+To run the driver against a PostgreSQL you started yourself, set `VAULT_SYNC_TEST_DATABASE_URL` (a role allowed to create databases), build the plugin, and run `go test -count=1 -tags e2e -run TestPluginE2E -v ./cmd/vault-sync-server/`.
+
+## Writing e2e tests
+
+- Put specs in `plugin/test/e2e/specs/` as `*.e2e.ts`. Functions passed to `browser.executeObsidian` are stringified and run inside Obsidian, so they cannot capture variables or imports. Pass inputs as extra arguments, and use the `obsidian` module from the first argument.
+- Code that must run inside Obsidian and is too big for one function belongs in the harness plugin as a method. Call it from the spec, as `conformance.e2e.ts` does.
+- Do not depend on timing. Wait for conditions (`browser.waitUntil`), never for fixed delays.
+- Every new assertion must fail when its behavior breaks. Check this by breaking the behavior once before committing.

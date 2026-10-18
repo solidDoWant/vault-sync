@@ -10,6 +10,7 @@ bin/
 /plugin/node_modules/
 /plugin/dist/
 /plugin/.wdio-obsidian-cache/
+/plugin/test/e2e/harness/dist/
 /node_modules/
 
 .direnv/
