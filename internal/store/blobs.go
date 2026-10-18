@@ -313,15 +313,17 @@ func (vault *VaultStore) ClaimBlobUploadForRemoval(ctx context.Context, uploadID
 }
 
 // DeleteBlobUpload deletes the finished session uploadID and its chunk
-// records. Call it only after its staged objects are gone.
-func (vault *VaultStore) DeleteBlobUpload(ctx context.Context, uploadID uuid.UUID) error {
-	_, err := vault.store.pool.Exec(ctx, `DELETE FROM blob_uploads WHERE vault_id = $1 AND id = $2 AND state = 'finished'`,
+// records. Call it only after its staged objects are gone. It reports
+// whether this call deleted the session; false means it was already gone
+// (another server process removed it first), which is not an error.
+func (vault *VaultStore) DeleteBlobUpload(ctx context.Context, uploadID uuid.UUID) (bool, error) {
+	tag, err := vault.store.pool.Exec(ctx, `DELETE FROM blob_uploads WHERE vault_id = $1 AND id = $2 AND state = 'finished'`,
 		vault.vaultID, uploadID)
 	if err != nil {
-		return fmt.Errorf("delete blob upload: %w", err)
+		return false, fmt.Errorf("delete blob upload: %w", err)
 	}
 
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // ReapableBlobUploads returns up to limit upload sessions, across all

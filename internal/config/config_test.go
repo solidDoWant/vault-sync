@@ -54,6 +54,7 @@ func TestLoadDefaults(t *testing.T) {
 		Database:             store.Config{DSN: testDSN},
 		OIDC:                 config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience},
 		MaxRequestBytes:      1 << 20,
+		ShutdownDelay:        5 * time.Second,
 		ShutdownTimeout:      30 * time.Second,
 		LogLevel:             slog.LevelInfo,
 		Blobs: config.BlobConfig{
@@ -277,6 +278,7 @@ func TestLoadOverrides(t *testing.T) {
 		config.ListenAddressEnv:        "127.0.0.1:8443",
 		config.MetricsListenAddressEnv: "127.0.0.1:9443",
 		config.MaxRequestBytesEnv:      "2097152",
+		config.ShutdownDelayEnv:        "10s",
 		config.ShutdownTimeoutEnv:      "45s",
 		config.LogLevelEnv:             "DEBUG",
 	})))
@@ -285,8 +287,16 @@ func TestLoadOverrides(t *testing.T) {
 	assert.Equal(t, "127.0.0.1:8443", cfg.ListenAddress)
 	assert.Equal(t, "127.0.0.1:9443", cfg.MetricsListenAddress)
 	assert.Equal(t, int64(2<<20), cfg.MaxRequestBytes)
+	assert.Equal(t, 10*time.Second, cfg.ShutdownDelay)
 	assert.Equal(t, 45*time.Second, cfg.ShutdownTimeout)
 	assert.Equal(t, slog.LevelDebug, cfg.LogLevel)
+}
+
+func TestLoadAllowsNoShutdownDelay(t *testing.T) {
+	cfg, err := config.Load(lookup(withRequired(map[string]string{config.ShutdownDelayEnv: "0s"})))
+	require.NoError(t, err)
+
+	assert.Zero(t, cfg.ShutdownDelay)
 }
 
 func TestLoadRejectsInvalidSettings(t *testing.T) {
@@ -367,6 +377,21 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 			name:         "shutdown timeout not positive",
 			env:          withRequired(map[string]string{config.ShutdownTimeoutEnv: "0s"}),
 			wantProblems: []string{config.ShutdownTimeoutEnv},
+		},
+		{
+			name:         "shutdown delay not a duration",
+			env:          withRequired(map[string]string{config.ShutdownDelayEnv: "5"}),
+			wantProblems: []string{config.ShutdownDelayEnv},
+		},
+		{
+			name:         "shutdown delay negative",
+			env:          withRequired(map[string]string{config.ShutdownDelayEnv: "-1s"}),
+			wantProblems: []string{config.ShutdownDelayEnv},
+		},
+		{
+			name:         "shutdown delay too long",
+			env:          withRequired(map[string]string{config.ShutdownDelayEnv: "6m"}),
+			wantProblems: []string{config.ShutdownDelayEnv},
 		},
 		{
 			name:         "unknown log level",

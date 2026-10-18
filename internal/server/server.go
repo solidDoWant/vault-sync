@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -49,8 +50,16 @@ type Pinger interface {
 type Options struct {
 	// MaxRequestBytes bounds every request body, after decompression.
 	MaxRequestBytes int64
-	// ShutdownTimeout bounds how long in-flight requests may drain.
+	// ShutdownDelay is how long, once shutdown starts, /readyz fails while
+	// the API still serves new connections, so load balancers stop routing
+	// here before any connection is refused.
+	ShutdownDelay time.Duration
+	// ShutdownTimeout bounds how long in-flight requests, and Drainers, may
+	// drain after ShutdownDelay.
 	ShutdownTimeout time.Duration
+	// Drainers own long-lived connections that the HTTP server does not
+	// track once upgraded (the realtime hub's WebSockets, SPEC.md §6.4).
+	Drainers []Drainer
 	// Database is checked by /readyz.
 	Database Pinger
 	// Authenticator validates bearer tokens. When nil, every procedure not
@@ -72,6 +81,18 @@ type Options struct {
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
+}
+
+// Drainer is told when the server drains, so that it can end long-lived
+// connections the HTTP server's own drain does not wait for. The realtime
+// hub implements it by closing every WebSocket with close code 1001 ("going
+// away"), so clients reconnect to another instance (SPEC.md §12).
+type Drainer interface {
+	// Drain is called once, after /readyz has started failing and new
+	// connections are no longer accepted, concurrently with the drain of
+	// in-flight requests. It returns once its connections are closed, or
+	// with ctx's error when ctx (bounded by ShutdownTimeout) ends first.
+	Drain(ctx context.Context) error
 }
 
 // Server serves the API and the metrics/health endpoints.
@@ -263,9 +284,11 @@ func (srv *Server) ListenAndServe(ctx context.Context, apiAddress, metricsAddres
 }
 
 // Serve serves the API on apiListener and metrics/health on metricsListener
-// until ctx is canceled. It then stops accepting connections, reports not
-// ready, and waits up to ShutdownTimeout for in-flight API requests before
-// closing the remaining connections. It returns nil after a clean drain, an
+// until ctx is canceled. It then reports not ready on /readyz, keeps serving
+// the API for ShutdownDelay (closing each connection after its response),
+// stops accepting connections, runs the Drainers, and waits up to
+// ShutdownTimeout for in-flight API requests and the Drainers before closing
+// the remaining connections. It returns nil after a clean drain, an
 // error wrapping context.DeadlineExceeded if the timeout forced connections
 // closed, or the error that stopped a listener.
 func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.Listener) error {
@@ -304,15 +327,34 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 
 	select {
 	case <-ctx.Done():
-		srv.options.Logger.InfoContext(ctx, "shutting down", "timeout", srv.options.ShutdownTimeout.String())
+		srv.options.Logger.InfoContext(ctx, "shutting down",
+			"delay", srv.options.ShutdownDelay.String(), "timeout", srv.options.ShutdownTimeout.String())
 	case serveErr = <-serveErrors:
 		srv.options.Logger.ErrorContext(ctx, "listener failed; shutting down", "error", serveErr)
 	}
 
+	// Fail readiness first and keep serving for ShutdownDelay, so load
+	// balancers stop routing here before any connection is refused.
+	// Responses meanwhile close their connections, so clients reconnect
+	// (to another instance) instead of reusing this one.
 	srv.draining.Store(true)
+	apiServer.SetKeepAlivesEnabled(false)
+
+	if serveErr == nil && srv.options.ShutdownDelay > 0 {
+		timer := time.NewTimer(srv.options.ShutdownDelay)
+
+		select {
+		case <-timer.C:
+		case serveErr = <-serveErrors:
+			timer.Stop()
+		}
+	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), srv.options.ShutdownTimeout)
 	defer cancel()
+
+	// Shutdown runs the drainers once it has closed the listeners.
+	drained := srv.registerDrainers(apiServer, shutdownCtx)
 
 	// Drain the API first; metrics and readiness stay up meanwhile.
 	shutdownErr := apiServer.Shutdown(shutdownCtx)
@@ -323,15 +365,68 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 		srv.options.Logger.WarnContext(ctx, "shutdown timeout reached; closed remaining connections")
 	}
 
+	shutdownErr = errors.Join(shutdownErr, waitForDrainers(shutdownCtx, drained))
+
 	if err := metricsServer.Shutdown(shutdownCtx); err != nil {
 		_ = metricsServer.Close()
 	}
 
-	if serveErr == nil {
+	if serveErr == nil && shutdownErr == nil {
 		srv.options.Logger.InfoContext(ctx, "server stopped")
 	}
 
 	return errors.Join(serveErr, shutdownErr)
+}
+
+// registerDrainers has apiServer's Shutdown run every Drainer, bounded by
+// ctx. The returned channel yields their joined error once all returned.
+func (srv *Server) registerDrainers(apiServer *http.Server, ctx context.Context) <-chan error {
+	drained := make(chan error, 1)
+
+	if len(srv.options.Drainers) == 0 {
+		drained <- nil
+
+		return drained
+	}
+
+	apiServer.RegisterOnShutdown(func() {
+		errs := make([]error, len(srv.options.Drainers))
+
+		var group sync.WaitGroup
+
+		for index, drainer := range srv.options.Drainers {
+			group.Go(func() { errs[index] = drainer.Drain(ctx) })
+		}
+
+		group.Wait()
+
+		drained <- errors.Join(errs...)
+	})
+
+	return drained
+}
+
+// waitForDrainers waits for the drainers' result, but no longer than ctx: a
+// drainer ignoring ctx cannot hold up the shutdown.
+func waitForDrainers(ctx context.Context, drained <-chan error) error {
+	var err error
+
+	select {
+	case err = <-drained:
+	case <-ctx.Done():
+		// Prefer the drainers' own result if they finished meanwhile.
+		select {
+		case err = <-drained:
+		default:
+			err = ctx.Err()
+		}
+	}
+
+	if err != nil {
+		return fmt.Errorf("drain long-lived connections: %w", err)
+	}
+
+	return nil
 }
 
 func serve(server *http.Server, listener net.Listener, name string) error {
