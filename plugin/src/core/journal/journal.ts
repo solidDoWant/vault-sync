@@ -33,7 +33,11 @@ export interface Journal {
   /** Inserts or replaces the state of `state.documentId`. */
   putDocument(state: DocumentState): Promise<void>;
 
-  /** Queues a local change. Rejects with Error if `revisionId` is already pending. */
+  /**
+   * Queues a local change before any of it is sent, so that a restart
+   * resumes it with the same revision id (SPEC.md §6.2, §8). Rejects with
+   * Error if `revisionId` is already pending.
+   */
   addPending(operation: PendingOperation): Promise<void>;
   /** Pending operations in the order they were added. */
   listPending(): Promise<PendingOperation[]>;
@@ -68,6 +72,10 @@ export interface DocumentState {
   seq: bigint;
   /** SHA-256 (hex) of the content at `revisionId`, compared against disk before applying remote content. */
   baseHash: string;
+  /** Size in bytes of the content at `revisionId`: a rename or delete commits the same content reference. */
+  size: bigint;
+  /** The document's kind; every revision of a document has the same one. */
+  kind: DocumentKindName;
   deleted: boolean;
 }
 
@@ -81,6 +89,9 @@ export interface PendingOperation {
   path: string;
   /** Content hash / blob id of the new content. */
   contentHash: string;
+  /** Size in bytes of the new content. */
+  size: bigint;
+  kind: DocumentKindName;
   deleted: boolean;
 }
 

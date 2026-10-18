@@ -9,6 +9,8 @@ const doc = (overrides: Partial<DocumentState> = {}): DocumentState => ({
   revisionId: "rev-1",
   seq: 1n,
   baseHash: "aa",
+  size: 2n,
+  kind: "text",
   deleted: false,
   ...overrides,
 });
@@ -19,6 +21,8 @@ const op = (overrides: Partial<PendingOperation> = {}): PendingOperation => ({
   baseRevisionId: "rev-1",
   path: "note.md",
   contentHash: "bb",
+  size: 2n,
+  kind: "text",
   deleted: false,
   ...overrides,
 });

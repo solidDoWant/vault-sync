@@ -6,7 +6,7 @@ import type { DocumentKindName, RemoteRevision } from "../journal/journal";
 import type { ProtocolClient } from "../protocol/client";
 import { isVaultRelativePath } from "../vaultpath/vaultpath";
 
-/** The protocol calls the pull side uses. */
+/** The protocol calls the engine uses, to pull and to push. */
 export type PullApi = Pick<ProtocolClient, "sync" | "blobs">;
 
 /** The server sent something the protocol does not allow, or content that does not match its hash. */
@@ -48,6 +48,29 @@ export function toIncoming(revision: Revision): IncomingRevision {
     },
     pathAllowed: decodable && isVaultRelativePath(path),
   };
+}
+
+/** The protobuf form of a document kind. */
+export function kindValue(kind: DocumentKindName): DocumentKind {
+  switch (kind) {
+    case "text":
+      return DocumentKind.TEXT;
+    case "yjs":
+      return DocumentKind.YJS;
+    case "blob":
+      return DocumentKind.BLOB;
+  }
+}
+
+/** Extensions classified as `text` by default (SPEC.md §7); everything else is a `blob`. */
+const textExtensions = new Set(["md", "txt", "css", "js"]);
+
+/** The default classification of a new document by its path's extension (SPEC.md §7). */
+export function classifyByExtension(path: string): DocumentKindName {
+  const name = path.slice(Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\")) + 1);
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return "blob";
+  return textExtensions.has(name.slice(dot + 1).toLowerCase()) ? "text" : "blob";
 }
 
 function kindName(kind: DocumentKind): DocumentKindName {

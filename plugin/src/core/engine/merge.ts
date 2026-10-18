@@ -26,25 +26,37 @@ export interface MergeRequest {
 }
 
 /**
- * What the merge hook did. `deferred`: nothing was written; the engine records
- * the remote revision as pending in the journal, and the merge path owns the
- * document (every later remote revision for it goes to the hook too) until it
- * resolves the deferral. The three-way merge (#18) adds outcomes.
+ * What the merge hook decided.
+ *
+ * - `deferred`: nothing is written. The engine records the remote revision as
+ *   pending in the journal, and the merge path owns the document (every later
+ *   remote revision of it goes to the hook too, and the engine pushes none of
+ *   its local changes) until a later call resolves it. The hook is asked again
+ *   on every push while the deferral stands.
+ * - `merged`: the document's merged state, which must contain the local
+ *   changes (or a conflict copy must, SPEC.md §7). The engine makes the disk
+ *   show it at `path` (`content: null` for a deleted document), provided the
+ *   local file still holds the content the hook was given, rebases the
+ *   document onto the remote revision and drops the unacknowledged local
+ *   operations of the document it replaces. It then pushes the result as a new
+ *   revision based on the remote one (SPEC.md §6.2 step 3). If the local file
+ *   changed in the meantime, the engine defers instead and asks again later.
+ *
+ * The merge algorithm itself (three-way text merge, conflict copies) is #18.
  */
-export interface MergeOutcome {
-  status: "deferred";
-}
+export type MergeOutcome = { status: "deferred" } | { status: "merged"; path: string; content: Uint8Array | null };
 
 /**
- * The engine's hand-off to the merge path. It is called at most once per
- * remote revision and document per pull, but may be called again for the same
- * revision after a crash, so it must be idempotent. It must never discard the
- * local content (SPEC.md §2 principle 1).
+ * The engine's hand-off to the merge path. It may be called again for the
+ * same remote revision (after a crash, or on a later push while the revision
+ * is deferred), so it must be idempotent. It must never discard the local
+ * content (SPEC.md §2 principle 1).
  */
 export type MergeHook = (request: MergeRequest) => Promise<MergeOutcome>;
 
 /**
- * The default merge hook until the merge algorithm exists: it never touches
- * the local file and keeps the remote revision pending in the journal.
+ * The default merge hook until the merge algorithm (#18) exists: it never
+ * touches the local file and keeps the remote revision pending in the
+ * journal, so the document's local changes stay on disk and unpushed.
  */
 export const deferMerge: MergeHook = () => Promise.resolve({ status: "deferred" });

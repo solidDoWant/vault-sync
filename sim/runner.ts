@@ -48,7 +48,7 @@ export class SimRun {
     readonly observer: EngineObserver,
     private readonly control: Control,
     /** Fault-free access for the harness's own checks. */
-    private readonly direct: ProtocolClient,
+    readonly direct: ProtocolClient,
     readonly trace: string[],
   ) {}
 
@@ -81,7 +81,9 @@ export class SimRun {
       clients.push(new ScriptedClient(index, createProtocolClient({ transport, token: () => token }), device.id, context));
     }
     const observerIndex = options.clients;
-    const observer = new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), context);
+    const observerDevice = (await setup.devices.registerDevice({ name: "sim engine" })).device;
+    if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
+    const observer = new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context);
     const simRun = new SimRun(context, clients, observer, control, setup, trace);
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
