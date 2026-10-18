@@ -30,7 +30,9 @@ type ListChangesRequest struct {
 	// Zero returns the vault from the beginning.
 	SinceSeq uint64 `protobuf:"varint,2,opt,name=since_seq,json=sinceSeq,proto3" json:"since_seq,omitempty"`
 	// Maximum number of revisions to return. Zero selects the server default;
-	// the server caps larger values.
+	// the server caps larger values. The server may return fewer, with
+	// has_more set, to keep the response within its size limit, but always at
+	// least one if any exist.
 	PageSize      uint32 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -445,7 +447,9 @@ type GetDocumentHistoryRequest struct {
 	// Document whose history to list.
 	DocumentId string `protobuf:"bytes,2,opt,name=document_id,json=documentId,proto3" json:"document_id,omitempty"`
 	// Maximum number of revisions to return. Zero selects the server default;
-	// the server caps larger values.
+	// the server caps larger values. The server may return fewer, with a
+	// next_page_token, to keep the response within its size limit, but always
+	// at least one if any exist.
 	PageSize uint32 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// Opaque token from a previous GetDocumentHistoryResponse. Empty for the
 	// first page.

@@ -37,7 +37,9 @@ export type ListChangesRequest = Message<"vaultsync.v1.ListChangesRequest"> & {
 
   /**
    * Maximum number of revisions to return. Zero selects the server default;
-   * the server caps larger values.
+   * the server caps larger values. The server may return fewer, with
+   * has_more set, to keep the response within its size limit, but always at
+   * least one if any exist.
    *
    * @generated from field: uint32 page_size = 3;
    */
@@ -274,7 +276,9 @@ export type GetDocumentHistoryRequest = Message<"vaultsync.v1.GetDocumentHistory
 
   /**
    * Maximum number of revisions to return. Zero selects the server default;
-   * the server caps larger values.
+   * the server caps larger values. The server may return fewer, with a
+   * next_page_token, to keep the response within its size limit, but always
+   * at least one if any exist.
    *
    * @generated from field: uint32 page_size = 3;
    */
