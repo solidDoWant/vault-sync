@@ -1,0 +1,30 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+import "vaultsync/v1/types.proto";
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// DeviceService manages the calling user's devices (plugin installations).
+service DeviceService {
+  // RegisterDevice registers a new device for the caller. Each plugin
+  // installation registers once and sends the returned id with every commit.
+  //
+  // Errors: INVALID_ARGUMENT for an empty or over-long name;
+  // RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+  rpc RegisterDevice(RegisterDeviceRequest) returns (RegisterDeviceResponse) {}
+}
+
+// RegisterDeviceRequest describes the device to register.
+message RegisterDeviceRequest {
+  // Human-readable device name. Must be non-empty; the server bounds its
+  // length.
+  string name = 1;
+}
+
+// RegisterDeviceResponse returns the registered device.
+message RegisterDeviceResponse {
+  // The new device.
+  Device device = 1;
+}

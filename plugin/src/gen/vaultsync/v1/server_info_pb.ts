@@ -13,6 +13,8 @@ export const file_vaultsync_v1_server_info: GenFile = /*@__PURE__*/
   fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCJCChVHZXRTZXJ2ZXJJbmZvUmVzcG9uc2USDwoHdmVyc2lvbhgBIAEoCRIYChBwcm90b2NvbF92ZXJzaW9uGAIgASgNMm8KEVNlcnZlckluZm9TZXJ2aWNlEloKDUdldFNlcnZlckluZm8SIi52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1JlcXVlc3QaIy52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw");
 
 /**
+ * GetServerInfoRequest has no parameters.
+ *
  * @generated from message vaultsync.v1.GetServerInfoRequest
  */
 export type GetServerInfoRequest = Message<"vaultsync.v1.GetServerInfoRequest"> & {
@@ -26,6 +28,8 @@ export const GetServerInfoRequestSchema: GenMessage<GetServerInfoRequest> = /*@_
   messageDesc(file_vaultsync_v1_server_info, 0);
 
 /**
+ * GetServerInfoResponse describes the server.
+ *
  * @generated from message vaultsync.v1.GetServerInfoResponse
  */
 export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"> & {
@@ -37,7 +41,8 @@ export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"
   version: string;
 
   /**
-   * Highest protocol version the server speaks.
+   * Highest protocol version the server speaks. The vaultsync.v1 schema is
+   * protocol version 1.
    *
    * @generated from field: uint32 protocol_version = 2;
    */
@@ -52,14 +57,17 @@ export const GetServerInfoResponseSchema: GenMessage<GetServerInfoResponse> = /*
   messageDesc(file_vaultsync_v1_server_info, 1);
 
 /**
- * ServerInfoService exposes unauthenticated server metadata. It exists so the
- * code-generation pipeline (Go + TypeScript) is exercised from day one; the
- * sync API is defined by the Phase 1 issues.
+ * ServerInfoService exposes server metadata. It is the only unauthenticated
+ * service: clients call it before signing in to check that they speak a
+ * compatible protocol version.
  *
  * @generated from service vaultsync.v1.ServerInfoService
  */
 export const ServerInfoService: GenService<{
   /**
+   * GetServerInfo returns the server build version and protocol version. It
+   * requires no authentication and reveals nothing about vaults or users.
+   *
    * @generated from rpc vaultsync.v1.ServerInfoService.GetServerInfo
    */
   getServerInfo: {

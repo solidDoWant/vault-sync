@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+import "vaultsync/v1/types.proto";
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// VaultService creates and lists vaults. Membership and invitation management
+// (Phase 3) and key management (Phase 4) are added as separate services.
+service VaultService {
+  // CreateVault creates a vault owned by the caller.
+  //
+  // Errors: INVALID_ARGUMENT for an empty or over-long name, an unspecified
+  // encryption mode, or escrow requested for a plaintext vault.
+  rpc CreateVault(CreateVaultRequest) returns (CreateVaultResponse) {}
+
+  // ListVaults lists the vaults the caller is a member of.
+  rpc ListVaults(ListVaultsRequest) returns (ListVaultsResponse) {}
+}
+
+// CreateVaultRequest describes the vault to create.
+message CreateVaultRequest {
+  // Human-readable name. Must be non-empty; the server bounds its length.
+  string name = 1;
+  // Encryption mode. Cannot be changed later.
+  VaultEncryption encryption = 2;
+  // Whether to enable escrow for plaintext backups (SPEC.md §9.4). Only valid
+  // with VAULT_ENCRYPTION_E2EE. Cannot be changed later.
+  bool escrow = 3;
+}
+
+// CreateVaultResponse returns the created vault.
+message CreateVaultResponse {
+  // The new vault. The caller is its owner.
+  Vault vault = 1;
+}
+
+// ListVaultsRequest pages through the caller's vaults.
+message ListVaultsRequest {
+  // Maximum number of vaults to return. Zero selects the server default; the
+  // server caps larger values.
+  uint32 page_size = 1;
+  // Opaque token from a previous ListVaultsResponse. Empty for the first page.
+  string page_token = 2;
+}
+
+// ListVaultsResponse is one page of the caller's vaults.
+message ListVaultsResponse {
+  // Vaults the caller is a member of, each with the caller's role.
+  repeated Vault vaults = 1;
+  // Token for the next page. Empty when there are no more vaults.
+  string next_page_token = 2;
+}

@@ -1,0 +1,120 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// Realtime channel frames (SPEC.md §6.4).
+//
+// The realtime channel is a WebSocket authenticated with the same bearer token
+// as the RPC API. Each binary WebSocket message carries exactly one
+// protobuf-encoded frame: ClientFrame from client to server, ServerFrame from
+// server to client. The channel is a latency optimization only; correctness
+// never depends on receiving a frame, and clients still pull with
+// ListChanges.
+//
+// Field numbers 100-199 of both envelopes are reserved for the Phase 5 Yjs
+// subscribe/update/awareness frames, multiplexed by document_id (SPEC.md §10).
+// Other new frame types (membership and key-epoch changes) take numbers below
+// 100. Receivers ignore frames whose oneof member they do not recognize.
+
+// ClientFrame is a frame sent by the client.
+message ClientFrame {
+  reserved 100 to 199;
+
+  // Client-chosen correlation id, echoed in the ServerFrame that answers this
+  // frame. Zero means no reply correlation is needed.
+  uint64 request_id = 1;
+
+  // The frame payload.
+  oneof frame {
+    // Start receiving notifications for a vault.
+    Subscribe subscribe = 2;
+    // Stop receiving notifications for a vault.
+    Unsubscribe unsubscribe = 3;
+  }
+}
+
+// ServerFrame is a frame sent by the server.
+message ServerFrame {
+  reserved 100 to 199;
+
+  // The request_id of the ClientFrame this frame answers, or zero for an
+  // unsolicited frame such as vault_changed.
+  uint64 request_id = 1;
+
+  // The frame payload.
+  oneof frame {
+    // A vault the client is subscribed to has new revisions.
+    VaultChanged vault_changed = 2;
+    // A subscribe request succeeded.
+    Subscribed subscribed = 3;
+    // A client frame failed, or the connection is about to close.
+    ErrorFrame error = 4;
+  }
+}
+
+// Subscribe asks for vault_changed notifications for a vault. The server
+// resolves the caller's role in the vault first; a non-member gets an error
+// frame with ERROR_CODE_NOT_FOUND.
+message Subscribe {
+  // Vault to subscribe to.
+  string vault_id = 1;
+}
+
+// Unsubscribe stops notifications for a vault. Unsubscribing from a vault
+// that is not subscribed is a no-op.
+message Unsubscribe {
+  // Vault to unsubscribe from.
+  string vault_id = 1;
+}
+
+// Subscribed confirms a subscription.
+message Subscribed {
+  // Vault subscribed to.
+  string vault_id = 1;
+  // The vault's head_seq when the subscription started. A client whose
+  // cursor is below this should pull.
+  uint64 head_seq = 2;
+}
+
+// VaultChanged notifies that a vault's head_seq advanced.
+message VaultChanged {
+  // Vault that changed.
+  string vault_id = 1;
+  // The vault's new head_seq.
+  uint64 seq = 2;
+}
+
+// ErrorFrame reports a failed client frame or an impending close.
+message ErrorFrame {
+  // Error category; mirrors the Connect error code of the same name.
+  ErrorCode code = 1;
+  // Human-readable description. Never contains secrets or note content.
+  string message = 2;
+  // Vault the error concerns, if any.
+  string vault_id = 3;
+  // Whether the server closes the connection after sending this frame.
+  bool fatal = 4;
+}
+
+// ErrorCode categorizes realtime errors.
+enum ErrorCode {
+  // Not set.
+  ERROR_CODE_UNSPECIFIED = 0;
+  // The frame was malformed or had invalid fields.
+  ERROR_CODE_INVALID_ARGUMENT = 1;
+  // The vault does not exist or the caller is not a member.
+  ERROR_CODE_NOT_FOUND = 2;
+  // The caller's role does not allow the operation.
+  ERROR_CODE_PERMISSION_DENIED = 3;
+  // The bearer token is missing, invalid, or expired.
+  ERROR_CODE_UNAUTHENTICATED = 4;
+  // A server limit (for example subscriptions per connection or frame rate)
+  // was exceeded.
+  ERROR_CODE_RESOURCE_EXHAUSTED = 5;
+  // The server is shutting down or temporarily unable to serve.
+  ERROR_CODE_UNAVAILABLE = 6;
+  // An unexpected server error.
+  ERROR_CODE_INTERNAL = 7;
+}

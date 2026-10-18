@@ -21,6 +21,7 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// GetServerInfoRequest has no parameters.
 type GetServerInfoRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -57,11 +58,13 @@ func (*GetServerInfoRequest) Descriptor() ([]byte, []int) {
 	return file_vaultsync_v1_server_info_proto_rawDescGZIP(), []int{0}
 }
 
+// GetServerInfoResponse describes the server.
 type GetServerInfoResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Server build version.
 	Version string `protobuf:"bytes,1,opt,name=version,proto3" json:"version,omitempty"`
-	// Highest protocol version the server speaks.
+	// Highest protocol version the server speaks. The vaultsync.v1 schema is
+	// protocol version 1.
 	ProtocolVersion uint32 `protobuf:"varint,2,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache

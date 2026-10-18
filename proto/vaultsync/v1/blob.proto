@@ -1,0 +1,126 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// BlobService uploads and downloads content-addressed blobs (SPEC.md §5,
+// §6.2). Uploads are chunked so that no request exceeds the gateway's body
+// limit (SPEC.md §3).
+//
+// Every RPC resolves the caller's role in vault_id first: a non-member gets
+// NOT_FOUND (existence is never leaked); a viewer calling an upload RPC gets
+// PERMISSION_DENIED.
+service BlobService {
+  // BeginBlob starts or resumes an upload. If the blob is already complete
+  // the upload short-circuits (complete = true) and no chunks are sent. If an
+  // earlier upload of the same blob was interrupted, received_size says where
+  // to resume.
+  //
+  // Errors: INVALID_ARGUMENT for a malformed blob_id or a size above the
+  // server's limit, or a size that differs from an in-progress upload of the
+  // same blob; PERMISSION_DENIED for viewers; NOT_FOUND for non-members.
+  rpc BeginBlob(BeginBlobRequest) returns (BeginBlobResponse) {}
+
+  // PutBlobChunk appends one chunk to an in-progress upload. Chunks are
+  // strictly sequential: offset must equal the bytes received so far.
+  //
+  // Errors: FAILED_PRECONDITION if no upload is in progress or offset is not
+  // the current received size; INVALID_ARGUMENT if the chunk is larger than
+  // max_chunk_size or extends past the declared size; PERMISSION_DENIED for
+  // viewers; NOT_FOUND for non-members.
+  rpc PutBlobChunk(PutBlobChunkRequest) returns (PutBlobChunkResponse) {}
+
+  // CommitBlob completes an upload. For plaintext vaults the server verifies
+  // SHA-256(content) == blob_id. Committing an already-complete blob
+  // succeeds (idempotent).
+  //
+  // Errors: FAILED_PRECONDITION if fewer than size bytes were received;
+  // INVALID_ARGUMENT if the content hash does not match (the partial upload is
+  // discarded); PERMISSION_DENIED for viewers; NOT_FOUND for non-members or
+  // if no upload exists.
+  rpc CommitBlob(CommitBlobRequest) returns (CommitBlobResponse) {}
+
+  // DownloadBlob reads a byte range of a complete blob. Clients download
+  // large blobs with repeated calls, advancing offset.
+  //
+  // Errors: NOT_FOUND if the blob is not complete in this vault or the caller
+  // is not a member; INVALID_ARGUMENT if offset is beyond the blob's size.
+  rpc DownloadBlob(DownloadBlobRequest) returns (DownloadBlobResponse) {}
+}
+
+// BeginBlobRequest declares a blob to upload.
+message BeginBlobRequest {
+  // Vault the blob belongs to. Blobs are never shared across vaults.
+  string vault_id = 1;
+  // Content address (32 bytes); see ContentRef.blob_id.
+  bytes blob_id = 2;
+  // Total size of the blob in bytes. Bounded by the server.
+  uint64 size = 3;
+}
+
+// BeginBlobResponse says how to proceed with the upload.
+message BeginBlobResponse {
+  // Whether the blob is already complete. If true, skip straight to
+  // CommitRevision.
+  bool complete = 1;
+  // Bytes already received for this blob; the next chunk's offset.
+  uint64 received_size = 2;
+  // Largest chunk the server accepts in PutBlobChunk.data.
+  uint32 max_chunk_size = 3;
+}
+
+// PutBlobChunkRequest carries one chunk of an upload.
+message PutBlobChunkRequest {
+  // Vault the blob belongs to.
+  string vault_id = 1;
+  // Blob being uploaded.
+  bytes blob_id = 2;
+  // Byte offset of data within the blob. Must equal the bytes received so
+  // far.
+  uint64 offset = 3;
+  // Chunk bytes. Non-empty and at most max_chunk_size.
+  bytes data = 4;
+}
+
+// PutBlobChunkResponse acknowledges a chunk.
+message PutBlobChunkResponse {
+  // Bytes received so far, including this chunk.
+  uint64 received_size = 1;
+}
+
+// CommitBlobRequest completes an upload.
+message CommitBlobRequest {
+  // Vault the blob belongs to.
+  string vault_id = 1;
+  // Blob to complete.
+  bytes blob_id = 2;
+}
+
+// CommitBlobResponse confirms a complete blob.
+message CommitBlobResponse {
+  // Size of the complete blob in bytes.
+  uint64 size = 1;
+}
+
+// DownloadBlobRequest asks for a byte range of a blob.
+message DownloadBlobRequest {
+  // Vault the blob belongs to.
+  string vault_id = 1;
+  // Blob to read.
+  bytes blob_id = 2;
+  // First byte to return.
+  uint64 offset = 3;
+  // Maximum number of bytes to return. Zero selects the server's maximum;
+  // the server caps larger values.
+  uint32 length = 4;
+}
+
+// DownloadBlobResponse carries a byte range of a blob.
+message DownloadBlobResponse {
+  // Bytes starting at offset. Shorter than the requested length only at the
+  // end of the blob or when capped by the server.
+  bytes data = 1;
+  // Total size of the blob in bytes.
+  uint64 size = 2;
+}
