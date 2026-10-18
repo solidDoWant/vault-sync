@@ -152,6 +152,8 @@ Server-side details (decision):
 
 ### 9.3 End-to-end encryption (opt-in per vault)
 
+Until Phase 4 (§15) delivers key management, the server rejects `CreateVault` for an E2EE vault (with or without escrow) with `FAILED_PRECONDITION` ("end-to-end encrypted vaults are not supported yet"), so that no client can commit plaintext into a vault marked as encrypted, whose `path_key` the server could not derive (§5; principle 1). Escrow on a plaintext vault is `INVALID_ARGUMENT`.
+
 Envelope encryption with multiple recipients:
 
 - Each **user** has an X25519 key pair. The private key is stored server-side wrapped by a key derived from a user recovery passphrase (Argon2id). Devices unwrap it once and keep it in local storage. (Device-to-device linking and Shamir-split recovery are later enhancements.)
@@ -233,7 +235,7 @@ Work is tracked as GitHub milestones and parent issues. Each phase ends with a b
 1. **Foundations** — protocol schema, server core (store, blobs, revisions, auth, authz), simulation harness skeleton, CI.
 2. **Single-user file sync** — plugin engine + adapter for desktop and Android, merge, conflicts, history/restore, export job, Helm chart. Dogfooding starts here.
 3. **Vault sharing** — membership management, invitations, roles in UI.
-4. **End-to-end encryption** — key hierarchy, escrow, export decryption, crypto vectors, independent crypto review.
+4. **End-to-end encryption** — key hierarchy, escrow, export decryption, crypto vectors, independent crypto review. Until then, creating an E2EE vault is rejected (§9.3).
 5. **Live collaborative editing** — Yjs documents, conversion, editor binding, awareness, compaction.
 
 ## 16. Open questions

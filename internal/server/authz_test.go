@@ -410,8 +410,9 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 		wantVault *vaultsyncv1.Vault
 	}{
 		{name: "plaintext", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes", Encryption: none}},
-		{name: "e2ee", request: &vaultsyncv1.CreateVaultRequest{Name: "Secret", Encryption: e2ee}},
-		{name: "e2ee with escrow", request: &vaultsyncv1.CreateVaultRequest{Name: "Backed up", Encryption: e2ee, Escrow: true}},
+		// End-to-end encryption needs Phase 4 key management (SPEC.md §15).
+		{name: "e2ee", request: &vaultsyncv1.CreateVaultRequest{Name: "Secret", Encryption: e2ee}, wantCode: connect.CodeFailedPrecondition},
+		{name: "e2ee with escrow", request: &vaultsyncv1.CreateVaultRequest{Name: "Backed up", Encryption: e2ee, Escrow: true}, wantCode: connect.CodeFailedPrecondition},
 		{name: "longest name", request: &vaultsyncv1.CreateVaultRequest{Name: strings.Repeat("n", api.MaxVaultNameBytes), Encryption: none}},
 		{name: "empty name", request: &vaultsyncv1.CreateVaultRequest{Encryption: none}, wantCode: connect.CodeInvalidArgument},
 		{name: "blank name", request: &vaultsyncv1.CreateVaultRequest{Name: " \t\n", Encryption: none}, wantCode: connect.CodeInvalidArgument},
@@ -440,6 +441,29 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 			assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, vault.GetRole())
 		})
 	}
+}
+
+// TestCreateVaultRejectsEndToEndEncryptionUntilPhase4 guards principle 1:
+// without key management a client would store plaintext in a vault marked
+// as encrypted.
+func TestCreateVaultRejectsEndToEndEncryptionUntilPhase4(t *testing.T) {
+	fixture := newVaultFixture(t, newMemoryStore(), newMemoryVaults(), nil)
+	token := fixture.token(t, "alice")
+
+	for _, escrow := range []bool{false, true} {
+		_, err := fixture.vaultClient().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
+			Name: "Secret", Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: escrow,
+		}, token))
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), "escrow %t", escrow)
+
+		var connectErr *connect.Error
+
+		require.ErrorAs(t, err, &connectErr)
+		assert.Equal(t, "end-to-end encrypted vaults are not supported yet", connectErr.Message())
+	}
+
+	assert.Empty(t, fixture.listVaults(t, token), "no vault is created")
 }
 
 func TestCreateVaultLimit(t *testing.T) {

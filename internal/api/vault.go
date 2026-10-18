@@ -82,6 +82,13 @@ func (service VaultService) CreateVault(ctx context.Context, request *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("escrow requires VAULT_ENCRYPTION_E2EE"))
 	}
 
+	// Until key management exists (Phase 4, SPEC.md §15), clients would
+	// commit plaintext into a vault marked as encrypted, and the server could
+	// not derive path keys for it (SPEC.md §5).
+	if encryption == store.EncryptionE2EE {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("end-to-end encrypted vaults are not supported yet"))
+	}
+
 	vault, err := service.Vaults.CreateVault(ctx, user.ID, store.NewVault{
 		Name:       name,
 		Encryption: encryption,
