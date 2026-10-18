@@ -5,6 +5,12 @@
 # command, and tears the stack down on exit, whether the command passes,
 # fails, or is interrupted. Requires Docker.
 #
+# VAULT_SYNC_TEST_POSTGRES_VERSION selects another PostgreSQL major version
+# than the default image: it applies the compose override
+# deploy/compose/compose.test-postgres<version>.yaml (only 14, the minimum
+# supported version, exists) and fails unless the running server reports that
+# major version.
+#
 # Used by scripts/test-integration.sh, scripts/test-sim.sh and scripts/test-e2e.sh.
 set -euo pipefail
 
@@ -19,6 +25,16 @@ fi
 # do not share or tear down each other's containers.
 compose=(docker compose --project-name "vault-sync-test-$$" --file deploy/compose/compose.test.yaml)
 
+postgres_version="${VAULT_SYNC_TEST_POSTGRES_VERSION:-}"
+if [[ -n "$postgres_version" ]]; then
+	override="deploy/compose/compose.test-postgres${postgres_version}.yaml"
+	if [[ ! "$postgres_version" =~ ^[0-9]+$ || ! -f "$override" ]]; then
+		echo "with-test-stack: no compose override for VAULT_SYNC_TEST_POSTGRES_VERSION=${postgres_version} (expected ${override})" >&2
+		exit 2
+	fi
+	compose+=(--file "$override")
+fi
+
 cleanup() {
 	"${compose[@]}" down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1 || true
 }
@@ -27,6 +43,16 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 "${compose[@]}" up --detach --wait --wait-timeout 120 --quiet-pull
+
+if [[ -n "$postgres_version" ]]; then
+	# server_version_num is major * 10000 + minor for PostgreSQL 10 and newer.
+	server_version_num="$("${compose[@]}" exec -T postgres psql --username=vault_sync --dbname=vault_sync --no-align --tuples-only --command='SHOW server_version_num')"
+	if [[ "$((server_version_num / 10000))" != "$postgres_version" ]]; then
+		echo "with-test-stack: wanted PostgreSQL ${postgres_version}, but the server reports server_version_num ${server_version_num}" >&2
+		exit 1
+	fi
+	echo "with-test-stack: PostgreSQL server_version_num ${server_version_num}" >&2
+fi
 
 host_port() {
 	local address
