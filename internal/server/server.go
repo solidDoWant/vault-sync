@@ -63,6 +63,9 @@ type Options struct {
 	// Memberships resolves callers' vault roles for every procedure in
 	// VaultProcedures. When nil, every caller is treated as a non-member.
 	Memberships authz.MembershipStore
+	// Sync serves SyncService. When nil, SyncService is unimplemented. Its
+	// Logger defaults to Logger.
+	Sync *api.SyncService
 	// Blobs serves BlobService. When nil, BlobService is unimplemented. Its
 	// Logger defaults to Logger.
 	Blobs *api.BlobService
@@ -152,6 +155,17 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 		vaults = api.VaultService{Vaults: options.Vaults, Logger: options.Logger}
 	}
 
+	var syncHandler vaultsyncv1connect.SyncServiceHandler = vaultsyncv1connect.UnimplementedSyncServiceHandler{}
+
+	if options.Sync != nil {
+		service := *options.Sync
+		if service.Logger == nil {
+			service.Logger = options.Logger
+		}
+
+		syncHandler = service
+	}
+
 	var blobs vaultsyncv1connect.BlobServiceHandler = vaultsyncv1connect.UnimplementedBlobServiceHandler{}
 
 	if options.Blobs != nil {
@@ -167,7 +181,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(api.ServerInfoService{}, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaults, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
-	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(vaultsyncv1connect.UnimplementedSyncServiceHandler{}, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(syncHandler, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(blobs, handlerOptions...))
 
 	corsHandler := cors.New(cors.Options{
