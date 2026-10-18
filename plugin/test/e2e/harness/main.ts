@@ -1,4 +1,4 @@
-import { MarkdownView, Plugin, TFile, type App } from "obsidian";
+import { FileView, MarkdownView, Plugin, TextFileView, TFile, type App } from "obsidian";
 
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
 import { InMemoryJournal } from "../../../src/core/journal/memory";
@@ -19,6 +19,15 @@ export interface EditorWriteResult {
   diskBefore: string;
   editor: string;
   cursor: { line: number; ch: number };
+  disk: string;
+}
+
+/** A canvas view's state after a remote write to its file (editor.e2e.ts). */
+export interface ViewWriteResult {
+  outcome: string;
+  diskBefore: string;
+  /** The view's own serialization of what it shows. */
+  view: string;
   disk: string;
 }
 
@@ -111,6 +120,45 @@ export default class VaultSyncE2EHarness extends Plugin {
       outcome = describeError(error);
     }
     return { outcome, diskBefore, editor: editor.getValue(), cursor: editor.getCursor(), disk: await this.app.vault.read(file) };
+  }
+
+  /**
+   * In the canvas showing `path`: adds a text node reading `nodeText` (unless
+   * null), unsaved (the canvas saves 2 s later at the earliest), then writes
+   * `remote` through the Obsidian adapter. All in one turn, so no autosave
+   * can come in between. The node is added through the canvas's internal API
+   * (not in Obsidian's typings), as a user's click does.
+   */
+  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string): Promise<ViewWriteResult> {
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) throw new Error(`no file ${path}`);
+    const view = this.canvasView(path);
+    const diskBefore = await this.app.vault.read(file);
+    if (nodeText !== null) {
+      const { canvas } = view as unknown as { canvas: { createTextNode(options: object): unknown } };
+      canvas.createTextNode({ pos: { x: 0, y: 200 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
+    }
+    let outcome = "ok";
+    try {
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+    } catch (error) {
+      outcome = describeError(error);
+    }
+    return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file) };
+  }
+
+  /** The canvas showing `path`, as the view serializes it. */
+  canvasViewData(path: string): string {
+    return this.canvasView(path).getViewData();
+  }
+
+  private canvasView(path: string): TextFileView {
+    const view = this.app.workspace
+      .getLeavesOfType("canvas")
+      .map((leaf) => leaf.view)
+      .find((candidate) => candidate instanceof FileView && candidate.file?.path === path);
+    if (!(view instanceof TextFileView)) throw new Error(`${path} is not open in a canvas`);
+    return view;
   }
 
   /** A fresh in-memory server holding one synced note, and an empty journal: this device before its first sync. */

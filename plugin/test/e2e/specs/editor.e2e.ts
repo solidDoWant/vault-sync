@@ -73,7 +73,7 @@ describe("Remote writes to a note open in the editor", function () {
 
     const local = lines("# Title", "line one", "line two TYPED", "line three", "line four", "last line");
     expect(result).toEqual({
-      outcome: "UnsavedEditsError: Busy note.md has unsaved edits that overlap the incoming change",
+      outcome: "UnsavedEditsError: Busy note.md has unsaved edits that the incoming change cannot be merged with",
       diskBefore: base,
       // Neither side overwrote the other: the editor and the disk hold the
       // user's text, and the engine keeps the remote revision deferred.
@@ -81,5 +81,63 @@ describe("Remote writes to a note open in the editor", function () {
       cursor: { line: 2, ch: 14 },
       disk: local,
     });
+  });
+});
+
+describe("Remote writes to a canvas open in its view", function () {
+  const canvas = (...texts: string[]) =>
+    JSON.stringify({
+      nodes: texts.map((text, index) => ({ id: `node${String(index)}`, type: "text", text, x: 0, y: index * 100, width: 200, height: 60 })),
+      edges: [],
+    });
+
+  /** Creates `path` with `content` and opens it in a canvas view. */
+  async function openCanvas(path: string, content: string): Promise<void> {
+    await browser.executeObsidian(
+      async ({ app }, canvasPath, data) => {
+        const file = await app.vault.create(canvasPath, data);
+        await app.workspace.getLeaf(true).openFile(file, { active: true });
+      },
+      path,
+      content,
+    );
+  }
+
+  it("are refused while the canvas has unsaved changes, which are saved instead", async function () {
+    const base = canvas("base node");
+    await openCanvas("Busy board.canvas", base);
+    const remote = canvas("base node", "remote node");
+    const result = await callHarness("addCanvasNodeThenWriteRemote", "Busy board.canvas", "unsaved node", remote);
+
+    expect(result.outcome).toBe("UnsavedEditsError: Busy board.canvas has unsaved edits that the incoming change cannot be merged with");
+    // The node was unsaved when the remote change arrived.
+    expect(result.diskBefore).toBe(base);
+    // It survives in the view and is now on disk; the remote content was not written.
+    expect(result.view).toContain("unsaved node");
+    expect(result.disk).toBe(result.view);
+    expect(result.disk).not.toContain("remote node");
+  });
+
+  it("are applied when the canvas has nothing unsaved", async function () {
+    await openCanvas("Clean board.canvas", canvas("base node"));
+    // Put the canvas's own serialization on disk, so the view's data equals the disk.
+    const saved = await callHarness("canvasViewData", "Clean board.canvas");
+    expect(saved).toContain("base node");
+    await browser.executeObsidian(
+      async ({ app }, path, data) => {
+        const file = app.vault.getFileByPath(path);
+        if (file === null) throw new Error(`no file ${path}`);
+        await app.vault.modify(file, data);
+      },
+      "Clean board.canvas",
+      saved,
+    );
+    const remote = canvas("base node", "remote node");
+    const result = await callHarness("addCanvasNodeThenWriteRemote", "Clean board.canvas", null, remote);
+
+    expect(result.outcome).toBe("ok");
+    expect(result.disk).toBe(remote);
+    // The view picks up the new content from disk.
+    await browser.waitUntil(async () => (await callHarness("canvasViewData", "Clean board.canvas")).includes("remote node"));
   });
 });

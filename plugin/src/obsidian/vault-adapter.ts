@@ -1,23 +1,28 @@
-import { MarkdownView, normalizePath, TFile, TFolder, type App, type EventRef, type TAbstractFile } from "obsidian";
+import { EditableFileView, MarkdownView, normalizePath, TextFileView, TFile, TFolder, type App, type EventRef, type TAbstractFile } from "obsidian";
 
 import { VaultError, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener } from "../core/vault/adapter";
 import { mergeUnsaved } from "./text-merge";
 
 /**
- * A remote write reached a file open in an editor whose unsaved edits overlap
- * the remote change. The adapter saved the editor (so the edits are on disk
- * and the engine sees them as a local change next time) and wrote nothing.
+ * A remote write reached a file open in a view with unsaved state it could
+ * not merge with: a Markdown editor whose unsaved edits overlap the remote
+ * change, or another view (e.g. a canvas) with anything unsaved. The adapter
+ * saved the view (so the state is on disk and the engine sees it as a local
+ * change next time) and wrote nothing.
  */
 export class UnsavedEditsError extends Error {
   override readonly name = "UnsavedEditsError";
 
   constructor(readonly path: string) {
-    super(`${path} has unsaved edits that overlap the incoming change`);
+    super(`${path} has unsaved edits that the incoming change cannot be merged with`);
   }
 }
 
 /** UTF-8 that keeps a byte order mark as U+FEFF, so text round-trips byte for byte. */
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+/** Obsidian's views that only display a file and hold no unsaved state of their own. */
+const readOnlyViewTypes = new Set(["image", "audio", "video", "pdf"]);
 
 /** Editor transactions the adapter makes carry this origin. */
 export const syncEditOrigin = "vault-sync";
@@ -37,7 +42,9 @@ export const syncEditOrigin = "vault-sync";
  *   revisions of their own.
  * - A write to a file open in a Markdown editor goes through Vault.process
  *   and an editor transaction, so the cursor, selection and unsaved
- *   keystrokes survive a non-overlapping remote change (see write()).
+ *   keystrokes survive a non-overlapping remote change. A write to a file
+ *   with unsaved state in any other view (e.g. a canvas) is refused after
+ *   saving that view (see overwrite()).
  * - watch() reports nothing before the workspace layout is ready: while
  *   Obsidian loads a vault it fires "create" for every existing file, which
  *   is indexing, not a user edit. Changes made while Obsidian was not running
@@ -127,20 +134,36 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * Replaces a file's content. For a UTF-8 file open in a Markdown editor
-   * this is a three-way merge inside Vault.process: the disk text is the base
-   * (the engine has checked it is the synced base), the editor buffer is the
-   * base plus any unsaved keystrokes, and `data` is the new content. Only the
-   * remote changes are applied to the editor, as one transaction, so
-   * CodeMirror maps the cursor and selection through them; the disk gets the
-   * same merged text. With no unsaved edits that is exactly `data`. With
-   * unsaved edits it is `data` plus those edits, which the engine then sees
-   * as the user's change it is. If the two overlap, the editor is saved
-   * instead and the write rejects with UnsavedEditsError, so neither side is
-   * overwritten.
+   * Replaces a file's content without discarding what an open view has not
+   * saved yet.
+   *
+   * - Not open, or open only in a read-only viewer (image, PDF, ...): written
+   *   as is.
+   * - Open in any other non-Markdown view (canvas, Bases, a plugin's view):
+   *   Obsidian replaces such a view's state with the disk's on a change, so
+   *   the write goes ahead only if every such view is a text file view whose
+   *   data equals the disk (nothing unsaved), checked inside Vault.process.
+   *   Otherwise the views are saved and the write rejects with
+   *   UnsavedEditsError: the next pull finds the saved state as a local change.
+   * - Open in a Markdown editor (UTF-8 content): a three-way merge inside
+   *   Vault.process. The disk text is the base (the engine has checked it is
+   *   the synced base), the editor buffer is the base plus any unsaved
+   *   keystrokes, and `data` is the new content. Only the remote changes are
+   *   applied to the editor, as one transaction, so CodeMirror maps the cursor
+   *   and selection through them; the disk gets the same merged text. With no
+   *   unsaved edits that is exactly `data`. With unsaved edits it is `data`
+   *   plus those edits, which the engine then sees as the user's change it is.
+   *   If the two overlap, the editor is saved instead and the write rejects
+   *   with UnsavedEditsError, so neither side is overwritten.
    */
   private async overwrite(file: TFile, data: Uint8Array): Promise<void> {
-    const view = this.openMarkdownView(file);
+    const views = this.openViews(file);
+    const others = views.filter((view) => !(view instanceof MarkdownView) && !readOnlyViewTypes.has(view.getViewType()));
+    if (others.length > 0) {
+      await this.overwriteUnderOtherViews(file, data, others);
+      return;
+    }
+    const view = views.find((candidate) => candidate instanceof MarkdownView);
     const text = view === undefined ? undefined : decodeText(data);
     if (view === undefined || text === undefined) {
       await this.vault.modifyBinary(file, toArrayBuffer(data));
@@ -169,13 +192,31 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     }
   }
 
-  /** A Markdown view showing `file`, if one is open (and loaded). */
-  private openMarkdownView(file: TFile): MarkdownView | undefined {
-    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
-      const { view } = leaf;
-      if (view instanceof MarkdownView && view.file === file) return view;
+  /** The overwrite() case of a file open in non-Markdown views that may hold unsaved state. */
+  private async overwriteUnderOtherViews(file: TFile, data: Uint8Array, views: EditableFileView[]): Promise<void> {
+    const text = decodeText(data);
+    const textViews = views.filter((view) => view instanceof TextFileView);
+    const outcome = { written: false };
+    if (text !== undefined && textViews.length === views.length) {
+      await this.vault.process(file, (disk) => {
+        if (!textViews.every((view) => view.getViewData() === disk)) return disk;
+        outcome.written = true;
+        return text;
+      });
     }
-    return undefined;
+    if (outcome.written) return;
+    for (const view of textViews) await view.save();
+    throw new UnsavedEditsError(file.path);
+  }
+
+  /** The loaded views editing `file` (not sidebar views such as backlinks or outline, which only follow it). */
+  private openViews(file: TFile): EditableFileView[] {
+    const views: EditableFileView[] = [];
+    this.app.workspace.iterateAllLeaves((leaf) => {
+      const { view } = leaf;
+      if (view instanceof EditableFileView && view.file === file) views.push(view);
+    });
+    return views;
   }
 
   /** Creates the missing ancestor folders of `path`; "path-conflict" if one of them is a file. */
