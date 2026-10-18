@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -18,6 +16,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/store"
+	"github.com/solidDoWant/vault-sync/internal/textcheck"
 )
 
 // Vault bounds.
@@ -69,9 +68,7 @@ func (service VaultService) CreateVault(ctx context.Context, request *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxVaultNameBytes))
 	}
 
-	// PostgreSQL text cannot hold U+0000, and no control character (Unicode
-	// category Cc) belongs in a display name.
-	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+	if !textcheck.Printable(name) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control characters"))
 	}
 
