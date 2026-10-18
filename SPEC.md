@@ -83,7 +83,7 @@ All identifiers are UUIDv7 unless stated. Every table below is scoped by `vault_
 
 ### 6.1 Pull
 
-`ListChanges(vault_id, since_seq, page_size)` returns revisions with `seq > since_seq` in `seq` order, paginated (the client passes the last `seq` it received as the next `since_seq` until `has_more` is false; the server caps `page_size` at 1000 and defaults it to 500). A client's durable cursor is the highest `seq` it has fully applied to disk. Clients pull on startup, on a realtime `vault_changed{seq}` notification, and on a timer as a fallback.
+`ListChanges(vault_id, since_seq, page_size)` returns revisions with `seq > since_seq` in `seq` order, paginated (the client passes the last `seq` it received as the next `since_seq` until `has_more` is false; the server caps `page_size` at 1000 and defaults it to 500, and also ends a page early where its encoding would exceed the send limit, so a page of long paths never fails as too large; every page holds at least one revision if one exists, and startup requires the send limit to fit a response with one maximum-size revision). A client's durable cursor is the highest `seq` it has fully applied to disk. Clients pull on startup, on a realtime `vault_changed{seq}` notification, and on a timer as a fallback.
 
 ### 6.2 Push (optimistic concurrency)
 

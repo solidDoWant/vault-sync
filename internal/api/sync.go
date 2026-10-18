@@ -47,6 +47,11 @@ const (
 type SyncLimits struct {
 	MaxChangesPageSize int
 	MaxHistoryPageSize int
+	// MaxResponseBytes bounds the encoded size of a ListChanges or
+	// GetDocumentHistory response (see pageBudget). The server sets it to
+	// its send limit; tests lower it. Zero leaves pages bounded by entry
+	// count only.
+	MaxResponseBytes int
 }
 
 // SyncService implements vaultsync.v1.SyncService (SPEC.md §6). Every
@@ -137,8 +142,19 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 		HeadSeq: uint64(max(changes.HeadSeq, 0)),
 	}
 
+	// The page also ends where its encoding would exceed the response
+	// limit; the client continues from the last revision it got.
+	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
+
 	for _, revision := range changes.Revisions {
-		response.Revisions = append(response.Revisions, revisionMessage(revision))
+		message := revisionMessage(revision)
+		if !budget.admit(message) {
+			response.HasMore = true
+
+			break
+		}
+
+		response.Revisions = append(response.Revisions, message)
 	}
 
 	return connect.NewResponse(response), nil
@@ -198,12 +214,24 @@ func (service SyncService) GetDocumentHistory(ctx context.Context, request *conn
 
 	response := &vaultsyncv1.GetDocumentHistoryResponse{Document: documentMessage(history.Document)}
 
+	// The page also ends where its encoding would exceed the response
+	// limit; the token continues after the last revision returned.
+	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
+	hasMore := history.HasMore
+
 	for _, revision := range history.Revisions {
-		response.Revisions = append(response.Revisions, revisionMessage(revision))
+		message := revisionMessage(revision)
+		if !budget.admit(message) {
+			hasMore = true
+
+			break
+		}
+
+		response.Revisions = append(response.Revisions, message)
 	}
 
-	if history.HasMore && len(history.Revisions) > 0 {
-		response.NextPageToken = encodeHistoryToken(history.Revisions[len(history.Revisions)-1].Seq)
+	if hasMore && len(response.Revisions) > 0 {
+		response.NextPageToken = encodeHistoryToken(history.Revisions[len(response.Revisions)-1].Seq)
 	}
 
 	return connect.NewResponse(response), nil

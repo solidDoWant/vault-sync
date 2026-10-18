@@ -196,6 +196,12 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 			service.Logger = options.Logger
 		}
 
+		// Pages of revisions are cut to fit the send limit, so a client
+		// can always advance its cursor (SPEC.md §6.1).
+		if service.Limits.MaxResponseBytes <= 0 || service.Limits.MaxResponseBytes > int(options.MaxRequestBytes) {
+			service.Limits.MaxResponseBytes = int(options.MaxRequestBytes)
+		}
+
 		syncHandler = service
 	}
 
