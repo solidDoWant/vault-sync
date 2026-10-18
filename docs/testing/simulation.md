@@ -18,7 +18,7 @@ make test-sim SIM_SEED=1234                     # replay one seed
 | `SIM_STEPS` | `1000` | Steps per seeded schedule. |
 | `SIM_CLIENTS` | `3` | Simulated clients (devices of one user) per run. |
 | `SIM_SHRINK_RUNS` | `150` | Most re-runs spent minimizing a failing seed. |
-| `SIM_REGRESSION_DIR` | `sim/regressions` | Where minimized failing seeds are written, and which regression cases are replayed. |
+| `SIM_REGRESSION_DIR` | `sim/regressions` | Where minimized failing seeds are written, and which regression cases are replayed. A relative path is relative to the repository root (where `make test-sim` runs), wherever you invoke it from. The run fails, naming the variable, if the directory does not exist or holds no `*.json` case. |
 | `SIM_TIMEOUT` | `60m` | `go test -timeout` for the whole run. |
 
 `make test-sim` exits non-zero on any violation. The output names the seed (`SIM FAILURE: seed N ...`), lists the violations, gives the replay command, and shows the end of the minimized schedule's trace. Docker is required. Unlike `make test-integration`, the simulation never skips.
@@ -94,7 +94,7 @@ The clients also report `protocol` violations: a gap or reordering seen in `List
 
 ## Failing seeds and regression cases
 
-A failing seed is minimized (`sim/shrink.ts`): the harness deletes chunks of steps for as long as a violation of the same kind remains, within `SIM_SHRINK_RUNS` re-runs. It then writes the result to `sim/regressions/seed-<seed>.json` with its violations. Every `make test-sim` replays every committed case.
+A failing seed is minimized (`sim/shrink.ts`): the harness deletes chunks of steps for as long as a violation of the same kind remains, within `SIM_SHRINK_RUNS` re-runs. It then writes the result to `sim/regressions/seed-<seed>.json` with its violations. Every `make test-sim` replays every committed case. A missing or empty regression directory fails the run before any test starts, so a mistyped `SIM_REGRESSION_DIR` can never pass while it skips the committed cases. To collect failing seeds somewhere else, point `SIM_REGRESSION_DIR` at a copy of `sim/regressions`.
 
 Following CLAUDE.md, a sync bug gets its simulation regression before it is fixed. Commit the case with the fix.
 

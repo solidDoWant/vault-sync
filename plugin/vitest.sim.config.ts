@@ -1,8 +1,8 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
+
+import { loadRegressionCases, regressionDirEnv, resolveRegressionDir } from "./scripts/sim-regressions";
 
 // The networked simulation suite (../sim/*.sim.test.ts, SPEC.md §13). `make
 // test-sim` runs it through the `sim`-tagged Go driver (sim/simulation_test.go),
@@ -26,13 +26,14 @@ function required(name: string): string {
   return value;
 }
 
+const suites = (process.env.VAULT_SYNC_SIM_SUITES ?? "seeds,regressions,scenarios,determinism").split(",");
+
 // The Go driver passes the directory it writes failing seeds to (an absolute
-// path); by default it is the committed sim/regressions.
-const regressionsDir = process.env.SIM_REGRESSION_DIR || fileURLToPath(new URL("../sim/regressions/", import.meta.url));
-const regressions = (existsSync(regressionsDir) ? readdirSync(regressionsDir) : [])
-  .filter((file) => file.endsWith(".json"))
-  .sort()
-  .map((file) => JSON.parse(readFileSync(path.join(regressionsDir, file), "utf8")) as unknown);
+// path); by default it is the committed sim/regressions. A relative value is
+// relative to the repository root. When the regressions suite runs, a missing
+// or empty directory fails the run instead of skipping the suite (#131).
+const repoRoot = fileURLToPath(new URL("..", import.meta.url));
+const regressions = loadRegressionCases(resolveRegressionDir(process.env[regressionDirEnv], repoRoot), { required: suites.includes("regressions") });
 
 const firstSeed = integer("SIM_FIRST_SEED", 1);
 const single = process.env.SIM_SEED;
@@ -56,7 +57,7 @@ export default defineConfig({
         clients,
         shrinkRuns: integer("SIM_SHRINK_RUNS", 150),
         regressions,
-        suites: (process.env.VAULT_SYNC_SIM_SUITES ?? "seeds,regressions,scenarios,determinism").split(","),
+        suites,
       },
     },
   },
