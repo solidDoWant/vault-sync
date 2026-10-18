@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
@@ -232,6 +233,12 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			problems = append(problems, fmt.Errorf("%s: %q is not an integer number of bytes", MaxRequestBytesEnv, raw))
 		case value < MinMaxRequestBytes || value > MaxMaxRequestBytes:
 			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range %d to %d bytes", MaxRequestBytesEnv, value, MinMaxRequestBytes, MaxMaxRequestBytes))
+		case value < api.MinResponseLimitBytes:
+			// The limit is also the send limit, and every page of
+			// revisions holds at least one, which must fit it.
+			problems = append(problems, fmt.Errorf(
+				"%s: %d is below %d bytes, the largest ListChanges or GetDocumentHistory response with a single revision",
+				MaxRequestBytesEnv, value, api.MinResponseLimitBytes))
 		default:
 			cfg.MaxRequestBytes = value
 		}

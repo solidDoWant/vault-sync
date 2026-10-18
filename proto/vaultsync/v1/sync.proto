@@ -75,7 +75,9 @@ message ListChangesRequest {
   // Zero returns the vault from the beginning.
   uint64 since_seq = 2;
   // Maximum number of revisions to return. Zero selects the server default;
-  // the server caps larger values.
+  // the server caps larger values. The server may return fewer, with
+  // has_more set, to keep the response within its size limit, but always at
+  // least one if any exist.
   uint32 page_size = 3;
 }
 
@@ -152,7 +154,9 @@ message GetDocumentHistoryRequest {
   // Document whose history to list.
   string document_id = 2;
   // Maximum number of revisions to return. Zero selects the server default;
-  // the server caps larger values.
+  // the server caps larger values. The server may return fewer, with a
+  // next_page_token, to keep the response within its size limit, but always
+  // at least one if any exist.
   uint32 page_size = 3;
   // Opaque token from a previous GetDocumentHistoryResponse. Empty for the
   // first page.
