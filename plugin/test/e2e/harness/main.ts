@@ -184,6 +184,7 @@ export default class VaultSyncE2EHarness extends Plugin {
     session.localChanges.push(changes);
     const summary = await this.vaultSync().startSync({
       vaultId: session.server.vaultId,
+      deviceId: "e2e-device",
       api: createProtocolClient({ transport: session.server.transport }),
       journal: session.journal,
       onLocalChange: (event) => changes.push(event),

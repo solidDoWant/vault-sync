@@ -9,6 +9,8 @@ import { ObsidianVaultAdapter } from "./vault-adapter";
 
 export interface SyncSessionOptions {
   vaultId: string;
+  /** This install's registered device, recorded with every commit. */
+  deviceId: string;
   api: PullApi;
   /** The device's durable journal for this vault (#21); it is what lets a restarted session resume. */
   journal: Journal;
@@ -41,11 +43,14 @@ export class SyncSession {
     if (this.stopped) return undefined;
     this.engine = new SyncEngine({
       vaultId: this.options.vaultId,
+      deviceId: this.options.deviceId,
       api: this.options.api,
       vault: new ObsidianVaultAdapter(this.app),
       journal: this.options.journal,
       ...(this.options.merge === undefined ? {} : { merge: this.options.merge }),
       ...(this.options.onLocalChange === undefined ? {} : { onLocalChange: this.options.onLocalChange }),
+      // No automatic pushes until login, settings and push triggers are wired (#25).
+      pushDebounceMs: null,
     });
     return this.engine.pull();
   }

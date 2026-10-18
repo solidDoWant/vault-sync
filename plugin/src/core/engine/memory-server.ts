@@ -3,9 +3,11 @@ import { Code, ConnectError, createRouterTransport, type Transport } from "@conn
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
-import { SyncService } from "../../gen/vaultsync/v1/sync_pb";
-import { DocumentKind, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
+import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
+import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
+import { pathKey } from "../pathkey/pathkey";
+import { isVaultRelativePath } from "../vaultpath/vaultpath";
 
 export interface InMemoryServerOptions {
   vaultId?: string;
@@ -13,6 +15,8 @@ export interface InMemoryServerOptions {
   maxPageSize?: number;
   /** Largest DownloadBlob range the server returns, so downloads take several calls. */
   maxDownloadBytes?: number;
+  /** Largest PutBlobChunk the server accepts, reported by BeginBlob. */
+  maxChunkBytes?: number;
 }
 
 export interface CommitInput {
@@ -27,29 +31,46 @@ export interface CommitInput {
 /** A call the server is about to handle; `fail` makes interceptors reject it. */
 export type Interceptor = (method: string, request: unknown) => void;
 
+/** A call the server has handled (its effects are in place); throwing loses the response. */
+export type ResponseInterceptor = (method: string, request: unknown, response: unknown) => void;
+
+interface Upload {
+  size: number;
+  chunks: Uint8Array[];
+  received: number;
+}
+
 const encoder = new TextEncoder();
 
 /**
- * An in-process stand-in for the server's pull side (ListChanges, GetRevision,
- * DownloadBlob) over ConnectRPC's router transport, for engine unit tests: no
- * network. It keeps a plaintext vault's revision log and blobs in memory and
- * follows the protocol's paging and ranging rules (SPEC.md §6.1, §6.2).
+ * An in-process stand-in for the server's sync and blob services over
+ * ConnectRPC's router transport, for engine unit tests: no network. It keeps a
+ * plaintext vault's revision log, blobs and upload sessions in memory and
+ * follows the protocol's paging, ranging, upload and commit rules (SPEC.md
+ * §6.1, §6.2): resumable sequential chunks, hash verification, optimistic
+ * concurrency with the head as a Document detail, idempotent retries by
+ * revision id, and path-key uniqueness among live documents.
  */
 export class InMemoryServer {
   readonly vaultId: string;
   readonly transport: Transport;
   /** Called before every handled call; throw from it to fail the call. */
   interceptor: Interceptor | undefined;
+  /** Called after every handled call; throw from it to lose the response. */
+  responseInterceptor: ResponseInterceptor | undefined;
   private revisions: Revision[] = [];
   private readonly blobs = new Map<string, Uint8Array>();
+  private readonly uploads = new Map<string, Upload>();
   private headSeq = 0n;
   private readonly maxPageSize: number;
   private readonly maxDownloadBytes: number;
+  readonly maxChunkBytes: number;
 
   constructor(options: InMemoryServerOptions = {}) {
     this.vaultId = options.vaultId ?? "vault-1";
     this.maxPageSize = options.maxPageSize ?? 1000;
     this.maxDownloadBytes = options.maxDownloadBytes ?? 1 << 20;
+    this.maxChunkBytes = options.maxChunkBytes ?? 1 << 20;
     this.transport = createRouterTransport(({ service }) => {
       service(SyncService, {
         listChanges: (request) => {
@@ -66,14 +87,64 @@ export class InMemoryServer {
           if (revision === undefined) throw new ConnectError("revision not found", Code.NotFound);
           return { revision };
         },
-        commitRevision: () => {
-          throw new ConnectError("not part of the in-memory pull server", Code.Unimplemented);
+        commitRevision: (request) => {
+          this.intercept("CommitRevision", request);
+          this.checkVault(request.vaultId);
+          return this.respond("CommitRevision", request, { revision: this.commitRequest(request) });
         },
         getDocumentHistory: () => {
-          throw new ConnectError("not part of the in-memory pull server", Code.Unimplemented);
+          throw new ConnectError("not part of the in-memory server", Code.Unimplemented);
         },
       });
       service(BlobService, {
+        beginBlob: (request) => {
+          this.intercept("BeginBlob", request);
+          this.checkVault(request.vaultId);
+          const id = bytesToHex(request.blobId);
+          const complete = this.blobs.get(id);
+          const maxChunkSize = this.maxChunkBytes;
+          if (complete !== undefined) return this.respond("BeginBlob", request, { complete: true, receivedSize: BigInt(complete.length), maxChunkSize });
+          const size = Number(request.size);
+          let upload = this.uploads.get(id);
+          if (upload === undefined) {
+            upload = { size, chunks: [], received: 0 };
+            this.uploads.set(id, upload);
+          }
+          if (upload.size !== size) throw new ConnectError("size differs from the upload in progress", Code.InvalidArgument);
+          return this.respond("BeginBlob", request, { complete: false, receivedSize: BigInt(upload.received), maxChunkSize });
+        },
+        putBlobChunk: (request) => {
+          this.intercept("PutBlobChunk", request);
+          this.checkVault(request.vaultId);
+          const upload = this.uploads.get(bytesToHex(request.blobId));
+          if (upload === undefined) throw new ConnectError("no upload in progress", Code.FailedPrecondition);
+          if (request.data.length === 0 || request.data.length > this.maxChunkBytes) throw new ConnectError("chunk size out of bounds", Code.InvalidArgument);
+          if (request.offset !== BigInt(upload.received)) throw new ConnectError("offset is not the received size", Code.FailedPrecondition);
+          if (upload.received + request.data.length > upload.size) throw new ConnectError("chunk extends past the size", Code.InvalidArgument);
+          upload.chunks.push(request.data.slice());
+          upload.received += request.data.length;
+          return this.respond("PutBlobChunk", request, { receivedSize: BigInt(upload.received) });
+        },
+        commitBlob: (request) => {
+          this.intercept("CommitBlob", request);
+          this.checkVault(request.vaultId);
+          const id = bytesToHex(request.blobId);
+          const complete = this.blobs.get(id);
+          if (complete !== undefined) return this.respond("CommitBlob", request, { size: BigInt(complete.length) });
+          const upload = this.uploads.get(id);
+          if (upload === undefined) throw new ConnectError("no upload", Code.NotFound);
+          if (upload.received < upload.size) throw new ConnectError("upload incomplete", Code.FailedPrecondition);
+          const content = new Uint8Array(upload.size);
+          let offset = 0;
+          for (const chunk of upload.chunks) {
+            content.set(chunk, offset);
+            offset += chunk.length;
+          }
+          this.uploads.delete(id);
+          if (sha256Hex(content) !== id) throw new ConnectError("content does not match blob_id", Code.InvalidArgument);
+          this.blobs.set(id, content);
+          return this.respond("CommitBlob", request, { size: BigInt(content.length) });
+        },
         downloadBlob: (request) => {
           this.intercept("DownloadBlob", request);
           this.checkVault(request.vaultId);
@@ -178,8 +249,85 @@ export class InMemoryServer {
     return files;
   }
 
+  /** Whether a blob is complete. */
+  hasBlob(blobId: string): boolean {
+    return this.blobs.has(blobId);
+  }
+
+  /** Every revision of `documentId`, oldest first. */
+  history(documentId: string): Revision[] {
+    return this.revisions.filter((revision) => revision.documentId === documentId);
+  }
+
   private intercept(method: string, request: unknown): void {
     this.interceptor?.(method, request);
+  }
+
+  private respond<T>(method: string, request: unknown, response: T): T {
+    this.responseInterceptor?.(method, request, response);
+    return response;
+  }
+
+  /** CommitRevision's checks, in the server's order (SPEC.md §6.2). */
+  private commitRequest(request: CommitRevisionRequest): Revision {
+    if (request.deviceId === "") throw new ConnectError("device not found", Code.NotFound);
+    const existing = this.revisions.find((revision) => revision.id === request.revisionId);
+    if (existing !== undefined) {
+      const same =
+        existing.documentId === request.documentId &&
+        existing.parentRevId === request.baseRevId &&
+        existing.kind === request.kind &&
+        existing.deleted === request.deleted &&
+        bytesToHex(existing.path) === bytesToHex(request.path) &&
+        bytesToHex(existing.contentRef?.blobId ?? new Uint8Array()) === bytesToHex(request.contentRef?.blobId ?? new Uint8Array()) &&
+        existing.contentRef?.size === request.contentRef?.size;
+      if (!same) throw new ConnectError("revision id reused with other fields", Code.InvalidArgument);
+      return existing;
+    }
+    const head = this.head(request.documentId);
+    if (head === undefined && request.baseRevId !== "") throw new ConnectError("the document does not exist", Code.FailedPrecondition);
+    if (head !== undefined && head.id !== request.baseRevId) {
+      throw new ConnectError("base_rev_id is not the document's head", Code.FailedPrecondition, undefined, [
+        { desc: DocumentSchema, value: { id: head.documentId, vaultId: this.vaultId, kind: head.kind, headRevId: head.id } },
+      ]);
+    }
+    if (head !== undefined && head.kind !== request.kind) throw new ConnectError("kind differs from the document's kind", Code.InvalidArgument);
+    const blobId = bytesToHex(request.contentRef?.blobId ?? new Uint8Array());
+    const blob = this.blobs.get(blobId);
+    if (blob === undefined) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+    if (BigInt(blob.length) !== request.contentRef?.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
+    const path = new TextDecoder().decode(request.path);
+    if (!isVaultRelativePath(path)) throw new ConnectError("path is not vault-relative", Code.InvalidArgument);
+    if (!request.deleted) {
+      const key = pathKey(path);
+      for (const [documentId, live] of this.liveHeads()) {
+        if (documentId !== request.documentId && pathKey(new TextDecoder().decode(live.path)) === key) {
+          throw new ConnectError("another live document has this path", Code.AlreadyExists);
+        }
+      }
+    }
+    this.headSeq++;
+    const revision = create(RevisionSchema, {
+      id: request.revisionId,
+      documentId: request.documentId,
+      vaultId: this.vaultId,
+      seq: this.headSeq,
+      parentRevId: request.baseRevId,
+      kind: request.kind,
+      contentRef: { blobId: hexToBytes(blobId), size: BigInt(blob.length) },
+      path: request.path,
+      deleted: request.deleted,
+      deviceId: request.deviceId,
+    });
+    this.revisions.push(revision);
+    return revision;
+  }
+
+  private liveHeads(): Map<string, Revision> {
+    const heads = new Map<string, Revision>();
+    for (const revision of this.revisions) heads.set(revision.documentId, revision);
+    for (const [documentId, revision] of heads) if (revision.deleted) heads.delete(documentId);
+    return heads;
   }
 
   private checkVault(vaultId: string): void {

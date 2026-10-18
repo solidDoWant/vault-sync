@@ -3,7 +3,7 @@
 // "crash" the engine after a chosen number of durable changes.
 
 import { createProtocolClient } from "../protocol/client";
-import type { DeferredRevision, DocumentState } from "../journal/journal";
+import type { DeferredRevision, DocumentState, PendingOperation, RemoteRevision } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import type { FileStat, VaultAdapter, VaultEvent, VaultListener } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
@@ -138,6 +138,12 @@ export class CrashingJournal extends InMemoryJournal {
   override removeDeferred(documentId: string): Promise<void> {
     return this.points.durable(() => super.removeDeferred(documentId));
   }
+  override addPending(operation: PendingOperation): Promise<void> {
+    return this.points.durable(() => super.addPending(operation));
+  }
+  override removePending(revisionId: string): Promise<void> {
+    return this.points.durable(() => super.removePending(revisionId));
+  }
 }
 
 export interface Harness {
@@ -149,6 +155,8 @@ export interface Harness {
   merges: MergeRequest[];
   /** Every vault event the engine reported as a local change. */
   localChanges: VaultEvent[];
+  /** Every revision the engine reported as acknowledged. */
+  acknowledged: RemoteRevision[];
   /** Replaces the engine with a fresh one over the same vault and journal (a restart). */
   restart(): SyncEngine;
 }
@@ -162,7 +170,13 @@ export interface HarnessOptions {
   /** Omit to record requests and defer; pass "default" to use the engine's default hook. */
   merge?: MergeHook | "default";
   pageSize?: number;
+  /** Automatic push delay; null (the default here) turns automatic pushes off. */
+  pushDebounceMs?: number | null;
+  onPushError?: (error: unknown) => void;
 }
+
+/** The device id the harness's engine commits with. */
+export const testDeviceId = "device-1";
 
 export function harness(options: HarnessOptions = {}): Harness {
   const server = options.server ?? new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5 });
@@ -170,6 +184,8 @@ export function harness(options: HarnessOptions = {}): Harness {
   const journal = options.journal ?? new InMemoryJournal();
   const merges: MergeRequest[] = [];
   const localChanges: VaultEvent[] = [];
+  const acknowledged: RemoteRevision[] = [];
+  let ids = 0;
   const recordingMerge: MergeHook = (request) => {
     merges.push(request);
     return Promise.resolve({ status: "deferred" });
@@ -177,12 +193,17 @@ export function harness(options: HarnessOptions = {}): Harness {
   const create = () =>
     new SyncEngine({
       vaultId: server.vaultId,
+      deviceId: testDeviceId,
       api: createProtocolClient({ transport: server.transport }),
       vault: options.wrapVault === undefined ? vault : options.wrapVault(vault),
       journal,
       ...(options.merge === "default" ? {} : { merge: options.merge ?? recordingMerge }),
       onLocalChange: (event) => localChanges.push(event),
+      onAcknowledged: (revision) => acknowledged.push(revision),
       pageSize: options.pageSize ?? 2,
+      pushDebounceMs: options.pushDebounceMs ?? null,
+      ...(options.onPushError === undefined ? {} : { onPushError: options.onPushError }),
+      newId: () => `id-${String(++ids)}`,
     });
   const result: Harness = {
     server,
@@ -191,6 +212,7 @@ export function harness(options: HarnessOptions = {}): Harness {
     engine: create(),
     merges,
     localChanges,
+    acknowledged,
     restart: () => {
       result.engine.dispose();
       result.engine = create();
