@@ -4,7 +4,8 @@
 
 import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 
 import { createHttpTransport, createProtocolClient } from "../plugin/src/core/protocol/client";
 import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
@@ -39,6 +40,7 @@ const maxDrainDeliveries = 100_000;
 
 export class SimRun {
   private stepNumber = 0;
+  direct: ReturnType<typeof createProtocolClient> | undefined;
 
   private constructor(
     readonly context: RunContext,
@@ -66,6 +68,7 @@ export class SimRun {
       network,
       acknowledged: [],
       violations: [],
+      rejected: [],
       log: (entry) => trace.push(`${String(run.stepNumber())}: ${entry}`),
     };
     const clients: ScriptedClient[] = [];
@@ -76,6 +79,7 @@ export class SimRun {
       clients.push(new ScriptedClient(index, createProtocolClient({ transport, token: () => token }), device.id, context));
     }
     const simRun = new SimRun(context, clients, control, trace);
+    simRun.direct = setup;
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
   }
@@ -120,6 +124,51 @@ export class SimRun {
     for (const client of this.clients) this.context.log(client.start("pull", 0));
     await settle();
     await this.drain();
+    for (const rejection of this.context.rejected) {
+      try {
+        const got = await this.direct!.sync.getRevision({ vaultId: this.context.vaultId, revisionId: rejection.revisionId });
+        const detail = `revision ${this.context.ids.label(rejection.revisionId)} of c${String(rejection.client)} was rejected with ${rejection.code} but is stored (seq ${String(got.revision?.seq)})`;
+        this.context.violations.push({ invariant: "rejected-but-stored", detail });
+        this.context.log(`VIOLATION rejected-but-stored: ${detail}`);
+      } catch (error) {
+        if (ConnectError.from(error).code !== Code.NotFound) throw error;
+      }
+    }
+    this.context.log(`checked ${String(this.context.rejected.length)} rejected revision ids`);
+    const seenBlobs = new Set<string>();
+    for (const ack of this.context.acknowledged) {
+      if (seenBlobs.has(ack.blobId)) continue;
+      seenBlobs.add(ack.blobId);
+      const blobId = hexToBytes(ack.blobId);
+      const chunks: Uint8Array[] = [];
+      let offset = 0n;
+      let total = -1n;
+      try {
+        while (total < 0n || offset < total) {
+          const response = await this.direct!.blobs.downloadBlob({ vaultId: this.context.vaultId, blobId, offset, length: 0 });
+          total = response.size;
+          if (response.data.length === 0 && offset < total) throw new Error("empty range");
+          chunks.push(response.data);
+          offset += BigInt(response.data.length);
+        }
+      } catch (error) {
+        this.context.violations.push({ invariant: "blob-readable", detail: `blob ${ack.blobId} of ${this.context.ids.label(ack.revisionId)} unreadable: ${String(error)}` });
+        continue;
+      }
+      const all = new Uint8Array(Number(offset));
+      let at = 0;
+      for (const chunk of chunks) { all.set(chunk, at); at += chunk.length; }
+      if (bytesToHex(sha256(all)) !== ack.blobId || String(total) !== ack.size) {
+        this.context.violations.push({ invariant: "blob-readable", detail: `blob ${ack.blobId} of ${this.context.ids.label(ack.revisionId)} has wrong content or size ${String(total)}` });
+      }
+    }
+    this.context.log(`checked ${String(seenBlobs.size)} acknowledged blobs`);
+    const snapshots = this.clients.map((client) => client.snapshot());
+    for (const [index, snapshot] of snapshots.entries()) {
+      if (snapshot !== snapshots[0]) {
+        this.context.violations.push({ invariant: "convergence", detail: `c${String(index)} (cursor ${String(this.clients[index]?.cursorSeq)}) disagrees with c0 (cursor ${String(this.clients[0]?.cursorSeq)})` });
+      }
+    }
     const violations = await this.control.check(this.context.vaultId, this.context.acknowledged);
     for (const violation of violations) {
       this.context.violations.push({ invariant: violation.invariant, detail: this.context.ids.relabel(violation.detail) });

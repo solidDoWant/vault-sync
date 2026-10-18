@@ -49,6 +49,8 @@ export interface RunContext {
   network: SimNetwork;
   acknowledged: Acknowledgement[];
   violations: Violation[];
+  /** Revision ids the server finally rejected (bughunt probe). */
+  rejected: { revisionId: string; code: string; client: number }[];
   /** Appends a trace entry. */
   log: (entry: string) => void;
 }
@@ -244,6 +246,7 @@ export class ScriptedClient {
       }
       if (result.status === "gave-up") return this.context.log(`${this.name} ${operation} ${document} gave up after network failures`);
       const { error } = result;
+      this.context.rejected.push({ revisionId, code: Code[error.code], client: this.index });
       if (error.code === Code.FailedPrecondition && fields.baseRevisionId !== "") {
         const head = error.findDetails(DocumentSchema)[0]?.headRevId;
         if (head === undefined || head === "") {
@@ -375,6 +378,18 @@ export class ScriptedClient {
       .filter((document) => !liveOnly || !document.deleted)
       .sort((left, right) => compareLabels(this.context.ids.label(left.id), this.context.ids.label(right.id)));
     return candidates.length === 0 ? undefined : random.pick(candidates);
+  }
+
+  /** Bughunt probe: the client's view of every document, for convergence. */
+  snapshot(): string {
+    return [...this.documents.values()]
+      .map((document) => `${document.id} ${document.head} ${document.path} ${String(document.deleted)} ${bytesToHex(document.blobId)} ${String(document.size)}`)
+      .sort()
+      .join("\n");
+  }
+
+  get cursorSeq(): bigint {
+    return this.cursor;
   }
 
   private learn(revision: Revision): void {
