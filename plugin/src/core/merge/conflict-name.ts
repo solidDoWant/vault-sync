@@ -28,18 +28,34 @@ const utf8Length = (text: string) => encoder.encode(text).length;
  * the local version where it is rather than drop it.
  */
 export function conflictCopyPath(path: string, device: string, date: Date, attempt = 1): string | null {
+  return conflictName(path, device, date, attempt, true, "");
+}
+
+/**
+ * The path `rest` (a path inside the folder `folder`) takes when the folder
+ * itself is renamed as a conflict copy: `<folder> (conflict <device>
+ * <date>)/<rest>`, as conflictCopyPath names a file but with no extension
+ * split off the folder's name. Used when a local file cannot be committed
+ * because another document's path is one of its folders (SPEC.md §6.3).
+ * Returns null if no name fits the limits.
+ */
+export function conflictFolderPath(folder: string, rest: string, device: string, date: Date, attempt = 1): string | null {
+  return conflictName(folder, device, date, attempt, false, `/${rest}`);
+}
+
+function conflictName(path: string, device: string, date: Date, attempt: number, splitExtension: boolean, tail: string): string | null {
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const folder = path.slice(0, separator + 1);
   const name = path.slice(separator + 1);
-  const dot = name.lastIndexOf(".");
+  const dot = splitExtension ? name.lastIndexOf(".") : -1;
   const [stem, extension] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
   const counter = attempt > 1 ? ` ${String(attempt)}` : "";
   const suffix = ` (conflict ${deviceLabel(device)} ${timestamp(date)}${counter})${extension}`;
   const characters = graphemes(stem);
-  const candidate = (length: number) => `${folder}${characters.slice(0, length).join("")}${suffix}`;
+  const candidate = (length: number) => `${folder}${characters.slice(0, length).join("")}${suffix}${tail}`;
   const fits = (length: number) => {
     const copy = candidate(length);
-    const segment = copy.slice(folder.length);
+    const segment = copy.slice(folder.length, copy.length - tail.length);
     return utf8Length(segment) <= maxSegmentBytes && utf8Length(copy) <= maxPathBytes && utf8Length(pathKey(copy)) <= maxPathKeyBytes && isVaultRelativePath(copy);
   };
   if (fits(characters.length)) return candidate(characters.length);
