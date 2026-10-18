@@ -134,7 +134,7 @@ The server requires **PostgreSQL 14 or newer**; on older versions the schema mig
 On `SIGTERM` or `SIGINT` it shuts down in this order:
 
 1. `/readyz` starts returning 503 immediately.
-2. For `VAULT_SYNC_SHUTDOWN_DELAY` the API keeps accepting and serving requests, but every response closes its connection, so clients and proxies reconnect, through the load balancer, to another replica.
+2. For `VAULT_SYNC_SHUTDOWN_DELAY` the API keeps accepting and serving requests, but every response closes its connection, so clients and proxies reconnect, through the load balancer, to another replica. Connections that are idle at the signal stay open until the delay ends, so a request a client sends on one at that moment is still served instead of reset.
 3. The API stops accepting connections, and in-flight requests get up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` to finish. Open realtime WebSockets are closed at this step with close code 1001 ("going away"), so clients reconnect elsewhere and re-subscribe.
 4. The process exits with status 0 after a clean drain, or status 1 if the timeout forced connections closed.
 

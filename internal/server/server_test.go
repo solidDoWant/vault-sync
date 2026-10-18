@@ -558,7 +558,9 @@ func TestShutdownGivesUpAfterTimeout(t *testing.T) {
 }
 
 func TestShutdownFailsReadinessBeforeRefusingConnections(t *testing.T) {
-	const shutdownDelay = 500 * time.Millisecond
+	// Generous, so the readiness poll and the request below fit within the
+	// delay even on a loaded machine.
+	const shutdownDelay = 3 * time.Second
 
 	running := startServer(t, server.Options{ShutdownDelay: shutdownDelay})
 
@@ -600,6 +602,68 @@ func TestShutdownFailsReadinessBeforeRefusingConnections(t *testing.T) {
 		require.NoError(t, running.err)
 	case <-time.After(5 * time.Second):
 		t.Fatal("server did not stop")
+	}
+}
+
+// A client may be reusing a kept-alive connection at the moment shutdown
+// starts, before any load balancer has noticed. Its request must be served,
+// not reset (issue #154): the server closes the connection only after
+// answering, so the client reconnects to another instance.
+func TestShutdownServesRequestsOnConnectionsIdleWhenShutdownStarts(t *testing.T) {
+	// Generous, so the request lands within the delay even on a loaded
+	// machine; the test waits for it only once, at cleanup.
+	const shutdownDelay = 3 * time.Second
+
+	running := startServer(t, server.Options{ShutdownDelay: shutdownDelay})
+
+	conn, err := net.Dial("tcp", running.apiAddress)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+
+	require.NoError(t, conn.SetDeadline(time.Now().Add(30*time.Second)))
+
+	reader := bufio.NewReader(conn)
+
+	serverInfo := func() (*http.Response, error) {
+		_, err := fmt.Fprintf(conn, "POST %s HTTP/1.1\r\nHost: vault-sync\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}", getServerInfoPath)
+		if err != nil {
+			return nil, err
+		}
+
+		response, err := http.ReadResponse(reader, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+
+		return response, err
+	}
+
+	response, err := serverInfo()
+	require.NoError(t, err)
+	require.Equal(t, http.StatusOK, response.StatusCode)
+	require.False(t, response.Close, "the connection is kept alive before shutdown")
+
+	// The connection is now idle on the server. Shutdown starts.
+	running.stop()
+
+	require.Eventually(t, func() bool {
+		status, _ := get(t, running.metricsURL()+"/readyz")
+
+		return status == http.StatusServiceUnavailable
+	}, 5*time.Second, 10*time.Millisecond, "readiness must fail as soon as shutdown starts")
+
+	response, err = serverInfo()
+	require.NoError(t, err, "a request on a connection idle when shutdown started must be served")
+	assert.Equal(t, http.StatusOK, response.StatusCode)
+	assert.True(t, response.Close, "responses during the shutdown delay must close their connection")
+
+	select {
+	case <-running.done:
+		t.Fatalf("server stopped before the shutdown delay ended: %v", running.err)
+	default:
 	}
 }
 

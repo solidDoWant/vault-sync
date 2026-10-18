@@ -470,7 +470,7 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 	baseContext := func(net.Listener) context.Context { return context.WithoutCancel(ctx) }
 
 	apiServer := &http.Server{
-		Handler:           srv.api,
+		Handler:           srv.closeConnectionsWhileDraining(srv.api),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		IdleTimeout:       idleTimeout,
@@ -511,9 +511,11 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 	// Fail readiness first and keep serving for ShutdownDelay, so load
 	// balancers stop routing here before any connection is refused.
 	// Responses meanwhile close their connections, so clients reconnect
-	// (to another instance) instead of reusing this one.
+	// (to another instance) instead of reusing this one. Idle connections
+	// stay open until Shutdown: closing them now would reset a request a
+	// client is sending on one at this moment (issue #154), which is why
+	// this is not http.Server.SetKeepAlivesEnabled(false).
 	srv.draining.Store(true)
-	apiServer.SetKeepAlivesEnabled(false)
 
 	if serveErr == nil && srv.options.ShutdownDelay > 0 {
 		timer := time.NewTimer(srv.options.ShutdownDelay)
@@ -551,6 +553,20 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 	}
 
 	return errors.Join(serveErr, shutdownErr)
+}
+
+// closeConnectionsWhileDraining has every response sent once shutdown has
+// started close its connection after it is written, so the client's next
+// request opens a connection a load balancer routes to another instance.
+// A successful WebSocket upgrade replaces the header with its own.
+func (srv *Server) closeConnectionsWhileDraining(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if srv.draining.Load() {
+			writer.Header().Set("Connection", "close")
+		}
+
+		next.ServeHTTP(writer, request)
+	})
 }
 
 // registerDrainers has apiServer's Shutdown run every Drainer, bounded by
