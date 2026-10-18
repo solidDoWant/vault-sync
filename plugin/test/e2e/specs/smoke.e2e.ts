@@ -4,16 +4,7 @@ import { browser, expect } from "@wdio/globals";
 import { obsidianPage } from "wdio-obsidian-service";
 
 import { e2eEnvironment, pluginId } from "../environment";
-
-// Obsidian's plugin registry is not in its public typings.
-interface PluginRegistry {
-  plugins: {
-    enabledPlugins: Set<string>;
-    plugins: Record<string, { _loaded?: boolean; manifest: { version: string } } | undefined>;
-    disablePlugin(id: string): Promise<void>;
-    enablePlugin(id: string): Promise<boolean>;
-  };
-}
+import { reloadPlugin, type PluginRegistry } from "../obsidian";
 
 const manifest = JSON.parse(readFileSync(new URL("../../../manifest.json", import.meta.url), "utf8")) as { version: string };
 
@@ -27,24 +18,6 @@ function pluginState() {
       loaded: plugin?._loaded === true,
       version: plugin?.manifest.version ?? null,
     };
-  }, pluginId);
-}
-
-/**
- * Runs the plugin's load again through Obsidian's own enable path and reports
- * whether it succeeded. The registry state alone cannot tell: Obsidian marks a
- * plugin loaded before calling its `onload`, and when `onload` throws (or its
- * promise rejects) it only logs "Plugin failure" and leaves the plugin
- * registered and enabled. `enablePlugin` resolves only after `onload` has
- * settled and resolves `false` when it failed, so this needs no waiting.
- * `disablePlugin` first, because `enablePlugin` is a no-op for a plugin that is
- * already registered; neither call changes the saved enabled-plugin list.
- */
-function reloadPlugin() {
-  return browser.executeObsidian(async ({ app }, id) => {
-    const registry = (app as unknown as PluginRegistry).plugins;
-    await registry.disablePlugin(id);
-    return registry.enablePlugin(id);
   }, pluginId);
 }
 
@@ -87,7 +60,7 @@ describe("vault-sync in Obsidian", function () {
   it("loads and enables the built plugin", async function () {
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
     // Its onload completes without throwing.
-    expect(await reloadPlugin()).toBe(true);
+    expect(await reloadPlugin(pluginId)).toBe(true);
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
   });
 
@@ -100,7 +73,7 @@ describe("vault-sync in Obsidian", function () {
     expect(obsidianPage.getVaultPath()).not.toBe(firstPath);
     expect(await vaultFiles()).toEqual(["Second vault.md"]);
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
-    expect(await reloadPlugin()).toBe(true);
+    expect(await reloadPlugin(pluginId)).toBe(true);
     expect((await obsidianPage.getPlatform()).isMobile).toBe(e2eEnvironment.emulateMobile);
   });
 
