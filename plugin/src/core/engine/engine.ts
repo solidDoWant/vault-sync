@@ -380,9 +380,14 @@ export class SyncEngine {
    * nothing, if the local file no longer holds what the merge hook was given
    * (the user changed it meanwhile) or another file is in the way.
    *
-   * Crash-safe: the disk is changed first, then the journal. Interrupted
-   * before the journal update, the document stays deferred, and the hook is
-   * asked again with the merge result as the local content.
+   * Crash-safe: the disk is changed first, then the pending operations are
+   * dropped, then the base is moved to the remote revision, then the deferral
+   * is removed. The merge result stays on disk throughout. Interrupted before
+   * the rebase, the remote revision is still unapplied (the cursor advances
+   * only after it, and a deferral is removed last), so the next pull or push
+   * hands it to the hook again with the merge result as the local content.
+   * Interrupted after the rebase, the result is an ordinary local edit on top
+   * of the remote revision and is pushed as one.
    */
   private async applyMerge(remote: RemoteRevision, local: { path: string; content: Uint8Array | null }, outcome: Extract<MergeOutcome, { status: "merged" }>): Promise<boolean> {
     if (outcome.content !== null && !isVaultRelativePath(outcome.path)) throw new Error(`the merge hook returned a path that is not vault-relative: ${outcome.path}`);
@@ -408,13 +413,15 @@ export class SyncEngine {
       if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return false;
       throw error;
     }
-    await this.journal.putDocument(syncedState(remote));
     // The document's unacknowledged operations are superseded: their commits
     // were refused (the head had moved past their base), and their content is
-    // part of the merge result on disk.
+    // part of the merge result on disk. They go before the rebase, so a
+    // document never has the remote revision as its base while an operation
+    // based on an older head is still pending.
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId === remote.documentId) await this.journal.removePending(operation.revisionId);
     }
+    await this.journal.putDocument(syncedState(remote));
     await this.journal.removeDeferred(remote.documentId);
     this.changes.paths.add(local.path);
     this.changes.paths.add(outcome.path);
@@ -589,7 +596,7 @@ export class SyncEngine {
         continue;
       }
       if (content === null) continue;
-      // A file where a deleted document was brings that document back (SPEC.md §6.3).
+      // A file where a deleted document was brings that document back (SPEC.md §8, decision #17).
       const tombstone = tombstones.get(path);
       if (tombstone !== undefined && !busyDocuments.has(tombstone.documentId)) {
         edits.push(this.operation(tombstone, path, content));

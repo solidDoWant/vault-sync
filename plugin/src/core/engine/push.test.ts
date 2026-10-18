@@ -143,6 +143,25 @@ describe("SyncEngine push", () => {
       expect(await h.journal.getDocument("a")).toMatchObject({ revisionId: pending[0]?.revisionId, baseHash: sha256Hex(bytes("a2")) });
     });
 
+    it("brings a deleted document back when a file reappears at its path", async () => {
+      const h = harness();
+      h.server.commit({ documentId: "a", path: "a.md", content: "a1" });
+      await h.engine.pull();
+      await h.vault.delete("a.md");
+      await h.engine.push();
+      const tombstone = h.server.head("a");
+      expect(tombstone?.deleted).toBe(true);
+      await h.vault.write("a.md", bytes("back again"));
+
+      await h.engine.push();
+
+      expect(h.server.liveFiles()).toEqual(new Map([["a.md", "back again"]]));
+      const head = h.server.head("a");
+      expect(head).toMatchObject({ deleted: false, parentRevId: tombstone?.id });
+      expect(h.server.history("a")).toHaveLength(3);
+      expect((await h.journal.listDocuments()).map((document) => document.documentId)).toEqual(["a"]);
+    });
+
     it("pushes an edit made while an earlier operation of the document was pending on top of it", async () => {
       const h = harness();
       h.server.commit({ documentId: "a", path: "a.md", content: "a1" });
@@ -324,6 +343,68 @@ describe("SyncEngine push", () => {
       expect(h.server.head("a")?.id).toBe(moved?.id);
       // Parked with the merge path: not retried against a head it cannot win.
       expect(commits).toEqual([]);
+    });
+
+    it("recovers and pushes the merge result wherever the merge is interrupted", async () => {
+      // An idempotent merge (as the hook contract requires): a local side that
+      // already contains the remote side is the merge result itself.
+      const merge: MergeHook = async (request) => {
+        const remote = decoder.decode((await request.readRemoteContent()) ?? new Uint8Array());
+        const local = decoder.decode(request.local.content ?? new Uint8Array());
+        const content = local.startsWith(`${remote}+`) ? local : `${remote}+${local}`;
+        return { status: "merged", path: request.remote.path, content: bytes(content) };
+      };
+      const setup = async (points: CrashPoints | undefined) => {
+        const h = points === undefined ? harness({ merge }) : harness({ merge, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
+        h.server.commit({ documentId: "a", path: "a.md", content: "base" });
+        await h.engine.pull();
+        await h.vault.write("a.md", bytes("local"));
+        let moved = false;
+        h.server.interceptor = (method) => {
+          if (method === "CommitRevision" && !moved) {
+            moved = true;
+            h.server.commit({ documentId: "a", path: "a.md", content: "remote" });
+          }
+        };
+        return h;
+      };
+      const state = async (h: Awaited<ReturnType<typeof setup>>) => ({
+        server: h.server.liveFiles(),
+        files: await files(h.vault),
+        pending: await h.journal.listPending(),
+        deferred: await h.journal.listDeferred(),
+        base: (await h.journal.getDocument("a"))?.revisionId === h.server.head("a")?.id,
+      });
+      const reference = await setup(undefined);
+      await reference.engine.push();
+      const expected = await state(reference);
+      expect(expected).toMatchObject({ server: new Map([["a.md", "remote+local"]]), pending: [], deferred: [], base: true });
+
+      let crashed = 0;
+      for (let crashAfter = 1; ; crashAfter++) {
+        const points = new CrashPoints();
+        const h = await setup(points);
+        points.count = 0;
+        points.crashAfter = crashAfter;
+        const outcome = await h.engine.push().then(
+          () => "finished",
+          (error: unknown) => {
+            if (!(error instanceof Crash)) throw error;
+            return "crashed";
+          },
+        );
+        if (outcome === "finished") break;
+        crashed++;
+        points.crashAfter = 0;
+        await h.engine.settled();
+        h.restart();
+        await h.engine.push();
+        await h.engine.push();
+
+        expect(await state(h), `crash after durable change ${String(crashAfter)}`).toEqual(expected);
+      }
+      // Every durable change of the push was a crash point, the merged write and the rebase among them.
+      expect(crashed).toBeGreaterThanOrEqual(5);
     });
   });
 
