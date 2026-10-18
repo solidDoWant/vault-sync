@@ -11,6 +11,27 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        # The Go toolchain for the dev shell and every Go build (the OCI
+        # image derivations must build with this, e.g. via
+        # `pkgs.buildGoModule.override { inherit go; }`). nixpkgs-unstable
+        # still ships go 1.26.8, which has standard-library vulnerabilities
+        # fixed in 1.26.9 (#140), so the pinned Go is overridden to 1.26.9
+        # (same version and hash as nixpkgs master) until nixpkgs catches up;
+        # once the pinned Go is at least that version it is used as is and
+        # this override can be deleted.
+        minimumGoVersion = "1.26.9";
+        go =
+          if pkgs.lib.versionAtLeast pkgs.go.version minimumGoVersion then
+            pkgs.go
+          else
+            pkgs.go.overrideAttrs (finalAttrs: _: {
+              version = minimumGoVersion;
+              src = pkgs.fetchurl {
+                url = "https://go.dev/dl/go${finalAttrs.version}.src.tar.gz";
+                hash = "sha256-lzXX3Ntls10/pXfwQGRzfAO4nPGitx5uaf4vPG+f1Mo=";
+              };
+            });
+
         # Shared libraries of the Obsidian (Electron) build and chromedriver
         # that the plugin e2e suite downloads (make test-e2e). They are
         # generic Linux binaries, so on NixOS they run through nix-ld, which
@@ -52,7 +73,7 @@
 
         devShells.default = pkgs.mkShell {
           packages = [
-            pkgs.go
+            go
             pkgs.golangci-lint
             pkgs.govulncheck
             pkgs.gnumake
