@@ -8,6 +8,12 @@
       dependencyDashboardApproval: true,
     },
     {
+      description: "The PostgreSQL 14 test override exercises the minimum supported version (docs/testing/integration.md); only minor and digest updates apply",
+      matchFileNames: ["deploy/compose/compose.test-postgres14.yaml"],
+      matchUpdateTypes: ["major"],
+      enabled: false,
+    },
+    {
       description: "No digest pins: flake.lock already pins nixpkgs, and a preset ref can't carry both tag and SHA",
       matchManagers: ["nix", "renovate-config"],
       pinDigests: false,
