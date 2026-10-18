@@ -69,7 +69,9 @@ export type BeginBlobResponse = Message<"vaultsync.v1.BeginBlobResponse"> & {
   receivedSize: bigint;
 
   /**
-   * Largest chunk the server accepts in PutBlobChunk.data.
+   * Largest chunk the server accepts in PutBlobChunk.data from this client,
+   * in the codec of this request: the configured maximum in binary protobuf,
+   * less in JSON, which base64-encodes the data.
    *
    * @generated from field: uint32 max_chunk_size = 3;
    */
@@ -224,8 +226,9 @@ export type DownloadBlobRequest = Message<"vaultsync.v1.DownloadBlobRequest"> & 
   offset: bigint;
 
   /**
-   * Maximum number of bytes to return. Zero selects the server's maximum;
-   * the server caps larger values.
+   * Maximum number of bytes to return. Zero selects the server's maximum
+   * for the request's codec (smaller in JSON than in binary protobuf); the
+   * server caps larger values. Continue from the end of a shorter range.
    *
    * @generated from field: uint32 length = 4;
    */

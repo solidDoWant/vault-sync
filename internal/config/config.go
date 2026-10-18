@@ -85,8 +85,9 @@ const (
 	// ChunkRequestOverheadBytes is reserved in every request body for the
 	// fields of a PutBlobChunkRequest besides its data (binary protobuf: a
 	// vault id, a blob id, an offset and field framing take under 100
-	// bytes), so a maximum-size chunk always fits the body limit.
-	ChunkRequestOverheadBytes = 1 << 10
+	// bytes), so a maximum-size chunk always fits the body limit. JSON
+	// clients are advertised smaller chunks (api.BlobService).
+	ChunkRequestOverheadBytes = api.ChunkReserveBytes
 
 	MaxBlobMaxUploadsPerVault = 10000
 	MinBlobUploadTTL          = 10 * time.Minute

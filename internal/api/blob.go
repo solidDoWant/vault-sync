@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"time"
 
 	"connectrpc.com/connect"
@@ -23,6 +24,12 @@ const (
 	// BlobIDBytes is the length of a blob id: a SHA-256 or HMAC-SHA256
 	// digest (SPEC.md §5).
 	BlobIDBytes = 32
+	// ChunkReserveBytes is reserved in every PutBlobChunk request and
+	// DownloadBlob response for the fields besides the chunk's data (a
+	// vault id, a blob id, an offset or size, and their framing take under
+	// 200 bytes in either codec), so a maximum-size chunk always fits the
+	// message limit.
+	ChunkReserveBytes = 1 << 10
 	// cleanupTimeout bounds the immediate removal of a finished upload's
 	// staged objects; whatever it leaves, the cleanup routine removes.
 	cleanupTimeout = 30 * time.Second
@@ -33,6 +40,10 @@ type BlobLimits struct {
 	// MaxChunkBytes is the largest PutBlobChunk payload and the largest
 	// DownloadBlob response payload.
 	MaxChunkBytes int64
+	// MaxMessageBytes is the server's request and send limit (zero:
+	// unbounded); the server sets it. A JSON client's chunks and ranges are
+	// cut so their base64 encoding fits it (see chunkLimit).
+	MaxMessageBytes int64
 	// MaxBlobBytes is the largest blob.
 	MaxBlobBytes int64
 	// MaxUploadsPerVault bounds the active upload sessions in one vault.
@@ -81,8 +92,29 @@ func (service BlobService) internal(ctx context.Context, message string, err err
 	return connect.NewError(connect.CodeInternal, errors.New(message))
 }
 
-func (service BlobService) maxChunkSize() uint32 {
-	return uint32(min(service.Limits.MaxChunkBytes, int64(^uint32(0))))
+// chunkLimit returns the largest chunk a request may upload, and the largest
+// range a response may carry, in the request's codec. In binary protobuf it
+// is MaxChunkBytes, which startup checks fits the message limit with
+// ChunkReserveBytes to spare. protobuf JSON encodes bytes in base64, four
+// characters for every three bytes, so a JSON chunk is cut to what fits the
+// message limit once encoded, keeping the same reserve and room for gzip
+// framing (as pageBudget does for pages of revisions). The limit depends
+// only on the request, so every replica agrees on it.
+func (service BlobService) chunkLimit(header http.Header) int64 {
+	limit := service.Limits.MaxChunkBytes
+
+	messageBytes := service.Limits.MaxMessageBytes
+	if messageBytes <= 0 || !isJSONContentType(header.Get("Content-Type")) {
+		return limit
+	}
+
+	budget := messageBytes - messageBytes/1000 - ChunkReserveBytes
+
+	return max(min(limit, budget/4*3), 1)
+}
+
+func maxChunkSize(limit int64) uint32 {
+	return uint32(min(limit, int64(^uint32(0))))
 }
 
 // BeginBlob starts or resumes an upload, or reports the blob complete.
@@ -112,7 +144,7 @@ func (service BlobService) BeginBlob(ctx context.Context, request *connect.Reque
 		return nil, service.internal(ctx, "cannot begin blob upload", err)
 	}
 
-	response := &vaultsyncv1.BeginBlobResponse{MaxChunkSize: service.maxChunkSize()}
+	response := &vaultsyncv1.BeginBlobResponse{MaxChunkSize: maxChunkSize(service.chunkLimit(request.Header()))}
 
 	if start.Complete {
 		response.Complete = true
@@ -168,7 +200,9 @@ func (service BlobService) PutBlobChunk(ctx context.Context, request *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("chunk extends past the declared size (%d bytes)", upload.Size))
 	}
 
-	if minimum := min(blobstore.MinChunkBytes, service.Limits.MaxChunkBytes); end < upload.Size && int64(len(data)) < minimum {
+	// A JSON client's chunks may be smaller than MinChunkBytes when the
+	// message limit is low; the minimum follows what it was advertised.
+	if minimum := min(blobstore.MinChunkBytes, service.chunkLimit(request.Header())); end < upload.Size && int64(len(data)) < minimum {
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			fmt.Errorf("every chunk but the last must be at least %d bytes", minimum))
 	}
@@ -384,10 +418,14 @@ func (service BlobService) DownloadBlob(ctx context.Context, request *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("offset is beyond the blob's size (%d bytes)", blob.Size))
 	}
 
-	// The response is bounded by the server, whatever the client asks for.
+	// The response is bounded by the server, in the request's codec,
+	// whatever the client asks for; a client continues from the end of a
+	// short range.
+	maxLength := service.chunkLimit(request.Header())
+
 	length := int64(request.Msg.GetLength())
-	if length == 0 || length > service.Limits.MaxChunkBytes {
-		length = service.Limits.MaxChunkBytes
+	if length == 0 || length > maxLength {
+		length = maxLength
 	}
 
 	length = min(length, blob.Size-int64(offset))
