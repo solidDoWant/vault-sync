@@ -3,6 +3,7 @@
 package server_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -27,6 +28,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/server"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/testinfra"
@@ -40,6 +42,8 @@ type syncFixture struct {
 	*blobFixture
 
 	replicas []*runningServer
+	// hubs are the replicas' realtime hubs, by replica.
+	hubs []*realtime.Hub
 }
 
 func newSyncFixture(t *testing.T, limits api.SyncLimits) *syncFixture {
@@ -67,15 +71,41 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits) *syncFixture {
 		queries := store.New(replicaPool)
 		verifier := auth.NewVerifier(auth.VerifierOptions{IssuerURL: issuer.URL, Audience: authtest.DefaultAudience, Logger: logger})
 
+		authenticator := auth.NewAuthenticator(verifier, queries)
+		hub := realtime.NewHub(realtime.Options{
+			Authenticator:  authenticator,
+			Store:          queries,
+			AllowedOrigins: server.AllowedOrigins,
+			Logger:         logger,
+		})
+		syncFix.hubs = append(syncFix.hubs, hub)
+
+		hubCtx, stopHub := context.WithCancel(context.WithoutCancel(t.Context()))
+		hubDone := make(chan struct{})
+
+		go func() {
+			defer close(hubDone)
+
+			hub.Run(hubCtx)
+		}()
+
+		// Registered before the server's cleanup, so it runs after the
+		// server (and its drain) stopped.
+		t.Cleanup(func() {
+			stopHub()
+			<-hubDone
+		})
+
 		syncFix.replicas = append(syncFix.replicas, startServer(t, server.Options{
 			MaxRequestBytes: config.DefaultMaxRequestBytes,
 			Database:        replicaPool,
-			Authenticator:   auth.NewAuthenticator(verifier, queries),
+			Authenticator:   authenticator,
 			Devices:         queries,
 			Vaults:          queries,
 			Memberships:     queries,
 			Sync:            &api.SyncService{Store: queries, Limits: limits},
 			Blobs:           &api.BlobService{Store: queries, Objects: objects, Limits: defaultBlobLimits},
+			Realtime:        hub,
 			Logger:          logger,
 		}))
 	}

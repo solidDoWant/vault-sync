@@ -6,12 +6,20 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 
 // Realtime channel frames (SPEC.md §6.4).
 //
-// The realtime channel is a WebSocket authenticated with the same bearer token
-// as the RPC API. Each binary WebSocket message carries exactly one
-// protobuf-encoded frame: ClientFrame from client to server, ServerFrame from
-// server to client. The channel is a latency optimization only; correctness
-// never depends on receiving a frame, and clients still pull with
-// ListChanges.
+// The realtime channel is one WebSocket per device at GET /v1/realtime,
+// authenticated with the same bearer token as the RPC API. The client offers
+// the subprotocol "vaultsync.v1" and, from a browser, also
+// "vaultsync.bearer.<access token>" (non-browser clients may send an
+// Authorization: Bearer header instead); the server echoes only
+// "vaultsync.v1" and refuses the upgrade (HTTP 401) without a valid token.
+// One connection multiplexes subscriptions to many vaults, up to
+// GetServerInfoResponse.max_realtime_subscriptions. When the access token
+// expires the server sends an UNAUTHENTICATED fatal error and closes; the
+// client reconnects with a fresh token. Each binary WebSocket message carries
+// exactly one protobuf-encoded frame: ClientFrame from client to server,
+// ServerFrame from server to client. The channel is a latency optimization
+// only; correctness never depends on receiving a frame, and clients still
+// pull with ListChanges.
 //
 // Field numbers 100-199 of both envelopes are reserved for the Phase 5 Yjs
 // subscribe/update/awareness frames, multiplexed by document_id (SPEC.md §10).
@@ -55,8 +63,12 @@ message ServerFrame {
 }
 
 // Subscribe asks for vault_changed notifications for a vault. The server
-// resolves the caller's role in the vault first; a non-member gets an error
-// frame with ERROR_CODE_NOT_FOUND.
+// resolves the caller's role in the vault first; a non-member, like a vault
+// that does not exist, gets an error frame with ERROR_CODE_NOT_FOUND.
+// Membership is checked again before every notification: a member removed
+// from the vault gets an unsolicited NOT_FOUND error frame naming the vault,
+// and its subscription ends. Subscribing to an already subscribed vault
+// re-checks membership and answers subscribed again.
 message Subscribe {
   // Vault to subscribe to.
   string vault_id = 1;

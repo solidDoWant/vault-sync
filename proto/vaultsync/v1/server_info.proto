@@ -23,4 +23,8 @@ message GetServerInfoResponse {
   // Highest protocol version the server speaks. The vaultsync.v1 schema is
   // protocol version 1.
   uint32 protocol_version = 2;
+  // Maximum number of vaults one realtime WebSocket connection may
+  // subscribe to (SPEC.md §6.4). Zero means the server does not offer the
+  // realtime channel.
+  uint32 max_realtime_subscriptions = 3;
 }

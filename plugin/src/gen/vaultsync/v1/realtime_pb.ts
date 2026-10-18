@@ -112,8 +112,12 @@ export const ServerFrameSchema: GenMessage<ServerFrame> = /*@__PURE__*/
 
 /**
  * Subscribe asks for vault_changed notifications for a vault. The server
- * resolves the caller's role in the vault first; a non-member gets an error
- * frame with ERROR_CODE_NOT_FOUND.
+ * resolves the caller's role in the vault first; a non-member, like a vault
+ * that does not exist, gets an error frame with ERROR_CODE_NOT_FOUND.
+ * Membership is checked again before every notification: a member removed
+ * from the vault gets an unsolicited NOT_FOUND error frame naming the vault,
+ * and its subscription ends. Subscribing to an already subscribed vault
+ * re-checks membership and answers subscribed again.
  *
  * @generated from message vaultsync.v1.Subscribe
  */

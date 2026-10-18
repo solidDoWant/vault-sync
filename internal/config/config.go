@@ -15,6 +15,7 @@ import (
 
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -45,7 +46,29 @@ const (
 	BlobMaxSizeBytesEnv       = "VAULT_SYNC_BLOB_MAX_SIZE_BYTES"
 	BlobMaxUploadsPerVaultEnv = "VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT"
 	BlobUploadTTLEnv          = "VAULT_SYNC_BLOB_UPLOAD_TTL"
+
+	RealtimeMaxConnectionsEnv        = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS"
+	RealtimeMaxConnectionsPerUserEnv = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER"
+	RealtimeMaxSubscriptionsEnv      = "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS"
 )
+
+// Realtime bounds.
+const (
+	MaxRealtimeMaxConnections        = 1_000_000
+	MaxRealtimeMaxConnectionsPerUser = 10_000
+	MaxRealtimeMaxSubscriptions      = 10_000
+)
+
+// RealtimeConfig bounds the realtime channel (SPEC.md §6.4). Each limit
+// applies per server instance.
+type RealtimeConfig struct {
+	// MaxConnections bounds the open realtime connections.
+	MaxConnections int
+	// MaxConnectionsPerUser bounds one user's open realtime connections.
+	MaxConnectionsPerUser int
+	// MaxSubscriptions bounds the vaults one connection subscribes to.
+	MaxSubscriptions int
+}
 
 // Blob defaults and bounds.
 const (
@@ -129,6 +152,8 @@ type Config struct {
 	S3 *blobstore.Config
 	// Blobs bounds blob uploads.
 	Blobs BlobConfig
+	// Realtime bounds the realtime channel.
+	Realtime RealtimeConfig
 }
 
 // OIDCConfig identifies the OIDC issuer whose access tokens the server
@@ -176,6 +201,11 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			MaxSizeBytes:       DefaultBlobMaxSizeBytes,
 			MaxUploadsPerVault: DefaultBlobMaxUploadsPerVault,
 			UploadTTL:          DefaultBlobUploadTTL,
+		},
+		Realtime: RealtimeConfig{
+			MaxConnections:        realtime.DefaultMaxConnections,
+			MaxConnectionsPerUser: realtime.DefaultMaxConnectionsPerUser,
+			MaxSubscriptions:      realtime.DefaultMaxSubscriptions,
 		},
 	}
 
@@ -244,6 +274,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	cfg.S3, s3Problems = loadS3(get)
 	problems = append(problems, s3Problems...)
 	problems = append(problems, loadBlobs(get, &cfg)...)
+	problems = append(problems, loadRealtime(get, &cfg.Realtime)...)
 
 	if err := errors.Join(problems...); err != nil {
 		return Config{}, err
@@ -352,6 +383,34 @@ func loadBlobs(get func(string) string, cfg *Config) []error {
 			"%s (%d) plus %d bytes of request framing must not exceed %s (%d): lower the chunk size or raise the request limit",
 			BlobMaxChunkBytesEnv, cfg.Blobs.MaxChunkBytes, ChunkRequestOverheadBytes, MaxRequestBytesEnv, cfg.MaxRequestBytes))
 	}
+
+	return problems
+}
+
+func loadRealtime(get func(string) string, cfg *RealtimeConfig) []error {
+	var problems []error
+
+	parseInt := func(name string, maximum int, target *int) {
+		raw := get(name)
+		if raw == "" {
+			return
+		}
+
+		value, err := strconv.Atoi(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not an integer", name, raw))
+		case value < 1 || value > maximum:
+			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range 1 to %d", name, value, maximum))
+		default:
+			*target = value
+		}
+	}
+
+	parseInt(RealtimeMaxConnectionsEnv, MaxRealtimeMaxConnections, &cfg.MaxConnections)
+	parseInt(RealtimeMaxConnectionsPerUserEnv, MaxRealtimeMaxConnectionsPerUser, &cfg.MaxConnectionsPerUser)
+	parseInt(RealtimeMaxSubscriptionsEnv, MaxRealtimeMaxSubscriptions, &cfg.MaxSubscriptions)
 
 	return problems
 }

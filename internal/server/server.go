@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -23,6 +24,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/authz"
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 )
 
 // AllowedOrigins are the Obsidian app origins allowed to call the API from a
@@ -78,6 +80,9 @@ type Options struct {
 	// Blobs serves BlobService. When nil, BlobService is unimplemented. Its
 	// Logger defaults to Logger.
 	Blobs *api.BlobService
+	// Realtime serves the realtime WebSocket at realtime.Path and is drained
+	// with the server. When nil, the realtime channel is not served.
+	Realtime *realtime.Hub
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
@@ -106,6 +111,13 @@ type Server struct {
 // New builds a Server.
 func New(options Options) *Server {
 	registry, rpcMetrics := newRegistry()
+
+	if options.Realtime != nil {
+		registry.MustRegister(options.Realtime.Collectors()...)
+
+		// The hub's WebSockets outlive the HTTP server's own drain.
+		options.Drainers = append(slices.Clip(options.Drainers), options.Realtime)
+	}
 
 	srv := &Server{options: options}
 	srv.api = newAPIHandler(options, rpcMetrics)
@@ -199,7 +211,17 @@ func newAPIHandler(options Options, metrics *rpcMetrics) http.Handler {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(api.ServerInfoService{}, handlerOptions...))
+	serverInfo := api.ServerInfoService{}
+
+	if options.Realtime != nil {
+		serverInfo.MaxRealtimeSubscriptions = uint32(options.Realtime.MaxSubscriptions()) //nolint:gosec // bounded by configuration.
+
+		// The hub authenticates and authorizes its upgrades itself, with
+		// the same authenticator and membership checks (SPEC.md §6.4).
+		mux.Handle("GET "+realtime.Path, options.Realtime)
+	}
+
+	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(serverInfo, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaults, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(syncHandler, handlerOptions...))

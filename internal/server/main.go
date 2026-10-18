@@ -13,6 +13,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
+	"github.com/solidDoWant/vault-sync/internal/realtime"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
@@ -78,17 +79,48 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		return 1
 	}
 
+	authenticator := auth.NewAuthenticator(verifier, queries)
+	hub := realtime.NewHub(realtime.Options{
+		Authenticator:  authenticator,
+		Store:          queries,
+		AllowedOrigins: AllowedOrigins,
+		Limits: realtime.Limits{
+			MaxConnections:        cfg.Realtime.MaxConnections,
+			MaxConnectionsPerUser: cfg.Realtime.MaxConnectionsPerUser,
+			MaxSubscriptions:      cfg.Realtime.MaxSubscriptions,
+		},
+		Logger: logger,
+	})
+
+	// The hub keeps delivering notifications through the shutdown delay;
+	// the server's drain stops it (Hub.Drain), and so does returning here
+	// before the database closes.
+	hubCtx, stopHub := context.WithCancel(context.WithoutCancel(ctx))
+	hubDone := make(chan struct{})
+
+	go func() {
+		defer close(hubDone)
+
+		hub.Run(hubCtx)
+	}()
+
+	defer func() {
+		stopHub()
+		<-hubDone
+	}()
+
 	srv := New(Options{
 		MaxRequestBytes: cfg.MaxRequestBytes,
 		ShutdownDelay:   cfg.ShutdownDelay,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Database:        pool,
-		Authenticator:   auth.NewAuthenticator(verifier, queries),
+		Authenticator:   authenticator,
 		Devices:         queries,
 		Vaults:          queries,
 		Memberships:     queries,
 		Sync:            &api.SyncService{Store: queries, Logger: logger},
 		Blobs:           blobs,
+		Realtime:        hub,
 		Logger:          logger,
 	})
 
