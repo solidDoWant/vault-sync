@@ -64,15 +64,20 @@ type fakeStore struct {
 	// then waits for gate, simulating a slow membership query.
 	entered chan struct{}
 	gate    chan struct{}
+
+	// vaultRoleErrors makes VaultRole (but not MemberHeadSeq) fail for
+	// a vault, simulating a database error at delivery time.
+	vaultRoleErrors map[uuid.UUID]error
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		members:    map[uuid.UUID]map[uuid.UUID]store.Role{},
-		heads:      map[uuid.UUID]int64{},
-		changes:    make(chan store.VaultChange),
-		failListen: make(chan struct{}),
-		ready:      make(chan struct{}, 16),
+		members:         map[uuid.UUID]map[uuid.UUID]store.Role{},
+		heads:           map[uuid.UUID]int64{},
+		changes:         make(chan store.VaultChange),
+		failListen:      make(chan struct{}),
+		ready:           make(chan struct{}, 16),
+		vaultRoleErrors: map[uuid.UUID]error{},
 	}
 }
 
@@ -125,7 +130,27 @@ func (fake *fakeStore) commit(t *testing.T, vaultID uuid.UUID) int64 {
 	return seq
 }
 
+// failVaultRole makes VaultRole fail for vaultID with err; nil clears it.
+func (fake *fakeStore) failVaultRole(vaultID uuid.UUID, err error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	fake.vaultRoleErrors[vaultID] = err
+}
+
 func (fake *fakeStore) VaultRole(_ context.Context, vaultID, user uuid.UUID) (store.Role, error) {
+	fake.mu.Lock()
+	err := fake.vaultRoleErrors[vaultID]
+	fake.mu.Unlock()
+
+	if err != nil {
+		return "", err
+	}
+
+	return fake.role(vaultID, user)
+}
+
+func (fake *fakeStore) role(vaultID, user uuid.UUID) (store.Role, error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 
@@ -137,14 +162,14 @@ func (fake *fakeStore) VaultRole(_ context.Context, vaultID, user uuid.UUID) (st
 	return role, nil
 }
 
-func (fake *fakeStore) MemberHeadSeq(ctx context.Context, vaultID, user uuid.UUID) (store.Role, int64, error) {
+func (fake *fakeStore) MemberHeadSeq(_ context.Context, vaultID, user uuid.UUID) (store.Role, int64, error) {
 	if fake.gate != nil {
 		fake.entered <- struct{}{}
 
 		<-fake.gate
 	}
 
-	role, err := fake.VaultRole(ctx, vaultID, user)
+	role, err := fake.role(vaultID, user)
 	if err != nil {
 		return "", 0, err
 	}
@@ -714,6 +739,62 @@ func TestRemovedMemberStopsReceivingNotifications(t *testing.T) {
 	bob.expectVaultChangedAfter(fixture, otherVault)
 }
 
+func TestFailedMembershipLookupDeliversNothing(t *testing.T) {
+	fixture := newFixture(t, fixtureOptions{})
+	vaultID := fixture.store.createVault("alice")
+	otherVault := fixture.store.createVault("alice")
+
+	alice := fixture.connect(t, "alice")
+	alice.subscribe(1, vaultID)
+	alice.subscribe(2, otherVault)
+
+	// The membership check before delivery fails with a database error,
+	// not ErrVaultNotFound: the notification must not be sent.
+	fixture.store.failVaultRole(vaultID, errors.New("connection reset"))
+	fixture.store.commit(t, vaultID)
+
+	// Deliveries run one batch at a time, in order. The first commit to
+	// the other vault is delivered in the failed commit's batch or a
+	// later one; the second, committed after the first was received, in
+	// a later batch still. So once the second is read, the failed
+	// commit's delivery is over, and anything it queued would have been
+	// read first.
+	alice.expectVaultChangedAfter(fixture, otherVault)
+	alice.expectVaultChangedAfter(fixture, otherVault)
+	assert.Equal(t, 2.0, testutil.ToFloat64(collector(t, fixture, "vault_sync_realtime_notifications_total")))
+
+	// The failure ends no subscription: once lookups succeed again, the
+	// vault's commits are delivered.
+	fixture.store.failVaultRole(vaultID, nil)
+	alice.expectVaultChangedAfter(fixture, vaultID)
+}
+
+func TestDisconnectReleasesTheConnectionsSubscriptions(t *testing.T) {
+	fixture := newFixture(t, fixtureOptions{})
+	vaultID := fixture.store.createVault("alice")
+	fixture.store.setMember(vaultID, "bob", store.RoleViewer)
+
+	alice := fixture.connect(t, "alice")
+	alice.subscribe(1, vaultID)
+
+	bob := fixture.connect(t, "bob")
+	bob.subscribe(1, vaultID)
+
+	connections := collector(t, fixture, "vault_sync_realtime_connections")
+	notifications := collector(t, fixture, "vault_sync_realtime_notifications_total")
+
+	require.NoError(t, alice.conn.Close(websocket.StatusNormalClosure, ""))
+	require.Eventually(t, func() bool { return testutil.ToFloat64(connections) == 1 }, readTimeout, 10*time.Millisecond)
+
+	// Two commits, the second made after bob received the first, so the
+	// first's delivery is over when bob reads the second. Only bob is
+	// still subscribed: one notification per commit. A subscription
+	// left behind by alice's connection would be notified too.
+	bob.expectVaultChangedAfter(fixture, vaultID)
+	bob.expectVaultChangedAfter(fixture, vaultID)
+	assert.Equal(t, 2.0, testutil.ToFloat64(notifications))
+}
+
 func TestSubscriptionsPerConnectionAreCapped(t *testing.T) {
 	fixture := newFixture(t, fixtureOptions{limits: realtime.Limits{MaxSubscriptions: 2}})
 	vaults := []uuid.UUID{fixture.store.createVault("alice"), fixture.store.createVault("alice"), fixture.store.createVault("alice")}
@@ -961,8 +1042,12 @@ func TestTokenExpiryEndsTheConnectionWithAFatalError(t *testing.T) {
 	// The verifier's clock runs a minute behind, so a token expiring in a
 	// second is accepted however slow the upgrade; the hub ends the
 	// connection at the token's real expiry.
+	//
+	// Because exp has whole-second precision, the token expires anywhere
+	// from 0 to 1 s after the upgrade. The client therefore sends nothing:
+	// the first frame it reads must be the fatal error, however quickly
+	// or slowly the expiry comes.
 	fixture := newFixture(t, fixtureOptions{verifierNow: func() time.Time { return time.Now().Add(-time.Minute) }})
-	vaultID := fixture.store.createVault("alice")
 
 	claims := fixture.issuer.Claims("alice", time.Now().Add(-time.Minute))
 	claims["exp"] = time.Now().Add(time.Second).Unix()
@@ -971,7 +1056,6 @@ func TestTokenExpiryEndsTheConnectionWithAFatalError(t *testing.T) {
 	require.NoError(t, err)
 
 	alice := &client{t: t, conn: conn}
-	alice.subscribe(1, vaultID)
 
 	frame := alice.read()
 	require.NotNil(t, frame.GetError(), "expected an error frame, got %v", frame)
