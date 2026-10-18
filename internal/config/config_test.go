@@ -160,6 +160,36 @@ func TestLoadS3Settings(t *testing.T) {
 			env:          with(map[string]string{config.S3ForcePathStyleEnv: "sometimes"}),
 			wantProblems: []string{config.S3ForcePathStyleEnv},
 		},
+		{
+			name: "shortest idle timeout",
+			env:  with(map[string]string{config.S3IdleTimeoutEnv: "1s"}),
+			want: &blobstore.Config{Region: "us-east-1", Bucket: "vault-sync", AccessKeyIDFile: accessKey, SecretAccessKeyFile: secretKey, ForcePathStyle: true, IdleTimeout: time.Second},
+		},
+		{
+			name: "longest idle timeout",
+			env:  with(map[string]string{config.S3IdleTimeoutEnv: "1h"}),
+			want: &blobstore.Config{Region: "us-east-1", Bucket: "vault-sync", AccessKeyIDFile: accessKey, SecretAccessKeyFile: secretKey, ForcePathStyle: true, IdleTimeout: time.Hour},
+		},
+		{
+			name:         "idle timeout alone requires the bucket and credentials",
+			env:          withRequired(map[string]string{config.S3IdleTimeoutEnv: "1m"}),
+			wantProblems: []string{config.S3BucketEnv},
+		},
+		{
+			name:         "idle timeout not a duration",
+			env:          with(map[string]string{config.S3IdleTimeoutEnv: "120"}),
+			wantProblems: []string{config.S3IdleTimeoutEnv},
+		},
+		{
+			name:         "idle timeout too short",
+			env:          with(map[string]string{config.S3IdleTimeoutEnv: "999ms"}),
+			wantProblems: []string{config.S3IdleTimeoutEnv},
+		},
+		{
+			name:         "idle timeout too long",
+			env:          with(map[string]string{config.S3IdleTimeoutEnv: "1h0m0.001s"}),
+			wantProblems: []string{config.S3IdleTimeoutEnv},
+		},
 	}
 
 	for _, test := range tests {

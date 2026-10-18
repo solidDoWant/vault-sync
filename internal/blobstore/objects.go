@@ -69,11 +69,15 @@ type Objects struct {
 
 // New returns an Objects for cfg. It does not contact the store.
 func New(cfg Config) (*Objects, error) {
+	return newObjects(cfg)
+}
+
+func newObjects(cfg Config, optFns ...func(*s3.Options)) (*Objects, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 
-	return &Objects{client: newClient(cfg), bucket: cfg.Bucket, compose: make(chan struct{}, composeSlots)}, nil
+	return &Objects{client: newClient(cfg, optFns...), bucket: cfg.Bucket, compose: make(chan struct{}, composeSlots)}, nil
 }
 
 // Client returns the underlying S3 client.

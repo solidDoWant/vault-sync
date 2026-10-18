@@ -44,6 +44,7 @@ const (
 	S3SecretAccessKeyFileEnv = "VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE"
 	S3ForcePathStyleEnv      = "VAULT_SYNC_S3_FORCE_PATH_STYLE"
 	S3TLSCAFileEnv           = "VAULT_SYNC_S3_TLS_CA_FILE"
+	S3IdleTimeoutEnv         = "VAULT_SYNC_S3_IDLE_TIMEOUT"
 
 	BlobMaxChunkBytesEnv      = "VAULT_SYNC_BLOB_MAX_CHUNK_BYTES"
 	BlobMaxSizeBytesEnv       = "VAULT_SYNC_BLOB_MAX_SIZE_BYTES"
@@ -126,6 +127,10 @@ const (
 	DefaultWriteTimeout = 2 * time.Minute
 	MinWriteTimeout     = time.Second
 	MaxWriteTimeout     = time.Hour
+	// MinS3IdleTimeout and MaxS3IdleTimeout bound S3IdleTimeoutEnv; the
+	// default is blobstore.DefaultIdleTimeout.
+	MinS3IdleTimeout = time.Second
+	MaxS3IdleTimeout = time.Hour
 	// DefaultShutdownDelay covers typical load-balancer and Kubernetes
 	// endpoint propagation after /readyz starts failing.
 	DefaultShutdownDelay = 5 * time.Second
@@ -406,7 +411,7 @@ func LoadExport(lookup func(string) (string, bool)) (ExportConfig, error) {
 func loadS3(get func(string) string) (*blobstore.Config, []error) {
 	names := []string{
 		S3EndpointEnv, S3RegionEnv, S3BucketEnv, S3AccessKeyIDFileEnv,
-		S3SecretAccessKeyFileEnv, S3ForcePathStyleEnv, S3TLSCAFileEnv,
+		S3SecretAccessKeyFileEnv, S3ForcePathStyleEnv, S3TLSCAFileEnv, S3IdleTimeoutEnv,
 	}
 
 	if !slices.ContainsFunc(names, func(name string) bool { return get(name) != "" }) {
@@ -432,6 +437,19 @@ func loadS3(get func(string) string) (*blobstore.Config, []error) {
 		}
 
 		s3.ForcePathStyle = value
+	}
+
+	if raw := get(S3IdleTimeoutEnv); raw != "" {
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 2m)", S3IdleTimeoutEnv, raw))
+		case value < MinS3IdleTimeout || value > MaxS3IdleTimeout:
+			problems = append(problems, fmt.Errorf("%s: %s is outside the allowed range %s to %s", S3IdleTimeoutEnv, raw, MinS3IdleTimeout, MaxS3IdleTimeout))
+		default:
+			s3.IdleTimeout = value
+		}
 	}
 
 	if s3.Bucket == "" {
