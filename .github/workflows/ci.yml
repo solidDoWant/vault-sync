@@ -82,6 +82,24 @@ jobs:
       - name: Integration tests
         run: nix develop -c make test-integration
 
+  # The store/migration integration tests and the rolling-upgrade test on
+  # PostgreSQL 14, the minimum supported version (docs/testing/integration.md),
+  # so a migration that needs a newer PostgreSQL fails CI. The rest of the
+  # suite runs only on the default image above.
+  integration-postgres14:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The rolling-upgrade test builds the previous release from history.
+          fetch-depth: 0
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Integration tests on PostgreSQL 14
+        run: nix develop -c make test-integration-postgres14
+
   # A short sync simulation (docs/testing/simulation.md): a few seeds
   # against the real server, plus the check that the harness catches a
   # deliberately broken server (issue #15: under 5 minutes).
@@ -132,7 +150,7 @@ jobs:
       - if: runner.os == 'Linux'
         uses: ./.github/actions/nix-dev-shell
       - if: runner.os == 'Linux'
-        name: Plugin e2e
+        name: Plugin e2e (Linux, Nix dev shell)
         run: nix develop -c make test-e2e
 
       # Windows and macOS: no Nix (Windows) and no Linux containers, so the
@@ -161,7 +179,7 @@ jobs:
           npm run build
           cp manifest.json dist/
       - if: runner.os != 'Linux'
-        name: Plugin e2e
+        name: Plugin e2e (native)
         env:
           VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
         run: ./scripts/with-native-s3.sh go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
@@ -172,7 +190,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, simulation, plugin-e2e]
+    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e]
     if: always()
     runs-on: ubuntu-latest
     steps:

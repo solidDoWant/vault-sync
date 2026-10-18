@@ -26,6 +26,10 @@ import (
 const (
 	e2eServerURLEnv = "VAULT_SYNC_E2E_SERVER_URL"
 	e2eTokenEnv     = "VAULT_SYNC_E2E_TOKEN"
+	// The fake OIDC issuer, with the device flow enabled, and its client id:
+	// the specs sign the plugin in through it (signin.e2e.ts).
+	e2eIssuerURLEnv = "VAULT_SYNC_E2E_ISSUER_URL"
+	e2eClientIDEnv  = "VAULT_SYNC_E2E_CLIENT_ID"
 )
 
 // TestPluginE2E runs the plugin e2e suite (plugin/wdio.conf.mts): the built
@@ -71,6 +75,9 @@ func TestPluginE2E(t *testing.T) {
 	issuer := authtest.NewIssuer(t)
 	key := issuer.AddKey(t, jose.ES256)
 	token := authtest.Sign(t, key, issuer.Claims("plugin-e2e-user", time.Now()))
+	// A separate user, so vaults the signed-in plugin creates never show up
+	// for the test token.
+	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "plugin-e2e-device-user"})
 
 	binary := testinfra.BuildServer(t, repoRoot)
 	apiAddress := testinfra.FreeAddress(t)
@@ -134,6 +141,8 @@ func TestPluginE2E(t *testing.T) {
 	suite.Command.Env = append(os.Environ(),
 		e2eServerURLEnv+"=http://"+apiAddress,
 		e2eTokenEnv+"="+token,
+		e2eIssuerURLEnv+"="+issuer.URL,
+		e2eClientIDEnv+"="+authtest.DefaultAudience,
 		"CI=1", // no interactive output
 	)
 	// Streamed, so that a slow first run (it downloads Obsidian) shows

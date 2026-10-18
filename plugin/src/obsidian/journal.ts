@@ -1,6 +1,6 @@
 import type { App } from "obsidian";
 
-import { IndexedDbJournal } from "../core/journal/indexeddb";
+import { IndexedDbJournal, type JournalOpenOptions } from "../core/journal/indexeddb";
 
 /** Which server vault a local vault syncs with. */
 export interface JournalKey {
@@ -26,10 +26,12 @@ export function journalDatabaseName(localVaultId: string, key: JournalKey): stri
 
 /**
  * Opens the durable journal for `key` in the open vault (SPEC.md §8),
- * creating or upgrading it as needed.
+ * creating or upgrading it as needed. `options.onBlocked` hears about an
+ * upgrade that has to wait for another connection (another Obsidian window
+ * running an older vault-sync).
  */
-export async function openVaultJournal(app: App, key: JournalKey, factory: IDBFactory = window.indexedDB): Promise<IndexedDbJournal> {
-  return await IndexedDbJournal.open(factory, journalDatabaseName(localVaultId(app), key));
+export async function openVaultJournal(app: App, key: JournalKey, factory: IDBFactory = window.indexedDB, options: JournalOpenOptions = {}): Promise<IndexedDbJournal> {
+  return await IndexedDbJournal.open(factory, journalDatabaseName(localVaultId(app), key), undefined, options);
 }
 
 /**
@@ -45,7 +47,14 @@ export function localVaultId(app: App): string {
   return id;
 }
 
-/** One spelling per server: URL parsing folds case and default ports, and trailing slashes are dropped. */
+/**
+ * One spelling per server: its origin and path only. URL parsing folds case
+ * and default ports, and trailing slashes are dropped. Credentials, query and
+ * fragment are left out, so a `user:pass@` never ends up in a database name
+ * (which devtools and the profile directory show), and URLs that differ only
+ * there share a journal.
+ */
 function normalizeServerUrl(serverUrl: string): string {
-  return new URL(serverUrl).href.replace(/\/+$/, "");
+  const url = new URL(serverUrl);
+  return `${url.origin}${url.pathname}`.replace(/\/+$/, "");
 }

@@ -20,9 +20,36 @@ export { conflictCopyPath } from "./merge/conflict-name";
 export { mergeText } from "./merge/text-merge";
 export { pathKey } from "./pathkey/pathkey";
 export {
+  defaultScope,
+  discoverOidc,
+  IdentityProviderError,
+  jwtExpiry,
+  jwtSubject,
+  OAuthError,
+  oidcRefresher,
+  pollDeviceAuthorization,
+  refreshAccessToken,
+  requireSecureUrl,
+  signInWithDeviceFlow,
+  SignInRequiredError,
+  startDeviceAuthorization,
+  type DeviceAuthorization,
+  type DeviceSignInOptions,
+  type HttpClient,
+  type HttpRequest,
+  type HttpResponse,
+  type OidcClientConfig,
+  type OidcEndpoints,
+  type PollOptions,
+  type TokenSet,
+} from "./auth/oidc";
+export { TokenManager, type AuthState, type TokenManagerOptions } from "./auth/tokens";
+export {
   createHttpTransport,
   createProtocolClient,
+  withAuthentication,
   withBearerToken,
+  type Authenticator,
   type ProtocolClient,
   type ProtocolClientOptions,
   type TokenSource,
