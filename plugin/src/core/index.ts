@@ -32,3 +32,4 @@ export {
   type VaultAdapterHarness,
 } from "./vault/conformance";
 export { InMemoryVault, type InMemoryVaultOptions } from "./vault/memory";
+export { isVaultRelativePath } from "./vaultpath/vaultpath";
