@@ -241,6 +241,90 @@ describe("SyncSession", () => {
       expect(server.liveFiles()).toEqual(new Map([["a.md", "typed just before the stop"]]));
     });
 
+    it("waits for a local step in progress, and the stopped engine takes no further local step", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "a", path: "a.md", content: "first" });
+      server.commit({ documentId: "b", path: "b.md", content: "second" });
+      const vault = new InMemoryVault();
+      const inner = new InMemoryJournal();
+      // Holds the first document write, the step between applying a.md's disk change and moving the cursor.
+      let release: () => void = () => undefined;
+      let held = false;
+      const steps: string[] = [];
+      const journal = new Proxy(inner, {
+        get: (target, property, receiver) => {
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return async (...args: unknown[]) => {
+            steps.push(String(property));
+            if (property === "putDocument" && !held) {
+              held = true;
+              await new Promise<void>((resolve) => (release = resolve));
+            }
+            return (value as (...values: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+      const running = session({ server, vault, journal });
+      void running.start();
+      await vi.waitFor(() => {
+        expect(held).toBe(true);
+      });
+
+      let stopped = false;
+      const stopping = running.stop().then(() => (stopped = true));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(stopped).toBe(false);
+      const stepsAtStop = steps.length;
+      release();
+      await stopping;
+
+      // The held write finished; nothing after it ran: no cursor move, no b.md.
+      expect(steps).toHaveLength(stepsAtStop);
+      expect(await inner.getCursor()).toBe(0n);
+      expect(await files(vault)).toEqual(new Map([["a.md", "first"]]));
+    });
+
+    it("waits for an automatic push's local step in progress before it resolves", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const inner = new InMemoryJournal();
+      let armed = false;
+      let held = false;
+      let release: () => void = () => undefined;
+      const journal = new Proxy(inner, {
+        get: (target, property, receiver) => {
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (typeof value !== "function") return value;
+          return async (...args: unknown[]) => {
+            if (armed && property === "addPending" && !held) {
+              held = true;
+              await new Promise<void>((resolve) => (release = resolve));
+            }
+            return (value as (...values: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+      const running = session({ server, vault, journal, options: { pushDebounceMs: 10 } });
+      await running.start();
+      armed = true;
+      await vault.write("a.md", bytes("typed"));
+      await vi.waitFor(() => {
+        expect(held).toBe(true);
+      });
+
+      let stopped = false;
+      const stopping = running.stop().then(() => (stopped = true));
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+
+      // The operation was recorded (so the next session resumes it), and never sent.
+      expect(await inner.listPending()).toHaveLength(1);
+      expect(server.liveFiles()).toEqual(new Map());
+    });
+
     it("resolves while a server call hangs, and the stopped engine never touches the vault or journal again", async () => {
       const server = new InMemoryServer();
       server.commit({

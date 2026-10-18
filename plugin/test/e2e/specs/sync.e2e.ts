@@ -65,22 +65,24 @@ function fileText(path: string) {
   }, path);
 }
 
-/** Whether the settings tab's server, issuer and client id fields are disabled, with the tab open. */
-function settingsFieldsDisabled() {
-  return browser.executeObsidian(({ app }, id) => {
-    const setting = (app as unknown as { setting: { open(): void; openTabById(tab: string): void; activeTab: { containerEl: HTMLElement } | null } }).setting;
-    setting.open();
-    setting.openTabById(id);
-    const inputs = [...(setting.activeTab?.containerEl.querySelectorAll<HTMLInputElement>("input[type=text]") ?? [])];
-    // Server URL, OIDC issuer URL, OIDC client ID: the first three text fields.
-    return inputs.slice(0, 3).map((input) => input.disabled);
-  }, pluginId);
-}
-
-function closeSettings() {
-  return browser.executeObsidian(({ app }) => {
-    (app as unknown as { setting: { close(): void } }).setting.close();
-  });
+/**
+ * Whether vault-sync's settings tab shows the server, issuer and client id
+ * fields disabled. `display` builds the tab first, as opening it does; later
+ * reads see what the plugin itself re-rendered.
+ */
+function settingsFieldsDisabled(display = false) {
+  return browser.executeObsidian(
+    ({ app }, id, build) => {
+      const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+      const tab = (plugin as unknown as { settingTab?: { containerEl: HTMLElement; display(): void } } | undefined)?.settingTab;
+      if (tab === undefined) throw new Error("vault-sync has no settings tab");
+      if (build) tab.display();
+      // Server URL, OIDC issuer URL, OIDC client ID: the first three text fields.
+      return [...tab.containerEl.querySelectorAll<HTMLInputElement>("input[type=text]")].slice(0, 3).map((input) => input.disabled);
+    },
+    pluginId,
+    display,
+  );
 }
 
 async function waitForIdle(): Promise<void> {
@@ -98,7 +100,7 @@ describe("syncing between two vaults", function () {
 
   it("locks the server and identity provider settings while a sign-in runs", async function () {
     await configure();
-    expect(await settingsFieldsDisabled()).toEqual([false, false, false]);
+    expect(await settingsFieldsDisabled(true)).toEqual([false, false, false]);
 
     await startSignIn();
     await browser.waitUntil(async () => (await dialog()) !== null, { timeoutMsg: "the sign-in dialog never showed a user code" });
@@ -109,7 +111,8 @@ describe("syncing between two vaults", function () {
     await browser.waitUntil(async () => (await signInResult()) !== null, { timeoutMsg: "the sign-in never finished" });
     expect(await signInResult()).toBe(true);
     await browser.waitUntil(async () => !(await isDialogOpen()), { timeoutMsg: "the sign-in dialog stayed open" });
-    await closeSettings();
+    // Signed in: still locked.
+    expect(await settingsFieldsDisabled()).toEqual([true, true, true]);
   });
 
   it("creates a remote vault from the primary vault and pushes its files", async function () {

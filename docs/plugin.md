@@ -1,6 +1,6 @@
 # Obsidian plugin
 
-This page covers the vault-sync plugin's settings and how it signs in. The server's configuration is in `docs/configuration.md`.
+This page covers the vault-sync plugin's settings, how it signs in, how a vault is connected, and what the sync status means. The server's configuration is in `docs/configuration.md`.
 
 ## Settings
 
@@ -11,10 +11,12 @@ Open **Settings → Vault Sync**.
 | Server URL | The vault-sync server's base URL, for example `https://sync.example.com`. |
 | OIDC issuer URL | The issuer your server trusts: the server's `VAULT_SYNC_OIDC_ISSUER_URL`, character for character (including any trailing slash), for example `https://auth.example.com/application/o/vault-sync/` for Authentik. |
 | OIDC client ID | The OAuth client the plugin signs in as (see below). The access tokens it receives must carry the server's `VAULT_SYNC_OIDC_AUDIENCE`. |
+| Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
+| Remote vault | Shown while signed in: the server vault this vault syncs with, or controls to connect to one of your vaults or create a new one (see [Connecting a vault](#connecting-a-vault)). |
 
-All three URLs must use `https`. Plain `http` works only for `localhost`, `127.0.0.1` and `::1`, for local development. While you are signed in, these settings are locked, because the stored refresh token belongs to that identity provider. Sign out to change them.
+All three URLs must use `https`. Plain `http` works only for `localhost`, `127.0.0.1` and `::1`, for local development. While you are signed in, and while a sign-in is in progress, these settings are locked, because the refresh token belongs to that identity provider. Sign out to change them.
 
-The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-sync/`. That file also holds the refresh token while you are signed in, so treat it as a secret. vault-sync never syncs it.
+The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-sync/`. That file also holds the refresh token while you are signed in, so treat it as a secret. It also holds this device's registration and the connected vault. vault-sync never syncs it.
 
 ## Signing in
 
@@ -29,11 +31,55 @@ Access tokens are kept in memory only, never on disk. The plugin refreshes the a
 
 ### When the session ends
 
-If the identity provider refuses the refresh token (it expired or was revoked, or your session there ended), the plugin forgets it, shows a notice, and its settings show **Sign in again**. Requests to the server fail until you sign in again. Local changes are not lost meanwhile: they stay in the sync journal and on disk, and the next push after you sign in again sends them. A network failure while refreshing does not sign you out. The next request tries again.
+If the identity provider refuses the refresh token (it expired or was revoked, or your session there ended), the plugin forgets it, shows a notice, pauses sync, and the status bar shows **sign-in needed**. The settings then show **Sign in again**, which restarts the device flow. Local changes are not lost meanwhile: they stay on disk and in the sync journal, and sync, which starts again as soon as you sign in, pushes them. A network failure while refreshing does not sign you out. The plugin shows **offline** and tries again.
 
-**Sign out** forgets both tokens.
+**Sign out** stops sync and forgets both tokens. The connected vault and this device's registration are kept, so signing in again with the same account resumes syncing.
 
 The plugin never logs or displays tokens.
+
+## Connecting a vault
+
+Once signed in, the settings show a **Remote vault** section. Each local vault is connected to one vault on the server:
+
+- **Connect to an existing vault** lists the vaults you are a member of. End-to-end encrypted vaults are not listed, because the plugin cannot sync them yet.
+- **Create a vault** creates a vault on the server (plaintext, owned by you) and connects to it. Its name defaults to the local vault's name.
+
+If both this vault and the remote vault already have files, the plugin asks before it connects. The two are then combined. Files only one side has are copied to the other, and nothing is deleted or overwritten. Where both sides have a file at the same path with different content, the remote version stays at that path, and this vault's version is kept next to it as a conflict copy, named `<name> (conflict <device> <date>).<ext>`.
+
+**Disconnect** stops syncing this vault. Its sync journal is kept, so connecting to the same vault again carries on where it stopped. Changing the server URL (after signing out) disconnects the vault too, because a vault id means nothing on another server.
+
+### Device registration
+
+Before its first sync, each installation of the plugin (each local vault, on each device) registers itself with the server as a device, under the **Device name** setting. It registers once and keeps the device id in `data.json`, so restarts and new sign-ins with the same account reuse it. Signing in with another account, or to another server, registers a new device for that account. Every commit records the device it came from.
+
+The server limits how many devices one user may register (100). The limit counts every registration ever made, and the server cannot list or remove devices yet ([#205](https://github.com/solidDoWant/vault-sync/issues/205)). When the limit is reached, the status shows **error** with the message that the account has reached the server's device limit, and sync does not start on this device. Local files are untouched. Ask the server's operator for help.
+
+## Sync
+
+While signed in and connected, the plugin syncs on its own:
+
+- When sync starts (Obsidian starting, the plugin enabled, a sign-in, a vault connected), it pulls the server's changes and then pushes every local change made since the last sync, including changes made while Obsidian was closed or the plugin was off.
+- 2 seconds after your last edit, it pushes. A burst of edits becomes one revision.
+- Every 30 seconds it pulls and pushes, which brings in changes from other devices and retries anything that failed. (A realtime channel will make other devices' changes arrive at once, [#193](https://github.com/solidDoWant/vault-sync/issues/193).)
+- The **Vault Sync: Sync now** command does the same at once.
+
+Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.
+
+### Status
+
+The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: Show sync status** (on mobile, where there is no status bar), for details. The settings show it too.
+
+| Status | Meaning |
+|---|---|
+| `idle` | The last sync succeeded. |
+| `syncing` | A pull or push is running. |
+| `offline` | The server or the identity provider could not be reached. Local changes are kept, and the next sync pushes them. |
+| `error` | The last sync failed for another reason, or the server refused some local changes. The details say why. |
+| `sign-in needed` | The session ended. Sign in again to resume. |
+| `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
+| `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
+
+After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy.
 
 ## Identity provider setup (Authentik)
 
