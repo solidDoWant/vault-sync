@@ -77,6 +77,12 @@
             pkgs.golangci-lint
             pkgs.govulncheck
             pkgs.gnumake
+            # git pinned by flake.lock, so local runs and CI (which runs make
+            # through `nix develop -c`) use the same version instead of the
+            # host's. Versions differ in behavior: since 2.55 detached
+            # auto-maintenance keeps objects/maintenance.lock after the command
+            # returns, which broke scripts/buf-breaking_test.sh on CI (#104).
+            pkgs.git
             # gh is deliberately NOT provided here: the coder VM ships a gh
             # wrapper in ~/.local/bin that fetches a fresh (8h) GitHub App token
             # per call, and a dev-shell gh would shadow it on PATH and fall back

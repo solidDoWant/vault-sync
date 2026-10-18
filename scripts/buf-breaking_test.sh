@@ -346,6 +346,9 @@ fi
 # a failing hook, a config set through the environment, and an exported
 # GIT_DIR/GIT_WORK_TREE/GIT_INDEX_FILE (as when `make test` runs from a git
 # hook). Without the isolation above, every commit in the suite would fail.
+# GIT_CONFIG_COUNT/GIT_CONFIG_KEY_0 are overwritten by the maintenance.auto
+# export whether or not the `unset` drops them, so GIT_CONFIG_PARAMETERS (which
+# nothing re-exports) and GIT_DIR are what prove the `unset` itself works.
 if [[ -z "${BUF_BREAKING_TEST_NESTED:-}" ]]; then
 	hostile="$work/hostile"
 	mkdir -p "$hostile/hooks"
@@ -364,6 +367,7 @@ EOF
 		BUF_BREAKING_TEST_NESTED=1 \
 			GIT_CONFIG_GLOBAL="$hostile/gitconfig" \
 			GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=commit.gpgsign GIT_CONFIG_VALUE_0=true \
+			GIT_CONFIG_PARAMETERS="'commit.gpgsign'='true' 'gpg.program'='false'" \
 			GIT_DIR="$hostile/not-a-repo.git" GIT_WORK_TREE="$hostile" GIT_INDEX_FILE="$hostile/index" \
 			"$repo_root/scripts/buf-breaking_test.sh" 2>&1
 	)"
