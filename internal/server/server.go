@@ -210,8 +210,10 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 		// Bounds the decoded (and decompressed) message size.
 		connect.WithReadMaxBytes(int(options.MaxRequestBytes)),
 		// Bounds every response message by the bytes sent (after
-		// compression, when the client accepts it). DownloadBlob caps its
-		// ranges at the chunk size, which fits within this limit.
+		// compression, when the client accepts it). Pages of revisions and
+		// DownloadBlob ranges are cut to fit it in the request's codec:
+		// binary ranges at the chunk size, JSON ranges smaller, as base64
+		// expands them by a third.
 		connect.WithSendMaxBytes(int(options.MaxRequestBytes)),
 	}
 
@@ -248,6 +250,12 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 		service := *options.Blobs
 		if service.Logger == nil {
 			service.Logger = options.Logger
+		}
+
+		// JSON chunks and ranges are cut to fit the request and send
+		// limit once base64-encoded (SPEC.md §6.2).
+		if service.Limits.MaxMessageBytes <= 0 || service.Limits.MaxMessageBytes > options.MaxRequestBytes {
+			service.Limits.MaxMessageBytes = options.MaxRequestBytes
 		}
 
 		blobs = service

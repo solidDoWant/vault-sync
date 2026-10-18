@@ -93,7 +93,9 @@ type BeginBlobResponse struct {
 	Complete bool `protobuf:"varint,1,opt,name=complete,proto3" json:"complete,omitempty"`
 	// Bytes already received for this blob; the next chunk's offset.
 	ReceivedSize uint64 `protobuf:"varint,2,opt,name=received_size,json=receivedSize,proto3" json:"received_size,omitempty"`
-	// Largest chunk the server accepts in PutBlobChunk.data.
+	// Largest chunk the server accepts in PutBlobChunk.data from this client,
+	// in the codec of this request: the configured maximum in binary protobuf,
+	// less in JSON, which base64-encodes the data.
 	MaxChunkSize  uint32 `protobuf:"varint,3,opt,name=max_chunk_size,json=maxChunkSize,proto3" json:"max_chunk_size,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -380,8 +382,9 @@ type DownloadBlobRequest struct {
 	BlobId []byte `protobuf:"bytes,2,opt,name=blob_id,json=blobId,proto3" json:"blob_id,omitempty"`
 	// First byte to return.
 	Offset uint64 `protobuf:"varint,3,opt,name=offset,proto3" json:"offset,omitempty"`
-	// Maximum number of bytes to return. Zero selects the server's maximum;
-	// the server caps larger values.
+	// Maximum number of bytes to return. Zero selects the server's maximum
+	// for the request's codec (smaller in JSON than in binary protobuf); the
+	// server caps larger values. Continue from the end of a shorter range.
 	Length        uint32 `protobuf:"varint,4,opt,name=length,proto3" json:"length,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
