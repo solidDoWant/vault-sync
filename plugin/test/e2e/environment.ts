@@ -10,6 +10,9 @@ function required(name: string): string {
 export const e2eEnvironment = {
   serverUrl: required("VAULT_SYNC_E2E_SERVER_URL"),
   token: required("VAULT_SYNC_E2E_TOKEN"),
+  /** The fake OIDC issuer (device flow enabled; test-only /device/approve and /test/revoke-refresh-tokens). */
+  issuerUrl: required("VAULT_SYNC_E2E_ISSUER_URL"),
+  clientId: required("VAULT_SYNC_E2E_CLIENT_ID"),
   emulateMobile: process.env.VAULT_SYNC_E2E_MOBILE === "1",
 };
 
