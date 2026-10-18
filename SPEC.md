@@ -73,7 +73,7 @@ All identifiers are UUIDv7 unless stated. Every table below is scoped by `vault_
 | `key_slots` | `vault_id`, `epoch`, `recipient_kind` (`user` \| `escrow`), `recipient_id`, `wrapped_key` | E2EE only (§9). |
 | `yjs_updates` | `document_id`, `seq`, `update` | Phase 5 (§10). |
 
-**Paths.** A path is an attribute of a revision, not an identity. Uniqueness is enforced on `path_key`, a normalized form of the path: Unicode NFC, then case-folded, so that two clients cannot create paths that collide on case-insensitive (Windows, macOS, Android/iOS) filesystems. For E2EE vaults the path itself is ciphertext and `path_key = HMAC-SHA256(path_key_secret, normalize(path))`, so the server can still enforce uniqueness without learning the path.
+**Paths.** A path is an attribute of a revision, not an identity. Uniqueness is enforced on `path_key`, a normalized form of the path: Unicode NFC, then case-folded, so that two clients cannot create paths that collide on case-insensitive (Windows, macOS, Android/iOS) filesystems. Precisely (decision): `normalize(path) = NFC(toCasefold(NFD(path)))` — Unicode canonical caseless matching (Unicode §3.13, D145) emitted in NFC, using **full, locale-independent** case folding (`CaseFolding.txt` statuses C and F; never the Turkic T mappings), so `Straße`/`STRASSE` collide, `İ` folds to `i̇` and dotless `ı` folds to itself. Full folding was chosen over simple folding because it catches strictly more collisions; locale independence keeps the key identical on every device. Separators, whitespace and dots are not altered and no validation happens here. Go (`internal/pathkey`) and TypeScript (`plugin/src/core/pathkey`) share one folding table generated from a vendored `CaseFolding.txt` and must agree on every vector in `testdata/paths/`. Normalization uses each platform's NFC/NFD (`golang.org/x/text/unicode/norm`, `String.prototype.normalize`), so keys can differ only for characters whose normalization data one side does not yet have (characters added in recent Unicode versions); closing that gap is deferred to [#63](https://github.com/solidDoWant/vault-sync/issues/63). For E2EE vaults the path itself is ciphertext and `path_key = HMAC-SHA256(path_key_secret, normalize(path))`, so the server can still enforce uniqueness without learning the path.
 
 **Content addressing.** For plaintext vaults `blob_id = SHA-256(content)`. For E2EE vaults `blob_id = HMAC-SHA256(blob_id_secret, plaintext)` (equality leaks only within a vault), and clients verify the id after decryption.
 
@@ -187,6 +187,7 @@ The v1 protocol includes the hooks for this from the start: stable document ids,
 | Server integration | real PostgreSQL + S3-compatible store via `docker compose` | `make test-integration`, CI |
 | **Sync simulation** | Seeded multi-client harness (`sim/`, TypeScript): N `core` engines over in-memory vaults against a real `vault-sync-server` process (real PostgreSQL + S3). Each client's transport is wrapped in a seeded fault injector (drop request, drop response after the server applied it, delay, reorder, partition, client crash/restart losing in-memory state). Operation schedules are derived from the seed so a failing seed replays the same client-side schedule. Invariants: convergence, no lost acknowledged writes, no resurrected deletes without a concurrent edit, no duplicate content. Failing seeds are minimized and committed as regression cases. | `make test-sim`, CI (short), nightly (long) |
 | Crypto vectors | shared `testdata/crypto/` vectors | Go + TS unit tests |
+| Path-key vectors | shared `testdata/paths/` vectors | Go + TS unit tests |
 | Plugin e2e | `wdio-obsidian-service` (real Obsidian; emulated mobile mode) | Linux in the dev VM; Windows + macOS in GitHub Actions |
 | Android | manual checklist in `docs/testing/android.md` until automated | human |
 
@@ -203,6 +204,7 @@ plugin/                  Obsidian plugin (npm project; nested empty go.mod fence
   src/gen/               generated TS protocol code (committed)
 sim/                     sync simulation harness (TS, drives src/core against the Go server)
 testdata/crypto/         cross-language crypto test vectors
+testdata/paths/          cross-language path_key vectors (§5)
 deploy/charts/           Helm chart(s)
 deploy/compose/          docker compose stack for integration tests (PostgreSQL + S3-compatible store)
 docs/                    operator + design docs; docs/agents/ holds the agent playbooks
