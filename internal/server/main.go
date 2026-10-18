@@ -86,6 +86,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Devices:         queries,
 		Vaults:          queries,
 		Memberships:     queries,
+		Sync:            &api.SyncService{Store: queries, Logger: logger},
 		Blobs:           blobs,
 		Logger:          logger,
 	})
