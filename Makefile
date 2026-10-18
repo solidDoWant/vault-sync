@@ -46,8 +46,8 @@ test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integrati
 	./scripts/test-integration.sh
 
 .PHONY: test-sim
-test-sim: ## TODO(phase 1): multi-client sync simulation (SIM_SEEDS, SIM_STEPS).
-	@echo "test-sim: not yet implemented" >&2; exit 1
+test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_SEED).
+	./scripts/test-sim.sh
 
 .PHONY: test-e2e
 test-e2e: ## TODO(phase 2): plugin e2e in real Obsidian via wdio-obsidian-service.
