@@ -135,7 +135,7 @@ The plugin authenticates against Authentik with the **OAuth 2.0 Device Authoriza
 Server-side details (decision):
 
 - Only RS256, ES256 and EdDSA signatures are accepted; `none` and HMAC algorithms are rejected. Tokens are size-bounded before parsing. `exp` has no leeway; `nbf`, when present, tolerates one minute of clock skew.
-- The JWKS (discovered from the issuer's OpenID configuration) is fetched lazily, refetched on an unknown `kid` and when older than one hour, and never more than once per 30 seconds. A failed refetch keeps the cached keys.
+- The JWKS (discovered from the issuer's OpenID configuration) is fetched lazily, refetched on an unknown `kid` and when older than one hour, and never more than once per 30 seconds. A failed refetch keeps the cached keys. At most one fetch is in flight and no lock is held across it: while hour-old keys are being refetched, other requests use the cached keys rather than wait. The discovery document, `jwks_uri` and redirects must be `https` (plain `http` only to loopback hosts, and only for a loopback `http` issuer); redirects must stay on the requested host and never downgrade to `http`.
 - Users are created on their first authenticated request, keyed by `(issuer, subject)`; concurrent first requests create exactly one user.
 - Authentication is **default-deny**: one interceptor on every ConnectRPC service authenticates every procedure that is not on an explicit public allow-list (only `ServerInfoService/GetServerInfo`). The realtime WebSocket upgrade (§6.4) authenticates with the same authenticator. A test enumerates every procedure in the schema and asserts it is authenticated or allow-listed.
 

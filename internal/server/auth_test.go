@@ -344,6 +344,12 @@ func TestRegisterDeviceValidatesInput(t *testing.T) {
 		{name: "empty name", request: &vaultsyncv1.RegisterDeviceRequest{}, wantCode: connect.CodeInvalidArgument},
 		{name: "blank name", request: &vaultsyncv1.RegisterDeviceRequest{Name: " \t"}, wantCode: connect.CodeInvalidArgument},
 		{name: "over-long name", request: &vaultsyncv1.RegisterDeviceRequest{Name: strings.Repeat("n", api.MaxDeviceNameBytes+1)}, wantCode: connect.CodeInvalidArgument},
+		{name: "non-ASCII name", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Jürgen’s Pixel 📱"}},
+		{name: "NUL in name", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Lap\x00top"}, wantCode: connect.CodeInvalidArgument},
+		{name: "newline in name", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Lap\ntop"}, wantCode: connect.CodeInvalidArgument},
+		{name: "escape sequence in name", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop\x1b[2J"}, wantCode: connect.CodeInvalidArgument},
+		{name: "DEL in name", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop\x7f"}, wantCode: connect.CodeInvalidArgument},
+		{name: "C1 control in name", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop\u0085"}, wantCode: connect.CodeInvalidArgument},
 		{name: "short key", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop", PublicKey: make([]byte, 31)}, wantCode: connect.CodeInvalidArgument},
 		{name: "long key", request: &vaultsyncv1.RegisterDeviceRequest{Name: "Laptop", PublicKey: make([]byte, 33)}, wantCode: connect.CodeInvalidArgument},
 	}

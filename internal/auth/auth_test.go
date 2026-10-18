@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -82,16 +83,79 @@ func TestVerifierRejectsTokensNotYetValidBeyondTheLeeway(t *testing.T) {
 	clock := newClock()
 	verifier := newVerifier(issuer, clock)
 
-	withinLeeway := issuer.Claims("alice", clock.Now())
-	withinLeeway["nbf"] = clock.Now().Add(auth.NotBeforeLeeway - time.Second).Unix()
-	_, err := verifier.Verify(t.Context(), authtest.Sign(t, key, withinLeeway))
-	require.NoError(t, err)
+	// The offsets are literal, not derived from auth.NotBeforeLeeway, so that
+	// widening the leeway (go-oidc alone tolerates five minutes) fails here.
+	tests := []struct {
+		name        string
+		notBefore   time.Duration
+		assertError require.ErrorAssertionFunc
+	}{
+		{name: "now", notBefore: 0},
+		{name: "59 seconds ahead", notBefore: 59 * time.Second},
+		{name: "60 seconds ahead", notBefore: 60 * time.Second},
+		{name: "61 seconds ahead", notBefore: 61 * time.Second, assertError: requireUnauthenticated},
+		{name: "2 minutes ahead", notBefore: 2 * time.Minute, assertError: requireUnauthenticated},
+		{name: "4 minutes ahead", notBefore: 4 * time.Minute, assertError: requireUnauthenticated},
+	}
 
-	// go-oidc alone would accept up to five minutes of skew.
-	beyondLeeway := issuer.Claims("alice", clock.Now())
-	beyondLeeway["nbf"] = clock.Now().Add(auth.NotBeforeLeeway + 2*time.Minute).Unix()
-	_, err = verifier.Verify(t.Context(), authtest.Sign(t, key, beyondLeeway))
-	require.ErrorIs(t, err, auth.ErrUnauthenticated)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.assertError == nil {
+				test.assertError = require.NoError
+			}
+
+			claims := issuer.Claims("alice", clock.Now())
+			claims["nbf"] = clock.Now().Add(test.notBefore).Unix()
+
+			_, err := verifier.Verify(t.Context(), authtest.Sign(t, key, claims))
+			test.assertError(t, err)
+		})
+	}
+}
+
+func requireUnauthenticated(t require.TestingT, err error, args ...any) {
+	require.ErrorIs(t, err, auth.ErrUnauthenticated, args...)
+}
+
+func TestAuthenticatorBoundsTheSubjectLength(t *testing.T) {
+	issuer := authtest.NewIssuer(t)
+	key := issuer.AddKey(t, jose.ES256)
+	clock := newClock()
+
+	tests := []struct {
+		name        string
+		subject     string
+		assertError require.ErrorAssertionFunc
+	}{
+		{name: "255 bytes", subject: strings.Repeat("s", 255)},
+		{name: "255 bytes of multi-byte characters", subject: strings.Repeat("é", 127) + "s"},
+		{name: "256 bytes", subject: strings.Repeat("s", 256), assertError: requireUnauthenticated},
+		{name: "256 bytes of multi-byte characters", subject: strings.Repeat("é", 128), assertError: requireUnauthenticated},
+		{name: "1 KiB", subject: strings.Repeat("s", 1024), assertError: requireUnauthenticated},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.assertError == nil {
+				test.assertError = require.NoError
+			}
+
+			users := &memoryUsers{users: map[auth.Identity]uuid.UUID{}}
+			authenticator := auth.NewAuthenticator(newVerifier(issuer, clock), users)
+
+			user, err := authenticator.AuthenticateToken(t.Context(), authtest.Sign(t, key, issuer.Claims(test.subject, clock.Now())))
+			test.assertError(t, err)
+
+			if err != nil {
+				assert.Empty(t, users.users, "no user is created for a rejected token")
+
+				return
+			}
+
+			assert.Equal(t, test.subject, user.Identity.Subject)
+			assert.Len(t, users.users, 1)
+		})
+	}
 }
 
 func TestVerifierRefreshesKeysAfterRotation(t *testing.T) {
