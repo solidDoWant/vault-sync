@@ -48,8 +48,8 @@ type DeviceFlow struct {
 	key     Key
 	options DeviceFlowOptions
 
-	mu            sync.Mutex
-	devices       map[string]*deviceGrant
+	mu      sync.Mutex
+	devices map[string]*deviceGrant
 	// refreshTokens maps each live refresh token to the subject it was issued to.
 	refreshTokens map[string]string
 	refreshes     int

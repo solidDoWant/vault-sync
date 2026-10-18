@@ -20,7 +20,7 @@ export class DeviceLimitError extends Error {
   override readonly name = "DeviceLimitError";
   constructor(serverMessage: string) {
     super(
-      `This device cannot be registered: your account has reached the server's limit on registered devices (${serverMessage}). Sync cannot start on this device until the server's operator raises the limit or removes devices.`,
+      `This device cannot be registered: your account has reached the server's limit on registered devices (${serverMessage}). Sync cannot start on this device. Registered devices cannot be removed yet, so ask the server's operator; your local files are untouched.`,
     );
   }
 }
