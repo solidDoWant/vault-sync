@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -217,17 +218,15 @@ func TestNonMemberAndMissingVaultAreIndistinguishable(t *testing.T) {
 		require.ErrorAs(t, missing, &missingErr)
 		assert.Equal(t, connect.CodeNotFound, notMemberErr.Code())
 		assert.Equal(t, authz.ErrVaultNotFound.Error(), notMemberErr.Message())
-		assertIndistinguishable(t, missingErr, notMemberErr)
+		assert.Empty(t, assertIndistinguishable(t, missingErr, notMemberErr))
 	}
 }
 
-// perResponseHeaders are the response headers whose value depends on when the
-// response was produced rather than on the error it carries. They are the only
-// headers excluded when comparing two errors, so any other header that differs
-// between the cases, including one added later, still fails the comparison.
-var perResponseHeaders = []string{
-	"Date", // set by net/http to the current second
-}
+// maxDateSkew bounds how far apart the Date headers of two indistinguishable
+// responses may be. Date is set by net/http to the second the response was
+// written, so it legitimately differs between two calls; it must still be a
+// valid HTTP date close to the other one, so it cannot carry anything else.
+const maxDateSkew = 5 * time.Second
 
 // errorDetail is the comparable form of a connect.ErrorDetail.
 type errorDetail struct {
@@ -235,19 +234,29 @@ type errorDetail struct {
 	Bytes []byte
 }
 
+// Names of the comparisons assertIndistinguishable makes. They label its
+// failures and are what it returns for each comparison that failed.
+const (
+	codeField    = "code"
+	messageField = "message"
+	detailsField = "error details"
+	headersField = "headers"
+	dateField    = "date"
+)
+
 // assertIndistinguishable asserts that a caller cannot tell want and got
-// apart: they have the same code, message, error details, and headers other
-// than perResponseHeaders. It returns whether they are indistinguishable.
-func assertIndistinguishable(t assert.TestingT, want, got *connect.Error) bool {
+// apart: they have the same code, message, error details and headers, except
+// that their Date headers only need to be valid HTTP dates within maxDateSkew
+// of each other. It returns the names of the comparisons that failed, so an
+// empty result means the errors are indistinguishable.
+func assertIndistinguishable(t assert.TestingT, want, got *connect.Error) []string {
 	if helper, ok := t.(interface{ Helper() }); ok {
 		helper.Helper()
 	}
 
 	observable := func(err *connect.Error) (http.Header, []errorDetail) {
 		header := err.Meta().Clone()
-		for _, name := range perResponseHeaders {
-			header.Del(name)
-		}
+		header.Del("Date") // compared separately by dateField
 
 		details := make([]errorDetail, 0, len(err.Details()))
 		for _, detail := range err.Details() {
@@ -260,12 +269,46 @@ func assertIndistinguishable(t assert.TestingT, want, got *connect.Error) bool {
 	wantHeader, wantDetails := observable(want)
 	gotHeader, gotDetails := observable(got)
 
-	codeEqual := assert.Equal(t, want.Code(), got.Code(), "code")
-	messageEqual := assert.Equal(t, want.Message(), got.Message(), "message")
-	detailsEqual := assert.Equal(t, wantDetails, gotDetails, "error details")
-	headersEqual := assert.Equal(t, wantHeader, gotHeader, "headers")
+	var failed []string
 
-	return codeEqual && messageEqual && detailsEqual && headersEqual
+	check := func(field string, equal bool) {
+		if !equal {
+			failed = append(failed, field)
+		}
+	}
+
+	check(codeField, assert.Equal(t, want.Code(), got.Code(), codeField))
+	check(messageField, assert.Equal(t, want.Message(), got.Message(), messageField))
+	check(detailsField, assert.Equal(t, wantDetails, gotDetails, detailsField))
+	check(headersField, assert.Equal(t, wantHeader, gotHeader, headersField))
+	check(dateField, assertDatesClose(t, want.Meta().Values("Date"), got.Meta().Values("Date")))
+
+	return failed
+}
+
+// assertDatesClose asserts that two Date header value lists are either both
+// absent or each a single valid HTTP date, within maxDateSkew of each other.
+func assertDatesClose(t assert.TestingT, want, got []string) bool {
+	if helper, ok := t.(interface{ Helper() }); ok {
+		helper.Helper()
+	}
+
+	if len(want) == 0 && len(got) == 0 {
+		return true
+	}
+
+	if !assert.Len(t, want, 1, dateField) || !assert.Len(t, got, 1, dateField) {
+		return false
+	}
+
+	wantTime, wantErr := http.ParseTime(want[0])
+	gotTime, gotErr := http.ParseTime(got[0])
+
+	if !assert.NoError(t, wantErr, dateField) || !assert.NoError(t, gotErr, dateField) {
+		return false
+	}
+
+	return assert.WithinDuration(t, wantTime, gotTime, maxDateSkew, dateField)
 }
 
 // failureRecorder is an assert.TestingT that records failures instead of
@@ -280,15 +323,18 @@ func (recorder *failureRecorder) Errorf(format string, args ...any) {
 
 // TestAssertIndistinguishableDetectsDifferences proves that the comparison in
 // TestNonMemberAndMissingVaultAreIndistinguishable fails when two errors differ
-// in code, message, error details, or an error-identifying header, and only
-// tolerates differences in per-response headers.
+// in code, message, error details, an error-identifying header, or carry Date
+// headers that are not close valid HTTP dates, and that each difference is
+// caught by its own comparison rather than as a side effect of another one.
 func TestAssertIndistinguishableDetectsDifferences(t *testing.T) {
+	const date = "Sun, 18 Oct 2026 07:33:06 GMT"
+
 	newError := func(t *testing.T, modify func(err *connect.Error) *connect.Error) *connect.Error {
 		t.Helper()
 
 		err := connect.NewError(connect.CodeNotFound, authz.ErrVaultNotFound)
 		err.Meta().Set("Content-Type", "application/proto")
-		err.Meta().Set("Date", "Sun, 18 Oct 2026 07:33:06 GMT")
+		err.Meta().Set("Date", date)
 
 		if modify != nil {
 			err = modify(err)
@@ -297,55 +343,65 @@ func TestAssertIndistinguishableDetectsDifferences(t *testing.T) {
 		return err
 	}
 
-	withDetail := func(t *testing.T, err *connect.Error) *connect.Error {
-		t.Helper()
+	// replace returns a new error with the given code and message that keeps
+	// every header of err, so only the code or message differs.
+	replace := func(err *connect.Error, code connect.Code, message error) *connect.Error {
+		replaced := connect.NewError(code, message)
+		for name, values := range err.Meta() {
+			replaced.Meta()[name] = values
+		}
 
-		detail, detailErr := connect.NewErrorDetail(&vaultsyncv1.GetRevisionRequest{VaultId: "exists"})
-		require.NoError(t, detailErr)
-		err.AddDetail(detail)
+		return replaced
+	}
 
-		return err
+	setDate := func(values ...string) func(_ *testing.T, err *connect.Error) *connect.Error {
+		return func(_ *testing.T, err *connect.Error) *connect.Error {
+			err.Meta().Del("Date")
+
+			for _, value := range values {
+				err.Meta().Add("Date", value)
+			}
+
+			return err
+		}
 	}
 
 	tests := []struct {
-		name           string
-		modify         func(t *testing.T, err *connect.Error) *connect.Error
-		wantDifference bool
+		name       string
+		modify     func(t *testing.T, err *connect.Error) *connect.Error
+		wantFailed []string
 	}{
 		{
 			name: "identical",
 		},
 		{
-			name: "only the date differs",
-			modify: func(_ *testing.T, err *connect.Error) *connect.Error {
-				err.Meta().Set("Date", "Sun, 18 Oct 2026 07:33:05 GMT")
-
-				return err
-			},
+			name:   "dates a second apart",
+			modify: setDate("Sun, 18 Oct 2026 07:33:05 GMT"),
 		},
 		{
 			name: "code differs",
 			modify: func(_ *testing.T, err *connect.Error) *connect.Error {
-				return connect.NewError(connect.CodePermissionDenied, authz.ErrVaultNotFound)
+				return replace(err, connect.CodePermissionDenied, authz.ErrVaultNotFound)
 			},
-			wantDifference: true,
+			wantFailed: []string{codeField},
 		},
 		{
 			name: "message differs",
 			modify: func(_ *testing.T, err *connect.Error) *connect.Error {
-				replaced := connect.NewError(err.Code(), errors.New("not a member"))
-				for name, values := range err.Meta() {
-					replaced.Meta()[name] = values
-				}
-
-				return replaced
+				return replace(err, err.Code(), errors.New("not a member"))
 			},
-			wantDifference: true,
+			wantFailed: []string{messageField},
 		},
 		{
-			name:           "error details differ",
-			modify:         withDetail,
-			wantDifference: true,
+			name: "error details differ",
+			modify: func(t *testing.T, err *connect.Error) *connect.Error {
+				detail, detailErr := connect.NewErrorDetail(&vaultsyncv1.GetRevisionRequest{VaultId: "exists"})
+				require.NoError(t, detailErr)
+				err.AddDetail(detail)
+
+				return err
+			},
+			wantFailed: []string{detailsField},
 		},
 		{
 			name: "an error-identifying header differs",
@@ -354,7 +410,27 @@ func TestAssertIndistinguishableDetectsDifferences(t *testing.T) {
 
 				return err
 			},
-			wantDifference: true,
+			wantFailed: []string{headersField},
+		},
+		{
+			name:       "date is not an HTTP date",
+			modify:     setDate("exists"),
+			wantFailed: []string{dateField},
+		},
+		{
+			name:       "dates further apart than the allowed skew",
+			modify:     setDate("Sun, 18 Oct 2026 07:34:06 GMT"),
+			wantFailed: []string{dateField},
+		},
+		{
+			name:       "date missing on one side",
+			modify:     setDate(),
+			wantFailed: []string{dateField},
+		},
+		{
+			name:       "date repeated on one side",
+			modify:     setDate(date, date),
+			wantFailed: []string{dateField},
 		},
 	}
 
@@ -366,10 +442,10 @@ func TestAssertIndistinguishableDetectsDifferences(t *testing.T) {
 			}
 
 			recorder := &failureRecorder{}
-			indistinguishable := assertIndistinguishable(recorder, newError(t, nil), newError(t, modify))
+			failed := assertIndistinguishable(recorder, newError(t, nil), newError(t, modify))
 
-			assert.Equal(t, test.wantDifference, !indistinguishable, "failures: %v", recorder.failures)
-			assert.Equal(t, test.wantDifference, len(recorder.failures) > 0, "failures: %v", recorder.failures)
+			assert.Equal(t, test.wantFailed, failed, "failures: %v", recorder.failures)
+			assert.Len(t, recorder.failures, len(test.wantFailed), "failures: %v", recorder.failures)
 		})
 	}
 }
