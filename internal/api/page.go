@@ -43,8 +43,9 @@ func newPageBudget(header http.Header, limitBytes int) *pageBudget {
 		return &pageBudget{}
 	}
 
-	// gzip adds at most 5 bytes per 64 KiB block of incompressible input;
-	// a thousandth of the limit covers it with room to spare.
+	// gzip (compress/flate) adds 5 bytes per 16 KiB block of
+	// incompressible input; a thousandth of the limit covers it with room
+	// to spare.
 	return &pageBudget{
 		remaining: limitBytes - limitBytes/1000 - pageReserveBytes,
 		limited:   true,

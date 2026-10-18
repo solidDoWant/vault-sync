@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -137,6 +138,12 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 		return nil, service.internal(ctx, "cannot list changes", err)
 	}
 
+	return connect.NewResponse(changesPage(request.Header(), service.Limits.MaxResponseBytes, changes)), nil
+}
+
+// changesPage builds the ListChanges response for changes, for a request
+// with header and a response limit of limitBytes (zero: unbounded).
+func changesPage(header http.Header, limitBytes int, changes store.Changes) *vaultsyncv1.ListChangesResponse {
 	response := &vaultsyncv1.ListChangesResponse{
 		HasMore: changes.HasMore,
 		HeadSeq: uint64(max(changes.HeadSeq, 0)),
@@ -144,7 +151,7 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 
 	// The page also ends where its encoding would exceed the response
 	// limit; the client continues from the last revision it got.
-	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
+	budget := newPageBudget(header, limitBytes)
 
 	for _, revision := range changes.Revisions {
 		message := revisionMessage(revision)
@@ -157,7 +164,7 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 		response.Revisions = append(response.Revisions, message)
 	}
 
-	return connect.NewResponse(response), nil
+	return response
 }
 
 // GetRevision returns one revision of the vault.
@@ -212,11 +219,18 @@ func (service SyncService) GetDocumentHistory(ctx context.Context, request *conn
 		return nil, service.internal(ctx, "cannot list document history", err)
 	}
 
+	return connect.NewResponse(historyPage(request.Header(), service.Limits.MaxResponseBytes, history)), nil
+}
+
+// historyPage builds the GetDocumentHistory response for history, for a
+// request with header and a response limit of limitBytes (zero:
+// unbounded).
+func historyPage(header http.Header, limitBytes int, history store.History) *vaultsyncv1.GetDocumentHistoryResponse {
 	response := &vaultsyncv1.GetDocumentHistoryResponse{Document: documentMessage(history.Document)}
 
 	// The page also ends where its encoding would exceed the response
 	// limit; the token continues after the last revision returned.
-	budget := newPageBudget(request.Header(), service.Limits.MaxResponseBytes)
+	budget := newPageBudget(header, limitBytes)
 	hasMore := history.HasMore
 
 	for _, revision := range history.Revisions {
@@ -234,7 +248,7 @@ func (service SyncService) GetDocumentHistory(ctx context.Context, request *conn
 		response.NextPageToken = encodeHistoryToken(history.Revisions[len(response.Revisions)-1].Seq)
 	}
 
-	return connect.NewResponse(response), nil
+	return response
 }
 
 // CommitRevision appends a revision with optimistic concurrency.
