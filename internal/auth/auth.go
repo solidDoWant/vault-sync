@@ -18,6 +18,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/google/uuid"
+
+	"github.com/solidDoWant/vault-sync/internal/textcheck"
 )
 
 // Token validation bounds.
@@ -156,6 +158,10 @@ func (verifier *Verifier) Verify(ctx context.Context, token string) (Identity, e
 
 	if verified.Subject == "" || len(verified.Subject) > MaxSubjectBytes {
 		return Identity{}, fmt.Errorf("%w: missing or over-long sub claim", ErrUnauthenticated)
+	}
+
+	if !textcheck.Printable(verified.Subject) {
+		return Identity{}, fmt.Errorf("%w: sub claim contains control characters", ErrUnauthenticated)
 	}
 
 	return Identity{Issuer: verified.Issuer, Subject: verified.Subject}, nil
