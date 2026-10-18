@@ -295,7 +295,7 @@ describe("SyncEngine pull", () => {
       const h = harness();
       h.server.commit({ documentId: "a", path: "a.md", content: "base" });
       await h.engine.pull();
-      await h.journal.addPending({ revisionId: "local-1", documentId: "a", baseRevisionId: h.server.head("a")?.id ?? "", path: "a.md", contentHash: sha256Hex(bytes("base")), deleted: false });
+      await h.journal.addPending({ revisionId: "local-1", documentId: "a", baseRevisionId: h.server.head("a")?.id ?? "", path: "a.md", contentHash: sha256Hex(bytes("base")), size: 4n, kind: "text", deleted: false });
 
       h.server.commit({ documentId: "a", path: "a.md", content: "remote edit" });
       await h.engine.pull();

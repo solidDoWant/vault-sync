@@ -1,8 +1,8 @@
 // Public surface of the platform-independent sync engine (SPEC.md §4). It
 // must never import `obsidian` or src/obsidian (lint-enforced).
-export { SyncEngine, type PullSummary, type SyncEngineOptions } from "./engine/engine";
+export { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type SyncEngineOptions } from "./engine/engine";
 export { deferMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
-export { RemoteContentError, type PullApi } from "./engine/remote";
+export { classifyByExtension, RemoteContentError, type PullApi } from "./engine/remote";
 export { sha256Hex } from "./hash";
 export type {
   DeferReason,
@@ -43,4 +43,5 @@ export {
   type VaultAdapterHarness,
 } from "./vault/conformance";
 export { InMemoryVault, type InMemoryVaultOptions } from "./vault/memory";
+export { uuidv7 } from "./uuid";
 export { isVaultRelativePath } from "./vaultpath/vaultpath";

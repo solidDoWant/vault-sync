@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, type RunResult } from "./runner";
-import { lostResponseAfterHeadMoved } from "./scenarios";
+import { enginePushUnderFaults, lostResponseAfterHeadMoved } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -98,6 +98,25 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
     const retryAt = result.trace.findIndex((line) => line.includes(`acknowledged ${result.retried} `));
     const otherAt = result.trace.findIndex((line) => line.includes(`acknowledged ${result.acknowledgedBy[1]?.at(-1) ?? "?"} `));
     expect(otherAt, trace).toBeLessThan(retryAt);
+  });
+
+  it("pushes the engine's edits through a lost commit response, a moved head and an interrupted upload", async () => {
+    const result = await enginePushUnderFaults(environment);
+    const trace = tail(result.trace, 160);
+
+    expect(result.violations, trace).toEqual([]);
+    // The lost commit was retried with its revision id: acknowledged once, never a conflict.
+    expect(result.engineAcknowledged.filter((revision) => revision.label === result.lostCommit), trace).toHaveLength(1);
+    expect(result.trace.filter((line) => line.includes(`${result.lostCommit} -> FailedPrecondition`)), trace).toEqual([]);
+    // The second edit met the moved head, was merged and committed on top of it.
+    expect(result.engineAcknowledged.map((revision) => revision.base), trace).toContain(result.movedHead);
+    expect(result.engineAcknowledged, trace).toHaveLength(2);
+    expect(result.serverContent, trace).toBe(result.engineContent);
+    expect(result.serverContent.endsWith("engine edit 2\n"), trace).toBe(true);
+    expect(result.serverContent.length, trace).toBeGreaterThan("engine edit 2\n".length);
+    // The restarted engine resumed the upload where the server's session stood.
+    expect(result.chunksBeforeCrash, trace).toEqual(["0"]);
+    expect(result.chunksAfterCrash, trace).toEqual(["65536", "131072"]);
   });
 });
 
