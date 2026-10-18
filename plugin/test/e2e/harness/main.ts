@@ -1,11 +1,13 @@
 import { FileView, MarkdownView, Plugin, TextFileView, TFile, type App } from "obsidian";
 
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
-import { InMemoryJournal } from "../../../src/core/journal/memory";
+import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
+import { IndexedDbJournal } from "../../../src/core/journal/indexeddb";
 import { createProtocolClient } from "../../../src/core/protocol/client";
 import type { VaultEvent } from "../../../src/core/vault/adapter";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
+import { journalDatabaseName, localVaultId, openVaultJournal, type JournalKey } from "../../../src/obsidian/journal";
 import { ObsidianVaultAdapter } from "../../../src/obsidian/vault-adapter";
 
 /** What the e2e specs get back from a case run inside Obsidian. */
@@ -68,7 +70,7 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** Events an Obsidian adapter watched from onload on, i.e. through Obsidian's startup indexing. */
   private readonly sinceLoad: VaultEvent[] = [];
 
-  private session: { server: InMemoryServer; journal: InMemoryJournal; listChangesSince: string[]; localChanges: VaultEvent[][] } | undefined;
+  private session: { server: InMemoryServer; journalKey: JournalKey; journal: IndexedDbJournal | undefined; listChangesSince: string[]; localChanges: VaultEvent[][] } | undefined;
 
   override onload(): void {
     // Registered as early as a plugin can: Obsidian may still be indexing.
@@ -91,6 +93,71 @@ export default class VaultSyncE2EHarness extends Plugin {
     } catch (error) {
       return { ok: false, error: describeError(error) };
     }
+  }
+
+  /** The Journal conformance case names, in suite order. */
+  journalConformanceCaseNames(): string[] {
+    return journalConformance.map((testCase) => testCase.name);
+  }
+
+  /** Runs one Journal conformance case against an IndexedDbJournal on Obsidian's own IndexedDB, in a database of its own. */
+  async runJournalConformanceCase(name: string): Promise<CaseResult> {
+    const testCase = journalConformance.find((candidate) => candidate.name === name);
+    if (testCase === undefined) return { ok: false, error: `no journal conformance case named ${JSON.stringify(name)}` };
+    const database = `vault-sync-e2e-journal-conformance-${String(Date.now())}-${String(Math.random()).slice(2)}`;
+    let current: IndexedDbJournal | undefined;
+    try {
+      const first = await IndexedDbJournal.open(window.indexedDB, database);
+      current = first;
+      await runJournalConformanceCase(testCase, () => ({
+        journal: first,
+        // An app restart: a new connection to the same database.
+        reopen: async () => {
+          current?.close();
+          current = await IndexedDbJournal.open(window.indexedDB, database);
+          return current;
+        },
+      }));
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: describeError(error) };
+    } finally {
+      current?.close();
+      await deleteDatabase(database);
+    }
+  }
+
+  /** Obsidian's id for the open vault, which keys its journals. */
+  localVaultId(): string {
+    return localVaultId(this.app);
+  }
+
+  /** Sets the cursor of the open vault's journal for `key`, as a sync would. */
+  async setJournalCursor(key: JournalKey, seq: string): Promise<void> {
+    const journal = await openVaultJournal(this.app, key);
+    try {
+      await journal.resetCursor(BigInt(seq));
+    } finally {
+      journal.close();
+    }
+  }
+
+  /**
+   * The cursor of the journal for `key` of the vault with Obsidian id
+   * `vaultId` (default: the open vault), read from this window's IndexedDB.
+   */
+  async journalCursor(key: JournalKey, vaultId?: string): Promise<string> {
+    const journal = await IndexedDbJournal.open(window.indexedDB, journalDatabaseName(vaultId ?? localVaultId(this.app), key));
+    try {
+      return String(await journal.getCursor());
+    } finally {
+      journal.close();
+    }
+  }
+
+  /** Deletes the open vault's journal for `key`. */
+  async deleteJournal(key: JournalKey): Promise<void> {
+    await deleteDatabase(journalDatabaseName(localVaultId(this.app), key));
   }
 
   /** The events reported to the adapter watched since this plugin loaded. */
@@ -162,23 +229,28 @@ export default class VaultSyncE2EHarness extends Plugin {
   }
 
   /** A fresh in-memory server holding one synced note, and an empty journal: this device before its first sync. */
-  setUpSession(): void {
+  async setUpSession(): Promise<void> {
     const server = new InMemoryServer();
     const listChangesSince: string[] = [];
     server.interceptor = (method, request) => {
       if (method === "ListChanges") listChangesSince.push(String((request as { sinceSeq: bigint }).sinceSeq));
     };
     server.commit({ documentId: "doc-synced", path: "Synced.md", content: "synced from the server\n" });
-    this.session = { server, journal: new InMemoryJournal(), listChangesSince, localChanges: [] };
+    const journalKey = { serverUrl: "https://e2e.invalid", vaultId: server.vaultId };
+    this.session?.journal?.close();
+    await this.deleteJournal(journalKey);
+    this.session = { server, journalKey, journal: undefined, listChangesSince, localChanges: [] };
   }
 
   /**
-   * Starts sync in the vault-sync plugin over the session's server and
-   * journal. The journal object outlives vault-sync's disable/enable cycle,
-   * as the durable IndexedDB journal (#21) does.
+   * Starts sync in the vault-sync plugin over the session's server and the
+   * open vault's IndexedDB journal, through a new connection each time: only
+   * what the journal stored survives vault-sync's disable/enable cycle.
    */
   async startSession(): Promise<SessionStart> {
     const session = this.requireSession();
+    session.journal?.close();
+    session.journal = await openVaultJournal(this.app, session.journalKey);
     session.listChangesSince.length = 0;
     const changes: VaultEvent[] = [];
     session.localChanges.push(changes);
@@ -214,6 +286,18 @@ export default class VaultSyncE2EHarness extends Plugin {
     if (this.session === undefined) throw new Error("setUpSession() first");
     return this.session;
   }
+}
+
+function deleteDatabase(name: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = window.indexedDB.deleteDatabase(name);
+    request.onsuccess = () => {
+      resolve();
+    };
+    request.onerror = () => {
+      reject(new Error(`deleting ${name} failed: ${String(request.error)}`));
+    };
+  });
 }
 
 function describeError(error: unknown): string {
