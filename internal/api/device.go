@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
@@ -17,6 +15,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/store"
+	"github.com/solidDoWant/vault-sync/internal/textcheck"
 )
 
 // Device registration bounds.
@@ -60,9 +59,7 @@ func (service DeviceService) RegisterDevice(ctx context.Context, request *connec
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxDeviceNameBytes))
 	}
 
-	// PostgreSQL text cannot hold U+0000, and no control character belongs
-	// in a display name.
-	if !utf8.ValidString(name) || strings.ContainsFunc(name, unicode.IsControl) {
+	if !textcheck.Printable(name) {
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control characters"))
 	}
 

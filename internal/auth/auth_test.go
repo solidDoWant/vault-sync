@@ -117,6 +117,56 @@ func requireUnauthenticated(t require.TestingT, err error, args ...any) {
 	require.ErrorIs(t, err, auth.ErrUnauthenticated, args...)
 }
 
+func TestAuthenticatorRejectsControlCharactersInTheSubject(t *testing.T) {
+	issuer := authtest.NewIssuer(t)
+	key := issuer.AddKey(t, jose.ES256)
+	clock := newClock()
+
+	// PostgreSQL text cannot hold U+0000, and no control character belongs
+	// in an identifier, so such tokens are rejected before any user lookup.
+	tests := []struct {
+		name        string
+		subject     string
+		assertError require.ErrorAssertionFunc
+	}{
+		{name: "plain", subject: "alice"},
+		{name: "uuid", subject: "0b6c3e0e-5c1f-4c55-9d0a-2f6a3a1e7d42"},
+		{name: "spaces and punctuation", subject: "alice smith|auth0:1234@example.com"},
+		{name: "multi-byte", subject: "zoë-日本-😀"},
+		{name: "NUL", subject: "ali\x00ce", assertError: requireUnauthenticated},
+		{name: "only NUL", subject: "\x00", assertError: requireUnauthenticated},
+		{name: "escape", subject: "alice\x1b[2J", assertError: requireUnauthenticated},
+		{name: "newline", subject: "alice\nbob", assertError: requireUnauthenticated},
+		{name: "tab", subject: "alice\tbob", assertError: requireUnauthenticated},
+		{name: "DEL", subject: "alice\x7f", assertError: requireUnauthenticated},
+		{name: "C1 next line", subject: "alice\u0085", assertError: requireUnauthenticated},
+		{name: "C1 last", subject: "alice\u009f", assertError: requireUnauthenticated},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.assertError == nil {
+				test.assertError = require.NoError
+			}
+
+			users := &memoryUsers{users: map[auth.Identity]uuid.UUID{}}
+			authenticator := auth.NewAuthenticator(newVerifier(issuer, clock), users)
+
+			user, err := authenticator.AuthenticateToken(t.Context(), authtest.Sign(t, key, issuer.Claims(test.subject, clock.Now())))
+			test.assertError(t, err)
+
+			if err != nil {
+				assert.Empty(t, users.users, "no user is created for a rejected token")
+
+				return
+			}
+
+			assert.Equal(t, test.subject, user.Identity.Subject)
+			assert.Len(t, users.users, 1)
+		})
+	}
+}
+
 func TestAuthenticatorBoundsTheSubjectLength(t *testing.T) {
 	issuer := authtest.NewIssuer(t)
 	key := issuer.AddKey(t, jose.ES256)

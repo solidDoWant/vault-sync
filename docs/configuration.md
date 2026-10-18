@@ -24,7 +24,7 @@ Every RPC except `vaultsync.v1.ServerInfoService/GetServerInfo` requires an `Aut
 
 - it is at most 16 KiB;
 - it is signed with RS256, ES256 or EdDSA (never `none` or an HMAC algorithm) by a key in the issuer's key set;
-- `iss` equals `VAULT_SYNC_OIDC_ISSUER_URL`, `aud` contains `VAULT_SYNC_OIDC_AUDIENCE`, `sub` is present (at most 255 bytes), `exp` is present and not in the past (no leeway), and `nbf`, if present, is no more than one minute in the future.
+- `iss` equals `VAULT_SYNC_OIDC_ISSUER_URL`, `aud` contains `VAULT_SYNC_OIDC_AUDIENCE`, `sub` is present (at most 255 bytes, without control characters), `exp` is present and not in the past (no leeway), and `nbf`, if present, is no more than one minute in the future.
 
 Anything else gets the Connect code `unauthenticated` (HTTP 401) with no detail about the reason; the reason is logged at `debug` level. Tokens and claims are never logged.
 
