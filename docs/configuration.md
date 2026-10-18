@@ -15,6 +15,22 @@
 | `VAULT_SYNC_MAX_REQUEST_BYTES` | `1048576` (1 MiB) | Maximum size of a request body in bytes, applied both to the bytes on the wire and to the decompressed message. Allowed range: 1024 to 67108864. The default matches the 1 MiB inspected-body limit of the WAF in front of the server. |
 | `VAULT_SYNC_SHUTDOWN_TIMEOUT` | `30s` | How long in-flight requests may finish after `SIGTERM` or `SIGINT` before the remaining connections are closed. A Go duration (`30s`, `1m`); must be positive. Keep it below the pod's `terminationGracePeriodSeconds`. |
 | `VAULT_SYNC_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn` or `error`. |
+| `VAULT_SYNC_OIDC_ISSUER_URL` | (required) | OIDC issuer identifier, for example `https://auth.example.com/application/o/vault-sync/` for Authentik. Access tokens' `iss` claim must equal it exactly (including any trailing slash). The signing keys are discovered from `<issuer>/.well-known/openid-configuration`. Must be `https`; plain `http` is accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) for local development. |
+| `VAULT_SYNC_OIDC_AUDIENCE` | (required) | Audience that access tokens' `aud` claim must contain; for Authentik, the client ID of the vault-sync provider. |
+
+### Authentication
+
+Every RPC except `vaultsync.v1.ServerInfoService/GetServerInfo` requires an `Authorization: Bearer` header carrying a JWT access token from the issuer. A token is accepted only if:
+
+- it is at most 16 KiB;
+- it is signed with RS256, ES256 or EdDSA (never `none` or an HMAC algorithm) by a key in the issuer's key set;
+- `iss` equals `VAULT_SYNC_OIDC_ISSUER_URL`, `aud` contains `VAULT_SYNC_OIDC_AUDIENCE`, `sub` is present (at most 255 bytes), `exp` is present and not in the past (no leeway), and `nbf`, if present, is no more than one minute in the future.
+
+Anything else gets the Connect code `unauthenticated` (HTTP 401) with no detail about the reason; the reason is logged at `debug` level. Tokens and claims are never logged.
+
+The issuer's key set is fetched on the first authenticated request, not at startup, so the server starts even when the issuer is unreachable. It is refetched when a token names an unknown key id (key rotation) and when the cached keys are older than one hour (so withdrawn keys stop being trusted), but at most once every 30 seconds, so a flood of tokens with made-up key ids cannot amplify into requests to the issuer. A newly rotated key is therefore accepted at most 30 seconds after the previous fetch. If a refetch fails, the cached keys stay in use.
+
+The first authenticated request of a new `(issuer, subject)` pair creates its user.
 
 ### PostgreSQL TLS
 
@@ -43,7 +59,7 @@ Besides the standard Go runtime (`go_*`) and process (`process_*`) metrics:
 | `vault_sync_rpc_requests_total` | counter | `procedure`, `code` | RPCs handled, by full procedure name (for example `/vaultsync.v1.ServerInfoService/GetServerInfo`) and Connect status code (`ok`, `unimplemented`, ...). |
 | `vault_sync_rpc_request_duration_seconds` | histogram | `procedure`, `code` | Time spent handling each RPC. |
 
-Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.
+Calls rejected for authentication are counted with code `unauthenticated`. Requests rejected before reaching an RPC handler (oversized declared bodies, unknown routes, malformed messages) are not counted.
 
 ## Startup and shutdown
 

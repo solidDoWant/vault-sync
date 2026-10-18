@@ -26,7 +26,10 @@ type RegisterDeviceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Human-readable device name. Must be non-empty; the server bounds its
 	// length.
-	Name          string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// The device's X25519 public key (SPEC.md §5): exactly 32 bytes, or empty
+	// for a device registered without one.
+	PublicKey     []byte `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -66,6 +69,13 @@ func (x *RegisterDeviceRequest) GetName() string {
 		return x.Name
 	}
 	return ""
+}
+
+func (x *RegisterDeviceRequest) GetPublicKey() []byte {
+	if x != nil {
+		return x.PublicKey
+	}
+	return nil
 }
 
 // RegisterDeviceResponse returns the registered device.
@@ -118,9 +128,11 @@ var File_vaultsync_v1_device_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_device_proto_rawDesc = "" +
 	"\n" +
-	"\x19vaultsync/v1/device.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"+\n" +
+	"\x19vaultsync/v1/device.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"J\n" +
 	"\x15RegisterDeviceRequest\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\"F\n" +
+	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x02 \x01(\fR\tpublicKey\"F\n" +
 	"\x16RegisterDeviceResponse\x12,\n" +
 	"\x06device\x18\x01 \x01(\v2\x14.vaultsync.v1.DeviceR\x06device2n\n" +
 	"\rDeviceService\x12]\n" +

@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 
+	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/store"
 	"github.com/solidDoWant/vault-sync/internal/version"
@@ -60,10 +61,19 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		return 1
 	}
 
+	queries := store.New(pool)
+	verifier := auth.NewVerifier(auth.VerifierOptions{
+		IssuerURL: cfg.OIDC.IssuerURL,
+		Audience:  cfg.OIDC.Audience,
+		Logger:    logger,
+	})
+
 	srv := New(Options{
 		MaxRequestBytes: cfg.MaxRequestBytes,
 		ShutdownTimeout: cfg.ShutdownTimeout,
 		Database:        pool,
+		Authenticator:   auth.NewAuthenticator(verifier, queries),
+		Devices:         queries,
 		Logger:          logger,
 	})
 
