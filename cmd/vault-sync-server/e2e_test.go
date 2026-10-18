@@ -31,16 +31,22 @@ const (
 // TestPluginE2E runs the plugin e2e suite (plugin/wdio.conf.mts): the built
 // plugin inside a real, pinned Obsidian driven by WebdriverIO through
 // wdio-obsidian-service, against the real server binary backed by
-// PostgreSQL (and the S3-compatible store, when configured) and a fake OIDC
-// issuer. The assertions live in plugin/test/e2e/specs; this test provides
-// the server and the token and fails if the suite fails. Run it with `make
-// test-e2e` (scripts/test-e2e.sh), which starts the dependencies, builds the
-// plugin and, on Linux, provides a headless X server; see
-// docs/testing/e2e.md.
+// PostgreSQL and the S3-compatible store, and a fake OIDC issuer. The
+// assertions live in plugin/test/e2e/specs; this test provides the server
+// and the token and fails if the suite fails. Run it with `make test-e2e`
+// (scripts/test-e2e.sh), which starts the dependencies, builds the plugin
+// and, on Linux, provides a headless X server; on macOS and Windows CI wraps
+// it in scripts/with-native-s3.sh; see docs/testing/e2e.md.
 func TestPluginE2E(t *testing.T) {
 	// Unlike the integration tests, the e2e suite never skips: a run
 	// without its database would prove nothing.
 	require.NotEmpty(t, os.Getenv(testinfra.DatabaseURLEnv), "%s must point at PostgreSQL; run `make test-e2e`", testinfra.DatabaseURLEnv)
+
+	// Nor does it run without its object store: a spec that syncs content
+	// must fail, not skip, when there is nowhere to put the blobs.
+	for _, variable := range []string{testinfra.S3EndpointEnv, testinfra.S3RegionEnv, testinfra.S3AccessKeyEnv, testinfra.S3SecretKeyEnv} {
+		require.NotEmpty(t, os.Getenv(variable), "%s must be set for the S3-compatible store; run `make test-e2e`", variable)
+	}
 
 	database := testinfra.PostgresConfig(t)
 
@@ -81,22 +87,15 @@ func TestPluginE2E(t *testing.T) {
 		config.ShutdownDelayEnv + "=0s",
 	}
 
-	// The object store is optional for the server. `make test-e2e` starts
-	// one; the macOS and Windows CI runners have no Linux containers and
-	// run without it.
-	if os.Getenv(testinfra.S3EndpointEnv) != "" {
-		bucket := testinfra.S3Bucket(t)
-		serverEnv = append(serverEnv,
-			config.S3EndpointEnv+"="+bucket.Endpoint,
-			config.S3RegionEnv+"="+bucket.Region,
-			config.S3BucketEnv+"="+bucket.Bucket,
-			config.S3AccessKeyIDFileEnv+"="+bucket.AccessKeyIDFile,
-			config.S3SecretAccessKeyFileEnv+"="+bucket.SecretAccessKeyFile,
-			config.S3ForcePathStyleEnv+"=true",
-		)
-	} else {
-		t.Logf("%s is not set: the server runs without an object store", testinfra.S3EndpointEnv)
-	}
+	bucket := testinfra.S3Bucket(t)
+	serverEnv = append(serverEnv,
+		config.S3EndpointEnv+"="+bucket.Endpoint,
+		config.S3RegionEnv+"="+bucket.Region,
+		config.S3BucketEnv+"="+bucket.Bucket,
+		config.S3AccessKeyIDFileEnv+"="+bucket.AccessKeyIDFile,
+		config.S3SecretAccessKeyFileEnv+"="+bucket.SecretAccessKeyFile,
+		config.S3ForcePathStyleEnv+"=true",
+	)
 
 	logs := &bytes.Buffer{}
 	server := testinfra.NewChild(t, binary)

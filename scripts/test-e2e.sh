@@ -14,7 +14,7 @@
 # Like the simulation, the suite cannot be skipped: without Docker this
 # fails. To run against a PostgreSQL you started yourself (as CI does on
 # macOS and Windows), set VAULT_SYNC_TEST_DATABASE_URL and run
-#   go test -count=1 -tags e2e -run TestPluginE2E -v ./cmd/vault-sync-server/
+#   ./scripts/with-native-s3.sh go test -count=1 -tags e2e -run TestPluginE2E -v ./cmd/vault-sync-server/
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
