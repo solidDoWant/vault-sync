@@ -42,7 +42,7 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest 
 	./scripts/buf-breaking_test.sh
 
 .PHONY: test-integration
-test-integration: ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker).
+test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker), incl. the plugin protocol client vs the real server.
 	./scripts/test-integration.sh
 
 .PHONY: test-sim

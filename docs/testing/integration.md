@@ -40,6 +40,17 @@ The script exports these variables; set them yourself to point the tests at othe
 | `VAULT_SYNC_TEST_S3_ACCESS_KEY` | S3 access key id. |
 | `VAULT_SYNC_TEST_S3_SECRET_KEY` | S3 secret access key. |
 
+## Plugin protocol client against the real server
+
+`cmd/vault-sync-server/client_integration_test.go` (`TestPluginProtocolClient`) checks that the plugin's protocol client (`plugin/src/core/protocol`) works against a real server. The Go test:
+
+1. creates a database with `testinfra.PostgresConfig` (so it skips without Docker, like the other tests);
+2. starts a fake OIDC issuer (`internal/auth/authtest`) on a loopback port and mints a valid access token and one signed by a key the issuer never published;
+3. builds the server binary and starts it on ephemeral loopback ports, pointed at the database and the fake issuer;
+4. runs `npx vitest run --config vitest.integration.config.ts` in `plugin/`, passing the server URL and tokens in `VAULT_SYNC_IT_SERVER_URL`, `VAULT_SYNC_IT_TOKEN` and `VAULT_SYNC_IT_FOREIGN_TOKEN`, and fails unless every test in that suite ran and passed.
+
+The vitest suite (`plugin/test/integration/*.integration.test.ts`) skips itself when those variables are unset, and `plugin/vitest.config.ts` excludes it, so `make test` and plain `npm test` never touch the network. `make test-integration` installs the plugin's npm dependencies first, since the Go test needs `vitest`. To run only this test: `./scripts/test-integration.sh -run TestPluginProtocolClient -v ./cmd/vault-sync-server/`.
+
 ## Writing integration tests
 
 - Start the file with `//go:build integration`.
