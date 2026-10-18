@@ -46,6 +46,20 @@ describe("src/core import fence", () => {
     "an inline type import": 'export type A = import("obsidian").App;\n',
     "an inline type import of the adapter": 'export type A = import("../obsidian/adapter").Adapter;\n',
     "an import-equals require": 'import o = require("obsidian");\nexport const p = o;\n',
+    "a window.require of obsidian":
+      'declare const window: { require: (id: string) => unknown };\nexport const o = window.require("obsidian");\n',
+    "a globalThis.require of obsidian":
+      'declare const globalThis: { require: (id: string) => unknown };\nexport const o = globalThis.require("obsidian");\n',
+    "a module.require of obsidian":
+      'declare const module: { require: (id: string) => unknown };\nexport const o = module.require("obsidian");\n',
+    "a computed-member require of obsidian":
+      'declare const window: { require: (id: string) => unknown };\nexport const o = window["require"]("obsidian");\n',
+    "an optional member require of obsidian":
+      'declare const window: { require?: (id: string) => unknown };\nexport const o = window.require?.("obsidian");\n',
+    "a member require of the adapter":
+      'declare const window: { require: (id: string) => unknown };\nexport const o = window.require("../obsidian/adapter");\n',
+    "a member require via a template literal":
+      "declare const window: { require: (id: string) => unknown };\nexport const o = window.require(`obsidian`);\n",
   };
 
   for (const [name, source] of Object.entries(forbidden)) {
@@ -57,6 +71,11 @@ describe("src/core import fence", () => {
 
   it("allows core-internal modules whose names merely contain 'obsidian'", async () => {
     const source = 'import { a } from "./obsidian-names";\nexport const b = a;\n';
+    expect(await fenceViolations("src/core/probe.ts", source)).toEqual([]);
+  });
+
+  it("allows member requires of other modules", async () => {
+    const source = 'declare const window: { require: (id: string) => unknown };\nexport const o = window.require("electron");\n';
     expect(await fenceViolations("src/core/probe.ts", source)).toEqual([]);
   });
 

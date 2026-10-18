@@ -6,6 +6,9 @@ import tseslint from "typescript-eslint";
 // contain a literal slash, so the selector form spells it as a \u escape.
 const OBSIDIAN_SPECIFIER = "(^|/)obsidian(/|$)";
 const OBSIDIAN_SELECTOR_REGEX = `/${OBSIDIAN_SPECIFIER.replaceAll("/", "\\u002F")}/`;
+// A call whose callee is `require` itself or a member named `require`
+// (window.require, globalThis.require, module.require, x["require"]).
+const REQUIRE_CALLEE = ":matches([callee.name='require'], [callee.property.name='require'], [callee.property.value='require'])";
 const OBSIDIAN_MESSAGE = "src/core must not depend on Obsidian or src/obsidian; go through VaultAdapter.";
 
 export default tseslint.config(
@@ -36,12 +39,12 @@ export default tseslint.config(
           `ImportExpression[source.value=${OBSIDIAN_SELECTOR_REGEX}]`,
           // import(`obsidian`)
           `ImportExpression > TemplateLiteral.source > TemplateElement[value.cooked=${OBSIDIAN_SELECTOR_REGEX}]`,
-          // require("obsidian")
-          `CallExpression[callee.name='require'][arguments.0.value=${OBSIDIAN_SELECTOR_REGEX}]`,
-          // require(`obsidian`)
-          `CallExpression[callee.name='require'] > TemplateLiteral.arguments > TemplateElement[value.cooked=${OBSIDIAN_SELECTOR_REGEX}]`,
+          // require("obsidian"), window.require("obsidian"), module["require"]("obsidian")
+          `CallExpression${REQUIRE_CALLEE}[arguments.0.value=${OBSIDIAN_SELECTOR_REGEX}]`,
+          // require(`obsidian`) and its member forms
+          `CallExpression${REQUIRE_CALLEE} > TemplateLiteral.arguments > TemplateElement[value.cooked=${OBSIDIAN_SELECTOR_REGEX}]`,
           // type T = import("obsidian").App
-          `TSImportType[argument.literal.value=${OBSIDIAN_SELECTOR_REGEX}]`,
+          `TSImportType[source.value=${OBSIDIAN_SELECTOR_REGEX}]`,
         ].map((selector) => ({ selector, message: OBSIDIAN_MESSAGE })),
       ],
     },
