@@ -4,8 +4,6 @@ package main_test
 
 import (
 	"bytes"
-	"io"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -80,13 +78,9 @@ func TestPluginE2E(t *testing.T) {
 	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "plugin-e2e-device-user"})
 
 	binary := testinfra.BuildServer(t, repoRoot)
-	apiAddress := testinfra.FreeAddress(t)
-	metricsAddress := testinfra.FreeAddress(t)
 
 	serverEnv := []string{
 		config.DatabaseURLEnv + "=" + database.DSN,
-		config.ListenAddressEnv + "=" + apiAddress,
-		config.MetricsListenAddressEnv + "=" + metricsAddress,
 		config.OIDCIssuerURLEnv + "=" + issuer.URL,
 		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 		config.LogLevelEnv + "=warn",
@@ -104,36 +98,33 @@ func TestPluginE2E(t *testing.T) {
 		config.S3ForcePathStyleEnv+"=true",
 	)
 
-	logs := &bytes.Buffer{}
-	server := testinfra.NewChild(t, binary)
-	// The OS environment (Windows needs SYSTEMROOT and friends) without
-	// any VAULT_SYNC_* settings of the caller, then the test's own.
-	server.Command.Env = append(withoutServerSettings(os.Environ()), serverEnv...)
-	server.Command.Stdout = logs
-	server.Command.Stderr = logs
+	// Starts a new process, with new addresses, if another process took
+	// one of the ports first.
+	apiAddress := testinfra.StartServer(t, "server", 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
+		logs := &bytes.Buffer{}
+		server := testinfra.NewChild(t, binary)
+		// The OS environment (Windows needs SYSTEMROOT and friends) without
+		// any VAULT_SYNC_* settings of the caller, then the test's own.
+		server.Command.Env = append(withoutServerSettings(os.Environ()), serverEnv...)
+		server.Command.Env = append(server.Command.Env,
+			config.ListenAddressEnv+"="+addresses.API,
+			config.MetricsListenAddressEnv+"="+addresses.Metrics,
+		)
+		server.Command.Stdout = logs
+		server.Command.Stderr = logs
 
-	// Registered before the server's cleanup, so it runs after the server
-	// has been stopped and its output collected.
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server logs:\n%s", logs.String())
-		}
-	})
+		// Registered before the server's cleanup, so it runs after the
+		// server has been stopped and its output collected.
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("server logs:\n%s", logs.String())
+			}
+		})
 
-	server.Start(t)
+		server.Start(t)
 
-	require.Eventually(t, func() bool {
-		response, err := http.Get("http://" + metricsAddress + "/readyz")
-		if err != nil {
-			return false
-		}
-
-		defer func() { _ = response.Body.Close() }()
-
-		_, _ = io.Copy(io.Discard, response.Body)
-
-		return response.StatusCode == http.StatusOK
-	}, 60*time.Second, 50*time.Millisecond, "server must become ready")
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String}
+	}).API
 
 	suite := testinfra.NewChild(t, "node", wdio, "run", "wdio.conf.mts")
 	suite.Command.Dir = pluginDir
