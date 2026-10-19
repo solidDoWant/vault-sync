@@ -1,11 +1,11 @@
 // An engine-backed client for the simulation: the real plugin/src/core
 // SyncEngine over an in-memory vault and journal, talking to the real server
-// through the simulated network and its faults. In seeded runs it only pulls
-// (#16): it never edits locally, so after the run its vault must equal the
-// server's live heads, it must report no local changes (echo suppression), and
-// it must have deferred nothing. Scripted scenarios also edit its vault and
-// push (#17), with several engines editing concurrently (#18); random engine
-// edits are #22. Its vault and journal survive a
+// through the simulated network and its faults. It pulls (#16) and pushes
+// (#17), with several engines editing concurrently (#18). In seeded runs its
+// user (EngineUser) makes random changes (#22); scripted scenarios make
+// theirs. After the run its vault must equal the server's live heads, it must
+// report none of its own writes as local changes (echo suppression), and it
+// must have deferred nothing. Its vault and journal survive a
 // crash (they are a device's disk), while the engine itself, and everything it
 // had in flight, does not.
 //
@@ -30,7 +30,11 @@ import type { VaultEvent } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
+import { EngineUser } from "./engine-user";
+import { UserLedger } from "./invariants";
 import { errorCode } from "./network";
+import { Random } from "./random";
+import type { EngineOperation } from "./schedule";
 
 /** Revisions per ListChanges page; small, so pulls page. */
 const pageSize = 7;
@@ -62,6 +66,11 @@ export class EngineObserver {
   private readonly localChanges: VaultEvent[] = [];
   /** Paths the scenario edited as the user: their events are expected local changes. */
   private readonly userEdited = new Set<string>();
+  /** What the user did, for the lost-write and phantom-delete checks (sim/invariants.ts). */
+  readonly ledger = new UserLedger();
+  private readonly user: EngineUser;
+  /** The last push that completed. */
+  lastPush: PushSummary | undefined;
   /** The merge hook of the engine (and of the engines after a crash); the default is the engine's, threeWayMerge. */
   merge: MergeHook | undefined;
 
@@ -69,13 +78,26 @@ export class EngineObserver {
     /** The observer's index in the simulated network (after the scripted clients). */
     readonly index: number,
     private readonly api: ProtocolClient,
-    private readonly deviceId: string,
+    readonly deviceId: string,
     private readonly context: RunContext,
     /** The platform whose path rules the engine and its vault follow. */
     readonly platform: PathPlatform = "posix",
   ) {
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.engine = this.createEngine();
+    this.user = new EngineUser({
+      name: this.name,
+      vault: this.vault,
+      journal: this.journal,
+      ledger: this.ledger,
+      now: () => `step ${String(context.stepNumber())}`,
+      touched: (path) => this.userEdited.add(path),
+    });
+  }
+
+  /** The user changes the vault (seeded with `arg`), or the engine starts a push; returns the trace entry. Never waits for the engine. */
+  async userOperation(operation: EngineOperation, arg: number): Promise<string> {
+    return operation === "push" ? this.startPush() : this.user.perform(operation, new Random(arg));
   }
 
   get name(): string {
@@ -118,19 +140,16 @@ export class EngineObserver {
 
   /** Writes `content` to the observer's vault as its user would; the engine pushes it on the next push. */
   async edit(path: string, content: Uint8Array): Promise<string> {
-    this.userEdited.add(path);
-    await this.vault.write(path, content);
+    const entry = await this.user.write(path, content);
     await this.engine.settled();
-    return `${this.name} user writes ${path} (${String(content.length)} B)`;
+    return entry;
   }
 
   /** Renames `from` to `to` in the observer's vault as its user would. */
   async move(from: string, to: string): Promise<string> {
-    this.userEdited.add(from);
-    this.userEdited.add(to);
-    await this.vault.rename(from, to);
+    const entry = await this.user.rename(from, to);
     await this.engine.settled();
-    return `${this.name} user renames ${from} to ${to}`;
+    return entry;
   }
 
   /** Renames the folder `from` to `to` as its user would; reported as a rename of every file in it, as Obsidian reports it. */
@@ -147,10 +166,27 @@ export class EngineObserver {
 
   /** Deletes `path` from the observer's vault as its user would. */
   async remove(path: string): Promise<string> {
-    this.userEdited.add(path);
+    const entry = await this.user.remove(path);
+    await this.engine.settled();
+    return entry;
+  }
+
+  /**
+   * Mutation for the harness's own tests (sim/invariants.sim.test.ts):
+   * overwrites `path` behind the user's back, as an engine that loses a user
+   * write would. The user never sees it, so it replaces nothing in the ledger.
+   */
+  async overwriteBehindUser(path: string, content: Uint8Array): Promise<string> {
+    await this.vault.write(path, content);
+    await this.engine.settled();
+    return `${this.name} MUTATION: ${path} overwritten behind the user's back`;
+  }
+
+  /** Mutation for the harness's own tests: deletes `path` behind the user's back, as an engine that drops a file would. */
+  async deleteBehindUser(path: string): Promise<string> {
     await this.vault.delete(path);
     await this.engine.settled();
-    return `${this.name} user deletes ${path}`;
+    return `${this.name} MUTATION: ${path} deleted behind the user's back`;
   }
 
   /** The engine's conflict log. */
@@ -177,6 +213,7 @@ export class EngineObserver {
       .push()
       .then(
         (summary: PushSummary) => {
+          this.lastPush = summary;
           this.context.log(`${this.name} pushed: ${String(summary.committed)} committed, ${String(summary.conflicts)} conflicts, ${String(summary.pending)} pending`);
         },
         (error: unknown) => {
@@ -209,6 +246,8 @@ export class EngineObserver {
     const files = new Map<string, string>();
     for (const path of await this.vault.list()) files.set(path, sha256Hex(await this.vault.read(path)));
     const unmaterializable = await this.unmaterializable();
+    // Where the engine keeps an unmaterializable document's edited file (SPEC.md §8): not a live path, and not to be removed.
+    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath === undefined ? [] : [document.localPath])));
     for (const [path, hash] of heads.files) {
       const local = files.get(path);
       const expectedMissing = harnessUnmaterializable(path, this.platform);
@@ -225,7 +264,7 @@ export class EngineObserver {
       if (!heads.files.has(path)) violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} reports ${path}, which is not a live document's path` });
     }
     for (const path of files.keys()) {
-      if (!heads.files.has(path)) violations.push({ invariant: "engine-convergence", detail: `${this.name} holds ${path}, which is not a live document` });
+      if (!heads.files.has(path) && !kept.has(path)) violations.push({ invariant: "engine-convergence", detail: `${this.name} holds ${path}, which is not a live document` });
     }
     const cursor = await this.journal.getCursor();
     if (cursor !== heads.lastSeq) violations.push({ invariant: "engine-convergence", detail: `${this.name} cursor is ${String(cursor)}, the feed ends at ${String(heads.lastSeq)}` });
@@ -264,7 +303,16 @@ export class EngineObserver {
         });
         this.context.log(`${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`);
       },
-      merge: (request) => (this.merge ?? threeWayMerge)(request),
+      merge: async (request) => {
+        const outcome = await (this.merge ?? threeWayMerge)(request);
+        // What the merge path made of the local content: it survives there (sim/invariants.ts).
+        if (outcome.status === "merged" && request.local.content !== null) {
+          const local = sha256Hex(request.local.content);
+          if (outcome.content !== null) this.ledger.merged(local, sha256Hex(outcome.content));
+          if (outcome.conflict !== undefined) this.ledger.merged(local, sha256Hex(outcome.conflict.content));
+        }
+        return outcome;
+      },
       deviceName: this.name,
       now: () => simDate,
       // The simulation decides when the engine pushes.

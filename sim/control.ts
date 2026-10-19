@@ -14,6 +14,12 @@ export interface RegressionCase {
   name: string;
   seed: number;
   clients: number;
+  /**
+   * Engines, each with a user making random changes, following
+   * seededPlatforms(seed, engines). Absent in cases recorded before #22: one
+   * engine without a user.
+   */
+  engines?: number;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];

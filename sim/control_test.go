@@ -31,6 +31,7 @@ type regressionCase struct {
 	Name       string          `json:"name"`
 	Seed       int64           `json:"seed"`
 	Clients    int             `json:"clients"`
+	Engines    int             `json:"engines,omitempty"`
 	Violations []violation     `json:"violations"`
 	Steps      json.RawMessage `json:"steps"`
 }

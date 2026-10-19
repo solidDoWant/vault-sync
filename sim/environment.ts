@@ -14,6 +14,8 @@ export interface SimEnvironment extends SimEndpoints {
   steps: number;
   /** Simulated clients per run (SIM_CLIENTS). */
   clients: number;
+  /** Engines per seeded run, each with a user making random changes (SIM_ENGINES). */
+  engines: number;
   /** Most runs spent minimizing one failing seed (SIM_SHRINK_RUNS). */
   shrinkRuns: number;
   /** Committed regression cases (sim/regressions/*.json), replayed every run. */
