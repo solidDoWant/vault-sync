@@ -7,7 +7,8 @@
 # Tuning (environment): SIM_SEEDS, SIM_FIRST_SEED, SIM_SEED, SIM_STEPS,
 # SIM_CLIENTS, SIM_ENGINES, SIM_SHRINK_RUNS, SIM_REGRESSION_DIR (relative to the repository
 # root; a missing or empty directory fails the run); SIM_TIMEOUT bounds the
-# whole run (default 60m). Extra arguments are passed to `go test`.
+# whole run (default 15m; a longer deliberate run sets it explicitly -- a hung
+# seed must not hold an agent for an hour). Extra arguments are passed to `go test`.
 #
 # Unlike the integration tests, the simulation cannot be skipped: without
 # Docker this fails.
@@ -20,4 +21,4 @@ if ! docker info >/dev/null 2>&1; then
 	exit 1
 fi
 
-exec ./scripts/with-test-stack.sh go test -count=1 -tags sim -timeout "${SIM_TIMEOUT:-60m}" -v "$@" ./sim/
+exec ./scripts/with-test-stack.sh go test -count=1 -tags sim -timeout "${SIM_TIMEOUT:-15m}" -v "$@" ./sim/
