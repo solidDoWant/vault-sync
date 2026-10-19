@@ -81,7 +81,7 @@ export class EngineObserver {
   /** Paths the scenario edited as the user: their events are expected local changes. */
   private readonly userEdited = new Set<string>();
   /** What the user did, for the lost-write and phantom-delete checks (sim/invariants.ts). */
-  readonly ledger = new UserLedger();
+  readonly ledger: UserLedger;
   private readonly user: EngineUser;
   /** The last push that completed. */
   lastPush: PushSummary | undefined;
@@ -105,6 +105,7 @@ export class EngineObserver {
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
+    this.ledger = new UserLedger(platform);
     this.user = new EngineUser({
       name: this.name,
       vault: this.vault,
@@ -345,6 +346,7 @@ export class EngineObserver {
   /** The app is killed: the engine and its in-flight calls are gone; the vault and journal remain. */
   crash(): string {
     this.context.network.crash(this.index);
+    this.ledger.crashed(this.context.serverSeq());
     this.engine.dispose();
     this.engine = this.createEngine();
     this.busy = false;

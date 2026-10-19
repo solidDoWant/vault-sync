@@ -142,7 +142,7 @@ describe("checkPhantomDeletes", () => {
     ...overrides,
   });
   const label = (id: string) => id;
-  const engine = (deleted: string[]) => [{ name: "e1", deviceId: "engine", deletedDocuments: new Set(deleted) }];
+  const engine = (deleted: string[]) => [{ name: "e1", deviceId: "engine", deletedDocuments: new Set(deleted), platform: "posix" as const, renames: [], crashes: [] }];
 
   it("accepts tombstones of scripted clients and of documents the engine's user deleted", () => {
     const feed = [revision({}), revision({ seq: 2n, deleted: true, deviceId: "scripted" }), revision({ seq: 3n, documentId: "d2", deleted: true })];
@@ -163,6 +163,94 @@ describe("checkPhantomDeletes", () => {
 
   it("ignores live revisions", () => {
     expect(checkPhantomDeletes([revision({ deviceId: "stranger" })], new Set(), [], label)).toEqual([]);
+  });
+
+  // #167 item 2, #280: the user renames synced d1 (content aa) from a.md to
+  // b.md, the app is killed (head seq 1) before the engine records the
+  // rename, and the restart's full scan pushes a tombstone of d1 plus a new
+  // document d2 at b.md with the same content.
+  describe("given a rename the engine lost to a crash", () => {
+    const tombstone = revision({ revisionId: "r2", seq: 2n, deleted: true });
+    const create = revision({ revisionId: "r3", documentId: "d2", seq: 3n, path: "b.md" });
+    /** e1's user renamed a.md (d1's file, content aa) to b.md; `then` runs after it; by default the app is then killed at head seq 1. */
+    const lostRename = (options: { documents?: string[]; then?: (ledger: UserLedger) => void; crash?: bigint | null; platform?: "posix" | "windows" } = {}) => {
+      const ledger = new UserLedger(options.platform ?? "posix");
+      ledger.renamed("a.md", "b.md", new Set(options.documents ?? ["d1"]), "aa");
+      options.then?.(ledger);
+      if (options.crash !== null) ledger.crashed(options.crash ?? 1n);
+      return [{ name: "e1", deviceId: "engine", deletedDocuments: ledger.deletedDocuments, platform: ledger.platform, renames: ledger.renames, crashes: ledger.crashes }];
+    };
+    const phantoms = (feed: FeedRevision[], engines: ReturnType<typeof lostRename>) => checkPhantomDeletes(feed, new Set(["scripted"]), engines, label).map((violation) => violation.detail);
+    const reported = ["e1 deleted d1 at a.md (seq 2, r2) although its user never deleted it"];
+
+    it("excuses the tombstone when the engine created the renamed file at its new path as a new document after the crash", () => {
+      expect(phantoms([revision({}), tombstone, create], lostRename())).toEqual([]);
+      // The create may come first.
+      expect(phantoms([revision({}), revision({ ...create, seq: 2n }), revision({ ...tombstone, seq: 3n })], lostRename())).toEqual([]);
+    });
+
+    it("follows the renamed file through the user's later renames and edits until the user deletes it", () => {
+      const later = (ledger: UserLedger) => {
+        ledger.write({ hash: "bb", path: "b.md", at });
+        ledger.renamed("b.md", "c.md", new Set(), "bb");
+        ledger.write({ hash: "cc", path: "c.md", at });
+      };
+      expect(phantoms([revision({}), tombstone, revision({ ...create, path: "c.md", contentHash: "cc" })], lostRename({ then: later }))).toEqual([]);
+      expect(phantoms([revision({}), tombstone, revision({ ...create, path: "c.md", contentHash: "bb" })], lostRename({ then: later }))).toEqual([]);
+      // Never content or a path the file did not have.
+      expect(phantoms([revision({}), tombstone, revision({ ...create, path: "c.md", contentHash: "dd" })], lostRename({ then: later }))).toEqual(reported);
+      expect(phantoms([revision({}), tombstone, revision({ ...create, path: "d.md", contentHash: "cc" })], lostRename({ then: later }))).toEqual(reported);
+      // Deleted, the file is followed no further: what is written at its path later is another file.
+      const deleted = (ledger: UserLedger) => {
+        ledger.deleted("b.md");
+        ledger.write({ hash: "ee", path: "b.md", at });
+      };
+      expect(phantoms([revision({}), tombstone, revision({ ...create, contentHash: "ee" })], lostRename({ then: deleted }))).toEqual(reported);
+    });
+
+    it("matches paths as the platform does", () => {
+      expect(phantoms([revision({}), tombstone, revision({ ...create, path: "B.md" })], lostRename({ platform: "windows" }))).toEqual([]);
+      expect(phantoms([revision({}), tombstone, revision({ ...create, path: "B.md" })], lostRename())).toEqual(reported);
+    });
+
+    it("excuses it when the engine took the renamed file for a document whose file the user deleted at that path (#254)", () => {
+      const replaced = revision({ revisionId: "r3", documentId: "d2", seq: 3n, path: "b.md" });
+      const feed = [revision({}), revision({ revisionId: "r0", documentId: "d2", seq: 0n, path: "b.md", contentHash: "cc" }), tombstone, replaced];
+      expect(phantoms(feed, lostRename({ then: (ledger) => ledger.deletedDocuments.add("d2") }))).toEqual([]);
+      // Not when the user never deleted that document: then it is an edit of a document that existed before.
+      expect(phantoms(feed, lostRename())).toEqual(reported);
+    });
+
+    it("still reports a genuine phantom delete: no rename, or a rename of another document", () => {
+      const noRename = new UserLedger();
+      noRename.crashed(1n);
+      expect(phantoms([revision({}), tombstone, create], [{ name: "e1", deviceId: "engine", deletedDocuments: new Set(), platform: "posix", renames: noRename.renames, crashes: noRename.crashes }])).toEqual(reported);
+      expect(phantoms([revision({}), tombstone, create], lostRename({ documents: ["d9"] }))).toEqual(reported);
+    });
+
+    it("reports it when the engine did not crash after the rename, or the tombstone came before the crash", () => {
+      expect(phantoms([revision({}), tombstone, create], lostRename({ crash: null }))).toEqual(reported);
+      // Killed before the user renamed the file: the running engine saw the rename.
+      const crashedFirst = new UserLedger();
+      crashedFirst.crashed(1n);
+      crashedFirst.renamed("a.md", "b.md", new Set(["d1"]), "aa");
+      expect(phantoms([revision({}), tombstone, create], [{ name: "e1", deviceId: "engine", deletedDocuments: new Set(), platform: "posix", renames: crashedFirst.renames, crashes: crashedFirst.crashes }])).toEqual(reported);
+      // Committed before the app was killed (head seq 2 at the crash): the running engine lost the rename.
+      expect(phantoms([revision({}), tombstone, create], lostRename({ crash: 2n }))).toEqual(reported);
+    });
+
+    it("reports it when the engine did not commit the renamed file as another document after the crash", () => {
+      // Nothing created.
+      expect(phantoms([revision({}), tombstone], lostRename())).toEqual(reported);
+      // Created by another device.
+      expect(phantoms([revision({}), tombstone, revision({ ...create, deviceId: "scripted" })], lostRename())).toEqual(reported);
+      // A tombstone, not a create.
+      expect(phantoms([revision({}), tombstone, revision({ ...create, deleted: true })], lostRename())).toEqual([...reported, "e1 deleted d2 at b.md (seq 3, r3) although its user never deleted it"]);
+      // The tombstoned document itself.
+      expect(phantoms([revision({}), tombstone, revision({ ...create, documentId: "d1", seq: 4n })], lostRename())).toEqual(reported);
+      // Created before the crash.
+      expect(phantoms([revision({}), revision({ ...create, seq: 1n }), revision({ ...tombstone, seq: 3n })], lostRename({ crash: 2n }))).toEqual(["e1 deleted d1 at a.md (seq 3, r2) although its user never deleted it"]);
+    });
   });
 });
 

@@ -487,6 +487,236 @@ describe("SyncEngine structural operations (SPEC.md §6.3)", () => {
       expect(await files(devices.b.vault)).toEqual(expected);
     });
   });
+
+  describe("given renames the engine has seen but not pushed yet (#280)", () => {
+    it("pushes a rename of a synced file whose path an untracked file was renamed to and deleted from before", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("n.md", bytes(lines("untracked")));
+      await h.vault.rename("n.md", "p.md");
+      await h.vault.delete("p.md");
+      // Another device's note arrives at the freed path, and the user renames it.
+      h.server.commit({ documentId: "theirs", path: "p.md", content: lines("theirs") });
+      await h.engine.pull();
+      await h.vault.rename("p.md", "q.md");
+
+      await h.engine.push();
+      await h.engine.push();
+
+      expect(h.server.liveDocuments()).toEqual(new Map([["q.md", "theirs"]]));
+      expect(h.server.liveFiles()).toEqual(new Map([["q.md", lines("theirs")]]));
+      expect(h.server.history("theirs").every((revision) => !revision.deleted)).toBe(true);
+      expect(await files(h.vault)).toEqual(new Map([["q.md", lines("theirs")]]));
+    });
+
+    it("moves a file renamed in this push aside under its own id when a merge in the same push needs its new path", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("a.md", bytes(lines("a")));
+      await h.vault.write("c.md", bytes(lines("c")));
+      await h.engine.push();
+      const ids = h.server.liveDocuments();
+      const [renamed, other] = [ids.get("a.md") ?? "", ids.get("c.md") ?? ""];
+      await h.vault.delete("c.md");
+      await h.vault.rename("a.md", "b.md");
+      // Between this push's pull and its first commit (the delete), another
+      // device renames the deleted note to b.md and edits it: the edit wins
+      // over the delete, and the note needs b.md, where the push's own
+      // rename put the other note.
+      let moved = false;
+      h.server.interceptor = (method) => {
+        if (method !== "CommitRevision" || moved) return;
+        moved = true;
+        h.server.commit({ documentId: other, path: "b.md", content: lines("c", "edited") });
+      };
+
+      for (let push = 0; push < 4; push++) await h.engine.push();
+
+      const copy = copyOf("b", ".md");
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["b.md", other],
+          [copy, renamed],
+        ]),
+      );
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["b.md", lines("c", "edited")],
+          [copy, lines("a")],
+        ]),
+      );
+      expect(h.server.history(renamed).every((revision) => !revision.deleted)).toBe(true);
+      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: renamed, reason: "path-taken", path: "b.md", copyPath: copy }]);
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    });
+
+    it("never commits the rename this push found once a merge in the same push moved the file aside, even when the path is free again", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("a.md", bytes(lines("a")));
+      await h.vault.write("c.md", bytes(lines("c")));
+      await h.engine.push();
+      const ids = h.server.liveDocuments();
+      const [renamed, other] = [ids.get("a.md") ?? "", ids.get("c.md") ?? ""];
+      await h.vault.delete("c.md");
+      await h.vault.rename("a.md", "b.md");
+      // As above, and before the push's next commit the other device moves
+      // the note on from b.md, so the server would take a rename to b.md.
+      let commits = 0;
+      h.server.interceptor = (method) => {
+        if (method !== "CommitRevision") return;
+        commits++;
+        if (commits === 1) h.server.commit({ documentId: other, path: "b.md", content: lines("c", "edited") });
+        if (commits === 2) h.server.commit({ documentId: other, path: "d.md" });
+      };
+
+      for (let push = 0; push < 4; push++) await h.engine.push();
+
+      const copy = copyOf("b", ".md");
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["d.md", other],
+          [copy, renamed],
+        ]),
+      );
+      expect(h.server.history(renamed).every((revision) => !revision.deleted)).toBe(true);
+      expect(h.server.history(renamed).map((revision) => new TextDecoder().decode(revision.path))).not.toContain("b.md");
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    });
+
+    it("pushes a rename of a new file the user renames while its create is being committed", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("s.md", bytes(lines("new")));
+      let renamed = false;
+      h.server.interceptor = (method) => {
+        if (method !== "CommitRevision" || renamed) return;
+        renamed = true;
+        void h.vault.rename("s.md", "a.md");
+      };
+
+      for (let push = 0; push < 3; push++) await h.engine.push();
+
+      // One document, created and renamed: never deleted and created again.
+      const documents = new Set(h.acknowledged.map((revision) => revision.documentId));
+      expect(documents.size).toBe(1);
+      expect(h.acknowledged.filter((revision) => revision.deleted)).toEqual([]);
+      expect(h.server.liveDocuments()).toEqual(new Map([["a.md", [...documents][0]]]));
+      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("new")]]));
+    });
+
+    it.each([
+      { outcome: "lands", lost: false },
+      { outcome: "is lost, so a later push retries it", lost: true },
+    ])("pushes a rename on of a file whose rename this push commits, when the commit $outcome", async ({ lost }) => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("x.md", bytes(lines("x")));
+      await h.vault.write("e.md", bytes(lines("e")));
+      await h.engine.push();
+      const moved = h.server.liveDocuments().get("x.md") ?? "";
+      await h.vault.rename("x.md", "c.md");
+      await h.vault.write("e.md", bytes(lines("e", "edited in the same push")));
+      // The user renames the file on while this push commits its rename.
+      let renamed = false;
+      h.server.interceptor = (method) => {
+        if (method !== "CommitRevision" || renamed) return;
+        renamed = true;
+        void h.vault.rename("c.md", "b.md");
+        if (lost) throw new ConnectError("unavailable", Code.Unavailable);
+      };
+
+      for (let push = 0; push < 4; push++) await h.engine.push().catch(() => undefined);
+
+      expect(h.server.liveDocuments().get("b.md")).toBe(moved);
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["b.md", lines("x")],
+          ["e.md", lines("e", "edited in the same push")],
+        ]),
+      );
+      expect(h.server.history(moved).every((revision) => !revision.deleted)).toBe(true);
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    });
+
+    it("pushes a rename of a new file the user renames while a later push retries its create, without taking it for a delete", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("s.md", bytes(lines("new")));
+      // The create's commit is lost, so it stays pending, and the next push
+      // (still a full scan of the vault) retries it while the user renames
+      // the file.
+      let failing = true;
+      let renamed = false;
+      h.server.interceptor = (method) => {
+        if (method !== "CommitRevision") return;
+        if (failing) throw new ConnectError("unavailable", Code.Unavailable);
+        if (renamed) return;
+        renamed = true;
+        void h.vault.rename("s.md", "a.md");
+      };
+      await expect(h.engine.push()).rejects.toThrow();
+      failing = false;
+
+      for (let push = 0; push < 3; push++) await h.engine.push();
+
+      // One document, created and renamed: never deleted and created again.
+      const documents = new Set(h.acknowledged.map((revision) => revision.documentId));
+      expect(documents.size).toBe(1);
+      expect(h.acknowledged.filter((revision) => revision.deleted)).toEqual([]);
+      expect(h.server.liveDocuments()).toEqual(new Map([["a.md", [...documents][0]]]));
+      expect(await files(h.vault)).toEqual(new Map([["a.md", lines("new")]]));
+    });
+
+    it("pushes a rename of a new file renamed before and after a push that failed", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("u.md", bytes(lines("new")));
+      await h.vault.rename("u.md", "c.md");
+      // The push records the create at c.md and loses its commit.
+      h.server.interceptor = (method) => {
+        if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+      };
+      await expect(h.engine.push()).rejects.toThrow();
+      h.server.interceptor = undefined;
+      await h.vault.rename("c.md", "b.md");
+
+      for (let push = 0; push < 3; push++) await h.engine.push();
+
+      // One document, created and renamed: never deleted and created again.
+      const documents = new Set(h.acknowledged.map((revision) => revision.documentId));
+      expect(documents.size).toBe(1);
+      expect(h.acknowledged.filter((revision) => revision.deleted)).toEqual([]);
+      expect(h.server.liveDocuments()).toEqual(new Map([["b.md", [...documents][0]]]));
+      expect(await files(h.vault)).toEqual(new Map([["b.md", lines("new")]]));
+    });
+
+    it("pushes a rename of a file the user moved on while its earlier rename was refused for a path another document took", async () => {
+      const h = harness({ merge: "default" });
+      await h.vault.write("x.md", bytes(lines("x")));
+      await h.engine.push();
+      const moved = h.server.liveDocuments().get("x.md") ?? "";
+      await h.vault.rename("x.md", "c.md");
+      // While the rename's commit is on its way, another device creates c.md,
+      // so the server refuses the rename, and the user renames the file on.
+      let refused = false;
+      h.server.interceptor = (method) => {
+        if (method !== "CommitRevision" || refused) return;
+        refused = true;
+        h.server.commit({ documentId: "theirs", path: "c.md", content: lines("theirs") });
+        void h.vault.rename("c.md", "b.md");
+      };
+
+      for (let push = 0; push < 4; push++) await h.engine.push();
+
+      expect(h.server.liveDocuments()).toEqual(
+        new Map([
+          ["b.md", moved],
+          ["c.md", "theirs"],
+        ]),
+      );
+      expect(h.server.history(moved).every((revision) => !revision.deleted)).toBe(true);
+      expect(await files(h.vault)).toEqual(
+        new Map([
+          ["b.md", lines("x")],
+          ["c.md", lines("theirs")],
+        ]),
+      );
+    });
+  });
 });
 
 /** Two devices over a server that also refuses file/folder path collisions (#134). */
