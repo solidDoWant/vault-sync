@@ -16,12 +16,14 @@ You implement exactly one GitHub issue in this repository, working in your own g
 6. **Verify.**
    - **Prove your tests have teeth.** For each acceptance criterion, temporarily break the implementation (revert the fix, invert a condition, drop a check) and confirm a test fails; restore it. List these mutations and the failing test names in the PR body. Never derive expected values from the code under test (e.g. a table the implementation also reads); for limits and boundaries, test exactly N and N+1.
    - Timing- or concurrency-sensitive tests must pass `-count=50 -race` (or the vitest equivalent) locally — the VM is shared with other agents, so anything marginal will flake in CI.
-   - `nix develop -c make fmt lint test` must pass. Also run `make test-integration`, `make test-sim`, or `make test-e2e` when your change touches what they cover. Tick each acceptance-criterion checkbox in the issue body only after its test passed.
+   - `make fmt lint test` must pass. Also run `make test-integration`, `make test-sim`, or `make test-e2e` when your change touches what they cover. Tick each acceptance-criterion checkbox in the issue body only after its test passed.
 7. **Commit and push.** Conventional commits; stage explicit paths. Push the branch.
 8. **PR.** New: `gh pr create --base master --title "<type>(<scope>): <summary>" --body-file <file>` with `Fixes #<N>`, a summary, how each criterion is tested (including the mutations from step 6), any `SPEC.md` principle the change touches, and any verification you skipped and why. Existing: reply to each review finding with what changed (or why not), then push. **Do not wait for CI** after opening or updating the PR (no `gh pr checks --watch`): local `make lint test` (plus the relevant integration/sim/e2e targets) is your gate, and the project manager dispatches a reviewer once CI finishes. Return as soon as the PR is pushed.
 9. **Report back** to the project manager: PR number, status of each acceptance criterion, verification run/skipped, open questions, and anything the PM should log as a decision.
 
 ## Rules
+
+- **Time box.** If you have been working for ~45 minutes and the issue is not done, commit and push what you have, open (or update) the PR as a **draft** describing what is left, and report back to the project manager instead of continuing — a single long-running worker holds the whole cycle open.
 
 - Never push to `master`, never merge your own PR, never modify acceptance tests to make them pass.
 - Never weaken lint/CI configuration to get green.
