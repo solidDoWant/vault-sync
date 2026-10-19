@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, remoteRenameOntoLocalFolder } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -844,6 +844,41 @@ describe.runIf(suites.has("scenarios"))("scripted file/folder rule scenarios (#3
     expect(result.tombstoned, trace).toEqual([]);
     // The case-insensitive engine never sent the same refused commit push after push.
     expect(result.pushes.filter((line) => line.endsWith("0 committed, 1 conflicts, 1 pending")).length, trace).toBeLessThanOrEqual(1);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted remote edit of a vacated path (#253)", () => {
+  it.each([
+    { platform: "macos", timing: "before-push" },
+    { platform: "macos", timing: "while-pushing" },
+    { platform: "windows", timing: "before-push" },
+    { platform: "windows", timing: "while-pushing" },
+  ] as const)("keeps the remote edit of a.md and the id of the note renamed onto A.md, with nothing left pending, under $platform rules ($timing)", async ({ platform, timing }) => {
+    const result = await remoteEditOfVacatedPath(environment, platform, timing);
+    const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const h = result.before.get("a.md");
+    const d = result.before.get("d.md");
+    expect(h, trace).toBeDefined();
+    expect(d, trace).toBeDefined();
+    // The edit wins over the delete: H stays live at a.md with the remote edit.
+    expect(result.documents.get("a.md"), trace).toBe(h);
+    // D keeps its id and content, at a conflict-copy path of the name it was renamed to.
+    const dPaths = [...result.documents].filter(([, document]) => document === d).map(([path]) => path);
+    expect(dPaths, trace).toEqual([expect.stringMatching(/^A \(conflict .*\)\.md$/)]);
+    const dPath = dPaths[0] ?? "";
+    const expected = new Map([
+      ["a.md", "h\nremote edit\n"],
+      [dPath, "d\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents.size, trace).toBe(2);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.conflicts, trace).toEqual([{ reason: "path-taken", path: "A.md", copyPath: dPath, document: d }]);
+    // Nothing stays pending: the case-insensitive engine's last push had nothing left to do.
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
 
