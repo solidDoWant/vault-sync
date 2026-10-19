@@ -1838,3 +1838,66 @@ export async function scriptedChangesOfBinary(endpoints: SimEndpoints): Promise<
     revisions: revisions.filter((revision) => revision.documentId === documentId).map(({ label, kind, deleted }) => ({ label, kind, deleted })),
   };
 }
+
+export interface SpellingRenameResult extends HeldPathResult {
+  /** The contents of every acknowledged revision of the note, in order. */
+  noteContents: string[];
+}
+
+/**
+ * A remote rename onto another spelling of an unpushed local file (#305) on
+ * a case-insensitive client. Both engines share `notes/f.md`; the second
+ * engine's user creates `STRASSE.md` and does not push it. The first engine
+ * renames the note to `straße.md` (the same path key) and pushes; the second
+ * engine's user renames the note to `Notes/C.md`, and the second engine
+ * pushes. The note must keep its id with its own content, and the user's
+ * new file must be a document of its own: never committed as the note's
+ * next revision.
+ */
+export async function remoteRenameOntoSpellingOfUnpushedFile(endpoints: SimEndpoints, platform: "windows" | "macos"): Promise<SpellingRenameResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("notes/f.md", encoder.encode("f\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.edit("STRASSE.md", encoder.encode("my own new note\n")));
+  log(await first.move("notes/f.md", "straße.md"));
+  await push(first);
+  log(await second.move("notes/f.md", "Notes/C.md"));
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const noteId = result.acknowledged.find((acknowledgement) => acknowledgement.path === "notes/f.md")?.documentId;
+  const noteContents: string[] = [];
+  for (const acknowledgement of result.acknowledged) {
+    if (acknowledgement.documentId !== noteId || acknowledgement.deleted) continue;
+    noteContents.push(decoder.decode(await downloadBlob(run, acknowledgement.blobId)));
+  }
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), noteContents };
+}
