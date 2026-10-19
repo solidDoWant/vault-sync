@@ -1,4 +1,5 @@
 import { pathKey } from "../pathkey/pathkey";
+import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { isVaultRelativePath } from "../vaultpath/vaultpath";
 
 /** Most UTF-8 bytes of a plaintext path the server accepts (SPEC.md §6.2). */
@@ -25,10 +26,12 @@ const utf8Length = (text: string) => encoder.encode(text).length;
  * `<name>`, until the path fits the server's limits (4096 bytes, 8192 bytes
  * normalized) and its file name fits 255 bytes. Returns null if no name fits
  * (the folder part or extension alone is too long); the caller must then keep
- * the local version where it is rather than drop it.
+ * the local version where it is rather than drop it. With `rules`, the copy
+ * must also be one the local platform can hold (SPEC.md §8), e.g. within
+ * Windows' MAX_PATH.
  */
-export function conflictCopyPath(path: string, device: string, date: Date, attempt = 1): string | null {
-  return conflictName(path, device, date, attempt, true, "");
+export function conflictCopyPath(path: string, device: string, date: Date, attempt = 1, rules?: PathRules): string | null {
+  return conflictName(path, device, date, attempt, true, "", rules);
 }
 
 /**
@@ -37,13 +40,13 @@ export function conflictCopyPath(path: string, device: string, date: Date, attem
  * <date>)/<rest>`, as conflictCopyPath names a file but with no extension
  * split off the folder's name. Used when a local file cannot be committed
  * because another document's path is one of its folders (SPEC.md §6.3).
- * Returns null if no name fits the limits.
+ * Returns null if no name fits the limits (and, with `rules`, the platform).
  */
-export function conflictFolderPath(folder: string, rest: string, device: string, date: Date, attempt = 1): string | null {
-  return conflictName(folder, device, date, attempt, false, `/${rest}`);
+export function conflictFolderPath(folder: string, rest: string, device: string, date: Date, attempt = 1, rules?: PathRules): string | null {
+  return conflictName(folder, device, date, attempt, false, `/${rest}`, rules);
 }
 
-function conflictName(path: string, device: string, date: Date, attempt: number, splitExtension: boolean, tail: string): string | null {
+function conflictName(path: string, device: string, date: Date, attempt: number, splitExtension: boolean, tail: string, rules: PathRules | undefined): string | null {
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const folder = path.slice(0, separator + 1);
   const name = path.slice(separator + 1);
@@ -56,7 +59,13 @@ function conflictName(path: string, device: string, date: Date, attempt: number,
   const fits = (length: number) => {
     const copy = candidate(length);
     const segment = copy.slice(folder.length, copy.length - tail.length);
-    return utf8Length(segment) <= maxSegmentBytes && utf8Length(copy) <= maxPathBytes && utf8Length(pathKey(copy)) <= maxPathKeyBytes && isVaultRelativePath(copy);
+    return (
+      utf8Length(segment) <= maxSegmentBytes &&
+      utf8Length(copy) <= maxPathBytes &&
+      utf8Length(pathKey(copy)) <= maxPathKeyBytes &&
+      isVaultRelativePath(copy) &&
+      (rules === undefined || unmaterializableReason(copy, rules) === undefined)
+    );
   };
   if (fits(characters.length)) return candidate(characters.length);
   if (!fits(0)) return null;

@@ -55,9 +55,11 @@ export interface RunContext {
 
 /**
  * Paths clients choose from. Several collide once normalized (§5), so creates and renames race for path keys, and the
- * file `NOTES` names the folder of the `notes/` documents, so they race as file and folder.
+ * file `NOTES` names the folder of the `notes/` documents, so they race as file and folder. The last three are names
+ * Windows cannot hold (a reserved device name, a colon, a trailing dot), so an engine under Windows rules tracks their
+ * documents as unmaterializable until they are renamed away (SPEC.md §8).
  */
-export const pathPool = ["a.md", "A.md", "b.md", "notes/c.md", "Notes/C.md", "straße.md", "STRASSE.md", "d.md", "e.md", "notes/f.md", "NOTES"] as const;
+export const pathPool = ["a.md", "A.md", "b.md", "notes/c.md", "Notes/C.md", "straße.md", "STRASSE.md", "d.md", "e.md", "notes/f.md", "NOTES", "CON.md", "ab:c.md", "trailing."] as const;
 
 /** Shared contents, so clients upload identical blobs (and share upload sessions). */
 const sharedContents = 6;

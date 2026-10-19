@@ -8,6 +8,7 @@ import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
 import { pathKey } from "../pathkey/pathkey";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
+import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
@@ -62,6 +63,34 @@ export interface SyncEngineOptions {
   newId?: () => string;
   /** The clock for conflict-copy names and the conflict log. Defaults to the system clock. */
   now?: () => Date;
+  /**
+   * The local platform's file-name rules (SPEC.md §8). A remote document
+   * whose path they forbid is tracked as unmaterializable instead of being
+   * written, and conflict copies get names they allow. Under `windows` and
+   * `macos` rules the vault is taken to match paths ignoring case and Unicode
+   * form, as those filesystems do. Defaults to POSIX rules.
+   */
+  pathRules?: PathRules;
+  /** Called whenever a remote revision is tracked as unmaterializable (SPEC.md §8): what the UI shows. */
+  onUnmaterializable?: (document: UnmaterializableDocument) => void;
+}
+
+/**
+ * A document the local platform cannot hold at the path the server has for
+ * it (SPEC.md §8, platform path rules). It is tracked, never dropped, and
+ * never renamed on the server: a later remote revision with a path the
+ * platform can hold (or a delete) materializes it. Until then its local
+ * changes are not pushed.
+ */
+export interface UnmaterializableDocument {
+  documentId: string;
+  /** The path the server has for the document. */
+  path: string;
+  reason: UnmaterializableCause;
+  /** The remote revision that could not be written. */
+  revision: RemoteRevision;
+  /** Where the document's earlier version stays on disk, if this device had one. */
+  localPath: string | undefined;
 }
 
 export interface PullSummary {
@@ -165,6 +194,10 @@ export class SyncEngine {
   private readonly classify: (path: string) => DocumentKindName;
   private readonly newId: () => string;
   private readonly now: () => Date;
+  private readonly pathRules: PathRules;
+  private readonly onUnmaterializable: (document: UnmaterializableDocument) => void;
+  /** Maps a path to what the vault takes as the same file: its path key on a case-insensitive platform. */
+  private readonly fileKey: (path: string) => string;
   private readonly echoes = new EchoSuppressor();
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
@@ -203,6 +236,9 @@ export class SyncEngine {
     this.classify = options.classify ?? classifyByExtension;
     this.newId = options.newId ?? (() => uuidv7());
     this.now = options.now ?? (() => new Date());
+    this.pathRules = options.pathRules ?? posixPathRules;
+    this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
+    this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
     this.unsubscribe = this.vault.watch((event) => {
       this.events = this.events.then(() => this.handleEvent(event));
     });
@@ -249,6 +285,74 @@ export class SyncEngine {
   push(): Promise<PushSummary> {
     this.cancelScheduledPush();
     return this.serialize(() => this.pushOnce());
+  }
+
+  /** The documents the local platform cannot hold at their server paths (SPEC.md §8), for the UI. */
+  async unmaterializable(): Promise<UnmaterializableDocument[]> {
+    const documents: UnmaterializableDocument[] = [];
+    for (const deferred of await this.journal.listDeferred()) {
+      if (deferred.reason === "unmaterializable") documents.push(await this.unmaterializableDocument(deferred.revision, deferred.unmaterializable ?? "refused-by-vault"));
+    }
+    return documents;
+  }
+
+  private async unmaterializableDocument(revision: RemoteRevision, reason: UnmaterializableCause): Promise<UnmaterializableDocument> {
+    const state = await this.journal.getDocument(revision.documentId);
+    const localPath = state !== undefined && !state.deleted && (await this.vault.stat(state.path)) !== null ? state.path : undefined;
+    return { documentId: revision.documentId, path: revision.path, reason, revision, localPath };
+  }
+
+  /**
+   * Tracks `remote` as unmaterializable: deferred, with nothing written, and
+   * reported. Recorded before the document's file is released (see
+   * releaseFile), so the deferral, which parks the document, is there first.
+   */
+  private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause): Promise<"deferred"> {
+    await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason });
+    await this.releaseFile(remote.documentId);
+    const document = await this.unmaterializableDocument(remote, reason);
+    try {
+      this.onUnmaterializable(document);
+    } catch (error) {
+      setTimeout(() => {
+        throw error;
+      });
+    }
+    return "deferred";
+  }
+
+  /**
+   * Releases the file of an unmaterializable document: the server no longer
+   * has the document at that path, so the path is freed for whatever the
+   * server or the user puts there. The file is removed if it still holds the
+   * synced content (which the server has) and no local operation of the
+   * document is pending; a file with local changes stays, with them, until
+   * the document materializes and the merge path takes it.
+   *
+   * The release is recorded in the journal by storing the document's state
+   * as `deleted` (no file of its own on this device; SPEC.md §8), so nothing
+   * at the old path is afterwards taken for the document's file: another
+   * document's, or a new local file, of any content. The record comes after
+   * the delete, and a release interrupted in between is finished by the next
+   * call (the interrupted pull's replay of the revision, or each start's
+   * push): the file is then gone, or another document holds the path (one
+   * the server put there meanwhile), and either way the document has no
+   * file there any more. Another document's file is never removed.
+   */
+  private async releaseFile(documentId: string): Promise<void> {
+    const state = await this.journal.getDocument(documentId);
+    if (state === undefined || state.deleted) return;
+    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return;
+    const key = this.fileKey(state.path);
+    const taken = (await this.journal.listDocuments()).some((other) => other.documentId !== documentId && !other.deleted && this.fileKey(other.path) === key);
+    if (!taken) {
+      const content = await this.readOrNull(state.path);
+      if (content !== null) {
+        if (sha256Hex(content) !== state.baseHash) return;
+        await this.echoed(this.echoes.expectDelete(state.path), () => this.vault.delete(state.path));
+      }
+    }
+    await this.journal.putDocument({ ...state, deleted: true });
   }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
@@ -319,6 +423,12 @@ export class SyncEngine {
     }
     if (state !== undefined && remote.seq <= state.seq) return "skipped";
     if (!remote.deleted && !incoming.pathAllowed) return this.defer(remote, "invalid-path");
+    const unmaterializable = remote.deleted ? undefined : unmaterializableReason(remote.path, this.pathRules);
+    if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
+
+    // An unmaterializable document whose file was released has no file of
+    // its own here any more: its state is `deleted` (see releaseFile), so it
+    // comes back as a new document would.
 
     // Download before looking at the disk, so the check-then-write window is short.
     const needsContent = !remote.deleted && (state === undefined || state.deleted || state.baseHash !== remote.contentHash);
@@ -326,13 +436,13 @@ export class SyncEngine {
 
     const inspection = await this.inspect(state, remote);
     if (inspection.kind === "dirty") return this.handToMerge(remote, state, inspection);
-    if (inspection.kind === "clean") {
-      try {
-        await this.writeToDisk(remote, inspection, content);
-      } catch (error) {
-        if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return this.defer(remote, "path-conflict");
-        throw error;
-      }
+    try {
+      if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
+      else if (!remote.deleted) await this.matchSpelling(remote.path);
+    } catch (error) {
+      if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return this.defer(remote, "path-conflict");
+      if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
+      throw error;
     }
     // A newer revision supersedes one deferred for its path (or this is the
     // deferred one, applied by a retry after the cursor passed it). Removed
@@ -367,9 +477,10 @@ export class SyncEngine {
       if (targetHash === remote.contentHash) return { kind: "applied" };
       return { kind: "dirty", path: target, content: targetContent };
     }
-    if (basePath === target) {
+    // The same file, also when only its spelling changes on a case-insensitive platform.
+    if (this.fileKey(basePath) === this.fileKey(target)) {
       if (targetHash === remote.contentHash) return { kind: "applied" };
-      if (baseOnDisk) return { kind: "clean", source: target, sourceHash: baseHash };
+      if (baseOnDisk) return { kind: "clean", source: basePath, sourceHash: baseHash };
       // Edited, or deleted locally (content null): a local change either way.
       return { kind: "dirty", path: target, content: targetContent };
     }
@@ -400,7 +511,22 @@ export class SyncEngine {
     }
     if (inspection.sourceHash === remote.contentHash) return;
     if (content === undefined) throw new Error(`content of ${remote.revisionId} was not downloaded`);
+    await this.matchSpelling(remote.path);
     await this.echoed(this.echoes.expectWrite(remote.path, remote.contentHash), () => this.vault.write(remote.path, content));
+  }
+
+  /**
+   * On a case-insensitive platform, renames the file the vault holds as
+   * `path` under another spelling (`Notes.md` for `notes.md`) to `path`, so
+   * the vault names it as the journal does. A write would otherwise keep the
+   * old spelling, and the file would look like another document's.
+   */
+  private async matchSpelling(path: string): Promise<void> {
+    if (this.pathRules.platform === "posix" || (await this.vault.stat(path)) === null) return;
+    const key = this.fileKey(path);
+    const actual = (await this.vault.list()).find((candidate) => candidate !== path && this.fileKey(candidate) === key);
+    if (actual === undefined) return;
+    await this.echoed(this.echoes.expectRename(actual, path), () => this.vault.rename(actual, path));
   }
 
   private async echoed(cancel: () => void, change: () => Promise<void>): Promise<void> {
@@ -460,7 +586,20 @@ export class SyncEngine {
       // A tombstone has no content of its own to merge against.
       readBaseContent: () => (state === undefined || state.deleted ? Promise.resolve(null) : revisionContent(this.api, this.vaultId, state.revisionId)),
     });
-    if (outcome.status === "merged" && (await this.applyMerge(remote, state, local, outcome))) return "merged";
+    if (outcome.status === "merged" && outcome.content !== null) {
+      // The result cannot be written here: the remote path never touches the
+      // disk, and the local changes stay as they are until a later revision
+      // gives the document a path the platform can hold.
+      if (outcome.path === remote.path && !isVaultRelativePath(outcome.path)) return this.defer(remote, "invalid-path");
+      const unmaterializable = unmaterializableReason(outcome.path, this.pathRules);
+      if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
+    }
+    try {
+      if (outcome.status === "merged" && (await this.applyMerge(remote, state, local, outcome))) return "merged";
+    } catch (error) {
+      if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
+      throw error;
+    }
     return this.defer(remote, "local-changes");
   }
 
@@ -633,6 +772,7 @@ export class SyncEngine {
         }
         const merged = outcome.content;
         const hash = sha256Hex(merged);
+        await this.matchSpelling(outcome.path);
         if (there === null || sha256Hex(there) !== hash) {
           await this.echoed(this.echoes.expectWrite(outcome.path, hash), () => this.vault.write(outcome.path, merged));
         }
@@ -735,18 +875,23 @@ export class SyncEngine {
    */
   private async freeConflictPath(path: string, folder?: string): Promise<string | null> {
     const date = this.now();
+    // Compared as the vault compares paths, so a copy never lands on a file of another spelling.
+    const key = this.fileKey;
     const taken = new Set<string>();
-    for (const operation of await this.journal.listPending()) taken.add(operation.path);
-    for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(record.copyPath);
+    for (const operation of await this.journal.listPending()) taken.add(key(operation.path));
+    for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(key(record.copyPath));
     // The vault reports files only; a folder is any file's ancestor.
-    const files = new Set(await this.vault.list());
+    const files = new Set((await this.vault.list()).map(key));
     const folders = new Set<string>();
     for (const file of files) for (const ancestor of ancestors(file)) folders.add(ancestor);
     for (let attempt = 1; attempt <= maxConflictNameAttempts; attempt++) {
       const candidate =
-        folder === undefined ? conflictCopyPath(path, this.deviceName, date, attempt) : conflictFolderPath(folder, path.slice(folder.length + 1), this.deviceName, date, attempt);
+        folder === undefined
+          ? conflictCopyPath(path, this.deviceName, date, attempt, this.pathRules)
+          : conflictFolderPath(folder, path.slice(folder.length + 1), this.deviceName, date, attempt, this.pathRules);
       if (candidate === null) return null;
-      if (taken.has(candidate) || files.has(candidate) || folders.has(candidate) || ancestors(candidate).some((ancestor) => files.has(ancestor))) continue;
+      const candidateKey = key(candidate);
+      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some((ancestor) => files.has(ancestor))) continue;
       if ((await this.journal.findDocumentByPath(candidate)) !== undefined) continue;
       return candidate;
     }
@@ -887,7 +1032,8 @@ export class SyncEngine {
   private async parked(): Promise<Parked> {
     const parked: Parked = { documents: new Set(), paths: new Set() };
     for (const deferred of await this.journal.listDeferred()) {
-      if (deferred.reason !== "local-changes") continue;
+      // An unmaterializable document waits too: its local changes are not pushed, and the server never hears of its file.
+      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable") continue;
       const { revision } = deferred;
       parked.documents.add(revision.documentId);
       parked.paths.add(revision.path);
@@ -936,7 +1082,8 @@ export class SyncEngine {
         continue;
       }
       if (state === undefined) continue;
-      if ((await this.readOrNull(from)) !== null && !movedHere.has(from)) continue;
+      // A file still at the old path makes it no move, unless only its spelling changed (the same file on a case-insensitive platform).
+      if (this.fileKey(from) !== this.fileKey(to) && (await this.readOrNull(from)) !== null && !movedHere.has(from)) continue;
       const holder = await this.journal.findDocumentByPath(to);
       if (holder !== undefined && !(movedAway.has(to) && holder.documentId !== state.documentId)) continue;
       const content = await this.readOrNull(to);
@@ -961,6 +1108,17 @@ export class SyncEngine {
       }
     }
     if (changes.all) for (const path of await this.vault.list()) paths.add(path);
+    if (this.pathRules.platform !== "posix") {
+      // On a case-insensitive platform a path of another spelling than a
+      // document's names that document's file, never a new one.
+      const live = new Map(documents.filter((state) => !state.deleted).map((state) => [this.fileKey(state.path), state.path]));
+      for (const path of [...paths]) {
+        const own = live.get(this.fileKey(path));
+        if (own === undefined || own === path) continue;
+        paths.delete(path);
+        paths.add(own);
+      }
+    }
 
     for (const path of [...paths].sort()) {
       if (handled.has(path) || busyPaths.has(path)) continue;
@@ -1193,10 +1351,20 @@ export class SyncEngine {
    * Applies again the remote revisions deferred because the vault refused
    * their path, once no file or folder is in the way any more. Each is tried
    * at most once per engine unless `again`, so a path the vault refuses for
-   * another reason does not cost a download on every push.
+   * another reason does not cost a download on every push. So are, once per
+   * engine, unmaterializable revisions whose path the platform rules now
+   * allow (the vault refused it although they did, or the vault moved to a
+   * shorter folder).
    */
   private async retryRefusedPaths(again = false): Promise<void> {
-    const deferrals = (await this.journal.listDeferred()).filter((deferred) => deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId)));
+    const deferrals = (await this.journal.listDeferred()).filter(
+      (deferred) =>
+        (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
+        (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined),
+    );
+    for (const deferred of await this.journal.listDeferred()) {
+      if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);
+    }
     if (deferrals.length === 0) return;
     const files = new Set(await this.vault.list());
     const folders = new Set([...files].flatMap((file) => ancestors(file)));

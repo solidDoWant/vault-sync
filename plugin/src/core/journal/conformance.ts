@@ -340,6 +340,17 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     },
   },
   {
+    name: "keeps why a deferred revision is unmaterializable, and drops it when the deferral is replaced",
+    run: async (journal, reopen) => {
+      await journal.putDeferred(sampleDeferred("doc-1", "r2", { reason: "unmaterializable", unmaterializable: "reserved-name" }));
+      const reopened = await reopen();
+      assertEqual(await reopened.getDeferred("doc-1"), sampleDeferred("doc-1", "r2", { reason: "unmaterializable", unmaterializable: "reserved-name" }), "unmaterializable deferral");
+      assertEqual((await reopened.listDeferred()).map((deferred) => deferred.unmaterializable), ["reserved-name"], "listed reason");
+      await reopened.putDeferred(sampleDeferred("doc-1", "r4"));
+      assertEqual((await (await reopen()).getDeferred("doc-1"))?.unmaterializable, undefined, "reason of the replaced deferral");
+    },
+  },
+  {
     name: "drops the merge-in-progress marker when the deferral is replaced without one",
     run: async (journal, reopen) => {
       await journal.putDeferred(sampleDeferred("doc-1", "r2", { merging: { path: "note.md", contentHash: "dd" } }));

@@ -8,6 +8,13 @@
 // edits are #22. Its vault and journal survive a
 // crash (they are a device's disk), while the engine itself, and everything it
 // had in flight, does not.
+//
+// Each engine follows a platform's path rules (posix, windows or macos), with
+// an in-memory vault that refuses the names that platform cannot hold and,
+// for windows and macos, matches paths ignoring case and Unicode form
+// (SPEC.md §8). A live document may then be missing from its vault only if
+// the engine reports it as unmaterializable and the harness's own check
+// agrees that the platform cannot hold its path.
 
 import { Code } from "@connectrpc/connect";
 
@@ -21,6 +28,7 @@ import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { VaultEvent } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
+import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { errorCode } from "./network";
 
@@ -35,8 +43,19 @@ export interface ServerHeads {
   lastSeq: bigint;
 }
 
+/**
+ * The harness's own, deliberately simple, check of which paths Windows cannot
+ * hold, independent of the engine's rules: enough for the names the scripted
+ * clients use (pathPool) and their conflict paths. Other platforms can hold
+ * all of them.
+ */
+export function harnessUnmaterializable(path: string, platform: PathPlatform): boolean {
+  if (platform !== "windows") return false;
+  return path.split("/").some((segment) => segment.includes(":") || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
+}
+
 export class EngineObserver {
-  private readonly vault = new InMemoryVault({ now: () => 0 });
+  private readonly vault: InMemoryVault;
   private readonly journal = new InMemoryJournal();
   private engine: SyncEngine;
   private busy = false;
@@ -52,12 +71,20 @@ export class EngineObserver {
     private readonly api: ProtocolClient,
     private readonly deviceId: string,
     private readonly context: RunContext,
+    /** The platform whose path rules the engine and its vault follow. */
+    readonly platform: PathPlatform = "posix",
   ) {
+    this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.engine = this.createEngine();
   }
 
   get name(): string {
     return `e${String(this.index)}`;
+  }
+
+  /** The documents the engine reports as unmaterializable: server path to reason. */
+  async unmaterializable(): Promise<Map<string, string>> {
+    return new Map((await this.engine.unmaterializable()).map((document) => [document.path, document.reason]));
   }
 
   get idle(): boolean {
@@ -181,10 +208,21 @@ export class EngineObserver {
     const violations: Violation[] = [];
     const files = new Map<string, string>();
     for (const path of await this.vault.list()) files.set(path, sha256Hex(await this.vault.read(path)));
+    const unmaterializable = await this.unmaterializable();
     for (const [path, hash] of heads.files) {
       const local = files.get(path);
+      const expectedMissing = harnessUnmaterializable(path, this.platform);
+      if (expectedMissing && !unmaterializable.has(path)) {
+        violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} (${this.platform}) does not report ${path}, which the platform cannot hold` });
+      } else if (!expectedMissing && unmaterializable.has(path)) {
+        violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} (${this.platform}) reports ${path} as unmaterializable (${String(unmaterializable.get(path))})` });
+      }
+      if (expectedMissing) continue;
       if (local === undefined) violations.push({ invariant: "engine-convergence", detail: `${this.name} is missing ${path}` });
       else if (local !== hash) violations.push({ invariant: "engine-convergence", detail: `${this.name} holds other content at ${path}` });
+    }
+    for (const path of unmaterializable.keys()) {
+      if (!heads.files.has(path)) violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} reports ${path}, which is not a live document's path` });
     }
     for (const path of files.keys()) {
       if (!heads.files.has(path)) violations.push({ invariant: "engine-convergence", detail: `${this.name} holds ${path}, which is not a live document` });
@@ -192,6 +230,8 @@ export class EngineObserver {
     const cursor = await this.journal.getCursor();
     if (cursor !== heads.lastSeq) violations.push({ invariant: "engine-convergence", detail: `${this.name} cursor is ${String(cursor)}, the feed ends at ${String(heads.lastSeq)}` });
     for (const deferred of await this.journal.listDeferred()) {
+      // Checked above: tracked exactly for the live documents the platform cannot hold.
+      if (deferred.reason === "unmaterializable") continue;
       violations.push({ invariant: "engine-deferred", detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes` });
     }
     for (const event of this.localChanges) {
@@ -231,6 +271,10 @@ export class EngineObserver {
       pushDebounceMs: null,
       newId: () => this.context.ids.generate(`${this.name}.x`),
       pageSize,
+      pathRules: { platform: this.platform },
+      onUnmaterializable: (document) => {
+        this.context.log(`${this.name} tracks ${document.path} as unmaterializable (${document.reason})`);
+      },
     });
   }
 
