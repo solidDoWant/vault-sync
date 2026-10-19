@@ -7,8 +7,8 @@ import { describe, expect, it } from "vitest";
 
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
-import { runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, structuralOperations } from "./scenarios";
+import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -36,6 +36,7 @@ function summarize(trace: readonly string[]): string {
     ["engine pulls completed", " deferred"],
     ["engine pulls interrupted", "engine pull interrupted"],
     ["engine crashes", "restarted with its vault and journal"],
+    ["tracked as unmaterializable", " as unmaterializable ("],
   ];
   return events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`).join(", ");
 }
@@ -48,7 +49,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
   it.each(environment.seeds)("seed %i keeps every invariant", async (seed) => {
     const options = { seed, clients: environment.clients };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
-    console.log(`seed ${String(seed)}: ${summarize(result.trace)}`);
+    console.log(`seed ${String(seed)} (${platformForSeed(seed)} path rules): ${summarize(result.trace)}`);
     if (result.violations.length === 0) return;
 
     // Minimize: keep removing steps while a violation of the same kind remains.
@@ -246,6 +247,77 @@ describe.runIf(suites.has("scenarios"))("scripted structural scenarios (#19)", (
       { reason: "path-taken", path: "topics/y.md", copyPath: `${stamped("topics")}/y.md` },
       { reason: "path-taken", path: "ideas", copyPath: stamped("ideas") },
     ]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
+  it("tracks the notes a Windows engine cannot hold, commits nothing for them, and materializes each once it gets a legal name", async () => {
+    const result = await unmaterializableOnWindows(environment);
+    const trace = tail(result.trace, 200);
+
+    // Convergence (only what Windows cannot hold may be missing, and exactly that is reported), no lost acknowledged writes, no echo.
+    expect(result.violations, trace).toEqual([]);
+    const overlong = `${"long".repeat(50)}/${"b".repeat(56)}.md`;
+    expect(result.reportedAfterCreate, trace).toEqual(
+      new Map([
+        ["CON.md", "reserved-name"],
+        ["notes/a:b.md", "forbidden-character"],
+        ["trailing.", "trailing-dot-or-space"],
+        [overlong, "path-too-long"],
+      ]),
+    );
+    expect(result.windowsFilesAfterCreate, trace).toEqual(["ok.md", "plan.md"]);
+    // The edited note stays where it was on Windows, with the user's edit, unpushed; the unchanged one is removed.
+    expect(result.reportedAfterRename.get("plan?.md"), trace).toBe("forbidden-character");
+    expect(result.reportedAfterRename.get("ok*.md"), trace).toBe("forbidden-character");
+    expect(result.windowsFilesAfterRename, trace).toEqual(new Map([["plan.md", "one\ntwo (edited on windows)\n"]]));
+    // Nothing committed while they could not be materialized: no rename, no drop, not the edit.
+    expect(result.windowsCommitsWhileTracked, trace).toEqual([]);
+    const expected = new Map([
+      ["console.md", "illegal 0\n"],
+      ["notes/a-b.md", "illegal 1\n"],
+      ["ok 2.md", "fine\n"],
+      ["plan 2.md", "one\ntwo (edited on windows)\n"],
+      ["short.md", "illegal 3\n"],
+      ["trailing.txt", "illegal 2\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents.size, trace).toBe(expected.size);
+    // The renamed notes are still the same documents.
+    expect(result.documents.get("plan 2.md"), trace).toBe(result.before.get("plan.md"));
+    expect(result.documents.get("ok 2.md"), trace).toBe(result.before.get("ok.md"));
+  });
+
+  it("never takes what is later at a path an unmaterializable rename freed for the renamed note's file", async () => {
+    const result = await freedPathReused(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([
+      ["draft 2.md", "draft\n"],
+      ["draft.md", "brand new\n"],
+      ["empty 2.md", ""],
+      ["empty.md", ""],
+      ["plan 2.md", "one\ntwo\n"],
+      ["plan.md", "another note\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents.size, trace).toBe(expected.size);
+    // The renamed notes are still the same documents, and the notes at their old paths are others.
+    for (const name of ["plan", "empty", "draft"]) {
+      expect(result.documents.get(`${name} 2.md`), trace).toBe(result.before.get(`${name}.md`));
+      expect(result.documents.get(`${name}.md`), trace).not.toBe(result.before.get(`${name}.md`));
+    }
+  });
+
+  it("keeps every invariant in a seeded run under Windows rules, tracking the pool's illegal names", async () => {
+    const result = await runSeed(environment, { seed: 1, clients: environment.clients, steps: Math.min(environment.steps, 400), platforms: ["windows"] });
+    const trace = tail(result.trace, 120);
+
+    expect(result.violations, trace).toEqual([]);
+    expect(result.trace.some((line) => line.includes(" as unmaterializable (")), trace).toBe(true);
   });
 });
 

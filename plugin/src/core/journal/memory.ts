@@ -95,5 +95,6 @@ export class InMemoryJournal implements Journal {
 function copyDeferred(deferred: DeferredRevision): DeferredRevision {
   const copy: DeferredRevision = { reason: deferred.reason, revision: { ...deferred.revision } };
   if (deferred.merging !== undefined) copy.merging = { ...deferred.merging };
+  if (deferred.unmaterializable !== undefined) copy.unmaterializable = deferred.unmaterializable;
   return copy;
 }
