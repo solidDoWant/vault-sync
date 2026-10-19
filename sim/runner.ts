@@ -40,7 +40,21 @@ export interface RunOptions {
    * gets `platformForSeed(seed)`, so seeded runs cover all three platforms.
    */
   platforms?: PathPlatform[];
+  /**
+   * Steps a commit retried with the same revision id waits on the network
+   * (NetworkOptions.commitRetryBackoff). Seeded schedules use
+   * seededCommitRetryBackoff; scripted scenarios, and regression cases
+   * recorded before #110, retry at once (0, the default).
+   */
+  commitRetryBackoff?: number;
 }
+
+/**
+ * The commit retry backoff of seeded schedules (#110): long enough that
+ * another client's commit often moves the head before a retry lands, the
+ * interleaving of #12, which a retry delivered at once almost never meets.
+ */
+export const seededCommitRetryBackoff = 30;
 
 /** The engines' platforms in a seeded run with `engines` engines: engine i follows `platformForSeed(seed + i)`, so most seeds mix platforms. */
 export function seededPlatforms(seed: number, engines: number): PathPlatform[] {
@@ -93,22 +107,29 @@ export class SimRun {
     const ids = new Ids();
     const trace: string[] = [];
     let serverSeq = 0n;
+    const run: { stepNumber: () => number } = { stepNumber: () => 0 };
+    const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
+    const violations: Violation[] = [];
     const network = new SimNetwork({
       describeRequest: (method, input) => describeRequest(ids, method, input),
       describeOutcome: (method, outcome) => describeOutcome(ids, method, outcome),
+      commitRetryBackoff: options.commitRetryBackoff,
+      violation: (invariant, detail) => {
+        violations.push({ invariant, detail });
+        log(`VIOLATION ${invariant}: ${detail}`);
+      },
       observeOutcome: (method, outcome) => {
         const seq = replySeq(method, outcome);
         if (seq !== undefined && seq > serverSeq) serverSeq = seq;
       },
     });
-    const run: { stepNumber: () => number } = { stepNumber: () => 0 };
     const context: RunContext = {
       vaultId: vault.id,
       ids,
       network,
       acknowledged: [],
-      violations: [],
-      log: (entry) => trace.push(`${String(run.stepNumber())}: ${entry}`),
+      violations,
+      log,
       stepNumber: () => run.stepNumber(),
       serverSeq: () => serverSeq,
     };
@@ -312,11 +333,11 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
   return run.finish();
 }
 
-/** Runs the schedule generated from `seed`. */
+/** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
   // Without `engines` the engine has no user, as before #22.
   const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0 });
-  return { ...(await runSteps(endpoints, options, steps)), steps };
+  return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 
 type Fields = Record<string, unknown>;
