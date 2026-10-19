@@ -103,6 +103,22 @@ describe("SyncEngine with backslash paths (#191)", () => {
     expect(await files(h.vault)).toEqual(new Map([["x\\a.md", "kept\n"]]));
   });
 
+  it("commits the delete of a synced document whose refused move to a backslash path the user then deleted", async () => {
+    const h = harness({ merge: "default" });
+    h.server.commit({ documentId: "doc", path: "a.md", content: "kept\n" });
+    await h.engine.pull();
+    await h.vault.rename("a.md", "x\\a.md");
+    expect((await h.engine.push()).rejected.map(({ operation }) => operation.path)).toEqual(["x\\a.md"]);
+
+    await h.vault.delete("x\\a.md");
+    await h.engine.push();
+
+    expect(h.server.head("doc")?.deleted).toBe(true);
+    expect(h.server.liveFiles()).toEqual(new Map());
+    expect(await files(h.vault)).toEqual(new Map());
+    expect(await h.engine.push()).toMatchObject({ committed: 0, rejected: [], pending: 0 });
+  });
+
   describe("given a document the server already holds at a backslash path", () => {
     async function synced() {
       const h = harness({ merge: "default" });
