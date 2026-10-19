@@ -354,3 +354,14 @@ func TestFeedHeadCheck(t *testing.T) {
 		})
 	}
 }
+
+// TestExcusableNeverExcusesAPurgedHead: of the revisions a purge removed,
+// the invariant checks excuse those that were not a document's head; a
+// purged head (a lost acknowledged write) stays a violation.
+func TestExcusableNeverExcusesAPurgedHead(t *testing.T) {
+	older := purgedRevision{ID: uuid.Must(uuid.NewV7()), Seq: 1}
+	head := purgedRevision{ID: uuid.Must(uuid.NewV7()), Seq: 2, Parent: uuid.NullUUID{UUID: older.ID, Valid: true}, Head: true}
+
+	assert.Equal(t, []purgedRevision{older}, excusable([]purgedRevision{older, head}))
+	assert.Empty(t, excusable([]purgedRevision{head}))
+}

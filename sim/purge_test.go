@@ -21,6 +21,26 @@ type purgedRevision struct {
 	ID     uuid.UUID
 	Seq    int64
 	Parent uuid.NullUUID
+	// Head: the revision was its document's head when it was purged.
+	// Retention never purges a head (SPEC.md §11), so such a purge is never
+	// excused (see excusable).
+	Head bool
+}
+
+// excusable is what the invariant checks may excuse of purged: the
+// revisions that were not a document's head. A purged head (a lost
+// acknowledged write, SPEC.md §2 principle 1) stays a history and seq
+// violation.
+func excusable(purged []purgedRevision) []purgedRevision {
+	var excused []purgedRevision
+
+	for _, revision := range purged {
+		if !revision.Head {
+			excused = append(excused, revision)
+		}
+	}
+
+	return excused
 }
 
 // agedPolicy is the deployment's default retention policy, which a run
@@ -69,6 +89,23 @@ func ageAndPurge(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, revis
 		return nil, fmt.Errorf("aged %d of %d revisions: some are not in vault %s", len(revisions), len(revisionIDs), vaultID)
 	}
 
+	documentIDs := make([]uuid.UUID, 0, len(revisions))
+	for _, revision := range revisions {
+		documentIDs = append(documentIDs, revision.document)
+	}
+
+	var heads []uuid.UUID
+
+	err = db.QueryRow(ctx, `SELECT COALESCE(array_agg(head_rev_id), '{}') FROM documents WHERE vault_id = $1 AND id = ANY($2)`, vaultID, documentIDs).Scan(&heads)
+	if err != nil {
+		return nil, fmt.Errorf("read document heads: %w", err)
+	}
+
+	isHead := make(map[uuid.UUID]bool, len(heads))
+	for _, head := range heads {
+		isHead[head] = true
+	}
+
 	vault := store.New(db).InVault(vaultID)
 	documents := map[uuid.UUID]bool{}
 
@@ -100,6 +137,7 @@ func ageAndPurge(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, revis
 
 	for _, revision := range revisions {
 		if !kept[revision.ID] {
+			revision.Head = isHead[revision.ID]
 			purged = append(purged, revision.purgedRevision)
 		}
 	}

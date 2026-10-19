@@ -227,7 +227,9 @@ func (control *control) purge(writer http.ResponseWriter, request *http.Request)
 		control.purged = map[uuid.UUID][]purgedRevision{}
 	}
 
-	control.purged[vaultID] = append(control.purged[vaultID], purged...)
+	// Every purged revision is returned, so the harness reports a purged
+	// head (retention-head), but only the others are excused.
+	control.purged[vaultID] = append(control.purged[vaultID], excusable(purged)...)
 	control.mu.Unlock()
 
 	ids := make([]string, len(purged))
