@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -675,6 +675,31 @@ describe.runIf(suites.has("scenarios"))("scripted remote renames onto another sp
     }
     expect(result.noteContents, trace).not.toHaveLength(0);
     expect(result.noteContents, trace).not.toContain("my own new note\n");
+    expect(result.tombstoned, trace).toEqual([]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted case-only renames on a case-insensitive client (#304)", () => {
+  it.each(["macos", "windows"] as const)("keeps the user's spelling when a remote edit arrives before the rename is pushed (%s)", async (platform) => {
+    const result = await caseOnlyRename(environment, platform, "remote-edit");
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("a.md");
+    expect(note, trace).toBeDefined();
+    expect(result.documents, trace).toEqual(new Map([["A.md", note]]));
+    for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["A.md", "a\nremote edit\n"]]));
+    expect(result.tombstoned, trace).toEqual([]);
+  });
+
+  it.each(["macos", "windows"] as const)("creates one document, at the new spelling, for a note renamed by case before its first push (%s)", async (platform) => {
+    const result = await caseOnlyRename(environment, platform, "first-push");
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    expect([...result.documents.keys()], trace).toEqual(["notes/c.md"]);
+    expect(new Set(result.acknowledged.map((acknowledgement) => acknowledgement.documentId)).size, trace).toBe(1);
+    for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["notes/c.md", "new\n"]]));
     expect(result.tombstoned, trace).toEqual([]);
   });
 });
