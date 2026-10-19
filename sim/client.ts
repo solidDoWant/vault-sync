@@ -88,6 +88,8 @@ const maxPages = 1000;
 interface KnownDocument {
   id: string;
   head: string;
+  /** The kind the server reports; it never changes (SPEC.md §7), so every later commit must carry it. */
+  kind: DocumentKind;
   path: string;
   deleted: boolean;
   blobId: Uint8Array;
@@ -103,6 +105,8 @@ interface Content {
 interface CommitFields {
   documentId: string;
   baseRevisionId: string;
+  /** TEXT for a create; the document's own kind otherwise, which is BLOB for an engine document at a path without a text extension. */
+  kind: DocumentKind;
   path: string;
   deleted: boolean;
   content: { blobId: Uint8Array; size: bigint };
@@ -178,7 +182,7 @@ export class ScriptedClient {
     const content = this.content(random);
     if (!(await this.upload(content))) return;
     const documentId = this.context.ids.generate(`${this.name}.d`);
-    await this.commitWithRetries("create", { documentId, baseRevisionId: "", path: random.pick(pathPool), deleted: false, content: contentRef(content) });
+    await this.commitWithRetries("create", { documentId, baseRevisionId: "", kind: DocumentKind.TEXT, path: random.pick(pathPool), deleted: false, content: contentRef(content) });
   }
 
   private async edit(random: Random): Promise<void> {
@@ -186,7 +190,14 @@ export class ScriptedClient {
     if (document === undefined) return this.context.log(`${this.name} edit: no known document`);
     const content = this.content(random);
     if (!(await this.upload(content))) return;
-    await this.commitWithRetries("edit", { documentId: document.id, baseRevisionId: document.head, path: document.path, deleted: false, content: contentRef(content) });
+    await this.commitWithRetries("edit", {
+      documentId: document.id,
+      baseRevisionId: document.head,
+      kind: document.kind,
+      path: document.path,
+      deleted: false,
+      content: contentRef(content),
+    });
   }
 
   private async rename(random: Random): Promise<void> {
@@ -196,6 +207,7 @@ export class ScriptedClient {
     await this.commitWithRetries("rename", {
       documentId: document.id,
       baseRevisionId: document.head,
+      kind: document.kind,
       path,
       deleted: false,
       content: { blobId: document.blobId, size: document.size },
@@ -208,6 +220,7 @@ export class ScriptedClient {
     await this.commitWithRetries("delete", {
       documentId: document.id,
       baseRevisionId: document.head,
+      kind: document.kind,
       path: document.path,
       deleted: true,
       content: { blobId: document.blobId, size: document.size },
@@ -290,7 +303,7 @@ export class ScriptedClient {
           documentId: fields.documentId,
           revisionId,
           baseRevId: fields.baseRevisionId,
-          kind: DocumentKind.TEXT,
+          kind: fields.kind,
           contentRef: fields.content,
           path: encoder.encode(fields.path),
           deleted: fields.deleted,
@@ -395,6 +408,7 @@ export class ScriptedClient {
     this.documents.set(revision.documentId, {
       id: revision.documentId,
       head: revision.id,
+      kind: revision.kind,
       path: decoder.decode(revision.path),
       deleted: revision.deleted,
       blobId: revision.contentRef?.blobId ?? new Uint8Array(),
