@@ -185,9 +185,31 @@ jobs:
           node-version: 24
           cache: npm
           cache-dependency-path: plugin/package-lock.json
-      - if: runner.os != 'Linux'
-        id: postgres
+      - if: runner.os == 'macOS'
+        id: postgres-macos
         uses: ikalnytskyi/action-setup-postgres@v8
+      # Windows: the PostgreSQL the runner image preinstalls (disabled
+      # service, superuser `postgres` with the image's documented password
+      # `root`). action-setup-postgres would `choco install` it, which fails
+      # whenever the Chocolatey community feed is down (#272).
+      - if: runner.os == 'Windows'
+        id: postgres-windows
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $true
+          $version = & "$env:PGBIN\pg_config.exe" --version
+          if ($version -notmatch '^PostgreSQL (\d+)') { throw "unexpected pg_config version: $version" }
+          $major = [int]$Matches[1]
+          Write-Output "preinstalled $version"
+          if ($major -lt 14) { throw "preinstalled PostgreSQL $major is older than the minimum supported 14" }
+          $service = "postgresql-x64-$major"
+          Set-Service -Name $service -StartupType Manual
+          Start-Service -Name $service
+          & "$env:PGBIN\pg_isready.exe" -h localhost -p 5432 -t 60
+          $env:PGPASSWORD = 'root'
+          & "$env:PGBIN\psql.exe" -h localhost -p 5432 -U postgres -d postgres -v ON_ERROR_STOP=1 -c 'SELECT version()'
+          "connection-uri=postgresql://postgres:root@localhost:5432/postgres" >> $env:GITHUB_OUTPUT
       - if: runner.os != 'Linux'
         name: Build plugin
         working-directory: plugin
@@ -199,7 +221,7 @@ jobs:
       - if: runner.os != 'Linux'
         name: Plugin e2e (native)
         env:
-          VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres.outputs.connection-uri }}
+          VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres-macos.outputs.connection-uri || steps.postgres-windows.outputs.connection-uri }}
         run: ./scripts/with-native-s3.sh go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
 
   # The single required status check (it also covers the plugin-e2e matrix,
