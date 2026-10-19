@@ -73,6 +73,11 @@ const (
 	resyncBatch = 1000
 )
 
+// membershipBatch bounds the users whose membership of one vault is checked
+// in one query before a delivery. It is a variable only so tests can lower
+// it.
+var membershipBatch = 1000
+
 // Backoff between attempts to reconnect the notification listener.
 const (
 	minListenBackoff = 500 * time.Millisecond
@@ -127,9 +132,9 @@ func setDefault[T int | int64 | float64 | time.Duration](value *T, fallback T) {
 
 // Store is the database access the hub needs. *store.Store implements it.
 type Store interface {
-	// VaultRole returns userID's role in vaultID, or store.ErrVaultNotFound
-	// when the vault does not exist or the user is not a member.
-	VaultRole(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, error)
+	// VaultMembers returns which of userIDs are members of vaultID (none
+	// when the vault does not exist), in one query.
+	VaultMembers(ctx context.Context, vaultID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error)
 	// MemberHeadSeq is VaultRole that also returns the vault's head_seq.
 	MemberHeadSeq(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, int64, error)
 	// HeadSeqs returns the head_seq of each existing vault in vaultIDs.
@@ -368,7 +373,9 @@ func (hub *Hub) deliverLoop(ctx context.Context) {
 
 // deliver sends vault_changed to the vault's subscribers whose user is still
 // a member. A removed member's subscriptions to the vault end, with a
-// NOT_FOUND error frame.
+// NOT_FOUND error frame. Membership is checked in one query per
+// membershipBatch subscribed users, so a busy vault costs one database round
+// trip rather than one per user.
 func (hub *Hub) deliver(ctx context.Context, vaultID uuid.UUID, seq int64) {
 	byUser := make(map[uuid.UUID][]*connection)
 
@@ -389,31 +396,50 @@ func (hub *Hub) deliver(ctx context.Context, vaultID uuid.UUID, seq int64) {
 
 	hub.mu.Unlock()
 
-	for userID, conns := range byUser {
+	users := make([]uuid.UUID, 0, len(byUser))
+	for userID := range byUser {
+		users = append(users, userID)
+	}
+
+	for start := 0; start < len(users); start += membershipBatch {
+		batch := users[start:min(start+membershipBatch, len(users))]
+
 		queryCtx, cancel := context.WithTimeout(ctx, queryTimeout)
-		_, err := hub.options.Store.VaultRole(queryCtx, vaultID, userID)
+		members, err := hub.options.Store.VaultMembers(queryCtx, vaultID, batch)
 
 		cancel()
 
-		switch {
-		case errors.Is(err, store.ErrVaultNotFound):
-			for _, conn := range conns {
-				if hub.unsubscribe(conn, vaultID) {
-					conn.enqueue(notFoundFrame(0, vaultID))
-				}
-			}
-		case err != nil:
+		if err != nil {
 			// Fail closed; the clients' fallback pull catches up.
 			if ctx.Err() == nil {
 				hub.logger.WarnContext(ctx, "cannot check vault membership for a realtime notification", "error", err)
 			}
-		default:
-			for _, conn := range conns {
-				if hub.subscribed(conn, vaultID) {
-					hub.metrics.notifications.Inc()
-					conn.enqueue(vaultChangedFrame(vaultID, seq))
-				}
+
+			continue
+		}
+
+		for _, userID := range batch {
+			hub.deliverToUser(vaultID, seq, byUser[userID], members[userID])
+		}
+	}
+}
+
+// deliverToUser sends vault_changed to one user's subscribed connections if
+// the user is still a member of the vault, and otherwise ends their
+// subscriptions with a NOT_FOUND error frame.
+func (hub *Hub) deliverToUser(vaultID uuid.UUID, seq int64, conns []*connection, member bool) {
+	for _, conn := range conns {
+		if !member {
+			if hub.unsubscribe(conn, vaultID) {
+				conn.enqueue(notFoundFrame(0, vaultID))
 			}
+
+			continue
+		}
+
+		if hub.subscribed(conn, vaultID) {
+			hub.metrics.notifications.Inc()
+			conn.enqueue(vaultChangedFrame(vaultID, seq))
 		}
 	}
 }
