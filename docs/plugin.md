@@ -86,7 +86,7 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `idle` | The last sync succeeded. |
 | `syncing` | A pull or push is running. |
 | `offline` | The server or the identity provider could not be reached. Local changes are kept, and the next sync pushes them. |
-| `error` | The last sync failed for another reason, or the server refused some local changes. The details say why. |
+| `error` | The last sync failed for another reason, or some local files cannot be synced because the server does not accept their paths. The details say why and name the file; the [conflict view](#conflicts) lists every such file. |
 | `sign-in needed` | The session ended. Sign in again to resume. |
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
@@ -110,6 +110,8 @@ When no conflict-copy name fits the path length limits (a very deep folder), not
 A note edited on two devices can also end up with a conflict copy when the two edits do not overlap: if one device was offline for longer than the server keeps old versions (see [History and restore](#history-and-restore)), the version both edits started from may have been removed from the server, so vault-sync cannot merge them and keeps both. The view explains this as "no longer kept on the server".
 
 The view also lists **files this device cannot hold**: documents whose path on the server is not a valid file name on this device's platform, such as `CON.md` or a name with `?` on Windows, or a name longer than 255 bytes anywhere. Each shows its path on the server and why it cannot be written here, and links to the earlier version if this device still has one. Such a document is never dropped or renamed on the server. Rename it on another device and it arrives here. Until then, local changes to its earlier version are not synced.
+
+Finally, it lists **files that are not synced**: local files whose path the server does not accept. vault-sync checks every path against the server's rules before it sends anything, so such a file is never uploaded, and it stays on this device, untouched. A path is refused if it contains a control character (such as a line break or a tab, which Linux and Android allow in file names), if a folder or file name in it is made only of dots and spaces (such as `...`), if it is longer than 4096 bytes, or longer than 8192 bytes once its letters are normalized (a few characters, such as some musical symbols, grow when normalized), or, for a new file, if it contains a backslash (`\`) or starts with a character and a colon (`1:x.md`). Each entry shows the path, with any invisible character written as `\uXXXX` (a line break shows as `\u000A`), and why it is refused. The status shows `error` and names the file (or the first of several) with the reason. Rename or move the file to a valid path and it syncs like any other; delete it and the entry disappears too.
 
 ## Config folder sync
 

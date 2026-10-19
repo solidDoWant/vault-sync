@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused, drivePrefixPathsRefused } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -542,6 +542,42 @@ describe.runIf(suites.has("scenarios"))("scripted drive-like path scenarios (#14
       ["1/x.md", "digit drive\n"],
       ["e-y.md", "letter drive\n"],
       ["z.md", "emoji drive\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect([...result.documents.keys()].sort(), trace).toEqual([...expected.keys()].sort());
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted server-refused path scenarios (#100)", () => {
+  it("never sends files whose paths the server refuses, reports each with its reason, and syncs them once renamed", async () => {
+    const result = await serverRefusedPathsSurfaced(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    // Nothing of the refused files was uploaded or committed, across a crash.
+    expect(result.refusalRequests, trace).toEqual([]);
+    expect([...result.afterRefusal.keys()], trace).toEqual(["notes/a.md"]);
+    expect(result.reasons, trace).toEqual(
+      new Map([
+        ["notes/line\nbreak.md", "invalid-character"],
+        ["notes/.../dots.md", "not-vault-relative"],
+        [normalizedTooLongPath, "too-long-normalized"],
+      ]),
+    );
+    expect(result.secondAfterRefusal, trace).toEqual(
+      new Map([
+        ["notes/a.md", "synced\n"],
+        ["notes/line\nbreak.md", "control character\n"],
+        ["notes/.../dots.md", "dots\n"],
+        [normalizedTooLongPath, "grows when normalized\n"],
+      ]),
+    );
+    const expected = new Map([
+      ["notes/a.md", "synced\n"],
+      ["notes/line break.md", "control character\n"],
+      ["notes/dots.md", "dots\n"],
+      ["notes/long.md", "grows when normalized\n"],
     ]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
