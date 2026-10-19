@@ -5,7 +5,6 @@ package main_test
 import (
 	"bytes"
 	"encoding/json"
-	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -56,37 +55,34 @@ func TestPluginProtocolClient(t *testing.T) {
 	foreignToken := authtest.Sign(t, authtest.NewKey(t, jose.ES256), issuer.Claims("plugin-integration-user", now))
 
 	binary := buildServer(t)
-	apiAddress := freeAddress(t)
-	metricsAddress := freeAddress(t)
+	// Starts a new process, with new addresses, if another process took
+	// one of the ports first.
+	apiAddress := testinfra.StartServer(t, "server", 30*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
+		logs := &bytes.Buffer{}
 
-	var logs bytes.Buffer
-
-	server := newChild(t, binary)
-	server.Command.Env = []string{
-		config.DatabaseURLEnv + "=" + database.DSN,
-		config.ListenAddressEnv + "=" + apiAddress,
-		config.MetricsListenAddressEnv + "=" + metricsAddress,
-		config.OIDCIssuerURLEnv + "=" + issuer.URL,
-		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
-	}
-	server.Command.Stdout = &logs
-	server.Command.Stderr = &logs
-
-	// Registered before the server's cleanup, so it runs after the server
-	// has been stopped and its output collected.
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server logs:\n%s", logs.String())
+		server := newChild(t, binary)
+		server.Command.Env = []string{
+			config.DatabaseURLEnv + "=" + database.DSN,
+			config.ListenAddressEnv + "=" + addresses.API,
+			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+			config.OIDCIssuerURLEnv + "=" + issuer.URL,
+			config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
 		}
-	})
+		server.Command.Stdout = logs
+		server.Command.Stderr = logs
 
-	server.Start(t)
+		// Registered before the server's cleanup, so it runs after the
+		// server has been stopped and its output collected.
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("server logs:\n%s", logs.String())
+			}
+		})
 
-	require.Eventually(t, func() bool {
-		status, err := httpGet("http://" + metricsAddress + "/readyz")
+		server.Start(t)
 
-		return err == nil && status == http.StatusOK
-	}, 30*time.Second, 50*time.Millisecond, "server must become ready")
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String}
+	}).API
 
 	report := filepath.Join(t.TempDir(), "report.json")
 
