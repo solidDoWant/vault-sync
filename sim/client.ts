@@ -51,6 +51,8 @@ export interface RunContext {
   violations: Violation[];
   /** Appends a trace entry. */
   log: (entry: string) => void;
+  /** The trace so far, for a failure that cannot wait for the run's result. */
+  trace: readonly string[];
   /** The schedule step being executed. */
   stepNumber: () => number;
   /**

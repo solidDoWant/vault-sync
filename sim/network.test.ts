@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { createProtocolClient } from "../plugin/src/core/protocol/client";
 import { SyncService } from "../plugin/src/gen/vaultsync/v1/sync_pb";
-import { errorCode, settle, SimNetwork } from "./network";
+import { errorCode, settle, SimNetwork, StallError, stallTurns } from "./network";
 
 // These tests exercise the fault injector itself, so the far side is a
 // trivial in-process handler that records what reached it. The simulation
@@ -261,6 +261,121 @@ describe("SimNetwork", () => {
       expect(await network.deliverRequest()).toBeUndefined();
       network.heal();
       expect(await network.deliverRequest()).toContain("CommitRevision(a) -> ok");
+    });
+
+    it("lets draining pass the time a retry's backoff waits for, but not a fault's delay (#302)", async () => {
+      const { network, received, commit } = setup(30);
+      network.now = 1000;
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+      commit(0, "a");
+      commit(1, "b");
+      await settle();
+      network.delay(1, 5);
+      expect(await network.deliverRequest()).toBeUndefined();
+
+      // The step clock stands still while draining; only passing time ends the backoff.
+      expect(network.passTime()).toBe("#1 c0 CommitRevision(a) retry backoff elapsed");
+      expect(await network.deliverRequest()).toContain("c0 CommitRevision(a) -> ok");
+      expect(network.passTime()).toBeUndefined();
+      expect(await network.deliverRequest()).toBeUndefined();
+      expect(received).toEqual(["a"]);
+    });
+
+    it("passes time to whichever comes first, a backoff timer or the end of a retry's backoff", async () => {
+      const { network, commit } = setup(30);
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+      commit(0, "a");
+      await settle();
+      const fired: string[] = [];
+      // Due at steps 2 and 31; the retry can be delivered from step 30.
+      network.timers(1).setTimeout(() => fired.push("early"), 2000);
+      network.timers(1).setTimeout(() => fired.push("late"), 31_000);
+
+      expect(network.passTime()).toBe("c1 backoff timer fired");
+      expect(network.passTime()).toBe("#1 c0 CommitRevision(a) retry backoff elapsed");
+      expect(network.passTime()).toBe("c1 backoff timer fired");
+      expect(fired).toEqual(["early", "late"]);
+      // The clock moved on with them, so a timer set now runs from step 31.
+      network.timers(1).setTimeout(() => fired.push("after"), 1000);
+      expect(network.fireDueTimers()).toEqual([]);
+    });
+
+    it("does not pass time for a retry that a fault delayed once its backoff was over", async () => {
+      const { network, commit } = setup(30);
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+      commit(0, "a");
+      await settle();
+      network.now = 30;
+      expect(network.delay(0, 5)).toBe("#1 c0 CommitRevision(a) held for 5 steps");
+
+      expect(network.passTime()).toBeUndefined();
+      expect(await network.deliverRequest()).toBeUndefined();
+    });
+
+    it("does not pass time for a partitioned client's retry, nor for another client's", async () => {
+      const { network, commit } = setup(30);
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+      network.partition(0, 10);
+      commit(0, "a");
+      await settle();
+
+      expect(network.passTime()).toBeUndefined();
+      network.now = 10;
+      expect(network.passTime(1)).toBeUndefined();
+      expect(network.passTime(0)).toBe("#1 c0 CommitRevision(a) retry backoff elapsed");
+    });
+  });
+
+  describe("waiting for work only the network can finish (#302)", () => {
+    it("reports work that stays pending for stallTurns turns with no network activity as a stall", async () => {
+      const { network, commit } = setup();
+      commit(0, "a");
+      await settle();
+      const work = new Promise<never>(() => undefined);
+
+      const error = await network.untilSettled(work, () => "e1 stalled").then(
+        () => undefined,
+        (failure: unknown) => failure,
+      );
+      expect(error).toBeInstanceOf(StallError);
+      expect((error as Error).message).toBe("e1 stalled; in the network: #0 c0 CommitRevision(a) (request)");
+    });
+
+    it("settles as the work does, if it settles on the last turn the bound allows, and reports it one turn later", async () => {
+      const { network } = setup();
+      const after = async (turns: number) => {
+        for (let turn = 0; turn < turns; turn++) await settle();
+        return turns;
+      };
+
+      expect(await network.untilSettled(after(stallTurns), () => "slow")).toBe(stallTurns);
+      await expect(network.untilSettled(after(stallTurns + 1), () => "too slow")).rejects.toThrow("too slow; in the network: nothing");
+      await expect(network.untilSettled(Promise.reject(new Error("failed")), () => "never")).rejects.toThrow("failed");
+    });
+
+    it("keeps waiting while the network is active", async () => {
+      const { network, commit } = setup();
+      const busy = async () => {
+        for (let turn = 0; turn < stallTurns + 10; turn++) {
+          commit(0, `r${String(turn)}`);
+          await settle();
+        }
+        return "done";
+      };
+
+      expect(await network.untilSettled(busy(), () => "busy")).toBe("done");
     });
   });
 

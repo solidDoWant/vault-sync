@@ -16,7 +16,7 @@ import { Control } from "./control";
 import { EngineObserver, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
 import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed } from "./invariants";
-import { settle, SimNetwork, type Outcome } from "./network";
+import { settle, SimNetwork, StallError, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 
 /** Where the server and the driver's control endpoint are. */
@@ -130,6 +130,7 @@ export class SimRun {
       acknowledged: [],
       violations,
       log,
+      trace,
       stepNumber: () => run.stepNumber(),
       serverSeq: () => serverSeq,
     };
@@ -180,8 +181,8 @@ export class SimRun {
     const clients = client === undefined ? everyone : everyone.filter((candidate) => candidate.index === client);
     for (let delivery = 0; delivery < maxDrainDeliveries; delivery++) {
       this.context.network.now = this.stepNumber;
-      // Once nothing can be delivered, time moves on to the next backoff timer.
-      const entry = this.context.network.deliverResponse(client) ?? (await this.context.network.deliverRequest(client)) ?? this.context.network.fireNextTimer(client);
+      // Once nothing can be delivered, time moves on to the next backoff timer or the end of a commit retry's backoff.
+      const entry = this.context.network.deliverResponse(client) ?? (await this.context.network.deliverRequest(client)) ?? this.context.network.passTime(client);
       if (entry === undefined) {
         if (clients.every((candidate) => candidate.idle) && !this.context.network.hasMessages(client)) return;
         break;
@@ -189,7 +190,10 @@ export class SimRun {
       this.context.log(`drain: ${entry}`);
       await settle();
     }
-    this.context.violations.push({ invariant: "liveness", detail: `clients did not become idle while draining${client === undefined ? "" : ` c${String(client)}`}` });
+    const busy = clients.filter((candidate) => !candidate.idle).map((candidate) => `c${String(candidate.index)}`);
+    const detail = `clients did not become idle while draining${client === undefined ? "" : ` c${String(client)}`} at step ${String(this.stepNumber)} (busy: ${busy.join(", ") || "none"}; in the network: ${this.context.network.describePending(client)})`;
+    this.context.violations.push({ invariant: "liveness", detail });
+    this.context.log(`VIOLATION liveness: ${detail}`);
   }
 
   /** Fires the clients' backoff timers that are due (SimNetwork.timers) and lets the clients react. */
@@ -227,7 +231,15 @@ export class SimRun {
     await settle();
     await this.drain();
     const heads = await serverHeads(this.direct, this.context.vaultId);
-    for (const observer of this.observers) this.context.violations.push(...(await observer.check(heads)));
+    for (const observer of this.observers) {
+      try {
+        this.context.violations.push(...(await observer.check(heads)));
+      } catch (error) {
+        // An engine that never settles cannot be checked; the run reports the stall (with the trace, which holds it) instead of hanging (#302).
+        if (!(error instanceof StallError)) throw error;
+        this.context.violations.push({ invariant: "liveness", detail: error.message.split("\n")[0] ?? error.message });
+      }
+    }
     for (const violation of await this.checkUsers()) {
       this.context.violations.push(violation);
       this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);

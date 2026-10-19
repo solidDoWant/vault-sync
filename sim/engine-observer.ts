@@ -40,7 +40,7 @@ import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
 import { checkEngineEchoes, UserLedger } from "./invariants";
-import { errorCode } from "./network";
+import { errorCode, StallError } from "./network";
 import { Random } from "./random";
 import type { EngineOperation } from "./schedule";
 
@@ -163,7 +163,7 @@ export class EngineObserver {
   /** Writes `content` to the observer's vault as its user would; the engine pushes it on the next push. */
   async edit(path: string, content: Uint8Array): Promise<string> {
     const entry = await this.user.write(path, content);
-    await this.engine.settled();
+    await this.settled();
     return entry;
   }
 
@@ -190,7 +190,7 @@ export class EngineObserver {
   /** Renames `from` to `to` in the observer's vault as its user would. */
   async move(from: string, to: string): Promise<string> {
     const entry = await this.user.rename(from, to);
-    await this.engine.settled();
+    await this.settled();
     return entry;
   }
 
@@ -208,14 +208,14 @@ export class EngineObserver {
     const serverSeq = this.context.serverSeq();
     const at = `step ${String(this.context.stepNumber())}`;
     for (const [path, moved] of moves) this.ledger.changed({ paths: [path, moved], result: { path: moved, hash: sha256Hex(await this.vault.read(moved)) }, serverSeq, at });
-    await this.engine.settled();
+    await this.settled();
     return `${this.name} user renames folder ${from} to ${to}`;
   }
 
   /** Deletes `path` from the observer's vault as its user would. */
   async remove(path: string): Promise<string> {
     const entry = await this.user.remove(path);
-    await this.engine.settled();
+    await this.settled();
     return entry;
   }
 
@@ -226,15 +226,32 @@ export class EngineObserver {
    */
   async overwriteBehindUser(path: string, content: Uint8Array): Promise<string> {
     await this.vault.write(path, content);
-    await this.engine.settled();
+    await this.settled();
     return `${this.name} MUTATION: ${path} overwritten behind the user's back`;
   }
 
   /** Mutation for the harness's own tests: deletes `path` behind the user's back, as an engine that drops a file would. */
   async deleteBehindUser(path: string): Promise<string> {
     await this.vault.delete(path);
-    await this.engine.settled();
+    await this.settled();
     return `${this.name} MUTATION: ${path} deleted behind the user's back`;
+  }
+
+  /**
+   * Waits until the engine has handled every vault event and finished its
+   * pull or push. Nothing delivers messages meanwhile, so an engine still
+   * waiting on the network never gets there: that throws a StallError naming
+   * the step and the end of the trace, instead of hanging the run (#302).
+   */
+  private async settled(): Promise<void> {
+    const stallTraceLines = 80;
+    try {
+      await this.context.network.untilSettled(this.engine.settled(), () => `run stalled at step ${String(this.context.stepNumber())}: ${this.name}'s engine work never finished, and nothing delivers its calls while the harness waits for it`);
+    } catch (error) {
+      if (!(error instanceof StallError)) throw error;
+      this.context.log(`STALLED: ${error.message}`);
+      throw new StallError(`${error.message}\nTrace (last lines):\n${this.context.trace.slice(-stallTraceLines).join("\n")}`);
+    }
   }
 
   /**
@@ -242,7 +259,7 @@ export class EngineObserver {
    * vault and journal, as the plugin restarts its session; call while idle.
    */
   async setConfigSync(settings: ConfigSyncSettings): Promise<string> {
-    await this.engine.settled();
+    await this.settled();
     this.engine.dispose();
     this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config, settings, ownFolders: ["plugins/vault-sync"] });
     this.engine = this.createEngine();
@@ -253,7 +270,7 @@ export class EngineObserver {
   async editConfig(relative: string, content: Uint8Array): Promise<string> {
     this.userEdited.add(`.obsidian/${relative}`);
     await this.config.write(relative, content);
-    await this.engine.settled();
+    await this.settled();
     return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
   }
 
@@ -261,7 +278,7 @@ export class EngineObserver {
   async removeConfig(relative: string): Promise<string> {
     this.userEdited.add(`.obsidian/${relative}`);
     await this.config.delete(relative);
-    await this.engine.settled();
+    await this.settled();
     return `${this.name} Obsidian deletes config ${relative}`;
   }
 
@@ -338,7 +355,7 @@ export class EngineObserver {
 
   /** The engine-level invariants, checked once the run has quiesced. */
   async check(heads: ServerHeads): Promise<Violation[]> {
-    await this.engine.settled();
+    await this.settled();
     const violations: Violation[] = [];
     const files = new Map<string, string>();
     for (const path of await this.synced.list()) files.set(path, sha256Hex(await this.synced.read(path)));
