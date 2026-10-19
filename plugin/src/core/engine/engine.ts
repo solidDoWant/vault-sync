@@ -1076,6 +1076,9 @@ export class SyncEngine {
     const holder = await this.documentAt(local.path);
     if (holder !== undefined && holder.documentId !== remote.documentId) return false;
     const copyPaths: string[] = [];
+    // The document's own file, which the result moves away from (or
+    // deletes): it takes no name from a conflict copy (#319).
+    const leaving = current !== null && (outcome.content === null || outcome.path !== local.path) ? local.path : undefined;
     try {
       // A file in the way at the result's new path. If it is no document's, it
       // was created here concurrently with the remote document's move there:
@@ -1095,7 +1098,7 @@ export class SyncEngine {
         if (owner !== undefined && owner.documentId !== remote.documentId) return false;
         if (remaining !== null && !sameContent(remaining, outcome.content)) {
           if (await this.belongsToDocument(outcome.path)) return false;
-          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining });
+          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining }, leaving);
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
           this.changes.paths.add(copyPath);
@@ -1115,7 +1118,7 @@ export class SyncEngine {
         merging: { path: outcome.path, contentHash: outcome.content === null ? null : sha256Hex(outcome.content) },
       });
       if (outcome.conflict !== undefined) {
-        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict);
+        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict, leaving);
         if (copyPath === null) return false;
         copyPaths.push(copyPath);
       }
@@ -1224,9 +1227,10 @@ export class SyncEngine {
    * crash is finished under the same name rather than written twice. Returns
    * the copy's path, or null if no name fits the path limits: the conflict is
    * then logged without a copy and nothing is written, so the local version
-   * stays where it is.
+   * stays where it is. `leaving` is the path of the document's own file that
+   * the merge moves away or deletes (see freeConflictPath).
    */
-  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }): Promise<string | null> {
+  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, leaving?: string): Promise<string | null> {
     const hash = sha256Hex(conflict.content);
     const logged = (await this.journal.listConflicts()).filter((record) => record.documentId === remote.documentId && record.copyHash === hash);
     let copyPath: string | null = null;
@@ -1239,7 +1243,7 @@ export class SyncEngine {
       }
     }
     if (copyPath === null) {
-      copyPath = await this.freeConflictPath(localPath);
+      copyPath = await this.freeConflictPath(localPath, undefined, leaving === undefined ? undefined : { documentId: remote.documentId, path: leaving });
       const unresolved = copyPath === null && logged.some((record) => record.copyPath === null && record.remoteRevisionId === remote.revisionId);
       if (!unresolved) {
         await this.journal.putConflict(this.conflictRecord(remote.documentId, remote.path, conflict.reason, copyPath, hash, remote.revisionId));
@@ -1270,13 +1274,20 @@ export class SyncEngine {
    * whatever the local platform: a name free only in a case-sensitive vault
    * would be refused again (#243). That also keeps a copy off a file of
    * another spelling on a case-insensitive platform.
+   *
+   * `leaving` is a document's own file that the caller moves away from its
+   * path or deletes (a merge of the document's remote rename): the server
+   * already has the document elsewhere, so that file takes no name. Counted,
+   * a file `NOTES` would leave no free name in `notes/` for the copy of a
+   * file in the way of the document's move to `notes/c.md`, and the move
+   * would wait forever (#319).
    */
-  private async freeConflictPath(path: string, folder?: string): Promise<string | null> {
+  private async freeConflictPath(path: string, folder?: string, leaving?: { documentId: string; path: string }): Promise<string | null> {
     const date = this.now();
     const taken = new Set<string>();
     for (const operation of await this.journal.listPending()) taken.add(pathKey(operation.path));
     for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(pathKey(record.copyPath));
-    const files = await this.knownFileKeys();
+    const files = await this.knownFileKeys(leaving);
     // A folder is any file's ancestor.
     const folders = new Set<string>();
     for (const file of files) for (const ancestor of ancestors(file)) folders.add(ancestor);
@@ -1299,11 +1310,13 @@ export class SyncEngine {
    * The path keys of every file this device knows of: the vault's files, the
    * live documents the journal has, and the paths of remote revisions it
    * holds deferred (documents the server has there, though this vault does
-   * not show them).
+   * not show them). Without `leaving`'s file and its document's state there.
    */
-  private async knownFileKeys(): Promise<Set<string>> {
-    const keys = new Set((await this.vault.list()).map(pathKey));
-    for (const state of await this.journal.listDocuments()) if (!state.deleted) keys.add(pathKey(state.path));
+  private async knownFileKeys(leaving?: { documentId: string; path: string }): Promise<Set<string>> {
+    const keys = new Set((await this.vault.list()).filter((path) => path !== leaving?.path).map(pathKey));
+    for (const state of await this.journal.listDocuments()) {
+      if (!state.deleted && !(state.documentId === leaving?.documentId && state.path === leaving.path)) keys.add(pathKey(state.path));
+    }
     for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
     return keys;
   }
