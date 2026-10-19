@@ -71,6 +71,21 @@ var brokenSchedule = []string{
 	"SIM_ENGINES=2",
 }
 
+// refusedRetrySchedule is the refused-retry detector's own pinned schedule:
+// brokenSchedule without engine users (SIM_ENGINES=0), so one engine only
+// pulls and the schedule has no engine-operation steps, the shape every
+// seeded run had before #22. Since engine users joined CI's short run, its
+// seeds no longer meet a commit retried after the head moved (follow-up
+// #284), so the detector keeps the schedule it was proven on (#110).
+var refusedRetrySchedule = []string{
+	"SIM_SEED=",
+	"SIM_FIRST_SEED=1",
+	"SIM_SEEDS=5",
+	"SIM_STEPS=1000",
+	"SIM_CLIENTS=3",
+	"SIM_ENGINES=0",
+}
+
 // simulation is a running server plus control endpoint.
 type simulation struct {
 	serverURL     string
@@ -270,28 +285,29 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 	// server, database and bucket.
 	t.Parallel()
 
-	requireSeedsDetect(t, "simfault", invariantStaleBase, "")
+	requireSeedsDetect(t, "simfault", brokenSchedule, invariantStaleBase, "")
 }
 
 // TestSimulationDetectsRefusedRetry proves that random schedules, not only
 // the scripted scenario, catch the #12 bug (#110): against a server built
 // with the `simfault_retry` tag, which refuses a retry of a revision it
-// already applied once the head moved past it, the seeds of CI's short run
-// must report the refused retry as a protocol violation. The server-side
+// already applied once the head moved past it, the seeds of
+// refusedRetrySchedule must report the refused retry as a protocol
+// violation. The server-side
 // invariants all hold in that run; only the network sees the duplicate
 // coming.
 func TestSimulationDetectsRefusedRetry(t *testing.T) {
 	t.Parallel()
 
-	requireSeedsDetect(t, "simfault_retry", invariantProtocol, refusedRetryDetail)
+	requireSeedsDetect(t, "simfault_retry", refusedRetrySchedule, invariantProtocol, refusedRetryDetail)
 }
 
 // requireSeedsDetect builds the server with the broken build tag, runs
-// brokenSchedule's seeds against it until one fails, and requires a
+// schedule's seeds against it until one fails, and requires a
 // violation of invariant whose detail contains detail. The minimized case
 // the harness wrote must reproduce it when replayed as a committed
 // regression case.
-func requireSeedsDetect(t *testing.T, tag, invariant, detail string) {
+func requireSeedsDetect(t *testing.T, tag string, schedule []string, invariant, detail string) {
 	t.Helper()
 
 	simulation := startSimulation(t, t.TempDir(), tag)
@@ -308,7 +324,7 @@ func requireSeedsDetect(t *testing.T, tag, invariant, detail string) {
 	result := simulation.runSuite(t, false, append([]string{
 		suitesEnv + "=seeds",
 		shrinkRunsEnv + "=" + strconv.Itoa(shrinkRuns),
-	}, brokenSchedule...), "--bail", "1")
+	}, schedule...), "--bail", "1")
 
 	require.Error(t, result.err, "the simulation passed against the %s server:\n%s", tag, result.output)
 

@@ -52,7 +52,10 @@ function describeViolations(result: RunResult): string {
 
 describe.runIf(suites.has("seeds"))("seeded schedules", () => {
   it.each(environment.seeds)("seed %i keeps every invariant", async (seed) => {
-    const options = { seed, clients: environment.clients, engines: environment.engines, platforms: seededPlatforms(seed, environment.engines), commitRetryBackoff: seededCommitRetryBackoff };
+    // Without engine users (SIM_ENGINES=0) `engines` stays unset: one engine
+    // only pulls, and a recorded case replays the same way.
+    const engines = environment.engines === 0 ? undefined : environment.engines;
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
     if (result.violations.length === 0) return;
@@ -72,7 +75,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
         `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
         describeViolations(final),
         `Regression case written to ${written}.`,
-        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(options.engines)}`,
+        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}`,
         "Trace of the minimized schedule (last lines):",
         tail(final.trace),
       ].join("\n"),
