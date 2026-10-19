@@ -49,13 +49,13 @@ export interface ServerHeads {
 
 /**
  * The harness's own, deliberately simple, check of which paths Windows cannot
- * hold, independent of the engine's rules: enough for the names the scripted
- * clients use (pathPool) and their conflict paths. Other platforms can hold
+ * hold, independent of the engine's rules: Windows's forbidden characters,
+ * trailing dots and spaces and reserved names, enough for the paths the sim uses. Other platforms can hold
  * all of them.
  */
 export function harnessUnmaterializable(path: string, platform: PathPlatform): boolean {
   if (platform !== "windows") return false;
-  return path.split("/").some((segment) => segment.includes(":") || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
+  return path.split("/").some((segment) => /[<>:"|?*]/.test(segment) || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
 }
 
 export class EngineObserver {
