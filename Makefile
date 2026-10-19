@@ -37,10 +37,11 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + release script tests.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + nightly-simulation report test + release script tests.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
+	./scripts/sim-nightly-report_test.sh
 	./scripts/release_test.sh
 
 .PHONY: test-integration
@@ -52,7 +53,7 @@ test-integration-postgres14: ## Run the store/migration integration tests and th
 	./scripts/test-integration-postgres14.sh
 
 .PHONY: test-sim
-test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_SEED, SIM_REGRESSION_DIR).
+test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_ENGINES, SIM_SEED, SIM_REGRESSION_DIR).
 	./scripts/test-sim.sh
 
 .PHONY: test-e2e

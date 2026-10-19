@@ -51,7 +51,7 @@ const (
 
 // brokenSchedule is the schedule the broken-server check always runs: the
 // short run CI does on every pull request (SIM_SEEDS=5, SIM_STEPS=1000, the
-// default three clients). It is pinned, not taken from the SIM_* tuning
+// default three clients and two engines). It is pinned, not taken from the SIM_* tuning
 // variables, so that replaying one seed or running shorter schedules locally
 // cannot make the check fail, and so that it proves the CI run catches the
 // broken server.
@@ -61,6 +61,7 @@ var brokenSchedule = []string{
 	"SIM_SEEDS=5",
 	"SIM_STEPS=1000",
 	"SIM_CLIENTS=3",
+	"SIM_ENGINES=2",
 }
 
 // simulation is a running server plus control endpoint.
