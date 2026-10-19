@@ -59,6 +59,17 @@ export interface VaultAdapter {
    * the order the changes happened.
    */
   watch(listener: VaultListener): () => void;
+
+  /**
+   * Optional: whether `path` is within what this vault syncs (all paths if
+   * absent). The engine leaves a path outside it alone: it pushes no change
+   * of it, not even the disappearance of a document it synced there earlier,
+   * and defers a remote revision of it (`out-of-scope`) until the path is in
+   * scope again, at a later engine start. ConfigSyncVault
+   * (src/core/config/config-vault.ts) uses it for config folder sync
+   * (SPEC.md §8).
+   */
+  isSynced?(path: string): boolean;
 }
 
 /**
