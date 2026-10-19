@@ -1,8 +1,9 @@
 // The user of an engine-driven simulation client (#22): random creates, edits,
 // renames and deletes in its vault, as a person would make them in Obsidian,
 // at any moment, also while the engine is pulling or pushing. Everything the
-// user does is recorded in the client's UserLedger, which the lost-write and
-// phantom-delete checks (sim/invariants.ts) hold the engine to.
+// user does is recorded in the client's UserLedger, which the lost-write,
+// phantom-delete and resurrected-delete checks (sim/invariants.ts) hold the
+// engine to.
 //
 // The user survives the app's crashes: the ledger is the harness's record,
 // not the app's.
@@ -31,6 +32,8 @@ export interface EngineUserOptions {
   now: () => string;
   /** Called with every path the user changes, so the engine's events there count as local changes. */
   touched: (path: string) => void;
+  /** The server's head seq, recorded with each write and rename for the resurrected-delete check. */
+  serverSeq: () => bigint;
 }
 
 export class EngineUser {
@@ -78,6 +81,7 @@ export class EngineUser {
     if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
     const hash = sha256Hex(content);
     this.options.ledger.write({ hash, path, at: this.options.now() });
+    this.options.ledger.changed({ paths: [path], result: { path, hash }, serverSeq: this.options.serverSeq(), at: this.options.now() });
     return `${this.options.name} user ${verb} ${path} (${hash.slice(0, 8)}, ${String(content.length)} B)`;
   }
 
@@ -85,7 +89,9 @@ export class EngineUser {
     this.options.touched(from);
     this.options.touched(to);
     await this.options.vault.rename(from, to);
+    const serverSeq = this.options.serverSeq();
     this.recordRename(from, to);
+    this.options.ledger.changed({ paths: [from, to], result: { path: to, hash: sha256Hex(await this.options.vault.read(to)) }, serverSeq, at: this.options.now() });
     return `${this.options.name} user renames ${from} to ${to}`;
   }
 
