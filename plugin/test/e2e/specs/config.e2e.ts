@@ -22,15 +22,24 @@ async function layout(path: string): Promise<string | null> {
 }
 
 /**
- * Waits until Obsidian has written its settings files (app.json,
- * appearance.json), which it does a few seconds after it starts.
- * appearance.json syncs with the themes category, so a session that should
- * see a settled config folder starts only after that.
+ * Waits until Obsidian has made the config writes it makes after it starts,
+ * each debounced (#326): app.json, appearance.json and core-plugins.json,
+ * which the fixture vault does not have, and community-plugins.json, which it
+ * saves again a second after it has loaded every enabled plugin (the harness
+ * among them, which watches for that save from its onload). The themes and
+ * plugin list categories sync the last three, so a session that starts
+ * earlier may push before one of them is written, then commit it on its next
+ * sync.
  */
 async function settingsWritten(): Promise<void> {
-  await browser.waitUntil(() => browser.executeObsidian(async ({ app }) => (await app.vault.adapter.exists(`${app.vault.configDir}/app.json`)) && app.vault.adapter.exists(`${app.vault.configDir}/appearance.json`)), {
-    timeoutMsg: "Obsidian never wrote its settings files",
-  });
+  await browser.waitUntil(
+    async () =>
+      (await browser.executeObsidian(async ({ app }) => {
+        for (const file of ["app.json", "appearance.json", "core-plugins.json"]) if (!(await app.vault.adapter.exists(`${app.vault.configDir}/${file}`))) return false;
+        return true;
+      })) && (await callHarness("configWritesSinceLoad")).includes("community-plugins.json"),
+    { timeoutMsg: "Obsidian never wrote its settings files" },
+  );
 }
 
 /** Runs an Obsidian command by id. */
@@ -119,6 +128,7 @@ describe("Config folder sync", function () {
     await callHarness("setConfigSync", everything);
     await callHarness("startSession");
     const before = await callHarness("serverState");
+    const filesBefore = await callHarness("serverFiles");
     // The config folder synced: the enabled plugin list at least, never the layout or vault-sync's own folder.
     const configDir = await browser.executeObsidian(({ app }) => app.vault.configDir);
     expect(before.paths).toContain(`${configDir}/community-plugins.json`);
@@ -143,7 +153,9 @@ describe("Config folder sync", function () {
     await browser.waitUntil(async () => (await layout(file)) !== layoutBefore && (await callHarness("reportedConfigChanges")).length > 0, { timeoutMsg: "Obsidian never saved the layout" });
     expect(await callHarness("reportedConfigChanges")).toContain(file.slice(configDir.length + 1));
 
-    expect(await callHarness("syncSession")).toBe(0);
+    // Compared together, so a failure names each file the sync committed and its content.
+    const committed = await callHarness("syncSession");
+    expect({ committed, files: await callHarness("serverFiles") }).toEqual({ committed: 0, files: filesBefore });
     expect(await callHarness("serverState")).toEqual(before);
   });
 

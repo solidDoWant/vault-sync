@@ -135,10 +135,20 @@ export default class VaultSyncE2EHarness extends Plugin {
 
   private session: { server: InMemoryServer; journalKey: JournalKey; journal: IndexedDbJournal | undefined; listChangesSince: string[]; localChanges: VaultEvent[][] } | undefined;
 
+  /** Paths (relative to the config folder) a config folder adapter watched from onload on reported, in order. */
+  private readonly configSinceLoad: string[] = [];
+
   override onload(): void {
     // Registered as early as a plugin can: Obsidian may still be indexing.
     const stop = new ObsidianVaultAdapter(this.app).watch((event) => this.sinceLoad.push(event));
     this.register(stop);
+    // Obsidian saves community-plugins.json again once it has loaded every enabled plugin, this one included (config.e2e.ts).
+    this.register(new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)).watch((event) => this.configSinceLoad.push(event.path)));
+  }
+
+  /** The config files (relative to the config folder) Obsidian wrote since this plugin loaded. */
+  configWritesSinceLoad(): string[] {
+    return [...new Set(this.configSinceLoad)];
   }
 
   /** The conformance case names, in suite order. */
@@ -468,6 +478,11 @@ export default class VaultSyncE2EHarness extends Plugin {
   serverState(): { paths: string[]; headSeq: string } {
     const { server } = this.requireSession();
     return { paths: [...server.liveFiles().keys()].sort(), headSeq: String(server.currentHeadSeq) };
+  }
+
+  /** The session server's live files: each path's content, sorted by path. */
+  serverFiles(): Record<string, string> {
+    return Object.fromEntries([...this.requireSession().server.liveFiles()].sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0)));
   }
 
   /** Commits `content` at `path` on the session server as another device would, as a new revision of the document there if there is one. */
