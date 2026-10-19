@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoLocalFolder } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -790,6 +790,32 @@ describe.runIf(suites.has("scenarios"))("scripted document-kind scenarios (#306)
     ]);
     expect(result.revisions.map(({ kind }) => kind), trace).toEqual(["BLOB", "BLOB", "BLOB", "BLOB"]);
     expect(result.revisions.map(({ deleted }) => deleted), trace).toEqual([false, false, false, true]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted file/folder rule scenarios (#307)", () => {
+  it.each(["windows", "macos"] as const)("keeps a local edit and a local note whose folder a remote rename's name takes, and stops pushing, under %s rules", async (platform) => {
+    const result = await remoteRenameOntoLocalFolder(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const a = result.before.get("a.md");
+    expect(a, trace).toBeDefined();
+    // Both vaults hold the same files as the server's live documents.
+    const [posix, other] = result.vaults;
+    expect(other, trace).toEqual(posix);
+    expect([...(posix?.keys() ?? [])].sort(), trace).toEqual([...result.documents.keys()].sort());
+    // The edit of a.md is live under a's id (the rename kept, the edit merged in) ...
+    const aPath = [...result.documents].find(([, document]) => document === a)?.[0];
+    expect(aPath, trace).toBeDefined();
+    expect(posix?.get(aPath ?? ""), trace).toBe("a\nlocal edit\n");
+    // ... and the new note's content is live, as another document.
+    const notes = [...(posix ?? new Map<string, string>())].filter(([, content]) => content === "new note\n");
+    expect(notes, trace).toHaveLength(1);
+    expect(result.documents.get(notes[0]?.[0] ?? ""), trace).not.toBe(a);
+    expect(result.tombstoned, trace).toEqual([]);
+    // The case-insensitive engine never sent the same refused commit push after push.
+    expect(result.pushes.filter((line) => line.endsWith("0 committed, 1 conflicts, 1 pending")).length, trace).toBeLessThanOrEqual(1);
   });
 });
 
