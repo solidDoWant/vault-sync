@@ -211,6 +211,78 @@ describe("SyncSession", () => {
       );
       expect(await files(vault)).toEqual(server.liveFiles());
     });
+
+    it("keeps an edit made while the server is unreachable, reports offline, and pushes it on the sync timer once the server is back", async () => {
+      vi.useFakeTimers();
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const statuses: SessionStatus[] = [];
+      await session({
+        server,
+        vault,
+        journal: new InMemoryJournal(),
+        statuses,
+        options: { pushDebounceMs: 1000, syncIntervalMs: 30_000 },
+      }).start();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "idle" });
+      });
+
+      // Every call fails as a request that never reached the server does (airplane mode).
+      server.interceptor = () => {
+        throw new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable);
+      };
+      await vault.write("a.md", bytes("written offline"));
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline" });
+      });
+      expect(await files(vault)).toEqual(new Map([["a.md", "written offline"]]));
+      expect(server.liveFiles()).toEqual(new Map());
+
+      server.interceptor = undefined;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => {
+        expect(server.liveFiles()).toEqual(new Map([["a.md", "written offline"]]));
+      });
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+      expect(await files(vault)).toEqual(new Map([["a.md", "written offline"]]));
+    });
+
+    it("pushes an edit made while the server was unreachable from the next session when the app was closed before it synced", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "a", path: "a.md", content: "synced" });
+      const vault = new InMemoryVault();
+      const journal = new InMemoryJournal();
+      const statuses: SessionStatus[] = [];
+      const first = session({ server, vault, journal, statuses });
+      await first.start();
+      expect(await files(vault)).toEqual(new Map([["a.md", "synced"]]));
+
+      server.interceptor = () => {
+        throw new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable);
+      };
+      await vault.write("a.md", bytes("edited offline"));
+      await vault.write("b.md", bytes("created offline"));
+      await first.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline" });
+      });
+      await first.stop();
+      expect(server.liveFiles()).toEqual(new Map([["a.md", "synced"]]));
+
+      server.interceptor = undefined;
+      await session({ server, vault, journal }).start();
+
+      const expected = new Map([
+        ["a.md", "edited offline"],
+        ["b.md", "created offline"],
+      ]);
+      expect(server.liveFiles()).toEqual(expected);
+      expect(await files(vault)).toEqual(expected);
+    });
   });
 
   describe("when stopped", () => {
