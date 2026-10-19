@@ -1,5 +1,5 @@
 import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
-import { SyncEngine, type PullSummary, type PushSummary, type UnmaterializableDocument } from "../core/engine/engine";
+import { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type UnmaterializableDocument } from "../core/engine/engine";
 import type { HistoryEntry, HistoryPage } from "../core/engine/history";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
@@ -7,6 +7,7 @@ import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/cli
 import type { DocumentState, Journal, RemoteRevision } from "../core/journal/journal";
 import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
+import { rejectedReasonText, visiblePath } from "./conflict-text";
 import { errorMessage, isOffline } from "./status";
 
 // No Obsidian import: the plugin passes the Obsidian adapter and its
@@ -106,7 +107,8 @@ export class SyncSession {
   private busy = false;
   /** The last pull or push's failure; undefined after a success. */
   private failure: unknown;
-  private rejected = 0;
+  /** The local operations the last push reported as refused for good (#100). */
+  private refused: RejectedOperation[] = [];
   private counts = { pending: 0, conflicts: 0 };
   /** Bumped by every report, so only the latest one's counts are kept. */
   private reports = 0;
@@ -263,8 +265,10 @@ export class SyncSession {
   private succeeded(result: PullSummary | PushSummary): void {
     if (this.stopped) return;
     this.failure = undefined;
-    // A pull says nothing about refused operations; a push does.
-    if ("rejected" in result) this.rejected = result.rejected.length;
+    // A pull says nothing about refused operations; a push does, every time
+    // (it looks at every pending operation), so a file the user renamed or
+    // removed drops off the list with the next push.
+    if ("rejected" in result) this.refused = result.rejected;
     void this.report();
   }
 
@@ -301,8 +305,14 @@ export class SyncSession {
         message: errorMessage(this.failure),
       };
     }
-    if (this.rejected > 0) {
-      const message = `The server refused ${String(this.rejected)} local ${this.rejected === 1 ? "change" : "changes"}; ${this.rejected === 1 ? "it stays" : "they stay"} pending.`;
+    const [first] = this.refused;
+    if (first !== undefined) {
+      const path = visiblePath(first.operation.path);
+      const reason = rejectedReasonText(first.reason, errorMessage(first.error));
+      const message =
+        this.refused.length === 1
+          ? `Cannot sync "${path}": ${reason} Rename or move it to sync it.`
+          : `Cannot sync ${String(this.refused.length)} local files, among them "${path}": ${reason} The Sync conflicts view lists them all.`;
       return { state: "error", ...this.counts, message };
     }
     return { state: "idle", ...this.counts };
@@ -333,6 +343,15 @@ export class SyncSession {
     const engine = this.engine;
     if (engine === undefined || this.stopped) return [];
     return engine.unmaterializable();
+  }
+
+  /**
+   * The local files the server refuses for good, as the last push found
+   * them (#100), for the conflict view: each stays on disk, unsynced, until
+   * the user renames or removes it. Empty once the session is stopped.
+   */
+  rejected(): Promise<RejectedOperation[]> {
+    return Promise.resolve(this.stopped ? [] : [...this.refused]);
   }
 
   /**

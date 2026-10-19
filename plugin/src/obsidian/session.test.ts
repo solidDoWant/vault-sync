@@ -578,6 +578,48 @@ describe("SyncSession", () => {
       });
     });
 
+    it("names a local file the server refuses, with the reason, until the user renames it (#100)", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      await vault.write("notes/line\nbreak.md", bytes("mine\n"));
+      const statuses: SessionStatus[] = [];
+      const running = session({ server, vault, journal: new InMemoryJournal(), statuses });
+      await running.start();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "error", pending: 1 });
+      });
+      expect(statuses.at(-1)?.message).toBe(
+        'Cannot sync "notes/line\\u000Abreak.md": The path contains a control character, such as a line break or a tab, which the server does not accept. Rename or move it to sync it.',
+      );
+
+      // A later push (the timer's, say) still reports it.
+      await running.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "error", pending: 1, message: expect.stringContaining("notes/line\\u000Abreak.md") as unknown });
+      });
+
+      await vault.rename("notes/line\nbreak.md", "notes/line break.md");
+      await running.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+      expect(server.liveFiles()).toEqual(new Map([["notes/line break.md", "mine\n"]]));
+    });
+
+    it("counts the local files the server refuses and names one of them", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      await vault.write("a\tb.md", bytes("one\n"));
+      await vault.write("c\td.md", bytes("two\n"));
+      const statuses: SessionStatus[] = [];
+      await session({ server, vault, journal: new InMemoryJournal(), statuses }).start();
+
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "error", pending: 2 });
+      });
+      expect(statuses.at(-1)?.message).toMatch(/^Cannot sync 2 local files, among them "(a\\u0009b|c\\u0009d)\.md": The path contains a control character.* The Sync conflicts view lists them all\.$/);
+    });
+
     it("reports nothing once stopped", async () => {
       vi.useFakeTimers();
       const server = new InMemoryServer();
@@ -638,6 +680,26 @@ describe("SyncSession", () => {
         { path: "notes/CON.md", reason: "reserved-name" },
       ]);
       expect(await vault.list()).toEqual(["ok.md"]);
+    });
+
+    it("lists the local files the server refuses with their path and reason until the user removes them (#100)", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      await vault.write("ok.md", bytes("fine\n"));
+      await vault.write("notes/.../a.md", bytes("dots\n"));
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      expect(await running.rejected()).toEqual([]);
+      await running.start();
+
+      expect((await running.rejected()).map(({ operation, reason }) => ({ path: operation.path, reason }))).toEqual([{ path: "notes/.../a.md", reason: "not-vault-relative" }]);
+      expect(server.liveFiles()).toEqual(new Map([["ok.md", "fine\n"]]));
+
+      await vault.delete("notes/.../a.md");
+      await running.syncNow();
+      expect(await running.rejected()).toEqual([]);
+
+      await running.stop();
+      expect(await running.rejected()).toEqual([]);
     });
 
     it("lists nothing once stopped", async () => {

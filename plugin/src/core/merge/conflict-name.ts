@@ -1,9 +1,6 @@
-import { pathKey } from "../pathkey/pathkey";
 import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
-import { isVaultRelativePath, maxPathBytes } from "../vaultpath/vaultpath";
+import { fitsPathKeyLimit, isVaultRelativePath, maxPathBytes } from "../vaultpath/vaultpath";
 
-/** Most UTF-8 bytes of a normalized path (`path_key`) the server accepts (SPEC.md §6.2). */
-export const maxPathKeyBytes = 8192;
 /** Most UTF-8 bytes of one path segment: the file-name limit of every supported platform's filesystems. */
 export const maxSegmentBytes = 255;
 /** Most characters of the device name in a conflict copy's name. */
@@ -60,7 +57,7 @@ function conflictName(path: string, device: string, date: Date, attempt: number,
     return (
       utf8Length(segment) <= maxSegmentBytes &&
       utf8Length(copy) <= maxPathBytes &&
-      utf8Length(pathKey(copy)) <= maxPathKeyBytes &&
+      fitsPathKeyLimit(copy) &&
       isVaultRelativePath(copy) &&
       (rules === undefined || unmaterializableReason(copy, rules) === undefined)
     );
