@@ -54,6 +54,20 @@ export {
   type ProtocolClientOptions,
   type TokenSource,
 } from "./protocol/client";
+export {
+  bearerSubprotocolPrefix,
+  RealtimeClient,
+  realtimeSubprotocol,
+  realtimeUrl,
+  reconnectDelay,
+  type RealtimeBackoff,
+  type RealtimeClientOptions,
+  type RealtimeConnector,
+  type RealtimeSocket,
+  type RealtimeSocketHandlers,
+  type RealtimeTimers,
+} from "./realtime/client";
+export { InMemoryRealtimeConnection, InMemoryRealtimeServer, type InMemoryRealtimeOptions } from "./realtime/memory";
 export { isProtocolCompatible, PROTOCOL_VERSION } from "./version";
 export {
   isVaultError,

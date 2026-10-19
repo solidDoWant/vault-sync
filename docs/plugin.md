@@ -60,10 +60,19 @@ While signed in and connected, the plugin syncs on its own:
 
 - When sync starts (Obsidian starting, the plugin enabled, a sign-in, a vault connected), it pulls the server's changes and then pushes every local change made since the last sync, including changes made while Obsidian was closed or the plugin was off.
 - 2 seconds after your last edit, it pushes. A burst of edits becomes one revision.
-- Every 30 seconds it pulls and pushes, which brings in changes from other devices and retries anything that failed. (A realtime channel will make other devices' changes arrive at once, [#193](https://github.com/solidDoWant/vault-sync/issues/193).)
+- When another device commits a change, the server notifies this device over its realtime channel (a WebSocket to `/v1/realtime` on the configured server), and the plugin pulls at once.
+- Every 30 seconds it pulls and pushes, which retries anything that failed and brings in other devices' changes even while the realtime channel is down.
 - The **Vault Sync: Sync now** command does the same at once.
 
 Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.
+
+### Realtime channel
+
+The realtime channel only makes changes arrive sooner; sync never depends on it (SPEC.md §6.4). Every time the plugin (re)subscribes, it pulls from where it left off, so a change made while it was disconnected is never missed.
+
+- It authenticates with the same access token as the API, sent as the `vaultsync.bearer.` WebSocket subprotocol, never in the URL, and never logged. When the token expires the server closes the connection; the plugin gets a fresh token from its stored sign-in, with no prompt, and reconnects.
+- When the connection drops or the server refuses it (the server restarting or draining, too many connections, the network going away), the plugin reconnects after a random delay that doubles with every consecutive failure, from about a second up to a minute. Meanwhile the 30-second sync keeps running.
+- The server must allow Obsidian's origins (`app://obsidian.md`, `capacitor://localhost`, `http://localhost`; the server allows them by default), and a reverse proxy in front of it must pass WebSocket upgrades on `/v1/realtime` ([configuration](configuration.md)). Without the channel, changes from other devices still arrive within 30 seconds.
 
 ### Status
 

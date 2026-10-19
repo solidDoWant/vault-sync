@@ -8,6 +8,7 @@ import { VaultService } from "../gen/vaultsync/v1/vault_pb";
 import type { AuthState } from "../core/auth/tokens";
 import { InMemoryServer } from "../core/engine/memory-server";
 import { InMemoryJournal } from "../core/journal/memory";
+import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
 import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, SyncController, type ClosableJournal } from "./controller";
@@ -425,5 +426,28 @@ describe("SyncController", () => {
 
     expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`]);
     await f.controller.stop();
+  });
+
+  it("subscribes the session to its vault on the configured server's realtime channel", async () => {
+    const server = fakeServer();
+    const realtime = new InMemoryRealtimeServer();
+    const servers: string[] = [];
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      realtime: (serverUrl) => {
+        servers.push(serverUrl);
+        return { connect: realtime.connect, accessToken: () => Promise.resolve(tokenFor("alice")) };
+      },
+    });
+
+    await f.controller.update();
+    await vi.waitFor(() => {
+      expect([...(realtime.open[0]?.subscriptions ?? [])]).toEqual([server.sync.vaultId]);
+    });
+    expect(servers).toEqual(["https://sync.example"]);
+
+    await f.controller.stop();
+    await vi.waitFor(() => {
+      expect(realtime.open).toEqual([]);
+    });
   });
 });
