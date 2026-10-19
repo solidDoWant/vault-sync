@@ -60,7 +60,7 @@ func TestPluginProtocolClient(t *testing.T) {
 	apiAddress := testinfra.StartServer(t, "server", 30*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
 		logs := &bytes.Buffer{}
 
-		server := newChild(t, binary)
+		server := testinfra.NewChild(t, binary)
 		server.Command.Env = []string{
 			config.DatabaseURLEnv + "=" + database.DSN,
 			config.ListenAddressEnv + "=" + addresses.API,
@@ -86,7 +86,7 @@ func TestPluginProtocolClient(t *testing.T) {
 
 	report := filepath.Join(t.TempDir(), "report.json")
 
-	suite := newChild(t, vitest, "run",
+	suite := testinfra.NewChild(t, vitest, "run",
 		"--config", "vitest.integration.config.ts",
 		"--reporter", "default", "--reporter", "json", "--outputFile.json", report,
 	)

@@ -40,8 +40,10 @@ const single = process.env.SIM_SEED;
 const seeds = single !== undefined && single !== "" ? [integer("SIM_SEED", 0)] : Array.from({ length: integer("SIM_SEEDS", 10) }, (_, index) => firstSeed + index);
 const clients = integer("SIM_CLIENTS", 3);
 if (clients < 1) throw new Error("SIM_CLIENTS must be at least 1");
+// 0 runs without engine users: one engine only pulls and the schedule has
+// no engine-operation steps, as seeded runs did before #22.
 const engines = integer("SIM_ENGINES", 2);
-if (engines < 1) throw new Error("SIM_ENGINES must be at least 1");
+if (engines < 0) throw new Error("SIM_ENGINES must not be negative");
 
 export default defineConfig({
   test: {

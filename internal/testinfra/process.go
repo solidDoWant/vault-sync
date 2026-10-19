@@ -15,9 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The child-process helpers below mirror cmd/vault-sync-server's
-// process_integration_test.go, exported so that tests outside that package
-// (the simulation driver in sim/) can start the server and node the same way.
+// The child-process helpers below start the server, node and vitest for
+// every test that runs them: cmd/vault-sync-server's integration and e2e
+// tests and the simulation driver in sim/.
 
 const (
 	// maxChildGrace caps how long before the test binary's deadline a
@@ -134,6 +134,12 @@ func (process *Child) Start(t testing.TB) {
 // Exited is closed once the child has exited and its output is collected.
 func (process *Child) Exited() <-chan struct{} {
 	return process.exited
+}
+
+// Err returns the error from waiting for the child. It is valid only after
+// Exited is closed.
+func (process *Child) Err() error {
+	return process.err
 }
 
 // Wait blocks until the child exits and returns the error from waiting for

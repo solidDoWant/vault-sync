@@ -55,9 +55,11 @@ describe("generateSchedule", () => {
 
   it("generates exactly the schedules of before #22 when the run has no engine users", () => {
     // The digest of seed 4242's 2000 steps for 3 clients, computed with the
-    // generator of master before engine operations existed (6201f44).
+    // generator from before engine operations existed, with the step weights
+    // retuned in #110 (c60a78c). Before that retune (6201f44) it was
+    // 9d03d04b91bd71eca1f9a1dba1bdae0dcee6a0610304d59dee41ffccea35905e.
     const schedule = generateSchedule({ seed: 4242, steps: 2000, clients: 3 });
-    expect(bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(schedule))))).toBe("9d03d04b91bd71eca1f9a1dba1bdae0dcee6a0610304d59dee41ffccea35905e");
+    expect(bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(schedule))))).toBe("b93c70d5465c4a9a9420c2e2034c35bdf22a0f21e542d91f818c8e0f6133b3c3");
     expect(generateSchedule({ seed: 4242, steps: 2000, clients: 3, engines: 0 })).toEqual(schedule);
   });
 

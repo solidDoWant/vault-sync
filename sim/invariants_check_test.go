@@ -3,6 +3,7 @@
 package sim_test
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -171,8 +172,18 @@ func TestInvariantChecksDetectEachViolation(t *testing.T) {
 			name: "two live documents share a path_key",
 			corrupt: func(t *testing.T, fixture *invariantFixture) []acknowledgement {
 				// The server's unique index would refuse this; the check must
-				// not rely on it.
+				// not rely on it. The subtests share the database, so the
+				// index comes back for the ones after this (#110).
+				var definition string
+				require.NoError(t, db.QueryRow(t.Context(), `SELECT pg_get_indexdef('documents_live_path_key_idx'::regclass)`).Scan(&definition))
 				exec(t, `DROP INDEX documents_live_path_key_idx`)
+				t.Cleanup(func() {
+					ctx := context.WithoutCancel(t.Context())
+					_, err := db.Exec(ctx, `UPDATE documents SET path_key = 'b.md' WHERE id = $1`, fixture.b)
+					require.NoError(t, err)
+					_, err = db.Exec(ctx, definition)
+					require.NoError(t, err, "recreate the live path_key index")
+				})
 				exec(t, `UPDATE documents SET path_key = 'a.md' WHERE id = $1`, fixture.b)
 				exec(t, `UPDATE revisions SET path = 'A.md' WHERE id = $1`, fixture.b1)
 
@@ -238,6 +249,12 @@ func TestInvariantChecksDetectEachViolation(t *testing.T) {
 			assert.ElementsMatch(t, test.expected, invariantsOf(violations), "violations: %+v", violations)
 		})
 	}
+
+	// No subtest leaves the shared database without the server's unique
+	// live path_key index, so none depends on the order they run in.
+	var indexed bool
+	require.NoError(t, db.QueryRow(t.Context(), `SELECT to_regclass('documents_live_path_key_idx') IS NOT NULL`).Scan(&indexed))
+	assert.True(t, indexed, "documents_live_path_key_idx was left dropped")
 }
 
 // TestInvariantChecksExcuseOnlyPurgedRevisions: a revision the run had
