@@ -7,6 +7,7 @@ import type { PullSummary } from "./core/engine/engine";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import type { PathRules } from "./core/vaultpath/platform";
 import { PROTOCOL_VERSION } from "./core/version";
+import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
 import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
 import { discoverIdentityProvider } from "./obsidian/discovery";
@@ -79,6 +80,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.addCommand({ id: "sign-in", name: "Sign in", callback: () => void this.signIn() });
     this.addCommand({ id: "sign-out", name: "Sign out", callback: () => void this.signOut() });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.controller?.syncNow() });
+    this.registerView(conflictViewType, (leaf) => new ConflictView(leaf, { problems: () => this.controller?.session ?? this.session }));
+    this.addCommand({ id: "show-conflicts", name: "Show conflicts", callback: () => void this.showConflicts() });
     // The status bar is desktop-only; on mobile this is how to see the status.
     this.addCommand({
       id: "show-status",
@@ -286,6 +289,21 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     await session?.stop();
   }
 
+  /** Opens the conflict view in the right sidebar, or reveals it if it is open. */
+  async showConflicts(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(conflictViewType)[0];
+    if (leaf === undefined) {
+      leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf("tab");
+      await leaf.setViewState({ type: conflictViewType, active: true });
+    }
+    await workspace.revealLeaf(leaf);
+  }
+
+  private refreshConflictViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(conflictViewType)) if (leaf.view instanceof ConflictView) void leaf.view.refresh();
+  }
+
   private layoutReady(): Promise<void> {
     return new Promise<void>((resolve) => {
       this.app.workspace.onLayoutReady(resolve);
@@ -297,6 +315,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.statusBar?.setText(statusText(status));
     this.statusBar?.setAttribute("aria-label", statusDescription(status));
     this.settingTab?.showStatus();
+    this.refreshConflictViews();
   }
 
   private noticeStatus(): void {
