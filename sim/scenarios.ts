@@ -1384,6 +1384,124 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, edited };
 }
 
+/** The ways #254's user vacates a synced path and puts another file there before the next push. */
+export type VacatedPathVariant = "deleted-then-created" | "deleted-then-renamed-onto" | "deleted-then-case-variant-renamed-onto" | "case-variant-swap" | "renamed-away-while-created";
+
+export interface VacatedPathResult extends HeldPathResult {
+  /** The second engine's conflict log after the run. */
+  conflicts: { reason: string; path: string; copyPath: string | null; document: string }[];
+}
+
+/**
+ * A new file at a path the user just vacated (#254). Both engines sync
+ * notes, and before the second engine pushes, its user vacates a synced path
+ * and puts another file there. The push must keep the user's intent: the
+ * old document is deleted or renamed under its own id, and the file now at
+ * the path is a new document, or the other document renamed under its own
+ * id. It is never committed as the old document's edit.
+ *
+ * - `deleted-then-created` (POSIX): the user deletes `h.md` and creates a new
+ *   `h.md`.
+ * - `deleted-then-renamed-onto` (POSIX): the user deletes `h.md` and renames
+ *   `d.md` onto it.
+ * - `deleted-then-case-variant-renamed-onto` (Windows, seed 24): the user
+ *   deletes `A.md` and renames `NOTES` to `a.md`.
+ * - `case-variant-swap` (macOS, #254's review of #278): the user renames
+ *   `a.md` to `z.md`, then `b.md` to `A.md`.
+ * - `renamed-away-while-created` (macOS, seed 22): the user creates
+ *   `STRASSE.md` and, while its create is being committed, renames it to
+ *   `b.md` and creates `straße.md`, which has the same path key.
+ */
+export async function fileAtVacatedPath(endpoints: SimEndpoints, variant: VacatedPathVariant): Promise<VacatedPathResult> {
+  const platform = variant === "deleted-then-case-variant-renamed-onto" ? "windows" : variant === "case-variant-swap" || variant === "renamed-away-while-created" ? "macos" : "posix";
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  const synced: Record<VacatedPathVariant, [string, string][]> = {
+    "deleted-then-created": [["h.md", "h\n"]],
+    "deleted-then-renamed-onto": [
+      ["h.md", "h\n"],
+      ["d.md", "d\n"],
+    ],
+    "deleted-then-case-variant-renamed-onto": [
+      ["A.md", "a\n"],
+      ["NOTES", "notes\n"],
+    ],
+    "case-variant-swap": [
+      ["a.md", "a\n"],
+      ["b.md", "b\n"],
+    ],
+    "renamed-away-while-created": [],
+  };
+  for (const [path, content] of synced[variant]) log(await first.edit(path, encoder.encode(content)));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  switch (variant) {
+    case "deleted-then-created":
+      log(await second.remove("h.md"));
+      log(await second.edit("h.md", encoder.encode("new\n")));
+      break;
+    case "deleted-then-renamed-onto":
+      log(await second.remove("h.md"));
+      log(await second.move("d.md", "h.md"));
+      break;
+    case "deleted-then-case-variant-renamed-onto":
+      log(await second.remove("A.md"));
+      log(await second.move("NOTES", "a.md"));
+      break;
+    case "case-variant-swap":
+      log(await second.move("a.md", "z.md"));
+      log(await second.move("b.md", "A.md"));
+      break;
+    case "renamed-away-while-created": {
+      log(await second.edit("STRASSE.md", encoder.encode("first\n")));
+      log(second.startPush());
+      await settle();
+      for (let delivery = 0; run.context.network.pendingRequest(second.index) !== "CommitRevision"; delivery++) {
+        if (delivery > 100) throw new Error("the second engine never sent CommitRevision");
+        await run.step({ kind: "deliver-request", client: second.index });
+        await run.step({ kind: "deliver-response", client: second.index });
+      }
+      // The server commits the create; before its response arrives, the user moves the file away and creates another.
+      await run.step({ kind: "deliver-request", client: second.index });
+      log(await second.move("STRASSE.md", "b.md"));
+      log(await second.edit("straße.md", encoder.encode("second\n")));
+      await run.drain(second.index);
+      break;
+    }
+  }
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = (await second.conflicts()).map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts };
+}
+
 export interface ThrottledEngineResult extends RunResult {
   /** The methods the server's per-user limit refused, in order. */
   refused: string[];

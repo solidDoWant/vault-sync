@@ -181,6 +181,17 @@ interface Changes {
   renames: Map<string, string>;
   /** Paths a rename moved a file to and the user then deleted it from. */
   vacated: Set<string>;
+  /**
+   * Known documents whose file the user deleted, by the file's path key (#254):
+   * a file at that path since then is another one, never the document's edit.
+   */
+  deleted: Map<string, DeletedFile>;
+}
+
+/** A known document whose file the user deleted, at the revision the journal had for it then. */
+interface DeletedFile {
+  documentId: string;
+  revisionId: string;
 }
 
 /** Documents and paths the merge path owns: the engine pushes none of their changes. */
@@ -246,9 +257,11 @@ export class SyncEngine {
   /** Pulls and pushes, one at a time. */
   private work: Promise<unknown> = Promise.resolve();
   /** Local changes not yet pushed. Events are lost when the app dies, so the first push scans everything. */
-  private changes: Changes = { all: true, paths: new Set(), renames: new Map(), vacated: new Set() };
+  private changes: Changes = { all: true, paths: new Set(), renames: new Map(), vacated: new Set(), deleted: new Map() };
   /** The renames the running push round took from `changes` and has not committed yet: still local moves to the merge path (#280). */
   private roundRenames = new Map<string, string>();
+  /** The deleted files the running push round looks at: like roundRenames, for #254. */
+  private roundDeleted = new Map<string, DeletedFile>();
   private pushTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
   private readonly rateLimitBackoff: Backoff;
@@ -573,6 +586,7 @@ export class SyncEngine {
       // This device's own commit, whose response was lost. The disk already
       // holds it, or a newer local edit, which the next push sends on top.
       if (state?.revisionId !== remote.revisionId) await this.journal.putDocument(syncedState(remote));
+      if (state !== undefined && !remote.deleted) this.carryDelete(remote.documentId, state.revisionId, remote.revisionId);
       await this.journal.removePending(remote.revisionId);
       // Changes left for after the operation (a newer edit, a rename that
       // waited for it) are pushed now, as after an acknowledged commit.
@@ -872,7 +886,8 @@ export class SyncEngine {
    * is found at `notes/c.md` (#242). A document the journal has at `path` is
    * not a move, and while it stays there, the file is its own; once a local
    * move took it away from `path` (a pending operation elsewhere, or a local
-   * rename not yet pushed), another document's move there is found (#267).
+   * rename not yet pushed), or the user deleted its file (#254), another
+   * document's move there is found (#267).
    */
   private async localMoveAt(path: string, documentId: string): Promise<{ documentId: string; path: string } | undefined> {
     const key = this.fileKey(path);
@@ -894,9 +909,12 @@ export class SyncEngine {
   /**
    * Whether a local move took the document away from its synced path: it
    * has a pending operation at another path, or a local rename from that
-   * path not yet pushed. Paths are compared as the vault compares them.
+   * path not yet pushed, or the user deleted its file since the last push.
+   * Paths are compared as the vault compares them.
    */
   private async movedAway(state: DocumentState): Promise<boolean> {
+    // The user deleted its file: a file at its path since then is another one (#254).
+    if (this.fileDeleted(state)) return true;
     const key = this.fileKey(state.path);
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId === state.documentId && !operation.deleted && this.fileKey(operation.path) !== key) return true;
@@ -1325,8 +1343,9 @@ export class SyncEngine {
     await this.retryRefusedPaths();
     for (let round = 0; round < maxPushRounds; round++) {
       const changes = this.changes;
-      this.changes = { all: false, paths: new Set(), renames: new Map(), vacated: new Set() };
+      this.changes = { all: false, paths: new Set(), renames: new Map(), vacated: new Set(), deleted: new Map() };
       this.roundRenames = changes.renames;
+      this.roundDeleted = changes.deleted;
       try {
         await this.pushRound(changes, summary, round === 0);
       } catch (error) {
@@ -1334,6 +1353,7 @@ export class SyncEngine {
         throw error;
       } finally {
         this.roundRenames = new Map();
+        this.roundDeleted = new Map();
       }
       if (!this.changes.all && this.changes.paths.size === 0) break;
     }
@@ -1419,8 +1439,11 @@ export class SyncEngine {
     // In a chain (b.md moved to c.md, then a.md to b.md), a rename's old path
     // may hold the file another rename moved there, and its new path may be
     // where a document that moved on is still synced.
-    const movedAway = new Set(changes.renames.values());
-    const movedHere = new Set(changes.renames.keys());
+    // Compared as the vault compares paths.
+    const movedAway = new Set([...changes.renames.values()].map((path) => this.fileKey(path)));
+    const movedHere = new Set([...changes.renames.keys()].map((path) => this.fileKey(path)));
+    // Documents at a rename's new path whose file the user deleted (#254).
+    const displaced: DocumentState[] = [];
     // Paths a rename recorded since this round began moved a file from or
     // to: the next round looks at them, with that rename (#280).
     const later = new Set([...this.changes.renames].flat().map((path) => this.fileKey(path)));
@@ -1454,17 +1477,73 @@ export class SyncEngine {
         continue;
       }
       if (state === undefined) continue;
-      // A file still at the old path makes it no move, unless only its spelling changed (the same file on a case-insensitive platform).
-      if (this.fileKey(from) !== this.fileKey(to) && (await this.readOrNull(from)) !== null && !movedHere.has(from)) continue;
-      const holder = await this.journal.findDocumentByPath(to);
-      if (holder !== undefined && !(movedAway.has(to) && holder.documentId !== state.documentId)) continue;
+      // The file left the old path: a file there now is another one, which
+      // the user put there since (#254), and is pushed below.
+      const holder = await this.documentAt(to);
+      let freed: DocumentState | undefined;
+      if (holder !== undefined && holder.documentId !== state.documentId) {
+        // The document at the new path moved away too, or the user deleted
+        // its file (#254, then it is deleted below). Another spelling of the
+        // path that neither explains goes to the server, which refuses it if
+        // that document still holds it (SPEC.md §6.3).
+        if (movedAway.has(this.fileKey(to)) || this.fileDeleted(holder, [changes.deleted])) freed = holder;
+        else if (holder.path === to) continue;
+      }
       const content = await this.readOrNull(to);
       if (content === null) continue;
       renames.push(this.operation(state, to, content));
       handled.add(from);
       handled.add(to);
+      if (freed === undefined) continue;
+      handled.add(freed.path);
+      if (!movedAway.has(this.fileKey(to))) displaced.push(freed);
     }
     edits.push(...dependencyOrder(renames, (operation) => changes.renames.get(operation.path)));
+
+    // A file at a path the user vacated since the last push, by a rename
+    // away or by deleting the document's file, is a new one (#254): the old
+    // document is renamed or deleted under its own id, never given the new
+    // file's content. A file there that a rename brought is that rename's.
+    const renamed = new Set(renames.map((operation) => operation.documentId));
+    const arrived = (path: string) => movedHere.has(this.fileKey(path));
+    const replacements = new Map<string, string>();
+    for (const operation of renames) {
+      const from = changes.renames.get(operation.path);
+      if (from === undefined || this.fileKey(from) === this.fileKey(operation.path) || arrived(from)) continue;
+      const actual = await this.fileAt(from);
+      if (actual !== undefined) replacements.set(this.fileKey(from), actual);
+    }
+    for (const holder of displaced) {
+      if (!renamed.has(holder.documentId)) removals.push(this.operation(holder, holder.path, null));
+    }
+    const displacedIds = new Set(displaced.map((holder) => holder.documentId));
+    for (const state of await this.journal.listDocuments()) {
+      const key = this.fileKey(state.path);
+      if (state.deleted || renamed.has(state.documentId) || displacedIds.has(state.documentId) || !this.fileDeleted(state, [changes.deleted])) continue;
+      if (handled.has(state.path) || busyPaths.has(state.path) || busyDocuments.has(state.documentId) || later.has(key)) {
+        // Its delete waits with the document: the push that frees it looks again.
+        const file = changes.deleted.get(key);
+        if (file !== undefined && !this.changes.deleted.has(key)) this.changes.deleted.set(key, file);
+        continue;
+      }
+      if (!this.inScope(state.path)) continue;
+      const actual = await this.fileAt(state.path);
+      // No file there: the path loop below pushes the delete.
+      if (actual === undefined || arrived(actual)) continue;
+      handled.add(state.path);
+      handled.add(actual);
+      // The same content back: nothing changed.
+      if (sameHash(await this.readOrNull(actual), state.baseHash)) continue;
+      removals.push(this.operation(state, state.path, null));
+      replacements.set(key, actual);
+    }
+    for (const actual of replacements.values()) {
+      if (!this.inScope(actual)) continue;
+      const content = await this.readOrNull(actual);
+      if (content === null) continue;
+      handled.add(actual);
+      creates.push({ revisionId: this.newId(), documentId: this.newId(), baseRevisionId: "", path: actual, contentHash: sha256Hex(content), size: BigInt(content.length), kind: this.classify(actual), deleted: false });
+    }
 
     // A rename's paths are looked at even when the rename waited for this
     // push: if it no longer qualifies, its new path is a file like any other.
@@ -1514,6 +1593,14 @@ export class SyncEngine {
       creates.push({ revisionId: this.newId(), documentId: this.newId(), baseRevisionId: "", path, contentHash: sha256Hex(content), size: BigInt(content.length), kind: this.classify(path), deleted: false });
     }
     return [...removals, ...edits, ...creates];
+  }
+
+  /** The file the vault holds at `path`, under the spelling it has (on a case-insensitive platform, possibly another one), if any. */
+  private async fileAt(path: string): Promise<string | undefined> {
+    if ((await this.readOrNull(path)) === null) return undefined;
+    if (this.pathRules.platform === "posix") return path;
+    const key = this.fileKey(path);
+    return (await this.vault.list()).find((candidate) => this.fileKey(candidate) === key) ?? path;
   }
 
   /** A new revision of a known document: `content` at `path`, or a tombstone (null). */
@@ -1624,6 +1711,7 @@ export class SyncEngine {
       deleted: operation.deleted,
     });
     await this.journal.removePending(operation.revisionId);
+    if (state !== undefined && !operation.deleted) this.carryDelete(operation.documentId, state.revisionId, revision.id);
     // The document moved: a local rename not pushed yet is from its new path now (#280).
     if (state !== undefined && !state.deleted && !operation.deleted && state.path !== operation.path) {
       if (this.roundRenames.get(operation.path) === state.path) this.roundRenames.delete(operation.path);
@@ -1864,9 +1952,49 @@ export class SyncEngine {
     for (const [to, from] of changes.renames) if (!this.changes.renames.has(to)) this.changes.renames.set(to, from);
     // Only where the restored rename is still the one recorded there.
     for (const path of changes.vacated) if (this.changes.renames.get(path) === changes.renames.get(path)) this.changes.vacated.add(path);
+    for (const [key, file] of changes.deleted) if (!this.changes.deleted.has(key)) this.changes.deleted.set(key, file);
   }
 
-  private recordChange(event: VaultEvent): void {
+  /**
+   * Whether the user deleted `state`'s file since the last push (#254), so a
+   * file at its path now is another one. A delete recorded at another
+   * revision of the document is stale: the engine has written the document
+   * since (a remote revision that brought it back, say).
+   */
+  private fileDeleted(state: DocumentState, marks: readonly Map<string, DeletedFile>[] = [this.changes.deleted, this.roundDeleted]): boolean {
+    const key = this.fileKey(state.path);
+    return marks.some((deleted) => {
+      const file = deleted.get(key);
+      return file !== undefined && file.documentId === state.documentId && file.revisionId === state.revisionId;
+    });
+  }
+
+  /**
+   * The known document whose own file a user's delete of `path` removed: the
+   * journal's live document there, unless a local move took it away (then
+   * the file was another one).
+   */
+  private async deletedFile(path: string): Promise<DeletedFile | undefined> {
+    try {
+      const state = await this.documentAt(path);
+      if (state === undefined || (await this.movedAway(state))) return undefined;
+      const key = this.fileKey(path);
+      if (this.localRenames().some(([to]) => this.fileKey(to) === key)) return undefined;
+      return { documentId: state.documentId, revisionId: state.revisionId };
+    } catch {
+      // In doubt, a delete like any other: a later file at the path is pushed as before.
+      return undefined;
+    }
+  }
+
+  /** A delete of the document's file the user made before this device's own commit of it landed is still the user's, at the commit's revision. */
+  private carryDelete(documentId: string, from: string, to: string): void {
+    for (const deleted of [this.changes.deleted, this.roundDeleted]) {
+      for (const file of deleted.values()) if (file.documentId === documentId && file.revisionId === from) file.revisionId = to;
+    }
+  }
+
+  private recordChange(event: VaultEvent, deleted?: DeletedFile): void {
     this.changes.paths.add(event.path);
     if (event.type === "rename") {
       this.changes.paths.add(event.oldPath);
@@ -1877,9 +2005,13 @@ export class SyncEngine {
       if (!vacated) this.changes.renames.delete(event.oldPath);
       this.changes.vacated.delete(event.path);
       if (origin !== event.path) this.changes.renames.set(event.path, origin);
+      // The file is back where it was synced: it was never deleted.
+      else this.changes.deleted.delete(this.fileKey(event.path));
     } else if (event.type === "delete" && this.changes.renames.has(event.path)) {
       // The file a rename put here is gone: a later file here is another one, never part of that rename (#280).
       this.changes.vacated.add(event.path);
+    } else if (deleted !== undefined && !this.changes.deleted.has(this.fileKey(event.path))) {
+      this.changes.deleted.set(this.fileKey(event.path), deleted);
     }
     this.schedulePush();
   }
@@ -1922,7 +2054,7 @@ export class SyncEngine {
       // In doubt, report the change: a duplicate report is harmless, a missed edit is not.
     }
     if (echo) return;
-    this.recordChange(event);
+    this.recordChange(event, event.type === "delete" ? await this.deletedFile(event.path) : undefined);
     try {
       this.onLocalChange(event);
     } catch (error) {

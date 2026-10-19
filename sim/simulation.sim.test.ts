@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, fileAtVacatedPath, type VacatedPathResult } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -533,6 +533,92 @@ describe.runIf(suites.has("scenarios"))("scripted lost-rename scenarios (#280)",
     expect(result.documents.get("note.md"), trace).toBe(note);
     expect(result.documents.get("moved.md"), trace).toBe(other);
     expect(result.tombstoned, trace).toEqual(order === "renamer-first" ? [note] : []);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted scenarios of a new file at a just-vacated path (#254)", () => {
+  /** The run's trace end, with what it ended with. */
+  const traceOf = (result: VacatedPathResult) =>
+    `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}\ntombstoned: ${JSON.stringify(result.tombstoned)}`;
+
+  it("tombstones the deleted note and creates a new document for the file created at its path", async () => {
+    const result = await fileAtVacatedPath(environment, "deleted-then-created");
+    const trace = traceOf(result);
+
+    expect(result.violations, trace).toEqual([]);
+    const h = result.before.get("h.md");
+    expect(h, trace).toBeDefined();
+    const expected = new Map([["h.md", "new\n"]]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents.get("h.md"), trace).toEqual(expect.any(String));
+    expect(result.documents.get("h.md"), trace).not.toBe(h);
+    expect(result.tombstoned, trace).toEqual([h]);
+    expect(result.conflicts, trace).toEqual([]);
+  });
+
+  it.each([
+    { variant: "deleted-then-renamed-onto", deleted: "h.md", renamed: "d.md", to: "h.md", content: "d\n" },
+    { variant: "deleted-then-case-variant-renamed-onto", deleted: "A.md", renamed: "NOTES", to: "a.md", content: "notes\n" },
+  ] as const)("renames the other note onto the path under its own id and tombstones the deleted one ($variant)", async ({ variant, deleted, renamed, to, content }) => {
+    const result = await fileAtVacatedPath(environment, variant);
+    const trace = traceOf(result);
+
+    expect(result.violations, trace).toEqual([]);
+    const gone = result.before.get(deleted);
+    const moved = result.before.get(renamed);
+    expect(gone, trace).toBeDefined();
+    expect(moved, trace).toBeDefined();
+    const expected = new Map([[to, content]]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents, trace).toEqual(new Map([[to, moved]]));
+    expect(result.tombstoned, trace).toEqual([gone]);
+    expect(result.conflicts, trace).toEqual([]);
+  });
+
+  it("keeps both notes' ids when one is renamed away and the other onto a case variant of its path (macOS)", async () => {
+    const result = await fileAtVacatedPath(environment, "case-variant-swap");
+    const trace = traceOf(result);
+
+    expect(result.violations, trace).toEqual([]);
+    const a = result.before.get("a.md");
+    const b = result.before.get("b.md");
+    expect(a, trace).toBeDefined();
+    expect(b, trace).toBeDefined();
+    const expected = new Map([
+      ["A.md", "b\n"],
+      ["z.md", "a\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents, trace).toEqual(
+      new Map([
+        ["z.md", a],
+        ["A.md", b],
+      ]),
+    );
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.conflicts, trace).toEqual([]);
+  });
+
+  it("renames a new note away and creates another at a case variant of its path while its create is committed (macOS, seed 22)", async () => {
+    const result = await fileAtVacatedPath(environment, "renamed-away-while-created");
+    const trace = traceOf(result);
+
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([
+      ["b.md", "first\n"],
+      ["straße.md", "second\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    const created = result.documents.get("b.md");
+    expect(created, trace).toEqual(expect.any(String));
+    expect(result.documents.get("straße.md"), trace).toEqual(expect.any(String));
+    expect(result.documents.get("straße.md"), trace).not.toBe(created);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.conflicts, trace).toEqual([]);
   });
 });
 
