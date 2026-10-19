@@ -107,10 +107,17 @@ func TestPortAllocatorGivesUpAfterBoundedProbes(t *testing.T) {
 func TestFreeAddressesAreDistinctAcrossCalls(t *testing.T) {
 	t.Parallel()
 
+	// A real kernel, but not the process-wide allocator: the ports that one
+	// hands out stay taken for the rest of the process, so -count=50 would
+	// use up the kernel's ephemeral port range.
+	ports := newPortAllocator(listenLoopback)
 	seen := map[string]struct{}{}
 
 	for range 200 {
-		for _, address := range FreeAddresses(t, 2) {
+		addresses, err := ports.take(2)
+		require.NoError(t, err)
+
+		for _, address := range addresses {
 			_, duplicate := seen[address]
 			require.False(t, duplicate, "address %s returned twice", address)
 
@@ -182,7 +189,7 @@ func TestServerStarterRetriesWhenAPortIsTaken(t *testing.T) {
 		{ready: true},
 	}}
 
-	starter := serverStarter{ports: processPorts, attempts: 3, ready: servers.ready, poll: time.Millisecond}
+	starter := serverStarter{ports: newPortAllocator(listenLoopback), attempts: 3, ready: servers.ready, poll: time.Millisecond}
 
 	addresses, err := starter.start(t.Context(), "server", time.Minute, servers.start)
 	require.NoError(t, err)
@@ -217,7 +224,7 @@ func TestServerStarterGivesUpAfterBoundedAttempts(t *testing.T) {
 		{ready: true},
 	}}
 
-	starter := serverStarter{ports: processPorts, attempts: attempts, ready: servers.ready, poll: time.Millisecond}
+	starter := serverStarter{ports: newPortAllocator(listenLoopback), attempts: attempts, ready: servers.ready, poll: time.Millisecond}
 
 	_, err := starter.start(t.Context(), "server", time.Minute, servers.start)
 	require.Error(t, err)
@@ -233,7 +240,7 @@ func TestServerStarterDoesNotRetryOtherStartupFailures(t *testing.T) {
 		{ready: true},
 	}}
 
-	starter := serverStarter{ports: processPorts, attempts: 3, ready: servers.ready, poll: time.Millisecond}
+	starter := serverStarter{ports: newPortAllocator(listenLoopback), attempts: 3, ready: servers.ready, poll: time.Millisecond}
 
 	_, err := starter.start(t.Context(), "killed-while-committing", time.Minute, servers.start)
 	require.Error(t, err)
@@ -247,7 +254,7 @@ func TestServerStarterFailsWhenNeverReady(t *testing.T) {
 
 	servers := &fakeServers{outcomes: []serverOutcome{{}, {ready: true}}}
 
-	starter := serverStarter{ports: processPorts, attempts: 3, ready: servers.ready, poll: time.Millisecond}
+	starter := serverStarter{ports: newPortAllocator(listenLoopback), attempts: 3, ready: servers.ready, poll: time.Millisecond}
 
 	_, err := starter.start(t.Context(), "server", 20*time.Millisecond, servers.start)
 	require.Error(t, err)

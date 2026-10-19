@@ -43,11 +43,14 @@ func newPortAllocator(listen func() (net.Listener, error)) *portAllocator {
 	return &portAllocator{handedOut: map[string]struct{}{}, listen: listen}
 }
 
+// listenLoopback opens a listener on a loopback port the kernel picks.
+func listenLoopback() (net.Listener, error) {
+	return net.Listen("tcp", "127.0.0.1:0")
+}
+
 // processPorts is shared by every test in the test process, so no two of
 // them are ever given the same port.
-var processPorts = newPortAllocator(func() (net.Listener, error) {
-	return net.Listen("tcp", "127.0.0.1:0")
-})
+var processPorts = newPortAllocator(listenLoopback)
 
 // take returns count distinct addresses that it has never returned before.
 // Every probe listener stays open until all addresses are found, so the
