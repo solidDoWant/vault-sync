@@ -78,6 +78,15 @@ export interface PathScopeResult {
   inside: string;
 }
 
+/** What the config folder adapter makes of one path (paths.e2e.ts). */
+export interface ConfigPathScopeResult {
+  /** Each call's outcome: "ok", a VaultError code, or the error. */
+  write: string;
+  rename: string;
+  /** Every file on disk afterwards in the test folder, and a stray evil.json in the config folder, sorted. */
+  files: string[];
+}
+
 /** What one sync session start saw (lifecycle.e2e.ts). bigints as strings, to cross executeObsidian. */
 export interface SessionStart {
   cursor: string | null;
@@ -182,6 +191,47 @@ export default class VaultSyncE2EHarness extends Plugin {
     };
     await emptyVault(this.app);
     return result;
+  }
+
+  /**
+   * The same for the config folder adapter (paths.e2e.ts, #148): `relative`
+   * is written and renamed onto under the config folder's
+   * `vault-sync-e2e-paths/` folder, which holds only inside.json, and every
+   * file then in that folder (and an evil.json the write might have put in
+   * the config folder itself) is reported, then removed.
+   */
+  async configPathScope(relative: string): Promise<ConfigPathScopeResult> {
+    const host = configFolderHost(this.app, normalizePath);
+    const disk = this.app.vault.adapter;
+    const folder = "vault-sync-e2e-paths";
+    const root = `${host.configDir}/${folder}`;
+    const adapter = new ObsidianConfigAdapter(host);
+    await adapter.write(`${folder}/inside.json`, encoder.encode("{}"));
+    const outcome = async (run: () => Promise<unknown>) => {
+      try {
+        await run();
+        return "ok";
+      } catch (error) {
+        return error instanceof VaultError ? error.code : describeError(error);
+      }
+    };
+    const path = `${folder}/${relative}`;
+    const write = await outcome(() => adapter.write(path, encoder.encode("{}")));
+    const rename = await outcome(() => adapter.rename(`${folder}/inside.json`, path));
+    const files: string[] = [];
+    const folders = [root];
+    for (let next = folders.pop(); next !== undefined; next = folders.pop()) {
+      const listed = await disk.list(next);
+      files.push(...listed.files);
+      folders.push(...listed.folders);
+    }
+    const stray = `${host.configDir}/evil.json`;
+    if (await disk.exists(stray)) {
+      files.push(stray);
+      await disk.remove(stray);
+    }
+    await disk.rmdir(root, true);
+    return { write, rename, files: files.sort() };
   }
 
   /** The Journal conformance case names, in suite order. */
@@ -432,7 +482,7 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** Starts recording the changes an Obsidian config folder adapter reports, to show they happen. */
   watchConfigFolder(): void {
     this.configEvents.length = 0;
-    this.register(new ObsidianConfigAdapter(configFolderHost(this.app)).watch((event) => this.configEvents.push(event.path)));
+    this.register(new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)).watch((event) => this.configEvents.push(event.path)));
   }
 
   /** What watchConfigFolder() recorded. */

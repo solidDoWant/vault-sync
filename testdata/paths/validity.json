@@ -24,7 +24,7 @@
     { "name": "issue 148: bare digit drive", "path": "1:", "valid": true, "new": false },
     { "name": "issue 148: digit drive with a separator", "path": "1:/x.md", "valid": true, "new": false },
     { "name": "issue 148: two code points followed by colon", "path": "12:x.md", "valid": true, "new": true },
-    { "name": "issue 148: letter and combining mark followed by colon", "path": "e\u0301:x.md", "valid": true, "new": true },
+    { "name": "issue 148: letter and combining mark followed by colon", "path": "e\u0301:combining.md", "valid": true, "new": true },
     { "name": "issue 148: digit drive in a later segment", "path": "notes/1:x.md", "valid": true, "new": true },
     { "name": "issue 148: colon first", "path": ":x.md", "valid": true, "new": true },
     { "name": "issue 148: fullwidth solidus is not a separator", "path": "a\uff0fb.md", "valid": true, "new": true },
