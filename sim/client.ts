@@ -51,6 +51,8 @@ export interface RunContext {
   violations: Violation[];
   /** Appends a trace entry. */
   log: (entry: string) => void;
+  /** The schedule step being executed. */
+  stepNumber: () => number;
 }
 
 /**
@@ -115,7 +117,7 @@ export class ScriptedClient {
   constructor(
     readonly index: number,
     private readonly api: ProtocolClient,
-    private readonly deviceId: string,
+    readonly deviceId: string,
     private readonly context: RunContext,
   ) {}
 
