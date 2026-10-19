@@ -1384,6 +1384,97 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, edited };
 }
 
+export interface ThrottledEngineResult extends RunResult {
+  /** The methods the server's per-user limit refused, in order. */
+  refused: string[];
+  /** The delay, in milliseconds, of each backoff the engine started, in order. */
+  delays: number[];
+  /** Labels of the revisions in the engine's CommitRevision requests, in order: refused ones included. */
+  commitLabels: string[];
+  /** Labels of the engine's acknowledged revisions, in order. */
+  engineAcknowledged: string[];
+  /** The edited file's head content on the server, and the engine's copy, after the run. */
+  serverContent: string;
+  engineContent: string;
+}
+
+/**
+ * The engine under the server's per-user limit on concurrent requests (#146,
+ * SPEC.md §12). The limit refuses the engine's calls with RESOURCE_EXHAUSTED
+ * four times in a row (a CommitRevision, a ListChanges, a BeginBlob and the
+ * CommitRevision again), each time in the engine's next push; the user's
+ * edit then lands. A later edit's first push is refused once more. The
+ * network checks that the engine sends nothing while backing off; the result
+ * shows each delay, and that the edit was committed once, with the revision
+ * id it was first sent with.
+ */
+export async function engineBacksOffWhenThrottled(endpoints: SimEndpoints): Promise<ThrottledEngineResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1 });
+  const { observer } = run;
+  const engine = observer.index;
+  const network = run.context.network;
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const refused: string[] = [];
+  /** Steps until the engine's next request is `method` (delivering the calls before it); the limit then refuses it. */
+  const refuse = async (method: string) => {
+    for (let step = 0; network.pendingRequest(engine) !== method; step++) {
+      if (step > 200) throw new Error(`the engine never sent ${method}`);
+      // A step without a request to deliver delivers the engine's reply, if any, or only moves time on:
+      // while the engine backs off there is nothing to deliver. A timer due at a step fires before it.
+      await run.step({ kind: network.pendingRequest(engine) === undefined ? "deliver-response" : "deliver-request", client: engine });
+    }
+    const entry = network.throttle(engine);
+    if (entry === undefined) throw new Error(`no ${method} from the engine to refuse`);
+    log(entry);
+    refused.push(method);
+    await run.step({ kind: "deliver-response", client: engine });
+    if (!observer.idle) throw new Error("the refused push is still running");
+  };
+
+  const path = "busy.md";
+  log(await observer.edit(path, encoder.encode("written while the server is busy\n")));
+  log(observer.startPush());
+  await refuse("CommitRevision");
+  // Each next push starts at once, as the plugin's timer or the user's next edit may start one; the engine waits.
+  log(observer.startPush());
+  await refuse("ListChanges");
+  log(observer.startPush());
+  await refuse("BeginBlob");
+  log(observer.startPush());
+  await refuse("CommitRevision");
+  log(observer.startPush());
+  await settle();
+  await run.drain(engine);
+
+  log(await observer.edit(path, encoder.encode("written while the server is busy\nand again\n")));
+  log(observer.startPush());
+  await refuse("ListChanges");
+  log(observer.startPush());
+  await settle();
+  await run.drain(engine);
+
+  const result = await run.finish();
+  const commitPattern = new RegExp(`c${String(engine)} CommitRevision\\(\\S+ (\\S+) .* (?:->|refused)`);
+  const commitLabels = run.trace.flatMap((line) => {
+    const label = commitPattern.exec(line)?.[1];
+    return label === undefined ? [] : [label];
+  });
+  const heads = await serverHeads(run.direct, run.context.vaultId);
+  const headHash = heads.files.get(path);
+  const engineCopy = await observer.read(path);
+  return {
+    ...result,
+    refused,
+    delays: network.timerDelays.filter((timer) => timer.client === engine).map((timer) => timer.ms),
+    commitLabels,
+    engineAcknowledged: result.acknowledged.filter((acknowledgement) => acknowledgement.client === engine).map((acknowledgement) => run.context.ids.label(acknowledgement.revisionId)),
+    serverContent: headHash === undefined ? "" : decoder.decode(await downloadBlob(run, headHash)),
+    engineContent: engineCopy === undefined ? "" : decoder.decode(engineCopy),
+  };
+}
+
 export interface BackslashPathResult extends RunResult {
   /** The server's live documents after the backslash files were pushed: path to document label. */
   afterRefusal: Map<string, string>;

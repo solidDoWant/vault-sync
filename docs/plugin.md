@@ -65,6 +65,8 @@ While signed in and connected, the plugin syncs on its own:
 - Every 30 seconds it pulls and pushes, which retries anything that failed and brings in other devices' changes even while the realtime channel is down.
 - The **Vault Sync: Sync now** command does the same at once.
 
+The server limits how many requests one account may have in progress at once (`VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER`, see `docs/configuration.md`). A single device stays far below the limit, but many devices syncing at once can reach it. When the server refuses a sync for that reason, the status shows **error** with the server's message. The plugin then waits before its next pull or push contacts the server, including **Sync now**. The wait is random, between half of a ceiling and the whole of it. The ceiling starts at 1 second and doubles with every refusal in a row, up to 1 minute. Once the wait is over, the plugin pushes, and the first sync that succeeds resets the ceiling. Nothing is lost while it waits: changes stay on disk and in the journal, and the plugin sends them again with the same revision ids.
+
 Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.
 
 ### Realtime channel

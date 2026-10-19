@@ -2,13 +2,14 @@
 // in-memory server, vault and journal, plus fault-injecting wrappers that
 // "crash" the engine after a chosen number of durable changes.
 
+import type { Backoff, Timers } from "../backoff";
 import { createProtocolClient } from "../protocol/client";
 import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState, PendingOperation, RemoteRevision } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import type { DeletePrecondition, FileStat, VaultAdapter, VaultEvent, VaultListener, WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
 import type { PathRules } from "../vaultpath/platform";
-import { SyncEngine, type UnmaterializableDocument } from "./engine";
+import { SyncEngine, type PushSummary, type UnmaterializableDocument } from "./engine";
 import type { MergeHook, MergeRequest } from "./merge";
 import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
 
@@ -242,6 +243,11 @@ export interface HarnessOptions {
   /** The engine's platform path rules, and the in-memory vault's unless `vault` is given. Defaults to POSIX. */
   pathRules?: PathRules;
   onUnmaterializable?: (document: UnmaterializableDocument) => void;
+  /** The engine's RESOURCE_EXHAUSTED backoff, its timers and its jitter source (SyncEngineOptions). */
+  rateLimitBackoff?: Backoff;
+  timers?: Timers;
+  random?: () => number;
+  onPushComplete?: (summary: PushSummary) => void;
 }
 
 /** The device id the harness's engine commits with. */
@@ -283,6 +289,10 @@ export function harness(options: HarnessOptions = {}): Harness {
       ...(options.classify === undefined ? {} : { classify: options.classify }),
       ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
       ...(options.onUnmaterializable === undefined ? {} : { onUnmaterializable: options.onUnmaterializable }),
+      ...(options.rateLimitBackoff === undefined ? {} : { rateLimitBackoff: options.rateLimitBackoff }),
+      ...(options.timers === undefined ? {} : { timers: options.timers }),
+      ...(options.random === undefined ? {} : { random: options.random }),
+      ...(options.onPushComplete === undefined ? {} : { onPushComplete: options.onPushComplete }),
     });
   const result: Harness = {
     server,

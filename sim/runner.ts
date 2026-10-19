@@ -163,6 +163,7 @@ export class SimRun {
   /** Executes one schedule step and lets the clients react to it. */
   async step(step: Step): Promise<void> {
     this.context.network.now = this.stepNumber;
+    await this.fireDueTimers();
     const entry = await this.execute(step);
     this.context.log(entry);
     await settle();
@@ -179,7 +180,8 @@ export class SimRun {
     const clients = client === undefined ? everyone : everyone.filter((candidate) => candidate.index === client);
     for (let delivery = 0; delivery < maxDrainDeliveries; delivery++) {
       this.context.network.now = this.stepNumber;
-      const entry = this.context.network.deliverResponse(client) ?? (await this.context.network.deliverRequest(client));
+      // Once nothing can be delivered, time moves on to the next backoff timer.
+      const entry = this.context.network.deliverResponse(client) ?? (await this.context.network.deliverRequest(client)) ?? this.context.network.fireNextTimer(client);
       if (entry === undefined) {
         if (clients.every((candidate) => candidate.idle) && !this.context.network.hasMessages(client)) return;
         break;
@@ -188,6 +190,13 @@ export class SimRun {
       await settle();
     }
     this.context.violations.push({ invariant: "liveness", detail: `clients did not become idle while draining${client === undefined ? "" : ` c${String(client)}`}` });
+  }
+
+  /** Fires the clients' backoff timers that are due (SimNetwork.timers) and lets the clients react. */
+  private async fireDueTimers(): Promise<void> {
+    const fired = this.context.network.fireDueTimers();
+    for (const entry of fired) this.context.log(entry);
+    if (fired.length > 0) await settle();
   }
 
   /**

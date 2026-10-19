@@ -1,6 +1,7 @@
 import { create, fromBinary, toBinary } from "@bufbuild/protobuf";
 
 import { ClientFrameSchema, ErrorCode, ServerFrameSchema, type ServerFrame } from "../../gen/vaultsync/v1/realtime_pb";
+import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 
 // The realtime channel's client (SPEC.md §6.4): one WebSocket that tells the
 // device a vault changed, so it pulls without waiting for its pull timer. It
@@ -47,17 +48,10 @@ export interface RealtimeSocket {
  */
 export type RealtimeConnector = (protocols: readonly string[], handlers: RealtimeSocketHandlers) => RealtimeSocket;
 
-export interface RealtimeTimers {
-  setTimeout(callback: () => void, ms: number): unknown;
-  clearTimeout(handle: unknown): void;
-}
+export type RealtimeTimers = Timers;
 
-export interface RealtimeBackoff {
-  /** The first reconnect's delay ceiling, in milliseconds; each consecutive failure doubles it. */
-  initialMs: number;
-  /** The largest delay ceiling, in milliseconds. */
-  maxMs: number;
-}
+/** The reconnect delays (backoffDelay): the first reconnect's ceiling, doubled by each consecutive failure up to `maxMs`. */
+export type RealtimeBackoff = Backoff;
 
 export const defaultRealtimeBackoff: Readonly<RealtimeBackoff> = { initialMs: 1000, maxMs: 60_000 };
 
@@ -87,23 +81,8 @@ export interface RealtimeClientOptions {
   log?: (message: string) => void;
 }
 
-const globalTimers: RealtimeTimers = {
-  setTimeout: (callback, ms) => setTimeout(callback, ms),
-  clearTimeout: (handle) => {
-    clearTimeout(handle as ReturnType<typeof setTimeout>);
-  },
-};
-
-/**
- * The delay before reconnect attempt `failures` (1 for the first): a ceiling
- * that doubles from `initialMs` up to `maxMs`, with "equal jitter" (half the
- * ceiling plus a random part of the other half), so it is never below half
- * the ceiling and never above `maxMs`.
- */
-export function reconnectDelay(failures: number, backoff: RealtimeBackoff, random: number): number {
-  const ceiling = Math.min(backoff.maxMs, backoff.initialMs * 2 ** Math.max(0, Math.min(failures - 1, 30)));
-  return ceiling / 2 + (ceiling / 2) * Math.min(Math.max(random, 0), 1);
-}
+/** The delay before reconnect attempt `failures` (1 for the first), never above `maxMs` (backoffDelay). */
+export const reconnectDelay = backoffDelay;
 
 /** The realtime endpoint for a server base URL: ws: for http:, wss: for https:. */
 export function realtimeUrl(serverUrl: string): string {
