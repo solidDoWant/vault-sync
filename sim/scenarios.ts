@@ -959,3 +959,74 @@ export async function freedPathReused(endpoints: SimEndpoints): Promise<FreedPat
   );
   return { ...result, vaults, before, documents: await liveDocuments(run) };
 }
+
+export interface PurgedMergeBaseResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** Each engine's conflict log: reason, path and copy path of every entry. */
+  conflicts: { reason: string; path: string; copyPath: string | null }[][];
+  /** Labels of the revisions retention purged. */
+  purged: string[];
+  /** Label of the second engine's merge base. */
+  base: string;
+}
+
+/**
+ * A merge base that retention purged (review of #219, SPEC.md §8, §11). Both
+ * engines sync a note; the second edits it and does not push, while the
+ * first edits it too and pushes. Then both revisions age past the retention
+ * policy, and the server's own purge removes the older one: the second
+ * engine's merge base. Another note is written after the purge. The second
+ * engine's pull must not stall on the missing base: it keeps the first
+ * engine's version in place and its own as a logged conflict copy, applies
+ * the later note, and both engines converge with nothing lost.
+ */
+export async function purgedMergeBase(endpoints: SimEndpoints): Promise<PurgedMergeBaseResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  const note = "notes/plan.md";
+  log(await first.edit(note, encoder.encode(textLines("one", "two", "three"))));
+  await push(first);
+  await pull(second);
+
+  log(await second.edit(note, encoder.encode(textLines("one", "two (second engine, offline)", "three"))));
+  log(await first.edit(note, encoder.encode(textLines("one (first engine)", "two", "three"))));
+  await push(first);
+
+  const revisions = (await run.direct.sync.listChanges({ vaultId: run.context.vaultId, sinceSeq: 0n })).revisions;
+  const [base, head] = revisions;
+  if (base === undefined || head === undefined || base.documentId !== head.documentId) throw new Error("expected the note's two revisions");
+  const purged = (await run.purge([base.id, head.id])).map((id) => run.context.ids.label(id));
+
+  log(await first.edit("notes/later.md", encoder.encode(textLines("written after the purge"))));
+  await push(first);
+  await pull(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
+  return { ...result, vaults, conflicts, purged, base: run.context.ids.label(base.id) };
+}

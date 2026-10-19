@@ -15,6 +15,8 @@ export function conflictReasonText(reason: ConflictReason): string {
       return "Created on this device and on another one at the same path.";
     case "path-taken":
       return "Another document already had this path, so this device's document was moved.";
+    case "base-purged":
+      return "Edited on this device and on another one, but the version both started from is no longer kept on the server, so they could not be merged.";
   }
 }
 

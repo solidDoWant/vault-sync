@@ -1,0 +1,166 @@
+import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
+
+import { RestoreError, type HistoryEntry } from "../core/engine/history";
+import type { DocumentState } from "../core/journal/journal";
+import { entryLabel, previewOf, sizeLabel } from "./history-view";
+import type { VaultHistory } from "./session";
+import { errorMessage } from "./status";
+
+const timeFormat = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "medium" });
+const formatTime = (date: Date) => timeFormat.format(date);
+
+/**
+ * A document's history (SPEC.md §11): its retained revisions, newest first,
+ * with time and device. Choosing one previews it; "Restore this version"
+ * commits it as the document's new head revision, which also brings a
+ * deleted document back.
+ */
+export class HistoryModal extends Modal {
+  private entries: HistoryEntry[] = [];
+  private nextPageToken = "";
+  private selected: { entry: HistoryEntry; content: Uint8Array | undefined } | undefined;
+  private listEl!: HTMLElement;
+  private moreEl!: HTMLElement;
+  private previewEl!: HTMLElement;
+
+  constructor(
+    app: App,
+    private readonly history: VaultHistory,
+    private readonly documentId: string,
+    path: string,
+  ) {
+    super(app);
+    this.titleEl.setText(`History of ${path}`);
+    this.modalEl.addClass("vault-sync-history");
+  }
+
+  override onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    this.listEl = contentEl.createDiv({ cls: "vault-sync-history-list" });
+    this.moreEl = contentEl.createDiv();
+    this.previewEl = contentEl.createDiv({ cls: "vault-sync-history-preview" });
+    this.previewEl.createEl("p", { text: "Choose a version to preview it.", cls: "vault-sync-history-hint" });
+    void this.load(true);
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
+  }
+
+  /** Loads the newest page (`fresh`) or the next older one. */
+  private async load(fresh: boolean): Promise<void> {
+    if (fresh) {
+      this.entries = [];
+      this.nextPageToken = "";
+      this.listEl.empty();
+      this.listEl.createEl("p", { text: "Loading history…" });
+    }
+    try {
+      const page = await this.history.history(this.documentId, fresh ? "" : this.nextPageToken);
+      this.entries.push(...page.entries);
+      this.nextPageToken = page.nextPageToken;
+    } catch (error) {
+      this.listEl.empty();
+      this.listEl.createEl("p", { text: `The history could not be loaded: ${errorMessage(error)}`, cls: "vault-sync-history-error" });
+      return;
+    }
+    this.renderList();
+  }
+
+  private renderList(): void {
+    this.listEl.empty();
+    this.entries.forEach((entry, index) => {
+      const row = this.listEl.createDiv({ cls: "vault-sync-history-entry", text: entryLabel(entry, this.entries[index + 1], formatTime) });
+      row.dataset.revisionId = entry.revisionId;
+      row.setAttribute("role", "button");
+      row.tabIndex = 0;
+      if (index === 0) row.createSpan({ text: " (current)", cls: "vault-sync-history-current" });
+      if (entry.revisionId === this.selected?.entry.revisionId) row.addClass("is-selected");
+      row.addEventListener("click", () => void this.select(entry));
+      row.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") void this.select(entry);
+      });
+    });
+    this.moreEl.empty();
+    if (this.nextPageToken !== "") {
+      new Setting(this.moreEl).addButton((button) => button.setButtonText("Load older versions").onClick(() => void this.load(false)));
+    }
+  }
+
+  private async select(entry: HistoryEntry): Promise<void> {
+    this.selected = { entry, content: undefined };
+    this.renderList();
+    const { previewEl } = this;
+    previewEl.empty();
+    previewEl.createEl("p", { text: "Loading this version…" });
+    let content: Uint8Array | undefined;
+    try {
+      content = await this.history.readRevision(entry);
+    } catch (error) {
+      if (this.selected.entry !== entry) return;
+      previewEl.empty();
+      previewEl.createEl("p", { text: `This version could not be loaded: ${errorMessage(error)}`, cls: "vault-sync-history-error" });
+      return;
+    }
+    if (this.selected.entry !== entry) return;
+    this.selected.content = content;
+    previewEl.empty();
+    const preview = previewOf(content);
+    if (preview.kind === "text") {
+      previewEl.createEl("pre", { text: preview.text, cls: "vault-sync-history-text" });
+      if (preview.truncated) previewEl.createEl("p", { text: `Only the start is shown (the version is ${sizeLabel(content.length)}).`, cls: "vault-sync-history-hint" });
+    } else {
+      previewEl.createEl("p", { text: `Binary content, ${sizeLabel(preview.size)}.`, cls: "vault-sync-history-hint" });
+    }
+    if (entry === this.entries[0] && !entry.deleted) return;
+    new Setting(previewEl).addButton((button) =>
+      button
+        .setButtonText("Restore this version")
+        .setCta()
+        .onClick(() => {
+          button.setDisabled(true);
+          void this.restore(entry, content).finally(() => {
+            button.setDisabled(false);
+          });
+        }),
+    );
+  }
+
+  private async restore(entry: HistoryEntry, content: Uint8Array | undefined): Promise<void> {
+    try {
+      const restored = await this.history.restore(entry, content);
+      new Notice(`Vault Sync: restored ${restored.path} to the version of ${entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt)}.`);
+      this.selected = undefined;
+      this.previewEl.empty();
+      await this.load(true);
+    } catch (error) {
+      const message = error instanceof RestoreError ? error.message : errorMessage(error);
+      new Notice(`Vault Sync: the version could not be restored: ${message}`);
+    }
+  }
+}
+
+/** Picks one of the deleted files this device knows of, most recently deleted first, and opens its history. */
+export class DeletedFilesModal extends FuzzySuggestModal<DocumentState> {
+  constructor(
+    app: App,
+    private readonly history: VaultHistory,
+    private readonly deleted: DocumentState[],
+  ) {
+    super(app);
+    this.setPlaceholder(deleted.length === 0 ? "No deleted files" : "Find a deleted file to restore");
+  }
+
+  getItems(): DocumentState[] {
+    return this.deleted;
+  }
+
+  getItemText(item: DocumentState): string {
+    return item.path;
+  }
+
+  onChooseItem(item: DocumentState): void {
+    new HistoryModal(this.app, this.history, item.documentId, item.path).open();
+  }
+}
