@@ -2,8 +2,10 @@ package vaultpath_test
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -78,6 +80,10 @@ func TestCheckNewReportsWhichRuleFailed(t *testing.T) {
 		{name: "new path", path: "notes/c.md"},
 		{name: "backslash only", path: `notes\c.md`, errorAssertion: errorIs(vaultpath.ErrBackslash)},
 		{name: "not relative", path: `..\c.md`, errorAssertion: errorIs(vaultpath.ErrNotRelative)},
+		{name: "issue 148: drive-like prefix", path: "1:x.md", errorAssertion: errorIs(vaultpath.ErrDrivePrefix)},
+		{name: "issue 148: non-ASCII drive-like prefix", path: "é:x.md", errorAssertion: errorIs(vaultpath.ErrDrivePrefix)},
+		{name: "issue 148: drive-like prefix and a backslash", path: `1:\x.md`, errorAssertion: errorIs(vaultpath.ErrNotNew)},
+		{name: "issue 148: backslash is not new", path: `notes\c.md`, errorAssertion: errorIs(vaultpath.ErrNotNew)},
 	}
 
 	for _, test := range tests {
@@ -87,6 +93,111 @@ func TestCheckNewReportsWhichRuleFailed(t *testing.T) {
 			}
 
 			test.errorAssertion(t, vaultpath.CheckNew(test.path))
+		})
+	}
+}
+
+// A path CheckNew refuses only because it may no longer be created, not
+// because it is not vault-relative, is ErrNotNew: CommitRevision then
+// accepts it only as a live document's unchanged path (SPEC.md §6.2).
+func TestCheckNewMarksKeepOnlyPaths(t *testing.T) {
+	for _, vector := range loadVectors(t) {
+		t.Run(vector.Name, func(t *testing.T) {
+			err := vaultpath.CheckNew(vector.Path)
+			assert.Equal(t, vector.Valid && !vector.New, errors.Is(err, vaultpath.ErrNotNew), "path %q: %v", vector.Path, err)
+		})
+	}
+}
+
+type textVector struct {
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Repeat int    `json:"repeat"`
+	Valid  bool   `json:"valid"`
+}
+
+// loadTextVectors reads the path text vectors shared with the TypeScript
+// client (plugin/src/core/vaultpath), each path repeated as given.
+func loadTextVectors(t *testing.T) []textVector {
+	t.Helper()
+
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "paths", "text.json"))
+	require.NoError(t, err)
+
+	var file struct {
+		Vectors []textVector `json:"vectors"`
+	}
+
+	require.NoError(t, json.Unmarshal(data, &file))
+	require.NotEmpty(t, file.Vectors)
+
+	for index := range file.Vectors {
+		vector := &file.Vectors[index]
+		if vector.Repeat == 0 {
+			vector.Repeat = 1
+		}
+
+		vector.Path = strings.Repeat(vector.Path, vector.Repeat)
+	}
+
+	return file.Vectors
+}
+
+func TestCheckTextMatchesSharedVectors(t *testing.T) {
+	valid, invalid := 0, 0
+
+	for _, vector := range loadTextVectors(t) {
+		t.Run(vector.Name, func(t *testing.T) {
+			err := vaultpath.CheckText(vector.Path)
+			if vector.Valid {
+				valid++
+
+				assert.NoError(t, err, "path of %d bytes", len(vector.Path))
+			} else {
+				invalid++
+
+				assert.Error(t, err, "path of %d bytes", len(vector.Path))
+			}
+
+			// Every non-empty text vector is otherwise a new path, so only
+			// the text rule decides it.
+			if vector.Path != "" {
+				assert.NoError(t, vaultpath.CheckNew(vector.Path))
+			}
+		})
+	}
+
+	assert.Positive(t, valid)
+	assert.Positive(t, invalid)
+}
+
+func TestCheckTextReportsWhichRuleFailed(t *testing.T) {
+	errorIs := func(want error) require.ErrorAssertionFunc {
+		return func(t require.TestingT, err error, args ...any) {
+			require.ErrorIs(t, err, want, args...)
+		}
+	}
+
+	tests := []struct {
+		name           string
+		path           string
+		errorAssertion require.ErrorAssertionFunc
+	}{
+		{name: "longest", path: strings.Repeat("a", 4096)},
+		{name: "empty", path: "", errorAssertion: errorIs(vaultpath.ErrLength)},
+		{name: "one byte too long", path: strings.Repeat("a", 4097), errorAssertion: errorIs(vaultpath.ErrLength)},
+		{name: "control character", path: "a\x00b", errorAssertion: errorIs(vaultpath.ErrNotPrintable)},
+		{name: "invalid UTF-8", path: "a\xffb", errorAssertion: errorIs(vaultpath.ErrNotPrintable)},
+		{name: "UTF-8 encoded surrogate", path: "a\xed\xa0\x80b", errorAssertion: errorIs(vaultpath.ErrNotPrintable)},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.errorAssertion == nil {
+				test.errorAssertion = require.NoError
+			}
+
+			test.errorAssertion(t, vaultpath.CheckText(test.path))
 		})
 	}
 }

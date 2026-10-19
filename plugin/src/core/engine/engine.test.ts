@@ -134,6 +134,11 @@ describe("SyncEngine pull", () => {
       ["a parent-directory segment", "../outside.md"],
       ["an absolute path", "/etc/passwd"],
       ["a drive prefix", "C:\\notes.md"],
+      // The text rule (#148), which E2EE paths need once decrypted.
+      ["a NUL", "a\u0000b.md"],
+      ["a newline", "a\nb.md"],
+      ["a C1 control character", "a\u0085b.md"],
+      ["more than 4096 bytes", "é".repeat(2049)],
     ])("never writes a path with %s, recording the revision as deferred instead", async (_name, path) => {
       const h = harness();
       const revision = h.server.commit({ documentId: "x", path, content: "evil" });

@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, Platform, Plugin, TFile, type App } from "obsidian";
+import { FileSystemAdapter, normalizePath, Notice, Platform, Plugin, TFile, type App } from "obsidian";
 
 import { VaultEncryption, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
@@ -388,7 +388,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const own = this.manifest.dir;
     return new ConfigSyncVault({
       notes: new ObsidianVaultAdapter(this.app),
-      config: new ObsidianConfigAdapter(configFolderHost(this.app)),
+      config: new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)),
       settings: configSyncSettings(this.data),
       // Where Obsidian installed this plugin, as well as plugins/vault-sync.
       ownFolders: own?.startsWith(configPrefix) === true ? [own.slice(configPrefix.length)] : [],

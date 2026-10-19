@@ -5,7 +5,7 @@ import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import type { DocumentKindName, RemoteRevision } from "../journal/journal";
 import type { ProtocolClient } from "../protocol/client";
-import { isVaultRelativePath } from "../vaultpath/vaultpath";
+import { isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
 import { errorCode } from "./errors";
 
 /** The protocol calls the engine uses, to pull and to push. */
@@ -19,7 +19,7 @@ export class RemoteContentError extends Error {
 /** A revision from the change feed plus whether its path may touch the disk. */
 export interface IncomingRevision {
   remote: RemoteRevision;
-  /** The path is valid UTF-8 and vault-relative (SPEC.md §6.2); otherwise it must never reach the vault. */
+  /** The path is valid UTF-8, within the length and character-set rule, and vault-relative (SPEC.md §6.2); otherwise it must never reach the vault. */
   pathAllowed: boolean;
 }
 
@@ -48,7 +48,7 @@ export function toIncoming(revision: Revision): IncomingRevision {
       contentHash: bytesToHex(revision.contentRef?.blobId ?? new Uint8Array()),
       size: revision.contentRef?.size ?? 0n,
     },
-    pathAllowed: decodable && isVaultRelativePath(path),
+    pathAllowed: decodable && isPathText(path) && isVaultRelativePath(path),
   };
 }
 
