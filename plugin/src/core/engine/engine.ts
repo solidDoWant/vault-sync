@@ -85,12 +85,39 @@ export interface SyncEngineOptions {
   rateLimitBackoff?: Backoff;
   /** The timers of that wait. Defaults to the global ones. */
   timers?: Timers;
+  /**
+   * The largest remote content, in bytes, the engine downloads (SPEC.md §8):
+   * a revision whose content is larger is deferred as `too-large`, never
+   * downloaded, and listed by tooLarge(). Defaults to defaultMaxDownloadBytes.
+   */
+  maxDownloadBytes?: number;
   /** Uniform in [0, 1); spreads the waits of a user's devices out. Defaults to Math.random. */
   random?: () => number;
 }
 
 /** The engine's wait after RESOURCE_EXHAUSTED: 0.5 to 1 s after the first refusal, doubling up to 30 to 60 s. */
 export const defaultRateLimitBackoff: Readonly<Backoff> = { initialMs: 1000, maxMs: 60_000 };
+
+/** The engine's download cap unless SyncEngineOptions.maxDownloadBytes sets one: 1 GiB. */
+export const defaultMaxDownloadBytes = 1024 * 1024 * 1024;
+
+/**
+ * A document whose remote revision is larger than the engine's download cap
+ * (SPEC.md §8): deferred, never downloaded, and never dropped. A later
+ * revision within the cap applies it. Until then its local changes are not
+ * pushed.
+ */
+export interface TooLargeDocument {
+  documentId: string;
+  /** The path the server has for the document. */
+  path: string;
+  /** The revision's content size in bytes. */
+  size: bigint;
+  /** The remote revision that was not downloaded. */
+  revision: RemoteRevision;
+  /** Where the document's earlier version stays on disk, if this device had one. */
+  localPath: string | undefined;
+}
 
 /** What a pull or push waiting out a RESOURCE_EXHAUSTED backoff rejects with when the engine is disposed. */
 export class EngineDisposedError extends Error {
@@ -245,6 +272,7 @@ export class SyncEngine {
   private readonly now: () => Date;
   private readonly pathRules: PathRules;
   private readonly onUnmaterializable: (document: UnmaterializableDocument) => void;
+  private readonly maxDownloadBytes: bigint;
   /** Maps a path to what the vault takes as the same file: its path key on a case-insensitive platform. */
   private readonly fileKey: (path: string) => string;
   private readonly echoes = new EchoSuppressor();
@@ -298,6 +326,7 @@ export class SyncEngine {
     this.now = options.now ?? (() => new Date());
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
+    this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
@@ -370,6 +399,18 @@ export class SyncEngine {
     const documents: UnmaterializableDocument[] = [];
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable") documents.push(await this.unmaterializableDocument(deferred.revision, deferred.unmaterializable ?? "refused-by-vault"));
+    }
+    return documents;
+  }
+
+  /** The documents whose remote revision is larger than the download cap (SPEC.md §8), for the UI. */
+  async tooLarge(): Promise<TooLargeDocument[]> {
+    const documents: TooLargeDocument[] = [];
+    for (const { revision, reason } of await this.journal.listDeferred()) {
+      if (reason !== "too-large") continue;
+      const state = await this.journal.getDocument(revision.documentId);
+      const localPath = state !== undefined && !state.deleted && (await this.vault.stat(state.path)) !== null ? state.path : undefined;
+      documents.push({ documentId: revision.documentId, path: revision.path, size: revision.size, revision, localPath });
     }
     return documents;
   }
@@ -607,6 +648,17 @@ export class SyncEngine {
       if (state !== undefined && remote.seq <= state.seq) return "skipped";
       if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
       return this.defer(remote, !remote.deleted && !incoming.pathAllowed ? "invalid-path" : "out-of-scope");
+    }
+    if (this.overCap(remote)) {
+      // Never downloaded, so never allocated (#316): nothing touches the
+      // disk, the cursor moves on, and a later revision within the cap
+      // applies the document.
+      if (state !== undefined && remote.seq <= state.seq) return "skipped";
+      if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
+      // A merge result written for the revision deferred before is finished
+      // first: the deferral that records it is about to be replaced.
+      if (deferred?.merging !== undefined) await this.resumeMerge(deferred.revision, state, deferred.merging);
+      return this.defer(remote, "too-large");
     }
     if (deferred?.reason === "local-changes" || pending.length > 0) {
       return this.handToMerge(remote, state, await this.localFile(state, remote));
@@ -1256,6 +1308,11 @@ export class SyncEngine {
     return keys;
   }
 
+  /** Whether `remote` has content larger than the download cap. */
+  private overCap(remote: RemoteRevision): boolean {
+    return !remote.deleted && remote.size > this.maxDownloadBytes;
+  }
+
   private async defer(remote: RemoteRevision, reason: DeferReason): Promise<"deferred"> {
     await this.journal.putDeferred({ revision: remote, reason });
     return "deferred";
@@ -1328,6 +1385,8 @@ export class SyncEngine {
         if (state.seq !== remote.seq) await this.journal.putDocument({ ...state, seq: remote.seq });
       } else if (this.outOfScope(remote, state)) {
         this.count(summary, await this.defer(remote, "out-of-scope"));
+      } else if (this.overCap(remote)) {
+        this.count(summary, await this.defer(remote, "too-large"));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
@@ -1417,8 +1476,8 @@ export class SyncEngine {
     const parked: Parked = { documents: new Set(), paths: new Set() };
     for (const deferred of await this.journal.listDeferred()) {
       // An unmaterializable document waits too: its local changes are not pushed, and the server never hears of its file.
-      // So does one whose remote revision is out of scope.
-      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope") continue;
+      // So does one whose remote revision is out of scope, or too large to download.
+      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope" && deferred.reason !== "too-large") continue;
       const { revision } = deferred;
       parked.documents.add(revision.documentId);
       parked.paths.add(revision.path);
@@ -1937,14 +1996,16 @@ export class SyncEngine {
    * another reason does not cost a download on every push. So are, once per
    * engine, unmaterializable revisions whose path the platform rules now
    * allow (the vault refused it although they did, or the vault moved to a
-   * shorter folder).
+   * shorter folder). So are, once per engine, out-of-scope revisions now in
+   * scope and too-large revisions the download cap now fits.
    */
   private async retryRefusedPaths(again = false): Promise<void> {
     const deferrals = (await this.journal.listDeferred()).filter(
       (deferred) =>
         (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
         (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
-        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)),
+        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)) ||
+        (deferred.reason === "too-large" && !this.retried.has(deferred.revision.revisionId) && !this.overCap(deferred.revision)),
     );
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);

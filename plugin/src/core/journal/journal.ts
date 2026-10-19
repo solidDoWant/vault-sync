@@ -146,8 +146,13 @@ export interface RemoteRevision {
  *   e.g. a config file while config sync is off. Nothing touches the disk,
  *   the document's local changes wait, and the revision is applied at an
  *   engine start that finds it in scope again.
+ * - `too-large`: the revision's content is larger than the engine's download
+ *   cap (SyncEngineOptions.maxDownloadBytes, SPEC.md §8). Its content is never
+ *   downloaded and nothing touches the disk; the document's local changes
+ *   wait, and a later revision within the cap (or an engine start with a cap
+ *   that fits it) applies it.
  */
-export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable" | "out-of-scope";
+export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable" | "out-of-scope" | "too-large";
 
 export interface DeferredRevision {
   revision: RemoteRevision;
