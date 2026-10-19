@@ -323,6 +323,30 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
     expect(await files(h.vault)).toEqual(new Map([["plan.md", "a new plan\n"]]));
   });
 
+  it("refuses to bring a deleted document back at a backslash path, committing nothing, its history still readable", async () => {
+    // SPEC.md §11 and §6.2 (decision #191): no document may be brought back
+    // at a path containing "\"; the server refuses the restore.
+    const h = harness({ server: clockedServer().server });
+    h.server.commit({ documentId: "legacy", path: "old\\note.md", content: "legacy\n" });
+    await h.engine.pull();
+    await h.vault.delete("old\\note.md");
+    await h.engine.push();
+    expect(h.server.head("legacy")?.deleted).toBe(true);
+    const entries = await allEntries(h, "legacy");
+    const tombstone = entryAt(entries, 0);
+    const revisions = h.server.revisionCount;
+
+    const failure = h.engine.restore(tombstone);
+
+    await expect(failure).rejects.toThrow(ConnectError);
+    await expect(failure).rejects.toMatchObject({ code: Code.InvalidArgument });
+    expect(h.server.revisionCount).toBe(revisions);
+    expect(h.server.head("legacy")?.deleted).toBe(true);
+    expect(await files(h.vault)).toEqual(new Map());
+    expect(await allEntries(h, "legacy")).toEqual(entries);
+    expect(decoder.decode(await h.engine.readRevision(entryAt(entries, 1)))).toBe("legacy\n");
+  });
+
   it("does not list a document this device only released because the platform cannot hold its path", async () => {
     const h = harness({ merge: "default", pathRules: { platform: "windows" }, server: clockedServer().server });
     h.server.commit({ documentId: "doc", path: "plan.md", content: "plan\n" });
