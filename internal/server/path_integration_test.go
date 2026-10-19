@@ -27,9 +27,9 @@ func TestCommitEnforcesSharedPathValidity(t *testing.T) {
 
 	var file struct {
 		Vectors []struct {
-			Name  string `json:"name"`
-			Path  string `json:"path"`
-			New   bool   `json:"new"`
+			Name string `json:"name"`
+			Path string `json:"path"`
+			New  bool   `json:"new"`
 		} `json:"vectors"`
 	}
 
