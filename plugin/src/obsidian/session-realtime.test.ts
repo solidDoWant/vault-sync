@@ -7,7 +7,7 @@ import { createProtocolClient } from "../core/protocol/client";
 import type { RealtimeTimers } from "../core/realtime/client";
 import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { InMemoryVault } from "../core/vault/memory";
-import { SyncSession, type SyncSessionOptions } from "./session";
+import { SyncSession, type SessionStatus, type SyncSessionOptions } from "./session";
 
 // The session over the realtime channel (SPEC.md §6.4): a change another
 // device commits arrives on a notification, without the pull timer, and the
@@ -87,6 +87,105 @@ describe("SyncSession with the realtime channel", () => {
       expect(await files(vault)).toEqual(new Map([["from-a.md", "written on the laptop"]]));
     });
     await session.stop();
+  });
+
+  describe("given its own commit's notification", () => {
+    /** A started, subscribed, idle session, and what it does from the returned point on. */
+    async function idleSession() {
+      const statuses: SessionStatus["state"][] = [];
+      const devices = setup({
+        onStatus: (status) => {
+          statuses.push(status.state);
+        },
+      });
+      const { server, realtime, session } = devices;
+      await session.start();
+      await vi.waitFor(() => {
+        expect([...(realtime.open[0]?.subscriptions ?? [])]).toEqual([server.vaultId]);
+        expect(statuses.at(-1)).toBe("idle");
+      });
+      const calls: string[] = [];
+      server.interceptor = (method) => {
+        calls.push(method);
+      };
+      return { ...devices, statuses, calls };
+    }
+
+    it("does not pull, and the status stays idle", async () => {
+      const { server, realtime, vault, session, statuses, calls } = await idleSession();
+      await vault.write("mine.md", new TextEncoder().encode("written here"));
+      await session.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toBe("idle");
+      });
+      expect(server.currentHeadSeq).toBe(1n);
+      calls.length = 0;
+      statuses.length = 0;
+
+      realtime.notify(server.vaultId, server.currentHeadSeq);
+      await flush();
+      const afterOwn = [...statuses];
+      // A later commit by another device: its notification is handled only
+      // after the first one's (they never overlap), so once its file is here
+      // the first notification has been fully handled.
+      const theirs = server.commit({ documentId: "theirs", path: "theirs.md", content: "from the laptop" });
+      realtime.notify(server.vaultId, theirs.seq);
+      await vi.waitFor(async () => {
+        expect((await files(vault)).get("theirs.md")).toBe("from the laptop");
+        expect(statuses.at(-1)).toBe("idle");
+      });
+
+      // Only the second notification pulled; the first reported no status at all (never "syncing").
+      expect(calls.filter((method) => method === "ListChanges")).toEqual(["ListChanges"]);
+      expect(afterOwn).toEqual([]);
+      await session.stop();
+    });
+
+    it("does not pull after the push when the notification arrives before the commit's response is handled", async () => {
+      const { server, realtime, vault, session, statuses, calls } = await idleSession();
+      server.responseInterceptor = (method, _request, response) => {
+        if (method !== "CommitRevision") return;
+        const seq = (response as { revision?: { seq: bigint } }).revision?.seq ?? 0n;
+        realtime.notify(server.vaultId, seq);
+      };
+      await vault.write("mine.md", new TextEncoder().encode("written here"));
+
+      await session.syncNow();
+      await flush();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toBe("idle");
+      });
+
+      // The push's own pull, then its commit; nothing after the commit.
+      expect(calls.filter((method) => method === "ListChanges" || method === "CommitRevision")).toEqual(["ListChanges", "CommitRevision"]);
+      await session.stop();
+    });
+
+    it("still pulls another device's commit that landed just before its own", async () => {
+      const { server, realtime, vault, session } = await idleSession();
+      let moved = false;
+      server.interceptor = (method) => {
+        if (method === "CommitRevision" && !moved) {
+          moved = true;
+          server.commit({ documentId: "theirs", path: "theirs.md", content: "committed in between" });
+        }
+      };
+      await vault.write("mine.md", new TextEncoder().encode("written here"));
+      await session.syncNow();
+      expect(await vault.stat("theirs.md")).toBeNull();
+
+      // The server coalesces the two notifications into the newest seq: the device's own.
+      realtime.notify(server.vaultId, server.currentHeadSeq);
+      await vi.waitFor(async () => {
+        expect(await files(vault)).toEqual(
+          new Map([
+            ["mine.md", "written here"],
+            ["theirs.md", "committed in between"],
+          ]),
+        );
+      });
+      await session.stop();
+    });
   });
 
   it("reconnects with a fresh token after expiry and pulls what was committed while it was disconnected", async () => {

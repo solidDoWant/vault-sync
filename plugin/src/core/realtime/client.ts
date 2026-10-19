@@ -4,9 +4,10 @@ import { ClientFrameSchema, ErrorCode, ServerFrameSchema, type ServerFrame } fro
 
 // The realtime channel's client (SPEC.md §6.4): one WebSocket that tells the
 // device a vault changed, so it pulls without waiting for its pull timer. It
-// is a latency optimization only. Every notification makes the caller pull
-// from its durable cursor, so a lost notification, a dropped connection or a
-// missed reconnect only delays a change until the next pull.
+// is a latency optimization only. Every subscribe, and every notification
+// above the caller's durable cursor, makes the caller pull from that cursor,
+// so a lost notification, a dropped connection or a missed reconnect only
+// delays a change until the next pull.
 
 /** The subprotocol both sides speak; the server echoes only this one. */
 export const realtimeSubprotocol = "vaultsync.v1";
@@ -70,9 +71,13 @@ export interface RealtimeClientOptions {
   /**
    * Pulls from the durable cursor. Called after every (re)subscribe and every
    * notification of the vault, never twice at once: notifications arriving
-   * during a pull are coalesced into one more pull after it.
+   * during a pull are coalesced into one more call after it. `seq` is the
+   * highest seq the coalesced notifications announced: the caller may skip
+   * the pull if its durable cursor is already there (its own commit's
+   * notification). It is undefined when the caller must pull regardless
+   * (after a subscribe, when notifications sent before it are gone).
    */
-  onChange: () => Promise<unknown>;
+  onChange: (seq?: bigint) => Promise<unknown>;
   timers?: RealtimeTimers;
   /** Uniform in [0, 1); spreads reconnects out. */
   random?: () => number;
@@ -126,6 +131,10 @@ export class RealtimeClient {
   private retry: unknown;
   private pulling = false;
   private again = false;
+  /** Whether the next onChange must pull regardless of the cursor (a subscribe came). */
+  private force = false;
+  /** The highest seq notified since the last onChange started. */
+  private notified: bigint | undefined;
   private readonly timers: RealtimeTimers;
   private readonly random: () => number;
   private readonly backoff: RealtimeBackoff;
@@ -214,10 +223,10 @@ export class RealtimeClient {
         if (frame.frame.value.vaultId !== vaultId) return false;
         this.failures = 0;
         // Notifications sent before the subscription are gone: pull from the cursor.
-        this.changed();
+        this.changed(undefined);
         return false;
       case "vaultChanged":
-        if (frame.frame.value.vaultId === vaultId) this.changed();
+        if (frame.frame.value.vaultId === vaultId) this.changed(frame.frame.value.seq);
         return false;
       case "error": {
         const error = frame.frame.value;
@@ -249,9 +258,14 @@ export class RealtimeClient {
     }, delay);
   }
 
-  /** Runs onChange, or once more after the running one if it already runs. */
-  private changed(): void {
+  /**
+   * Runs onChange, or once more after the running one if it already runs.
+   * `seq` is the notified seq, or undefined for a pull that must happen.
+   */
+  private changed(seq: bigint | undefined): void {
     if (this.stopped) return;
+    if (seq === undefined) this.force = true;
+    else if (this.notified === undefined || seq > this.notified) this.notified = seq;
     if (this.pulling) {
       this.again = true;
       return;
@@ -260,8 +274,11 @@ export class RealtimeClient {
     void (async () => {
       do {
         this.again = false;
+        const target = this.force ? undefined : this.notified;
+        this.force = false;
+        this.notified = undefined;
         try {
-          await this.options.onChange();
+          await this.options.onChange(target);
         } catch {
           // The caller records its own failures; the pull timer retries.
         }
