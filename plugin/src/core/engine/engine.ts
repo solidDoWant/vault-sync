@@ -1360,7 +1360,14 @@ export class SyncEngine {
     ];
     for (const path of candidates) {
       const content = await this.readOrNull(path);
-      if (content !== null) return { path, content };
+      if (content === null) continue;
+      // A file the journal has as another live document's, which no local
+      // move took away, is that document's: on a case-insensitive platform
+      // one created at the rename's target in another case after the user
+      // deleted the renamed file (#323).
+      const holder = await this.documentAt(path);
+      if (holder !== undefined && holder.documentId !== state.documentId && !(await this.movedAway(holder))) continue;
+      return { path, content };
     }
     return local;
   }
