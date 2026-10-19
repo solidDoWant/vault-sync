@@ -237,8 +237,13 @@ export default class VaultSyncE2EHarness extends Plugin {
     return view;
   }
 
-  /** A fresh in-memory server holding one synced note, and an empty journal: this device before its first sync. */
+  /**
+   * A fresh in-memory server holding one synced note, an empty journal and
+   * an emptied vault: this device before its first sync, with nothing of its
+   * own to push.
+   */
   async setUpSession(): Promise<void> {
+    await emptyVault(this.app);
     const server = new InMemoryServer();
     const listChangesSince: string[] = [];
     server.interceptor = (method, request) => {

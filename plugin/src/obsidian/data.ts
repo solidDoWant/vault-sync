@@ -13,9 +13,38 @@ export interface PluginData {
   oidcClientId: string;
   /** Secret: the device's refresh token (SPEC.md §9.1). Absent when signed out. Never logged or shown. */
   refreshToken?: string;
+  /** This device's name, registered with the server and used in conflict-copy names; empty means the platform's name. */
+  deviceName: string;
+  /** This install's registered device. Registered once per account, then reused. */
+  device?: RegisteredDevice;
+  /** The server vault this local vault syncs with. */
+  vault?: ConnectedVault;
 }
 
-export const defaultPluginData: Readonly<PluginData> = { serverUrl: "", oidcIssuer: "", oidcClientId: "" };
+/** A device registered with RegisterDevice, and the account it belongs to: the server refuses commits with another user's device. */
+export interface RegisteredDevice {
+  id: string;
+  /** The server it is registered with (serverBaseUrl). */
+  serverUrl: string;
+  /** The OIDC issuer and subject of the account that registered it. */
+  issuer: string;
+  subject: string;
+}
+
+/** The server vault this local vault is connected to. */
+export interface ConnectedVault {
+  id: string;
+  name: string;
+  /** The server it lives on (serverBaseUrl): a vault id means nothing on another server. */
+  serverUrl: string;
+}
+
+export const defaultPluginData: Readonly<PluginData> = {
+  serverUrl: "",
+  oidcIssuer: "",
+  oidcClientId: "",
+  deviceName: "",
+};
 
 /** Reads stored plugin data, keeping each field that has the right type and defaulting the rest. */
 export function parsePluginData(raw: unknown): PluginData {
@@ -28,10 +57,27 @@ export function parsePluginData(raw: unknown): PluginData {
     serverUrl: text("serverUrl") ?? defaultPluginData.serverUrl,
     oidcIssuer: text("oidcIssuer") ?? defaultPluginData.oidcIssuer,
     oidcClientId: text("oidcClientId") ?? defaultPluginData.oidcClientId,
+    deviceName: text("deviceName") ?? defaultPluginData.deviceName,
   };
   const refreshToken = text("refreshToken");
   if (refreshToken !== undefined && refreshToken !== "") data.refreshToken = refreshToken;
+  const device = record(stored.device, ["id", "serverUrl", "issuer", "subject"]);
+  if (device !== undefined) data.device = device;
+  const vault = record(stored.vault, ["id", "name", "serverUrl"]);
+  if (vault !== undefined) data.vault = vault;
   return data;
+}
+
+/** `raw` as a record of the non-empty string `fields`, or undefined if any is missing. */
+function record<Field extends string>(raw: unknown, fields: readonly Field[]): Record<Field, string> | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const result: Partial<Record<Field, string>> = {};
+  for (const field of fields) {
+    const value = (raw as Record<string, unknown>)[field];
+    if (typeof value !== "string" || value === "") return undefined;
+    result[field] = value;
+  }
+  return result as Record<Field, string>;
 }
 
 /**

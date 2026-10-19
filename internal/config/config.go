@@ -17,6 +17,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
+	"github.com/solidDoWant/vault-sync/internal/retention"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -54,7 +55,35 @@ const (
 	RealtimeMaxConnectionsEnv        = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS"
 	RealtimeMaxConnectionsPerUserEnv = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER"
 	RealtimeMaxSubscriptionsEnv      = "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS"
+
+	RetentionKeepAllEnv   = "VAULT_SYNC_RETENTION_KEEP_ALL"
+	RetentionKeepDailyEnv = "VAULT_SYNC_RETENTION_KEEP_DAILY"
+	BlobGCGraceEnv        = "VAULT_SYNC_BLOB_GC_GRACE"
 )
+
+// Retention bounds; the defaults are retention.DefaultKeepAll,
+// retention.DefaultKeepDaily and retention.DefaultGrace.
+const (
+	// MinRetentionKeepAll keeps at least a day of complete history, so a
+	// device that was offline briefly still finds the base of its edits.
+	MinRetentionKeepAll = 24 * time.Hour
+	// MinBlobGCGrace leaves a client that just read a purged revision time
+	// to restore it without uploading its content again.
+	MinBlobGCGrace = time.Hour
+)
+
+// RetentionConfig is the retention policy and blob garbage collection
+// (SPEC.md §11).
+type RetentionConfig struct {
+	// KeepAll keeps every revision younger than this.
+	KeepAll time.Duration
+	// KeepDaily thins revisions between KeepAll and this age to one a day;
+	// older revisions are thinned to one a week. Never below KeepAll.
+	KeepDaily time.Duration
+	// BlobGrace is how long a blob no revision references is kept after
+	// the purge of the last revision referencing it.
+	BlobGrace time.Duration
+}
 
 // Realtime bounds.
 const (
@@ -188,6 +217,8 @@ type Config struct {
 	Blobs BlobConfig
 	// Realtime bounds the realtime channel.
 	Realtime RealtimeConfig
+	// Retention is the retention policy.
+	Retention RetentionConfig
 }
 
 // OIDCConfig identifies the OIDC issuer whose access tokens the server
@@ -242,6 +273,11 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			MaxConnections:        realtime.DefaultMaxConnections,
 			MaxConnectionsPerUser: realtime.DefaultMaxConnectionsPerUser,
 			MaxSubscriptions:      realtime.DefaultMaxSubscriptions,
+		},
+		Retention: RetentionConfig{
+			KeepAll:   retention.DefaultKeepAll,
+			KeepDaily: retention.DefaultKeepDaily,
+			BlobGrace: retention.DefaultGrace,
 		},
 	}
 
@@ -341,6 +377,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	problems = append(problems, s3Problems...)
 	problems = append(problems, loadBlobs(get, &cfg)...)
 	problems = append(problems, loadRealtime(get, &cfg.Realtime)...)
+	problems = append(problems, loadRetention(get, &cfg.Retention)...)
 
 	if err := errors.Join(problems...); err != nil {
 		return Config{}, err
@@ -547,6 +584,43 @@ func loadRealtime(get func(string) string, cfg *RealtimeConfig) []error {
 	parseInt(RealtimeMaxConnectionsEnv, MaxRealtimeMaxConnections, &cfg.MaxConnections)
 	parseInt(RealtimeMaxConnectionsPerUserEnv, MaxRealtimeMaxConnectionsPerUser, &cfg.MaxConnectionsPerUser)
 	parseInt(RealtimeMaxSubscriptionsEnv, MaxRealtimeMaxSubscriptions, &cfg.MaxSubscriptions)
+
+	return problems
+}
+
+func loadRetention(get func(string) string, cfg *RetentionConfig) []error {
+	var problems []error
+
+	parseDuration := func(name string, minimum time.Duration, target *time.Duration) bool {
+		raw := get(name)
+		if raw == "" {
+			return true
+		}
+
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 2160h)", name, raw))
+		case value < minimum:
+			problems = append(problems, fmt.Errorf("%s: must be at least %s, got %s", name, minimum, raw))
+		default:
+			*target = value
+
+			return true
+		}
+
+		return false
+	}
+
+	keepAll := parseDuration(RetentionKeepAllEnv, MinRetentionKeepAll, &cfg.KeepAll)
+	keepDaily := parseDuration(RetentionKeepDailyEnv, 0, &cfg.KeepDaily)
+	parseDuration(BlobGCGraceEnv, MinBlobGCGrace, &cfg.BlobGrace)
+
+	if keepAll && keepDaily && cfg.KeepDaily < cfg.KeepAll {
+		problems = append(problems, fmt.Errorf("%s (%s) must not be below %s (%s)",
+			RetentionKeepDailyEnv, cfg.KeepDaily, RetentionKeepAllEnv, cfg.KeepAll))
+	}
 
 	return problems
 }

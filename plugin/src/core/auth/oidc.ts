@@ -308,15 +308,28 @@ function tokenSet(body: Record<string, unknown>, obtainedAt: number): TokenSet {
  * what the server checks, so it is preferred over `expires_in`.
  */
 export function jwtExpiry(token: string): number | undefined {
+  const exp = jwtClaims(token)?.exp;
+  return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
+}
+
+/**
+ * The `sub` of a JWT access token, without verifying it: who the server will
+ * take the caller to be, used only to tell local records of different
+ * accounts apart (never to authorize anything).
+ */
+export function jwtSubject(token: string): string | undefined {
+  const sub = jwtClaims(token)?.sub;
+  return typeof sub === "string" && sub !== "" ? sub : undefined;
+}
+
+function jwtClaims(token: string): Record<string, unknown> | undefined {
   const parts = token.split(".");
   if (parts.length !== 3 || parts[1] === undefined) return undefined;
   try {
     const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
     const json = new TextDecoder().decode(Uint8Array.from(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")), (char) => char.charCodeAt(0)));
     const claims: unknown = JSON.parse(json);
-    if (typeof claims !== "object" || claims === null) return undefined;
-    const exp = (claims as { exp?: unknown }).exp;
-    return typeof exp === "number" && Number.isFinite(exp) ? exp * 1000 : undefined;
+    return typeof claims === "object" && claims !== null ? (claims as Record<string, unknown>) : undefined;
   } catch {
     return undefined;
   }

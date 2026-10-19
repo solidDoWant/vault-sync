@@ -11,6 +11,27 @@
       let
         pkgs = nixpkgs.legacyPackages.${system};
 
+        # Nix copies a flake's source into the store before evaluating it. As
+        # a git flake (`nix develop` in a checkout or worktree) only tracked
+        # files are copied. As a path flake (`path:...`, or
+        # `builtins.getFlake (toString ./.)`, which treats a bare path as
+        # `path:`) the whole directory is copied, including the gitignored
+        # plugin/node_modules and plugin/.wdio-obsidian-cache (over 1 GB),
+        # once per evaluation of a changed tree (#158). That copy cannot be
+        # prevented from in here, so path-flake evaluation fails instead of
+        # silently repeating it. Git sources carry rev (clean) or dirtyRev
+        # (dirty); path sources carry neither.
+        requireGitSource = value:
+          if self ? rev || self ? dirtyRev then
+            value
+          else
+            throw ''
+              vault-sync: this flake was evaluated as a path flake, so Nix copied the whole directory, gitignored caches included, to ${self.outPath}.
+              Evaluate it as a git flake instead: run `nix develop` inside the checkout or worktree, or use builtins.getFlake "git+file://''${toString ./.}" rather than builtins.getFlake (toString ./.).
+              Reclaim the space with: nix store delete ${self.outPath}
+              See README.md (Development).
+            '';
+
         # The Go toolchain for the dev shell and every Go build (the OCI
         # image derivations must build with this, e.g. via
         # `pkgs.buildGoModule.override { inherit go; }`). nixpkgs-unstable
@@ -71,7 +92,7 @@
         # release-tooling issue, following tape-archiver's streamLayeredImage
         # pattern.
 
-        devShells.default = pkgs.mkShell {
+        devShells.default = requireGitSource (pkgs.mkShell {
           packages = [
             go
             pkgs.golangci-lint
@@ -120,6 +141,6 @@
             export NIX_LD="${pkgs.stdenv.cc.bintools.dynamicLinker}"
             export NIX_LD_LIBRARY_PATH="${pkgs.lib.makeLibraryPath electronLibraries}''${NIX_LD_LIBRARY_PATH:+:$NIX_LD_LIBRARY_PATH}"
           '';
-        };
+        });
       });
 }

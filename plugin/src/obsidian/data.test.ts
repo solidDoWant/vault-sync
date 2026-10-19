@@ -2,23 +2,33 @@ import { describe, expect, it } from "vitest";
 
 import { parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
 
-const complete: PluginData = { serverUrl: "https://sync.example", oidcIssuer: "https://auth.example/o/vs/", oidcClientId: "vault-sync" };
+const complete: PluginData = { serverUrl: "https://sync.example", oidcIssuer: "https://auth.example/o/vs/", oidcClientId: "vault-sync", deviceName: "" };
 
 describe("parsePluginData", () => {
   it("defaults everything when nothing is stored", () => {
-    expect(parsePluginData(null)).toEqual({ serverUrl: "", oidcIssuer: "", oidcClientId: "" });
+    expect(parsePluginData(null)).toEqual({ serverUrl: "", oidcIssuer: "", oidcClientId: "", deviceName: "" });
   });
 
-  it("keeps stored fields, including the refresh token", () => {
-    expect(parsePluginData({ ...complete, refreshToken: "secret" })).toEqual({ ...complete, refreshToken: "secret" });
+  it("keeps stored fields, including the refresh token, the device and the connected vault", () => {
+    const stored: PluginData = {
+      ...complete,
+      deviceName: "Laptop",
+      refreshToken: "secret",
+      device: { id: "device-1", serverUrl: "https://sync.example", issuer: "https://auth.example/o/vs/", subject: "user-1" },
+      vault: { id: "vault-1", name: "Notes", serverUrl: "https://sync.example" },
+    };
+    expect(parsePluginData(JSON.parse(JSON.stringify(stored)))).toEqual(stored);
   });
 
-  it("ignores fields of the wrong type and an empty refresh token", () => {
-    expect(parsePluginData({ serverUrl: 5, oidcIssuer: "https://auth.example/", refreshToken: "" })).toEqual({
-      serverUrl: "",
+  it("ignores fields of the wrong type, an empty refresh token, and incomplete device and vault records", () => {
+    const stored = {
+      serverUrl: 5,
       oidcIssuer: "https://auth.example/",
-      oidcClientId: "",
-    });
+      refreshToken: "",
+      device: { id: "device-1", serverUrl: "https://sync.example", issuer: "https://auth.example/" },
+      vault: { id: "", name: "Notes", serverUrl: "https://sync.example" },
+    };
+    expect(parsePluginData(stored)).toEqual({ serverUrl: "", oidcIssuer: "https://auth.example/", oidcClientId: "", deviceName: "" });
   });
 });
 
