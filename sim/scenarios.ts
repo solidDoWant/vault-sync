@@ -3,6 +3,7 @@
 
 import { hexToBytes } from "@noble/hashes/utils.js";
 
+import { DocumentKind } from "../plugin/src/gen/vaultsync/v1/types_pb";
 import { serverHeads } from "./engine-observer";
 import { settle } from "./network";
 import { seededCommitRetryBackoff, SimRun, type RunResult, type SimEndpoints } from "./runner";
@@ -1789,4 +1790,51 @@ export async function stalledEngineReported(endpoints: SimEndpoints): Promise<St
     (failure: unknown) => failure,
   );
   return { ...(await run.finish()), error };
+}
+
+export interface ScriptedChangesOfBinaryResult extends RunResult {
+  /** Id of the engine's blob document. */
+  documentId: string;
+  /** The document's revisions on the server, in order: label, kind and whether it is a tombstone. */
+  revisions: { label: string; kind: string; deleted: boolean }[];
+}
+
+/**
+ * A scripted client changes an engine's blob document (#306). The engine
+ * classifies `trailing.`, a path without a text extension, as a blob, and
+ * pushes it. The scripted client pulls it, then edits, renames and deletes it.
+ * The server never changes a document's kind (SPEC.md §7), so each of those
+ * commits must carry the document's own kind, not TEXT, and be accepted.
+ */
+export async function scriptedChangesOfBinary(endpoints: SimEndpoints): Promise<ScriptedChangesOfBinaryResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 1, platforms: ["posix"] });
+  const { observer } = run;
+  const drain = async () => {
+    await settle();
+    await run.drain();
+  };
+  run.context.log(await observer.edit("trailing.", encoder.encode("engine content\n")));
+  run.context.log(observer.startPush());
+  await drain();
+  for (const operation of ["pull", "edit", "rename", "delete"] as const) {
+    await run.step({ kind: "operation", client: 0, operation, arg: 1 });
+    await drain();
+  }
+  const result = await run.finish();
+
+  const revisions: { documentId: string; label: string; kind: string; deleted: boolean }[] = [];
+  for (let since = 0n; ; ) {
+    const response = await run.direct.sync.listChanges({ vaultId: run.context.vaultId, sinceSeq: since, pageSize: 1000 });
+    for (const revision of response.revisions) {
+      revisions.push({ documentId: revision.documentId, label: run.context.ids.label(revision.id), kind: DocumentKind[revision.kind], deleted: revision.deleted });
+      since = revision.seq;
+    }
+    if (!response.hasMore) break;
+  }
+  const documentId = revisions[0]?.documentId ?? "";
+  return {
+    ...result,
+    documentId,
+    revisions: revisions.filter((revision) => revision.documentId === documentId).map(({ label, kind, deleted }) => ({ label, kind, deleted })),
+  };
 }
