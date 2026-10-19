@@ -1,0 +1,242 @@
+---
+# vault-sync Helm chart values. docs/deployment.md describes every value and
+# walks through a full deployment; docs/configuration.md describes every
+# VAULT_SYNC_* variable the values below set.
+#
+# `config` is this chart's own interface: the chart turns it into the server
+# Deployment ("main"), the export CronJob ("export"), their Services, Secret
+# mounts and environment. `resources` is passed to the bjw-s common library
+# chart and deep-merged over what the chart computes, so anything the library
+# supports can be overridden or added there.
+#
+# Secrets are never created by this chart: every credential is a reference to
+# a Secret you create (for example with cert-manager, CloudNativePG or
+# external-secrets). Only the named keys of each Secret are projected into
+# the pods, as a directory (never with subPath), so a rotated Secret reaches
+# the running pods without a restart.
+config:
+  # logLevel sets VAULT_SYNC_LOG_LEVEL on the server and the export job:
+  # debug, info, warn or error. Empty uses the server default (info).
+  logLevel: ""
+
+  # database configures PostgreSQL for the server. The export job uses the
+  # same settings unless config.export.database overrides them.
+  database:
+    # url is VAULT_SYNC_DATABASE_URL (required): a postgres:// URL or libpq
+    # keyword/value string, without sslcert/sslkey. Set exactly one of value
+    # (only if it holds no password) or secretKeyRef.
+    url:
+      value: ""
+      secretKeyRef:
+        name: ""
+        key: ""
+    tls:
+      # clientCertificate names a Secret holding the PostgreSQL client
+      # certificate and key, for example a kubernetes.io/tls Secret from
+      # cert-manager or the one CloudNativePG creates for a user. Mounted at
+      # /etc/vault-sync/database-client-cert and passed as
+      # VAULT_SYNC_DATABASE_TLS_CERT_FILE and VAULT_SYNC_DATABASE_TLS_KEY_FILE.
+      clientCertificate:
+        secretName: ""
+        certKey: tls.crt
+        keyKey: tls.key
+      # caCert names the Secret key holding the CA bundle that signs the
+      # PostgreSQL server certificate (for CloudNativePG, the
+      # `<cluster>-ca` Secret, key ca.crt). Mounted at
+      # /etc/vault-sync/database-ca and passed as
+      # VAULT_SYNC_DATABASE_TLS_CA_FILE. Setting it turns on full verification
+      # (docs/configuration.md, PostgreSQL TLS).
+      caCert:
+        secretKeyRef:
+          name: ""
+          key: ca.crt
+
+  # s3 configures the object store holding file contents (required).
+  s3:
+    # bucket is VAULT_SYNC_S3_BUCKET (required). The bucket must exist.
+    bucket: ""
+    # endpoint is VAULT_SYNC_S3_ENDPOINT, for example the Ceph RGW URL. Empty
+    # uses AWS S3.
+    endpoint: ""
+    # region is VAULT_SYNC_S3_REGION. Empty uses the server default
+    # (us-east-1).
+    region: ""
+    # forcePathStyle is VAULT_SYNC_S3_FORCE_PATH_STYLE: "true" or "false".
+    # Empty uses the server default (true).
+    forcePathStyle: ""
+    # idleTimeout is VAULT_SYNC_S3_IDLE_TIMEOUT, a Go duration. Empty uses the
+    # server default (2m).
+    idleTimeout: ""
+    # credentials names the Secret holding the S3 access key id and secret
+    # access key (required), and the keys within it. Mounted at
+    # /etc/vault-sync/s3-credentials and passed as
+    # VAULT_SYNC_S3_ACCESS_KEY_ID_FILE and VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE.
+    # The defaults match the Secret that Rook creates for an
+    # ObjectBucketClaim.
+    credentials:
+      secretName: ""
+      accessKeyIdKey: AWS_ACCESS_KEY_ID
+      secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+    # caCert names the Secret key holding a CA bundle for the S3 endpoint,
+    # instead of the system roots. Mounted at /etc/vault-sync/s3-ca and passed
+    # as VAULT_SYNC_S3_TLS_CA_FILE.
+    caCert:
+      secretKeyRef:
+        name: ""
+        key: ca.crt
+
+  # oidc configures access-token validation (docs/configuration.md,
+  # Authentication).
+  oidc:
+    # issuerUrl is VAULT_SYNC_OIDC_ISSUER_URL (required), for example
+    # https://auth.example.com/application/o/vault-sync/ for Authentik.
+    issuerUrl: ""
+    # audience is VAULT_SYNC_OIDC_AUDIENCE (required): the client ID of the
+    # vault-sync provider.
+    audience: ""
+    # clientId is VAULT_SYNC_OIDC_CLIENT_ID: the OAuth client the plugin signs
+    # in as, when it differs from the audience. Empty leaves it unset.
+    clientId: ""
+
+  # server holds the API server's tunables. Every empty value leaves its
+  # variable unset, so the server default applies (docs/configuration.md).
+  # The listen addresses are fixed by the chart: the API on 8080
+  # (VAULT_SYNC_LISTEN_ADDRESS) and metrics and health on 9090
+  # (VAULT_SYNC_METRICS_LISTEN_ADDRESS).
+  server:
+    # VAULT_SYNC_MAX_REQUEST_BYTES. Keep it at or below the WAF's inspected
+    # body limit (1 MiB by default).
+    maxRequestBytes: ""
+    # VAULT_SYNC_WRITE_TIMEOUT.
+    writeTimeout: ""
+    # VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER.
+    maxConcurrentRpcsPerUser: ""
+    # VAULT_SYNC_SHUTDOWN_DELAY and VAULT_SYNC_SHUTDOWN_TIMEOUT. Their sum
+    # plus a margin must stay below the pod's terminationGracePeriodSeconds
+    # (45 by default, see resources below).
+    shutdownDelay: ""
+    shutdownTimeout: ""
+    blob:
+      # VAULT_SYNC_BLOB_MAX_CHUNK_BYTES.
+      maxChunkBytes: ""
+      # VAULT_SYNC_BLOB_MAX_SIZE_BYTES.
+      maxSizeBytes: ""
+      # VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT.
+      maxUploadsPerVault: ""
+      # VAULT_SYNC_BLOB_UPLOAD_TTL.
+      uploadTtl: ""
+      # VAULT_SYNC_BLOB_GC_GRACE.
+      gcGrace: ""
+    retention:
+      # VAULT_SYNC_RETENTION_KEEP_ALL.
+      keepAll: ""
+      # VAULT_SYNC_RETENTION_KEEP_DAILY.
+      keepDaily: ""
+    realtime:
+      # VAULT_SYNC_REALTIME_MAX_CONNECTIONS.
+      maxConnections: ""
+      # VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER.
+      maxConnectionsPerUser: ""
+      # VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS.
+      maxSubscriptions: ""
+    metrics:
+      # serviceMonitor creates a prometheus-operator ServiceMonitor scraping
+      # /metrics on the "metrics" Service (port 9090). Needs the
+      # monitoring.coreos.com CRDs; set enabled to false without them.
+      serviceMonitor:
+        enabled: true
+        interval: 1m
+        scrapeTimeout: 10s
+
+  # export configures the plaintext export CronJob (docs/export.md). It runs
+  # `vault-sync-server export -out /export/<directory>` with its own Secret
+  # mounts; the server Deployment never mounts the export's output or its
+  # escrow key.
+  export:
+    enabled: true
+    # schedule is the CronJob schedule; timeZone is an optional IANA time
+    # zone for it (the cluster's default otherwise).
+    schedule: "0 3 * * *"
+    timeZone: ""
+    output:
+      # persistence is the volume the export writes to (required while the
+      # export is enabled), as a bjw-s persistence item, for example
+      #   persistence:
+      #     type: persistentVolumeClaim
+      #     existingClaim: vault-sync-export
+      # or an nfs or hostPath volume that your tape-archival tooling reads.
+      # The chart mounts it at /export; mount options other than the path
+      # can be set here.
+      persistence: {}
+      # directory is the export directory inside the volume. The export
+      # replaces it on every run and keeps a lock file and a staging
+      # directory beside it, at the top of the volume.
+      directory: vaults
+    # database overrides config.database for the export, so it can use its
+    # own read-only role (docs/export.md lists the grants it needs). Empty
+    # fields fall back to config.database; the CA is always shared.
+    database:
+      url:
+        value: ""
+        secretKeyRef:
+          name: ""
+          key: ""
+      tls:
+        clientCertificate:
+          secretName: ""
+          certKey: tls.crt
+          keyKey: tls.key
+    # s3 overrides config.s3.credentials for the export, so it can use
+    # read-only S3 credentials. An empty secretName falls back to
+    # config.s3.credentials; the bucket, endpoint and CA are shared.
+    s3:
+      credentials:
+        secretName: ""
+        accessKeyIdKey: AWS_ACCESS_KEY_ID
+        secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
+    # escrow names the Secret holding the escrow private key (SPEC.md §9.4).
+    # It is mounted read-only at /etc/vault-sync/escrow into the export job
+    # only; the chart refuses to render if any value would put it into the
+    # server. The export does not read it until end-to-end encryption ships
+    # (Phase 4); setting it now only prepares the mount.
+    escrow:
+      secretName: ""
+
+# resources follows the bjw-s common library schema
+# (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)
+# and is deep-merged over what the chart computes; your values win.
+#
+# The chart computes:
+#   - controllers.main: the server Deployment. 2 replicas, RollingUpdate with
+#     maxUnavailable 0 and maxSurge 1, a PodDisruptionBudget with
+#     maxUnavailable 1 while replicas > 1, spread across nodes, startup and
+#     liveness probes on /healthz and a readiness probe on /readyz (metrics
+#     port), terminationGracePeriodSeconds 45, non-root (65532) with a
+#     read-only root filesystem and no capabilities, and requests/limits of
+#     100m/1 CPU and 128Mi/512Mi memory.
+#   - controllers.export: the export CronJob (when config.export.enabled),
+#     with the same security context, concurrencyPolicy Forbid, backoffLimit
+#     2 and requests/limits of 100m/1 CPU and 128Mi/1Gi memory.
+#   - service.main (port 8080, "http": point your ingress here) and
+#     service.metrics (port 9090; never expose it).
+#   - serviceMonitor.main (when config.server.metrics.serviceMonitor.enabled).
+#   - persistence entries for every Secret above and the export volume.
+#
+# For example, to run three replicas and pin the image:
+#   controllers:
+#     main:
+#       replicas: 3
+#       containers:
+#         main:
+#           image:
+#             repository: ghcr.io/soliddowant/vault-sync
+#             tag: 1.2.3
+#
+# The server keeps no per-replica state (SPEC.md §12): do not add volumes
+# to controllers.main that a replica writes to.
+resources:
+  controllers:
+    main: {}
+  # ingress and route are entirely yours; the Service to target is
+  # service.main (identifier "main"), port "http".
+  ingress: {}

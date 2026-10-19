@@ -1,0 +1,436 @@
+---
+{{/* ============================================================ */}}
+{{/* Chart internals (not exposed in values)                      */}}
+{{/* ============================================================ */}}
+{{/* The controller and container names give overrides a stable path:
+   resources.controllers.{main,export}.containers.main. */}}
+{{- $serverController := "main" -}}
+{{- $exportController := "export" -}}
+{{- $container := "main" -}}
+
+{{/* Ports match the env vars set below and the image's ExposedPorts. */}}
+{{- $httpPort := 8080 -}}
+{{- $metricsPort := 9090 -}}
+
+{{- $mountRoot := "/etc/vault-sync" -}}
+{{- $exportMount := "/export" -}}
+{{- $defaultImageRepository := "ghcr.io/soliddowant/vault-sync" -}}
+{{- $runAsUser := 65532 -}}
+
+{{- $config := .Values.config -}}
+{{- $exportEnabled := $config.export.enabled -}}
+
+{{/* ============================================================ */}}
+{{/* Validation                                                   */}}
+{{/* ============================================================ */}}
+{{- define "vault-sync.secretKeyRef" -}}
+  {{- /* Validates a {value, secretKeyRef} pair and returns it as an env value
+     (a string or a valueFrom dict) in YAML, or "" if neither is set. */ -}}
+  {{- $path := .path -}}
+  {{- $value := .ref.value | default "" -}}
+  {{- $name := dig "secretKeyRef" "name" "" .ref -}}
+  {{- $key := dig "secretKeyRef" "key" "" .ref -}}
+  {{- if or (and $name (not $key)) (and $key (not $name)) -}}
+    {{- fail (printf "%s.secretKeyRef.name and .key must be set together" $path) -}}
+  {{- end -}}
+  {{- if and $value $name -}}
+    {{- fail (printf "%s.value and %s.secretKeyRef are mutually exclusive; set only one" $path $path) -}}
+  {{- end -}}
+  {{- if $name -}}
+    {{- dict "env" (dict "valueFrom" (dict "secretKeyRef" (dict "name" $name "key" $key))) | toYaml -}}
+  {{- else if $value -}}
+    {{- dict "env" $value | toYaml -}}
+  {{- end -}}
+{{- end -}}
+
+{{- $databaseURL := include "vault-sync.secretKeyRef" (dict "path" "config.database.url" "ref" $config.database.url) | fromYaml -}}
+{{- if not $databaseURL -}}
+  {{- fail "config.database.url is required: set config.database.url.value or config.database.url.secretKeyRef" -}}
+{{- end -}}
+{{- $exportDatabaseURL := include "vault-sync.secretKeyRef" (dict "path" "config.export.database.url" "ref" $config.export.database.url) | fromYaml -}}
+{{- if not $exportDatabaseURL -}}
+  {{- $exportDatabaseURL = $databaseURL -}}
+{{- end -}}
+
+{{- if not $config.s3.bucket -}}
+  {{- fail "config.s3.bucket is required" -}}
+{{- end -}}
+{{- if not $config.s3.credentials.secretName -}}
+  {{- fail "config.s3.credentials.secretName is required (a Secret holding the S3 access key id and secret access key)" -}}
+{{- end -}}
+{{- if not $config.oidc.issuerUrl -}}
+  {{- fail "config.oidc.issuerUrl is required" -}}
+{{- end -}}
+{{- if not $config.oidc.audience -}}
+  {{- fail "config.oidc.audience is required" -}}
+{{- end -}}
+
+{{- range $path, $ref := dict "config.database.tls.caCert" $config.database.tls.caCert "config.s3.caCert" $config.s3.caCert -}}
+  {{- if and $ref.secretKeyRef.name (not $ref.secretKeyRef.key) -}}
+    {{- fail (printf "%s.secretKeyRef.key must not be empty when name is set" $path) -}}
+  {{- end -}}
+{{- end -}}
+
+{{- if $exportEnabled -}}
+  {{- if not $config.export.schedule -}}
+    {{- fail "config.export.schedule is required while config.export.enabled is true" -}}
+  {{- end -}}
+  {{- if not $config.export.output.persistence -}}
+    {{- fail "config.export.output.persistence is required while config.export.enabled is true (the volume the export writes to)" -}}
+  {{- end -}}
+  {{- $directory := $config.export.output.directory | default "" | toString -}}
+  {{- if or (not $directory) (contains "/" $directory) (eq $directory ".") (eq $directory "..") -}}
+    {{- fail "config.export.output.directory must be a single, non-empty directory name" -}}
+  {{- end -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Secret mounts                                                */}}
+{{/* ============================================================ */}}
+{{/* Each entry becomes a persistence item mounted (read-only, whole Secret,
+   so rotations are seen) into the listed controllers only. */}}
+{{- $secretMounts := dict -}}
+{{- $controllers := list $serverController -}}
+{{- if $exportEnabled -}}
+  {{- $controllers = append $controllers $exportController -}}
+{{- end -}}
+
+{{/* Per-controller environment. */}}
+{{- $serverEnv := dict -}}
+{{- $exportEnv := dict -}}
+
+{{/* PostgreSQL client certificate: the export uses its own when set. */}}
+{{- $serverClientCert := $config.database.tls.clientCertificate -}}
+{{- $exportClientCert := $config.export.database.tls.clientCertificate -}}
+{{- if not $exportClientCert.secretName -}}
+  {{- $exportClientCert = $serverClientCert -}}
+{{- end -}}
+{{- if $serverClientCert.secretName -}}
+  {{- $path := printf "%s/database-client-cert" $mountRoot -}}
+  {{- $_ := set $secretMounts "database-client-cert" (dict "secretName" $serverClientCert.secretName "path" $path "controllers" (list $serverController) "keys" (list $serverClientCert.certKey $serverClientCert.keyKey)) -}}
+  {{- $_ := set $serverEnv "VAULT_SYNC_DATABASE_TLS_CERT_FILE" (printf "%s/%s" $path $serverClientCert.certKey) -}}
+  {{- $_ := set $serverEnv "VAULT_SYNC_DATABASE_TLS_KEY_FILE" (printf "%s/%s" $path $serverClientCert.keyKey) -}}
+{{- end -}}
+{{- if and $exportEnabled $exportClientCert.secretName -}}
+  {{- $path := printf "%s/export-database-client-cert" $mountRoot -}}
+  {{- $_ := set $secretMounts "export-database-client-cert" (dict "secretName" $exportClientCert.secretName "path" $path "controllers" (list $exportController) "keys" (list $exportClientCert.certKey $exportClientCert.keyKey)) -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_DATABASE_TLS_CERT_FILE" (printf "%s/%s" $path $exportClientCert.certKey) -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_DATABASE_TLS_KEY_FILE" (printf "%s/%s" $path $exportClientCert.keyKey) -}}
+{{- end -}}
+
+{{/* PostgreSQL CA: shared by both. */}}
+{{- with $config.database.tls.caCert.secretKeyRef.name -}}
+  {{- $path := printf "%s/database-ca" $mountRoot -}}
+  {{- $_ := set $secretMounts "database-ca" (dict "secretName" . "path" $path "controllers" $controllers "keys" (list $config.database.tls.caCert.secretKeyRef.key)) -}}
+  {{- $file := printf "%s/%s" $path $config.database.tls.caCert.secretKeyRef.key -}}
+  {{- $_ := set $serverEnv "VAULT_SYNC_DATABASE_TLS_CA_FILE" $file -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_DATABASE_TLS_CA_FILE" $file -}}
+{{- end -}}
+
+{{/* S3 credentials: the export uses its own when set. */}}
+{{- $serverS3 := $config.s3.credentials -}}
+{{- $exportS3 := $config.export.s3.credentials -}}
+{{- if not $exportS3.secretName -}}
+  {{- $exportS3 = $serverS3 -}}
+{{- end -}}
+{{- $path := printf "%s/s3-credentials" $mountRoot -}}
+{{- $_ := set $secretMounts "s3-credentials" (dict "secretName" $serverS3.secretName "path" $path "controllers" (list $serverController) "keys" (list $serverS3.accessKeyIdKey $serverS3.secretAccessKeyKey)) -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_S3_ACCESS_KEY_ID_FILE" (printf "%s/%s" $path $serverS3.accessKeyIdKey) -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE" (printf "%s/%s" $path $serverS3.secretAccessKeyKey) -}}
+{{- if $exportEnabled -}}
+  {{- $path := printf "%s/export-s3-credentials" $mountRoot -}}
+  {{- $_ := set $secretMounts "export-s3-credentials" (dict "secretName" $exportS3.secretName "path" $path "controllers" (list $exportController) "keys" (list $exportS3.accessKeyIdKey $exportS3.secretAccessKeyKey)) -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_S3_ACCESS_KEY_ID_FILE" (printf "%s/%s" $path $exportS3.accessKeyIdKey) -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_S3_SECRET_ACCESS_KEY_FILE" (printf "%s/%s" $path $exportS3.secretAccessKeyKey) -}}
+{{- end -}}
+
+{{/* S3 CA: shared by both. */}}
+{{- with $config.s3.caCert.secretKeyRef.name -}}
+  {{- $path := printf "%s/s3-ca" $mountRoot -}}
+  {{- $_ := set $secretMounts "s3-ca" (dict "secretName" . "path" $path "controllers" $controllers "keys" (list $config.s3.caCert.secretKeyRef.key)) -}}
+  {{- $file := printf "%s/%s" $path $config.s3.caCert.secretKeyRef.key -}}
+  {{- $_ := set $serverEnv "VAULT_SYNC_S3_TLS_CA_FILE" $file -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_S3_TLS_CA_FILE" $file -}}
+{{- end -}}
+
+{{/* Escrow private key: the export job only, never the server (SPEC.md
+   §9.4). The guard below fails the render if any value puts it into the
+   server. */}}
+{{- $escrowSecretName := $config.export.escrow.secretName | default "" -}}
+{{- if and $escrowSecretName $exportEnabled -}}
+  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController)) -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Environment                                                  */}}
+{{/* ============================================================ */}}
+{{- $_ := set $serverEnv "VAULT_SYNC_LISTEN_ADDRESS" (printf ":%d" $httpPort) -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_METRICS_LISTEN_ADDRESS" (printf ":%d" $metricsPort) -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_DATABASE_URL" $databaseURL.env -}}
+{{- $_ := set $exportEnv "VAULT_SYNC_DATABASE_URL" $exportDatabaseURL.env -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_OIDC_ISSUER_URL" $config.oidc.issuerUrl -}}
+{{- $_ := set $serverEnv "VAULT_SYNC_OIDC_AUDIENCE" $config.oidc.audience -}}
+{{- with $config.oidc.clientId -}}
+  {{- $_ := set $serverEnv "VAULT_SYNC_OIDC_CLIENT_ID" . -}}
+{{- end -}}
+
+{{/* Optional values: an empty value leaves the variable unset, so the
+   server's default applies. Compared as strings so that a numeric 0 or a
+   boolean false still reaches the server (which validates it). */}}
+{{- $shared := dict
+  "VAULT_SYNC_LOG_LEVEL" $config.logLevel
+  "VAULT_SYNC_S3_BUCKET" $config.s3.bucket
+  "VAULT_SYNC_S3_ENDPOINT" $config.s3.endpoint
+  "VAULT_SYNC_S3_REGION" $config.s3.region
+  "VAULT_SYNC_S3_FORCE_PATH_STYLE" $config.s3.forcePathStyle
+  "VAULT_SYNC_S3_IDLE_TIMEOUT" $config.s3.idleTimeout
+-}}
+{{- $serverOnly := dict
+  "VAULT_SYNC_MAX_REQUEST_BYTES" $config.server.maxRequestBytes
+  "VAULT_SYNC_WRITE_TIMEOUT" $config.server.writeTimeout
+  "VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER" $config.server.maxConcurrentRpcsPerUser
+  "VAULT_SYNC_SHUTDOWN_DELAY" $config.server.shutdownDelay
+  "VAULT_SYNC_SHUTDOWN_TIMEOUT" $config.server.shutdownTimeout
+  "VAULT_SYNC_BLOB_MAX_CHUNK_BYTES" $config.server.blob.maxChunkBytes
+  "VAULT_SYNC_BLOB_MAX_SIZE_BYTES" $config.server.blob.maxSizeBytes
+  "VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT" $config.server.blob.maxUploadsPerVault
+  "VAULT_SYNC_BLOB_UPLOAD_TTL" $config.server.blob.uploadTtl
+  "VAULT_SYNC_BLOB_GC_GRACE" $config.server.blob.gcGrace
+  "VAULT_SYNC_RETENTION_KEEP_ALL" $config.server.retention.keepAll
+  "VAULT_SYNC_RETENTION_KEEP_DAILY" $config.server.retention.keepDaily
+  "VAULT_SYNC_REALTIME_MAX_CONNECTIONS" $config.server.realtime.maxConnections
+  "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER" $config.server.realtime.maxConnectionsPerUser
+  "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS" $config.server.realtime.maxSubscriptions
+-}}
+{{- range $name, $value := $shared -}}
+  {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") -}}
+    {{- $_ := set $serverEnv $name (toString $value) -}}
+    {{- $_ := set $exportEnv $name (toString $value) -}}
+  {{- end -}}
+{{- end -}}
+{{- range $name, $value := $serverOnly -}}
+  {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") -}}
+    {{- $_ := set $serverEnv $name (toString $value) -}}
+  {{- end -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Persistence                                                  */}}
+{{/* ============================================================ */}}
+{{- $persistence := dict -}}
+{{- range $id, $mount := $secretMounts -}}
+  {{- $advancedMounts := dict -}}
+  {{- range $controller := $mount.controllers -}}
+    {{- $_ := set $advancedMounts $controller (dict $container (list (dict "path" $mount.path "readOnly" true))) -}}
+  {{- end -}}
+  {{- $item := dict
+    "type" "secret"
+    "name" $mount.secretName
+    "defaultMode" 288
+    "advancedMounts" $advancedMounts
+  -}}
+  {{/* Project only the keys the server reads, so for example the CA private
+     key in CloudNativePG's <cluster>-ca Secret never reaches a pod. Projected
+     keys (unlike subPath mounts) still follow rotations. */}}
+  {{- with $mount.keys -}}
+    {{- $items := list -}}
+    {{- range $key := . | uniq -}}
+      {{- $items = append $items (dict "key" $key "path" $key) -}}
+    {{- end -}}
+    {{- $_ := set $item "items" $items -}}
+  {{- end -}}
+  {{- $_ := set $persistence $id $item -}}
+{{- end -}}
+{{- if $exportEnabled -}}
+  {{- $output := mustDeepCopy $config.export.output.persistence -}}
+  {{- $_ := set $output "advancedMounts" (dict $exportController (dict $container (list (dict "path" $exportMount)))) -}}
+  {{- $_ := unset $output "globalMounts" -}}
+  {{- $_ := set $persistence "export" $output -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Controllers                                                  */}}
+{{/* ============================================================ */}}
+{{- $containerSecurityContext := dict
+  "allowPrivilegeEscalation" false
+  "capabilities" (dict "drop" (list "ALL"))
+  "readOnlyRootFilesystem" true
+  "runAsNonRoot" true
+  "runAsUser" $runAsUser
+  "runAsGroup" $runAsUser
+  "seccompProfile" (dict "type" "RuntimeDefault")
+-}}
+{{- $podSecurityContext := dict
+  "runAsNonRoot" true
+  "runAsUser" $runAsUser
+  "runAsGroup" $runAsUser
+  "fsGroup" $runAsUser
+  "fsGroupChangePolicy" "OnRootMismatch"
+  "seccompProfile" (dict "type" "RuntimeDefault")
+-}}
+{{- $image := dict "repository" $defaultImageRepository "tag" .Chart.AppVersion -}}
+
+{{- $userControllers := .Values.resources.controllers | default dict -}}
+{{- $userServer := index $userControllers $serverController | default dict -}}
+{{- $replicas := index $userServer "replicas" | default 2 | int -}}
+
+{{- $probe := dict "enabled" true "custom" true -}}
+{{- $server := dict
+  "type" "deployment"
+  "replicas" 2
+  "strategy" "RollingUpdate"
+  "rollingUpdate" (dict "maxUnavailable" 0 "maxSurge" 1)
+  "pod" (dict
+    "terminationGracePeriodSeconds" 45
+    "securityContext" $podSecurityContext
+    "topologySpreadConstraints" (list (dict
+      "maxSkew" 1
+      "topologyKey" "kubernetes.io/hostname"
+      "whenUnsatisfiable" "ScheduleAnyway"
+    ))
+  )
+  "containers" (dict $container (dict
+    "image" (mustDeepCopy $image)
+    "env" $serverEnv
+    "ports" (list
+      (dict "name" "http" "containerPort" $httpPort "protocol" "TCP")
+      (dict "name" "metrics" "containerPort" $metricsPort "protocol" "TCP")
+    )
+    "probes" (dict
+      "startup" (merge (dict "spec" (dict
+        "httpGet" (dict "path" "/healthz" "port" "metrics")
+        "periodSeconds" 5
+        "failureThreshold" 120
+      )) $probe)
+      "liveness" (merge (dict "spec" (dict
+        "httpGet" (dict "path" "/healthz" "port" "metrics")
+        "periodSeconds" 10
+        "failureThreshold" 3
+      )) $probe)
+      "readiness" (merge (dict "spec" (dict
+        "httpGet" (dict "path" "/readyz" "port" "metrics")
+        "periodSeconds" 2
+        "failureThreshold" 2
+      )) $probe)
+    )
+    "securityContext" $containerSecurityContext
+    "resources" (dict
+      "requests" (dict "cpu" "100m" "memory" "128Mi")
+      "limits" (dict "cpu" "1" "memory" "512Mi")
+    )
+  ))
+-}}
+{{- if gt $replicas 1 -}}
+  {{- $_ := set $server "podDisruptionBudget" (dict "maxUnavailable" 1) -}}
+{{- end -}}
+
+{{- $computedControllers := dict $serverController $server -}}
+{{- if $exportEnabled -}}
+  {{- $cronjob := dict
+    "schedule" $config.export.schedule
+    "concurrencyPolicy" "Forbid"
+    "backoffLimit" 2
+    "successfulJobsHistory" 3
+    "failedJobsHistory" 3
+  -}}
+  {{- with $config.export.timeZone -}}
+    {{- $_ := set $cronjob "timeZone" . -}}
+  {{- end -}}
+  {{- $_ := set $computedControllers $exportController (dict
+    "type" "cronjob"
+    "cronjob" $cronjob
+    "pod" (dict "securityContext" $podSecurityContext)
+    "containers" (dict $container (dict
+      "image" (mustDeepCopy $image)
+      "args" (list "export" "-out" (printf "%s/%s" $exportMount $config.export.output.directory))
+      "env" $exportEnv
+      "securityContext" $containerSecurityContext
+      "resources" (dict
+        "requests" (dict "cpu" "100m" "memory" "128Mi")
+        "limits" (dict "cpu" "1" "memory" "1Gi")
+      )
+    ))
+  ) -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Services and ServiceMonitor                                  */}}
+{{/* ============================================================ */}}
+{{- $services := dict
+  "main" (dict "controller" $serverController "ports" (dict "http" (dict "port" $httpPort "primary" true)))
+  "metrics" (dict "controller" $serverController "ports" (dict "metrics" (dict "port" $metricsPort)))
+-}}
+{{- $serviceMonitors := dict -}}
+{{- $serviceMonitor := $config.server.metrics.serviceMonitor -}}
+{{- if $serviceMonitor.enabled -}}
+  {{- $_ := set $serviceMonitors "main" (dict
+    "service" (dict "identifier" "metrics")
+    "endpoints" (list (dict
+      "port" "metrics"
+      "path" "/metrics"
+      "interval" $serviceMonitor.interval
+      "scrapeTimeout" $serviceMonitor.scrapeTimeout
+    ))
+  ) -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Merge user resources                                         */}}
+{{/* ============================================================ */}}
+{{- $computed := dict
+  "controllers" $computedControllers
+  "service" $services
+  "serviceMonitor" $serviceMonitors
+  "persistence" $persistence
+-}}
+{{- $merged := mustMergeOverwrite $computed (mustDeepCopy (.Values.resources | default dict)) -}}
+
+{{/* Resolve an image tag override that is a template (e.g. "{{ .Chart.AppVersion }}"). */}}
+{{- range $id, $controller := $merged.controllers -}}
+  {{- $main := dig "containers" $container dict $controller -}}
+  {{- with $main.image -}}
+    {{- $_ := set . "tag" (tpl (toString (.tag | default "")) $ | default $.Chart.AppVersion) -}}
+  {{- end -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Escrow guard (SPEC.md §9.4)                                  */}}
+{{/* ============================================================ */}}
+{{/* The escrow private key must never reach the internet-facing server. A
+   Secret that names it may be mounted only through advancedMounts of the
+   export controller, and nothing in the server controller or the default
+   pod options may name it (env, envFrom, volumes). */}}
+{{- if $escrowSecretName -}}
+  {{- $namesEscrow := printf "(?m)(name|secretName): ['\"]?%s['\"]?$" (regexQuoteMeta $escrowSecretName) -}}
+  {{- range $id, $item := $merged.persistence -}}
+    {{- if regexMatch $namesEscrow (toYaml $item) -}}
+      {{- if $item.globalMounts -}}
+        {{- fail (printf "resources.persistence.%s mounts the escrow Secret %q into every controller; it may be mounted into the export job only (SPEC.md §9.4)" $id $escrowSecretName) -}}
+      {{- end -}}
+      {{- if not $item.advancedMounts -}}
+        {{- fail (printf "resources.persistence.%s mounts the escrow Secret %q into every controller; it may be mounted into the export job only (SPEC.md §9.4)" $id $escrowSecretName) -}}
+      {{- end -}}
+      {{- range $controller, $_ := $item.advancedMounts -}}
+        {{- if ne $controller $exportController -}}
+          {{- fail (printf "resources.persistence.%s mounts the escrow Secret %q into controller %q; it may be mounted into the export job only (SPEC.md §9.4)" $id $escrowSecretName $controller) -}}
+        {{- end -}}
+      {{- end -}}
+    {{- end -}}
+  {{- end -}}
+  {{- range $id, $controller := $merged.controllers -}}
+    {{- if and (ne $id $exportController) (regexMatch $namesEscrow (toYaml $controller)) -}}
+      {{- fail (printf "resources.controllers.%s references the escrow Secret %q; it may be used by the export job only (SPEC.md §9.4)" $id $escrowSecretName) -}}
+    {{- end -}}
+  {{- end -}}
+  {{- if regexMatch $namesEscrow (toYaml (.Values.resources.defaultPodOptions | default dict)) -}}
+    {{- fail (printf "resources.defaultPodOptions references the escrow Secret %q, which would reach the server; it may be used by the export job only (SPEC.md §9.4)" $escrowSecretName) -}}
+  {{- end -}}
+{{- end -}}
+
+{{/* ============================================================ */}}
+{{/* Hand over to the common library                              */}}
+{{/* ============================================================ */}}
+{{- $values := omit (mustDeepCopy .Values) "config" "resources" -}}
+{{- $values = mustMergeOverwrite $values $merged -}}
+{{- $_ := set . "Values" $values -}}
+{{- include "bjw-s.common.loader.all" . }}

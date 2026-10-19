@@ -37,10 +37,11 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + release script tests.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
+	./scripts/release_test.sh
 
 .PHONY: test-integration
 test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker), incl. the plugin protocol client vs the real server.
@@ -81,9 +82,9 @@ $(PLUGIN_DIR)/node_modules/.package-lock.json: $(PLUGIN_DIR)/package.json $(PLUG
 	@touch $@
 
 .PHONY: plugin-build
-plugin-build: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Build the plugin bundle into plugin/dist/.
+plugin-build: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Build the plugin bundle (main.js, manifest.json, styles.css) into plugin/dist/.
 	cd $(PLUGIN_DIR) && npm run build
-	cp $(PLUGIN_DIR)/manifest.json $(PLUGIN_DIR)/dist/
+	cp $(PLUGIN_DIR)/manifest.json $(PLUGIN_DIR)/styles.css $(PLUGIN_DIR)/dist/
 
 .PHONY: plugin-test
 plugin-test: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the plugin's vitest unit tests.
@@ -105,7 +106,59 @@ build: $(BIN_DIR)/vault-sync-server plugin-build ## Build the server binary into
 
 .PHONY: clean
 clean: ## Remove build artifacts.
-	@rm -rf $(BIN_DIR) $(PLUGIN_DIR)/dist
+	@rm -rf $(BIN_DIR) $(PLUGIN_DIR)/dist $(CHART_DIR)/charts
+
+##@ Container Images
+
+# VERSION (above) is the one place a release is versioned: it is stamped into
+# the binary and tags the image, the packaged chart, the plugin manifest and
+# the git tag. PUSH_ALL=true also tags :latest and pushes; the default only
+# builds and loads into the local Docker daemon. Registry credentials are
+# taken from the Docker daemon / Helm registry login (no login step here).
+CONTAINER_REGISTRY ?= ghcr.io/soliddowant
+PUSH_ALL ?= false
+IMAGE := $(CONTAINER_REGISTRY)/vault-sync
+
+.PHONY: build-images
+build-images: ## Build the server OCI image with Nix (patched Go), check its binary with govulncheck, load it into Docker and tag it ghcr.io/soliddowant/vault-sync:VERSION (PUSH_ALL=true also tags :latest and pushes).
+	./scripts/build-images.sh "$(VERSION)" "$(PUSH_ALL)" "$(IMAGE)"
+
+##@ Helm
+
+CHART_DIR := deploy/charts/vault-sync
+HELM_REGISTRY := $(CONTAINER_REGISTRY)/charts
+HELM_PUSH ?= $(PUSH_ALL)
+
+.PHONY: chart-lint
+chart-lint: ## Lint the Helm chart and check its rendered manifests (Deployment, export CronJob, ServiceMonitor, Secret references, escrow never in the server); no cluster needed.
+	./scripts/chart_test.sh
+
+.PHONY: helm
+helm: ## Package the Helm chart into bin/helm/, versioned VERSION (PUSH_ALL=true also pushes it to oci://ghcr.io/soliddowant/charts).
+	@mkdir -p "$(BIN_DIR)/helm"
+	./scripts/chart-dependencies.sh "$(CHART_DIR)"
+	helm package "$(CHART_DIR)" --version "$(VERSION)" --app-version "$(VERSION)" --destination "$(BIN_DIR)/helm"
+	$(if $(filter true,$(HELM_PUSH)),helm push "$(BIN_DIR)/helm/vault-sync-$(VERSION).tgz" oci://$(HELM_REGISTRY),@echo "Skipping chart push (set PUSH_ALL=true to push to oci://$(HELM_REGISTRY))")
+
+##@ Release
+
+RELEASE_ASSET_DIR := $(BIN_DIR)/release
+
+.PHONY: plugin-release-assets
+plugin-release-assets: plugin-build ## Collect the plugin release assets (main.js, manifest.json stamped with VERSION, styles.css) into bin/release/.
+	@mkdir -p "$(RELEASE_ASSET_DIR)"
+	cp $(PLUGIN_DIR)/dist/main.js $(PLUGIN_DIR)/dist/styles.css "$(RELEASE_ASSET_DIR)/"
+	jq --arg version "$(VERSION)" '.version = $$version' $(PLUGIN_DIR)/dist/manifest.json > "$(RELEASE_ASSET_DIR)/manifest.json"
+
+# Dry run by default: the image and chart are built (not pushed) and the tag,
+# tag push and GitHub release are printed. PUSH_ALL=true releases for real.
+# The preflight (version, gh auth, and for a real release a clean tree and a
+# new tag) runs before anything is built or pushed.
+.PHONY: release
+release: ## Release VERSION: build and (PUSH_ALL=true) push the image and chart, tag VERSION and create a GitHub release with the plugin's main.js, manifest.json and styles.css for BRAT. Dry run unless PUSH_ALL=true. Requires gh.
+	./scripts/release.sh preflight "$(VERSION)" "$(PUSH_ALL)"
+	$(MAKE) build-images helm plugin-release-assets VERSION="$(VERSION)" PUSH_ALL="$(PUSH_ALL)"
+	./scripts/release.sh publish "$(VERSION)" "$(PUSH_ALL)" "$(RELEASE_ASSET_DIR)"
 
 ##@ Dependencies
 
