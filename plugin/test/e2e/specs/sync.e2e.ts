@@ -13,6 +13,11 @@ import { configure, dialog, isDialogOpen, issuerPost, signInAs, signInResult, st
 const subject = "plugin-e2e-sync-user";
 const remoteVaultName = "e2e two vaults";
 const sharedText = "written in the primary vault\n";
+// An attachment larger than two upload chunks and download ranges (768 KiB
+// each by default, less for JSON clients), and not a multiple of either, so
+// both are split and the last piece is a short one.
+const attachmentPath = "Attachments/Photo.jpg";
+const attachmentSize = 2 * 768 * 1024 + 12_345;
 
 /** The plugin's sync status, connected vault and stored device. */
 function syncState() {
@@ -85,6 +90,38 @@ function settingsFieldsDisabled(display = false) {
   );
 }
 
+/** Writes `size` pseudo-random (incompressible) bytes at `path`, creating its folder. */
+function writeAttachment(path: string, size: number) {
+  return browser.executeObsidian(
+    async ({ app }, filePath, length) => {
+      const content = new Uint8Array(length);
+      let state = 0x9e3779b9;
+      for (let index = 0; index < length; index++) {
+        state ^= state << 13;
+        state ^= state >>> 17;
+        state ^= state << 5;
+        content[index] = state & 0xff;
+      }
+      const folder = filePath.slice(0, filePath.lastIndexOf("/"));
+      if (app.vault.getFolderByPath(folder) === null) await app.vault.createFolder(folder);
+      await app.vault.createBinary(filePath, content.buffer);
+    },
+    path,
+    size,
+  );
+}
+
+/** The size and SHA-256 (hex) of the file at `path` as Obsidian reads it, or null if there is none. */
+function binaryDigest(path: string) {
+  return browser.executeObsidian(async ({ app }, filePath) => {
+    const file = app.vault.getFileByPath(filePath);
+    if (file === null) return null;
+    const content = await app.vault.readBinary(file);
+    const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", content));
+    return { size: content.byteLength, sha256: [...digest].map((byte) => byte.toString(16).padStart(2, "0")).join("") };
+  }, path);
+}
+
 async function waitForIdle(): Promise<void> {
   await browser.waitUntil(
     async () => {
@@ -97,6 +134,7 @@ async function waitForIdle(): Promise<void> {
 
 describe("syncing between two vaults", function () {
   let firstDeviceId: string | null = null;
+  let attachmentDigest: Awaited<ReturnType<typeof binaryDigest>> = null;
 
   it("locks the server and identity provider settings while a sign-in runs", async function () {
     await configure();
@@ -138,6 +176,16 @@ describe("syncing between two vaults", function () {
     if (!e2eEnvironment.emulateMobile) expect(state.statusBar).toBe("Vault Sync: idle");
   });
 
+  it("pushes an attachment larger than one upload chunk", async function () {
+    await writeAttachment(attachmentPath, attachmentSize);
+    attachmentDigest = await binaryDigest(attachmentPath);
+    expect(attachmentDigest?.size).toBe(attachmentSize);
+
+    await browser.waitUntil(async () => (await remoteFiles()).some((file) => file.path === attachmentPath), { timeoutMsg: "the attachment never reached the server" });
+    await waitForIdle();
+    expect(await remoteFiles()).toContainEqual({ path: attachmentPath, deviceId: firstDeviceId });
+  });
+
   it("keeps its device registration and resumes sync after a plugin reload", async function () {
     expect(await reloadPlugin(pluginId)).toBe(true);
 
@@ -164,9 +212,16 @@ describe("syncing between two vaults", function () {
     expect(state.storedDeviceId).not.toBeNull();
     expect(state.storedDeviceId).not.toBe(firstDeviceId);
     expect(await remoteFiles()).toEqual([
+      { path: attachmentPath, deviceId: firstDeviceId },
       { path: "Primary vault.md", deviceId: firstDeviceId },
       { path: "Second vault.md", deviceId: state.storedDeviceId },
       { path: "Shared.md", deviceId: firstDeviceId },
     ]);
+  });
+
+  it("brings the attachment to the second vault byte for byte", async function () {
+    expect(attachmentDigest).not.toBeNull();
+    await browser.waitUntil(async () => (await binaryDigest(attachmentPath))?.sha256 === attachmentDigest?.sha256, { timeoutMsg: "the attachment never arrived whole in the second vault" });
+    expect(await binaryDigest(attachmentPath)).toEqual(attachmentDigest);
   });
 });

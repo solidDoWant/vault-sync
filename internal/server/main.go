@@ -118,6 +118,8 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		ShutdownTimeout:          cfg.ShutdownTimeout,
 		Database:                 pool,
 		Authenticator:            authenticator,
+		OIDCIssuerURL:            cfg.OIDC.IssuerURL,
+		OIDCClientID:             cfg.OIDC.ClientID,
 		Devices:                  queries,
 		Vaults:                   queries,
 		Memberships:              queries,

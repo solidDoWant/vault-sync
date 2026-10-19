@@ -70,8 +70,19 @@ type GetServerInfoResponse struct {
 	// subscribe to (SPEC.md §6.4). Zero means the server does not offer the
 	// realtime channel.
 	MaxRealtimeSubscriptions uint32 `protobuf:"varint,3,opt,name=max_realtime_subscriptions,json=maxRealtimeSubscriptions,proto3" json:"max_realtime_subscriptions,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
+	// The OIDC issuer identifier whose access tokens the server accepts
+	// (VAULT_SYNC_OIDC_ISSUER_URL), exactly as configured, including any
+	// trailing slash (SPEC.md §9.1). Clients discover the identity provider's
+	// endpoints from `<issuer>/.well-known/openid-configuration`. Empty from
+	// servers older than this field.
+	OidcIssuerUrl string `protobuf:"bytes,4,opt,name=oidc_issuer_url,json=oidcIssuerUrl,proto3" json:"oidc_issuer_url,omitempty"`
+	// The public OAuth client id the plugin signs in as with the device
+	// authorization grant (VAULT_SYNC_OIDC_CLIENT_ID, by default the
+	// audience). A public client has no secret. Empty when the server
+	// advertises none; the user then enters it.
+	OidcClientId  string `protobuf:"bytes,5,opt,name=oidc_client_id,json=oidcClientId,proto3" json:"oidc_client_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GetServerInfoResponse) Reset() {
@@ -125,16 +136,32 @@ func (x *GetServerInfoResponse) GetMaxRealtimeSubscriptions() uint32 {
 	return 0
 }
 
+func (x *GetServerInfoResponse) GetOidcIssuerUrl() string {
+	if x != nil {
+		return x.OidcIssuerUrl
+	}
+	return ""
+}
+
+func (x *GetServerInfoResponse) GetOidcClientId() string {
+	if x != nil {
+		return x.OidcClientId
+	}
+	return ""
+}
+
 var File_vaultsync_v1_server_info_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_server_info_proto_rawDesc = "" +
 	"\n" +
 	"\x1evaultsync/v1/server_info.proto\x12\fvaultsync.v1\"\x16\n" +
-	"\x14GetServerInfoRequest\"\x9a\x01\n" +
+	"\x14GetServerInfoRequest\"\xe8\x01\n" +
 	"\x15GetServerInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x12<\n" +
-	"\x1amax_realtime_subscriptions\x18\x03 \x01(\rR\x18maxRealtimeSubscriptions2o\n" +
+	"\x1amax_realtime_subscriptions\x18\x03 \x01(\rR\x18maxRealtimeSubscriptions\x12&\n" +
+	"\x0foidc_issuer_url\x18\x04 \x01(\tR\roidcIssuerUrl\x12$\n" +
+	"\x0eoidc_client_id\x18\x05 \x01(\tR\foidcClientId2o\n" +
 	"\x11ServerInfoService\x12Z\n" +
 	"\rGetServerInfo\x12\".vaultsync.v1.GetServerInfoRequest\x1a#.vaultsync.v1.GetServerInfoResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 

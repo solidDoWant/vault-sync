@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/server_info.proto.
  */
 export const file_vaultsync_v1_server_info: GenFile = /*@__PURE__*/
-  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCJmChVHZXRTZXJ2ZXJJbmZvUmVzcG9uc2USDwoHdmVyc2lvbhgBIAEoCRIYChBwcm90b2NvbF92ZXJzaW9uGAIgASgNEiIKGm1heF9yZWFsdGltZV9zdWJzY3JpcHRpb25zGAMgASgNMm8KEVNlcnZlckluZm9TZXJ2aWNlEloKDUdldFNlcnZlckluZm8SIi52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1JlcXVlc3QaIy52YXVsdHN5bmMudjEuR2V0U2VydmVySW5mb1Jlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw");
+  fileDesc("Ch52YXVsdHN5bmMvdjEvc2VydmVyX2luZm8ucHJvdG8SDHZhdWx0c3luYy52MSIWChRHZXRTZXJ2ZXJJbmZvUmVxdWVzdCKXAQoVR2V0U2VydmVySW5mb1Jlc3BvbnNlEg8KB3ZlcnNpb24YASABKAkSGAoQcHJvdG9jb2xfdmVyc2lvbhgCIAEoDRIiChptYXhfcmVhbHRpbWVfc3Vic2NyaXB0aW9ucxgDIAEoDRIXCg9vaWRjX2lzc3Vlcl91cmwYBCABKAkSFgoOb2lkY19jbGllbnRfaWQYBSABKAkybwoRU2VydmVySW5mb1NlcnZpY2USWgoNR2V0U2VydmVySW5mbxIiLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRTZXJ2ZXJJbmZvUmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z");
 
 /**
  * GetServerInfoRequest has no parameters.
@@ -56,6 +56,27 @@ export type GetServerInfoResponse = Message<"vaultsync.v1.GetServerInfoResponse"
    * @generated from field: uint32 max_realtime_subscriptions = 3;
    */
   maxRealtimeSubscriptions: number;
+
+  /**
+   * The OIDC issuer identifier whose access tokens the server accepts
+   * (VAULT_SYNC_OIDC_ISSUER_URL), exactly as configured, including any
+   * trailing slash (SPEC.md §9.1). Clients discover the identity provider's
+   * endpoints from `<issuer>/.well-known/openid-configuration`. Empty from
+   * servers older than this field.
+   *
+   * @generated from field: string oidc_issuer_url = 4;
+   */
+  oidcIssuerUrl: string;
+
+  /**
+   * The public OAuth client id the plugin signs in as with the device
+   * authorization grant (VAULT_SYNC_OIDC_CLIENT_ID, by default the
+   * audience). A public client has no secret. Empty when the server
+   * advertises none; the user then enters it.
+   *
+   * @generated from field: string oidc_client_id = 5;
+   */
+  oidcClientId: string;
 };
 
 /**
@@ -68,14 +89,17 @@ export const GetServerInfoResponseSchema: GenMessage<GetServerInfoResponse> = /*
 /**
  * ServerInfoService exposes server metadata. It is the only unauthenticated
  * service: clients call it before signing in to check that they speak a
- * compatible protocol version.
+ * compatible protocol version and to discover the identity provider to sign
+ * in with.
  *
  * @generated from service vaultsync.v1.ServerInfoService
  */
 export const ServerInfoService: GenService<{
   /**
-   * GetServerInfo returns the server build version and protocol version. It
-   * requires no authentication and reveals nothing about vaults or users.
+   * GetServerInfo returns the server build version, the protocol version,
+   * limits clients need, and OIDC discovery data. It requires no
+   * authentication and reveals nothing about vaults or users, and nothing
+   * secret: the issuer and the public client id are public by design.
    *
    * @generated from rpc vaultsync.v1.ServerInfoService.GetServerInfo
    */

@@ -37,6 +37,7 @@ const (
 	LogLevelEnv                 = "VAULT_SYNC_LOG_LEVEL"
 	OIDCIssuerURLEnv            = "VAULT_SYNC_OIDC_ISSUER_URL"
 	OIDCAudienceEnv             = "VAULT_SYNC_OIDC_AUDIENCE"
+	OIDCClientIDEnv             = "VAULT_SYNC_OIDC_CLIENT_ID"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
@@ -230,7 +231,16 @@ type OIDCConfig struct {
 	IssuerURL string
 	// Audience must appear in tokens' aud claim.
 	Audience string
+	// ClientID is the public OAuth client id the plugin signs in as,
+	// advertised by GetServerInfo. It defaults to Audience when that is a
+	// valid client id (MaxOIDCClientIDBytes printable ASCII characters at
+	// most), and is otherwise empty: no client id is advertised.
+	ClientID string
 }
+
+// MaxOIDCClientIDBytes bounds VAULT_SYNC_OIDC_CLIENT_ID. OAuth 2.0 does not
+// bound client ids; identity providers generate ids far shorter than this.
+const MaxOIDCClientIDBytes = 255
 
 // Load reads the configuration through lookup (os.LookupEnv in production).
 // An empty variable is treated as unset. All problems are reported together,
@@ -285,6 +295,17 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 
 	if cfg.OIDC.Audience == "" {
 		problems = append(problems, fmt.Errorf("%s is required", OIDCAudienceEnv))
+	}
+
+	if clientID := get(OIDCClientIDEnv); clientID != "" {
+		if err := checkClientID(clientID); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", OIDCClientIDEnv, err))
+		} else {
+			cfg.OIDC.ClientID = clientID
+		}
+	} else if checkClientID(cfg.OIDC.Audience) == nil {
+		// The Authentik setup: the access token's aud is the client id.
+		cfg.OIDC.ClientID = cfg.OIDC.Audience
 	}
 
 	problems = append(problems, checkListenAddress(ListenAddressEnv, cfg.ListenAddress))
@@ -673,6 +694,23 @@ func checkIssuerURL(issuer string) error {
 	}
 
 	return fmt.Errorf("%s: must use https (plain http is allowed only for a loopback host), got %q", OIDCIssuerURLEnv, issuer)
+}
+
+// checkClientID requires a client id clients can send: 1 to
+// MaxOIDCClientIDBytes characters of printable ASCII (RFC 6749 appendix A.1,
+// VSCHAR). It is advertised to unauthenticated callers, so it is bounded.
+func checkClientID(clientID string) error {
+	if clientID == "" || len(clientID) > MaxOIDCClientIDBytes {
+		return fmt.Errorf("must be 1 to %d bytes long, got %d", MaxOIDCClientIDBytes, len(clientID))
+	}
+
+	for _, character := range []byte(clientID) {
+		if character < 0x20 || character > 0x7e {
+			return errors.New("must contain only printable ASCII characters")
+		}
+	}
+
+	return nil
 }
 
 func checkDatabase(database store.Config) error {
