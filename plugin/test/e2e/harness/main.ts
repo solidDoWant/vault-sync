@@ -1,4 +1,4 @@
-import { FileView, MarkdownView, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
+import { FileView, MarkdownView, normalizePath, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
 import { hexToBytes } from "@noble/hashes/utils.js";
 
@@ -10,7 +10,8 @@ import { journalConformance, runJournalConformanceCase } from "../../../src/core
 import { IndexedDbJournal } from "../../../src/core/journal/indexeddb";
 import { createProtocolClient } from "../../../src/core/protocol/client";
 import { uuidv7 } from "../../../src/core/uuid";
-import type { VaultEvent } from "../../../src/core/vault/adapter";
+import { VaultError, type FileStat, type VaultEvent } from "../../../src/core/vault/adapter";
+import { isVaultRelativePath } from "../../../src/core/vaultpath/vaultpath";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
 import { configFolderHost, ObsidianConfigAdapter } from "../../../src/obsidian/config-adapter";
@@ -58,6 +59,32 @@ export interface ViewWriteResult {
   /** The view's own serialization of what it shows. */
   view: string;
   disk: string;
+}
+
+/** What Obsidian and the adapter make of one path (paths.e2e.ts). */
+export interface PathScopeResult {
+  /** normalizePath's result. */
+  normalized: string;
+  /** Whether isVaultRelativePath accepts the path, and its normalized form. */
+  accepted: boolean;
+  normalizedAccepted: boolean;
+  /** Each call's outcome: "ok", a VaultError code, or the error. */
+  write: string;
+  rename: string;
+  read: string;
+  stat: FileStat | null;
+  /** The adapter's files afterwards, and inside.md's content. */
+  listed: string[];
+  inside: string;
+}
+
+/** What the config folder adapter makes of one path (paths.e2e.ts). */
+export interface ConfigPathScopeResult {
+  /** Each call's outcome: "ok", a VaultError code, or the error. */
+  write: string;
+  rename: string;
+  /** Every file on disk afterwards in the test folder, and a stray evil.json in the config folder, sorted. */
+  files: string[];
 }
 
 /** What one sync session start saw (lifecycle.e2e.ts). bigints as strings, to cross executeObsidian. */
@@ -129,6 +156,82 @@ export default class VaultSyncE2EHarness extends Plugin {
     } catch (error) {
       return { ok: false, error: describeError(error) };
     }
+  }
+
+  /**
+   * What Obsidian and the adapter make of `path` (paths.e2e.ts, #148): what
+   * normalizePath turns it into, whether the shared rule accepts it before
+   * and after, and what each adapter call does with it, over an emptied vault
+   * holding only inside.md. The rule must hold on the string the file system
+   * gets, so the adapter refuses any path normalizePath would change.
+   */
+  async pathScope(path: string): Promise<PathScopeResult> {
+    await emptyVault(this.app);
+    const adapter = new ObsidianVaultAdapter(this.app);
+    await adapter.write("inside.md", encoder.encode("inside\n"));
+    const outcome = async (run: () => Promise<unknown>) => {
+      try {
+        await run();
+        return "ok";
+      } catch (error) {
+        return error instanceof VaultError ? error.code : describeError(error);
+      }
+    };
+    const normalized = normalizePath(path);
+    const result: PathScopeResult = {
+      normalized,
+      accepted: isVaultRelativePath(path),
+      normalizedAccepted: isVaultRelativePath(normalized),
+      write: await outcome(() => adapter.write(path, encoder.encode("outside\n"))),
+      rename: await outcome(() => adapter.rename("inside.md", path)),
+      read: await outcome(() => adapter.read(path)),
+      stat: await adapter.stat(path),
+      listed: await adapter.list(),
+      inside: new TextDecoder().decode(await adapter.read("inside.md")),
+    };
+    await emptyVault(this.app);
+    return result;
+  }
+
+  /**
+   * The same for the config folder adapter (paths.e2e.ts, #148): `relative`
+   * is written and renamed onto under the config folder's
+   * `vault-sync-e2e-paths/` folder, which holds only inside.json, and every
+   * file then in that folder (and an evil.json the write might have put in
+   * the config folder itself) is reported, then removed.
+   */
+  async configPathScope(relative: string): Promise<ConfigPathScopeResult> {
+    const host = configFolderHost(this.app, normalizePath);
+    const disk = this.app.vault.adapter;
+    const folder = "vault-sync-e2e-paths";
+    const root = `${host.configDir}/${folder}`;
+    const adapter = new ObsidianConfigAdapter(host);
+    await adapter.write(`${folder}/inside.json`, encoder.encode("{}"));
+    const outcome = async (run: () => Promise<unknown>) => {
+      try {
+        await run();
+        return "ok";
+      } catch (error) {
+        return error instanceof VaultError ? error.code : describeError(error);
+      }
+    };
+    const path = `${folder}/${relative}`;
+    const write = await outcome(() => adapter.write(path, encoder.encode("{}")));
+    const rename = await outcome(() => adapter.rename(`${folder}/inside.json`, path));
+    const files: string[] = [];
+    const folders = [root];
+    for (let next = folders.pop(); next !== undefined; next = folders.pop()) {
+      const listed = await disk.list(next);
+      files.push(...listed.files);
+      folders.push(...listed.folders);
+    }
+    const stray = `${host.configDir}/evil.json`;
+    if (await disk.exists(stray)) {
+      files.push(stray);
+      await disk.remove(stray);
+    }
+    await disk.rmdir(root, true);
+    return { write, rename, files: files.sort() };
   }
 
   /** The Journal conformance case names, in suite order. */
@@ -379,7 +482,7 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** Starts recording the changes an Obsidian config folder adapter reports, to show they happen. */
   watchConfigFolder(): void {
     this.configEvents.length = 0;
-    this.register(new ObsidianConfigAdapter(configFolderHost(this.app)).watch((event) => this.configEvents.push(event.path)));
+    this.register(new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)).watch((event) => this.configEvents.push(event.path)));
   }
 
   /** What watchConfigFolder() recorded. */

@@ -1,0 +1,32 @@
+{
+  "description": "Shared path text vectors (SPEC.md section 6.2, issue 148). A plaintext path is 1 to 4096 bytes of UTF-8 with no control character (Unicode category Cc: U+0000 to U+001F and U+007F to U+009F). Each vector's path is \"path\" repeated \"repeat\" times (once if absent). Every non-empty path here is otherwise vault-relative and new (testdata/paths/validity.json), so \"valid\" is exactly the text rule. internal/vaultpath.CheckText (Go, used by CommitRevision) and isPathText in plugin/src/core/vaultpath (TypeScript, applied to every path a client receives, including E2EE paths after decryption, which the server cannot check) must return valid exactly as given. Lengths count UTF-8 bytes, not code points or UTF-16 code units.",
+  "vectors": [
+    { "name": "one byte", "path": "a", "valid": true },
+    { "name": "empty", "path": "", "valid": false },
+    { "name": "4096 one-byte characters", "path": "a", "repeat": 4096, "valid": true },
+    { "name": "4097 one-byte characters", "path": "a", "repeat": 4097, "valid": false },
+    { "name": "2048 two-byte characters (4096 bytes)", "path": "é", "repeat": 2048, "valid": true },
+    { "name": "2049 two-byte characters (4098 bytes, 2049 UTF-16 code units)", "path": "é", "repeat": 2049, "valid": false },
+    { "name": "1365 three-byte characters (4095 bytes)", "path": "日", "repeat": 1365, "valid": true },
+    { "name": "1366 three-byte characters (4098 bytes)", "path": "日", "repeat": 1366, "valid": false },
+    { "name": "1024 four-byte characters (4096 bytes)", "path": "😀", "repeat": 1024, "valid": true },
+    { "name": "1025 four-byte characters (4100 bytes, 2050 UTF-16 code units)", "path": "😀", "repeat": 1025, "valid": false },
+    { "name": "multi-byte characters", "path": "zoë-日本-😀.md", "valid": true },
+    { "name": "no-break space", "path": "a\u00a0b.md", "valid": true },
+    { "name": "zero-width space (format, not control)", "path": "a\u200bb.md", "valid": true },
+    { "name": "byte order mark (format, not control)", "path": "\ufeffa.md", "valid": true },
+    { "name": "line separator (not control)", "path": "a\u2028b.md", "valid": true },
+    { "name": "replacement character", "path": "a\ufffdb.md", "valid": true },
+    { "name": "NUL", "path": "a\u0000b.md", "valid": false },
+    { "name": "start of heading", "path": "a\u0001b.md", "valid": false },
+    { "name": "tab", "path": "a\tb.md", "valid": false },
+    { "name": "newline", "path": "a\nb.md", "valid": false },
+    { "name": "carriage return", "path": "a\rb.md", "valid": false },
+    { "name": "escape", "path": "a\u001bb.md", "valid": false },
+    { "name": "unit separator", "path": "a\u001fb.md", "valid": false },
+    { "name": "DEL", "path": "a\u007fb.md", "valid": false },
+    { "name": "first C1 control", "path": "a\u0080b.md", "valid": false },
+    { "name": "last C1 control", "path": "a\u009fb.md", "valid": false },
+    { "name": "control character at the end", "path": "a.md\u0000", "valid": false }
+  ]
+}

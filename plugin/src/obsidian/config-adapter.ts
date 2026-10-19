@@ -18,14 +18,22 @@ export interface ConfigFolderHost {
    * Returns an unsubscribe function.
    */
   onRaw(listener: (path: string) => void): () => void;
+  /**
+   * Obsidian's normalizePath, which its DataAdapter applies to every path it
+   * is given: it maps U+00A0 and U+202F to a space, so a received segment
+   * such as ".." followed by U+00A0 would reach the disk as ".. ", which
+   * Windows reads as "..".
+   */
+  normalizePath(path: string): string;
 }
 
-/** The config folder host of the open vault. */
-export function configFolderHost(app: App): ConfigFolderHost {
+/** The config folder host of the open vault; `normalizePath` is Obsidian's (passed in, as this module imports only Obsidian's types). */
+export function configFolderHost(app: App, normalizePath: (path: string) => string): ConfigFolderHost {
   const vault = app.vault;
   return {
     configDir: vault.configDir,
     adapter: vault.adapter,
+    normalizePath,
     onRaw: (listener) => {
       // "raw" is not in Obsidian's public typings.
       const on = vault.on.bind(vault) as unknown as (name: "raw", callback: (path: string) => void) => EventRef;
@@ -71,7 +79,7 @@ export class ObsidianConfigAdapter implements VaultAdapter {
       files.push(...listed.files);
       folders.push(...listed.folders);
     }
-    return files.map((path) => this.relative(path)).filter((path): path is string => path !== undefined);
+    return files.map((path) => this.relative(path)).filter((path): path is string => path !== undefined && this.inScope(path));
   }
 
   async read(path: string): Promise<Uint8Array> {
@@ -80,11 +88,13 @@ export class ObsidianConfigAdapter implements VaultAdapter {
   }
 
   async stat(path: string): Promise<FileStat | null> {
+    if (!this.inScope(path)) return null;
     const stat = await this.adapter.stat(this.full(path));
     return stat?.type === "file" ? { size: stat.size, mtime: stat.mtime } : null;
   }
 
   async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    if (!this.inScope(path)) throw new VaultError("path-conflict", path);
     const existing = await this.adapter.stat(this.full(path));
     if (existing?.type === "folder") throw new VaultError("path-conflict", path);
     if (precondition !== undefined) {
@@ -98,6 +108,7 @@ export class ObsidianConfigAdapter implements VaultAdapter {
   async rename(from: string, to: string): Promise<void> {
     await this.requireFile(from);
     if (from === to) return;
+    if (!this.inScope(to)) throw new VaultError("path-conflict", to);
     const target = await this.adapter.stat(this.full(to));
     if (target?.type === "folder") throw new VaultError("path-conflict", to);
     // A rename that changes only letter case finds the file itself at `to` on a case-insensitive disk.
@@ -115,12 +126,22 @@ export class ObsidianConfigAdapter implements VaultAdapter {
   watch(listener: VaultListener): () => void {
     return this.host.onRaw((path) => {
       const relative = this.relative(path);
-      if (relative !== undefined && relative !== "") listener({ type: "modify", path: relative });
+      if (relative !== undefined && relative !== "" && this.inScope(relative)) listener({ type: "modify", path: relative });
     });
   }
 
   private full(path: string): string {
     return `${this.host.configDir}/${path}`;
+  }
+
+  /**
+   * Whether the DataAdapter would touch exactly this path: the engine checks
+   * paths as received (SPEC.md §6.2), so one Obsidian's normalizePath would
+   * change is out of scope (#148). As in ObsidianVaultAdapter.
+   */
+  private inScope(path: string): boolean {
+    const full = this.full(path);
+    return this.host.normalizePath(full) === full;
   }
 
   /** A vault-relative path as a path in the config folder, if it is in it. */
@@ -130,7 +151,7 @@ export class ObsidianConfigAdapter implements VaultAdapter {
   }
 
   private async requireFile(path: string): Promise<void> {
-    if ((await this.adapter.stat(this.full(path)))?.type !== "file") throw new VaultError("not-found", path);
+    if (!this.inScope(path) || (await this.adapter.stat(this.full(path)))?.type !== "file") throw new VaultError("not-found", path);
   }
 
   /** Creates the missing ancestor folders of `path`; "path-conflict" if one of them is a file. */

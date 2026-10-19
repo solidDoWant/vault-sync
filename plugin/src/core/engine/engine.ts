@@ -1533,9 +1533,9 @@ export class SyncEngine {
       return;
     }
     if (!isNewVaultPath(operation.path) && (state === undefined || state.deleted || state.path !== operation.path)) {
-      // A path with a "\" may only be kept by the live document already at
-      // it, never given to a new, moved or deleted one (SPEC.md §6.2,
-      // decision #191): the server would refuse it, so nothing is sent. The
+      // A path with a "\" or a drive-like prefix may only be kept by the live
+      // document already at it, never given to a new, moved or deleted one
+      // (SPEC.md §6.2, decisions #191, #148): the server would refuse it, so nothing is sent. The
       // operation stays pending and its file where it is, unless the file is
       // gone, which a later push then sees as any other change.
       if (!operation.deleted && (await this.readOrNull(operation.path)) === null) {
@@ -1544,7 +1544,7 @@ export class SyncEngine {
         if (state !== undefined && !state.deleted) this.changes.paths.add(state.path);
         return;
       }
-      summary.rejected.push({ operation, error: new ConnectError('a new path must not contain "\\"; use "/" as the separator', Code.InvalidArgument) });
+      summary.rejected.push({ operation, error: new ConnectError('a new path must not contain "\\" or start with one character and ":"', Code.InvalidArgument) });
       return;
     }
     // A rename or delete keeps the base's content, which the server already holds.

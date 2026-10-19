@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -562,6 +562,35 @@ describe.runIf(suites.has("scenarios"))("scripted backslash-path scenarios (#191
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
     expect([...result.documents.keys()].sort(), trace).toEqual([...expected.keys()]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted drive-like path scenarios (#148)", () => {
+  it("refuses new paths starting with one character and a colon, keeps their files, and syncs them once renamed", async () => {
+    const result = await drivePrefixPathsRefused(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    // No drive-like file reached the server, and all stayed on the second engine's disk.
+    expect([...result.afterRefusal.keys()], trace).toEqual(["1-x.md"]);
+    expect(result.rejected, trace).toEqual(["1:x.md", "é:y.md", "😀:z.md"].sort());
+    expect(result.secondAfterRefusal, trace).toEqual(
+      new Map([
+        ["1-x.md", "synced\n"],
+        ["1:x.md", "digit drive\n"],
+        ["é:y.md", "letter drive\n"],
+        ["😀:z.md", "emoji drive\n"],
+      ]),
+    );
+    const expected = new Map([
+      ["1-x.md", "synced\n"],
+      ["1/x.md", "digit drive\n"],
+      ["e-y.md", "letter drive\n"],
+      ["z.md", "emoji drive\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect([...result.documents.keys()].sort(), trace).toEqual([...expected.keys()].sort());
   });
 });
 

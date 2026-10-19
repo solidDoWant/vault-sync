@@ -8,7 +8,7 @@ import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/
 import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
-import { isNewVaultPath, isVaultRelativePath } from "../vaultpath/vaultpath";
+import { isNewVaultPath, isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
 
 export interface InMemoryServerOptions {
   vaultId?: string;
@@ -48,6 +48,7 @@ interface Upload {
 }
 
 const encoder = new TextEncoder();
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 
 /**
  * An in-process stand-in for the server's sync and blob services over
@@ -57,8 +58,10 @@ const encoder = new TextEncoder();
  * §6.1, §6.2): resumable sequential chunks, hash verification, optimistic
  * concurrency with the head as a Document detail, idempotent retries by
  * revision id, path-key uniqueness among live documents, including the
- * file/folder rule (a live document never at or under another's folder), and
- * the backslash rule (no document created or moved into a path with a "\").
+ * file/folder rule (a live document never at or under another's folder), the
+ * new-path rules (no document created or moved into a path with a "\" or a
+ * drive-like prefix such as "1:"), and the path text rule (length, control
+ * characters).
  */
 export class InMemoryServer {
   readonly vaultId: string;
@@ -354,11 +357,17 @@ export class InMemoryServer {
     const blob = this.blobs.get(blobId);
     if (blob === undefined) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
     if (BigInt(blob.length) !== request.contentRef?.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
-    const path = new TextDecoder().decode(request.path);
+    let path: string;
+    try {
+      path = strictDecoder.decode(request.path);
+    } catch {
+      throw new ConnectError("path is not valid UTF-8", Code.InvalidArgument);
+    }
+    if (!isPathText(path)) throw new ConnectError("path must be 1 to 4096 bytes without control characters", Code.InvalidArgument);
     if (!isVaultRelativePath(path)) throw new ConnectError("path is not vault-relative", Code.InvalidArgument);
-    // A path with a "\" may only be kept by the live document already at it (#191).
+    // A path with a "\" (#191) or a drive-like prefix (#148) may only be kept by the live document already at it.
     if (!isNewVaultPath(path) && (head === undefined || head.deleted || new TextDecoder().decode(head.path) !== path)) {
-      throw new ConnectError('a new path must not contain "\\"', Code.InvalidArgument);
+      throw new ConnectError('a new path must not contain "\\" or start with one character and ":"', Code.InvalidArgument);
     }
     if (!request.deleted) {
       const key = pathKey(path);

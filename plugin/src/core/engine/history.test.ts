@@ -323,13 +323,17 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
     expect(await files(h.vault)).toEqual(new Map([["plan.md", "a new plan\n"]]));
   });
 
-  it("refuses to bring a deleted document back at a backslash path, committing nothing, its history still readable", async () => {
-    // SPEC.md §11 and §6.2 (decision #191): no document may be brought back
-    // at a path containing "\"; the server refuses the restore.
+  it.each([
+    ["a backslash path (#191)", "old\\note.md"],
+    ["a drive-like path (#148)", "1:note.md"],
+  ])("refuses to bring a deleted document back at %s, committing nothing, its history still readable", async (_, path) => {
+    // SPEC.md §11 and §6.2 (decisions #191, #148): no document may be
+    // brought back at a path that may no longer be created; the server
+    // refuses the restore.
     const h = harness({ server: clockedServer().server });
-    h.server.commit({ documentId: "legacy", path: "old\\note.md", content: "legacy\n" });
+    h.server.commit({ documentId: "legacy", path, content: "legacy\n" });
     await h.engine.pull();
-    await h.vault.delete("old\\note.md");
+    await h.vault.delete(path);
     await h.engine.push();
     expect(h.server.head("legacy")?.deleted).toBe(true);
     const entries = await allEntries(h, "legacy");

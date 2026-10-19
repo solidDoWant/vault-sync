@@ -11,28 +11,74 @@
 // them is the client's job, not a security boundary.
 //
 // CheckNew is the stricter rule for a path a commit creates or renames a
-// document into: it must also contain no "\" (decision, #191). Windows
+// document into. It must also contain no "\" (decision, #191). Windows
 // reads "\" as a separator and other platforms as part of a name, so "a/b"
 // and "a\b" would otherwise be two live documents naming one file on
-// Windows. Documents committed before the rule keep their "\" paths, which
-// still pass Check.
+// Windows. It must also not start with any single code point and a colon
+// (decision, #148): Win32 reads any first character followed by ":" as a
+// drive, and drives such as "1:" can be created with subst. Documents
+// committed before these rules keep their paths, which still pass Check.
 //
-// The TypeScript client (plugin/src/core/vaultpath) applies the same rules,
-// and testdata/paths/validity.json is the shared conformance suite.
+// CheckText is the length and character-set rule every plaintext path must
+// also pass.
+//
+// The TypeScript client (plugin/src/core/vaultpath) applies the same rules.
+// testdata/paths/validity.json (Check, CheckNew) and testdata/paths/text.json
+// (CheckText) are the shared conformance suites.
 package vaultpath
 
 import (
 	"errors"
+	"fmt"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/solidDoWant/vault-sync/internal/textcheck"
 )
+
+// MaxBytes bounds a plaintext path (UTF-8 bytes).
+const MaxBytes = 4096
 
 // ErrNotRelative is returned for a path that is not vault-relative.
 var ErrNotRelative = errors.New(`path must be relative ("/" and "\" are both separators), ` +
 	`with no drive letter and no empty, "." or ".." segments`)
 
+// ErrNotNew is wrapped by every error CheckNew returns for a path that is
+// vault-relative but may no longer be given to a document: a commit may
+// keep it only as a live document's unchanged path.
+var ErrNotNew = errors.New("a new path may not be created at this path")
+
 // ErrBackslash is returned by CheckNew for a vault-relative path that
-// contains "\".
-var ErrBackslash = errors.New(`a new path must not contain "\"; use "/" as the separator`)
+// contains "\". It wraps ErrNotNew.
+var ErrBackslash = fmt.Errorf(`%w: a new path must not contain "\"; use "/" as the separator`, ErrNotNew)
+
+// ErrDrivePrefix is returned by CheckNew for a vault-relative path that
+// starts with one code point and a colon, such as "1:x". It wraps
+// ErrNotNew.
+var ErrDrivePrefix = fmt.Errorf(`%w: a new path must not start with one character and ":", which Windows reads as a drive`, ErrNotNew)
+
+// ErrLength is returned by CheckText for an empty path or one longer than
+// MaxBytes.
+var ErrLength = fmt.Errorf("path must be 1 to %d bytes", MaxBytes)
+
+// ErrNotPrintable is returned by CheckText for a path that is not valid
+// UTF-8 or contains a control character.
+var ErrNotPrintable = errors.New("path must be valid UTF-8 without control characters")
+
+// CheckText returns ErrLength unless path is 1 to MaxBytes bytes, and
+// ErrNotPrintable unless it is valid UTF-8 without control characters
+// (textcheck.Printable).
+func CheckText(path string) error {
+	if len(path) == 0 || len(path) > MaxBytes {
+		return ErrLength
+	}
+
+	if !textcheck.Printable(path) {
+		return ErrNotPrintable
+	}
+
+	return nil
+}
 
 // separators are the path separators on any supported platform.
 const separators = `/\`
@@ -61,8 +107,9 @@ func Check(path string) error {
 }
 
 // CheckNew returns ErrNotRelative unless path is vault-relative, and
-// ErrBackslash if it is but contains "\": a commit may create or rename a
-// document only into a path that passes CheckNew.
+// ErrBackslash or ErrDrivePrefix (both wrapping ErrNotNew) if it is but
+// contains "\" or starts with one code point and a colon: a commit may
+// create or rename a document only into a path that passes CheckNew.
 func CheckNew(path string) error {
 	if err := Check(path); err != nil {
 		return err
@@ -70,6 +117,10 @@ func CheckNew(path string) error {
 
 	if strings.Contains(path, `\`) {
 		return ErrBackslash
+	}
+
+	if _, size := utf8.DecodeRuneInString(path); strings.HasPrefix(path[size:], ":") {
+		return ErrDrivePrefix
 	}
 
 	return nil
