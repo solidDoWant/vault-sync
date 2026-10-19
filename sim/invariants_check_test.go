@@ -243,7 +243,7 @@ func TestInvariantChecksDetectEachViolation(t *testing.T) {
 			fixture := newInvariantFixture(t, db)
 			acked := test.corrupt(t, fixture)
 
-			violations, err := checkInvariants(t.Context(), db, fixture.vault, acked, nil)
+			violations, err := checkInvariants(t.Context(), db, fixture.vault, acked, nil, nil)
 			require.NoError(t, err)
 
 			assert.ElementsMatch(t, test.expected, invariantsOf(violations), "violations: %+v", violations)
@@ -277,11 +277,80 @@ func TestInvariantChecksExcuseOnlyPurgedRevisions(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []purgedRevision{{ID: fixture.a1, Seq: 1}}, purged, "the older revision of the day is purged, the head kept")
 
-	violations, err := checkInvariants(t.Context(), db, fixture.vault, fixture.acked, purged)
+	violations, err := checkInvariants(t.Context(), db, fixture.vault, fixture.acked, purged, nil)
 	require.NoError(t, err)
 	assert.Empty(t, violations)
 
-	violations, err = checkInvariants(t.Context(), db, fixture.vault, fixture.acked, nil)
+	violations, err = checkInvariants(t.Context(), db, fixture.vault, fixture.acked, nil, nil)
 	require.NoError(t, err)
 	assert.ElementsMatch(t, []string{invariantHistory, invariantHistory, invariantSeq}, invariantsOf(violations), "violations: %+v", violations)
+}
+
+// TestFeedHeadCheck: after retention purged a document's older revision, a
+// client that pulled every document's current head passes, and one that
+// missed a document, holds the purged revision as a head, or knows a
+// document the vault does not have violates feed-head.
+func TestFeedHeadCheck(t *testing.T) {
+	database := testinfra.PostgresConfig(t)
+
+	db, err := pgxpool.New(t.Context(), database.DSN)
+	require.NoError(t, err)
+	t.Cleanup(db.Close)
+
+	_, err = store.Migrate(t.Context(), db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name     string
+		heads    func(fixture *invariantFixture) map[string]string
+		expected []string
+	}{
+		{
+			name: "every document at its head",
+			heads: func(fixture *invariantFixture) map[string]string {
+				return map[string]string{fixture.a.String(): fixture.a2.String(), fixture.b.String(): fixture.b1.String()}
+			},
+		},
+		{
+			name: "a document never pulled",
+			heads: func(fixture *invariantFixture) map[string]string {
+				return map[string]string{fixture.a.String(): fixture.a2.String()}
+			},
+			expected: []string{invariantFeedHead},
+		},
+		{
+			name: "the purged revision held as the head",
+			heads: func(fixture *invariantFixture) map[string]string {
+				return map[string]string{fixture.a.String(): fixture.a1.String(), fixture.b.String(): fixture.b1.String()}
+			},
+			expected: []string{invariantFeedHead},
+		},
+		{
+			name: "a document the vault does not have",
+			heads: func(fixture *invariantFixture) map[string]string {
+				return map[string]string{
+					fixture.a.String(): fixture.a2.String(), fixture.b.String(): fixture.b1.String(),
+					uuid.Must(uuid.NewV7()).String(): uuid.Must(uuid.NewV7()).String(),
+				}
+			},
+			expected: []string{invariantFeedHead},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newInvariantFixture(t, db)
+
+			purged, err := ageAndPurge(t.Context(), db, fixture.vault, []uuid.UUID{fixture.a1, fixture.a2})
+			require.NoError(t, err)
+			require.Equal(t, []purgedRevision{{ID: fixture.a1, Seq: 1}}, purged)
+
+			heads := []clientHeads{{Client: 1, Heads: test.heads(fixture)}}
+
+			violations, err := checkInvariants(t.Context(), db, fixture.vault, fixture.acked, purged, heads)
+			require.NoError(t, err)
+
+			assert.ElementsMatch(t, test.expected, invariantsOf(violations), "violations: %+v", violations)
+		})
+	}
 }

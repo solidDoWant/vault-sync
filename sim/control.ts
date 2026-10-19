@@ -27,6 +27,12 @@ export interface RegressionCase {
   steps: Step[];
 }
 
+/** A scripted client's known document heads: document id to revision id. */
+export interface ClientHeads {
+  client: number;
+  heads: Record<string, string>;
+}
+
 export class Control {
   constructor(private readonly baseUrl: string) {}
 
@@ -36,9 +42,13 @@ export class Control {
     return token;
   }
 
-  /** The server-side invariants (§13) the vault's database state violates. */
-  async check(vaultId: string, acknowledged: readonly Acknowledgement[]): Promise<Violation[]> {
-    const { violations } = await this.post<{ violations: Violation[] | null }>("/check", { vaultId, acknowledged });
+  /**
+   * The server-side invariants (§13) the vault's database state violates.
+   * `heads` are scripted clients' known document heads after their last
+   * pull, which must be exactly the documents' heads (`feed-head`).
+   */
+  async check(vaultId: string, acknowledged: readonly Acknowledgement[], heads: readonly ClientHeads[] = []): Promise<Violation[]> {
+    const { violations } = await this.post<{ violations: Violation[] | null }>("/check", { vaultId, acknowledged, heads });
     return violations ?? [];
   }
 
