@@ -34,7 +34,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import type { ConflictRecord } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
-import type { VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
+import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
@@ -69,7 +69,7 @@ export function harnessUnmaterializable(path: string, platform: PathPlatform): b
 export class EngineObserver {
   private readonly vault: InMemoryVault;
   /** What the engine sees: the vault, with a scenario's saves landing just before an engine write (#163). */
-  private readonly engineVault: InterleavingVault;
+  private readonly engineVault: MutableVault;
   /** The config folder, with paths relative to it; synced only after setConfigSync. */
   private readonly config: InMemoryVault;
   /** What the engine syncs: the vault, or after setConfigSync the vault plus the config folder. */
@@ -98,7 +98,7 @@ export class EngineObserver {
     readonly platform: PathPlatform = "posix",
   ) {
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
-    this.engineVault = new InterleavingVault(this.vault);
+    this.engineVault = new MutableVault(this.vault);
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
@@ -109,6 +109,7 @@ export class EngineObserver {
       ledger: this.ledger,
       now: () => `step ${String(context.stepNumber())}`,
       touched: (path) => this.userEdited.add(path),
+      serverSeq: () => context.serverSeq(),
     });
   }
 
@@ -191,12 +192,18 @@ export class EngineObserver {
 
   /** Renames the folder `from` to `to` as its user would; reported as a rename of every file in it, as Obsidian reports it. */
   async moveFolder(from: string, to: string): Promise<string> {
+    const moves: [string, string][] = [];
     for (const path of await this.vault.list()) {
       if (!path.startsWith(`${from}/`)) continue;
+      const moved = `${to}/${path.slice(from.length + 1)}`;
       this.userEdited.add(path);
-      this.userEdited.add(`${to}/${path.slice(from.length + 1)}`);
+      this.userEdited.add(moved);
+      moves.push([path, moved]);
     }
     await this.vault.renameFolder(from, to);
+    const serverSeq = this.context.serverSeq();
+    const at = `step ${String(this.context.stepNumber())}`;
+    for (const [path, moved] of moves) this.ledger.changed({ paths: [path, moved], result: { path: moved, hash: sha256Hex(await this.vault.read(moved)) }, serverSeq, at });
     await this.engine.settled();
     return `${this.name} user renames folder ${from} to ${to}`;
   }
@@ -262,6 +269,16 @@ export class EngineObserver {
   /** The config folder's content at `relative`, or undefined. */
   async readConfig(relative: string): Promise<Uint8Array | undefined> {
     return (await this.config.stat(relative)) === null ? undefined : this.config.read(relative);
+  }
+
+  /**
+   * Mutation for the harness's own tests: the engine's next delete of `path`
+   * leaves the file where it is, as an engine that skips applying a remote
+   * tombstone to its disk would; the engine believes it deleted the file.
+   */
+  keepFileOnNextDelete(path: string): string {
+    this.engineVault.keepOnNextDelete(path);
+    return `${this.name} MUTATION: the engine's next delete of ${path} will leave the file`;
   }
 
   /** The engine's conflict log. */
@@ -409,6 +426,20 @@ export class EngineObserver {
   private violation(invariant: string, detail: string): void {
     this.context.violations.push({ invariant, detail });
     this.context.log(`VIOLATION ${invariant}: ${detail}`);
+  }
+}
+
+/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops. */
+class MutableVault extends InterleavingVault {
+  private readonly keep = new Set<string>();
+
+  keepOnNextDelete(path: string): void {
+    this.keep.add(path);
+  }
+
+  override async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    if (this.keep.delete(path)) return;
+    await super.delete(path, precondition);
   }
 }
 

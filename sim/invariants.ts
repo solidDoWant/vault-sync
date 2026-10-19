@@ -14,6 +14,12 @@
 //   scripted client (which deletes only when its schedule says so) or by an
 //   engine whose user deleted that document's file. No file disappears
 //   without a delete.
+// - `resurrected-delete`: every live revision that follows a tombstone of
+//   the same document was committed by a scripted client or by an engine
+//   whose user wrote or renamed a file at one of that document's paths and
+//   had not already had that change committed. A deleted document comes back
+//   only through a concurrent edit (SPEC.md §4) or the user's re-creation of
+//   the file (§8), never because an engine failed to apply a delete.
 // - `engine-echo`: every change an engine reported as local (its
 //   onLocalChange events) is at a path its user changed. The engine's own
 //   writes, renames and deletes must never be reported (echo suppression).
@@ -38,6 +44,22 @@ export interface UserWrite {
   at: string;
 }
 
+/**
+ * A user's write or rename, for the resurrected-delete check. `serverSeq` is
+ * the server's head seq when it happened (every commit goes through the
+ * simulated network, so the harness knows it exactly), which orders the
+ * change against the revisions of the change feed without any clock: the
+ * revisions with a greater seq were committed after it.
+ */
+export interface UserChange {
+  /** The paths it changed: a write's path, a rename's old and new path. */
+  paths: string[];
+  /** What the file held afterwards, if the user knows: its path and content hash. */
+  result: { path: string; hash: string } | undefined;
+  serverSeq: bigint;
+  at: string;
+}
+
 /** What one engine's user did to its vault, and what the merge path made of local content. */
 export class UserLedger {
   readonly writes: UserWrite[] = [];
@@ -47,9 +69,15 @@ export class UserLedger {
   readonly mergedInto = new Map<string, Set<string>>();
   /** Documents whose file the user deleted. */
   readonly deletedDocuments = new Set<string>();
+  /** Every write and rename, in order. */
+  readonly changes: UserChange[] = [];
 
   write(write: UserWrite): void {
     this.writes.push(write);
+  }
+
+  changed(change: UserChange): void {
+    this.changes.push(change);
   }
 
   replace(hash: string): void {
@@ -147,6 +175,73 @@ export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevic
   return violations;
 }
 
+/** An engine's device, with its platform and what its user wrote and renamed. */
+export interface EngineChanges {
+  name: string;
+  deviceId: string;
+  platform: PathPlatform;
+  changes: readonly UserChange[];
+}
+
+/** How `platform` matches paths: by path key where it ignores case and Unicode form (windows, macos), exactly under posix. */
+function pathMatcher(platform: PathPlatform): (path: string) => string {
+  return platform === "posix" ? (path: string) => path : pathKey;
+}
+
+/**
+ * `resurrected-delete`: the live revisions after a tombstone that no user
+ * change explains. A scripted client's always is one (it writes only when
+ * told to). An engine's must carry a change of its user at one of the
+ * document's paths (any it held up to the revision): one made before the
+ * revision was committed, and not already carried by an earlier revision of
+ * the same document from that engine. That earlier revision carries it if it
+ * is a tombstone (the user deleted the file since) or if it holds what the
+ * file held after that change or a later one at the document's paths. A
+ * change the engine already pushed, followed by another device's delete,
+ * does not explain the engine bringing the document back: that is the
+ * engine failing to apply the delete.
+ */
+export function checkResurrections(feed: readonly FeedRevision[], scriptedDevices: ReadonlySet<string>, engines: readonly EngineChanges[], label: (id: string) => string): Violation[] {
+  const byDevice = new Map(engines.map((engine) => [engine.deviceId, engine]));
+  const byDocument = new Map<string, FeedRevision[]>();
+  for (const revision of feed) {
+    const revisions = byDocument.get(revision.documentId) ?? [];
+    revisions.push(revision);
+    byDocument.set(revision.documentId, revisions);
+  }
+  const violations: Violation[] = [];
+  for (const revisions of byDocument.values()) {
+    revisions.sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
+    for (let index = 1; index < revisions.length; index++) {
+      const revision = revisions[index];
+      const previous = revisions[index - 1];
+      if (revision === undefined || previous === undefined || revision.deleted || !previous.deleted) continue;
+      if (scriptedDevices.has(revision.deviceId)) continue;
+      const engine = byDevice.get(revision.deviceId);
+      if (engine !== undefined && explained(engine, revisions.slice(0, index + 1))) continue;
+      violations.push({
+        invariant: "resurrected-delete",
+        detail: `${engine?.name ?? `unknown device ${revision.deviceId}`} brought back ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) after its delete at ${previous.path} (seq ${String(previous.seq)}) ${engine === undefined ? "although no client of the run uses that device" : "although its user changed no file of it since"}`,
+      });
+    }
+  }
+  return violations;
+}
+
+/** Whether a change of `engine`'s user explains the last of `revisions` (one document's, by seq), which follows a tombstone. */
+function explained(engine: EngineChanges, revisions: readonly FeedRevision[]): boolean {
+  const resurrection = revisions[revisions.length - 1];
+  if (resurrection === undefined) return false;
+  const key = pathMatcher(engine.platform);
+  const paths = new Set(revisions.map((revision) => key(revision.path)));
+  const relevant = engine.changes.filter((change) => change.serverSeq < resurrection.seq && change.paths.some((path) => paths.has(key(path))));
+  const own = revisions.filter((revision) => revision !== resurrection && revision.deviceId === engine.deviceId);
+  return relevant.some((change, index) => {
+    const carried = new Set(relevant.slice(index).flatMap((later) => (later.result === undefined ? [] : [`${later.result.hash}:${key(later.result.path)}`])));
+    return !own.some((revision) => revision.seq > change.serverSeq && (revision.deleted || carried.has(`${revision.contentHash}:${key(revision.path)}`)));
+  });
+}
+
 /**
  * `engine-echo`: the local changes `engine` reported at a path its user never
  * changed, i.e. its own writes, renames and deletes it took for the user's.
@@ -158,7 +253,7 @@ export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevic
  * by path key there (SPEC.md §5), exactly under posix.
  */
 export function checkEngineEchoes(engine: string, events: readonly VaultEvent[], touched: ReadonlySet<string>, platform: PathPlatform): Violation[] {
-  const key = platform === "posix" ? (path: string) => path : pathKey;
+  const key = pathMatcher(platform);
   const touchedKeys = new Set([...touched].map(key));
   const violations: Violation[] = [];
   for (const event of events) {
