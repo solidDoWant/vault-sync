@@ -1207,3 +1207,99 @@ async function tombstonedDocuments(run: SimRun): Promise<string[]> {
   }
   return [...tombstoned].sort();
 }
+
+export interface KnownHeldPathResult extends HeldPathResult {
+  /** The second engine's conflict log after the run. */
+  conflicts: { reason: string; path: string; copyPath: string | null; document: string }[];
+}
+
+/**
+ * A pull brings a known document's own revision to a path a pending rename
+ * of another document holds, with that document's content (#267). The second
+ * engine renames note `a` away to `z.md` and pushes, then renames note `b` to
+ * `a.md`, but that commit is lost before the server sees it and the app is
+ * killed before it retries, so it stays
+ * pending. Its user deletes `z.md`, while the first engine moves `a` back to
+ * `a.md` with `b`'s content. The second engine's pull must not take `b`'s
+ * file for `a`: `b` moves on to a `path-taken` conflict copy under its own
+ * id, `a` comes back at `a.md` (its remote edit wins over the local delete),
+ * and neither is ever tombstoned.
+ *
+ * In the `renamed-away-unpushed` variant the second engine pushes neither
+ * rename, so its journal still has `a` at `a.md` when the first engine's
+ * edit of `a` there (with `b`'s content) arrives; the outcome must be the same.
+ *
+ * In the `swapped-unpushed` variant (review of #278) the second engine's user
+ * only swaps the names, keeping `z.md`, and pushes neither rename, while the
+ * first engine edits `a` at `a.md`. A local rename wins over a remote edit
+ * (SPEC.md §7): `a` must end at `z.md` with the edit, `b` must keep `a.md`,
+ * and no conflict may be logged.
+ */
+export async function knownDocumentAtHeldPath(endpoints: SimEndpoints, variant: "renamed-away-pushed" | "renamed-away-unpushed" | "swapped-unpushed"): Promise<KnownHeldPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("a.md", encoder.encode("a\n")));
+  log(await first.edit("b.md", encoder.encode("b\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.move("a.md", "z.md"));
+  if (variant === "renamed-away-pushed") {
+    await push(second);
+    await pull(first);
+
+    // The rename's commit request is lost before the server sees it, and the
+    // app is killed before it retries, so the commit stays pending.
+    log(await second.move("b.md", "a.md"));
+    log(second.startPush());
+    await settle();
+    for (let delivery = 0; run.context.network.pendingRequest(second.index) !== "CommitRevision"; delivery++) {
+      if (delivery > 100) throw new Error("the second engine never sent CommitRevision");
+      await run.step({ kind: "deliver-request", client: second.index });
+      await run.step({ kind: "deliver-response", client: second.index });
+    }
+    log(second.crash());
+    await run.step({ kind: "drop-request", pick: 0 });
+    await run.drain(second.index);
+
+    log(await second.remove("z.md"));
+    log(await first.move("z.md", "a.md"));
+  } else {
+    log(await second.move("b.md", "a.md"));
+    if (variant === "renamed-away-unpushed") log(await second.remove("z.md"));
+  }
+  log(await first.edit("a.md", encoder.encode(variant === "swapped-unpushed" ? "a remote\n" : "b\n")));
+  await push(first);
+
+  await pull(second);
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = (await second.conflicts()).map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts };
+}
