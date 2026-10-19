@@ -505,6 +505,8 @@ describe.runIf(suites.has("scenarios"))("scripted lost-rename scenarios (#280)",
     expect(result.documents.get("note.md"), trace).toBe(note);
     expect(result.documents.get("moved.md"), trace).toBe(other);
     expect(result.tombstoned, trace).toEqual(order === "renamer-first" ? [note] : []);
+  });
+});
 
 describe.runIf(suites.has("scenarios"))("scripted backslash-path scenarios (#191)", () => {
   it("refuses new paths containing a backslash, keeps their files, and syncs them once renamed", async () => {

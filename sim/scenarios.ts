@@ -1382,6 +1382,7 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
     .flat()
     .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, edited };
+}
 
 export interface BackslashPathResult extends RunResult {
   /** The server's live documents after the backslash files were pushed: path to document label. */
