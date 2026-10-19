@@ -1,0 +1,221 @@
+{
+  "name": "seed-10-engine-echo",
+  "seed": 10,
+  "clients": 3,
+  "engines": 2,
+  "violations": [
+    {
+      "invariant": "engine-echo",
+      "detail": "e3 reported its own modify of a.md as a local change"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 1941809381
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 2143585114
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 2681649732
+    },
+    {
+      "kind": "drop-request",
+      "pick": 3774765040
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 3065468424
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 2290343523
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 1970100683
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 821578222
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 2745790237
+    },
+    {
+      "kind": "drop-response",
+      "pick": 716660608
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 792906324
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "delete",
+      "arg": 2096671842
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 3210468910
+    },
+    {
+      "kind": "drop-response",
+      "pick": 751603804
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 4115553624
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 2019387969
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 4106022979
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 1237661577
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "drop-response",
+      "pick": 2785860162
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "create",
+      "arg": 3014392532
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "delay",
+      "pick": 3714163822,
+      "steps": 12
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 2197893817
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "create",
+      "arg": 208468925
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 3511728717
+    }
+  ]
+}
