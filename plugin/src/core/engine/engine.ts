@@ -1876,8 +1876,10 @@ export class SyncEngine {
     await this.journal.removePending(operation.revisionId);
     this.changes.paths.add(operation.path);
     // A remote document the file was in the way of (a file where it needs a
-    // folder, or the reverse) may now fit.
+    // folder, or the reverse) may now fit, and so may the merge of a remote
+    // rename there, deferred with the user's edit (#307).
     await this.retryRefusedPaths(true);
+    await this.retryMerges();
     await this.commitOperation(replacement, summary);
   }
 
@@ -1903,14 +1905,19 @@ export class SyncEngine {
    * The folder of `path` that another live document's path takes, ignoring
    * case and Unicode form (`notes` for a local `notes/c.md` when a remote
    * document is the file `notes`): a document this device synced, or a remote
-   * revision deferred because the vault refused its path.
+   * revision it holds deferred, whatever the reason. A deferred revision is
+   * where the server has its document, so it is in the way just the same:
+   * one the vault refused, or a remote rename onto the folder's name whose
+   * merge waits on the folder this path keeps (#307). The same files
+   * freeConflictPath keeps a copy out of, so a folder copy name is found
+   * whenever a file copy name cannot be.
    */
   private async takenFolder(path: string): Promise<string | undefined> {
     const folders = ancestors(path);
     if (folders.length === 0) return undefined;
     const keys = new Set<string>();
     for (const state of await this.journal.listDocuments()) if (!state.deleted) keys.add(pathKey(state.path));
-    for (const deferred of await this.journal.listDeferred()) if (deferred.reason === "path-conflict" && !deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
+    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
     return folders.find((folder) => keys.has(pathKey(folder)));
   }
 
