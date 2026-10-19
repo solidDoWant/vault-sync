@@ -6,9 +6,10 @@ import { TokenManager, type AuthState } from "./core/auth/tokens";
 import type { PullSummary } from "./core/engine/engine";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import type { PathRules } from "./core/vaultpath/platform";
-import { isProtocolCompatible, PROTOCOL_VERSION } from "./core/version";
+import { PROTOCOL_VERSION } from "./core/version";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
 import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
+import { discoverIdentityProvider } from "./obsidian/discovery";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
 import { SyncSession, type SyncSessionOptions } from "./obsidian/session";
@@ -120,7 +121,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   /**
    * Signs in with the OAuth device flow (SPEC.md §9.1): checks that the
-   * server speaks a compatible protocol, shows the verification URL and user
+   * server speaks a compatible protocol and takes the identity provider it
+   * advertises (the settings may override it), shows the verification URL and user
    * code in a dialog, polls the identity provider, and stores the refresh
    * token in plugin data. Resolves whether the sign-in succeeded; closing the
    * dialog cancels it and leaves the state as it was. A signed-in device must
@@ -149,12 +151,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.signInModal = modal;
     modal.open();
     try {
-      const info = await this.unauthenticatedClient().serverInfo.getServerInfo({});
-      if (!isProtocolCompatible(info.protocolVersion)) {
-        throw new Error(`the server speaks protocol v${String(info.protocolVersion)}, but this plugin needs v${String(PROTOCOL_VERSION)} or later; update the server`);
-      }
+      const config = await discoverIdentityProvider(this.unauthenticatedClient(), this.data);
       modal.signal.throwIfAborted();
-      const config = oidcConfig(this.data);
       const tokens = await signInWithDeviceFlow(requestUrlHttpClient, config, {
         signal: modal.signal,
         onAuthorization: (authorization) => {
@@ -173,6 +171,9 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       // these tokens (its settings are locked from the start of the sign-in).
       const manager = this.createTokenManager(config, { stored: false });
       this.tokens = manager;
+      // Stored with the refresh token, so later refreshes (after a restart
+      // too) go to this provider without asking the server again.
+      this.data.identityProvider = { issuer: config.issuer, clientId: config.clientId };
       await manager.signIn(tokens);
       modal.close();
       new Notice("Vault Sync: signed in");
@@ -300,8 +301,11 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       ...(stored === undefined ? {} : { refreshToken: stored }),
       refresh: oidcRefresher(requestUrlHttpClient, config),
       persist: async (refreshToken) => {
-        if (refreshToken === undefined) delete this.data.refreshToken;
-        else this.data.refreshToken = refreshToken;
+        if (refreshToken === undefined) {
+          delete this.data.refreshToken;
+          // The next sign-in asks the server again.
+          delete this.data.identityProvider;
+        } else this.data.refreshToken = refreshToken;
         await this.saveSettings();
       },
       onStateChange: (state) => {

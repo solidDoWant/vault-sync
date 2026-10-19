@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,7 +54,7 @@ func TestLoadDefaults(t *testing.T) {
 		ListenAddress:            ":8080",
 		MetricsListenAddress:     ":9090",
 		Database:                 store.Config{DSN: testDSN},
-		OIDC:                     config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience},
+		OIDC:                     config.OIDCConfig{IssuerURL: testIssuer, Audience: testAudience, ClientID: testAudience},
 		MaxRequestBytes:          1 << 20,
 		WriteTimeout:             2 * time.Minute,
 		MaxConcurrentRPCsPerUser: 32,
@@ -748,5 +749,86 @@ func TestLoadOIDCSettings(t *testing.T) {
 				assert.Contains(t, err.Error(), problem)
 			}
 		})
+	}
+}
+
+func TestLoadOIDCClientID(t *testing.T) {
+	longest := strings.Repeat("c", 255)
+	tooLong := strings.Repeat("c", 256)
+
+	tests := []struct {
+		name         string
+		env          map[string]string
+		wantClientID string
+		assertErr    require.ErrorAssertionFunc
+	}{
+		{
+			name:         "defaults to the audience",
+			env:          withRequired(nil),
+			wantClientID: testAudience,
+		},
+		{
+			name:         "explicit client id differing from the audience",
+			env:          withRequired(map[string]string{config.OIDCClientIDEnv: "obsidian-plugin"}),
+			wantClientID: "obsidian-plugin",
+		},
+		{
+			name:         "255 bytes",
+			env:          withRequired(map[string]string{config.OIDCClientIDEnv: longest}),
+			wantClientID: longest,
+		},
+		{
+			name:         "printable ASCII including inner spaces and punctuation",
+			env:          withRequired(map[string]string{config.OIDCClientIDEnv: "a b~!"}),
+			wantClientID: "a b~!",
+		},
+		{
+			name:      "256 bytes",
+			env:       withRequired(map[string]string{config.OIDCClientIDEnv: tooLong}),
+			assertErr: errorContaining(config.OIDCClientIDEnv),
+		},
+		{
+			name:      "control character",
+			env:       withRequired(map[string]string{config.OIDCClientIDEnv: "vault\x01sync"}),
+			assertErr: errorContaining(config.OIDCClientIDEnv),
+		},
+		{
+			name:      "non-ASCII character",
+			env:       withRequired(map[string]string{config.OIDCClientIDEnv: "vault-syncé"}),
+			assertErr: errorContaining(config.OIDCClientIDEnv),
+		},
+		{
+			// An audience that cannot be a client id (a long URI, say) is
+			// still accepted for token validation, but is not advertised.
+			name:         "audience that is not a valid client id is not advertised",
+			env:          withRequired(map[string]string{config.OIDCAudienceEnv: tooLong}),
+			wantClientID: "",
+		},
+		{
+			name:         "explicit client id with an audience that is not a valid client id",
+			env:          withRequired(map[string]string{config.OIDCAudienceEnv: tooLong, config.OIDCClientIDEnv: "obsidian-plugin"}),
+			wantClientID: "obsidian-plugin",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.assertErr == nil {
+				test.assertErr = require.NoError
+			}
+
+			cfg, err := config.Load(lookup(test.env))
+			test.assertErr(t, err)
+
+			if err == nil {
+				assert.Equal(t, test.wantClientID, cfg.OIDC.ClientID)
+			}
+		})
+	}
+}
+
+func errorContaining(substring string) require.ErrorAssertionFunc {
+	return func(t require.TestingT, err error, _ ...any) {
+		require.ErrorContains(t, err, substring)
 	}
 }

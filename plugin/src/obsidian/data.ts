@@ -7,18 +7,26 @@ import { requireSecureUrl, type OidcClientConfig } from "../core/auth/oidc";
 export interface PluginData {
   /** The sync server's base URL. */
   serverUrl: string;
-  /** The OIDC issuer the server trusts (its `VAULT_SYNC_OIDC_ISSUER_URL`). */
+  /** Optional: the OIDC issuer the server trusts (its `VAULT_SYNC_OIDC_ISSUER_URL`). Empty uses the one GetServerInfo advertises. */
   oidcIssuer: string;
-  /** The OAuth client the plugin signs in as; its access tokens must carry the server's audience. */
+  /** Optional: the OAuth client the plugin signs in as; its access tokens must carry the server's audience. Empty uses the one GetServerInfo advertises. */
   oidcClientId: string;
   /** Secret: the device's refresh token (SPEC.md §9.1). Absent when signed out. Never logged or shown. */
   refreshToken?: string;
+  /** The identity provider the refresh token belongs to, as resolved at sign-in, so refreshing never depends on reaching the server. Kept while signed in. */
+  identityProvider?: IdentityProvider;
   /** This device's name, registered with the server and used in conflict-copy names; empty means the platform's name. */
   deviceName: string;
   /** This install's registered device. Registered once per account, then reused. */
   device?: RegisteredDevice;
   /** The server vault this local vault syncs with. */
   vault?: ConnectedVault;
+}
+
+/** An OIDC issuer and the client signed in as. */
+export interface IdentityProvider {
+  issuer: string;
+  clientId: string;
 }
 
 /** A device registered with RegisterDevice, and the account it belongs to: the server refuses commits with another user's device. */
@@ -61,6 +69,8 @@ export function parsePluginData(raw: unknown): PluginData {
   };
   const refreshToken = text("refreshToken");
   if (refreshToken !== undefined && refreshToken !== "") data.refreshToken = refreshToken;
+  const identityProvider = record(stored.identityProvider, ["issuer", "clientId"]);
+  if (identityProvider !== undefined) data.identityProvider = identityProvider;
   const device = record(stored.device, ["id", "serverUrl", "issuer", "subject"]);
   if (device !== undefined) data.device = device;
   const vault = record(stored.vault, ["id", "name", "serverUrl"]);
@@ -101,23 +111,28 @@ export function serverBaseUrl(data: PluginData): string {
   return data.serverUrl.trim().replace(/\/+$/, "");
 }
 
-export function oidcConfig(data: PluginData): OidcClientConfig {
+/** The issuer and client id entered in the settings, trimmed; either may be empty (use the server's). */
+export function oidcSettings(data: PluginData): IdentityProvider {
   return { issuer: data.oidcIssuer.trim(), clientId: data.oidcClientId.trim() };
 }
 
+/** The identity provider of the current sign-in: the one resolved at sign-in, else (data from before #194) the settings. */
+export function oidcConfig(data: PluginData): OidcClientConfig {
+  return data.identityProvider ?? oidcSettings(data);
+}
+
 /**
- * Why signing in with `data` cannot work, or undefined if it can. URLs must
- * use https, except plain http to localhost for development, so tokens never
- * cross the network in the clear.
+ * Why signing in with `data` cannot work, or undefined if it can. Only the
+ * server URL is required: the identity provider comes from the server
+ * (discoverIdentityProvider). URLs must use https, except plain http to
+ * localhost for development, so tokens never cross the network in the clear.
  */
 export function signInProblem(data: PluginData): string | undefined {
   try {
     if (serverBaseUrl(data) === "") return "Enter the server URL.";
     requireSecureUrl(serverBaseUrl(data), "The server URL");
-    const config = oidcConfig(data);
-    if (config.issuer === "") return "Enter the OIDC issuer URL.";
-    requireSecureUrl(config.issuer, "The OIDC issuer URL");
-    if (config.clientId === "") return "Enter the OIDC client ID.";
+    const { issuer } = oidcSettings(data);
+    if (issuer !== "") requireSecureUrl(issuer, "The OIDC issuer URL");
   } catch (error) {
     return error instanceof Error ? `${error.message}.` : String(error);
   }

@@ -51,7 +51,9 @@ async function listVaults(): Promise<CallResult> {
 
 describe("signing in with the device flow", function () {
   before(async function () {
-    await configure(e2eEnvironment.serverUrl, e2eEnvironment.issuerUrl, e2eEnvironment.clientId);
+    // Only the server URL: the plugin takes the issuer and client id the
+    // server advertises in GetServerInfo (#194). sync.e2e.ts enters them.
+    await configure(e2eEnvironment.serverUrl, "", "");
   });
 
   it("starts signed out, and the server refuses the plugin's calls", async function () {

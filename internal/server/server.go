@@ -87,6 +87,11 @@ type Options struct {
 	// Authenticator validates bearer tokens. When nil, every procedure not
 	// in PublicProcedures is rejected as unauthenticated.
 	Authenticator *auth.Authenticator
+	// OIDCIssuerURL and OIDCClientID are the identity provider clients sign
+	// in with, advertised to unauthenticated callers by GetServerInfo. Both
+	// are public; never put a secret here.
+	OIDCIssuerURL string
+	OIDCClientID  string
 	// Devices stores devices. When nil, DeviceService is unimplemented.
 	Devices api.DeviceStore
 	// Vaults stores vaults. When nil, VaultService is unimplemented.
@@ -265,7 +270,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 	}
 
 	mux := http.NewServeMux()
-	serverInfo := api.ServerInfoService{}
+	serverInfo := api.ServerInfoService{OIDCIssuerURL: options.OIDCIssuerURL, OIDCClientID: options.OIDCClientID}
 
 	if options.Realtime != nil {
 		serverInfo.MaxRealtimeSubscriptions = uint32(options.Realtime.MaxSubscriptions()) //nolint:gosec // bounded by configuration.
