@@ -298,12 +298,23 @@ export class SimNetwork {
    * reaches the server, and the refusal waits as its response.
    */
   throttle(client: number): string | undefined {
+    return this.refuse(client, throttledError(), "by the server's per-user limit");
+  }
+
+  /**
+   * Refuses `client`'s oldest request with `error` before the call runs, as
+   * a server that rejects it would. Scripted scenarios only, for a refusal
+   * the real server gives under conditions a scenario cannot set up (#167).
+   * The request never reaches the server, and the refusal waits as its
+   * response.
+   */
+  refuse(client: number, error: ConnectError, why = "by the server"): string | undefined {
     const message = this.messages.find((candidate) => candidate.client === client && candidate.phase === "request");
     if (message === undefined) return undefined;
     this.activity++;
     message.phase = "response";
-    message.outcome = { ok: false, error: throttledError() };
-    return `${this.label(message)} refused by the server's per-user limit -> ResourceExhausted`;
+    message.outcome = { ok: false, error };
+    return `${this.label(message)} refused ${why} -> ${Code[error.code]}`;
   }
 
   /** Delivers the oldest deliverable response (to `client`, if given). */

@@ -1,6 +1,7 @@
 // Scripted scenarios: hand-written interleavings that random schedules hit
 // only rarely, driven step by step against the real server.
 
+import { Code, ConnectError } from "@connectrpc/connect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../plugin/src/gen/vaultsync/v1/types_pb";
@@ -1607,6 +1608,68 @@ export async function engineBacksOffWhenThrottled(endpoints: SimEndpoints): Prom
     serverContent: headHash === undefined ? "" : decoder.decode(await downloadBlob(run, headHash)),
     engineContent: engineCopy === undefined ? "" : decoder.decode(engineCopy),
   };
+}
+
+export interface BusyPathResult extends RunResult {
+  /** The server's live documents while the rename was refused: path to document label. */
+  whileRefused: Map<string, string>;
+  /** The server's live documents after the run: path to document label. */
+  documents: Map<string, string>;
+  /** The engine's vault after the run: path to content. */
+  vault: Map<string, string>;
+}
+
+/**
+ * A change at a path a pending operation holds (#167 item 3). One POSIX
+ * engine syncs `note.md`, and its user renames it to `moved.md`. The server
+ * refuses the rename's CommitRevision with INVALID_ARGUMENT, so it stays
+ * pending, and the user creates a new note at `note.md`, which the journal
+ * still has as the renamed document's path. The next push is refused the same
+ * way. Then the server takes the rename. The push that commits it must also
+ * push the new note, without another local change or a restart: both notes
+ * must be live on the server, the renamed one under its own id.
+ */
+export async function changeAtBusyPathKept(endpoints: SimEndpoints): Promise<BusyPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 1, platforms: ["posix"] });
+  const [observer] = run.observers;
+  if (observer === undefined) throw new Error("the run has an engine");
+  const engine = observer.index;
+  const network = run.context.network;
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async () => {
+    log(observer.startPush());
+    await settle();
+    await run.drain(engine);
+  };
+  /** Pushes, and has the server refuse the push's CommitRevision as invalid. */
+  const refusedPush = async () => {
+    log(observer.startPush());
+    for (let step = 0; network.pendingRequest(engine) !== "CommitRevision"; step++) {
+      if (step > 200) throw new Error("the engine never sent CommitRevision");
+      await run.step({ kind: network.pendingRequest(engine) === undefined ? "deliver-response" : "deliver-request", client: engine });
+    }
+    const entry = network.refuse(engine, new ConnectError("simulated refusal", Code.InvalidArgument));
+    if (entry === undefined) throw new Error("no CommitRevision from the engine to refuse");
+    log(entry);
+    await settle();
+    await run.drain(engine);
+  };
+
+  log(await observer.edit("note.md", encoder.encode("the note\n")));
+  await push();
+  log(await observer.move("note.md", "moved.md"));
+  await refusedPush();
+  log(await observer.edit("note.md", encoder.encode("a new note\n")));
+  await refusedPush();
+  const whileRefused = await liveDocuments(run);
+  await push();
+
+  const result = await run.finish();
+  const vault = new Map<string, string>();
+  for (const path of await observer.list()) vault.set(path, decoder.decode((await observer.read(path)) ?? new Uint8Array()));
+  return { ...result, whileRefused, documents: await liveDocuments(run), vault };
 }
 
 export interface BackslashPathResult extends RunResult {
