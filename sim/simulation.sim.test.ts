@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
-import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase } from "./scenarios";
+import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -374,6 +374,28 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.conflicts[1], trace).toEqual([{ reason: "base-purged", path: "notes/plan.md", copyPath: copy }]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)", () => {
+  it("never takes a known document's file for a new document at its path, nor tombstones either", async () => {
+    const result = await newDocumentAtHeldPath(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([
+      ["d.md", "same\n"],
+      ["moved.md", "same\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    // The note moved with its edit under its own id; the new note is another document.
+    const note = result.before.get("d.md");
+    expect(note, trace).toBeDefined();
+    expect(result.documents.get("moved.md"), trace).toBe(note);
+    expect(result.documents.get("d.md"), trace).toBeDefined();
+    expect(result.documents.get("d.md"), trace).not.toBe(note);
+    expect(result.tombstoned, trace).toEqual([]);
   });
 });
 

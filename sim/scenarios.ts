@@ -1125,3 +1125,85 @@ export async function purgedMergeBase(endpoints: SimEndpoints): Promise<PurgedMe
   const conflicts = await Promise.all([first, second].map(async (engine) => (await engine.conflicts()).map(({ reason, path, copyPath }) => ({ reason, path, copyPath }))));
   return { ...result, vaults, conflicts, purged, base: run.context.ids.label(base.id) };
 }
+
+export interface HeldPathResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents after the first sync and after the run: path to document label. */
+  before: Map<string, string>;
+  documents: Map<string, string>;
+  /** Labels of the documents that got a tombstone during the run, sorted. */
+  tombstoned: string[];
+}
+
+/**
+ * A pull brings a new document to a path the journal still has for a known
+ * document (#264). The second engine's user edits a synced note and creates
+ * a folder at the path the first engine then renames the note to, so the
+ * second engine's merge of the rename is deferred. The first engine then
+ * creates another note, with the edit's content, at the note's old path.
+ * The second engine's pull must not take the edited file for the new note:
+ * once the user removes the folder, the note moves with its edit, the new
+ * note is written at the old path, and neither is ever tombstoned.
+ */
+export async function newDocumentAtHeldPath(endpoints: SimEndpoints): Promise<HeldPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("d.md", encoder.encode("base\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.edit("d.md", encoder.encode("same\n")));
+  log(await second.edit("moved.md/x.md", encoder.encode("in the way\n")));
+  log(await first.move("d.md", "moved.md"));
+  await push(first);
+  log(await first.edit("d.md", encoder.encode("same\n")));
+  await push(first);
+
+  await pull(second);
+  log(await second.remove("moved.md/x.md"));
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run) };
+}
+
+/** Labels of the documents with a tombstone anywhere in the vault's change feed, sorted. */
+async function tombstonedDocuments(run: SimRun): Promise<string[]> {
+  const tombstoned = new Set<string>();
+  let since = 0n;
+  for (;;) {
+    const response = await run.direct.sync.listChanges({ vaultId: run.context.vaultId, sinceSeq: since, pageSize: 1000 });
+    for (const revision of response.revisions) {
+      if (revision.deleted) tombstoned.add(run.context.ids.label(revision.documentId));
+      since = revision.seq;
+    }
+    if (!response.hasMore) break;
+  }
+  return [...tombstoned].sort();
+}
