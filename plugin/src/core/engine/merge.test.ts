@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { sha256Hex } from "../hash";
 import type { ConflictRecord, DeferredRevision, DocumentState } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
+import type { WritePrecondition } from "../vault/adapter";
 import { threeWayMerge, type MergeHook } from "./merge";
 import { InMemoryServer } from "./memory-server";
 import { classifyByExtensions } from "./remote";
@@ -432,8 +433,8 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
           new Proxy(vault, {
             get(target, property, receiver) {
               if (property === "write") {
-                return async (path: string, data: Uint8Array) => {
-                  await target.write(path, data);
+                return async (path: string, data: Uint8Array, precondition?: WritePrecondition) => {
+                  await target.write(path, data, precondition);
                   if (path === copyOf("c", ".md") && !edited) {
                     edited = true;
                     await target.write("c.md", bytes(lines("my own new note", "typed meanwhile")));

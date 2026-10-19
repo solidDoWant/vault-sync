@@ -426,6 +426,102 @@ export async function remoteRenameOntoUnsyncedFile(endpoints: SimEndpoints): Pro
   return { ...result, vaults, conflicts };
 }
 
+export interface SaveBeforeEngineWriteResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** Whether every armed save landed (inside the engine's apply, as intended). */
+  savesLanded: boolean;
+}
+
+/**
+ * A local save that lands after the engine checked the disk against its base
+ * and before its write or delete reaches the vault (#163, SPEC.md §8), as
+ * Obsidian's autosave can. Two engines over the real server; the second
+ * one's user saves at that moment:
+ *
+ * 1. Before the write of the first engine's edit of the note: both edits must
+ *    be merged, never the remote one written over the save.
+ * 2. Before the delete of a note the first engine deleted: the edit wins over
+ *    the delete.
+ * 3. Before the write of a merge result (the second engine already had an
+ *    unpushed edit, merged with the first engine's): the newer save must be
+ *    merged too.
+ * 4. Before the second engine, which follows Windows' path rules, removes the
+ *    unchanged file of a note the first engine renamed to a name Windows
+ *    cannot hold (releasing it, SPEC.md §8): the file must stay as a local
+ *    edit, merged once a later rename gives the note a legal name.
+ */
+export async function saveBeforeEngineWrite(endpoints: SimEndpoints): Promise<SaveBeforeEngineWriteResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+  const lines = (...values: string[]) => encoder.encode(values.map((value) => `${value}\n`).join(""));
+  let savesLanded = true;
+  const pull = async () => {
+    log(second.startPull());
+    await drain(second.index);
+    if (second.savePending) savesLanded = false;
+  };
+
+  // 1. A remote edit.
+  log(await first.edit("notes/edit.md", lines("one", "two", "three")));
+  // 2. A remote delete.
+  log(await first.edit("notes/gone.md", lines("keep", "me")));
+  // 3. A merge result.
+  log(await first.edit("notes/merge.md", lines("alpha", "beta", "gamma", "delta")));
+  // 4. A release of an unmaterializable note's file.
+  log(await first.edit("notes/release.md", lines("left", "as", "synced")));
+  log(first.startPush());
+  await drain(first.index);
+  log(second.startPull());
+  await drain(second.index);
+
+  log(await first.edit("notes/edit.md", lines("ONE", "two", "three")));
+  log(await first.remove("notes/gone.md"));
+  log(await first.edit("notes/merge.md", lines("ALPHA", "beta", "gamma", "delta")));
+  log(await first.move("notes/release.md", "notes/release?.md"));
+  log(first.startPush());
+  await drain(first.index);
+
+  log(await second.edit("notes/merge.md", lines("alpha", "beta", "GAMMA", "delta")));
+  log(second.saveBeforeNextEngineChange("notes/edit.md", lines("one", "two", "THREE")));
+  log(second.saveBeforeNextEngineChange("notes/gone.md", lines("keep", "me", "edited")));
+  log(second.saveBeforeNextEngineChange("notes/merge.md", lines("alpha", "beta", "GAMMA", "DELTA")));
+  log(second.saveBeforeNextEngineChange("notes/release.md", lines("left", "as", "synced", "then", "saved")));
+  await pull();
+  log(second.startPush());
+  await drain(second.index);
+  log(first.startPull());
+  await drain(first.index);
+
+  // The note gets a legal name again, and the second engine merges the kept save into it.
+  log(await first.move("notes/release?.md", "notes/released.md"));
+  log(first.startPush());
+  await drain(first.index);
+  await pull();
+  log(second.startPush());
+  await drain(second.index);
+  log(first.startPull());
+  await drain(first.index);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, savesLanded };
+}
+
 export interface StructuralOperationsResult extends RunResult {
   /** Each engine's vault after the run: path to content. */
   vaults: Map<string, string>[];

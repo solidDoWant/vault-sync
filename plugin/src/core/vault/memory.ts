@@ -1,6 +1,7 @@
+import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { posixPathRules, unmaterializableReason, type PathRules } from "../vaultpath/platform";
-import { VaultError, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener } from "./adapter";
+import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "./adapter";
 
 export interface InMemoryVaultOptions {
   /** Clock for mtimes; inject a deterministic one in the simulation. Defaults to Date.now. */
@@ -26,6 +27,7 @@ interface StoredFile {
 /**
  * A VaultAdapter backed by a Map, for unit tests and the simulation harness.
  * Events are delivered synchronously, in order, after each change is applied.
+ * Preconditions are checked synchronously with the change, so atomically.
  */
 export class InMemoryVault implements VaultAdapter {
   /** Files by lookup key: the path itself, or its path key on a case-insensitive platform. */
@@ -62,8 +64,9 @@ export class InMemoryVault implements VaultAdapter {
     return Promise.resolve(file.data.slice());
   }
 
-  write(path: string, data: Uint8Array): Promise<void> {
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
     const existing = this.files.get(this.key(path));
+    if (precondition !== undefined && !holds(existing, precondition.expectedHash)) return Promise.reject(new VaultError("changed", path));
     if (existing === undefined) {
       if (unmaterializableReason(path, this.pathRules) !== undefined) return Promise.reject(new VaultError("unmaterializable", path));
       if (this.conflicts(path)) return Promise.reject(new VaultError("path-conflict", path));
@@ -118,9 +121,10 @@ export class InMemoryVault implements VaultAdapter {
     return Promise.resolve();
   }
 
-  delete(path: string): Promise<void> {
+  delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     const file = this.files.get(this.key(path));
     if (file === undefined) return Promise.reject(new VaultError("not-found", path));
+    if (precondition !== undefined && !holds(file, precondition.expectedHash)) return Promise.reject(new VaultError("changed", path));
     this.files.delete(this.key(path));
     this.emit({ type: "delete", path: file.path });
     return Promise.resolve();
@@ -162,4 +166,10 @@ export class InMemoryVault implements VaultAdapter {
       }
     }
   }
+}
+
+/** Whether `file` is what a precondition expects: absent for null, else content with that hash. */
+function holds(file: StoredFile | undefined, expectedHash: string | null): boolean {
+  if (file === undefined) return expectedHash === null;
+  return expectedHash !== null && sha256Hex(file.data) === expectedHash;
 }

@@ -1,6 +1,7 @@
 import { FileView, MarkdownView, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
+import { sha256Hex } from "../../../src/core/hash";
 import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
 import { IndexedDbJournal } from "../../../src/core/journal/indexeddb";
 import { createProtocolClient } from "../../../src/core/protocol/client";
@@ -22,6 +23,25 @@ export interface EditorWriteResult {
   editor: string;
   cursor: { line: number; ch: number };
   disk: string;
+}
+
+/**
+ * How a harness write imitates the engine's (editor.e2e.ts): `save` saves the
+ * view after the change, as Obsidian's autosave may after the engine checked
+ * the disk; `expectBase` makes the write name the content the disk had before
+ * the change, as the engine does (#163).
+ */
+export interface RemoteWriteOptions {
+  save?: boolean;
+  expectBase?: boolean;
+}
+
+/** The editor and disk after a remote delete of an open note (editor.e2e.ts). */
+export interface EditorDeleteResult {
+  outcome: string;
+  editor: string;
+  /** The text on disk afterwards, or null if the file is gone. */
+  disk: string | null;
 }
 
 /** A canvas view's state after a remote write to its file (editor.e2e.ts). */
@@ -180,22 +200,51 @@ export default class VaultSyncE2EHarness extends Plugin {
    * writes `remote` through the Obsidian adapter as the engine would apply a
    * remote revision. All in one turn, so no autosave can come in between.
    */
-  async typeThenWriteRemote(path: string, cursor: { line: number; ch: number }, typed: string, remote: string): Promise<EditorWriteResult> {
+  async typeThenWriteRemote(path: string, cursor: { line: number; ch: number }, typed: string, remote: string, options: RemoteWriteOptions = {}): Promise<EditorWriteResult> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
-    const view = this.app.workspace.getLeavesOfType("markdown").map((leaf) => leaf.view).find((candidate) => candidate instanceof MarkdownView && candidate.file === file);
-    if (!(view instanceof MarkdownView)) throw new Error(`${path} is not open in a Markdown view`);
+    const view = this.markdownView(path);
+    const diskBefore = await this.app.vault.read(file);
+    const { editor } = view;
+    editor.setCursor(cursor);
+    editor.replaceSelection(typed);
+    if (options.save === true) await view.save();
+    let outcome = "ok";
+    try {
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
+    } catch (error) {
+      outcome = describeError(error);
+    }
+    return { outcome, diskBefore, editor: editor.getValue(), cursor: editor.getCursor(), disk: await this.app.vault.read(file) };
+  }
+
+  /**
+   * In the Markdown editor showing `path`: types `typed` at `cursor`
+   * (unsaved), then deletes the file through the Obsidian adapter as the
+   * engine applies a remote delete, naming the content the disk had.
+   */
+  async typeThenDeleteRemote(path: string, cursor: { line: number; ch: number }, typed: string): Promise<EditorDeleteResult> {
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) throw new Error(`no file ${path}`);
+    const view = this.markdownView(path);
     const diskBefore = await this.app.vault.read(file);
     const { editor } = view;
     editor.setCursor(cursor);
     editor.replaceSelection(typed);
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+      await new ObsidianVaultAdapter(this.app).delete(path, { expectedHash: sha256Hex(encoder.encode(diskBefore)) });
     } catch (error) {
       outcome = describeError(error);
     }
-    return { outcome, diskBefore, editor: editor.getValue(), cursor: editor.getCursor(), disk: await this.app.vault.read(file) };
+    const after = this.app.vault.getFileByPath(path);
+    return { outcome, editor: editor.getValue(), disk: after === null ? null : await this.app.vault.read(after) };
+  }
+
+  private markdownView(path: string): MarkdownView {
+    const view = this.app.workspace.getLeavesOfType("markdown").map((leaf) => leaf.view).find((candidate) => candidate instanceof MarkdownView && candidate.file?.path === path);
+    if (!(view instanceof MarkdownView)) throw new Error(`${path} is not open in a Markdown view`);
+    return view;
   }
 
   /**
@@ -205,7 +254,7 @@ export default class VaultSyncE2EHarness extends Plugin {
    * can come in between. The node is added through the canvas's internal API
    * (not in Obsidian's typings), as a user's click does.
    */
-  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string): Promise<ViewWriteResult> {
+  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string, options: RemoteWriteOptions = {}): Promise<ViewWriteResult> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.canvasView(path);
@@ -214,9 +263,10 @@ export default class VaultSyncE2EHarness extends Plugin {
       const { canvas } = view as unknown as { canvas: { createTextNode(options: object): unknown } };
       canvas.createTextNode({ pos: { x: 0, y: 200 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
     }
+    if (options.save === true) await view.save();
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
     } catch (error) {
       outcome = describeError(error);
     }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import shared from "../../../../testdata/paths/vectors.json";
+import { sha256Hex } from "../hash";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "./adapter";
 import { ConformanceFailure, runConformanceCase, vaultAdapterConformance, type ConformanceCase } from "./conformance";
 import { InMemoryVault } from "./memory";
@@ -111,6 +112,21 @@ describe("InMemoryVault", () => {
           await expect(vault.rename("b.md", "A.md")).rejects.toSatisfy((error) => isVaultError(error, "already-exists"));
           await vault.rename("a.md", "A.md");
           expect((await vault.list()).sort()).toEqual(["A.md", "b.md"]);
+        });
+
+        it("checks a write's or delete's precondition against the file of another spelling", async () => {
+          const vault = new InMemoryVault({ pathRules: { platform } });
+          await vault.write("Note.md", new Uint8Array([1]));
+          const current = { expectedHash: sha256Hex(new Uint8Array([1])) };
+          const other = { expectedHash: sha256Hex(new Uint8Array([9])) };
+          await expect(vault.write("NOTE.md", new Uint8Array([2]), { expectedHash: null })).rejects.toSatisfy((error) => isVaultError(error, "changed"));
+          await expect(vault.write("NOTE.md", new Uint8Array([2]), other)).rejects.toSatisfy((error) => isVaultError(error, "changed"));
+          await expect(vault.delete("NOTE.MD", other)).rejects.toSatisfy((error) => isVaultError(error, "changed"));
+          expect(await vault.read("Note.md")).toEqual(new Uint8Array([1]));
+          await vault.write("NOTE.md", new Uint8Array([2]), current);
+          expect(await vault.read("Note.md")).toEqual(new Uint8Array([2]));
+          await vault.delete("NOTE.MD", { expectedHash: sha256Hex(new Uint8Array([2])) });
+          expect(await vault.list()).toEqual([]);
         });
 
         it("treats a folder of another spelling as the same folder", async () => {

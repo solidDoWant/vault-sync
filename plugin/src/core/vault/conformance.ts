@@ -1,3 +1,4 @@
+import { sha256Hex } from "../hash";
 import { isVaultError, type VaultAdapter, type VaultErrorCode, type VaultEvent } from "./adapter";
 
 /**
@@ -255,6 +256,66 @@ export const vaultAdapterConformance: readonly ConformanceCase[] = [
       await assertRejects(adapter.write("file.md/child.md", bytes("z")), "path-conflict", "write() under a file");
       await assertRejects(adapter.rename("file.md", "a"), "path-conflict", "rename() onto a folder");
       assertEqual(await sortedList(adapter), ["a/b.md", "file.md"], "list()");
+    },
+  },
+  {
+    // The sync engine's guard against overwriting a save it has not seen (SPEC.md §8, #163).
+    name: "a write naming the file's current content replaces it, and one naming other content fails with changed",
+    run: async (adapter, options) => {
+      // UTF-8 text, text with a byte order mark, and bytes that are not UTF-8.
+      const versions: [string, Uint8Array, Uint8Array, Uint8Array][] = [
+        ["note.md", bytes("base\n"), bytes("saved by the user\n"), bytes("remote\n")],
+        ["bom.md", bytes("\ufeffbase\n"), bytes("\ufeffsaved by the user\n"), bytes("\ufeffremote\n")],
+        ["image.png", Uint8Array.of(0xff, 0x00, 0x01), Uint8Array.of(0xff, 0x00, 0x02), Uint8Array.of(0xff, 0x00, 0x03)],
+      ];
+      for (const [path, base, saved, remote] of versions) {
+        await adapter.write(path, base);
+        await adapter.write(path, saved);
+        const recorder = new EventRecorder(adapter);
+        try {
+          await assertRejects(adapter.write(path, remote, { expectedHash: sha256Hex(base) }), "changed", `write(${path}) naming the old content`);
+          await recorder.expect([], options, `events of the refused write to ${path}`);
+        } finally {
+          recorder.stop();
+        }
+        assertEqual(await adapter.read(path), saved, `read(${path}) after the refused write`);
+        await adapter.write(path, remote, { expectedHash: sha256Hex(saved) });
+        assertEqual(await adapter.read(path), remote, `read(${path}) after the write naming the current content`);
+      }
+    },
+  },
+  {
+    name: "a write expecting no file creates one, and fails with changed where a file is",
+    run: async (adapter) => {
+      await adapter.write("new.md", bytes("created"), { expectedHash: null });
+      assertEqual(await adapter.read("new.md"), bytes("created"), "read() after the create");
+      await assertRejects(adapter.write("new.md", bytes("again"), { expectedHash: null }), "changed", "write() expecting no file");
+      assertEqual(await adapter.read("new.md"), bytes("created"), "read() after the refused create");
+    },
+  },
+  {
+    name: "a write expecting a file fails with changed where none is",
+    run: async (adapter) => {
+      await assertRejects(adapter.write("gone.md", bytes("remote"), { expectedHash: sha256Hex(bytes("base")) }), "changed", "write() expecting a file");
+      assertEqual(await adapter.list(), [], "list()");
+    },
+  },
+  {
+    name: "a delete naming the file's current content removes it, and one naming other content fails with changed",
+    run: async (adapter, options) => {
+      await adapter.write("note.md", bytes("base"));
+      await adapter.write("note.md", bytes("saved by the user"));
+      const recorder = new EventRecorder(adapter);
+      try {
+        await assertRejects(adapter.delete("note.md", { expectedHash: sha256Hex(bytes("base")) }), "changed", "delete() naming the old content");
+        await recorder.expect([], options, "events of the refused delete");
+      } finally {
+        recorder.stop();
+      }
+      assertEqual(await adapter.read("note.md"), bytes("saved by the user"), "read() after the refused delete");
+      await assertRejects(adapter.delete("missing.md", { expectedHash: sha256Hex(bytes("base")) }), "not-found", "delete() of a missing file");
+      await adapter.delete("note.md", { expectedHash: sha256Hex(bytes("saved by the user")) });
+      assertEqual(await adapter.list(), [], "list() after the delete");
     },
   },
   {
