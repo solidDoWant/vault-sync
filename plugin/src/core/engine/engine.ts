@@ -1,6 +1,7 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
+import type { Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import type { ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
 import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
@@ -269,6 +270,20 @@ export class SyncEngine {
    */
   pull(): Promise<PullSummary> {
     return this.serialize(() => this.pullOnce());
+  }
+
+  /**
+   * Pulls only if the durable cursor is below `seq`, the seq a realtime
+   * notification announced (SPEC.md §6.4); resolves with undefined, having
+   * called the server for nothing, if it is not. The cursor is checked before
+   * the pull is queued, so a device that is caught up (its own commit's
+   * notification, say) never becomes busy, and again once the pull's turn
+   * comes, so a notification that arrived before its commit's response was
+   * handled finds the cursor the push advanced.
+   */
+  async pullIfBehind(seq: bigint): Promise<PullSummary | undefined> {
+    if ((await this.journal.getCursor()) >= seq) return undefined;
+    return this.serialize(async () => ((await this.journal.getCursor()) >= seq ? undefined : this.pullOnce()));
   }
 
   /**
@@ -1398,10 +1413,30 @@ export class SyncEngine {
       deleted: operation.deleted,
     });
     await this.journal.removePending(operation.revisionId);
+    await this.advancePastOwnCommit(revision);
     summary.committed++;
     // Changes made while the operation was pending were left for after it.
     this.changes.paths.add(operation.path);
     this.onAcknowledged(remote);
+  }
+
+  /**
+   * Moves the cursor onto this device's just-acknowledged revision if it is
+   * the next seq after the cursor, so its own vault_changed starts no pull
+   * (SPEC.md §6.1, §6.4). Seqs are gapless, so nothing is skipped; if another
+   * device committed in between, the cursor stays for the next pull.
+   * Interrupted before the cursor moves, the next pull lists the revision and
+   * skips it. The revision does not go through the pull's apply step: the
+   * journal already records it as applied, so that step would only remove a
+   * deferral (path conflict, invalid path) of an older revision of the
+   * document, and a document with one cannot have a commit acknowledged here
+   * (its base is behind the server's head, so the commit is refused as head
+   * moved). A stale path-conflict deferral would be removed by its retry
+   * anyway, which finds it superseded.
+   */
+  private async advancePastOwnCommit(revision: Revision): Promise<void> {
+    if ((await this.journal.getCursor()) !== revision.seq - 1n) return;
+    await this.journal.setCursor(revision.seq);
   }
 
   /**
