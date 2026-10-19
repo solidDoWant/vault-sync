@@ -47,6 +47,13 @@ const (
 	// brokenShrinkRuns bounds minimization in the broken-server check,
 	// which only needs to show that minimization works.
 	brokenShrinkRuns = 40
+
+	// invariantProtocol is the harness's violation of a protocol guarantee
+	// a client observed (sim/client.ts, sim/network.ts).
+	invariantProtocol = "protocol"
+	// refusedRetryDetail is part of the protocol violation sim/network.ts
+	// reports when the server refuses a retry of a revision it applied.
+	refusedRetryDetail = "although the server already applied this revision id"
 )
 
 // brokenSchedule is the schedule the broken-server check always runs: the
@@ -133,7 +140,8 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 	require.NoError(t, err)
 	t.Cleanup(db.Close)
 
-	ctl := &control{db: db, issuer: issuer, key: key, regressionDir: regressionDir}
+	deadline, hasDeadline := t.Deadline()
+	ctl := &control{db: db, issuer: issuer, key: key, regressionDir: regressionDir, tokenExpiry: tokenExpiry(deadline, hasDeadline, time.Now())}
 	controlServer := httptest.NewServer(ctl.handler())
 	t.Cleanup(controlServer.Close)
 
@@ -257,7 +265,35 @@ func TestSimulation(t *testing.T) {
 // commits against a stale base, the seeds of CI's short run (brokenSchedule)
 // must report a stale-base violation.
 func TestSimulationDetectsBrokenServer(t *testing.T) {
-	simulation := startSimulation(t, t.TempDir(), "simfault")
+	// The broken-server checks run side by side, each against its own
+	// server, database and bucket.
+	t.Parallel()
+
+	requireSeedsDetect(t, "simfault", invariantStaleBase, "")
+}
+
+// TestSimulationDetectsRefusedRetry proves that random schedules, not only
+// the scripted scenario, catch the #12 bug (#110): against a server built
+// with the `simfault_retry` tag, which refuses a retry of a revision it
+// already applied once the head moved past it, the seeds of CI's short run
+// must report the refused retry as a protocol violation. The server-side
+// invariants all hold in that run; only the network sees the duplicate
+// coming.
+func TestSimulationDetectsRefusedRetry(t *testing.T) {
+	t.Parallel()
+
+	requireSeedsDetect(t, "simfault_retry", invariantProtocol, refusedRetryDetail)
+}
+
+// requireSeedsDetect builds the server with the broken build tag, runs
+// brokenSchedule's seeds against it until one fails, and requires a
+// violation of invariant whose detail contains detail. The minimized case
+// the harness wrote must reproduce it when replayed as a committed
+// regression case.
+func requireSeedsDetect(t *testing.T, tag, invariant, detail string) {
+	t.Helper()
+
+	simulation := startSimulation(t, t.TempDir(), tag)
 
 	shrinkRuns := brokenShrinkRuns
 
@@ -273,7 +309,7 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 		shrinkRunsEnv + "=" + strconv.Itoa(shrinkRuns),
 	}, brokenSchedule...), "--bail", "1")
 
-	require.Error(t, result.err, "the simulation passed against a server that skips the base-revision check:\n%s", result.output)
+	require.Error(t, result.err, "the simulation passed against the %s server:\n%s", tag, result.output)
 
 	reports := simulation.control.recorded()
 	require.NotEmpty(t, reports, "the suite failed without reporting a violating seed:\n%s", result.output)
@@ -283,20 +319,21 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 	for _, regression := range reports {
 		var steps []json.RawMessage
 		assert.NoError(t, json.Unmarshal(regression.Steps, &steps))
-		t.Logf("seed %d against the simfault server: %v, minimized to %d steps", regression.Seed, invariantsOf(regression.Violations), len(steps))
+		t.Logf("seed %d against the %s server: %v, minimized to %d steps", regression.Seed, tag, invariantsOf(regression.Violations), len(steps))
 
 		for _, found := range regression.Violations {
-			detected = detected || found.Invariant == invariantStaleBase
+			detected = detected || (found.Invariant == invariant && strings.Contains(found.Detail, detail))
 		}
 	}
 
-	require.True(t, detected, "no stale-base violation was reported:\n%s", result.output)
+	require.True(t, detected, "no %s violation (%q) was reported:\n%s", invariant, detail, result.output)
 
 	// The minimized case it wrote must reproduce the violation when replayed
 	// as a committed regression case.
 	replay := simulation.runSuite(t, false, []string{suitesEnv + "=regressions"})
-	require.Error(t, replay.err, "the recorded regression case passed against the simfault server:\n%s", replay.output)
-	require.Contains(t, replay.output, invariantStaleBase, "the regression case failed for another reason:\n%s", replay.output)
+	require.Error(t, replay.err, "the recorded regression case passed against the %s server:\n%s", tag, replay.output)
+	require.Contains(t, replay.output, invariant, "the regression case failed for another reason:\n%s", replay.output)
+	require.Contains(t, replay.output, detail, "the regression case failed for another reason:\n%s", replay.output)
 	require.Positive(t, replay.total, "no regression case was replayed:\n%s", replay.output)
 }
 

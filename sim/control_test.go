@@ -28,11 +28,13 @@ const maxControlBody = 64 << 20
 // regressionCase is a minimized failing schedule (sim/control.ts
 // RegressionCase). Steps are kept verbatim.
 type regressionCase struct {
-	Name       string          `json:"name"`
-	Seed       int64           `json:"seed"`
-	Clients    int             `json:"clients"`
-	Violations []violation     `json:"violations"`
-	Steps      json.RawMessage `json:"steps"`
+	Name    string `json:"name"`
+	Seed    int64  `json:"seed"`
+	Clients int    `json:"clients"`
+	// CommitRetryBackoff is absent in cases recorded before #110.
+	CommitRetryBackoff *int            `json:"commitRetryBackoff,omitempty"`
+	Violations         []violation     `json:"violations"`
+	Steps              json.RawMessage `json:"steps"`
 }
 
 var regressionName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,99}$`)
@@ -45,6 +47,9 @@ type control struct {
 	issuer        *authtest.Issuer
 	key           authtest.Key
 	regressionDir string
+	// tokenExpiry is when every token the endpoint mints expires
+	// (tokenExpiry).
+	tokenExpiry time.Time
 
 	mu      sync.Mutex
 	users   int
@@ -79,7 +84,10 @@ func (control *control) token(writer http.ResponseWriter, _ *http.Request) {
 	subject := fmt.Sprintf("sim-user-%d", control.users)
 	control.mu.Unlock()
 
-	token, err := control.sign(control.issuer.Claims(subject, time.Now()))
+	claims := control.issuer.Claims(subject, time.Now())
+	claims["exp"] = control.tokenExpiry.Unix()
+
+	token, err := control.sign(claims)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 
@@ -87,6 +95,27 @@ func (control *control) token(writer http.ResponseWriter, _ *http.Request) {
 	}
 
 	respond(writer, map[string]string{"token": token})
+}
+
+const (
+	// tokenExpiryMargin keeps tokens valid a little past the test deadline,
+	// for clock skew between the driver and the server.
+	tokenExpiryMargin = time.Minute
+	// unboundedTokenLifetime is the token lifetime of a run without a
+	// deadline (`go test -timeout 0`).
+	unboundedTokenLifetime = 7 * 24 * time.Hour
+)
+
+// tokenExpiry returns when the tokens of a run expire: after the `go test`
+// deadline (SIM_TIMEOUT) if it has one, so that no run, however many steps a
+// seed has, outlives its token and fails with UNAUTHENTICATED (#110). A run
+// mints one token and uses it for every call.
+func tokenExpiry(deadline time.Time, hasDeadline bool, now time.Time) time.Time {
+	if !hasDeadline {
+		return now.Add(unboundedTokenLifetime)
+	}
+
+	return deadline.Add(tokenExpiryMargin)
 }
 
 func (control *control) sign(claims map[string]any) (string, error) {

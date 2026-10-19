@@ -14,6 +14,8 @@ export interface RegressionCase {
   name: string;
   seed: number;
   clients: number;
+  /** The run's RunOptions.commitRetryBackoff; absent in cases recorded before #110, which retried at once. */
+  commitRetryBackoff?: number;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];
