@@ -82,6 +82,8 @@ func TestSchemaRequestFields(t *testing.T) {
 	}{
 		{name: "server info reports server version", message: "GetServerInfoResponse", field: "version", kind: protoreflect.StringKind},
 		{name: "server info reports protocol version", message: "GetServerInfoResponse", field: "protocol_version", kind: protoreflect.Uint32Kind},
+		{name: "server info advertises the OIDC issuer", message: "GetServerInfoResponse", field: "oidc_issuer_url", kind: protoreflect.StringKind},
+		{name: "server info advertises the plugin client id", message: "GetServerInfoResponse", field: "oidc_client_id", kind: protoreflect.StringKind},
 		{name: "list changes takes a since seq", message: "ListChangesRequest", field: "since_seq", kind: protoreflect.Uint64Kind},
 		{name: "list changes is paginated", message: "ListChangesRequest", field: "page_size", kind: protoreflect.Uint32Kind},
 		{name: "list changes reports more pages", message: "ListChangesResponse", field: "has_more", kind: protoreflect.BoolKind},

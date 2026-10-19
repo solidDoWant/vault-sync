@@ -40,8 +40,10 @@ const (
 
 // ServerInfoServiceClient is a client for the vaultsync.v1.ServerInfoService service.
 type ServerInfoServiceClient interface {
-	// GetServerInfo returns the server build version and protocol version. It
-	// requires no authentication and reveals nothing about vaults or users.
+	// GetServerInfo returns the server build version, the protocol version,
+	// limits clients need, and OIDC discovery data. It requires no
+	// authentication and reveals nothing about vaults or users, and nothing
+	// secret: the issuer and the public client id are public by design.
 	GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error)
 }
 
@@ -77,8 +79,10 @@ func (c *serverInfoServiceClient) GetServerInfo(ctx context.Context, req *connec
 
 // ServerInfoServiceHandler is an implementation of the vaultsync.v1.ServerInfoService service.
 type ServerInfoServiceHandler interface {
-	// GetServerInfo returns the server build version and protocol version. It
-	// requires no authentication and reveals nothing about vaults or users.
+	// GetServerInfo returns the server build version, the protocol version,
+	// limits clients need, and OIDC discovery data. It requires no
+	// authentication and reveals nothing about vaults or users, and nothing
+	// secret: the issuer and the public client id are public by design.
 	GetServerInfo(context.Context, *connect.Request[v1.GetServerInfoRequest]) (*connect.Response[v1.GetServerInfoResponse], error)
 }
 
