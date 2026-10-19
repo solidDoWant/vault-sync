@@ -61,6 +61,9 @@ export class InMemoryRealtimeServer {
   readonly connections: InMemoryRealtimeConnection[] = [];
   /** Set to an HTTP status to refuse every upgrade (the client sees 1006, as a browser does). */
   refuseWith: 429 | 503 | undefined;
+  /** Set to hold every subscribe back, unanswered and unregistered, until releaseSubscribes(): a slow subscribe. */
+  holdSubscribes = false;
+  private readonly held: (() => void)[] = [];
   private readonly authenticate: (token: string) => boolean;
   private readonly headSeq: (vaultId: string) => bigint;
 
@@ -102,6 +105,17 @@ export class InMemoryRealtimeServer {
     return this.connections.filter((connection) => connection.open);
   }
 
+  /** How many subscribes are held back. */
+  get heldSubscribes(): number {
+    return this.held.length;
+  }
+
+  /** Handles the held subscribes now, as they would have been on arrival, and stops holding. */
+  releaseSubscribes(): void {
+    this.holdSubscribes = false;
+    for (const subscribe of this.held.splice(0)) subscribe();
+  }
+
   /** Notifies every subscriber of `vaultId` that its head is now `seq`. */
   notify(vaultId: string, seq: bigint): void {
     for (const connection of this.open) {
@@ -129,8 +143,14 @@ export class InMemoryRealtimeServer {
     const frame = fromBinary(ClientFrameSchema, data);
     if (frame.frame.case === "subscribe") {
       const { vaultId } = frame.frame.value;
-      connection.subscriptions.add(vaultId);
-      connection.send(create(ServerFrameSchema, { requestId: frame.requestId, frame: { case: "subscribed", value: { vaultId, headSeq: this.headSeq(vaultId) } } }));
+      const subscribe = () => {
+        if (!connection.open) return;
+        // As the real hub does: registered first, then the head read.
+        connection.subscriptions.add(vaultId);
+        connection.send(create(ServerFrameSchema, { requestId: frame.requestId, frame: { case: "subscribed", value: { vaultId, headSeq: this.headSeq(vaultId) } } }));
+      };
+      if (this.holdSubscribes) this.held.push(subscribe);
+      else subscribe();
     } else if (frame.frame.case === "unsubscribe") {
       connection.subscriptions.delete(frame.frame.value.vaultId);
     }
