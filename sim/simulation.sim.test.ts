@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -922,6 +922,32 @@ describe.runIf(suites.has("scenarios"))("scripted remote edit of a vacated path 
     expect(result.documents.size, trace).toBe(2);
     expect(result.tombstoned, trace).toEqual([]);
     expect(result.conflicts, trace).toEqual([{ reason: "path-taken", path: "A.md", copyPath: dPath, document: d }]);
+    // Nothing stays pending: the case-insensitive engine's last push had nothing left to do.
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted remote rename into a folder named like a deleted note's path (#299)", () => {
+  it.each(["macos", "windows"] as const)("keeps the remote edit at notes/f.md and the user's notes/f.md as a conflict copy, with nothing deferred, under %s rules", async (platform) => {
+    const result = await remoteRenameIntoDeletedNotesFolder(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("NOTES");
+    expect(note, trace).toBeDefined();
+    // The edit wins over the delete: the note is live at its new path with the remote edit.
+    expect(result.documents.get("notes/f.md"), trace).toBe(note);
+    // The user's own notes/f.md is kept, as a new document at a conflict-copy path in notes/.
+    const copyPaths = [...result.documents.keys()].filter((path) => path !== "notes/f.md");
+    expect(copyPaths, trace).toEqual([expect.stringMatching(/^notes\/f \(conflict .*\)\.md$/)]);
+    const copyPath = copyPaths[0] ?? "";
+    const expected = new Map([
+      ["notes/f.md", "theirs, edited\n"],
+      [copyPath, "mine\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.tombstoned, trace).toEqual([]);
     // Nothing stays pending: the case-insensitive engine's last push had nothing left to do.
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
