@@ -333,4 +333,21 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
     expect((await h.journal.getDocument("doc"))?.deleted).toBe(true);
     expect(await h.engine.deletedDocuments()).toEqual([]);
   });
+
+  it("does not list a deleted document that a local change not yet pushed brings back", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "the old plan\n");
+    await h.vault.delete("plan.md");
+    await h.engine.push();
+    expect((await h.engine.deletedDocuments()).map((document) => document.documentId)).toEqual([documentId]);
+    // The file is written again, but the server is unreachable when the push commits it.
+    await h.vault.write("plan.md", bytes("the plan, back again\n"));
+    h.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("try later", Code.Unavailable);
+    };
+    await expect(h.engine.push()).rejects.toThrow(/try later/);
+    expect((await h.journal.listPending()).map((operation) => ({ documentId: operation.documentId, deleted: operation.deleted }))).toEqual([{ documentId, deleted: false }]);
+
+    expect(await h.engine.deletedDocuments()).toEqual([]);
+  });
 });

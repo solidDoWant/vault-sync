@@ -44,6 +44,36 @@ describe("SyncEngine when blob garbage collection removes an upload before its c
     expect(h.server.liveFiles()).toEqual(new Map([["note.md", "old content, written again\n"]]));
     expect(h.server.hasBlob(hash)).toBe(true);
   });
+
+  it("never drops a pending delete whose commit is refused for missing content", async () => {
+    const h = harness();
+    await h.vault.write("note.md", bytes("to be deleted\n"));
+    await h.engine.push();
+    const [document] = await h.journal.listDocuments();
+    const documentId = document?.documentId ?? "";
+    await h.vault.delete("note.md");
+    // A tombstone's content is the head's, which collection keeps; here the
+    // server has lost that blob anyway: it refuses the delete's content_ref
+    // and reports the blob as not uploaded.
+    const hash = sha256Hex(bytes("to be deleted\n"));
+    h.server.interceptor = (method, request) => {
+      if (method === "CommitRevision" && (request as { deleted: boolean }).deleted) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+    };
+    h.server.responseInterceptor = (method, request, response) => {
+      if (method === "BeginBlob" && bytesToHex((request as { blobId: Uint8Array }).blobId) === hash) Object.assign(response as object, { complete: false, receivedSize: 0n });
+    };
+
+    await expect(h.engine.push()).rejects.toThrow(/not a complete blob/);
+
+    const pending = await h.journal.listPending();
+    expect(pending.map((operation) => ({ documentId: operation.documentId, deleted: operation.deleted }))).toEqual([{ documentId, deleted: true }]);
+    // Once the server accepts it, the same delete is committed.
+    h.server.interceptor = undefined;
+    h.server.responseInterceptor = undefined;
+    await h.engine.push();
+    expect(h.server.head(documentId)?.deleted).toBe(true);
+    expect(h.server.head(documentId)?.id).toBe(pending[0]?.revisionId);
+  });
 });
 
 describe("SyncEngine when retention purged a merge base (SPEC.md §8, §11)", () => {
