@@ -295,6 +295,13 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 
 	progress := func(ctx context.Context) error { return vault.TouchBlobUpload(ctx, upload.ID) }
 
+	// The garbage collector may be deleting an earlier object of this blob
+	// (SPEC.md §11). Once that is done, a deletion that starts later sees
+	// this upload in progress and leaves the object alone.
+	if err := vault.AwaitBlobDeletion(ctx, blobID); err != nil {
+		return nil, service.internal(ctx, "cannot commit blob", err)
+	}
+
 	err = service.Objects.Compose(ctx, blobstore.BlobKey(upload.VaultID, blobID), sources, upload.Size, verify, progress)
 	if errors.Is(err, blobstore.ErrHashMismatch) {
 		if err := vault.FinishBlobUpload(ctx, upload.ID); err != nil {

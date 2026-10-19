@@ -189,8 +189,10 @@ export const DocumentSchema: GenMessage<Document> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_types, 3);
 
 /**
- * Revision is one immutable entry in a document's history. Revisions are
- * append-only; a create, rename, edit, delete, or restore each adds one.
+ * Revision is one entry in a document's history. Revisions are append-only;
+ * a create, rename, edit, delete, or restore each adds one. Retention may
+ * purge old revisions other than the head (SPEC.md §11); parent_rev_id is
+ * the only field that changes afterwards.
  *
  * @generated from message vaultsync.v1.Revision
  */
@@ -225,8 +227,10 @@ export type Revision = Message<"vaultsync.v1.Revision"> & {
   seq: bigint;
 
   /**
-   * Id of the revision this one was based on. Empty for the document's first
-   * revision.
+   * Id of the revision this one was based on or, once retention purged that
+   * revision, of the nearest older revision that is retained (SPEC.md §11):
+   * it always names a revision that exists. Empty for the document's first
+   * revision, and once every older revision was purged.
    *
    * @generated from field: string parent_rev_id = 5;
    */

@@ -66,7 +66,8 @@ func TestLoadDefaults(t *testing.T) {
 			MaxUploadsPerVault: 32,
 			UploadTTL:          24 * time.Hour,
 		},
-		Realtime: config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128},
+		Realtime:  config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128},
+		Retention: config.RetentionConfig{KeepAll: 90 * 24 * time.Hour, KeepDaily: 365 * 24 * time.Hour, BlobGrace: 24 * time.Hour},
 	}, cfg)
 }
 
@@ -391,6 +392,87 @@ func TestLoadRealtimeSettings(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, test.want, cfg.Realtime)
+		})
+	}
+}
+
+func TestLoadRetentionSettings(t *testing.T) {
+	const day = 24 * time.Hour
+
+	defaults := config.RetentionConfig{KeepAll: 90 * day, KeepDaily: 365 * day, BlobGrace: day}
+
+	tests := []struct {
+		name string
+		env  map[string]string
+		want config.RetentionConfig
+		// wantProblems are substrings that must each appear in the error.
+		wantProblems []string
+	}{
+		{name: "defaults", want: defaults},
+		{
+			name: "overrides",
+			env: map[string]string{
+				config.RetentionKeepAllEnv:   "720h",
+				config.RetentionKeepDailyEnv: "2160h",
+				config.BlobGCGraceEnv:        "6h",
+			},
+			want: config.RetentionConfig{KeepAll: 30 * day, KeepDaily: 90 * day, BlobGrace: 6 * time.Hour},
+		},
+		{
+			name: "the smallest values",
+			env: map[string]string{
+				config.RetentionKeepAllEnv:   "24h",
+				config.RetentionKeepDailyEnv: "24h",
+				config.BlobGCGraceEnv:        "1h",
+			},
+			want: config.RetentionConfig{KeepAll: day, KeepDaily: day, BlobGrace: time.Hour},
+		},
+		{
+			name:         "keep-all too short",
+			env:          map[string]string{config.RetentionKeepAllEnv: "23h59m59s", config.RetentionKeepDailyEnv: "48h"},
+			wantProblems: []string{config.RetentionKeepAllEnv},
+		},
+		{
+			name:         "daily window ending before the keep-all window",
+			env:          map[string]string{config.RetentionKeepAllEnv: "48h", config.RetentionKeepDailyEnv: "47h59m59s"},
+			wantProblems: []string{config.RetentionKeepDailyEnv, config.RetentionKeepAllEnv},
+		},
+		{
+			name:         "keep-all raised past the default daily window",
+			env:          map[string]string{config.RetentionKeepAllEnv: "8761h"},
+			wantProblems: []string{config.RetentionKeepDailyEnv},
+		},
+		{
+			name:         "grace too short",
+			env:          map[string]string{config.BlobGCGraceEnv: "59m59s"},
+			wantProblems: []string{config.BlobGCGraceEnv},
+		},
+		{
+			name: "not durations",
+			env: map[string]string{
+				config.RetentionKeepAllEnv:   "90 days",
+				config.RetentionKeepDailyEnv: "1y",
+				config.BlobGCGraceEnv:        "1 day",
+			},
+			wantProblems: []string{config.RetentionKeepAllEnv, config.RetentionKeepDailyEnv, config.BlobGCGraceEnv},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg, err := config.Load(lookup(withRequired(test.env)))
+			if len(test.wantProblems) > 0 {
+				require.Error(t, err)
+
+				for _, problem := range test.wantProblems {
+					assert.Contains(t, err.Error(), problem)
+				}
+
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, test.want, cfg.Retention)
 		})
 	}
 }
