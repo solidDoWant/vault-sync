@@ -1480,8 +1480,8 @@ export async function fileAtVacatedPath(endpoints: SimEndpoints, variant: Vacate
       }
       // The server commits the create; before its response arrives, the user moves the file away and creates another.
       await run.step({ kind: "deliver-request", client: second.index });
-      log(await second.move("STRASSE.md", "b.md"));
-      log(await second.edit("straße.md", encoder.encode("second\n")));
+      log(await second.move("STRASSE.md", "b.md", { whileBusy: true }));
+      log(await second.edit("straße.md", encoder.encode("second\n"), { whileBusy: true }));
       await run.drain(second.index);
       break;
     }
