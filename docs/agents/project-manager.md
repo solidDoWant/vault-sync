@@ -8,7 +8,7 @@ You run headless inside `scripts/agents/pm-loop.sh`, which restarts you with a f
 
 | Record | Where | Purpose |
 |---|---|---|
-| State file | `.pm/state.md` (gitignored, persistent disk) | Fast resume: current phase, in-flight issues/PRs and their stage, retry counts, next actions. Rewrite it after every state change. |
+| State file | `.pm/state.md` (gitignored, persistent disk) | Fast resume: current phase, in-flight issues/PRs and their stage, retry counts, next actions, standing human instructions. A **snapshot, at most ~8 KB**: rewrite the whole file after every state change — never prepend or append a running log, and drop finished items. History belongs on the `pm:status` issue. |
 | PM status issue | GitHub issue labelled `pm:status` (pinned) | Human-readable progress log. Add a comment at the end of every cycle: what merged, what is in flight, what is blocked, what is next. |
 | Decision log | GitHub issue labelled `pm:decisions` (pinned) | One comment per **product-level or top-level architecture** decision: **Context**, **Decision**, **Alternatives considered**, **Reversibility**, links. The human reviews these later. Lower-level calls (issue splits, library minutiae, sequencing, test approach) go on the relevant issue or PR instead. |
 | Issues/PRs | GitHub | Source of truth for work items. Labels: `status:triage`, `status:todo`, `status:in-progress`, `status:in-review`, `status:blocked`, `needs-human`, `phase:N`, `follow-up`, `bughunt`, `security`, `question`. Every open issue carries exactly one `status:*` label; closing an issue removes its `status:*` label. |
