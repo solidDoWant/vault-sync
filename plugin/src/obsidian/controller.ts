@@ -146,6 +146,8 @@ export interface SyncControllerOptions {
   syncIntervalMs: number | null;
   /** The local platform's file-name rules, passed to every session (SyncSessionOptions.pathRules). */
   pathRules?: PathRules;
+  /** The download cap, passed to every session (SyncSessionOptions.maxDownloadBytes). */
+  maxDownloadBytes?: number;
   /** The realtime channel to the session's server (serverBaseUrl), if any (SyncSessionOptions.realtime). */
   realtime?: (serverUrl: string) => SyncSessionOptions["realtime"];
   onStatus: (status: SyncStatus) => void;
@@ -291,6 +293,7 @@ export class SyncController {
         pushDebounceMs: this.options.pushDebounceMs,
         syncIntervalMs: this.options.syncIntervalMs,
         ...(this.options.pathRules === undefined ? {} : { pathRules: this.options.pathRules }),
+        ...(this.options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: this.options.maxDownloadBytes }),
         onStatus: (status) => {
           if (this.running?.session === session) this.publish(status);
         },

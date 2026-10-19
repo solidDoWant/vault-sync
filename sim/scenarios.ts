@@ -1979,3 +1979,73 @@ export async function remoteRenameOntoLocalFolder(endpoints: SimEndpoints, platf
   const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
 }
+
+/**
+ * A remote edit of a note whose path the user vacated for another note's
+ * rename (#253). Both engines sync `a.md` and `d.md`. The second engine
+ * follows macOS or Windows rules; its user deletes `a.md` and renames `d.md`
+ * to `A.md` (the same path key). The first engine edits `a.md` and pushes,
+ * either before the second engine pushes or while that push is committing
+ * (`timing`). The edit must survive and the renamed note must keep its id,
+ * and no operation may stay pending (SPEC.md §2 principle 1).
+ */
+export async function remoteEditOfVacatedPath(endpoints: SimEndpoints, platform: "windows" | "macos", timing: "before-push" | "while-pushing"): Promise<RenameOntoLocalFolderResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("a.md", encoder.encode("h\n")));
+  log(await first.edit("d.md", encoder.encode("d\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.remove("a.md"));
+  log(await second.move("d.md", "A.md"));
+  log(await first.edit("a.md", encoder.encode("h\nremote edit\n")));
+  if (timing === "before-push") {
+    await push(first);
+    await push(second);
+  } else {
+    log(second.startPush());
+    await settle();
+    for (let delivery = 0; run.context.network.pendingRequest(second.index) !== "CommitRevision"; delivery++) {
+      if (delivery > 100) throw new Error("the second engine never sent CommitRevision");
+      await run.step({ kind: "deliver-request", client: second.index });
+      await run.step({ kind: "deliver-response", client: second.index });
+    }
+    // The edit commits just before the second engine's first CommitRevision reaches the server.
+    await push(first);
+    await run.drain(second.index);
+  }
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = (await Promise.all([first, second].map((engine) => engine.conflicts())))
+    .flat()
+    .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
+}
