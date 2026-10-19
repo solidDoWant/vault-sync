@@ -1,3 +1,4 @@
+import { Code } from "@connectrpc/connect";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
@@ -5,6 +6,7 @@ import { sha256Hex } from "../hash";
 import type { DocumentKindName, RemoteRevision } from "../journal/journal";
 import type { ProtocolClient } from "../protocol/client";
 import { isVaultRelativePath } from "../vaultpath/vaultpath";
+import { errorCode } from "./errors";
 
 /** The protocol calls the engine uses, to pull and to push. */
 export type PullApi = Pick<ProtocolClient, "sync" | "blobs">;
@@ -124,4 +126,19 @@ export async function revisionContent(api: PullApi, vaultId: string, revisionId:
   const revision = (await api.sync.getRevision({ vaultId, revisionId })).revision;
   if (revision?.contentRef === undefined) throw new RemoteContentError(`revision ${revisionId} has no content`);
   return downloadContent(api, vaultId, bytesToHex(revision.contentRef.blobId), revision.contentRef.size);
+}
+
+/**
+ * The merge base's content (SPEC.md §8), or null if retention purged the
+ * revision or its blob is gone (NOT_FOUND from GetRevision or DownloadBlob,
+ * §11): the two versions then have no common base. Any other failure is
+ * thrown.
+ */
+export async function baseContent(api: PullApi, vaultId: string, revisionId: string): Promise<Uint8Array | null> {
+  try {
+    return await revisionContent(api, vaultId, revisionId);
+  } catch (error) {
+    if (errorCode(error) === Code.NotFound) return null;
+    throw error;
+  }
 }
