@@ -85,12 +85,39 @@ export interface SyncEngineOptions {
   rateLimitBackoff?: Backoff;
   /** The timers of that wait. Defaults to the global ones. */
   timers?: Timers;
+  /**
+   * The largest remote content, in bytes, the engine downloads (SPEC.md §8):
+   * a revision whose content is larger is deferred as `too-large`, never
+   * downloaded, and listed by tooLarge(). Defaults to defaultMaxDownloadBytes.
+   */
+  maxDownloadBytes?: number;
   /** Uniform in [0, 1); spreads the waits of a user's devices out. Defaults to Math.random. */
   random?: () => number;
 }
 
 /** The engine's wait after RESOURCE_EXHAUSTED: 0.5 to 1 s after the first refusal, doubling up to 30 to 60 s. */
 export const defaultRateLimitBackoff: Readonly<Backoff> = { initialMs: 1000, maxMs: 60_000 };
+
+/** The engine's download cap unless SyncEngineOptions.maxDownloadBytes sets one: 1 GiB. */
+export const defaultMaxDownloadBytes = 1024 * 1024 * 1024;
+
+/**
+ * A document whose remote revision is larger than the engine's download cap
+ * (SPEC.md §8): deferred, never downloaded, and never dropped. A later
+ * revision within the cap applies it. Until then its local changes are not
+ * pushed.
+ */
+export interface TooLargeDocument {
+  documentId: string;
+  /** The path the server has for the document. */
+  path: string;
+  /** The revision's content size in bytes. */
+  size: bigint;
+  /** The remote revision that was not downloaded. */
+  revision: RemoteRevision;
+  /** Where the document's earlier version stays on disk, if this device had one. */
+  localPath: string | undefined;
+}
 
 /** What a pull or push waiting out a RESOURCE_EXHAUSTED backoff rejects with when the engine is disposed. */
 export class EngineDisposedError extends Error {
@@ -245,6 +272,7 @@ export class SyncEngine {
   private readonly now: () => Date;
   private readonly pathRules: PathRules;
   private readonly onUnmaterializable: (document: UnmaterializableDocument) => void;
+  private readonly maxDownloadBytes: bigint;
   /** Maps a path to what the vault takes as the same file: its path key on a case-insensitive platform. */
   private readonly fileKey: (path: string) => string;
   private readonly echoes = new EchoSuppressor();
@@ -298,6 +326,7 @@ export class SyncEngine {
     this.now = options.now ?? (() => new Date());
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
+    this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
@@ -370,6 +399,18 @@ export class SyncEngine {
     const documents: UnmaterializableDocument[] = [];
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable") documents.push(await this.unmaterializableDocument(deferred.revision, deferred.unmaterializable ?? "refused-by-vault"));
+    }
+    return documents;
+  }
+
+  /** The documents whose remote revision is larger than the download cap (SPEC.md §8), for the UI. */
+  async tooLarge(): Promise<TooLargeDocument[]> {
+    const documents: TooLargeDocument[] = [];
+    for (const { revision, reason } of await this.journal.listDeferred()) {
+      if (reason !== "too-large") continue;
+      const state = await this.journal.getDocument(revision.documentId);
+      const localPath = state !== undefined && !state.deleted && (await this.vault.stat(state.path)) !== null ? state.path : undefined;
+      documents.push({ documentId: revision.documentId, path: revision.path, size: revision.size, revision, localPath });
     }
     return documents;
   }
@@ -607,6 +648,17 @@ export class SyncEngine {
       if (state !== undefined && remote.seq <= state.seq) return "skipped";
       if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
       return this.defer(remote, !remote.deleted && !incoming.pathAllowed ? "invalid-path" : "out-of-scope");
+    }
+    if (this.overCap(remote)) {
+      // Never downloaded, so never allocated (#316): nothing touches the
+      // disk, the cursor moves on, and a later revision within the cap
+      // applies the document.
+      if (state !== undefined && remote.seq <= state.seq) return "skipped";
+      if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
+      // A merge result written for the revision deferred before is finished
+      // first: the deferral that records it is about to be replaced.
+      if (deferred?.merging !== undefined) await this.resumeMerge(deferred.revision, state, deferred.merging);
+      return this.defer(remote, "too-large");
     }
     if (deferred?.reason === "local-changes" || pending.length > 0) {
       return this.handToMerge(remote, state, await this.localFile(state, remote));
@@ -1024,6 +1076,9 @@ export class SyncEngine {
     const holder = await this.documentAt(local.path);
     if (holder !== undefined && holder.documentId !== remote.documentId) return false;
     const copyPaths: string[] = [];
+    // The document's own file, which the result moves away from (or
+    // deletes): it takes no name from a conflict copy (#319).
+    const leaving = current !== null && (outcome.content === null || outcome.path !== local.path) ? local.path : undefined;
     try {
       // A file in the way at the result's new path. If it is no document's, it
       // was created here concurrently with the remote document's move there:
@@ -1043,7 +1098,7 @@ export class SyncEngine {
         if (owner !== undefined && owner.documentId !== remote.documentId) return false;
         if (remaining !== null && !sameContent(remaining, outcome.content)) {
           if (await this.belongsToDocument(outcome.path)) return false;
-          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining });
+          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining }, leaving);
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
           this.changes.paths.add(copyPath);
@@ -1063,7 +1118,7 @@ export class SyncEngine {
         merging: { path: outcome.path, contentHash: outcome.content === null ? null : sha256Hex(outcome.content) },
       });
       if (outcome.conflict !== undefined) {
-        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict);
+        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict, leaving);
         if (copyPath === null) return false;
         copyPaths.push(copyPath);
       }
@@ -1172,9 +1227,10 @@ export class SyncEngine {
    * crash is finished under the same name rather than written twice. Returns
    * the copy's path, or null if no name fits the path limits: the conflict is
    * then logged without a copy and nothing is written, so the local version
-   * stays where it is.
+   * stays where it is. `leaving` is the path of the document's own file that
+   * the merge moves away or deletes (see freeConflictPath).
    */
-  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }): Promise<string | null> {
+  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, leaving?: string): Promise<string | null> {
     const hash = sha256Hex(conflict.content);
     const logged = (await this.journal.listConflicts()).filter((record) => record.documentId === remote.documentId && record.copyHash === hash);
     let copyPath: string | null = null;
@@ -1187,7 +1243,7 @@ export class SyncEngine {
       }
     }
     if (copyPath === null) {
-      copyPath = await this.freeConflictPath(localPath);
+      copyPath = await this.freeConflictPath(localPath, undefined, leaving === undefined ? undefined : { documentId: remote.documentId, path: leaving });
       const unresolved = copyPath === null && logged.some((record) => record.copyPath === null && record.remoteRevisionId === remote.revisionId);
       if (!unresolved) {
         await this.journal.putConflict(this.conflictRecord(remote.documentId, remote.path, conflict.reason, copyPath, hash, remote.revisionId));
@@ -1218,13 +1274,20 @@ export class SyncEngine {
    * whatever the local platform: a name free only in a case-sensitive vault
    * would be refused again (#243). That also keeps a copy off a file of
    * another spelling on a case-insensitive platform.
+   *
+   * `leaving` is a document's own file that the caller moves away from its
+   * path or deletes (a merge of the document's remote rename): the server
+   * already has the document elsewhere, so that file takes no name. Counted,
+   * a file `NOTES` would leave no free name in `notes/` for the copy of a
+   * file in the way of the document's move to `notes/c.md`, and the move
+   * would wait forever (#319).
    */
-  private async freeConflictPath(path: string, folder?: string): Promise<string | null> {
+  private async freeConflictPath(path: string, folder?: string, leaving?: { documentId: string; path: string }): Promise<string | null> {
     const date = this.now();
     const taken = new Set<string>();
     for (const operation of await this.journal.listPending()) taken.add(pathKey(operation.path));
     for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(pathKey(record.copyPath));
-    const files = await this.knownFileKeys();
+    const files = await this.knownFileKeys(leaving);
     // A folder is any file's ancestor.
     const folders = new Set<string>();
     for (const file of files) for (const ancestor of ancestors(file)) folders.add(ancestor);
@@ -1247,13 +1310,20 @@ export class SyncEngine {
    * The path keys of every file this device knows of: the vault's files, the
    * live documents the journal has, and the paths of remote revisions it
    * holds deferred (documents the server has there, though this vault does
-   * not show them).
+   * not show them). Without `leaving`'s file and its document's state there.
    */
-  private async knownFileKeys(): Promise<Set<string>> {
-    const keys = new Set((await this.vault.list()).map(pathKey));
-    for (const state of await this.journal.listDocuments()) if (!state.deleted) keys.add(pathKey(state.path));
+  private async knownFileKeys(leaving?: { documentId: string; path: string }): Promise<Set<string>> {
+    const keys = new Set((await this.vault.list()).filter((path) => path !== leaving?.path).map(pathKey));
+    for (const state of await this.journal.listDocuments()) {
+      if (!state.deleted && !(state.documentId === leaving?.documentId && state.path === leaving.path)) keys.add(pathKey(state.path));
+    }
     for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
     return keys;
+  }
+
+  /** Whether `remote` has content larger than the download cap. */
+  private overCap(remote: RemoteRevision): boolean {
+    return !remote.deleted && remote.size > this.maxDownloadBytes;
   }
 
   private async defer(remote: RemoteRevision, reason: DeferReason): Promise<"deferred"> {
@@ -1328,6 +1398,8 @@ export class SyncEngine {
         if (state.seq !== remote.seq) await this.journal.putDocument({ ...state, seq: remote.seq });
       } else if (this.outOfScope(remote, state)) {
         this.count(summary, await this.defer(remote, "out-of-scope"));
+      } else if (this.overCap(remote)) {
+        this.count(summary, await this.defer(remote, "too-large"));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
@@ -1417,8 +1489,8 @@ export class SyncEngine {
     const parked: Parked = { documents: new Set(), paths: new Set() };
     for (const deferred of await this.journal.listDeferred()) {
       // An unmaterializable document waits too: its local changes are not pushed, and the server never hears of its file.
-      // So does one whose remote revision is out of scope.
-      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope") continue;
+      // So does one whose remote revision is out of scope, or too large to download.
+      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope" && deferred.reason !== "too-large") continue;
       const { revision } = deferred;
       parked.documents.add(revision.documentId);
       parked.paths.add(revision.path);
@@ -1937,14 +2009,16 @@ export class SyncEngine {
    * another reason does not cost a download on every push. So are, once per
    * engine, unmaterializable revisions whose path the platform rules now
    * allow (the vault refused it although they did, or the vault moved to a
-   * shorter folder).
+   * shorter folder). So are, once per engine, out-of-scope revisions now in
+   * scope and too-large revisions the download cap now fits.
    */
   private async retryRefusedPaths(again = false): Promise<void> {
     const deferrals = (await this.journal.listDeferred()).filter(
       (deferred) =>
         (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
         (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
-        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)),
+        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)) ||
+        (deferred.reason === "too-large" && !this.retried.has(deferred.revision.revisionId) && !this.overCap(deferred.revision)),
     );
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);

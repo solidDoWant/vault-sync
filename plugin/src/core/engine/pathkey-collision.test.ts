@@ -690,4 +690,57 @@ describe("SyncEngine collisions by path key", () => {
       );
     });
   });
+
+  describe("given a remote rename out of a file whose path key names the destination's folder (#319)", () => {
+    // Simulation seed-24-drift (POSIX engine): another device creates the
+    // file NOTES and renames it to notes/c.md, while the user creates
+    // notes/c.md here. The renamed document takes the path and the user's
+    // file becomes a conflict copy in notes/. NOTES is the document's own
+    // file, which the rename moves away, so it never makes notes/ a file's
+    // path by path key that no copy can go in.
+    it("keeps the user's file as a conflict copy next to the renamed document, and syncs both (posix)", async () => {
+      const h = harness({ merge: "default", pathRules: { platform: "posix" } });
+      h.server.commit({ documentId: "N", path: "NOTES", content: "theirs\n" });
+      await h.engine.pull();
+      h.server.commit({ documentId: "N", path: "notes/c.md" });
+      await h.vault.write("notes/c.md", bytes("mine\n"));
+
+      const pulled = await h.engine.pull();
+      const summaries = await pushUntilQuiet(h);
+
+      expect(pulled.merged).toBe(1);
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["notes/c.md", "theirs\n"],
+          [`notes/${copyOf("c", ".md")}`, "mine\n"],
+        ]),
+      );
+      expect(h.server.liveDocuments().get("notes/c.md")).toBe("N");
+      expect(h.server.history("N").every((revision) => !revision.deleted)).toBe(true);
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+      expect(await h.journal.listDeferred()).toEqual([]);
+      expect(await h.journal.listPending()).toEqual([]);
+      expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+    });
+
+    it("takes the path for the renamed document when the user's file arrived in the same pull (posix)", async () => {
+      // The seed's pull: the create at NOTES and its rename come in one feed.
+      const h = harness({ merge: "default", pathRules: { platform: "posix" } });
+      h.server.commit({ documentId: "N", path: "NOTES", content: "theirs\n" });
+      h.server.commit({ documentId: "N", path: "notes/c.md" });
+      await h.vault.write("notes/c.md", bytes("mine\n"));
+
+      await h.engine.pull();
+      await pushUntilQuiet(h);
+
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["notes/c.md", "theirs\n"],
+          [`notes/${copyOf("c", ".md")}`, "mine\n"],
+        ]),
+      );
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+      expect(await h.journal.listDeferred()).toEqual([]);
+    });
+  });
 });
