@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
+import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -337,6 +337,23 @@ describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
 
     expect(result.violations, trace).toEqual([]);
     expect(result.trace.some((line) => line.includes(" as unmaterializable (")), trace).toBe(true);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("config folder sync (#28)", () => {
+  it("syncs only the selected config files, applies nothing while off, and never deletes on the server when turned off", async () => {
+    const result = await configFolderSync(environment);
+    const trace = tail(result.trace, 200);
+
+    // Convergence of everything each engine syncs; config files outside its scope are deferred, never written.
+    expect(result.violations, trace).toEqual([]);
+    const synced = [".obsidian/community-plugins.json", ".obsidian/hotkeys.json", ".obsidian/plugins/dataview/main.js", ".obsidian/snippets/wide.css", "note.md"];
+    expect(result.liveAfterPush, trace).toEqual(synced);
+    expect(result.configWhileOff, trace).toEqual([]);
+    // A layout change, then edits and a delete with config sync off: no commit, nothing deleted on the server.
+    expect(result.commitsWhileOff, trace).toBe(0);
+    expect(result.liveAtEnd, trace).toEqual(synced);
+    expect(result.configAfterOn, trace).toEqual(["community-plugins.json", "hotkeys.json", "plugins/dataview/main.js", "snippets/wide.css"]);
   });
 });
 

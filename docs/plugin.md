@@ -13,10 +13,11 @@ Open **Settings → Vault Sync**.
 | OIDC client ID | Optional. Leave it empty to sign in as the client the server advertises (its `VAULT_SYNC_OIDC_CLIENT_ID`, by default its audience). Enter a client ID to sign in as another public client instead (see below). The access tokens it receives must carry the server's `VAULT_SYNC_OIDC_AUDIENCE`. |
 | Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
 | Remote vault | Shown while signed in: the server vault this vault syncs with, or controls to connect to one of your vaults or create a new one (see [Connecting a vault](#connecting-a-vault)). |
+| Sync the config folder | Off by default. Syncs the selected parts of this vault's config folder on this device (see [Config folder sync](#config-folder-sync)). Turning it on is a security risk: plugins and settings synced from other devices, plugin code included, run on this device. |
 
 Usually the server URL is all you enter. The server URL and the issuer, whether entered or advertised by the server, must use `https`. Plain `http` works only for `localhost`, `127.0.0.1` and `::1`, for local development. While you are signed in, and while a sign-in is in progress, these settings are locked, because the refresh token belongs to that identity provider. Sign out to change them. While signed in, the empty issuer and client ID fields show the ones in use.
 
-The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-sync/`. That file also holds the refresh token while you are signed in, so treat it as a secret, together with the issuer and client ID it was issued for, so that refreshing it never depends on reaching the server. It also holds this device's registration and the connected vault. vault-sync never syncs it.
+The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-sync/`. That file also holds the refresh token while you are signed in, so treat it as a secret, together with the issuer and client ID it was issued for, so that refreshing it never depends on reaching the server. It also holds this device's registration, the connected vault and the config sync settings. vault-sync never syncs it, even with config folder sync on.
 
 ## Signing in
 
@@ -105,6 +106,49 @@ Copy what you need from the conflict copy into the note, then delete the copy. D
 When no conflict-copy name fits the path length limits (a very deep folder), nothing is copied: this device's version stays where it is, unsynced, and the view says so. Move the file to a shorter path to sync it.
 
 The view also lists **files this device cannot hold**: documents whose path on the server is not a valid file name on this device's platform, such as `CON.md` or a name with `?` on Windows, or a name longer than 255 bytes anywhere. Each shows its path on the server and why it cannot be written here, and links to the earlier version if this device still has one. Such a document is never dropped or renamed on the server. Rename it on another device and it arrives here. Until then, local changes to its earlier version are not synced.
+
+## Config folder sync
+
+By default vault-sync syncs only your notes and attachments. Nothing in the vault's config folder (`.obsidian`, or the name set under **Settings → Files and links → Override config folder**) is uploaded or written. **Sync the config folder** changes that for this vault on this device only. The setting is kept in the plugin's `data.json` on the device. It is never synced and never set by the server, so every device opts in by itself, and nobody else can turn it on for you.
+
+> **Security risk.** With config sync on, settings and plugins from any device that syncs this vault apply on this device, and with **Plugin code and data** on, plugin code from those devices runs here with full access to the device. In a vault you share, that means code from every member with edit rights. Turn it on only for vaults you trust, where you want this folder synced.
+
+With the toggle on, you choose what syncs. Every category is a separate toggle:
+
+| Category | Default when turned on | Files (inside the config folder) |
+|---|---|---|
+| Themes | on | `themes/` and `appearance.json` (the chosen theme, enabled snippets and other appearance settings) |
+| CSS snippets | on | `snippets/` and `appearance.json` |
+| Hotkeys | on | `hotkeys.json` |
+| Enabled plugin list | off | `core-plugins.json` and `community-plugins.json` |
+| Plugin code and data | off | `plugins/<plugin>/`: each community plugin's code, manifest, styles and settings |
+
+No other file in the config folder syncs, whatever is selected. That covers `app.json` (Editor and Files and links settings), the core plugins' own settings files (`daily-notes.json`, `templates.json`, `bookmarks.json`, `types.json` and so on) and any other file in it.
+
+On the server, config files are always stored under `.obsidian/`. Each device reads and writes them in its own config folder, so a device whose config folder is called `.obsidian-mobile` syncs with devices that use `.obsidian`.
+
+### Files that never sync
+
+These files hold state that belongs to one device. They never sync, even with every category on, and a revision of one of them that some other client uploads is never written to disk. The list comes from running the pinned Obsidian version (1.14.4, the version in the e2e suite), desktop and emulated mobile. The research took a snapshot of the config folder before and after each of these actions: opening and closing notes, opening a note in a new tab, switching tabs, splitting a pane, switching to reading view, toggling and resizing the sidebars, folding a heading, scrolling, resizing the window, changing the theme, opening the graph view, the local graph, a canvas, search, the file explorer, the outline, backlinks and tags, renaming and deleting notes, opening a daily note, adding properties, toggling a core plugin, bookmarking, the command palette, the quick switcher, the settings, and restarting Obsidian.
+
+| File | Why it is device-local |
+|---|---|
+| `workspace.json` | The desktop layout: open tabs and splits, their sizes, the sidebars, the active pane, each view's state (mode, cursor, folds) and the recently opened files. Obsidian rewrites it on every pane or tab switch, opened or closed note, split, sidebar toggle or resize, view-mode change and fold. Syncing it would conflict constantly and move every device's panes around. |
+| `workspace-mobile.json` | The same layout state for the mobile app, rewritten just as often. |
+| `workspace*.json` (any other) | For example `workspaces.json`, the layouts the Workspaces core plugin saves, which are laid out for one device's screen. |
+| `graph.json` | The graph view's settings, together with its current zoom level. Obsidian writes it when the graph view opens and on every zoom. |
+| `plugins/vault-sync/` (and the folder vault-sync is installed in) | vault-sync's own code and its `data.json`, which holds this device's refresh token, registration and settings. |
+
+The research found that scrolling, resizing or moving the window, the quick switcher, the command palette, search and indexing (the metadata cache) write nothing to the config folder. Obsidian keeps that state outside the vault (the window state, and IndexedDB and local storage for caches and history). The other changes it found were to settings files, which change only when you change a setting: `appearance.json` (the theme), `core-plugins.json` (a core plugin turned on or off) and `community-plugins.json`.
+
+### How config changes arrive
+
+Obsidian reads its config files when it starts and keeps its own copy in memory. When sync changes a config file, vault-sync shows a notice asking you to reload Obsidian. Run **Reload app without saving** from the command palette. vault-sync never reloads Obsidian by itself. Until you reload, Obsidian keeps using the old settings and may write them back when you change a setting, which would undo the synced change.
+
+- vault-sync learns about changes in the config folder from Obsidian's raw file events. The desktop app reports them (the e2e suite checks this, on desktop and in emulated mobile mode), and a change is then pushed like a note edit, 2 seconds after Obsidian writes it. Whether the Android app reports them has not been checked on a device yet. Where they are not reported, the change is pushed the next time sync starts (Obsidian starting, the plugin enabled, a sign-in, a change to these settings), because every start compares the whole folder with the journal.
+- If two devices change the same config file, the usual merge rules apply (SPEC.md §7). CSS and JavaScript files merge line by line. JSON settings files are blobs: the other device's version stays in place, and this device's version is kept next to it as a conflict copy, for example `.obsidian/hotkeys (conflict Laptop 2026-10-18 101500).json`. Such copies stay on the device and do not sync. Obsidian does not show files in the config folder, so delete the copy with your file manager once you have looked at it. Until then it counts as a conflict in the status.
+- The first time you turn it on, in a vault whose config files another device has already synced, this device's own differing versions of those files become conflict copies in the same way, and the synced versions apply.
+- Turning the toggle or a category off stops syncing those files on this device. Nothing is deleted, here or on the server, and other devices keep them. Changes that arrive meanwhile are applied once you turn it on again.
 
 ## Identity provider setup (Authentik)
 
