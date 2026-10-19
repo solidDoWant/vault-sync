@@ -11,6 +11,12 @@ type Expectation = { type: "write"; hash: string } | { type: "delete" } | { type
  * the engine wrote (by hash), so a user edit that lands on top of an engine
  * write is still reported. Reporting a change twice is harmless; missing one
  * is not, so every doubt resolves to "user edit".
+ *
+ * Events at a path arrive in the order of the changes, so an event that
+ * matches an expectation also expires every expectation registered before it
+ * at that path: their events were lost (or folded into this one). A lost event
+ * therefore leaves its expectation only until the engine's next change at the
+ * path is seen, not forever, where it could swallow a later user change.
  */
 export class EchoSuppressor {
   private readonly expected = new Map<string, Expectation[]>();
@@ -37,11 +43,12 @@ export class EchoSuppressor {
     if (list === undefined) return false;
     switch (event.type) {
       case "delete":
-        return this.consume(event.path, list.find((entry) => entry.type === "delete"));
+        return this.consume(event.path, list.find((entry) => entry.type === "delete"), true);
       case "rename":
         return this.consume(
           event.path,
           list.find((entry) => entry.type === "rename" && entry.from === event.oldPath),
+          true,
         );
       case "create":
       case "modify": {
@@ -50,7 +57,7 @@ export class EchoSuppressor {
         // Two engine writes to one path can both be on disk before the first
         // event is handled, so accept any content the engine wrote there.
         const hash = await hashAt(event.path);
-        this.consume(event.path, writes[0]);
+        this.consume(event.path, writes[0], true);
         return writes.some((entry) => entry.hash === hash);
       }
     }
@@ -65,12 +72,14 @@ export class EchoSuppressor {
     };
   }
 
-  private consume(path: string, expectation: Expectation | undefined): boolean {
+  /** Removes `expectation`; for one an event matched (`expireEarlier`), also those registered before it at `path`. */
+  private consume(path: string, expectation: Expectation | undefined, expireEarlier = false): boolean {
     if (expectation === undefined) return false;
     const list = this.expected.get(path);
     const index = list?.indexOf(expectation) ?? -1;
     if (list === undefined || index < 0) return false;
-    list.splice(index, 1);
+    if (expireEarlier) list.splice(0, index + 1);
+    else list.splice(index, 1);
     if (list.length === 0) this.expected.delete(path);
     return true;
   }
