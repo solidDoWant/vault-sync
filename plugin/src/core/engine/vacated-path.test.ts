@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
 import type { PathPlatform } from "../vaultpath/platform";
 import type { PushSummary } from "./engine";
-import { copyOf, files, harness, syncedOnBoth, twoDevices, type Harness } from "./testing";
+import { copyOf, files, harness, moveHeadBeforeCommit, syncedOnBoth, twoDevices, type Harness } from "./testing";
 
 // A new file at a path the user just vacated (#254): the user deletes a
 // synced document's file, or renames it away, and before the next push puts
@@ -158,6 +158,51 @@ describe("SyncEngine push of a new file at a just-vacated path (#254)", () => {
         expect(await files(h.vault)).toEqual(h.server.liveFiles());
         expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
       });
+
+      for (const edited of ["before the push", "while the push commits"] as const) {
+        it(`keeps the other document's id and the remote edit when the user deletes a.md and renames another file onto A.md, with the edit landing ${edited} (${platform}, #253)`, async () => {
+          const h = harness({ merge: "default", pathRules: { platform } });
+          h.server.commit({ documentId: "H", path: "a.md", content: "h\n" });
+          h.server.commit({ documentId: "D", path: "d.md", content: "d\n" });
+          await h.engine.pull();
+          await h.vault.delete("a.md");
+          await h.vault.rename("d.md", "A.md");
+          // Another device edits H.
+          const edit = () => h.server.commit({ documentId: "H", path: "a.md", content: "h\nremote\n" });
+          if (edited === "before the push") edit();
+          else moveHeadBeforeCommit(h, edit);
+
+          const summaries = await pushUntilQuiet(h);
+          await h.engine.pull();
+
+          // Nothing is stuck: every operation committed or became a logged conflict.
+          expect(await h.journal.listPending()).toEqual([]);
+          expect(summaries.at(-1)).toMatchObject({ committed: 0, conflicts: 0, pending: 0 });
+          expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+          expect(await pushUntilQuiet(h)).toEqual([{ committed: 0, conflicts: 0, pending: 0, rejected: [] }]);
+          // The edit wins over the delete, at H's own path; D keeps its id at a conflict-copy path of the name it was renamed to.
+          const copy = copyOf("A", ".md");
+          expect(h.server.liveDocuments()).toEqual(
+            new Map([
+              ["a.md", "H"],
+              [copy, "D"],
+            ]),
+          );
+          expect(h.server.liveFiles()).toEqual(
+            new Map([
+              ["a.md", "h\nremote\n"],
+              [copy, "d\n"],
+            ]),
+          );
+          expect(everDeleted(h, "D")).toBe(false);
+          expect(contentsOf(h, "D")).toEqual(["d\n"]);
+          expect(everDeleted(h, "H")).toBe(false);
+          expect(await files(h.vault)).toEqual(h.server.liveFiles());
+          expect((await h.journal.listConflicts()).map(({ documentId, path, copyPath, reason }) => ({ documentId, path, copyPath, reason }))).toEqual([
+            { documentId: "D", path: "A.md", copyPath: copy, reason: "path-taken" },
+          ]);
+        });
+      }
 
       for (const push of ["settled", "pending"] as const) {
         it(`keeps both ids when the user renames a.md away and another file onto A.md, with the renames ${push} (${platform})`, async () => {

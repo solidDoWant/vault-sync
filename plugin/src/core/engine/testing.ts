@@ -248,6 +248,8 @@ export interface HarnessOptions {
   timers?: Timers;
   random?: () => number;
   onPushComplete?: (summary: PushSummary) => void;
+  /** The engine's download cap (SyncEngineOptions.maxDownloadBytes). */
+  maxDownloadBytes?: number;
 }
 
 /** The device id the harness's engine commits with. */
@@ -293,6 +295,7 @@ export function harness(options: HarnessOptions = {}): Harness {
       ...(options.timers === undefined ? {} : { timers: options.timers }),
       ...(options.random === undefined ? {} : { random: options.random }),
       ...(options.onPushComplete === undefined ? {} : { onPushComplete: options.onPushComplete }),
+      ...(options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: options.maxDownloadBytes }),
     });
   const result: Harness = {
     server,

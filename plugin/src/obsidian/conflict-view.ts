@@ -1,8 +1,8 @@
 import { ItemView, TFile, type WorkspaceLeaf } from "obsidian";
 
 import type { OpenConflict } from "../core/engine/conflicts";
-import type { RejectedOperation, UnmaterializableDocument } from "../core/engine/engine";
-import { conflictReasonText, rejectedReasonText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import type { RejectedOperation, TooLargeDocument, UnmaterializableDocument } from "../core/engine/engine";
+import { conflictReasonText, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
 import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
@@ -10,14 +10,17 @@ export const conflictViewType = "vault-sync-conflicts";
 /** Where the view reads what it lists: the running sync session, if any. */
 export interface ConflictSource {
   /** Undefined while sync is not running. */
-  problems(): { conflicts(): Promise<OpenConflict[]>; unmaterializable(): Promise<UnmaterializableDocument[]>; rejected(): Promise<RejectedOperation[]> } | undefined;
+  problems():
+    | { conflicts(): Promise<OpenConflict[]>; unmaterializable(): Promise<UnmaterializableDocument[]>; tooLarge(): Promise<TooLargeDocument[]>; rejected(): Promise<RejectedOperation[]> }
+    | undefined;
 }
 
 /**
  * The conflict view (SPEC.md §7, §8): the open conflicts of the conflict
  * log, each with a link to both versions and a button that opens them side
  * by side, the documents this device's platform cannot hold, each with its
- * server path and why, and the local files the server refuses (#100), each
+ * server path and why, the documents too large to download on this device
+ * (#316), and the local files the server refuses (#100), each
  * with its path and why. It reads the journal through the session and
  * keeps no state of its own; deleting a conflict copy resolves its entry.
  */
@@ -67,11 +70,12 @@ export class ConflictView extends ItemView {
     const problems = this.conflictSource.problems();
     let conflicts: OpenConflict[] = [];
     let unmaterializable: UnmaterializableDocument[] = [];
+    let tooLarge: TooLargeDocument[] = [];
     let rejected: RejectedOperation[] = [];
     let failure: string | undefined;
     if (problems !== undefined) {
       try {
-        [conflicts, unmaterializable, rejected] = await Promise.all([problems.conflicts(), problems.unmaterializable(), problems.rejected()]);
+        [conflicts, unmaterializable, tooLarge, rejected] = await Promise.all([problems.conflicts(), problems.unmaterializable(), problems.tooLarge(), problems.rejected()]);
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
@@ -99,6 +103,18 @@ export class ConflictView extends ItemView {
       root.createEl("p", { text: "These documents are synced, but their path on the server is not a valid file name here. Rename them on another device to bring them here. Local changes to them are not synced until then." });
       const list = root.createEl("ul", { cls: "vault-sync-unmaterializable" });
       for (const document of unmaterializable) this.renderUnmaterializable(list.createEl("li", { cls: "vault-sync-unmaterializable-document" }), document);
+    }
+
+    if (tooLarge.length > 0) {
+      root.createEl("h4", { text: "Files too large for this device" });
+      root.createEl("p", { text: "These documents are synced, but their newest version on the server is larger than this device downloads. A smaller version brings them here. Local changes to them are not synced until then." });
+      const list = root.createEl("ul", { cls: "vault-sync-too-large" });
+      for (const document of tooLarge) {
+        const item = list.createEl("li", { cls: "vault-sync-too-large-document" });
+        item.createDiv({ text: document.path, cls: "vault-sync-too-large-path" });
+        item.createDiv({ text: tooLargeText(document.size), cls: "vault-sync-too-large-reason" });
+        if (document.localPath !== undefined) this.fileLine(item, "Earlier version on this device", document.localPath, "vault-sync-too-large-local");
+      }
     }
 
     if (rejected.length > 0) {

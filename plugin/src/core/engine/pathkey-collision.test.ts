@@ -611,6 +611,72 @@ describe("SyncEngine collisions by path key", () => {
     }
   });
 
+  describe("on a case-insensitive platform, given a note renamed and then deleted locally, while another device creates a note at the rename's target in another case and edits the first note (#323)", () => {
+    // The file at the rename's target is the other note's, not this note's
+    // local version: the user's delete stands against the remote edit, which
+    // wins (SPEC.md §7), so the note comes back at its path.
+    for (const platform of ["macos", "windows"] as const) {
+      it(`applies the edit at the note's path and leaves the other note untouched under ${platform} rules`, async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "C", path: "notes/c.md", content: "c\n" });
+        await h.engine.pull();
+        await h.vault.rename("notes/c.md", "a.md");
+        await h.vault.delete("a.md");
+        h.server.commit({ documentId: "A", path: "A.md", content: "A\n" });
+        h.server.commit({ documentId: "C", path: "notes/c.md", content: "c\nedited\n" });
+
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["A.md", "A\n"],
+            ["notes/c.md", "c\nedited\n"],
+          ]),
+        );
+        expect(h.server.history("A")).toHaveLength(1);
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+    }
+  });
+
+  describe("given a note renamed onto the path another note was renamed away from, with a concurrent remote edit of the first note (#323)", () => {
+    // The file at the rename's target is the renamed note's: the other note
+    // the journal has there moved away. The edit follows the rename.
+    const cases = [
+      { platform: "posix", target: "a.md" },
+      { platform: "windows", target: "a.md" },
+      { platform: "windows", target: "A.md" },
+    ] as const;
+    for (const { platform, target } of cases) {
+      it(`merges the edit into the renamed file at ${target} under ${platform} rules`, async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "A", path: "a.md", content: "a\n" });
+        h.server.commit({ documentId: "B", path: "b.md", content: "b\n" });
+        await h.engine.pull();
+        await h.vault.rename("a.md", "z.md");
+        await h.vault.rename("b.md", target);
+        h.server.commit({ documentId: "B", path: "b.md", content: "b\nedited\n" });
+
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["z.md", "a\n"],
+            [target, "b\nedited\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments().get(target)).toBe("B");
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+    }
+  });
+
   describe("given conflict copies whose names collide by path key (#243)", () => {
     it("gives two local files that collide with one remote document copies free by path key, and syncs both (posix)", async () => {
       const h = harness({ merge: "default" });
