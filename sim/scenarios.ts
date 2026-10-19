@@ -1396,7 +1396,7 @@ export async function engineBacksOffWhenThrottled(endpoints: SimEndpoints): Prom
 }
 
 export interface BackslashPathResult extends RunResult {
-  /** The server's live documents after the backslash files were pushed: path to document label. */
+  /** The server's live documents after the refused files were pushed: path to document label. */
   afterRefusal: Map<string, string>;
   /** The second engine's vault then: path to content. */
   secondAfterRefusal: Map<string, string>;
@@ -1418,6 +1418,46 @@ export interface BackslashPathResult extends RunResult {
  * `notes-c.md`: both must sync, and the vaults must converge.
  */
 export async function backslashPathsRefused(endpoints: SimEndpoints): Promise<BackslashPathResult> {
+  return newPathsRefused(endpoints, {
+    synced: [
+      ["a/b", "slash\n"],
+      ["notes", "a file\n"],
+    ],
+    refused: [
+      ["a\\b", "backslash twin\n", "a/c"],
+      ["notes\\c.md", "under the file\n", "notes-c.md"],
+    ],
+  });
+}
+
+/**
+ * New paths starting with one character and a colon (#148, SPEC.md §6.2),
+ * which Win32 reads as a drive (`1:` can be created with subst). Two POSIX
+ * engines. The first syncs a note `1-x.md`. The second engine's user creates
+ * `1:x.md`, `é:y.md` and `😀:z.md`, and the engine pushes, crashes and
+ * pushes again. None may reach the server, and all must stay on the second
+ * engine's disk, reported as rejected. Then the user renames them to
+ * `1/x.md`, `e-y.md` and `z.md`: all must sync, and the vaults must
+ * converge.
+ */
+export async function drivePrefixPathsRefused(endpoints: SimEndpoints): Promise<BackslashPathResult> {
+  return newPathsRefused(endpoints, {
+    synced: [["1-x.md", "synced\n"]],
+    refused: [
+      ["1:x.md", "digit drive\n", "1/x.md"],
+      ["é:y.md", "letter drive\n", "e-y.md"],
+      ["😀:z.md", "emoji drive\n", "z.md"],
+    ],
+  });
+}
+
+/**
+ * The shape of backslashPathsRefused and drivePrefixPathsRefused: the first
+ * engine syncs `synced`, the second creates each `refused` file at a path a
+ * commit may not give a document, pushes, crashes and pushes again, then
+ * renames each to its valid path and pushes.
+ */
+async function newPathsRefused(endpoints: SimEndpoints, files: { synced: [path: string, content: string][]; refused: [path: string, content: string, renameTo: string][] }): Promise<BackslashPathResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -1440,13 +1480,11 @@ export async function backslashPathsRefused(endpoints: SimEndpoints): Promise<Ba
     return files;
   };
 
-  log(await first.edit("a/b", encoder.encode("slash\n")));
-  log(await first.edit("notes", encoder.encode("a file\n")));
+  for (const [path, content] of files.synced) log(await first.edit(path, encoder.encode(content)));
   await push(first);
   await pull(second);
 
-  log(await second.edit("a\\b", encoder.encode("backslash twin\n")));
-  log(await second.edit("notes\\c.md", encoder.encode("under the file\n")));
+  for (const [path, content] of files.refused) log(await second.edit(path, encoder.encode(content)));
   await push(second);
   log(second.crash());
   await push(second);
@@ -1454,8 +1492,7 @@ export async function backslashPathsRefused(endpoints: SimEndpoints): Promise<Ba
   const afterRefusal = await liveDocuments(run);
   const secondAfterRefusal = await contents(second);
 
-  log(await second.move("a\\b", "a/c"));
-  log(await second.move("notes\\c.md", "notes-c.md"));
+  for (const [path, , renameTo] of files.refused) log(await second.move(path, renameTo));
   await push(second);
   await pull(first);
 

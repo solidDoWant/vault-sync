@@ -60,6 +60,11 @@ class FakeDisk implements ConfigFolderHost {
     return () => this.listeners.delete(listener);
   }
 
+  /** The part of Obsidian's normalizePath that matters here: U+00A0 and U+202F become a space. */
+  normalizePath(path: string): string {
+    return path.replace(/[\u00a0\u202f]/gu, " ");
+  }
+
   /** A change made by Obsidian or the user, not through the adapter. */
   put(path: string, content: string): void {
     for (let folder = parent(path); folder !== ""; folder = parent(folder)) this.folders.add(folder);
@@ -105,6 +110,36 @@ describe("ObsidianConfigAdapter", () => {
       await runConformanceCase(testCase, () => ({ adapter: new ObsidianConfigAdapter(disk()) }));
     });
   }
+
+  it.each([
+    ["after", "plugins/x/..\u00a0/..\u00a0/evil.json"],
+    ["before", "plugins/x/\u202f../evil.json"],
+  ])("never touches a path Obsidian's normalizePath would change, with the space %s the dots (#148)", async (_, path) => {
+    const fake = disk();
+    fake.put(".obsidian/plugins/x/data.json", "{}");
+    fake.put(`.obsidian/${path}`, "already there");
+    const files = new Map(fake.files);
+    const folders = new Set(fake.folders);
+    const adapter = new ObsidianConfigAdapter(fake);
+    const events: unknown[] = [];
+    const stop = adapter.watch((event) => events.push(event));
+
+    await expect(adapter.write(path, bytes("{}"))).rejects.toMatchObject({ code: "path-conflict" });
+    await expect(adapter.rename("plugins/x/data.json", path)).rejects.toMatchObject({ code: "path-conflict" });
+    await expect(adapter.read(path)).rejects.toMatchObject({ code: "not-found" });
+    await expect(adapter.delete(path)).rejects.toMatchObject({ code: "not-found" });
+    expect(await adapter.stat(path)).toBeNull();
+    expect(await adapter.list()).toEqual(["plugins/x/data.json"]);
+    fake.put(`.obsidian/${path}`, "changed");
+    stop();
+
+    // Nothing reported for it, and nothing on disk changed but the outside edit.
+    expect(events).toEqual([]);
+    files.set(`.obsidian/${path}`, bytes("changed"));
+    const contents = (map: Map<string, Uint8Array>) => new Map([...map].map(([key, value]) => [key, text(value)]));
+    expect(contents(fake.files)).toEqual(contents(files));
+    expect(fake.folders).toEqual(folders);
+  });
 
   it("works in a config folder of any name, with paths relative to it", async () => {
     const fake = disk(".obsidian-mobile");

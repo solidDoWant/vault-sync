@@ -97,3 +97,35 @@ describe("InMemoryServer's backslash rule (SPEC.md §6.2, #191)", () => {
     expect(await commit(server, "back", "b3", tombstone.id, "c\\d.md")).toBe("InvalidArgument");
   });
 });
+
+describe("InMemoryServer's drive-like path rule (SPEC.md §6.2, #148)", () => {
+  it("refuses to create a path starting with one character and a colon", async () => {
+    const server = new InMemoryServer();
+
+    expect(await commit(server, "x", "x1", "", "1:x.md")).toBe("InvalidArgument");
+    expect(await commit(server, "y", "y1", "", "é:x.md")).toBe("InvalidArgument");
+    expect(await commit(server, "z", "z1", "", "12:x.md")).toBe("ok");
+  });
+
+  it("lets a live document already at such a path be edited in place, but not moved to another", async () => {
+    const server = new InMemoryServer();
+    const legacy = server.commit({ documentId: "legacy", path: "1:x.md", content: "legacy" });
+
+    expect(await commit(server, "legacy", "l2", legacy.id, "2:x.md")).toBe("InvalidArgument");
+    expect(await commit(server, "legacy", "l3", legacy.id, "1:x.md")).toBe("ok");
+  });
+});
+
+describe("InMemoryServer's path text rule (SPEC.md §6.2, #148)", () => {
+  it.each([
+    ["a NUL", "a\u0000b.md"],
+    ["a newline", "a\nb.md"],
+    ["more than 4096 bytes", "é".repeat(2049)],
+  ])("refuses a path with %s", async (_, path) => {
+    expect(await commit(new InMemoryServer(), "x", "x1", "", path)).toBe("InvalidArgument");
+  });
+
+  it("accepts a path of exactly 4096 bytes", async () => {
+    expect(await commit(new InMemoryServer(), "x", "x1", "", "é".repeat(2048))).toBe("ok");
+  });
+});

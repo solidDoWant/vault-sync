@@ -27,8 +27,9 @@ func requireInvalidArgument(t require.TestingT, err error, msgAndArgs ...any) {
 }
 
 // seedLegacyPath gives a live document, committed through the API, the path
-// legacy instead, as a commit accepted before the backslash rule (#191)
-// would have left it: its head revision's path and its path_key.
+// legacy instead, as a commit accepted before the backslash (#191) or
+// drive-like prefix (#148) rule would have left it: its head revision's
+// path and its path_key.
 func (fixture *syncFixture) seedLegacyPath(t *testing.T, head *vaultsyncv1.Revision, legacy string) *vaultsyncv1.Revision {
 	t.Helper()
 
@@ -174,6 +175,86 @@ func TestExistingBackslashDocumentStaysEditable(t *testing.T) {
 			fixture.requireDocumentMirrorsHead(t, committed.GetDocumentId(), committed)
 		})
 	}
+}
+
+// Issue #148 (decision on #52): a path starting with one code point and a
+// colon ("1:x.md", "é:x.md") is read as a drive by Win32, so a commit may
+// never create a document there, move one there, or bring a tombstone back
+// there. A document committed at such a path before the rule stays usable
+// (SPEC.md §2, principle 1): it can be edited and deleted in place and
+// renamed to a valid path.
+func TestDrivePrefixPathsAreKeptButNeverGiven(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.client(t, "alice", "")
+
+	const legacy = "1:old.md"
+
+	tests := []struct {
+		name string
+		// create commits a new document at path instead of a successor of
+		// the legacy document.
+		create bool
+		// deleteFirst tombstones the legacy document before the action.
+		deleteFirst bool
+		path        string
+		deleted     bool
+		assertion   require.ErrorAssertionFunc
+	}{
+		{name: "create at a digit drive", create: true, path: "1:x.md", assertion: requireInvalidArgument},
+		{name: "create at a non-ASCII drive", create: true, path: "é:x.md", assertion: requireInvalidArgument},
+		{name: "create at a bare digit drive", create: true, path: "1:", assertion: requireInvalidArgument},
+		{name: "create with two characters before the colon", create: true, path: "12:x.md"},
+		{name: "create with a drive-like later segment", create: true, path: "notes/1:x.md"},
+		{name: "edit in place", path: legacy},
+		{name: "delete in place", path: legacy, deleted: true},
+		{name: "rename to a valid path", path: "notes/1-old.md"},
+		{name: "rename to another drive-like path", path: "2:old.md", assertion: requireInvalidArgument},
+		{name: "delete moving to another drive-like path", path: "2:old.md", deleted: true, assertion: requireInvalidArgument},
+		{name: "resurrect at the drive-like path", deleteFirst: true, path: legacy, assertion: requireInvalidArgument},
+		{name: "resurrect at a valid path", deleteFirst: true, path: "notes/1-old.md"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := alice.in(fixture.createVault(t, alice.token, "Notes").GetId())
+			content := client.content(t, "content")
+			edited := client.content(t, "edited")
+
+			head := fixture.seedLegacyPath(t, client.mustCommit(t, client.create(t, "placeholder.md", content)), legacy)
+			if test.deleteFirst {
+				head = client.mustCommit(t, client.next(t, head, legacy, content, true))
+			}
+
+			request := client.next(t, head, test.path, edited, test.deleted)
+			if test.create {
+				request = client.create(t, test.path, edited)
+			}
+
+			before := fixture.headSeq(t, client.vaultID)
+			documents := fixture.count(t, "documents", client.vaultID)
+			committed, err := client.commit(t, request)
+
+			assertion := test.assertion
+			if assertion == nil {
+				assertion = require.NoError
+			}
+
+			assertion(t, err)
+
+			if err != nil {
+				assert.Equal(t, before, fixture.headSeq(t, client.vaultID), "nothing is committed")
+				assert.Equal(t, documents, fixture.count(t, "documents", client.vaultID), "no document is written")
+
+				return
+			}
+
+			assert.Equal(t, before+1, fixture.headSeq(t, client.vaultID))
+			assert.Equal(t, test.path, string(committed.GetPath()))
+			fixture.requireDocumentMirrorsHead(t, committed.GetDocumentId(), committed)
+		})
+	}
+
+	assert.NotContains(t, fixture.logs.String(), `"level":"ERROR"`, "refused paths are not internal errors")
 }
 
 // Issue #191: a document committed with a "\" path before the rule stays

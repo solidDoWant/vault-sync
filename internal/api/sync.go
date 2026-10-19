@@ -20,14 +20,13 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
 	"github.com/solidDoWant/vault-sync/internal/store"
-	"github.com/solidDoWant/vault-sync/internal/textcheck"
 	"github.com/solidDoWant/vault-sync/internal/vaultpath"
 )
 
 // Sync bounds.
 const (
 	// MaxPathBytes bounds a revision's path (UTF-8 bytes).
-	MaxPathBytes = 4096
+	MaxPathBytes = vaultpath.MaxBytes
 	// MaxPathKeyBytes bounds a derived path_key; case folding can expand
 	// a path.
 	MaxPathKeyBytes = 8192
@@ -395,9 +394,10 @@ func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision,
 		return store.NewRevision{}, err
 	}
 
-	// A vault-relative path with a "\" may no longer be created, but a
-	// document committed before that rule may keep it (SPEC.md §6.2, #191).
-	revision.PathMustBeCurrent = errors.Is(vaultpath.CheckNew(revision.Path), vaultpath.ErrBackslash)
+	// A vault-relative path with a "\" (#191) or a drive-like prefix such as
+	// "1:" (#148) may no longer be created, but a document committed before
+	// those rules may keep it (SPEC.md §6.2).
+	revision.PathMustBeCurrent = errors.Is(vaultpath.CheckNew(revision.Path), vaultpath.ErrNotNew)
 
 	revision.Deleted = message.GetDeleted()
 
@@ -420,18 +420,14 @@ func parseClientID(value string) (uuid.UUID, error) {
 }
 
 // checkPath validates a plaintext vault-relative path: 1 to MaxPathBytes
-// bytes of UTF-8 without control characters that is vault-relative on every
-// client platform (vaultpath.Check: "/" and "\" are both separators). Only
-// the stricter vaultpath.CheckNew paths may be created; parseCommit marks
-// the others.
+// bytes of UTF-8 without control characters (vaultpath.CheckText) that is
+// vault-relative on every client platform (vaultpath.Check: "/" and "\" are
+// both separators). Only the stricter vaultpath.CheckNew paths may be
+// created; parseCommit marks the others.
 func checkPath(path []byte) (string, error) {
-	if len(path) == 0 || len(path) > MaxPathBytes {
-		return "", invalidArgument("path must be 1 to %d bytes", MaxPathBytes)
-	}
-
 	text := string(path)
-	if !textcheck.Printable(text) {
-		return "", invalidArgument("path must be valid UTF-8 without control characters")
+	if err := vaultpath.CheckText(text); err != nil {
+		return "", connect.NewError(connect.CodeInvalidArgument, err)
 	}
 
 	if err := vaultpath.Check(text); err != nil {
