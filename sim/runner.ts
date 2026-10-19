@@ -282,7 +282,7 @@ export class SimRun {
     }
     const violations = this.observers.flatMap((observer) => checkLostWrites(observer.name, observer.ledger, present));
     const scripted = new Set(this.clients.map((client) => client.deviceId));
-    const engines = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, deletedDocuments: observer.ledger.deletedDocuments }));
+    const engines = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, deletedDocuments: observer.ledger.deletedDocuments, platform: observer.platform, renames: observer.ledger.renames, crashes: observer.ledger.crashes }));
     violations.push(...checkPhantomDeletes(feed, scripted, engines, (id) => this.context.ids.label(id)));
     const changes = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, platform: observer.platform, changes: observer.ledger.changes }));
     violations.push(...checkResurrections(feed, scripted, changes, (id) => this.context.ids.label(id)));
