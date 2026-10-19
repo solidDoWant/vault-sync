@@ -10,6 +10,7 @@ describe("conflict view wording", () => {
     ["binary", /cannot be merged/],
     ["concurrent-create", /Created on this device and on another one/],
     ["path-taken", /already had this path/],
+    ["base-purged", /no longer kept on the server/],
   ])("explains a %s conflict", (reason, expected) => {
     expect(conflictReasonText(reason)).toMatch(expected);
   });

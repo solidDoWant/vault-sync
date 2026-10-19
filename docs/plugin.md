@@ -105,6 +105,8 @@ Copy what you need from the conflict copy into the note, then delete the copy. D
 
 When no conflict-copy name fits the path length limits (a very deep folder), nothing is copied: this device's version stays where it is, unsynced, and the view says so. Move the file to a shorter path to sync it.
 
+A note edited on two devices can also end up with a conflict copy when the two edits do not overlap: if one device was offline for longer than the server keeps old versions (see [History and restore](#history-and-restore)), the version both edits started from may have been removed from the server, so vault-sync cannot merge them and keeps both. The view explains this as "no longer kept on the server".
+
 The view also lists **files this device cannot hold**: documents whose path on the server is not a valid file name on this device's platform, such as `CON.md` or a name with `?` on Windows, or a name longer than 255 bytes anywhere. Each shows its path on the server and why it cannot be written here, and links to the earlier version if this device still has one. Such a document is never dropped or renamed on the server. Rename it on another device and it arrives here. Until then, local changes to its earlier version are not synced.
 
 ## Config folder sync
@@ -149,6 +151,17 @@ Obsidian reads its config files when it starts and keeps its own copy in memory.
 - If two devices change the same config file, the usual merge rules apply (SPEC.md §7). CSS and JavaScript files merge line by line. JSON settings files are blobs: the other device's version stays in place, and this device's version is kept next to it as a conflict copy, for example `.obsidian/hotkeys (conflict Laptop 2026-10-18 101500).json`. Such copies stay on the device and do not sync. Obsidian does not show files in the config folder, so delete the copy with your file manager once you have looked at it. Until then it counts as a conflict in the status.
 - The first time you turn it on, in a vault whose config files another device has already synced, this device's own differing versions of those files become conflict copies in the same way, and the synced versions apply.
 - Turning the toggle or a category off stops syncing those files on this device. Nothing is deleted, here or on the server, and other devices keep them. Changes that arrive meanwhile are applied once you turn it on again.
+
+## History and restore
+
+The server keeps every revision of every file until its retention policy thins old ones out (by default everything for 90 days, then one revision per day for a year, then one per week; see "Retention and history" in [configuration](configuration.md)). A file's current revision is never removed, and neither is the record that a file was deleted.
+
+- **Vault Sync: Show file history** (for the open file), or **Show sync history** in a file's context menu, lists the file's revisions, newest first. Each line shows when the server received the revision, which device made it (`this device`, or another device by the start of its id; the server does not tell other devices' names), and what changed (edited, moved, deleted, restored). Older revisions load with **Load older versions**.
+- Choose a revision to preview it. Text is shown as it is (the start of a very long file only); other files by size.
+- **Restore this version** makes the chosen revision the file's current content again. Nothing is overwritten: the restore is a new revision on top of the current one, so the version it replaces stays in the history, and it reaches your other devices like any edit. Local edits not synced yet are pushed first, so they are in the history too. The file keeps its current name and folder.
+- **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was.
+
+A deleted file cannot be restored while another file has taken its path; move that file away first. History is only available while the vault syncs (signed in and connected).
 
 ## Identity provider setup (Authentik)
 

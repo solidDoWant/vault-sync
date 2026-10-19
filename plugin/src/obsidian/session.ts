@@ -1,9 +1,10 @@
 import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
 import { SyncEngine, type PullSummary, type PushSummary, type UnmaterializableDocument } from "../core/engine/engine";
+import type { HistoryEntry, HistoryPage } from "../core/engine/history";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
-import type { Journal } from "../core/journal/journal";
+import type { DocumentState, Journal, RemoteRevision } from "../core/journal/journal";
 import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { errorMessage, isOffline } from "./status";
@@ -58,6 +59,17 @@ export interface SessionStatus {
   /** Unresolved conflicts (see SyncStatus.conflicts). */
   conflicts: number;
   message?: string;
+}
+
+/** A running session's history browsing and restore (SPEC.md §11), what the history views use. */
+export interface VaultHistory {
+  /** The id of the synced document at `path`, if a live one is there. */
+  documentAt(path: string): Promise<string | undefined>;
+  history(documentId: string, pageToken?: string): Promise<HistoryPage>;
+  readRevision(entry: HistoryEntry): Promise<Uint8Array>;
+  /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one. */
+  restore(entry: HistoryEntry, content?: Uint8Array): Promise<RemoteRevision>;
+  deletedDocuments(): Promise<DocumentState[]>;
 }
 
 /** What a stopped session's engine gets for every vault, journal and server call it makes after the stop. */
@@ -119,6 +131,32 @@ export class SyncSession {
     const engine = this.engine;
     if (engine === undefined || this.stopped) return undefined;
     return this.attempt(() => engine.push());
+  }
+
+  /**
+   * History browsing and restore for the session's vault (SPEC.md §11), once
+   * its engine runs; undefined before that and after the stop.
+   */
+  history(): VaultHistory | undefined {
+    const engine = this.engine;
+    if (engine === undefined || this.stopped) return undefined;
+    const { journal } = this.options;
+    return {
+      documentAt: async (path) => {
+        const state = await journal.findDocumentByPath(path);
+        return state === undefined || state.deleted ? undefined : state.documentId;
+      },
+      history: (documentId, pageToken) => engine.history(documentId, pageToken),
+      readRevision: (entry) => engine.readRevision(entry),
+      restore: async (entry, content) => {
+        try {
+          return await engine.restore(entry, content);
+        } finally {
+          void this.report();
+        }
+      },
+      deletedDocuments: () => engine.deletedDocuments(),
+    };
   }
 
   /**

@@ -9,7 +9,7 @@ import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
 import type { JournalKey } from "./journal";
-import { SyncSession, type SyncSessionOptions } from "./session";
+import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./session";
 import { errorMessage, isOffline, type SyncStatus } from "./status";
 
 // What decides whether this vault syncs, and with what: the account, the
@@ -229,6 +229,11 @@ export class SyncController {
   /** Pulls and pushes now, if a session runs. */
   async syncNow(): Promise<void> {
     await this.running?.session.syncNow();
+  }
+
+  /** History browsing and restore, while a session runs. */
+  history(): VaultHistory | undefined {
+    return this.running?.session.history();
   }
 
   private async apply(generation: number): Promise<void> {
