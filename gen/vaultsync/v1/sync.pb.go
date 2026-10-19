@@ -33,7 +33,15 @@ type ListChangesRequest struct {
 	// the server caps larger values. The server may return fewer, with
 	// has_more set, to keep the response within its size limit, but always at
 	// least one if any exist.
-	PageSize      uint32 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	PageSize uint32 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
+	// Anchor of the revision at since_seq, as the client received it
+	// (Revision.anchor), or empty for no check. With an anchor, the server
+	// first checks that the vault still holds that revision at since_seq; if
+	// not, its history no longer contains the client's cursor (it was restored
+	// from a backup, or retention purged the revision) and the response only
+	// sets diverged (SPEC.md §6.1, §8). Either empty or exactly 16 bytes, and
+	// empty when since_seq is zero.
+	SinceAnchor   []byte `protobuf:"bytes,4,opt,name=since_anchor,json=sinceAnchor,proto3" json:"since_anchor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -89,6 +97,13 @@ func (x *ListChangesRequest) GetPageSize() uint32 {
 	return 0
 }
 
+func (x *ListChangesRequest) GetSinceAnchor() []byte {
+	if x != nil {
+		return x.SinceAnchor
+	}
+	return nil
+}
+
 // ListChangesResponse is one page of revisions.
 type ListChangesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -97,7 +112,12 @@ type ListChangesResponse struct {
 	// Whether revisions with a higher seq than the last one returned exist.
 	HasMore bool `protobuf:"varint,2,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
 	// The vault's head_seq when the page was read.
-	HeadSeq       uint64 `protobuf:"varint,3,opt,name=head_seq,json=headSeq,proto3" json:"head_seq,omitempty"`
+	HeadSeq uint64 `protobuf:"varint,3,opt,name=head_seq,json=headSeq,proto3" json:"head_seq,omitempty"`
+	// Whether since_anchor was given and the vault holds no revision at
+	// since_seq with that anchor. The page is then empty and has_more false;
+	// the client resyncs from seq zero (SPEC.md §8). Never set without
+	// since_anchor.
+	Diverged      bool `protobuf:"varint,4,opt,name=diverged,proto3" json:"diverged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -151,6 +171,13 @@ func (x *ListChangesResponse) GetHeadSeq() uint64 {
 		return x.HeadSeq
 	}
 	return 0
+}
+
+func (x *ListChangesResponse) GetDiverged() bool {
+	if x != nil {
+		return x.Diverged
+	}
+	return false
 }
 
 // GetRevisionRequest identifies a revision.
@@ -584,15 +611,17 @@ var File_vaultsync_v1_sync_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_sync_proto_rawDesc = "" +
 	"\n" +
-	"\x17vaultsync/v1/sync.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"i\n" +
+	"\x17vaultsync/v1/sync.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"\x8c\x01\n" +
 	"\x12ListChangesRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1b\n" +
 	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\x12\x1b\n" +
-	"\tpage_size\x18\x03 \x01(\rR\bpageSize\"\x81\x01\n" +
+	"\tpage_size\x18\x03 \x01(\rR\bpageSize\x12!\n" +
+	"\fsince_anchor\x18\x04 \x01(\fR\vsinceAnchor\"\x9d\x01\n" +
 	"\x13ListChangesResponse\x124\n" +
 	"\trevisions\x18\x01 \x03(\v2\x16.vaultsync.v1.RevisionR\trevisions\x12\x19\n" +
 	"\bhas_more\x18\x02 \x01(\bR\ahasMore\x12\x19\n" +
-	"\bhead_seq\x18\x03 \x01(\x04R\aheadSeq\"P\n" +
+	"\bhead_seq\x18\x03 \x01(\x04R\aheadSeq\x12\x1a\n" +
+	"\bdiverged\x18\x04 \x01(\bR\bdiverged\"P\n" +
 	"\x12GetRevisionRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1f\n" +
 	"\vrevision_id\x18\x02 \x01(\tR\n" +

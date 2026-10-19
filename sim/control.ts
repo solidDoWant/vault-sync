@@ -54,6 +54,22 @@ export class Control {
     return purged ?? [];
   }
 
+  /** Backs up the vault's change history in the database, for restore; returns the vault's head_seq then. */
+  async snapshot(vaultId: string): Promise<bigint> {
+    const { headSeq } = await this.post<{ headSeq: number }>("/snapshot", { vaultId });
+    return BigInt(headSeq);
+  }
+
+  /**
+   * Restores the vault's last snapshot, as a restore of a database backup
+   * would (SPEC.md §8): later revisions are gone and head_seq is back, so
+   * the next commits reuse seqs clients have applied. Returns head_seq.
+   */
+  async restore(vaultId: string): Promise<bigint> {
+    const { headSeq } = await this.post<{ headSeq: number }>("/restore", { vaultId });
+    return BigInt(headSeq);
+  }
+
   /** Records a minimized failing schedule; returns where it was written. */
   async report(regression: RegressionCase): Promise<string> {
     const { path } = await this.post<{ path: string }>("/report", regression);

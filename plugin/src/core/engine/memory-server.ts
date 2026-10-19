@@ -74,6 +74,8 @@ export class InMemoryServer {
   private readonly blobs = new Map<string, Uint8Array>();
   private readonly uploads = new Map<string, Upload>();
   private headSeq = 0n;
+  /** Anchors handed out so far; a restore does not rewind it, so it never hands out an anchor again (SPEC.md §6.1). */
+  private anchors = 0n;
   private readonly maxPageSize: number;
   private readonly maxDownloadBytes: number;
   readonly maxChunkBytes: number;
@@ -94,6 +96,11 @@ export class InMemoryServer {
           this.intercept("ListChanges", request);
           this.checkVault(request.vaultId);
           const limit = Math.min(request.pageSize === 0 ? 500 : request.pageSize, this.maxPageSize);
+          if (request.sinceAnchor.length > 0) {
+            if (request.sinceAnchor.length !== 16 || request.sinceSeq === 0n) throw new ConnectError("since_anchor is malformed", Code.InvalidArgument);
+            const atCursor = this.revisions.find((revision) => revision.seq === request.sinceSeq);
+            if (atCursor === undefined || bytesToHex(atCursor.anchor) !== bytesToHex(request.sinceAnchor)) return { revisions: [], hasMore: false, headSeq: this.headSeq, diverged: true };
+          }
           const after = this.revisions.filter((revision) => revision.seq > request.sinceSeq);
           return { revisions: after.slice(0, limit), hasMore: after.length > limit, headSeq: this.headSeq };
         },
@@ -220,6 +227,7 @@ export class InMemoryServer {
       deleted: input.deleted ?? false,
       deviceId: input.deviceId ?? "",
       createTime: timestampFromDate(this.now()),
+      anchor: this.nextAnchor(),
     });
     this.revisions.push(revision);
     return revision;
@@ -256,6 +264,14 @@ export class InMemoryServer {
   corruptBlob(revision: Revision, bytes: Uint8Array): void {
     if (revision.contentRef === undefined) throw new Error("revision has no content");
     this.blobs.set(bytesToHex(revision.contentRef.blobId), bytes);
+  }
+
+  /** A fresh anchor: unique for the server's lifetime, like the real server's random ones. */
+  private nextAnchor(): Uint8Array {
+    this.anchors++;
+    const anchor = new Uint8Array(16);
+    new DataView(anchor.buffer).setBigUint64(8, this.anchors);
+    return anchor;
   }
 
   /** Forgets every revision after `seq`, as a database restore from a backup would. */
@@ -399,6 +415,7 @@ export class InMemoryServer {
       deleted: request.deleted,
       deviceId: request.deviceId,
       createTime: timestampFromDate(this.now()),
+      anchor: this.nextAnchor(),
     });
     this.revisions.push(revision);
     return revision;

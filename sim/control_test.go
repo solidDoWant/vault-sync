@@ -57,6 +57,8 @@ type control struct {
 	reports []regressionCase
 	// purged lists, per vault, the revisions runs had retention purge.
 	purged map[uuid.UUID][]purgedRevision
+	// snapshots holds, per vault, the backup the next restore restores.
+	snapshots map[uuid.UUID]vaultSnapshot
 }
 
 func (control *control) handler() http.Handler {
@@ -65,6 +67,8 @@ func (control *control) handler() http.Handler {
 	mux.HandleFunc("POST /check", control.check)
 	mux.HandleFunc("POST /report", control.report)
 	mux.HandleFunc("POST /purge", control.purge)
+	mux.HandleFunc("POST /snapshot", control.snapshot)
+	mux.HandleFunc("POST /restore", control.restore)
 
 	return http.MaxBytesHandler(mux, maxControlBody)
 }

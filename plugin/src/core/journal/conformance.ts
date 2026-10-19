@@ -157,6 +157,34 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     },
   },
   {
+    name: "cursor anchor is stored with the cursor and replaced or cleared with it",
+    run: async (initial, reopen) => {
+      let journal = initial;
+      assertEqual(await journal.getCursorAnchor(), undefined, "initial anchor");
+      const first = new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]);
+      const second = new Uint8Array(16).fill(7);
+      await journal.setCursor(5n, first);
+      first.fill(0);
+      journal = await reopen();
+      assertEqual(await journal.getCursorAnchor(), new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]), "anchor after a reopen, not aliased to the caller's array");
+      await journal.setCursor(6n, second);
+      journal = await reopen();
+      assertEqual(await journal.getCursorAnchor(), second, "anchor of the advanced cursor");
+      await journal.setCursor(7n);
+      journal = await reopen();
+      assertEqual(await journal.getCursorAnchor(), undefined, "a cursor set without an anchor has none");
+      await journal.resetCursor(3n, second);
+      journal = await reopen();
+      assertEqual(await journal.getCursorAnchor(), second, "anchor of a reset cursor");
+      await assertRejects(journal.setCursor(2n, first), RangeError, "setCursor below the cursor");
+      journal = await reopen();
+      assertEqual(await journal.getCursorAnchor(), second, "a refused move keeps the anchor");
+      await journal.resetCursor(1n);
+      journal = await reopen();
+      assertEqual(await journal.getCursorAnchor(), undefined, "a cursor reset without an anchor has none");
+    },
+  },
+  {
     name: "cursor keeps the full range of seq values",
     run: async (journal, reopen) => {
       const max = 2n ** 63n - 1n;

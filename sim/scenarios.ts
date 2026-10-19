@@ -2227,3 +2227,66 @@ export async function remoteRenameIntoDeletedNotesFolder(endpoints: SimEndpoints
   const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
 }
+
+export interface RestoredServerResult {
+  trace: string[];
+  /** Whether the behind engine's pull after the restore resynced. */
+  resynced: boolean | undefined;
+  /** The behind engine's vault after that pull: path to content. */
+  vault: Map<string, string>;
+  /** The server's live paths at the end. */
+  serverFiles: string[];
+}
+
+/**
+ * A server restored from a database backup whose head_seq then passes a
+ * device's cursor again (#155, SPEC.md §6.1, §8). The first engine writes a
+ * note and the database is backed up; it then writes two more revisions,
+ * which the second engine pulls (its cursor is 3). The backup is restored
+ * (head_seq 1), and a third engine, new to the vault, writes three notes:
+ * the restored server numbers them 2 to 4, past the second engine's cursor.
+ * The second engine's next pull must detect the divergence and resync: it
+ * then holds all three post-restore notes, and keeps the content of the
+ * revisions the server lost.
+ */
+export async function restoredServer(endpoints: SimEndpoints): Promise<RestoredServerResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 3, platforms: ["posix", "posix", "posix"] });
+  const [first, second, third] = run.observers;
+  if (first === undefined || second === undefined || third === undefined) throw new Error("the run has three engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("notes/kept.md", encoder.encode(textLines("kept"))));
+  await push(first);
+  if ((await run.snapshot()) !== 1n) throw new Error("expected the backup at seq 1");
+
+  log(await first.edit("notes/kept.md", encoder.encode(textLines("kept", "edited before the restore"))));
+  log(await first.edit("notes/lost.md", encoder.encode(textLines("only before the restore"))));
+  await push(first);
+  await pull(second);
+  if (second.lastPull?.cursor !== 3n) throw new Error(`expected the second engine at seq 3, it is at ${String(second.lastPull?.cursor)}`);
+
+  await run.restore();
+  await pull(third);
+  for (const index of [1, 2, 3]) log(await third.edit(`notes/after-${String(index)}.md`, encoder.encode(textLines(`written after the restore ${String(index)}`))));
+  await push(third);
+
+  second.lastPull = undefined;
+  await pull(second);
+
+  const vault = new Map<string, string>();
+  for (const path of await second.list()) vault.set(path, decoder.decode((await second.read(path)) ?? new Uint8Array()));
+  const lastPull = () => second.lastPull;
+  return { trace: run.trace, resynced: lastPull()?.resynced, vault, serverFiles: await liveFiles(run) };
+}

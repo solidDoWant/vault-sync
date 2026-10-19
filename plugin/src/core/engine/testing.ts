@@ -179,11 +179,11 @@ export class CrashingJournal extends InMemoryJournal {
   constructor(private readonly points: CrashPoints) {
     super();
   }
-  override setCursor(seq: bigint): Promise<void> {
-    return this.points.durable(() => super.setCursor(seq));
+  override setCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
+    return this.points.durable(() => super.setCursor(seq, anchor));
   }
-  override resetCursor(seq: bigint): Promise<void> {
-    return this.points.durable(() => super.resetCursor(seq));
+  override resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
+    return this.points.durable(() => super.resetCursor(seq, anchor));
   }
   override putDocument(state: DocumentState): Promise<void> {
     return this.points.durable(() => super.putDocument(state));
