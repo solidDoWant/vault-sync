@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoLocalFolder } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, remoteRenameOntoLocalFolder } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -648,6 +648,34 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios of a new file at a j
     expect(result.vaults[1]?.size, trace).toBe(3);
     expect(result.tombstoned, trace).toEqual([]);
     expect(result.conflicts.map(({ path, copyPath }) => ({ path, copyPath })), trace).toEqual([{ path: "e.md", copyPath: copy }]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted remote renames onto another spelling of an unpushed file (#305)", () => {
+  it.each(["macos", "windows"] as const)("keeps the note's id and content and makes the user's new file a document of its own (%s)", async (platform) => {
+    const result = await remoteRenameOntoSpellingOfUnpushedFile(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}\nnote contents: ${JSON.stringify(result.noteContents)}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("notes/f.md");
+    expect(note, trace).toBeDefined();
+    const notePaths = [...result.documents].filter(([, document]) => document === note).map(([path]) => path);
+    expect(notePaths, trace).toHaveLength(1);
+    const [notePath = ""] = notePaths;
+    const ownPaths = [...result.documents].filter(([, document]) => document !== note).map(([path]) => path);
+    expect(ownPaths, trace).toHaveLength(1);
+    const [ownPath = ""] = ownPaths;
+    for (const vault of result.vaults) {
+      expect(vault, trace).toEqual(
+        new Map([
+          [notePath, "f\n"],
+          [ownPath, "my own new note\n"],
+        ]),
+      );
+    }
+    expect(result.noteContents, trace).not.toHaveLength(0);
+    expect(result.noteContents, trace).not.toContain("my own new note\n");
+    expect(result.tombstoned, trace).toEqual([]);
   });
 });
 
