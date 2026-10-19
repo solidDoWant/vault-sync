@@ -141,8 +141,13 @@ export interface RemoteRevision {
  *   wait until a later revision gives it a path the platform can hold. A
  *   file it already had is removed if unchanged (its DocumentState is then
  *   stored as `deleted`), and kept if edited.
+ * - `out-of-scope`: the revision's path, or the path the document has on
+ *   this device, is outside what the vault syncs (VaultAdapter.isSynced),
+ *   e.g. a config file while config sync is off. Nothing touches the disk,
+ *   the document's local changes wait, and the revision is applied at an
+ *   engine start that finds it in scope again.
  */
-export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable";
+export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable" | "out-of-scope";
 
 export interface DeferredRevision {
   revision: RemoteRevision;

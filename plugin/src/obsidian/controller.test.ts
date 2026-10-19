@@ -373,6 +373,34 @@ describe("SyncController", () => {
     await f.controller.stop();
   });
 
+  it("restarts the session over a fresh vault when asked, as after a config sync setting changed", async () => {
+    const server = fakeServer();
+    let vaults = 0;
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      vault: () => {
+        vaults++;
+        return new InMemoryVault();
+      },
+    });
+    await f.controller.update();
+
+    await f.controller.restart();
+
+    expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`, `stopped ${server.sync.vaultId}`, `start ${server.sync.vaultId} as device-1`]);
+    expect(vaults).toBe(2);
+    await f.controller.stop();
+  });
+
+  it("starts nothing on a restart while signed out", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    f.auth.state = "signed-out";
+
+    await f.controller.restart();
+
+    expect(f.events).toEqual([]);
+  });
+
   it("shows the device limit as an error and starts no sync", async () => {
     const server = fakeServer({
       registerDevice: () => {

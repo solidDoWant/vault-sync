@@ -3,13 +3,17 @@ import { FileSystemAdapter, Notice, Platform, Plugin, TFile, type App } from "ob
 import { VaultEncryption, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
 import { TokenManager, type AuthState } from "./core/auth/tokens";
+import { ConfigSyncVault } from "./core/config/config-vault";
+import type { ConfigSyncSettings } from "./core/config/policy";
 import type { PullSummary } from "./core/engine/engine";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import type { PathRules } from "./core/vaultpath/platform";
+import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
+import { configFolderHost, ObsidianConfigAdapter, reloadNotifier } from "./obsidian/config-adapter";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
-import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
+import { configSyncSettings, oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
@@ -55,7 +59,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
       defaultDeviceName: platformName(),
       openJournal: (key, onBlocked) => openVaultJournal(this.app, key, window.indexedDB, { onBlocked }),
-      vault: () => new ObsidianVaultAdapter(this.app),
+      vault: () => this.syncedVault(),
       ready: () => this.layoutReady(),
       pushDebounceMs,
       syncIntervalMs,
@@ -330,7 +334,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    */
   async startSync(options: Omit<SyncSessionOptions, "vault" | "ready" | "pushDebounceMs" | "syncIntervalMs"> & Partial<SyncSessionOptions>): Promise<PullSummary | undefined> {
     await this.stopSync();
-    const session = new SyncSession({ vault: new ObsidianVaultAdapter(this.app), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, pathRules: localPathRules(this.app), ...options });
+    const session = new SyncSession({ vault: this.syncedVault(), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, pathRules: localPathRules(this.app), ...options });
     this.session = session;
     return session.start();
   }
@@ -355,6 +359,41 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
 
   private refreshConflictViews(): void {
     for (const leaf of this.app.workspace.getLeavesOfType(conflictViewType)) if (leaf.view instanceof ConflictView) void leaf.view.refresh();
+  }
+
+  /** The open vault's config folder. */
+  get configDir(): string {
+    return this.app.vault.configDir;
+  }
+
+  /** Stores this device's config sync settings for this vault (never synced or set by the server) and restarts sync with them. */
+  async setConfigSync(settings: ConfigSyncSettings): Promise<void> {
+    this.data.configSync = settings;
+    await this.saveSettings();
+    await this.controller?.restart();
+  }
+
+  /** Tells the user to reload once sync changed config files (Obsidian reads them only at startup); never reloads by itself. */
+  private readonly configChanged = reloadNotifier((message) => {
+    new Notice(`Vault Sync: ${message}`, 0);
+  }, 1000);
+
+  /**
+   * What a session syncs: the notes, plus the config folder files this
+   * device's config sync settings select (SPEC.md §8). Built for every
+   * session start, so a settings change applies from the next one.
+   */
+  private syncedVault(): VaultAdapter {
+    const configPrefix = `${this.app.vault.configDir}/`;
+    const own = this.manifest.dir;
+    return new ConfigSyncVault({
+      notes: new ObsidianVaultAdapter(this.app),
+      config: new ObsidianConfigAdapter(configFolderHost(this.app)),
+      settings: configSyncSettings(this.data),
+      // Where Obsidian installed this plugin, as well as plugins/vault-sync.
+      ownFolders: own?.startsWith(configPrefix) === true ? [own.slice(configPrefix.length)] : [],
+      onConfigChange: this.configChanged,
+    });
   }
 
   private layoutReady(): Promise<void> {
