@@ -34,6 +34,8 @@ export interface NetworkOptions {
   describeRequest: (method: string, input: unknown) => string;
   /** Describes a server reply for the trace. */
   describeOutcome: (method: string, outcome: Outcome) => string;
+  /** Sees every server reply as the server sends it, before any fault can lose it. */
+  observeOutcome?: (method: string, outcome: Outcome) => void;
 }
 
 /** Thrown to a client whose request or response the network lost. */
@@ -200,6 +202,7 @@ export class SimNetwork {
       (error: unknown): Outcome => ({ ok: false, error }),
     );
     message.phase = "response";
+    this.options.observeOutcome?.(message.method, message.outcome);
     return `${this.label(message)} -> ${this.options.describeOutcome(message.method, message.outcome)}`;
   }
 
