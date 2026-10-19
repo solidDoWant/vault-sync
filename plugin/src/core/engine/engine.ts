@@ -708,7 +708,7 @@ export class SyncEngine {
     }
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
-      else if (!remote.deleted) await this.matchSpelling(remote.path);
+      else if (!remote.deleted) await this.matchSpelling(remote.path, remote.documentId);
     } catch (error) {
       if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return this.defer(remote, "path-conflict");
       if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
@@ -804,7 +804,7 @@ export class SyncEngine {
     }
     if (inspection.sourceHash === remote.contentHash) return;
     if (content === undefined) throw new Error(`content of ${remote.revisionId} was not downloaded`);
-    await this.matchSpelling(remote.path);
+    await this.matchSpelling(remote.path, remote.documentId);
     await this.echoed(this.echoes.expectWrite(remote.path, remote.contentHash), () => this.vault.write(remote.path, content, { expectedHash }));
   }
 
@@ -813,13 +813,26 @@ export class SyncEngine {
    * `path` under another spelling (`Notes.md` for `notes.md`) to `path`, so
    * the vault names it as the journal does. A write would otherwise keep the
    * old spelling, and the file would look like another document's.
+   *
+   * A spelling the user gave the document's file (a case-only rename not
+   * yet pushed, or one a pending operation of the document commits) is
+   * kept: undone here, the push would still commit it, and the vault would
+   * never match the server (#304).
    */
-  private async matchSpelling(path: string): Promise<void> {
+  private async matchSpelling(path: string, documentId: string): Promise<void> {
     if (this.pathRules.platform === "posix" || (await this.vault.stat(path)) === null) return;
     const key = this.fileKey(path);
     const actual = (await this.vault.list()).find((candidate) => candidate !== path && this.fileKey(candidate) === key);
-    if (actual === undefined) return;
+    if (actual === undefined || (await this.localSpelling(actual, documentId))) return;
     await this.echoed(this.echoes.expectRename(actual, path), () => this.vault.rename(actual, path));
+  }
+
+  /** Whether a local rename of `documentId` not yet pushed, or a pending operation of it, put its file at exactly `path`. */
+  private async localSpelling(path: string, documentId: string): Promise<boolean> {
+    for (const [to, from] of this.localRenames()) {
+      if (to === path && (await this.journal.findDocumentByPath(from))?.documentId === documentId) return true;
+    }
+    return (await this.journal.listPending()).some((operation) => operation.documentId === documentId && operation.path === path && !operation.deleted);
   }
 
   private async echoed(cancel: () => void, change: () => Promise<void>): Promise<void> {
@@ -1136,7 +1149,7 @@ export class SyncEngine {
         }
         const merged = outcome.content;
         const hash = sha256Hex(merged);
-        await this.matchSpelling(outcome.path);
+        await this.matchSpelling(outcome.path, remote.documentId);
         if (there === null || sha256Hex(there) !== hash) {
           const expectedHash = there === null ? null : sha256Hex(there);
           await this.echoed(this.echoes.expectWrite(outcome.path, hash), () => this.vault.write(outcome.path, merged, { expectedHash }));
@@ -1346,7 +1359,14 @@ export class SyncEngine {
    */
   private async followRename(state: DocumentState | undefined, local: { path: string; content: Uint8Array | null }): Promise<{ path: string; content: Uint8Array | null }> {
     if (state === undefined || state.deleted || local.path !== state.path) return local;
-    if (local.content !== null && sha256Hex(local.content) === state.baseHash) return local;
+    if (local.content !== null) {
+      // On a case-insensitive platform the file at the synced path may be
+      // the document's own under the spelling a local case-only rename gave
+      // it: the rename is the user's, so the merge keeps it (#304).
+      const actual = await this.fileAt(state.path);
+      if (actual !== undefined && actual !== state.path && (await this.localSpelling(actual, state.documentId))) return { path: actual, content: local.content };
+      if (sha256Hex(local.content) === state.baseHash) return local;
+    }
     const merging = (await this.journal.getDeferred(state.documentId))?.merging;
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId && !operation.deleted && operation.path !== state.path);
     const candidates = [
@@ -1651,8 +1671,12 @@ export class SyncEngine {
       // On a case-insensitive platform a path of another spelling than a
       // document's names that document's file, never a new one.
       const live = new Map(documents.filter((state) => !state.deleted).map((state) => [this.fileKey(state.path), state.path]));
+      // A path no document has names the file the vault holds under its
+      // own spelling: a file renamed by case before its first push is one
+      // create, at its new spelling (#304).
+      const onDisk = new Map((await this.vault.list()).map((path) => [this.fileKey(path), path]));
       for (const path of [...paths]) {
-        const own = live.get(this.fileKey(path));
+        const own = live.get(this.fileKey(path)) ?? onDisk.get(this.fileKey(path));
         if (own === undefined || own === path) continue;
         paths.delete(path);
         paths.add(own);
