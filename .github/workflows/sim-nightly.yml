@@ -1,0 +1,95 @@
+name: sim-nightly
+
+# The long sync simulation (docs/testing/simulation.md, SPEC.md §13): many
+# seeds and steps with engines whose users make random changes, every night
+# on master. Each night runs new seeds (the first seed moves with the run
+# number), so coverage grows over time; any failing seed is replayable with
+# the command in the issue this workflow files.
+
+on:
+  schedule:
+    - cron: "23 3 * * *"
+  workflow_dispatch:
+    inputs:
+      seeds:
+        description: Number of seeds
+        default: "50"
+      steps:
+        description: Steps per seed
+        default: "3000"
+      first_seed:
+        description: First seed (empty for the run-number rotation)
+        default: ""
+
+# Least privilege: the default token only reads; the job adds issues: write
+# for filing the failure.
+permissions:
+  contents: read
+
+concurrency:
+  group: sim-nightly
+  cancel-in-progress: false
+
+jobs:
+  simulation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    permissions:
+      contents: read
+      issues: write
+    env:
+      # Inputs reach the scripts only through the environment, never
+      # interpolated into a script.
+      SEEDS: ${{ inputs.seeds || '50' }}
+      STEPS: ${{ inputs.steps || '3000' }}
+      FIRST_SEED: ${{ inputs.first_seed }}
+      RUN_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Long simulation
+        id: simulation
+        run: |
+          set -euo pipefail
+          [[ $SEEDS =~ ^[0-9]+$ && $STEPS =~ ^[0-9]+$ && $RUN_NUMBER =~ ^[0-9]+$ ]] || { echo "seeds and steps must be numbers" >&2; exit 2; }
+          if [[ -z $FIRST_SEED ]]; then FIRST_SEED=$(( 100000 + RUN_NUMBER * SEEDS )); fi
+          [[ $FIRST_SEED =~ ^[0-9]+$ ]] || { echo "first_seed must be a number" >&2; exit 2; }
+          echo "seeds $FIRST_SEED to $(( FIRST_SEED + SEEDS - 1 )), $STEPS steps"
+          # Failing seeds are minimized into a copy of the committed cases,
+          # uploaded below; the checkout stays clean.
+          mkdir -p build/sim-regressions
+          cp sim/regressions/*.json build/sim-regressions/
+          nix develop -c make test-sim \
+            SIM_FIRST_SEED="$FIRST_SEED" SIM_SEEDS="$SEEDS" SIM_STEPS="$STEPS" \
+            SIM_CLIENTS=3 SIM_ENGINES=2 SIM_SHRINK_RUNS=10 SIM_TIMEOUT=300m \
+            SIM_REGRESSION_DIR=build/sim-regressions 2>&1 | tee build/sim-output.txt
+      - name: Upload the minimized cases
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sim-regressions
+          path: |
+            build/sim-regressions/
+            build/sim-output.txt
+          retention-days: 30
+      - name: File an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          touch build/sim-output.txt
+          ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL" > build/sim-issue.md
+          seeds=$(grep -oE 'SIM FAILURE: seed [0-9]+' build/sim-output.txt | grep -oE '[0-9]+$' | sort -nu | head -10 | paste -sd, - | sed 's/,/, /g' || true)
+          title="sim: nightly simulation failed${seeds:+ (seeds $seeds)}"
+          # One open issue at a time: later failures are added to it as comments.
+          existing=$(gh issue list --state open --search 'in:title "sim: nightly simulation failed"' --json number --jq '.[0].number // empty')
+          if [[ -n $existing ]]; then
+            gh issue comment "$existing" --body-file build/sim-issue.md
+          else
+            gh issue create --title "$title" --body-file build/sim-issue.md
+          fi
