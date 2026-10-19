@@ -1,6 +1,7 @@
 import { EditableFileView, MarkdownView, normalizePath, TextFileView, TFile, TFolder, type App, type EventRef, type TAbstractFile } from "obsidian";
 
-import { VaultError, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener } from "../core/vault/adapter";
+import { sha256Hex } from "../core/hash";
+import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
 import { mergeUnsaved } from "../core/merge/text-merge";
 
 /**
@@ -20,6 +21,7 @@ export class UnsavedEditsError extends Error {
 
 /** UTF-8 that keeps a byte order mark as U+FEFF, so text round-trips byte for byte. */
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const encoder = new TextEncoder();
 
 /** Obsidian's views that only display a file and hold no unsaved state of their own. */
 const readOnlyViewTypes = new Set(["image", "audio", "video", "pdf"]);
@@ -45,6 +47,17 @@ export const syncEditOrigin = "vault-sync";
  *   keystrokes survive a non-overlapping remote change. A write to a file
  *   with unsaved state in any other view (e.g. a canvas) is refused after
  *   saving that view (see overwrite()).
+ * - Write and delete preconditions (the engine's expected content hash) are
+ *   checked inside the same Vault.process call that writes, wherever the new
+ *   content is text and the file's is too. On desktop, Vault.process runs in
+ *   the file adapter's queue, which Obsidian's own saves (an editor's
+ *   autosave) go through as well, so nothing saved after the check is
+ *   overwritten. Three windows of one read remain (SPEC.md §8): binary
+ *   content has no such route and is checked by reading the file just
+ *   before modifyBinary; a delete is checked by reading the file just before
+ *   Vault.delete (and refused while an open text view shows anything else);
+ *   and on mobile, Obsidian's Capacitor adapter does not queue a plain write
+ *   with process.
  * - watch() reports nothing before the workspace layout is ready: while
  *   Obsidian loads a vault it fires "create" for every existing file, which
  *   is indexing, not a user edit. Changes made while Obsidian was not running
@@ -65,18 +78,23 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     return new Uint8Array(await this.vault.readBinary(this.requireFile(path)));
   }
 
-  async write(path: string, data: Uint8Array): Promise<void> {
+  async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
     if (!inScope(path)) throw new VaultError("path-conflict", path);
     const existing = this.vault.getAbstractFileByPath(path);
     if (existing instanceof TFolder) throw new VaultError("path-conflict", path);
+    const expectedHash = precondition?.expectedHash;
     if (existing instanceof TFile) {
-      await this.overwrite(existing, data);
+      if (expectedHash === null) throw new VaultError("changed", path);
+      await this.overwrite(existing, data, expectedHash);
       return;
     }
+    if (typeof expectedHash === "string") throw new VaultError("changed", path);
     await this.ensureParentFolders(path);
     try {
       await this.vault.createBinary(path, toArrayBuffer(data));
     } catch (error) {
+      // A file created at this very path meanwhile; with no precondition, as before.
+      if (expectedHash === null && this.vault.getFileByPath(path) !== null) throw new VaultError("changed", path);
       // E.g. a file differing only in letter case on a case-insensitive disk.
       if (await this.vault.adapter.exists(path)) throw new VaultError("path-conflict", path);
       throw error;
@@ -100,8 +118,25 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     }
   }
 
-  async delete(path: string): Promise<void> {
-    await this.vault.delete(this.requireFile(path));
+  /**
+   * With a precondition, the file is read and deleted only if it still holds
+   * the expected content and no open text view (a Markdown editor, a canvas)
+   * shows anything else: unsaved state is saved instead, and the delete
+   * rejects with "changed", so the engine finds it as a local edit.
+   */
+  async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    const file = this.requireFile(path);
+    if (precondition !== undefined) {
+      const current = new Uint8Array(await this.vault.readBinary(file));
+      if (sha256Hex(current) !== precondition.expectedHash) throw new VaultError("changed", path);
+      const text = decodeText(current);
+      const unsaved = text === undefined ? [] : this.openViews(file).filter((view) => view instanceof TextFileView && !sameText(view.getViewData(), text));
+      if (unsaved.length > 0) {
+        for (const view of unsaved) if (view instanceof TextFileView) await view.save();
+        throw new VaultError("changed", path);
+      }
+    }
+    await this.vault.delete(file);
   }
 
   stat(path: string): Promise<FileStat | null> {
@@ -155,22 +190,30 @@ export class ObsidianVaultAdapter implements VaultAdapter {
    *   plus those edits, which the engine then sees as the user's change it is.
    *   If the two overlap, the editor is saved instead and the write rejects
    *   with UnsavedEditsError, so neither side is overwritten.
+   *
+   * With `expectedHash`, every route first checks that the disk still holds
+   * it, inside Vault.process where there is one, and rejects with "changed",
+   * writing nothing, if not.
    */
-  private async overwrite(file: TFile, data: Uint8Array): Promise<void> {
+  private async overwrite(file: TFile, data: Uint8Array, expectedHash: string | undefined): Promise<void> {
     const views = this.openViews(file);
     const others = views.filter((view) => !(view instanceof MarkdownView) && !readOnlyViewTypes.has(view.getViewType()));
     if (others.length > 0) {
-      await this.overwriteUnderOtherViews(file, data, others);
+      await this.overwriteUnderOtherViews(file, data, others, expectedHash);
       return;
     }
     const view = views.find((candidate) => candidate instanceof MarkdownView);
     const text = view === undefined ? undefined : decodeText(data);
     if (view === undefined || text === undefined) {
-      await this.vault.modifyBinary(file, toArrayBuffer(data));
+      await this.replace(file, data, expectedHash);
       return;
     }
-    const outcome = { overlapping: false };
+    const outcome = { overlapping: false, changed: false };
     await this.vault.process(file, (disk) => {
+      if (!holds(disk, expectedHash)) {
+        outcome.changed = true;
+        return disk;
+      }
       const { editor } = view;
       const local = editor.getValue();
       const merge = disk.includes("\r") || text.includes("\r") ? wholeText(disk, local, text) : mergeUnsaved(disk, local, text);
@@ -186,25 +229,54 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       }
       return merge.merged;
     });
+    if (outcome.changed) throw new VaultError("changed", file.path);
     if (outcome.overlapping) {
       await view.save();
       throw new UnsavedEditsError(file.path);
     }
   }
 
+  /** The overwrite() case of a file open in no editing view: written as is. */
+  private async replace(file: TFile, data: Uint8Array, expectedHash: string | undefined): Promise<void> {
+    if (expectedHash === undefined) {
+      await this.vault.modifyBinary(file, toArrayBuffer(data));
+      return;
+    }
+    const current = new Uint8Array(await this.vault.readBinary(file));
+    const text = decodeText(data);
+    // Vault.process reads the file as text, so it is only for text replacing text.
+    if (text === undefined || decodeText(current) === undefined) {
+      if (sha256Hex(current) !== expectedHash) throw new VaultError("changed", file.path);
+      await this.vault.modifyBinary(file, toArrayBuffer(data));
+      return;
+    }
+    const outcome = { changed: false };
+    await this.vault.process(file, (disk) => {
+      if (holds(disk, expectedHash)) return text;
+      outcome.changed = true;
+      return disk;
+    });
+    if (outcome.changed) throw new VaultError("changed", file.path);
+  }
+
   /** The overwrite() case of a file open in non-Markdown views that may hold unsaved state. */
-  private async overwriteUnderOtherViews(file: TFile, data: Uint8Array, views: EditableFileView[]): Promise<void> {
+  private async overwriteUnderOtherViews(file: TFile, data: Uint8Array, views: EditableFileView[], expectedHash: string | undefined): Promise<void> {
     const text = decodeText(data);
     const textViews = views.filter((view) => view instanceof TextFileView);
-    const outcome = { written: false };
+    const outcome = { written: false, changed: false };
     if (text !== undefined && textViews.length === views.length) {
       await this.vault.process(file, (disk) => {
+        if (!holds(disk, expectedHash)) {
+          outcome.changed = true;
+          return disk;
+        }
         if (!textViews.every((view) => view.getViewData() === disk)) return disk;
         outcome.written = true;
         return text;
       });
     }
     if (outcome.written) return;
+    if (outcome.changed) throw new VaultError("changed", file.path);
     for (const view of textViews) await view.save();
     throw new UnsavedEditsError(file.path);
   }
@@ -246,6 +318,21 @@ export class ObsidianVaultAdapter implements VaultAdapter {
 function inScope(path: string): boolean {
   if (path === "" || normalizePath(path) !== path) return false;
   return !path.split("/").some((segment) => segment.startsWith("."));
+}
+
+/**
+ * Whether the disk text Vault.process read is the content with `expectedHash`
+ * (undefined: no precondition). A byte order mark the read dropped is allowed
+ * for.
+ */
+function holds(disk: string, expectedHash: string | undefined): boolean {
+  if (expectedHash === undefined) return true;
+  return sha256Hex(encoder.encode(disk)) === expectedHash || (!disk.startsWith("\ufeff") && sha256Hex(encoder.encode(`\ufeff${disk}`)) === expectedHash);
+}
+
+/** Whether a view's data shows `disk`; a Markdown editor's buffer may have dropped the "\r" of CRLF line endings. */
+function sameText(viewData: string, disk: string): boolean {
+  return viewData === disk || viewData === disk.replaceAll("\r\n", "\n");
 }
 
 function decodeText(data: Uint8Array): string | undefined {

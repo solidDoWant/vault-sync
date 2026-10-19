@@ -22,6 +22,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { SyncEngine, type PushSummary } from "../plugin/src/core/engine/engine";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
+import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
 import type { ConflictRecord } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
@@ -56,6 +57,8 @@ export function harnessUnmaterializable(path: string, platform: PathPlatform): b
 
 export class EngineObserver {
   private readonly vault: InMemoryVault;
+  /** What the engine sees: the vault, with a scenario's saves landing just before an engine write (#163). */
+  private readonly engineVault: InterleavingVault;
   private readonly journal = new InMemoryJournal();
   private engine: SyncEngine;
   private busy = false;
@@ -75,6 +78,7 @@ export class EngineObserver {
     readonly platform: PathPlatform = "posix",
   ) {
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
+    this.engineVault = new InterleavingVault(this.vault);
     this.engine = this.createEngine();
   }
 
@@ -122,6 +126,25 @@ export class EngineObserver {
     await this.vault.write(path, content);
     await this.engine.settled();
     return `${this.name} user writes ${path} (${String(content.length)} B)`;
+  }
+
+  /**
+   * Arms a save of `content` to `path` by the user that lands just before the
+   * engine's next write or delete of `path`, after the engine checked the
+   * disk: what Obsidian's autosave can do (#163).
+   */
+  saveBeforeNextEngineChange(path: string, content: Uint8Array): string {
+    this.userEdited.add(path);
+    this.engineVault.beforeNextChange(path, async () => {
+      this.context.log(`${this.name} user saves ${path} (${String(content.length)} B) just before the engine changes it`);
+      await this.vault.write(path, content);
+    });
+    return `${this.name} user will save ${path} just before the engine's next change of it`;
+  }
+
+  /** Whether a save armed by saveBeforeNextEngineChange has not landed yet. */
+  get savePending(): boolean {
+    return this.engineVault.pending;
   }
 
   /** Renames `from` to `to` in the observer's vault as its user would. */
@@ -247,7 +270,7 @@ export class EngineObserver {
       vaultId: this.context.vaultId,
       deviceId: this.deviceId,
       api: this.api,
-      vault: this.vault,
+      vault: this.engineVault,
       journal: this.journal,
       onLocalChange: (event) => this.localChanges.push(event),
       onAcknowledged: (revision) => {

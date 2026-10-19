@@ -24,8 +24,12 @@ export interface VaultAdapter {
    * occupied by the other kind of entry (a folder where the file should go, or
    * a file where a folder should go), and with "unmaterializable" if the
    * platform cannot hold a file at the path.
+   *
+   * With a precondition, the write happens only if the file still holds what
+   * the caller last saw (see WritePrecondition), checked atomically with the
+   * write. Otherwise it rejects with "changed" and changes nothing.
    */
-  write(path: string, data: Uint8Array): Promise<void>;
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void>;
 
   /**
    * Moves a file. Rejects with "not-found" if `from` does not exist,
@@ -35,8 +39,14 @@ export interface VaultAdapter {
    */
   rename(from: string, to: string): Promise<void>;
 
-  /** Deletes a file. Rejects with "not-found" if it does not exist. */
-  delete(path: string): Promise<void>;
+  /**
+   * Deletes a file. Rejects with "not-found" if it does not exist. With a
+   * precondition, it deletes only a file whose content hash is
+   * `expectedHash`, and rejects with "changed" otherwise, changing nothing.
+   * An adapter that knows of unsaved state for the file (an open editor whose
+   * content differs from the disk) rejects with "changed" too.
+   */
+  delete(path: string, precondition?: DeletePrecondition): Promise<void>;
 
   /** Returns a file's metadata, or null if it does not exist. */
   stat(path: string): Promise<FileStat | null>;
@@ -49,6 +59,22 @@ export interface VaultAdapter {
    * the order the changes happened.
    */
   watch(listener: VaultListener): () => void;
+}
+
+/**
+ * What a write expects to replace: the SHA-256 (lowercase hex, as sha256Hex)
+ * of the file's current bytes, or null for "no file there" (a create). The
+ * engine passes the hash it checked against the journal's base, so a change
+ * the user saved after that check (Obsidian's autosave, say) is never
+ * overwritten (SPEC.md §8).
+ */
+export interface WritePrecondition {
+  expectedHash: string | null;
+}
+
+/** What a delete expects to remove: the SHA-256 of the file's current bytes. */
+export interface DeletePrecondition {
+  expectedHash: string;
 }
 
 export interface FileStat {
@@ -75,8 +101,10 @@ export type VaultListener = (event: VaultEvent) => void;
  *   (SPEC.md §8, platform path rules), e.g. a Windows reserved name. A write
  *   or rename may reject with it; the engine then tracks the document as
  *   unmaterializable instead of failing.
+ * - `changed`: a write's or delete's precondition did not hold; the file is
+ *   not what the caller last saw.
  */
-export type VaultErrorCode = "not-found" | "already-exists" | "path-conflict" | "unmaterializable";
+export type VaultErrorCode = "not-found" | "already-exists" | "path-conflict" | "unmaterializable" | "changed";
 
 /** The error every VaultAdapter rejects with for the documented failure cases. */
 export class VaultError extends Error {
