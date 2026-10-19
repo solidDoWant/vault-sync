@@ -232,10 +232,39 @@ func TestInvariantChecksDetectEachViolation(t *testing.T) {
 			fixture := newInvariantFixture(t, db)
 			acked := test.corrupt(t, fixture)
 
-			violations, err := checkInvariants(t.Context(), db, fixture.vault, acked)
+			violations, err := checkInvariants(t.Context(), db, fixture.vault, acked, nil)
 			require.NoError(t, err)
 
 			assert.ElementsMatch(t, test.expected, invariantsOf(violations), "violations: %+v", violations)
 		})
 	}
+}
+
+// TestInvariantChecksExcuseOnlyPurgedRevisions: a revision the run had
+// retention purge, with the server's own purge, is not a lost write, its
+// seq is not a gap and its child's new parent is not a stale base; the same
+// state without the excuse still violates history and seq.
+func TestInvariantChecksExcuseOnlyPurgedRevisions(t *testing.T) {
+	database := testinfra.PostgresConfig(t)
+
+	db, err := pgxpool.New(t.Context(), database.DSN)
+	require.NoError(t, err)
+	t.Cleanup(db.Close)
+
+	_, err = store.Migrate(t.Context(), db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	require.NoError(t, err)
+
+	fixture := newInvariantFixture(t, db)
+
+	purged, err := ageAndPurge(t.Context(), db, fixture.vault, []uuid.UUID{fixture.a1, fixture.a2})
+	require.NoError(t, err)
+	require.Equal(t, []purgedRevision{{ID: fixture.a1, Seq: 1}}, purged, "the older revision of the day is purged, the head kept")
+
+	violations, err := checkInvariants(t.Context(), db, fixture.vault, fixture.acked, purged)
+	require.NoError(t, err)
+	assert.Empty(t, violations)
+
+	violations, err = checkInvariants(t.Context(), db, fixture.vault, fixture.acked, nil)
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{invariantHistory, invariantHistory, invariantSeq}, invariantsOf(violations), "violations: %+v", violations)
 }

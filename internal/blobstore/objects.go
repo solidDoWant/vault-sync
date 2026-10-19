@@ -65,6 +65,9 @@ type Objects struct {
 	// afterPart, if set (by tests only), runs after each multipart part is
 	// uploaded and before progress is reported.
 	afterPart func(ctx context.Context, number int32)
+	// beforeSourceRead, if set (by tests only), runs before each staged
+	// object is opened while composing.
+	beforeSourceRead func(ctx context.Context, key string)
 }
 
 // New returns an Objects for cfg. It does not contact the store.
@@ -377,6 +380,10 @@ func (reader *sourceReader) Read(buffer []byte) (int, error) {
 
 		source := reader.sources[0]
 		reader.sources = reader.sources[1:]
+
+		if reader.objects.beforeSourceRead != nil {
+			reader.objects.beforeSourceRead(reader.ctx, source.Key)
+		}
 
 		output, err := reader.objects.client.GetObject(reader.ctx, &s3.GetObjectInput{
 			Bucket: aws.String(reader.objects.bucket),

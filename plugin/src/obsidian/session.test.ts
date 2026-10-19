@@ -657,4 +657,41 @@ describe("SyncSession", () => {
       expect(await running.unmaterializable()).toEqual([]);
     });
   });
+
+  describe("history", () => {
+    it("is there only while the session runs", async () => {
+      const server = new InMemoryServer();
+      const running = session({ server, vault: new InMemoryVault(), journal: new InMemoryJournal() });
+      expect(running.history()).toBeUndefined();
+      await running.start();
+      expect(running.history()).toBeDefined();
+      await running.stop();
+      expect(running.history()).toBeUndefined();
+    });
+
+    it("finds a file's document, lists its history and restores a revision on disk", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+      await vault.write("plan.md", bytes("first"));
+      await running.syncNow();
+      await vault.write("plan.md", bytes("second"));
+      await running.syncNow();
+      const history = running.history();
+      if (history === undefined) throw new Error("no history");
+
+      const documentId = await history.documentAt("plan.md");
+      if (documentId === undefined) throw new Error("no document at plan.md");
+      const { entries } = await history.history(documentId);
+      const first = entries[1];
+      if (first === undefined) throw new Error("no first revision");
+      expect(new TextDecoder().decode(await history.readRevision(first))).toBe("first");
+      await history.restore(first);
+
+      expect(await files(vault)).toEqual(new Map([["plan.md", "first"]]));
+      expect(await history.documentAt("elsewhere.md")).toBeUndefined();
+      await running.stop();
+    });
+  });
 });

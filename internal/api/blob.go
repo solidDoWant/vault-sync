@@ -323,9 +323,16 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 			return nil, completeErr
 		}
 
-		if errors.Is(err, store.ErrBlobUploadConflict) {
-			// Discarded or reaped meanwhile, which only happens to a
-			// session idle for longer than the upload TTL.
+		// Discarded or reaped meanwhile, which only happens to a session
+		// idle for longer than the upload TTL. Composing notices that when
+		// it reports progress, or earlier, by failing to read a staged
+		// chunk the cleanup routine deleted while a part was read. The
+		// cleanup routine of any server process claims a session in
+		// PostgreSQL before it deletes any of its staged objects, so the
+		// session is then no longer active. (Checking records activity on
+		// a session that is still active, which the client may retry.)
+		if errors.Is(err, store.ErrBlobUploadConflict) ||
+			errors.Is(vault.TouchBlobUpload(ctx, upload.ID), store.ErrBlobUploadConflict) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition,
 				errors.New("the upload is no longer in progress; call BeginBlob"))
 		}

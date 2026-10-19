@@ -25,6 +25,12 @@ func SetAfterPart(objects *Objects, hook func(ctx context.Context, number int32)
 	objects.afterPart = hook
 }
 
+// SetBeforeSourceRead makes objects call hook before it opens each staged
+// object while composing.
+func SetBeforeSourceRead(objects *Objects, hook func(ctx context.Context, key string)) {
+	objects.beforeSourceRead = hook
+}
+
 // AbortStaleMultipartUploads runs one listing pass of the multipart sweep
 // from the start, with at most pages pages.
 func AbortStaleMultipartUploads(ctx context.Context, objects *Objects, cutoff time.Time, pages int, spare func(ctx context.Context, key string) (bool, error)) (int, error) {

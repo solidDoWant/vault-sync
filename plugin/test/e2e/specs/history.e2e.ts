@@ -1,0 +1,164 @@
+import { browser, expect } from "@wdio/globals";
+
+import type VaultSyncPlugin from "../../../src/main";
+import { pluginId } from "../environment";
+import { configure, signInAs } from "../signin";
+
+// History browsing and restore (#26, SPEC.md §11) in a real Obsidian against
+// the harness-started server: the history view of a synced note lists its
+// revisions with time and device, previews one, and restores it; a deleted
+// note is found among the deleted files and restored. Its own user and
+// remote vault, so the other specs' vaults are untouched.
+
+const subject = "plugin-e2e-history-user";
+const remoteVaultName = "e2e history";
+const note = "History.md";
+const firstVersion = "the first version\n";
+const secondVersion = "the second version\n";
+
+function fileText(path: string) {
+  return browser.executeObsidian(async ({ app }, filePath) => {
+    const file = app.vault.getFileByPath(filePath);
+    return file === null ? null : app.vault.read(file);
+  }, path);
+}
+
+/** How many revisions the server has of the note, read through the plugin's client. */
+function remoteRevisions(path: string) {
+  return browser.executeObsidian(
+    async ({ app }, id, filePath) => {
+      const vaultSync = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+      const vaultId = vaultSync?.connectedVault?.id;
+      if (vaultSync === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
+      const response = await vaultSync.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n });
+      const decoder = new TextDecoder();
+      return response.revisions.filter((revision) => decoder.decode(revision.path) === filePath).length;
+    },
+    pluginId,
+    path,
+  );
+}
+
+async function waitForIdle(): Promise<void> {
+  await browser.waitUntil(
+    async () =>
+      browser.executeObsidian(({ app }, id) => {
+        const vaultSync = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+        return vaultSync?.syncStatus.state === "idle" && vaultSync.syncStatus.pending === 0;
+      }, pluginId),
+    { timeoutMsg: "sync never became idle" },
+  );
+}
+
+/** The rows of the open history view. */
+function historyRows() {
+  return browser.executeObsidian(() => [...document.querySelectorAll<HTMLElement>(".vault-sync-history-entry")].map((row) => row.textContent));
+}
+
+/** Clicks the history view's row `index` (0 is the newest). */
+function clickRow(index: number) {
+  return browser.executeObsidian((_, at) => {
+    const row = document.querySelectorAll<HTMLElement>(".vault-sync-history-entry")[at];
+    if (row === undefined) throw new Error(`no history row ${String(at)}`);
+    row.click();
+  }, index);
+}
+
+function previewText() {
+  return browser.executeObsidian(() => document.querySelector(".vault-sync-history-text")?.textContent ?? null);
+}
+
+/** Clicks the history view's "Restore this version" button. */
+function clickRestore() {
+  return browser.executeObsidian(() => {
+    const button = [...document.querySelectorAll<HTMLButtonElement>(".vault-sync-history button")].find((candidate) => candidate.textContent === "Restore this version");
+    if (button === undefined) throw new Error("no restore button");
+    button.click();
+  });
+}
+
+/** Closes the history view as the user would, with Escape. */
+async function closeHistory() {
+  await browser.keys("Escape");
+  await browser.waitUntil(async () => browser.executeObsidian(() => document.querySelector(".vault-sync-history") === null), { timeoutMsg: "the history view stayed open" });
+}
+
+describe("history and restore", function () {
+  it("signs in and syncs a note with two versions", async function () {
+    await configure();
+    expect(await signInAs(subject)).toBe(true);
+    await browser.executeObsidian(
+      async ({ app }, id, name) => {
+        const vaultSync = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+        if (vaultSync === undefined) throw new Error("vault-sync is not loaded");
+        await vaultSync.connectVault(await vaultSync.createRemoteVault(name), true);
+      },
+      pluginId,
+      remoteVaultName,
+    );
+    await browser.executeObsidian(async ({ app }, path, text) => {
+      await app.vault.create(path, text);
+    }, note, firstVersion);
+    await browser.waitUntil(async () => (await remoteRevisions(note)) === 1, { timeoutMsg: "the first version never reached the server" });
+    await waitForIdle();
+    await browser.executeObsidian(
+      async ({ app }, path, text) => {
+        const file = app.vault.getFileByPath(path);
+        if (file === null) throw new Error(`no ${path}`);
+        await app.vault.modify(file, text);
+      },
+      note,
+      secondVersion,
+    );
+    await browser.waitUntil(async () => (await remoteRevisions(note)) === 2, { timeoutMsg: "the second version never reached the server" });
+    await waitForIdle();
+  });
+
+  it("lists the note's revisions with time and device, previews one and restores it as a new head", async function () {
+    await browser.executeObsidian(async ({ app }, id, path) => {
+      await (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id]?.showHistory(path);
+    }, pluginId, note);
+    await browser.waitUntil(async () => (await historyRows()).length === 2, { timeoutMsg: "the history view never listed two revisions" });
+    const rows = await historyRows();
+    for (const row of rows) expect(row).toContain(" · this device · ");
+    expect(rows[0]).toContain("(current)");
+
+    await clickRow(1);
+    await browser.waitUntil(async () => (await previewText()) === firstVersion, { timeoutMsg: "the preview never showed the first version" });
+    await clickRestore();
+
+    await browser.waitUntil(async () => (await fileText(note)) === firstVersion, { timeoutMsg: "the note never showed the restored version" });
+    await browser.waitUntil(async () => (await historyRows()).length === 3, { timeoutMsg: "the history view never listed the restore" });
+    expect(await remoteRevisions(note)).toBe(3);
+    await closeHistory();
+  });
+
+  it("finds the deleted note among the deleted files and restores it", async function () {
+    await browser.executeObsidian(async ({ app }, path) => {
+      const file = app.vault.getFileByPath(path);
+      if (file === null) throw new Error(`no ${path}`);
+      await app.vault.delete(file);
+    }, note);
+    await browser.waitUntil(async () => (await remoteRevisions(note)) === 4, { timeoutMsg: "the delete never reached the server" });
+    await waitForIdle();
+
+    await browser.executeObsidian(async ({ app }, id) => {
+      await (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id]?.browseDeletedFiles();
+    }, pluginId);
+    await browser.waitUntil(async () => browser.executeObsidian(() => [...document.querySelectorAll(".suggestion-item")].some((item) => item.textContent === "History.md")), {
+      timeoutMsg: "the deleted note was never listed",
+    });
+    // The only deleted file is the selected suggestion: Enter chooses it.
+    await browser.keys("Enter");
+    await browser.waitUntil(async () => (await historyRows()).length === 4, { timeoutMsg: "the deleted note's history was never listed" });
+    expect((await historyRows())[0]).toContain("deleted History.md");
+
+    await clickRow(0);
+    await browser.waitUntil(async () => (await previewText()) === firstVersion, { timeoutMsg: "the preview never showed the content at the delete" });
+    await clickRestore();
+
+    await browser.waitUntil(async () => (await fileText(note)) === firstVersion, { timeoutMsg: "the deleted note never came back" });
+    expect(await remoteRevisions(note)).toBe(5);
+    await closeHistory();
+  });
+});
