@@ -1,4 +1,5 @@
-import { SyncEngine, type PullSummary, type PushSummary } from "../core/engine/engine";
+import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
+import { SyncEngine, type PullSummary, type PushSummary, type UnmaterializableDocument } from "../core/engine/engine";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
@@ -269,14 +270,25 @@ export class SyncSession {
   }> {
     const { journal, vault } = this.options;
     const pending = (await journal.listPending()).length;
-    let conflicts = 0;
-    for (const conflict of await journal.listConflicts()) {
-      // Resolved once the user deletes (or renames) the copy. A conflict
-      // without a copy is open while its remote revision still waits.
-      const open = conflict.copyPath === null ? (await journal.getDeferred(conflict.documentId)) !== undefined : (await vault.stat(conflict.copyPath)) !== null;
-      if (open) conflicts++;
-    }
+    const conflicts = (await openConflicts(journal, vault)).length;
     return { pending, conflicts };
+  }
+
+  /**
+   * The conflicts the user has not resolved yet, newest first: what the
+   * conflict view lists. Empty once the session is stopped (its journal may
+   * be closed).
+   */
+  async conflicts(): Promise<OpenConflict[]> {
+    if (this.stopped) return [];
+    return openConflicts(this.options.journal, this.options.vault);
+  }
+
+  /** The documents the local platform cannot hold at their server paths (SPEC.md §8), for the conflict view. Empty before the session started and once it is stopped. */
+  async unmaterializable(): Promise<UnmaterializableDocument[]> {
+    const engine = this.engine;
+    if (engine === undefined || this.stopped) return [];
+    return engine.unmaterializable();
   }
 
   /**
