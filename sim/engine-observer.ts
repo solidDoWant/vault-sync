@@ -27,7 +27,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
 import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
-import { SyncEngine, type PushSummary } from "../plugin/src/core/engine/engine";
+import { EngineDisposedError, SyncEngine, type PushSummary } from "../plugin/src/core/engine/engine";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
@@ -87,6 +87,8 @@ export class EngineObserver {
   lastPush: PushSummary | undefined;
   /** The merge hook of the engine (and of the engines after a crash); the default is the engine's, threeWayMerge. */
   merge: MergeHook | undefined;
+  /** The jitter of the engines' backoff, the same in every replay. */
+  private readonly backoffJitter: Random;
 
   constructor(
     /** The observer's index in the simulated network (after the scripted clients). */
@@ -97,6 +99,7 @@ export class EngineObserver {
     /** The platform whose path rules the engine and its vault follow. */
     readonly platform: PathPlatform = "posix",
   ) {
+    this.backoffJitter = Random.derive(index, "backoff");
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.engineVault = new MutableVault(this.vault);
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
@@ -143,8 +146,8 @@ export class EngineObserver {
           this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred`);
         },
         (error: unknown) => {
-          if (errorCode(error) === Code.Unavailable) {
-            this.context.log(`${this.name} engine pull interrupted: Unavailable`);
+          if (interrupted(error)) {
+            this.context.log(`${this.name} engine pull interrupted: ${interruption(error)}`);
           } else {
             this.violation("engine", `${this.name} pull failed: ${error instanceof Error ? error.message : String(error)}`);
           }
@@ -309,8 +312,8 @@ export class EngineObserver {
           this.context.log(`${this.name} pushed: ${String(summary.committed)} committed, ${String(summary.conflicts)} conflicts, ${String(summary.pending)} pending`);
         },
         (error: unknown) => {
-          if (errorCode(error) === Code.Unavailable) {
-            this.context.log(`${this.name} engine push interrupted: Unavailable`);
+          if (interrupted(error)) {
+            this.context.log(`${this.name} engine push interrupted: ${interruption(error)}`);
           } else {
             this.violation("engine", `${this.name} push failed: ${error instanceof Error ? error.message : String(error)}`);
           }
@@ -417,6 +420,9 @@ export class EngineObserver {
       newId: () => this.context.ids.generate(`${this.name}.x`),
       pageSize,
       pathRules: { platform: this.platform },
+      // The RESOURCE_EXHAUSTED backoff (#146) runs on the network's step clock, with a jitter that replays.
+      timers: this.context.network.timers(this.index),
+      random: this.backoffJitter.float.bind(this.backoffJitter),
       onUnmaterializable: (document) => {
         this.context.log(`${this.name} tracks ${document.path} as unmaterializable (${document.reason})`);
       },
@@ -462,4 +468,17 @@ export async function serverHeads(api: ProtocolClient, vaultId: string): Promise
   const files = new Map<string, string>();
   for (const head of heads.values()) if (!head.deleted) files.set(head.path, head.hash);
   return { files, lastSeq };
+}
+
+/**
+ * A pull or push failure the engine expects and recovers from by itself: a
+ * call lost on the network, one the server's per-user limit refused (the
+ * engine backs off, #146), or a wait for that backoff cut short by a crash.
+ */
+function interrupted(error: unknown): boolean {
+  return error instanceof EngineDisposedError || errorCode(error) === Code.Unavailable || errorCode(error) === Code.ResourceExhausted;
+}
+
+function interruption(error: unknown): string {
+  return error instanceof EngineDisposedError ? "engine disposed" : Code[errorCode(error)];
 }
