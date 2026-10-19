@@ -165,7 +165,9 @@ const (
 	DefaultShutdownDelay = 5 * time.Second
 	MaxShutdownDelay     = 5 * time.Minute
 
-	MinMaxRequestBytes = 1 << 10
+	// MinMaxRequestBytes is also the smallest send limit: every page of
+	// revisions holds at least one, which must fit it.
+	MinMaxRequestBytes = api.MinResponseLimitBytes
 	MaxMaxRequestBytes = 64 << 20
 
 	// DefaultMaxConcurrentRPCsPerUser bounds one user's in-flight
@@ -300,14 +302,12 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 		switch {
 		case err != nil:
 			problems = append(problems, fmt.Errorf("%s: %q is not an integer number of bytes", MaxRequestBytesEnv, raw))
-		case value < MinMaxRequestBytes || value > MaxMaxRequestBytes:
-			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range %d to %d bytes", MaxRequestBytesEnv, value, MinMaxRequestBytes, MaxMaxRequestBytes))
-		case value < api.MinResponseLimitBytes:
-			// The limit is also the send limit, and every page of
-			// revisions holds at least one, which must fit it.
+		case value < MinMaxRequestBytes:
 			problems = append(problems, fmt.Errorf(
-				"%s: %d is below %d bytes, the largest ListChanges or GetDocumentHistory response with a single revision",
-				MaxRequestBytesEnv, value, api.MinResponseLimitBytes))
+				"%s: %d is outside the allowed range %d to %d bytes: the minimum is the largest ListChanges or GetDocumentHistory response with a single revision",
+				MaxRequestBytesEnv, value, MinMaxRequestBytes, MaxMaxRequestBytes))
+		case value > MaxMaxRequestBytes:
+			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range %d to %d bytes", MaxRequestBytesEnv, value, MinMaxRequestBytes, MaxMaxRequestBytes))
 		default:
 			cfg.MaxRequestBytes = value
 		}
