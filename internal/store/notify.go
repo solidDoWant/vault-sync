@@ -172,6 +172,32 @@ func (store *Store) MemberHeadSeq(ctx context.Context, vaultID, userID uuid.UUID
 	return role, headSeq, nil
 }
 
+// VaultMembers returns which of userIDs are members of vaultID, in one
+// query. A vault that does not exist has no members. Callers bound the
+// length of userIDs.
+func (store *Store) VaultMembers(ctx context.Context, vaultID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	rows, err := store.pool.Query(ctx, `SELECT user_id FROM vault_members WHERE vault_id = $1 AND user_id = ANY($2)`,
+		vaultID, userIDs)
+	if err != nil {
+		return nil, fmt.Errorf("look up vault members: %w", err)
+	}
+
+	members := make(map[uuid.UUID]bool, len(userIDs))
+
+	var userID uuid.UUID
+
+	_, err = pgx.ForEachRow(rows, []any{&userID}, func() error {
+		members[userID] = true
+
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("look up vault members: %w", err)
+	}
+
+	return members, nil
+}
+
 // HeadSeqs returns the head_seq of each existing vault in vaultIDs.
 func (store *Store) HeadSeqs(ctx context.Context, vaultIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
 	rows, err := store.pool.Query(ctx, `SELECT id, head_seq FROM vaults WHERE id = ANY($1)`, vaultIDs)

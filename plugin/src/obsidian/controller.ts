@@ -9,7 +9,7 @@ import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
 import type { JournalKey } from "./journal";
-import { SyncSession, type SyncSessionOptions } from "./session";
+import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./session";
 import { errorMessage, isOffline, type SyncStatus } from "./status";
 
 // What decides whether this vault syncs, and with what: the account, the
@@ -146,6 +146,8 @@ export interface SyncControllerOptions {
   syncIntervalMs: number | null;
   /** The local platform's file-name rules, passed to every session (SyncSessionOptions.pathRules). */
   pathRules?: PathRules;
+  /** The realtime channel to the session's server (serverBaseUrl), if any (SyncSessionOptions.realtime). */
+  realtime?: (serverUrl: string) => SyncSessionOptions["realtime"];
   onStatus: (status: SyncStatus) => void;
   /** Builds the session; tests replace it to observe sessions. Defaults to `new SyncSession(options)`. */
   createSession?: (options: SyncSessionOptions) => SyncSession;
@@ -202,9 +204,19 @@ export class SyncController {
     return run;
   }
 
+  /** The running session, if any. */
+  get session(): SyncSession | undefined {
+    return this.running?.session;
+  }
+
   /** Pulls and pushes now, if a session runs. */
   async syncNow(): Promise<void> {
     await this.running?.session.syncNow();
+  }
+
+  /** History browsing and restore, while a session runs. */
+  history(): VaultHistory | undefined {
+    return this.running?.session.history();
   }
 
   private async apply(generation: number): Promise<void> {
@@ -249,7 +261,9 @@ export class SyncController {
         return;
       }
       const deviceName = data.deviceName.trim() === "" ? this.options.defaultDeviceName : data.deviceName.trim();
+      const realtime = this.options.realtime?.(serverBaseUrl(data));
       const sessionOptions: SyncSessionOptions = {
+        ...(realtime === undefined ? {} : { realtime }),
         vaultId: wanted.vault.id,
         deviceId,
         deviceName,

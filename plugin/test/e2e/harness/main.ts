@@ -1,9 +1,14 @@
 import { FileView, MarkdownView, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
+import { hexToBytes } from "@noble/hashes/utils.js";
+
+import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
+import { sha256Hex } from "../../../src/core/hash";
 import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
 import { IndexedDbJournal } from "../../../src/core/journal/indexeddb";
 import { createProtocolClient } from "../../../src/core/protocol/client";
+import { uuidv7 } from "../../../src/core/uuid";
 import type { VaultEvent } from "../../../src/core/vault/adapter";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
@@ -22,6 +27,25 @@ export interface EditorWriteResult {
   editor: string;
   cursor: { line: number; ch: number };
   disk: string;
+}
+
+/**
+ * How a harness write imitates the engine's (editor.e2e.ts): `save` saves the
+ * view after the change, as Obsidian's autosave may after the engine checked
+ * the disk; `expectBase` makes the write name the content the disk had before
+ * the change, as the engine does (#163).
+ */
+export interface RemoteWriteOptions {
+  save?: boolean;
+  expectBase?: boolean;
+}
+
+/** The editor and disk after a remote delete of an open note (editor.e2e.ts). */
+export interface EditorDeleteResult {
+  outcome: string;
+  editor: string;
+  /** The text on disk afterwards, or null if the file is gone. */
+  disk: string | null;
 }
 
 /** A canvas view's state after a remote write to its file (editor.e2e.ts). */
@@ -180,22 +204,51 @@ export default class VaultSyncE2EHarness extends Plugin {
    * writes `remote` through the Obsidian adapter as the engine would apply a
    * remote revision. All in one turn, so no autosave can come in between.
    */
-  async typeThenWriteRemote(path: string, cursor: { line: number; ch: number }, typed: string, remote: string): Promise<EditorWriteResult> {
+  async typeThenWriteRemote(path: string, cursor: { line: number; ch: number }, typed: string, remote: string, options: RemoteWriteOptions = {}): Promise<EditorWriteResult> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
-    const view = this.app.workspace.getLeavesOfType("markdown").map((leaf) => leaf.view).find((candidate) => candidate instanceof MarkdownView && candidate.file === file);
-    if (!(view instanceof MarkdownView)) throw new Error(`${path} is not open in a Markdown view`);
+    const view = this.markdownView(path);
+    const diskBefore = await this.app.vault.read(file);
+    const { editor } = view;
+    editor.setCursor(cursor);
+    editor.replaceSelection(typed);
+    if (options.save === true) await view.save();
+    let outcome = "ok";
+    try {
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
+    } catch (error) {
+      outcome = describeError(error);
+    }
+    return { outcome, diskBefore, editor: editor.getValue(), cursor: editor.getCursor(), disk: await this.app.vault.read(file) };
+  }
+
+  /**
+   * In the Markdown editor showing `path`: types `typed` at `cursor`
+   * (unsaved), then deletes the file through the Obsidian adapter as the
+   * engine applies a remote delete, naming the content the disk had.
+   */
+  async typeThenDeleteRemote(path: string, cursor: { line: number; ch: number }, typed: string): Promise<EditorDeleteResult> {
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) throw new Error(`no file ${path}`);
+    const view = this.markdownView(path);
     const diskBefore = await this.app.vault.read(file);
     const { editor } = view;
     editor.setCursor(cursor);
     editor.replaceSelection(typed);
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+      await new ObsidianVaultAdapter(this.app).delete(path, { expectedHash: sha256Hex(encoder.encode(diskBefore)) });
     } catch (error) {
       outcome = describeError(error);
     }
-    return { outcome, diskBefore, editor: editor.getValue(), cursor: editor.getCursor(), disk: await this.app.vault.read(file) };
+    const after = this.app.vault.getFileByPath(path);
+    return { outcome, editor: editor.getValue(), disk: after === null ? null : await this.app.vault.read(after) };
+  }
+
+  private markdownView(path: string): MarkdownView {
+    const view = this.app.workspace.getLeavesOfType("markdown").map((leaf) => leaf.view).find((candidate) => candidate instanceof MarkdownView && candidate.file?.path === path);
+    if (!(view instanceof MarkdownView)) throw new Error(`${path} is not open in a Markdown view`);
+    return view;
   }
 
   /**
@@ -205,7 +258,7 @@ export default class VaultSyncE2EHarness extends Plugin {
    * can come in between. The node is added through the canvas's internal API
    * (not in Obsidian's typings), as a user's click does.
    */
-  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string): Promise<ViewWriteResult> {
+  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string, options: RemoteWriteOptions = {}): Promise<ViewWriteResult> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.canvasView(path);
@@ -214,9 +267,10 @@ export default class VaultSyncE2EHarness extends Plugin {
       const { canvas } = view as unknown as { canvas: { createTextNode(options: object): unknown } };
       canvas.createTextNode({ pos: { x: 0, y: 200 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
     }
+    if (options.save === true) await view.save();
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
     } catch (error) {
       outcome = describeError(error);
     }
@@ -283,12 +337,60 @@ export default class VaultSyncE2EHarness extends Plugin {
     return this.requireSession().localChanges.map((changes) => [...changes]);
   }
 
+  /** Commits `content` at `path` on the session's server, as another device would. */
+  commitRemote(documentId: string, path: string, content: string): void {
+    this.requireSession().server.commit({ documentId, path, content });
+  }
+
   /** Modifies a file the way a user edit lands on disk. */
   async modifyFile(path: string, text: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) throw new Error(`no file ${path}`);
     await this.app.vault.modify(file, text);
   }
+
+  /**
+   * Turns vault-sync's pull timer off for the sessions it starts from now on
+   * (realtime.e2e.ts), so a remote change can arrive only through a start's
+   * pull or the realtime channel.
+   */
+  disablePullTimer(): void {
+    const controller = (this.vaultSync() as unknown as { controller?: { options: { syncIntervalMs: number | null } } }).controller;
+    if (controller === undefined) throw new Error("vault-sync has no sync controller");
+    controller.options.syncIntervalMs = null;
+  }
+
+  /**
+   * Commits a new note to vault-sync's connected server vault as another
+   * device of the signed-in user would (realtime.e2e.ts): a device of its
+   * own, the blob upload, then CommitRevision. Resolves with the revision's seq.
+   */
+  async commitFromAnotherDevice(path: string, text: string): Promise<string> {
+    const plugin = this.vaultSync();
+    const vaultId = plugin.connectedVault?.id;
+    if (vaultId === undefined) throw new Error("vault-sync is not connected");
+    const client = plugin.protocolClient();
+    this.otherDeviceId ??= (await client.devices.registerDevice({ name: "e2e other device" })).device?.id;
+    if (this.otherDeviceId === undefined) throw new Error("the server registered no device");
+    const content = encoder.encode(text);
+    const blobId = hexToBytes(sha256Hex(content));
+    const size = BigInt(content.length);
+    await client.blobs.beginBlob({ vaultId, blobId, size });
+    await client.blobs.putBlobChunk({ vaultId, blobId, offset: 0n, data: content });
+    await client.blobs.commitBlob({ vaultId, blobId });
+    const response = await client.sync.commitRevision({
+      vaultId,
+      documentId: uuidv7(),
+      revisionId: uuidv7(),
+      kind: DocumentKind.TEXT,
+      contentRef: { blobId, size },
+      path: encoder.encode(path),
+      deviceId: this.otherDeviceId,
+    });
+    return String(response.revision?.seq ?? 0n);
+  }
+
+  private otherDeviceId: string | undefined;
 
   private vaultSync(): VaultSyncPlugin {
     const plugin = (this.app as unknown as PluginRegistry).plugins.plugins["vault-sync"];

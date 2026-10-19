@@ -1,7 +1,10 @@
-import { SyncEngine, type PullSummary, type PushSummary } from "../core/engine/engine";
+import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
+import { SyncEngine, type PullSummary, type PushSummary, type UnmaterializableDocument } from "../core/engine/engine";
+import type { HistoryEntry, HistoryPage } from "../core/engine/history";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
-import type { Journal } from "../core/journal/journal";
+import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
+import type { DocumentState, Journal, RemoteRevision } from "../core/journal/journal";
 import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { errorMessage, isOffline } from "./status";
@@ -41,6 +44,12 @@ export interface SyncSessionOptions {
   pathRules?: PathRules;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
+  /**
+   * The realtime channel (SPEC.md §6.4). When set, the started session
+   * subscribes to the vault and pulls after every (re)subscribe and every
+   * notification of it. The pull timer runs either way.
+   */
+  realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
 }
 
 export interface SessionStatus {
@@ -50,6 +59,17 @@ export interface SessionStatus {
   /** Unresolved conflicts (see SyncStatus.conflicts). */
   conflicts: number;
   message?: string;
+}
+
+/** A running session's history browsing and restore (SPEC.md §11), what the history views use. */
+export interface VaultHistory {
+  /** The id of the synced document at `path`, if a live one is there. */
+  documentAt(path: string): Promise<string | undefined>;
+  history(documentId: string, pageToken?: string): Promise<HistoryPage>;
+  readRevision(entry: HistoryEntry): Promise<Uint8Array>;
+  /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one. */
+  restore(entry: HistoryEntry, content?: Uint8Array): Promise<RemoteRevision>;
+  deletedDocuments(): Promise<DocumentState[]>;
 }
 
 /** What a stopped session's engine gets for every vault, journal and server call it makes after the stop. */
@@ -65,7 +85,8 @@ export class SessionStoppedError extends Error {
  * over the device's journal. It starts once `ready` resolves, resumes from
  * the journal's cursor (so disabling and re-enabling the plugin, or
  * restarting Obsidian, never starts a full resync), pulls, and pushes. It
- * then pushes after local changes (debounced) and on a timer.
+ * then pushes after local changes (debounced) and on a timer, and pulls when
+ * the realtime channel reports a remote change.
  *
  * Stopping never loses a local change: an edit the session had not pushed
  * yet stays on disk, and the next session's first push scans the whole vault
@@ -78,6 +99,7 @@ export class SyncSession {
   private starting: Promise<unknown> = Promise.resolve();
   private readonly abort = new AbortController();
   private timer: ReturnType<typeof setInterval> | undefined;
+  private realtime: RealtimeClient | undefined;
   private timerRun: Promise<unknown> | undefined;
   private busy = false;
   /** The last pull or push's failure; undefined after a success. */
@@ -112,6 +134,32 @@ export class SyncSession {
   }
 
   /**
+   * History browsing and restore for the session's vault (SPEC.md §11), once
+   * its engine runs; undefined before that and after the stop.
+   */
+  history(): VaultHistory | undefined {
+    const engine = this.engine;
+    if (engine === undefined || this.stopped) return undefined;
+    const { journal } = this.options;
+    return {
+      documentAt: async (path) => {
+        const state = await journal.findDocumentByPath(path);
+        return state === undefined || state.deleted ? undefined : state.documentId;
+      },
+      history: (documentId, pageToken) => engine.history(documentId, pageToken),
+      readRevision: (entry) => engine.readRevision(entry),
+      restore: async (entry, content) => {
+        try {
+          return await engine.restore(entry, content);
+        } finally {
+          void this.report();
+        }
+      },
+      deletedDocuments: () => engine.deletedDocuments(),
+    };
+  }
+
+  /**
    * Stops the session and resolves once its engine has settled: from then on
    * it neither touches the vault or the journal nor calls the server, so a new
    * session can start over the same journal. A call still waiting for the
@@ -123,6 +171,7 @@ export class SyncSession {
     this.stopped = true;
     this.abort.abort(new SessionStoppedError());
     if (this.timer !== undefined) clearInterval(this.timer);
+    this.realtime?.stop();
     this.engine?.dispose();
     this.stopping = (async () => {
       await this.starting;
@@ -172,6 +221,10 @@ export class SyncSession {
     // retries ran out, say) must not wait for the user's next edit.
     await this.attempt(() => engine.push());
     if (this.isStopped()) return undefined;
+    if (options.realtime !== undefined) {
+      this.realtime = new RealtimeClient({ ...options.realtime, vaultId: options.vaultId, onChange: () => this.attempt(() => engine.pull()) });
+      this.realtime.start();
+    }
     if (options.syncIntervalMs !== null) {
       this.timer = setInterval(() => {
         // One timer push at a time: on a slow network ticks never pile up.
@@ -255,14 +308,25 @@ export class SyncSession {
   }> {
     const { journal, vault } = this.options;
     const pending = (await journal.listPending()).length;
-    let conflicts = 0;
-    for (const conflict of await journal.listConflicts()) {
-      // Resolved once the user deletes (or renames) the copy. A conflict
-      // without a copy is open while its remote revision still waits.
-      const open = conflict.copyPath === null ? (await journal.getDeferred(conflict.documentId)) !== undefined : (await vault.stat(conflict.copyPath)) !== null;
-      if (open) conflicts++;
-    }
+    const conflicts = (await openConflicts(journal, vault)).length;
     return { pending, conflicts };
+  }
+
+  /**
+   * The conflicts the user has not resolved yet, newest first: what the
+   * conflict view lists. Empty once the session is stopped (its journal may
+   * be closed).
+   */
+  async conflicts(): Promise<OpenConflict[]> {
+    if (this.stopped) return [];
+    return openConflicts(this.options.journal, this.options.vault);
+  }
+
+  /** The documents the local platform cannot hold at their server paths (SPEC.md §8), for the conflict view. Empty before the session started and once it is stopped. */
+  async unmaterializable(): Promise<UnmaterializableDocument[]> {
+    const engine = this.engine;
+    if (engine === undefined || this.stopped) return [];
+    return engine.unmaterializable();
   }
 
   /**

@@ -161,6 +161,17 @@ export class SimRun {
   }
 
   /**
+   * Has retention purge revisions of the run's vault, as if they were old
+   * enough (Control.purge); returns the purged ids. The invariant checks then
+   * expect exactly these to be gone.
+   */
+  async purge(revisionIds: readonly string[]): Promise<string[]> {
+    const purged = await this.control.purge(this.context.vaultId, revisionIds);
+    this.context.log(`retention purged ${purged.map((id) => this.context.ids.label(id)).join(", ") || "nothing"}`);
+    return purged;
+  }
+
+  /**
    * Ends the run: lifts every fault, lets in-flight work finish, has every
    * client pull, and checks the invariants against the server's database.
    */

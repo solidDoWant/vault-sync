@@ -60,10 +60,19 @@ While signed in and connected, the plugin syncs on its own:
 
 - When sync starts (Obsidian starting, the plugin enabled, a sign-in, a vault connected), it pulls the server's changes and then pushes every local change made since the last sync, including changes made while Obsidian was closed or the plugin was off.
 - 2 seconds after your last edit, it pushes. A burst of edits becomes one revision.
-- Every 30 seconds it pulls and pushes, which brings in changes from other devices and retries anything that failed. (A realtime channel will make other devices' changes arrive at once, [#193](https://github.com/solidDoWant/vault-sync/issues/193).)
+- When another device commits a change, the server notifies this device over its realtime channel (a WebSocket to `/v1/realtime` on the configured server), and the plugin pulls at once.
+- Every 30 seconds it pulls and pushes, which retries anything that failed and brings in other devices' changes even while the realtime channel is down.
 - The **Vault Sync: Sync now** command does the same at once.
 
 Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.
+
+### Realtime channel
+
+The realtime channel only makes changes arrive sooner; sync never depends on it (SPEC.md §6.4). Every time the plugin (re)subscribes, it pulls from where it left off, so a change made while it was disconnected is never missed.
+
+- It authenticates with the same access token as the API, sent as the `vaultsync.bearer.` WebSocket subprotocol, never in the URL, and never logged. When the token expires the server closes the connection; the plugin gets a fresh token from its stored sign-in, with no prompt, and reconnects.
+- When the connection drops or the server refuses it (the server restarting or draining, too many connections, the network going away), the plugin reconnects after a random delay that doubles with every consecutive failure, from about a second up to a minute. Meanwhile the 30-second sync keeps running.
+- The server must allow Obsidian's origins (`app://obsidian.md`, `capacitor://localhost`, `http://localhost`; the server allows them by default), and a reverse proxy in front of it must pass WebSocket upgrades on `/v1/realtime` ([configuration](configuration.md)). Without the channel, changes from other devices still arrive within 30 seconds.
 
 ### Status
 
@@ -79,7 +88,36 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
 
-After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy.
+After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy. The [conflict view](#conflicts) lists them.
+
+### Conflicts
+
+When this device and another one changed the same note on the same lines, edited the same attachment, or created a file at the same path, vault-sync keeps both versions and never writes conflict markers into a note. The other device's version stays at the path, and this device's version is kept next to it as a conflict copy, `<name> (conflict <device> <date>).<ext>`. The copy is an ordinary file and syncs to your other devices.
+
+Run **Vault Sync: Show conflicts** to open the conflict view in the right sidebar. It lists each unresolved conflict, newest first, with:
+
+- why it happened and when;
+- a link to the version that stayed in place (it follows the note if it was renamed since) and a link to the conflict copy (Ctrl/Cmd-click opens it in a new tab);
+- **Compare side by side**, which opens the two versions next to each other in a new tab. On a phone, where Obsidian shows one pane at a time, both open and you switch between them.
+
+Copy what you need from the conflict copy into the note, then delete the copy. Deleting (or renaming) the copy resolves the conflict: its entry disappears from the view, and the status no longer counts it. The view only reads the sync journal, so resolving a conflict on another device (deleting the copy there) clears it here too once that delete has synced.
+
+When no conflict-copy name fits the path length limits (a very deep folder), nothing is copied: this device's version stays where it is, unsynced, and the view says so. Move the file to a shorter path to sync it.
+
+A note edited on two devices can also end up with a conflict copy when the two edits do not overlap: if one device was offline for longer than the server keeps old versions (see [History and restore](#history-and-restore)), the version both edits started from may have been removed from the server, so vault-sync cannot merge them and keeps both. The view explains this as "no longer kept on the server".
+
+The view also lists **files this device cannot hold**: documents whose path on the server is not a valid file name on this device's platform, such as `CON.md` or a name with `?` on Windows, or a name longer than 255 bytes anywhere. Each shows its path on the server and why it cannot be written here, and links to the earlier version if this device still has one. Such a document is never dropped or renamed on the server. Rename it on another device and it arrives here. Until then, local changes to its earlier version are not synced.
+
+## History and restore
+
+The server keeps every revision of every file until its retention policy thins old ones out (by default everything for 90 days, then one revision per day for a year, then one per week; see "Retention and history" in [configuration](configuration.md)). A file's current revision is never removed, and neither is the record that a file was deleted.
+
+- **Vault Sync: Show file history** (for the open file), or **Show sync history** in a file's context menu, lists the file's revisions, newest first. Each line shows when the server received the revision, which device made it (`this device`, or another device by the start of its id; the server does not tell other devices' names), and what changed (edited, moved, deleted, restored). Older revisions load with **Load older versions**.
+- Choose a revision to preview it. Text is shown as it is (the start of a very long file only); other files by size.
+- **Restore this version** makes the chosen revision the file's current content again. Nothing is overwritten: the restore is a new revision on top of the current one, so the version it replaces stays in the history, and it reaches your other devices like any edit. Local edits not synced yet are pushed first, so they are in the history too. The file keeps its current name and folder.
+- **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was.
+
+A deleted file cannot be restored while another file has taken its path; move that file away first. History is only available while the vault syncs (signed in and connected).
 
 ## Identity provider setup (Authentik)
 

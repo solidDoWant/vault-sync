@@ -1,0 +1,2 @@
+# Fetched by `helm dependency build` (make chart-lint, make helm); pinned by Chart.lock.
+/charts/

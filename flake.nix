@@ -86,11 +86,37 @@
           libxcb
           libxshmfence
         ];
+
+        # The version stamped into the server binary and used as the image
+        # tag. `make build-images` and `make release` pass the release version
+        # as VAULT_SYNC_VERSION and evaluate with --impure so it can be read
+        # here; it is a build argument, never committed. A pure evaluation
+        # (`nix build .#server`) reads "" and falls back to the git revision.
+        releaseVersion = builtins.getEnv "VAULT_SYNC_VERSION";
+        revision = self.shortRev or self.dirtyShortRev or "";
+        version = if releaseVersion != "" then releaseVersion else revision;
+
+        # The server binary, built with the patched `go` above rather than
+        # nixpkgs' default Go, so the shipped binary carries the same
+        # standard-library fixes as the dev shell (#140). `make build-images`
+        # checks it with `govulncheck -mode=binary`.
+        server = pkgs.callPackage ./nix/server.nix {
+          buildGoModule = pkgs.buildGoModule.override { inherit go; };
+          inherit version;
+        };
+
+        # The OCI image (streamLayeredImage, as in tape-archiver): the server
+        # binary and CA roots.
+        serverImage = pkgs.callPackage ./nix/server-image.nix {
+          inherit server;
+          tag = if version != "" then version else "dev";
+        };
       in
       {
-        # Package and OCI image derivations (nix/*.nix) are added by the
-        # release-tooling issue, following tape-archiver's streamLayeredImage
-        # pattern.
+        packages = requireGitSource {
+          inherit server serverImage;
+          default = server;
+        };
 
         devShells.default = requireGitSource (pkgs.mkShell {
           packages = [
@@ -132,7 +158,11 @@
             # wdio-obsidian-service).
             pkgs.xvfb-run
 
+            # Helm chart lint, render and packaging (make chart-lint, make
+            # helm), and yq for the rendered-manifest assertions in
+            # scripts/chart_test.sh.
             pkgs.kubernetes-helm
+            pkgs.yq-go
           ];
 
           # The loader comes from the same nixpkgs as the libraries, so that

@@ -50,6 +50,8 @@ type control struct {
 	mu      sync.Mutex
 	users   int
 	reports []regressionCase
+	// purged lists, per vault, the revisions runs had retention purge.
+	purged map[uuid.UUID][]purgedRevision
 }
 
 func (control *control) handler() http.Handler {
@@ -57,6 +59,7 @@ func (control *control) handler() http.Handler {
 	mux.HandleFunc("POST /token", control.token)
 	mux.HandleFunc("POST /check", control.check)
 	mux.HandleFunc("POST /report", control.report)
+	mux.HandleFunc("POST /purge", control.purge)
 
 	return http.MaxBytesHandler(mux, maxControlBody)
 }
@@ -128,7 +131,11 @@ func (control *control) check(writer http.ResponseWriter, request *http.Request)
 		return
 	}
 
-	violations, err := checkInvariants(request.Context(), control.db, vaultID, body.Acknowledged)
+	control.mu.Lock()
+	purged := append([]purgedRevision(nil), control.purged[vaultID]...)
+	control.mu.Unlock()
+
+	violations, err := checkInvariants(request.Context(), control.db, vaultID, body.Acknowledged, purged)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 
@@ -136,6 +143,65 @@ func (control *control) check(writer http.ResponseWriter, request *http.Request)
 	}
 
 	respond(writer, map[string]any{"violations": violations})
+}
+
+// purge ages revisions past the retention policy and purges them with the
+// server's own retention code (ageAndPurge), as if the run had lasted that
+// long, and remembers what it purged for the invariant checks. It returns the
+// purged revision ids.
+func (control *control) purge(writer http.ResponseWriter, request *http.Request) {
+	var body struct {
+		VaultID     string   `json:"vaultId"`
+		RevisionIDs []string `json:"revisionIds"`
+	}
+
+	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	vaultID, err := uuid.Parse(body.VaultID)
+	if err != nil {
+		http.Error(writer, "vaultId: "+err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	revisionIDs := make([]uuid.UUID, 0, len(body.RevisionIDs))
+
+	for _, id := range body.RevisionIDs {
+		revisionID, err := uuid.Parse(id)
+		if err != nil {
+			http.Error(writer, "revisionIds: "+err.Error(), http.StatusBadRequest)
+
+			return
+		}
+
+		revisionIDs = append(revisionIDs, revisionID)
+	}
+
+	purged, err := ageAndPurge(request.Context(), control.db, vaultID, revisionIDs)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	control.mu.Lock()
+	if control.purged == nil {
+		control.purged = map[uuid.UUID][]purgedRevision{}
+	}
+
+	control.purged[vaultID] = append(control.purged[vaultID], purged...)
+	control.mu.Unlock()
+
+	ids := make([]string, len(purged))
+	for index, revision := range purged {
+		ids[index] = revision.ID.String()
+	}
+
+	respond(writer, map[string][]string{"purged": ids})
 }
 
 // report writes a minimized failing schedule to the regression directory,

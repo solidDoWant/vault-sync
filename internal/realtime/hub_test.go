@@ -65,19 +65,23 @@ type fakeStore struct {
 	entered chan struct{}
 	gate    chan struct{}
 
-	// vaultRoleErrors makes VaultRole (but not MemberHeadSeq) fail for
-	// a vault, simulating a database error at delivery time.
-	vaultRoleErrors map[uuid.UUID]error
+	// membershipErrors makes the membership check before delivery (but
+	// not MemberHeadSeq) fail for a vault, simulating a database error at
+	// delivery time.
+	membershipErrors map[uuid.UUID]error
+	// membershipQueries counts the membership checks made before
+	// delivery, each one a database round trip.
+	membershipQueries int
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{
-		members:         map[uuid.UUID]map[uuid.UUID]store.Role{},
-		heads:           map[uuid.UUID]int64{},
-		changes:         make(chan store.VaultChange),
-		failListen:      make(chan struct{}),
-		ready:           make(chan struct{}, 16),
-		vaultRoleErrors: map[uuid.UUID]error{},
+		members:          map[uuid.UUID]map[uuid.UUID]store.Role{},
+		heads:            map[uuid.UUID]int64{},
+		changes:          make(chan store.VaultChange),
+		failListen:       make(chan struct{}),
+		ready:            make(chan struct{}, 16),
+		membershipErrors: map[uuid.UUID]error{},
 	}
 }
 
@@ -130,24 +134,42 @@ func (fake *fakeStore) commit(t *testing.T, vaultID uuid.UUID) int64 {
 	return seq
 }
 
-// failVaultRole makes VaultRole fail for vaultID with err; nil clears it.
-func (fake *fakeStore) failVaultRole(vaultID uuid.UUID, err error) {
+// failMembershipLookup makes the membership check before delivery fail for
+// vaultID with err; nil clears it.
+func (fake *fakeStore) failMembershipLookup(vaultID uuid.UUID, err error) {
 	fake.mu.Lock()
 	defer fake.mu.Unlock()
 
-	fake.vaultRoleErrors[vaultID] = err
+	fake.membershipErrors[vaultID] = err
 }
 
-func (fake *fakeStore) VaultRole(_ context.Context, vaultID, user uuid.UUID) (store.Role, error) {
+// queries returns the number of membership checks made before delivery.
+func (fake *fakeStore) queries() int {
 	fake.mu.Lock()
-	err := fake.vaultRoleErrors[vaultID]
-	fake.mu.Unlock()
+	defer fake.mu.Unlock()
 
-	if err != nil {
-		return "", err
+	return fake.membershipQueries
+}
+
+func (fake *fakeStore) VaultMembers(_ context.Context, vaultID uuid.UUID, users []uuid.UUID) (map[uuid.UUID]bool, error) {
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+
+	fake.membershipQueries++
+
+	if err := fake.membershipErrors[vaultID]; err != nil {
+		return nil, err
 	}
 
-	return fake.role(vaultID, user)
+	members := map[uuid.UUID]bool{}
+
+	for _, user := range users {
+		if _, ok := fake.members[vaultID][user]; ok {
+			members[user] = true
+		}
+	}
+
+	return members, nil
 }
 
 func (fake *fakeStore) role(vaultID, user uuid.UUID) (store.Role, error) {
@@ -750,7 +772,7 @@ func TestFailedMembershipLookupDeliversNothing(t *testing.T) {
 
 	// The membership check before delivery fails with a database error,
 	// not ErrVaultNotFound: the notification must not be sent.
-	fixture.store.failVaultRole(vaultID, errors.New("connection reset"))
+	fixture.store.failMembershipLookup(vaultID, errors.New("connection reset"))
 	fixture.store.commit(t, vaultID)
 
 	// Deliveries run one batch at a time, in order. The first commit to
@@ -765,8 +787,51 @@ func TestFailedMembershipLookupDeliversNothing(t *testing.T) {
 
 	// The failure ends no subscription: once lookups succeed again, the
 	// vault's commits are delivered.
-	fixture.store.failVaultRole(vaultID, nil)
+	fixture.store.failMembershipLookup(vaultID, nil)
 	alice.expectVaultChangedAfter(fixture, vaultID)
+}
+
+func TestDeliveryChecksMembershipInOneQueryPerBatchOfUsers(t *testing.T) {
+	restore := realtime.SetMembershipBatch(2)
+	t.Cleanup(restore)
+
+	for _, test := range []struct {
+		name     string
+		subjects []string
+		queries  int
+	}{
+		{name: "one user", subjects: []string{"alice"}, queries: 1},
+		{name: "a full batch", subjects: []string{"alice", "bob"}, queries: 1},
+		{name: "one user more than a batch", subjects: []string{"alice", "bob", "carol"}, queries: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t, fixtureOptions{})
+			vaultID := fixture.store.createVault("alice")
+
+			var clients []*client
+
+			for _, subject := range test.subjects {
+				fixture.store.setMember(vaultID, subject, store.RoleEditor)
+
+				// Two devices per user: still one membership check
+				// per user.
+				for device := range 2 {
+					conn := fixture.connect(t, subject)
+					conn.subscribe(uint64(device+1), vaultID) //nolint:gosec // small test values.
+					clients = append(clients, conn)
+				}
+			}
+
+			before := fixture.store.queries()
+			seq := fixture.store.commit(t, vaultID)
+
+			for _, conn := range clients {
+				conn.expectVaultChanged(vaultID, seq)
+			}
+
+			assert.Equal(t, test.queries, fixture.store.queries()-before)
+		})
+	}
 }
 
 func TestDisconnectReleasesTheConnectionsSubscriptions(t *testing.T) {

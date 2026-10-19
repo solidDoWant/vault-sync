@@ -1,0 +1,62 @@
+/*
+ * Vault Sync plugin styles. Obsidian loads this file next to main.js; it is
+ * shipped in every GitHub release (make release) so BRAT installs it too.
+ * Only Obsidian's CSS variables are used, so every theme applies.
+ */
+
+/* The device-flow code the user types on the identity provider's page. */
+.vault-sync-user-code {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-large);
+  letter-spacing: 0.15em;
+  margin: var(--size-4-3) 0;
+  text-align: center;
+  user-select: all;
+}
+
+.vault-sync-verification-uri {
+  word-break: break-all;
+}
+
+.vault-sync-sign-in-error {
+  color: var(--text-error);
+}
+
+.vault-sync-connect-warning {
+  color: var(--text-warning);
+}
+
+/* The history view (SPEC.md §11): the revision list, then the preview. */
+.vault-sync-history-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  margin-bottom: var(--size-4-3);
+}
+
+.vault-sync-history-entry {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.vault-sync-history-entry:hover,
+.vault-sync-history-entry.is-selected {
+  background-color: var(--background-modifier-hover);
+}
+
+.vault-sync-history-current,
+.vault-sync-history-hint {
+  color: var(--text-muted);
+}
+
+.vault-sync-history-text {
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+
+.vault-sync-history-error {
+  color: var(--text-error);
+}

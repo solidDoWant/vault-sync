@@ -1,6 +1,8 @@
 // Public surface of the platform-independent sync engine (SPEC.md §4). It
 // must never import `obsidian` or src/obsidian (lint-enforced).
 export { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type SyncEngineOptions, type UnmaterializableDocument } from "./engine/engine";
+export { openConflicts, type OpenConflict } from "./engine/conflicts";
+export { RestoreError, type HistoryEntry, type HistoryPage, type RestoreFailure } from "./engine/history";
 export { deferMerge, threeWayMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
 export { classifyByExtension, classifyByExtensions, defaultTextExtensions, RemoteContentError, type PullApi } from "./engine/remote";
 export { sha256Hex } from "./hash";
@@ -54,6 +56,20 @@ export {
   type ProtocolClientOptions,
   type TokenSource,
 } from "./protocol/client";
+export {
+  bearerSubprotocolPrefix,
+  RealtimeClient,
+  realtimeSubprotocol,
+  realtimeUrl,
+  reconnectDelay,
+  type RealtimeBackoff,
+  type RealtimeClientOptions,
+  type RealtimeConnector,
+  type RealtimeSocket,
+  type RealtimeSocketHandlers,
+  type RealtimeTimers,
+} from "./realtime/client";
+export { InMemoryRealtimeConnection, InMemoryRealtimeServer, type InMemoryRealtimeOptions } from "./realtime/memory";
 export { isProtocolCompatible, PROTOCOL_VERSION } from "./version";
 export {
   isVaultError,

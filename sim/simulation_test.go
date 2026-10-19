@@ -13,7 +13,6 @@ import (
 	"debug/buildinfo"
 	"encoding/json"
 	"io"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
@@ -90,56 +89,46 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 	issuer := authtest.NewIssuer(t)
 	key := issuer.AddKey(t, jose.ES256)
 
-	apiAddress := testinfra.FreeAddress(t)
-	metricsAddress := testinfra.FreeAddress(t)
-
-	logs := &bytes.Buffer{}
-	server := testinfra.NewChild(t, binary)
-	server.Command.Env = []string{
-		config.DatabaseURLEnv + "=" + database.DSN,
-		config.ListenAddressEnv + "=" + apiAddress,
-		config.MetricsListenAddressEnv + "=" + metricsAddress,
-		config.OIDCIssuerURLEnv + "=" + issuer.URL,
-		config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
-		config.S3EndpointEnv + "=" + bucket.Endpoint,
-		config.S3RegionEnv + "=" + bucket.Region,
-		config.S3BucketEnv + "=" + bucket.Bucket,
-		config.S3AccessKeyIDFileEnv + "=" + bucket.AccessKeyIDFile,
-		config.S3SecretAccessKeyFileEnv + "=" + bucket.SecretAccessKeyFile,
-		config.S3ForcePathStyleEnv + "=true",
-		// The smallest chunk size the server allows, so the occasional
-		// large content is uploaded in several chunks.
-		config.BlobMaxChunkBytesEnv + "=65536",
-		// Clients that crash or give up abandon upload sessions; a long
-		// run must not hit the per-vault session limit.
-		config.BlobMaxUploadsPerVaultEnv + "=10000",
-		config.LogLevelEnv + "=warn",
-		// Stop at once when the test ends (#96).
-		"VAULT_SYNC_SHUTDOWN_DELAY=0s",
-	}
-	server.Command.Stdout = logs
-	server.Command.Stderr = logs
-
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server logs:\n%s", logs.String())
+	// Starts a new process, with new addresses, if another process took
+	// one of the ports first.
+	apiAddress := testinfra.StartServer(t, "server", 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
+		logs := &bytes.Buffer{}
+		server := testinfra.NewChild(t, binary)
+		server.Command.Env = []string{
+			config.DatabaseURLEnv + "=" + database.DSN,
+			config.ListenAddressEnv + "=" + addresses.API,
+			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+			config.OIDCIssuerURLEnv + "=" + issuer.URL,
+			config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
+			config.S3EndpointEnv + "=" + bucket.Endpoint,
+			config.S3RegionEnv + "=" + bucket.Region,
+			config.S3BucketEnv + "=" + bucket.Bucket,
+			config.S3AccessKeyIDFileEnv + "=" + bucket.AccessKeyIDFile,
+			config.S3SecretAccessKeyFileEnv + "=" + bucket.SecretAccessKeyFile,
+			config.S3ForcePathStyleEnv + "=true",
+			// The smallest chunk size the server allows, so the occasional
+			// large content is uploaded in several chunks.
+			config.BlobMaxChunkBytesEnv + "=65536",
+			// Clients that crash or give up abandon upload sessions; a long
+			// run must not hit the per-vault session limit.
+			config.BlobMaxUploadsPerVaultEnv + "=10000",
+			config.LogLevelEnv + "=warn",
+			// Stop at once when the test ends (#96).
+			"VAULT_SYNC_SHUTDOWN_DELAY=0s",
 		}
-	})
+		server.Command.Stdout = logs
+		server.Command.Stderr = logs
 
-	server.Start(t)
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("server logs:\n%s", logs.String())
+			}
+		})
 
-	require.Eventually(t, func() bool {
-		response, err := http.Get("http://" + metricsAddress + "/readyz")
-		if err != nil {
-			return false
-		}
+		server.Start(t)
 
-		defer func() { _ = response.Body.Close() }()
-
-		_, _ = io.Copy(io.Discard, response.Body)
-
-		return response.StatusCode == http.StatusOK
-	}, 60*time.Second, 50*time.Millisecond, "server must become ready")
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String}
+	}).API
 
 	db, err := pgxpool.New(t.Context(), database.DSN)
 	require.NoError(t, err)

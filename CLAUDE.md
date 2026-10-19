@@ -46,6 +46,9 @@ Run `make help` for the full list (keep it and this section current as targets a
 - `make test-integration-postgres14` — the `./internal/store/` and rolling-upgrade integration tests on PostgreSQL 14, the minimum supported version (`VAULT_SYNC_TEST_POSTGRES_VERSION=14`; needs Docker). Run it when touching migrations or SQL.
 - `make test-sim` — multi-client sync simulation against a real server on PostgreSQL + S3 (`docker compose`; `SIM_SEEDS`, `SIM_STEPS`, `SIM_CLIENTS` tune it, `SIM_SEED=N` replays one seed; see `docs/testing/simulation.md`).
 - `make test-e2e` — plugin e2e in a pinned real Obsidian via `wdio-obsidian-service` (headless via xvfb) against a real server on PostgreSQL + S3 (`docker compose`); `VAULT_SYNC_E2E_MOBILE=1` uses Obsidian's emulated mobile mode. See `docs/testing/e2e.md`.
+- `make build-images` — build the server OCI image with Nix (`nix/`), check its binary with `govulncheck -mode=binary`, load it into Docker and tag it `ghcr.io/soliddowant/vault-sync:$VERSION`; `PUSH_ALL=true` also pushes. Needs Docker. After a `go.mod`/`go.sum` change, update `vendorHash` in `nix/server.nix`.
+- `make chart-lint` — lint `deploy/charts/vault-sync` and check its rendered manifests (`scripts/chart_test.sh`; no cluster). Run it when touching the chart, `docs/configuration.md`'s variables or `docs/deployment.md`. `make helm` packages the chart.
+- `make release VERSION=x.y.z` — dry run of a release (image, chart, plugin assets `main.js`/`manifest.json`/`styles.css`, tag, GitHub release). Never run it with `PUSH_ALL=true`: releasing is the human's call. See `docs/deployment.md`.
 
 ## Dev Tools
 
