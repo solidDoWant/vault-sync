@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
 import type { PathPlatform } from "../vaultpath/platform";
 import type { PushSummary } from "./engine";
-import { files, harness, syncedOnBoth, twoDevices, type Harness } from "./testing";
+import { copyOf, files, harness, syncedOnBoth, twoDevices, type Harness } from "./testing";
 
 // A new file at a path the user just vacated (#254): the user deletes a
 // synced document's file, or renames it away, and before the next push puts
@@ -303,4 +303,142 @@ describe("SyncEngine push of a new file at a just-vacated path (#254)", () => {
       expect(await files(devices.b.vault)).toEqual(live);
     });
   });
+});
+
+/** The distinct paths `documentId`'s live revisions were ever at: whether a rename took it somewhere. */
+function pathsOf(h: Harness, documentId: string): string[] {
+  const decoder = new TextDecoder();
+  return [...new Set(h.server.history(documentId).filter((revision) => !revision.deleted).map((revision) => decoder.decode(revision.path)))];
+}
+
+// The file a rename moves away from a path is that path's known document's
+// only while it is that document's own file (#303): a new file the user
+// created there (before another device's document arrived at the path, or
+// after the user deleted or renamed away the document's own file) is
+// renamed as a new file, never as the document's rename.
+describe("SyncEngine push of a rename of a file that is not the known document at its old path (#303)", () => {
+  for (const platform of platforms) {
+    describe(`under ${platform} rules`, () => {
+      for (const second of [true, false]) {
+        it(`never moves another device's new document at e.md when the user created e.md and renamed it away${second ? ", then renamed another new file onto e.md" : ""}`, async () => {
+          const h = harness({ merge: "default", pathRules: { platform } });
+          await h.vault.write("e.md", bytes("user's first\n"));
+          await h.vault.rename("e.md", "notes/f.md");
+          if (second) {
+            await h.vault.write("x.md", bytes("user's second\n"));
+            await h.vault.rename("x.md", "e.md");
+          }
+          await h.engine.settled();
+          // Another device creates e.md before this one pushes.
+          h.server.commit({ documentId: "R", path: "e.md", content: "remote\n" });
+
+          const summaries = await pushUntilQuiet(h);
+
+          const documents = h.server.liveDocuments();
+          const live = h.server.liveFiles();
+          expect(documents.get("e.md")).toBe("R");
+          expect(pathsOf(h, "R")).toEqual(["e.md"]);
+          expect(contentsOf(h, "R")).toEqual(["remote\n"]);
+          expect(everDeleted(h, "R")).toBe(false);
+          expect(live.get("e.md")).toBe("remote\n");
+          expect(live.get("notes/f.md")).toBe("user's first\n");
+          expect(documents.get("notes/f.md")).not.toBe("R");
+          if (second) {
+            // The user's second note lost e.md to the remote one: it is a conflict copy, a document of its own.
+            const copy = copyOf("e", ".md");
+            expect(live.get(copy)).toBe("user's second\n");
+            expect(new Set(documents.values()).size).toBe(3);
+            expect((await h.journal.listConflicts()).map(({ path, copyPath }) => ({ path, copyPath }))).toEqual([{ path: "e.md", copyPath: copy }]);
+          }
+          expect(live.size).toBe(second ? 3 : 2);
+          expect(await files(h.vault)).toEqual(live);
+          expect(await h.journal.listPending()).toEqual([]);
+          expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+        });
+      }
+
+      it("deletes the document and creates a new one when the user deletes its file, creates another at its path and renames that away", async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "H", path: "h.md", content: "h\n" });
+        await h.engine.pull();
+        await h.vault.delete("h.md");
+        await h.vault.write("h.md", bytes("new\n"));
+        await h.vault.rename("h.md", "moved.md");
+
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.head("H")?.deleted).toBe(true);
+        expect(pathsOf(h, "H")).toEqual(["h.md"]);
+        expect(contentsOf(h, "H")).toEqual(["h\n"]);
+        const documents = h.server.liveDocuments();
+        expect(documents.size).toBe(1);
+        expect(documents.get("moved.md")).toEqual(expect.any(String));
+        expect(documents.get("moved.md")).not.toBe("H");
+        expect(h.server.liveFiles()).toEqual(new Map([["moved.md", "new\n"]]));
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+
+      it("renames a new note once and creates another when, while its create is committed, the user renames it away, creates another at its path and renames that away too", async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        await h.vault.write("s.md", bytes("first\n"));
+        let renamed = false;
+        h.server.interceptor = (method) => {
+          if (method !== "CommitRevision" || renamed) return;
+          renamed = true;
+          void (async () => {
+            await h.vault.rename("s.md", "a.md");
+            await h.vault.write("s.md", bytes("second\n"));
+            await h.vault.rename("s.md", "b.md");
+          })();
+        };
+
+        const summaries = await pushUntilQuiet(h);
+
+        const documents = h.server.liveDocuments();
+        const first = documents.get("a.md");
+        expect(first).toEqual(expect.any(String));
+        expect(pathsOf(h, first ?? "")).toEqual(["s.md", "a.md"]);
+        expect(contentsOf(h, first ?? "")).toEqual(["first\n"]);
+        expect(everDeleted(h, first ?? "")).toBe(false);
+        expect(documents.get("b.md")).toEqual(expect.any(String));
+        expect(documents.get("b.md")).not.toBe(first);
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["a.md", "first\n"],
+            ["b.md", "second\n"],
+          ]),
+        );
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+
+      it("renames the document once and creates a new one when the user renames its file away, creates another at its path and renames that away too", async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "N", path: "n.md", content: "n\n" });
+        await h.engine.pull();
+        await h.vault.rename("n.md", "a.md");
+        await h.vault.write("n.md", bytes("new\n"));
+        await h.vault.rename("n.md", "b.md");
+
+        const summaries = await pushUntilQuiet(h);
+
+        const documents = h.server.liveDocuments();
+        expect(documents.get("a.md")).toBe("N");
+        expect(pathsOf(h, "N")).toEqual(["n.md", "a.md"]);
+        expect(contentsOf(h, "N")).toEqual(["n\n"]);
+        expect(everDeleted(h, "N")).toBe(false);
+        expect(documents.get("b.md")).toEqual(expect.any(String));
+        expect(documents.get("b.md")).not.toBe("N");
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["a.md", "n\n"],
+            ["b.md", "new\n"],
+          ]),
+        );
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+    });
+  }
 });

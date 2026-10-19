@@ -1986,6 +1986,29 @@ export class SyncEngine {
   }
 
   /**
+   * Whether the file at `path` is a document's own file: the journal's live
+   * document there that no local move took away and whose file the user did
+   * not delete, or a pending operation's there (a create the running push
+   * round commits, say). A file the user created there since is no
+   * document's: moved away, it is a new file, never the document's rename
+   * (#303), also when another device's document arrives at `path` before
+   * the push.
+   */
+  private async ownFileAt(path: string): Promise<boolean> {
+    try {
+      const key = this.fileKey(path);
+      // A local rename took that file away already: this one came after it.
+      if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return false;
+      if ((await this.journal.listPending()).some((operation) => !operation.deleted && this.fileKey(operation.path) === key)) return true;
+      const state = await this.documentAt(path);
+      return state !== undefined && !(await this.movedAway(state));
+    } catch {
+      // In doubt, a rename like any other.
+      return true;
+    }
+  }
+
+  /**
    * The known document whose own file a user's delete of `path` removed: the
    * journal's live document there, unless a local move took it away (then
    * the file was another one).
@@ -2010,7 +2033,7 @@ export class SyncEngine {
     }
   }
 
-  private recordChange(event: VaultEvent, deleted?: DeletedFile): void {
+  private recordChange(event: VaultEvent, deleted?: DeletedFile, own = true): void {
     this.changes.paths.add(event.path);
     if (event.type === "rename") {
       this.changes.paths.add(event.oldPath);
@@ -2020,7 +2043,12 @@ export class SyncEngine {
       const origin = vacated ? event.oldPath : (this.changes.renames.get(event.oldPath) ?? this.roundRenames.get(event.oldPath) ?? event.oldPath);
       if (!vacated) this.changes.renames.delete(event.oldPath);
       this.changes.vacated.delete(event.path);
-      if (origin !== event.path) this.changes.renames.set(event.path, origin);
+      // A file that was no document's own file where it was moved from is a
+      // new file at its new path, never a rename of the document the
+      // journal has (or later gets) at its old path (#303).
+      if (origin === event.oldPath && !own) {
+        this.changes.renames.delete(event.path);
+      } else if (origin !== event.path) this.changes.renames.set(event.path, origin);
       // The file is back where it was synced: it was never deleted.
       else this.changes.deleted.delete(this.fileKey(event.path));
     } else if (event.type === "delete" && this.changes.renames.has(event.path)) {
@@ -2070,7 +2098,8 @@ export class SyncEngine {
       // In doubt, report the change: a duplicate report is harmless, a missed edit is not.
     }
     if (echo) return;
-    this.recordChange(event, event.type === "delete" ? await this.deletedFile(event.path) : undefined);
+    if (event.type === "rename") this.recordChange(event, undefined, await this.ownFileAt(event.oldPath));
+    else this.recordChange(event, event.type === "delete" ? await this.deletedFile(event.path) : undefined);
     try {
       this.onLocalChange(event);
     } catch (error) {
