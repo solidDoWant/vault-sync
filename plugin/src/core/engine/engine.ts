@@ -442,6 +442,12 @@ export class SyncEngine {
     } catch (error) {
       if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return this.defer(remote, "path-conflict");
       if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
+      if (isVaultError(error, "changed") && inspection.kind === "clean") {
+        // Saved locally after inspect() checked it (Obsidian's autosave,
+        // say; #163): a local change, so the merge path gets what is there now.
+        const path = remote.deleted ? (inspection.source ?? remote.path) : remote.path;
+        return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+      }
       throw error;
     }
     // A newer revision supersedes one deferred for its path (or this is the
@@ -499,11 +505,19 @@ export class SyncEngine {
     return { kind: "dirty", path: basePath, content: baseContent };
   }
 
-  /** Makes the disk show `remote`, given a clean inspection. Every change is registered for echo suppression first. */
+  /**
+   * Makes the disk show `remote`, given a clean inspection. Every change is
+   * registered for echo suppression first. The write or delete names the
+   * content the inspection found, so the vault refuses it with "changed" if
+   * the file was saved since (SPEC.md §8).
+   */
   private async writeToDisk(remote: RemoteRevision, inspection: Extract<Inspection, { kind: "clean" }>, content: Uint8Array | undefined): Promise<void> {
     const { source } = inspection;
+    const expectedHash = inspection.sourceHash ?? null;
     if (remote.deleted) {
-      if (source !== undefined) await this.echoed(this.echoes.expectDelete(source), () => this.vault.delete(source));
+      if (source === undefined) return;
+      if (expectedHash === null) throw new Error(`no base hash for ${source}`);
+      await this.echoed(this.echoes.expectDelete(source), () => this.vault.delete(source, { expectedHash }));
       return;
     }
     if (source !== undefined && source !== remote.path) {
@@ -512,7 +526,7 @@ export class SyncEngine {
     if (inspection.sourceHash === remote.contentHash) return;
     if (content === undefined) throw new Error(`content of ${remote.revisionId} was not downloaded`);
     await this.matchSpelling(remote.path);
-    await this.echoed(this.echoes.expectWrite(remote.path, remote.contentHash), () => this.vault.write(remote.path, content));
+    await this.echoed(this.echoes.expectWrite(remote.path, remote.contentHash), () => this.vault.write(remote.path, content, { expectedHash }));
   }
 
   /**
@@ -748,7 +762,8 @@ export class SyncEngine {
           // document's file.
           await this.dropOperationsAt(outcome.path, remote.documentId);
           if (!sameContent(await this.readOrNull(outcome.path), remaining)) return false;
-          await this.echoed(this.echoes.expectDelete(outcome.path), () => this.vault.delete(outcome.path));
+          const expectedHash = sha256Hex(remaining);
+          await this.echoed(this.echoes.expectDelete(outcome.path), () => this.vault.delete(outcome.path, { expectedHash }));
         }
       }
       await this.journal.putDeferred({
@@ -762,7 +777,10 @@ export class SyncEngine {
         copyPaths.push(copyPath);
       }
       if (outcome.content === null) {
-        if (current !== null) await this.echoed(this.echoes.expectDelete(local.path), () => this.vault.delete(local.path));
+        if (current !== null) {
+          const expectedHash = sha256Hex(current);
+          await this.echoed(this.echoes.expectDelete(local.path), () => this.vault.delete(local.path, { expectedHash }));
+        }
       } else {
         let there = outcome.path === local.path ? current : await this.readOrNull(outcome.path);
         if (outcome.path !== local.path && current !== null) {
@@ -774,11 +792,14 @@ export class SyncEngine {
         const hash = sha256Hex(merged);
         await this.matchSpelling(outcome.path);
         if (there === null || sha256Hex(there) !== hash) {
-          await this.echoed(this.echoes.expectWrite(outcome.path, hash), () => this.vault.write(outcome.path, merged));
+          const expectedHash = there === null ? null : sha256Hex(there);
+          await this.echoed(this.echoes.expectWrite(outcome.path, hash), () => this.vault.write(outcome.path, merged, { expectedHash }));
         }
       }
     } catch (error) {
-      if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return false;
+      // "changed": the user saved a file after it was read here (#163); the
+      // next merge attempt starts from what they saved.
+      if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists") || isVaultError(error, "changed")) return false;
       throw error;
     }
     // The document's unacknowledged operations are superseded: their commits
@@ -858,7 +879,9 @@ export class SyncEngine {
     const there = await this.readOrNull(copyPath);
     if (there === null || sha256Hex(there) !== hash) {
       const target = copyPath;
-      await this.echoed(this.echoes.expectWrite(target, hash), () => this.vault.write(target, conflict.content));
+      // Only where no file is: one saved there meanwhile is the user's, and
+      // the vault refuses the write ("changed").
+      await this.echoed(this.echoes.expectWrite(target, hash), () => this.vault.write(target, conflict.content, { expectedHash: null }));
     }
     return copyPath;
   }

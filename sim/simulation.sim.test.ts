@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -181,6 +181,24 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.conflicts[0], trace).toEqual([]);
     expect(result.conflicts[1], trace).toEqual([{ reason: "concurrent-create", path: "notes/c.md", copyPath: copy }]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted scenarios: a local save between the engine's check and its change (#163)", () => {
+  it("merges or keeps a save that lands just before the engine's write or delete, never overwriting or deleting it", async () => {
+    const result = await saveBeforeEngineWrite(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    expect(result.savesLanded, trace).toBe(true);
+    const expected = new Map([
+      ["notes/edit.md", "ONE\ntwo\nTHREE\n"],
+      ["notes/gone.md", "keep\nme\nedited\n"],
+      ["notes/merge.md", "ALPHA\nbeta\nGAMMA\nDELTA\n"],
+    ]);
+    // The engines converged on the server's heads (engine-convergence), so these are the server's too.
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.vaults[0], trace).toEqual(expected);
   });
 });
 
