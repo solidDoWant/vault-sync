@@ -120,6 +120,12 @@ Server-side details (decision, #52):
 - **Bounds.** Inbound frames are at most 4 KiB (larger closes with 1009); the inbound rate is 20 frames per second with a burst of the subscription cap plus 32 (excess is a fatal `RESOURCE_EXHAUSTED`); subscriptions per connection, connections per user and connections per replica are capped (`docs/configuration.md`). Each connection's send queue is bounded; a client too slow to drain it, or that does not answer pings, is disconnected rather than buffered. Malformed or text frames are a fatal `INVALID_ARGUMENT`.
 - **Drain.** On shutdown every socket is closed with 1001 ("going away"); clients reconnect with backoff and jitter.
 
+Client-side details (decision, #193):
+
+- **Token.** The plugin offers the token only as the `vaultsync.bearer.` subprotocol, never in the URL, and never logs it. It takes the token from its token manager, which refreshes it ahead of expiry. On the fatal `UNAUTHENTICATED` frame it invalidates that token in the token manager, so the reconnect carries a freshly refreshed one, with no user interaction.
+- **Pull.** It pulls from its durable cursor after every `subscribed` (notifications sent while it was not subscribed are gone) and on every `vault_changed` of its vault. Pulls never overlap: notifications that arrive during a pull cause one more pull after it. The pull timer runs whether or not the channel is up.
+- **Reconnect.** Every close, or a failed upgrade, reconnects after a delay with equal jitter: half of a ceiling that starts at 1 s and doubles with each consecutive failure up to 60 s, plus a uniformly random part of the other half. A successful `subscribed` resets it. A browser does not expose a refused upgrade's HTTP status (401, 429, 503 all look like a 1006 close), so these back off alike; a token the server no longer accepts is also invalidated by the next RPC that fails as unauthenticated. A non-fatal error frame for the vault (`NOT_FOUND` after a membership change, say) drops the connection and retries with the same backoff.
+
 ## 7. Merge rules (client side)
 
 Classification is by extension and is configurable:

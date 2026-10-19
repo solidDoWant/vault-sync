@@ -146,6 +146,8 @@ export interface SyncControllerOptions {
   syncIntervalMs: number | null;
   /** The local platform's file-name rules, passed to every session (SyncSessionOptions.pathRules). */
   pathRules?: PathRules;
+  /** The realtime channel to the session's server (serverBaseUrl), if any (SyncSessionOptions.realtime). */
+  realtime?: (serverUrl: string) => SyncSessionOptions["realtime"];
   onStatus: (status: SyncStatus) => void;
   /** Builds the session; tests replace it to observe sessions. Defaults to `new SyncSession(options)`. */
   createSession?: (options: SyncSessionOptions) => SyncSession;
@@ -249,7 +251,9 @@ export class SyncController {
         return;
       }
       const deviceName = data.deviceName.trim() === "" ? this.options.defaultDeviceName : data.deviceName.trim();
+      const realtime = this.options.realtime?.(serverBaseUrl(data));
       const sessionOptions: SyncSessionOptions = {
+        ...(realtime === undefined ? {} : { realtime }),
         vaultId: wanted.vault.id,
         deviceId,
         deviceName,
