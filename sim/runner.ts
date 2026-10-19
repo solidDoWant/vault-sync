@@ -15,7 +15,7 @@ import { ScriptedClient, type Acknowledgement, type RunContext, type Violation }
 import { Control } from "./control";
 import { EngineObserver, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
-import { checkLostWrites, checkPhantomDeletes, serverFeed } from "./invariants";
+import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed } from "./invariants";
 import { settle, SimNetwork, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 
@@ -92,7 +92,15 @@ export class SimRun {
 
     const ids = new Ids();
     const trace: string[] = [];
-    const network = new SimNetwork({ describeRequest: (method, input) => describeRequest(ids, method, input), describeOutcome: (method, outcome) => describeOutcome(ids, method, outcome) });
+    let serverSeq = 0n;
+    const network = new SimNetwork({
+      describeRequest: (method, input) => describeRequest(ids, method, input),
+      describeOutcome: (method, outcome) => describeOutcome(ids, method, outcome),
+      observeOutcome: (method, outcome) => {
+        const seq = replySeq(method, outcome);
+        if (seq !== undefined && seq > serverSeq) serverSeq = seq;
+      },
+    });
     const run: { stepNumber: () => number } = { stepNumber: () => 0 };
     const context: RunContext = {
       vaultId: vault.id,
@@ -102,6 +110,7 @@ export class SimRun {
       violations: [],
       log: (entry) => trace.push(`${String(run.stepNumber())}: ${entry}`),
       stepNumber: () => run.stepNumber(),
+      serverSeq: () => serverSeq,
     };
     const clients: ScriptedClient[] = [];
     for (let index = 0; index < options.clients; index++) {
@@ -217,7 +226,7 @@ export class SimRun {
     this.context.violations.push({ invariant: "liveness", detail: `the engines still committed after ${String(maxPushRounds)} rounds of pushes` });
   }
 
-  /** The user-visible invariants (sim/invariants.ts): no lost write, no file gone without a delete. */
+  /** The user-visible invariants (sim/invariants.ts): no lost write, no file gone without a delete, no delete undone without a user's change. */
   private async checkUsers(): Promise<Violation[]> {
     const feed = await serverFeed(this.direct, this.context.vaultId);
     const sizes = new Map(feed.map((revision) => [revision.contentHash, revision.size]));
@@ -245,6 +254,8 @@ export class SimRun {
     const scripted = new Set(this.clients.map((client) => client.deviceId));
     const engines = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, deletedDocuments: observer.ledger.deletedDocuments }));
     violations.push(...checkPhantomDeletes(feed, scripted, engines, (id) => this.context.ids.label(id)));
+    const changes = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, platform: observer.platform, changes: observer.ledger.changes }));
+    violations.push(...checkResurrections(feed, scripted, changes, (id) => this.context.ids.label(id)));
     return violations;
   }
 
@@ -333,6 +344,14 @@ function describeRequest(ids: Ids, method: string, input: unknown): string {
     default:
       return method;
   }
+}
+
+/** The server's head seq a reply shows: a committed revision's seq, or the feed's head. */
+function replySeq(method: string, outcome: Outcome): bigint | undefined {
+  if (!outcome.ok) return undefined;
+  const message = ((outcome.value as { message?: unknown }).message ?? {}) as Fields;
+  const seq = method === "CommitRevision" ? ((message.revision ?? {}) as Fields).seq : method === "ListChanges" ? message.headSeq : undefined;
+  return typeof seq === "bigint" ? seq : undefined;
 }
 
 function describeOutcome(ids: Ids, method: string, outcome: Outcome): string {

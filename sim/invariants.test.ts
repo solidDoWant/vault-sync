@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkEngineEchoes, checkLostWrites, checkPhantomDeletes, UserLedger, type FeedRevision } from "./invariants";
+import { checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
 
 const at = "step 1";
 
@@ -50,6 +50,82 @@ describe("checkLostWrites", () => {
     ledger.replace("bb");
     ledger.merged("aa", "cc");
     expect(ledger.owed()).toEqual(new Set(["aa", "cc"]));
+  });
+});
+
+describe("checkResurrections", () => {
+  const label = (id: string) => id;
+  const revision = (overrides: Partial<FeedRevision>): FeedRevision => ({
+    revisionId: "r",
+    documentId: "d1",
+    seq: 1n,
+    path: "a.md",
+    deleted: false,
+    deviceId: "engine",
+    contentHash: "aa",
+    size: 1n,
+    ...overrides,
+  });
+  const write = (path: string, hash: string, serverSeq: bigint): UserChange => ({ paths: [path], result: { path, hash }, serverSeq, at });
+  const resurrections = (feed: FeedRevision[], changes: UserChange[], platform: EngineChanges["platform"] = "posix") =>
+    checkResurrections(feed, new Set(["scripted"]), [{ name: "e1", deviceId: "engine", platform, changes }], label).map((violation) => violation.detail);
+  // d1 is created by a scripted client at seq 1 and deleted by it at seq 2; the engine brings it back at seq 3, with bb.
+  const deletedThenBack = (back: Partial<FeedRevision> = {}) => [
+    revision({ deviceId: "scripted" }),
+    revision({ seq: 2n, deleted: true, deviceId: "scripted", contentHash: "" }),
+    revision({ seq: 3n, revisionId: "r3", contentHash: "bb", ...back }),
+  ];
+  // The engine's own d1: aa, committed at seq 1, deleted by a scripted client at seq 2, brought back with aa at seq 3.
+  const ownThenBack = () => [revision({}), revision({ seq: 2n, deleted: true, deviceId: "scripted", contentHash: "" }), revision({ seq: 3n, revisionId: "r3" })];
+
+  it("reports an engine that brings a deleted document back although its user changed no file of it", () => {
+    expect(resurrections(deletedThenBack(), [])).toEqual(["e1 brought back d1 at a.md (seq 3, r3) after its delete at a.md (seq 2) although its user changed no file of it since"]);
+    // A change at another path does not explain it.
+    expect(resurrections(deletedThenBack(), [write("b.md", "bb", 1n)])).toHaveLength(1);
+  });
+
+  it("accepts a document brought back by a scripted client, or by the engine of a user who edited, re-created or renamed its file", () => {
+    expect(resurrections(deletedThenBack({ deviceId: "scripted" }), [])).toEqual([]);
+    // Edited concurrently with the delete (before it), or re-created after it.
+    expect(resurrections(deletedThenBack(), [write("a.md", "bb", 1n)])).toEqual([]);
+    expect(resurrections(deletedThenBack(), [write("a.md", "bb", 2n)])).toEqual([]);
+    // Renamed from the document's path to a new one, where it comes back.
+    expect(resurrections(deletedThenBack({ path: "c.md" }), [{ paths: ["a.md", "c.md"], result: { path: "c.md", hash: "aa" }, serverSeq: 1n, at }])).toEqual([]);
+  });
+
+  it("does not count a change made once the document was back", () => {
+    expect(resurrections(deletedThenBack(), [write("a.md", "bb", 3n)])).toHaveLength(1);
+    expect(resurrections(deletedThenBack(), [write("a.md", "bb", 2n)])).toEqual([]);
+  });
+
+  it("does not count a change the engine had already committed before the delete", () => {
+    // The user wrote aa before seq 1, which committed it.
+    expect(resurrections(ownThenBack(), [write("a.md", "aa", 0n)])).toHaveLength(1);
+    // Committed with a later change's content: the earlier change is carried too.
+    expect(resurrections(ownThenBack(), [write("a.md", "a0", 0n), write("a.md", "aa", 0n)])).toHaveLength(1);
+    // A later change the engine had not committed explains it.
+    expect(resurrections(ownThenBack(), [write("a.md", "aa", 0n), write("a.md", "ab", 1n)])).toEqual([]);
+    // The engine committed other content after the change, which it then still owed.
+    expect(resurrections(ownThenBack(), [write("a.md", "a0", 0n)])).toEqual([]);
+  });
+
+  it("does not count a change the engine's own tombstone superseded", () => {
+    // The user wrote a.md, then deleted it (the engine's tombstone at seq 2): bringing it back needs a new change.
+    const feed = [revision({}), revision({ seq: 2n, deleted: true, contentHash: "" }), revision({ seq: 3n, revisionId: "r3" })];
+    expect(resurrections(feed, [write("a.md", "a0", 0n)])).toHaveLength(1);
+    expect(resurrections(feed, [write("a.md", "a0", 0n), write("a.md", "aa", 2n)])).toEqual([]);
+  });
+
+  it("matches paths as the engine's platform does", () => {
+    expect(resurrections(deletedThenBack(), [write("A.md", "bb", 1n)], "posix")).toHaveLength(1);
+    expect(resurrections(deletedThenBack(), [write("A.md", "bb", 1n)], "windows")).toEqual([]);
+  });
+
+  it("reports a document brought back by a device no client of the run uses, and ignores live revisions after live ones", () => {
+    expect(resurrections(deletedThenBack({ deviceId: "stranger" }), [write("a.md", "bb", 1n)])).toEqual([
+      "unknown device stranger brought back d1 at a.md (seq 3, r3) after its delete at a.md (seq 2) although no client of the run uses that device",
+    ]);
+    expect(resurrections([revision({ deviceId: "stranger" }), revision({ seq: 2n, deviceId: "stranger" })], [])).toEqual([]);
   });
 });
 

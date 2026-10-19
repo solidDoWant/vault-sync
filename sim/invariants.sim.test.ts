@@ -3,12 +3,14 @@
 // rules among other platforms; a seed replays identically; and each new
 // check catches the bug it exists for, injected as a mutation (an engine
 // that loses a user's write, one that drops a file, one that reports its own
-// write as the user's on a case-insensitive platform). Runs from
+// write as the user's on a case-insensitive platform, one that skips a
+// remote delete and pushes the file back, #276). Runs from
 // `make test-sim` (sim/simulation_test.go).
 
 import { describe, expect, it } from "vitest";
 
 import { simEnvironment } from "./environment";
+import { serverFeed } from "./invariants";
 import { settle } from "./network";
 import { runSeed, SimRun, type RunResult, type SimEndpoints } from "./runner";
 
@@ -72,6 +74,91 @@ async function macosUserWritesAnotherSpelling(endpoints: SimEndpoints, mutate: (
   await drain();
   return { result: await run.finish(), run };
 }
+
+/**
+ * Two POSIX engines (#276): `e1` creates `notes/a.md` and `notes/b.md`, `e2`
+ * syncs both, `before` runs, `e1`'s user deletes `notes/b.md` and pushes,
+ * `e2` pulls the delete, `after` runs, and `e2` crashes, so its next push is
+ * a full scan, and pushes.
+ */
+async function deleteOnFirstEngine(endpoints: SimEndpoints, before: (run: SimRun) => Promise<string>, after: (run: SimRun) => Promise<string>): Promise<{ result: RunResult; run: SimRun }> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const drain = async () => {
+    await settle();
+    await run.drain();
+  };
+  run.context.log(await first.edit("notes/a.md", encoder.encode("a\n")));
+  run.context.log(await first.edit("notes/b.md", encoder.encode("b\n")));
+  run.context.log(first.startPush());
+  await drain();
+  run.context.log(second.startPull());
+  await drain();
+  run.context.log(await before(run));
+  run.context.log(await first.remove("notes/b.md"));
+  run.context.log(first.startPush());
+  await drain();
+  run.context.log(second.startPull());
+  await drain();
+  run.context.log(await after(run));
+  run.context.log(second.crash());
+  run.context.log(second.startPush());
+  await drain();
+  return { result: await run.finish(), run };
+}
+
+const nothing = () => Promise.resolve("nothing");
+
+/** The paths at which the feed has a live revision right after a tombstone of the same document. */
+async function broughtBack(run: SimRun): Promise<string[]> {
+  const feed = await serverFeed(run.direct, run.context.vaultId);
+  const deleted = new Map<string, boolean>();
+  const paths: string[] = [];
+  for (const revision of feed) {
+    if (!revision.deleted && deleted.get(revision.documentId) === true) paths.push(revision.path);
+    deleted.set(revision.documentId, revision.deleted);
+  }
+  return paths;
+}
+
+describe.runIf(suites.has("scenarios"))("resurrected deletes (#276)", () => {
+  it("passes the resurrection scenario without a mutation: the delete stays applied everywhere", async () => {
+    const { result, run } = await deleteOnFirstEngine(environment, nothing, nothing);
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    expect(await run.observers[0]?.list(), trace).toEqual(["notes/a.md"]);
+    expect(await run.observers[1]?.list(), trace).toEqual(["notes/a.md"]);
+    expect(await broughtBack(run), trace).toEqual([]);
+  });
+
+  it("catches an engine that skips applying a remote delete to its disk and pushes the file back (resurrected-delete)", async () => {
+    const { result, run } = await deleteOnFirstEngine(environment, (run) => Promise.resolve(run.observers[1]?.keepFileOnNextDelete("notes/b.md") ?? ""), nothing);
+    const trace = tail(result.trace);
+    // Every vault converged on the resurrected note: only the new check sees the bug.
+    expect(invariants(result), trace).toEqual(["resurrected-delete"]);
+    expect(result.violations[0]?.detail, trace).toMatch(/^e2 brought back .* at notes\/b\.md .* after its delete at notes\/b\.md .* although its user changed no file of it since$/);
+    expect(await run.observers[0]?.list(), trace).toEqual(["notes/a.md", "notes/b.md"]);
+    expect(await broughtBack(run), trace).toEqual(["notes/b.md"]);
+  });
+
+  it("accepts a delete undone by the other engine's user's concurrent edit, which wins (SPEC.md §4)", async () => {
+    const { result, run } = await deleteOnFirstEngine(environment, async (run) => (await run.observers[1]?.edit("notes/b.md", encoder.encode("b\nedited while deleted elsewhere\n"))) ?? "", nothing);
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    // The edit brought the note back on the engine that deleted it.
+    expect(new TextDecoder().decode(await run.observers[0]?.read("notes/b.md")), trace).toBe("b\nedited while deleted elsewhere\n");
+    expect(await broughtBack(run), trace).toEqual(["notes/b.md"]);
+  });
+
+  it("accepts a deleted note the other engine's user creates again at its path (SPEC.md §8)", async () => {
+    const { result, run } = await deleteOnFirstEngine(environment, nothing, async (run) => (await run.observers[1]?.edit("notes/b.md", encoder.encode("b, written again\n"))) ?? "");
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    expect(new TextDecoder().decode(await run.observers[0]?.read("notes/b.md")), trace).toBe("b, written again\n");
+    expect(await broughtBack(run), trace).toEqual(["notes/b.md"]);
+  });
+});
 
 describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
   it("keeps every invariant when engines' users make random changes under faults, with Windows rules among the engines", async () => {

@@ -53,6 +53,11 @@ export interface RunContext {
   log: (entry: string) => void;
   /** The schedule step being executed. */
   stepNumber: () => number;
+  /**
+   * The server's head seq: the highest seq any reply has carried. Every call
+   * goes through the network, which sees every reply, so it is exact.
+   */
+  serverSeq: () => bigint;
 }
 
 /**
