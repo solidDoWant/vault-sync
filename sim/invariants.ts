@@ -14,13 +14,19 @@
 //   scripted client (which deletes only when its schedule says so) or by an
 //   engine whose user deleted that document's file. No file disappears
 //   without a delete.
+// - `engine-echo`: every change an engine reported as local (its
+//   onLocalChange events) is at a path its user changed. The engine's own
+//   writes, renames and deletes must never be reported (echo suppression).
 //
 // The checks are pure functions over recorded data, unit tested in
 // invariants.test.ts.
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
+import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
+import type { VaultEvent } from "../plugin/src/core/vault/adapter";
+import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { Violation } from "./client";
 
 /** A user's write: content they created or edited, which they may expect to find again. */
@@ -137,6 +143,27 @@ export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevic
       invariant: "phantom-delete",
       detail: `${engine?.name ?? `unknown device ${revision.deviceId}`} deleted ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) although ${engine === undefined ? "no client" : "its user never"} deleted it`,
     });
+  }
+  return violations;
+}
+
+/**
+ * `engine-echo`: the local changes `engine` reported at a path its user never
+ * changed, i.e. its own writes, renames and deletes it took for the user's.
+ * `touched` holds the paths the user changed, as the user spelled them. On a
+ * case-insensitive platform (windows, macos) the vault resolves another
+ * spelling to the same file and reports the change under the file's own
+ * spelling (#247): the user's write of `STRASSE.md` over `straße.md` is a
+ * modify of `straße.md`. So paths match as the engine's vault matches them:
+ * by path key there (SPEC.md §5), exactly under posix.
+ */
+export function checkEngineEchoes(engine: string, events: readonly VaultEvent[], touched: ReadonlySet<string>, platform: PathPlatform): Violation[] {
+  const key = platform === "posix" ? (path: string) => path : pathKey;
+  const touchedKeys = new Set([...touched].map(key));
+  const violations: Violation[] = [];
+  for (const event of events) {
+    if (touchedKeys.has(key(event.path))) continue;
+    violations.push({ invariant: "engine-echo", detail: `${engine} reported its own ${event.type} of ${event.path} as a local change` });
   }
   return violations;
 }

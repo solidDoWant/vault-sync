@@ -2,7 +2,8 @@
 // whose users make random changes keep every invariant, also under Windows
 // rules among other platforms; a seed replays identically; and each new
 // check catches the bug it exists for, injected as a mutation (an engine
-// that loses a user's write, one that drops a file). Runs from
+// that loses a user's write, one that drops a file, one that reports its own
+// write as the user's on a case-insensitive platform). Runs from
 // `make test-sim` (sim/simulation_test.go).
 
 import { describe, expect, it } from "vitest";
@@ -41,6 +42,35 @@ async function twoEngines(endpoints: SimEndpoints, mutate: (run: SimRun) => Prom
   run.context.log(second.startPush());
   await drain();
   return run.finish();
+}
+
+/**
+ * A POSIX engine and a macOS one (#247). `e1` creates `straße.md` and
+ * `notes/b.md`; `e2` syncs both, then its user writes `STRASSE.md`, which
+ * the macOS vault resolves to `straße.md` and reports as a modify of it.
+ * `mutate` gets the run after that write; then `e2` pushes and `e1` pulls.
+ */
+async function macosUserWritesAnotherSpelling(endpoints: SimEndpoints, mutate: (run: SimRun) => Promise<string>): Promise<{ result: RunResult; run: SimRun }> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "macos"] });
+  const [posix, macos] = run.observers;
+  if (posix === undefined || macos === undefined) throw new Error("the run has two engines");
+  const drain = async () => {
+    await settle();
+    await run.drain();
+  };
+  run.context.log(await posix.edit("straße.md", encoder.encode("one\n")));
+  run.context.log(await posix.edit("notes/b.md", encoder.encode("b\n")));
+  run.context.log(posix.startPush());
+  await drain();
+  run.context.log(macos.startPull());
+  await drain();
+  run.context.log(await macos.edit("STRASSE.md", encoder.encode("one\nedited on macos\n")));
+  run.context.log(await mutate(run));
+  run.context.log(macos.startPush());
+  await drain();
+  run.context.log(posix.startPull());
+  await drain();
+  return { result: await run.finish(), run };
 }
 
 describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
@@ -111,6 +141,24 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(invariants(result), tail(result.trace)).toEqual(["lost-write"]);
     expect(result.violations[0]?.detail).toContain("e2's user wrote");
     expect(result.violations[0]?.detail).toContain("to notes/a.md");
+  });
+
+  it("attributes to the user a write the macOS vault reports under the file's own spelling, which the engine pushes as an edit (#247)", async () => {
+    const { result, run } = await macosUserWritesAnotherSpelling(environment, () => Promise.resolve("no mutation"));
+    const trace = tail(result.trace);
+
+    expect(result.violations, trace).toEqual([]);
+    // The write is an edit of the synced note, under the note's own spelling, on both engines.
+    expect(await run.observers[1]?.list(), trace).toEqual(["notes/b.md", "straße.md"]);
+    expect(await run.observers[0]?.list(), trace).toEqual(["notes/b.md", "straße.md"]);
+    expect(new TextDecoder().decode(await run.observers[0]?.read("straße.md")), trace).toBe("one\nedited on macos\n");
+  });
+
+  it("still catches an engine that reports its own write as a local change on a case-insensitive platform (engine-echo)", async () => {
+    // An engine write of the content the file already has, not suppressed: reported at notes/b.md, which the user never changed under any spelling.
+    const { result } = await macosUserWritesAnotherSpelling(environment, async (run) => run.observers[1]?.overwriteBehindUser("NOTES/B.md", encoder.encode("b\n")) ?? "");
+    expect(invariants(result), tail(result.trace)).toEqual(["engine-echo"]);
+    expect(result.violations.map((violation) => violation.detail)).toEqual(["e2 reported its own modify of notes/b.md as a local change"]);
   });
 
   it("catches an engine that drops a file its user never deleted (phantom-delete)", async () => {

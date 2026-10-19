@@ -32,7 +32,7 @@ import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
-import { UserLedger } from "./invariants";
+import { checkEngineEchoes, UserLedger } from "./invariants";
 import { errorCode } from "./network";
 import { Random } from "./random";
 import type { EngineOperation } from "./schedule";
@@ -296,10 +296,7 @@ export class EngineObserver {
       if (deferred.reason === "unmaterializable") continue;
       violations.push({ invariant: "engine-deferred", detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes` });
     }
-    for (const event of this.localChanges) {
-      if (this.userEdited.has(event.path)) continue;
-      violations.push({ invariant: "engine-echo", detail: `${this.name} reported its own ${event.type} of ${event.path} as a local change` });
-    }
+    violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEdited, this.platform));
     for (const violation of violations) this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
     return violations;
   }
