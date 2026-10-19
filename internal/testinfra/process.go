@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -170,18 +169,4 @@ func BuildServer(t testing.TB, repoRoot string, tags ...string) string {
 	require.NoError(t, err, "go build: %s", output)
 
 	return binary
-}
-
-// FreeAddress returns a loopback address with a port that was free a moment
-// ago.
-func FreeAddress(t testing.TB) string {
-	t.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	address := listener.Addr().String()
-	require.NoError(t, listener.Close())
-
-	return address
 }
