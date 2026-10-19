@@ -23,18 +23,6 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/testinfra"
 )
 
-func freeAddress(t *testing.T) string {
-	t.Helper()
-
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	require.NoError(t, err)
-
-	address := listener.Addr().String()
-	require.NoError(t, listener.Close())
-
-	return address
-}
-
 func buildServer(t *testing.T) string {
 	t.Helper()
 
@@ -70,41 +58,41 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	database := testinfra.PostgresConfig(t)
 	binary := buildServer(t)
 
-	apiAddress := freeAddress(t)
-	metricsAddress := freeAddress(t)
+	var server *child
 
-	var logs bytes.Buffer
+	// Starts a new process, with new addresses, if another process took
+	// one of the ports first.
+	started := testinfra.StartServer(t, "server", 30*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
+		logs := &bytes.Buffer{}
 
-	server := newChild(t, binary)
-	server.Command.Env = []string{
-		config.DatabaseURLEnv + "=" + database.DSN,
-		config.ListenAddressEnv + "=" + apiAddress,
-		config.MetricsListenAddressEnv + "=" + metricsAddress,
-		config.ShutdownDelayEnv + "=2s",
-		config.ShutdownTimeoutEnv + "=20s",
-		// The issuer is contacted only to authenticate a request, so an
-		// unreachable one does not prevent startup.
-		config.OIDCIssuerURLEnv + "=http://127.0.0.1:1/",
-		config.OIDCAudienceEnv + "=vault-sync",
-	}
-	server.Command.Stdout = &logs
-	server.Command.Stderr = &logs
-
-	// Registered before the server's cleanup, so it runs after the server
-	// has been stopped and its output collected.
-	t.Cleanup(func() {
-		if t.Failed() {
-			t.Logf("server logs:\n%s", logs.String())
+		server = newChild(t, binary)
+		server.Command.Env = []string{
+			config.DatabaseURLEnv + "=" + database.DSN,
+			config.ListenAddressEnv + "=" + addresses.API,
+			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+			config.ShutdownDelayEnv + "=2s",
+			config.ShutdownTimeoutEnv + "=20s",
+			// The issuer is contacted only to authenticate a request, so an
+			// unreachable one does not prevent startup.
+			config.OIDCIssuerURLEnv + "=http://127.0.0.1:1/",
+			config.OIDCAudienceEnv + "=vault-sync",
 		}
+		server.Command.Stdout = logs
+		server.Command.Stderr = logs
+
+		// Registered before the server's cleanup, so it runs after the
+		// server has been stopped and its output collected.
+		t.Cleanup(func() {
+			if t.Failed() {
+				t.Logf("server logs:\n%s", logs.String())
+			}
+		})
+
+		server.Start(t)
+
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String}
 	})
-
-	server.Start(t)
-
-	require.Eventually(t, func() bool {
-		status, err := httpGet("http://" + metricsAddress + "/readyz")
-
-		return err == nil && status == http.StatusOK
-	}, 30*time.Second, 50*time.Millisecond, "server must become ready")
+	apiAddress, metricsAddress := started.API, started.Metrics
 
 	status, err := httpGet("http://" + metricsAddress + "/healthz")
 	require.NoError(t, err)
