@@ -171,6 +171,17 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 			return Revision{}, ErrRevisionConflict
 		}
 
+		if refuseAppliedRetryAfterHeadMoved {
+			document, err := vault.document(ctx, tx, existing.DocumentID, "")
+			if err != nil {
+				return Revision{}, err
+			}
+
+			if document.HeadRevID != existing.ID {
+				return Revision{}, &HeadMovedError{Document: document}
+			}
+		}
+
 		return existing, nil
 	case !errors.Is(err, ErrNotFound):
 		return Revision{}, err

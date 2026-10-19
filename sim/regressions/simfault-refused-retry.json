@@ -1,0 +1,151 @@
+{
+  "name": "simfault-refused-retry",
+  "seed": 2,
+  "clients": 3,
+  "commitRetryBackoff": 30,
+  "violations": [
+    {
+      "invariant": "protocol",
+      "detail": "#9 c1 CommitRevision(c1.d1 c1.r1 base=- \"b.md\" blob=a8d45a1b) was refused with FailedPrecondition, although the server already applied this revision id (a retry must get the revision back)"
+    },
+    {
+      "invariant": "protocol",
+      "detail": "c1 CommitRevision for create of c1.d1 failed with FailedPrecondition: base_rev_id is not the document's head; pull, merge and retry with the current head (attached as a Document detail)"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 3058683447
+    },
+    {
+      "kind": "drop-response",
+      "pick": 250736345
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 3657679721
+    },
+    {
+      "kind": "partition",
+      "client": 1,
+      "steps": 10
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 3234105898
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 656273471
+    },
+    {
+      "kind": "drop-response",
+      "pick": 28671045
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 1186960900
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 4190476395
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "pull",
+      "arg": 1126447285
+    },
+    {
+      "kind": "drop-response",
+      "pick": 2006907478
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "delete",
+      "arg": 478578250
+    },
+    {
+      "kind": "deliver-request"
+    }
+  ]
+}

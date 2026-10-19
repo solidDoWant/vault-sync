@@ -60,11 +60,16 @@ export const stepWeights: Readonly<Record<StepKind, number>> = {
   // An operation takes several round trips (a blob upload, then the
   // commit), so deliveries dominate; faults are frequent enough that most
   // operations of a long schedule meet one, rare enough that most finish.
-  operation: 24,
-  "deliver-request": 30,
-  "deliver-response": 30,
+  // Tuned for commits and conflicts per seed (#110). A client has one call in
+  // flight at a time, and a delivery step finds nothing of its kind about a
+  // third of the time, so delivery steps bound the yield and the weights move
+  // it only a little. A delay stalls a whole operation, so it is rarer than
+  // the other faults.
+  operation: 28,
+  "deliver-request": 34,
+  "deliver-response": 34,
   reorder: 3,
-  delay: 3,
+  delay: 1.5,
   "drop-request": 2,
   "drop-response": 3,
   partition: 0.75,
@@ -86,9 +91,10 @@ export const engineOperationWeights: Readonly<Record<EngineOperation, number>> =
 /** Relative frequency of each operation. */
 export const operationWeights: Readonly<Record<Operation, number>> = {
   create: 25,
-  edit: 40,
-  rename: 10,
-  delete: 10,
+  // Edits of known documents race other clients' commits (FAILED_PRECONDITION).
+  edit: 45,
+  rename: 12,
+  delete: 8,
   pull: 15,
 };
 

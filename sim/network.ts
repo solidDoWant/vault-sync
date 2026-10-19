@@ -21,6 +21,8 @@ interface Message {
   method: string;
   /** Symbolic description of the request for the trace. */
   description: string;
+  /** The revision id of a CommitRevision request. */
+  revisionId?: string;
   phase: "request" | "response";
   /** Step number before which the message cannot be delivered. */
   heldUntil: number;
@@ -34,9 +36,19 @@ export interface NetworkOptions {
   describeRequest: (method: string, input: unknown) => string;
   /** Describes a server reply for the trace. */
   describeOutcome: (method: string, outcome: Outcome) => string;
+  /** Reports a broken protocol guarantee the network observed on the wire. */
+  violation: (invariant: string, detail: string) => void;
+  /**
+   * Steps a CommitRevision retry (a request with a revision id sent before)
+   * waits before it can be delivered; 0 or unset delivers retries at once.
+   */
+  commitRetryBackoff?: number;
   /** Sees every server reply as the server sends it, before any fault can lose it. */
   observeOutcome?: (method: string, outcome: Outcome) => void;
 }
+
+/** CommitRevision refusals that a retry of a revision the server already applied must never get (SPEC.md §6.2). */
+const refusedRetryCodes: readonly Code[] = [Code.FailedPrecondition, Code.AlreadyExists];
 
 /** Thrown to a client whose request or response the network lost. */
 export function networkError(reason: string): ConnectError {
@@ -46,6 +58,12 @@ export function networkError(reason: string): ConnectError {
 /** The status code of a call's failure (UNKNOWN for non-Connect errors). */
 export function errorCode(error: unknown): Code {
   return ConnectError.from(error).code;
+}
+
+
+function revisionIdOf(input: unknown): string | undefined {
+  const revisionId = (input as { revisionId?: unknown } | undefined)?.revisionId;
+  return typeof revisionId === "string" && revisionId !== "" ? revisionId : undefined;
 }
 
 /** Lets clients run until they block on their next call or finish. */
@@ -62,6 +80,14 @@ export class SimNetwork {
   private messages: Message[] = [];
   private readonly incarnations = new Map<number, number>();
   private readonly partitionedUntil = new Map<number, number>();
+  /**
+   * Revision ids of CommitRevision calls the server answered successfully,
+   * whether or not the answer then reached the client. A retry of one must
+   * get the revision back, however far the head moved since (§6.2).
+   */
+  private readonly appliedRevisions = new Set<string>();
+  /** Revision ids of every CommitRevision request sent so far (for the retry backoff). */
+  private readonly sentRevisions = new Set<string>();
 
   constructor(private readonly options: NetworkOptions) {}
 
@@ -174,6 +200,7 @@ export class SimNetwork {
   }
 
   private enqueue<T>(client: number, method: string, input: unknown, send: () => Promise<T>): Promise<T> {
+    const revisionId = method === "CommitRevision" ? revisionIdOf(input) : undefined;
     return new Promise<T>((resolve, reject) => {
       this.messages.push({
         id: this.nextId++,
@@ -181,8 +208,9 @@ export class SimNetwork {
         incarnation: this.incarnation(client),
         method,
         description: this.options.describeRequest(method, input),
+        revisionId,
         phase: "request",
-        heldUntil: 0,
+        heldUntil: this.backoff(revisionId),
         send,
         settle: (outcome) => {
           if (outcome.ok) resolve(outcome.value as T);
@@ -190,6 +218,22 @@ export class SimNetwork {
         },
       });
     });
+  }
+
+  /**
+   * The step before which a CommitRevision request cannot be delivered: a
+   * retry of a revision id already sent waits out the backoff, as a real
+   * client's retry would, so other clients' commits can move the head
+   * meanwhile (#110). A first attempt is not held.
+   */
+  private backoff(revisionId: string | undefined): number {
+    const steps = this.options.commitRetryBackoff ?? 0;
+    if (revisionId === undefined || steps === 0) return 0;
+    if (!this.sentRevisions.has(revisionId)) {
+      this.sentRevisions.add(revisionId);
+      return 0;
+    }
+    return this.now + steps;
   }
 
   private deliverableRequests(): Message[] {
@@ -203,7 +247,30 @@ export class SimNetwork {
     );
     message.phase = "response";
     this.options.observeOutcome?.(message.method, message.outcome);
+    this.checkRetry(message, message.outcome);
     return `${this.label(message)} -> ${this.options.describeOutcome(message.method, message.outcome)}`;
+  }
+
+  /**
+   * Catches a client-side duplicate the server-side invariants cannot see
+   * (#12, #110): the server applied a commit, its response was lost, and the
+   * retry with the same revision id was refused as stale or as a path
+   * collision. The client would then rebase or move the change and commit it
+   * again as a second revision.
+   */
+  private checkRetry(message: Message, outcome: Outcome): void {
+    if (message.method !== "CommitRevision" || message.revisionId === undefined) return;
+    if (outcome.ok) {
+      this.appliedRevisions.add(message.revisionId);
+      return;
+    }
+    const code = errorCode(outcome.error);
+    if (refusedRetryCodes.includes(code) && this.appliedRevisions.has(message.revisionId)) {
+      this.options.violation(
+        "protocol",
+        `${this.label(message)} was refused with ${Code[code]}, although the server already applied this revision id (a retry must get the revision back)`,
+      );
+    }
   }
 
   private fail(message: Message, reason: string): void {

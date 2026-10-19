@@ -9,8 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"syscall"
 	"testing"
@@ -23,18 +21,14 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/testinfra"
 )
 
+// buildServer builds this package's server binary (testinfra.BuildServer).
 func buildServer(t *testing.T) string {
 	t.Helper()
 
-	binary := filepath.Join(t.TempDir(), "vault-sync-server")
+	repoRoot, err := filepath.Abs(filepath.Join("..", ".."))
+	require.NoError(t, err)
 
-	build := exec.CommandContext(t.Context(), "go", "build", "-o", binary, ".")
-
-	build.Env = append(os.Environ(), "CGO_ENABLED=0")
-	output, err := build.CombinedOutput()
-	require.NoError(t, err, "go build: %s", output)
-
-	return binary
+	return testinfra.BuildServer(t, repoRoot)
 }
 
 func httpGet(url string) (int, error) {
@@ -58,14 +52,14 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	database := testinfra.PostgresConfig(t)
 	binary := buildServer(t)
 
-	var server *child
+	var server *testinfra.Child
 
 	// Starts a new process, with new addresses, if another process took
 	// one of the ports first.
 	started := testinfra.StartServer(t, "server", 30*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
 		logs := &bytes.Buffer{}
 
-		server = newChild(t, binary)
+		server = testinfra.NewChild(t, binary)
 		server.Command.Env = []string{
 			config.DatabaseURLEnv + "=" + database.DSN,
 			config.ListenAddressEnv + "=" + addresses.API,
