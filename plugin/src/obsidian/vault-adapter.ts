@@ -119,21 +119,26 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   /**
-   * With a precondition, the file is read and deleted only if it still holds
-   * the expected content and no open text view (a Markdown editor, a canvas)
-   * shows anything else: unsaved state is saved instead, and the delete
-   * rejects with "changed", so the engine finds it as a local edit.
+   * Never discards what an open view has not saved (#181). The file is read
+   * and deleted only if it still holds the precondition's content (if there
+   * is one) and no open text view (a Markdown editor, a canvas) shows
+   * anything else. Unsaved state (keystrokes within Obsidian's save debounce)
+   * is saved instead, and the delete rejects, deleting nothing: with
+   * "changed" under a precondition, so the engine finds the saved text as a
+   * local edit, and with UnsavedEditsError without one, as write() does.
    */
   async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     const file = this.requireFile(path);
-    if (precondition !== undefined) {
+    if (precondition !== undefined || this.openViews(file).length > 0) {
       const current = new Uint8Array(await this.vault.readBinary(file));
-      if (sha256Hex(current) !== precondition.expectedHash) throw new VaultError("changed", path);
+      if (precondition !== undefined && sha256Hex(current) !== precondition.expectedHash) throw new VaultError("changed", path);
       const text = decodeText(current);
-      const unsaved = text === undefined ? [] : this.openViews(file).filter((view) => view instanceof TextFileView && !sameText(view.getViewData(), text));
+      // The views open now, after the read: one opened meanwhile counts too.
+      const views = this.openViews(file).filter((view) => view instanceof TextFileView);
+      const unsaved = text === undefined ? [] : views.filter((view) => !sameText(view.getViewData(), text));
       if (unsaved.length > 0) {
-        for (const view of unsaved) if (view instanceof TextFileView) await view.save();
-        throw new VaultError("changed", path);
+        for (const view of unsaved) await view.save();
+        throw precondition === undefined ? new UnsavedEditsError(path) : new VaultError("changed", path);
       }
     }
     await this.vault.delete(file);
