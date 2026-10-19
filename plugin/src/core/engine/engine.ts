@@ -10,7 +10,7 @@ import { pathKey } from "../pathkey/pathkey";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
-import { isVaultRelativePath } from "../vaultpath/vaultpath";
+import { isNewVaultPath, isVaultRelativePath } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "./history";
@@ -1494,6 +1494,21 @@ export class SyncEngine {
     if (state?.revisionId === operation.revisionId) {
       // Acknowledged before an interruption; only the clean-up is left.
       await this.journal.removePending(operation.revisionId);
+      return;
+    }
+    if (!isNewVaultPath(operation.path) && (state === undefined || state.deleted || state.path !== operation.path)) {
+      // A path with a "\" may only be kept by the live document already at
+      // it, never given to a new, moved or deleted one (SPEC.md §6.2,
+      // decision #191): the server would refuse it, so nothing is sent. The
+      // operation stays pending and its file where it is, unless the file is
+      // gone, which a later push then sees as any other change.
+      if (!operation.deleted && (await this.readOrNull(operation.path)) === null) {
+        await this.journal.removePending(operation.revisionId);
+        this.changes.paths.add(operation.path);
+        if (state !== undefined && !state.deleted) this.changes.paths.add(state.path);
+        return;
+      }
+      summary.rejected.push({ operation, error: new ConnectError('a new path must not contain "\\"; use "/" as the separator', Code.InvalidArgument) });
       return;
     }
     // A rename or delete keeps the base's content, which the server already holds.

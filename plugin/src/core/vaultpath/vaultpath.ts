@@ -16,3 +16,19 @@ export function isVaultRelativePath(path: string): boolean {
   if (/^[A-Za-z]:/.test(path)) return false;
   return path.split(/[/\\]/).every((segment) => !/^[. ]*$/.test(segment));
 }
+
+/**
+ * Reports whether a commit may create or rename a document into `path`
+ * (SPEC.md §6.2, decision #191): it is vault-relative and contains no "\".
+ * Windows reads "\" as a separator and other platforms as part of a name, so
+ * `a/b` and `a\b` would otherwise be two live documents naming one file on
+ * Windows. A document committed before the rule keeps its "\" path, which
+ * still passes {@link isVaultRelativePath}; the server accepts it only as the
+ * unchanged path of a live document (an edit or a delete in place).
+ *
+ * Must match `CheckNew` in internal/vaultpath (Go) exactly, on the `new`
+ * field of testdata/paths/validity.json.
+ */
+export function isNewVaultPath(path: string): boolean {
+  return isVaultRelativePath(path) && !path.includes("\\");
+}

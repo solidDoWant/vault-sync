@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -488,6 +488,35 @@ describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)"
       ]),
     );
     expect(result.tombstoned, trace).toEqual([]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted backslash-path scenarios (#191)", () => {
+  it("refuses new paths containing a backslash, keeps their files, and syncs them once renamed", async () => {
+    const result = await backslashPathsRefused(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    // Neither backslash file reached the server, and both stayed on the second engine's disk.
+    expect([...result.afterRefusal.keys()].sort(), trace).toEqual(["a/b", "notes"]);
+    expect(result.rejected, trace).toEqual(["a\\b", "notes\\c.md"]);
+    expect(result.secondAfterRefusal, trace).toEqual(
+      new Map([
+        ["a/b", "slash\n"],
+        ["a\\b", "backslash twin\n"],
+        ["notes", "a file\n"],
+        ["notes\\c.md", "under the file\n"],
+      ]),
+    );
+    const expected = new Map([
+      ["a/b", "slash\n"],
+      ["a/c", "backslash twin\n"],
+      ["notes", "a file\n"],
+      ["notes-c.md", "under the file\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect([...result.documents.keys()].sort(), trace).toEqual([...expected.keys()]);
   });
 });
 

@@ -23,6 +23,7 @@ func TestCommitErrorMapsStoreRefusalsToClientCodes(t *testing.T) {
 	}{
 		{err: store.ErrInvalidPath, code: connect.CodeInvalidArgument},
 		{err: fmt.Errorf("commit: %w", store.ErrInvalidPath), code: connect.CodeInvalidArgument},
+		{err: store.ErrPathNotCurrent, code: connect.CodeInvalidArgument},
 		{err: store.ErrPathKeyTaken, code: connect.CodeAlreadyExists},
 		{err: store.ErrIDInUse, code: connect.CodeInvalidArgument},
 	}
