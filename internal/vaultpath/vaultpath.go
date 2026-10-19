@@ -10,7 +10,14 @@
 // colons elsewhere, trailing dots or spaces on other names) pass: refusing
 // them is the client's job, not a security boundary.
 //
-// The TypeScript client (plugin/src/core/vaultpath) applies the same rule,
+// CheckNew is the stricter rule for a path a commit creates or renames a
+// document into: it must also contain no "\" (decision, #191). Windows
+// reads "\" as a separator and other platforms as part of a name, so "a/b"
+// and "a\b" would otherwise be two live documents naming one file on
+// Windows. Documents committed before the rule keep their "\" paths, which
+// still pass Check.
+//
+// The TypeScript client (plugin/src/core/vaultpath) applies the same rules,
 // and testdata/paths/validity.json is the shared conformance suite.
 package vaultpath
 
@@ -22,6 +29,10 @@ import (
 // ErrNotRelative is returned for a path that is not vault-relative.
 var ErrNotRelative = errors.New(`path must be relative ("/" and "\" are both separators), ` +
 	`with no drive letter and no empty, "." or ".." segments`)
+
+// ErrBackslash is returned by CheckNew for a vault-relative path that
+// contains "\".
+var ErrBackslash = errors.New(`a new path must not contain "\"; use "/" as the separator`)
 
 // separators are the path separators on any supported platform.
 const separators = `/\`
@@ -47,6 +58,21 @@ func Check(path string) error {
 
 		path = path[end+1:]
 	}
+}
+
+// CheckNew returns ErrNotRelative unless path is vault-relative, and
+// ErrBackslash if it is but contains "\": a commit may create or rename a
+// document only into a path that passes CheckNew.
+func CheckNew(path string) error {
+	if err := Check(path); err != nil {
+		return err
+	}
+
+	if strings.Contains(path, `\`) {
+		return ErrBackslash
+	}
+
+	return nil
 }
 
 // checkSegment rejects a segment that is empty, ".", "..", or a form Windows

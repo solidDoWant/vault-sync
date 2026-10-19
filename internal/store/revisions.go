@@ -41,6 +41,11 @@ var (
 	// ErrInvalidPath: the path or path key is empty, longer than the
 	// schema allows (SPEC.md §5), or text PostgreSQL cannot store.
 	ErrInvalidPath = errors.New("path or path_key is empty, too long, or not valid UTF-8 without NUL")
+	// ErrPathNotCurrent: the revision's path may only be kept, not given
+	// (NewRevision.PathMustBeCurrent), and the document is new, a
+	// tombstone, or at another path.
+	ErrPathNotCurrent = errors.New(`a new path must not contain "\"; ` +
+		`only a live document already at such a path may keep it (edit or delete it in place, or rename it to a path without "\")`)
 )
 
 // HeadMovedError is returned when a commit's base is not the document's
@@ -69,7 +74,13 @@ type NewRevision struct {
 	Path        string
 	PathKey     string
 	Deleted     bool
-	DeviceID    uuid.UUID
+	// PathMustBeCurrent accepts Path only as the unchanged path of the
+	// document's live head (an edit or a delete in place), never for a new
+	// document, a rename or a resurrection: ErrPathNotCurrent otherwise.
+	// Set for paths that a commit may no longer create but that documents
+	// committed before the rule may still hold (SPEC.md §6.2, #191).
+	PathMustBeCurrent bool
+	DeviceID          uuid.UUID
 	// UserID is the committing user; DeviceID must belong to them.
 	UserID uuid.UUID
 }
@@ -180,6 +191,12 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		return Revision{}, ErrKindMismatch
 	}
 
+	if revision.PathMustBeCurrent {
+		if err := vault.checkPathCurrent(ctx, tx, isNew, document, revision); err != nil {
+			return Revision{}, err
+		}
+	}
+
 	var size int64
 
 	err = tx.QueryRow(ctx, `
@@ -255,6 +272,26 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	}
 
 	return vault.revision(ctx, tx, revision.ID)
+}
+
+// checkPathCurrent returns ErrPathNotCurrent unless document exists, is
+// live, and its head revision's path is exactly revision's. Under the
+// document's row lock, so the head cannot move meanwhile.
+func (vault *VaultStore) checkPathCurrent(ctx context.Context, tx pgx.Tx, isNew bool, document Document, revision NewRevision) error {
+	if isNew || document.Deleted {
+		return ErrPathNotCurrent
+	}
+
+	head, err := vault.revision(ctx, tx, document.HeadRevID)
+	if err != nil {
+		return fmt.Errorf("look up head revision: %w", err)
+	}
+
+	if head.Path != revision.Path {
+		return ErrPathNotCurrent
+	}
+
+	return nil
 }
 
 // Folder collision probes for a path key ($2) in a vault ($1), each

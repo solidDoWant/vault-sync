@@ -63,3 +63,37 @@ describe("InMemoryServer's file/folder rule (SPEC.md §6.3, #134)", () => {
     expect(await commit(server, "x", "x1", "", "notes/c.md")).toBe("ok");
   });
 });
+
+describe("InMemoryServer's backslash rule (SPEC.md §6.2, #191)", () => {
+  it("refuses to create a path with a backslash, beside a live slash twin or file, or anywhere", async () => {
+    const server = new InMemoryServer();
+    server.commit({ documentId: "twin", path: "a/b", content: "slash" });
+    server.commit({ documentId: "file", path: "notes", content: "a file" });
+
+    expect(await commit(server, "x", "x1", "", "a\\b")).toBe("InvalidArgument");
+    expect(await commit(server, "y", "y1", "", "notes\\c.md")).toBe("InvalidArgument");
+    expect(await commit(server, "z", "z1", "", "elsewhere\\z.md")).toBe("InvalidArgument");
+    expect(await commit(server, "w", "w1", "", "elsewhere/z.md")).toBe("ok");
+  });
+
+  it("lets a live document already at a backslash path be edited and deleted in place, or renamed to a valid path", async () => {
+    const server = new InMemoryServer();
+    const edited = server.commit({ documentId: "edit", path: "a\\b.md", content: "legacy" });
+    const deleted = server.commit({ documentId: "delete", path: "c\\d.md", content: "legacy" });
+    const renamed = server.commit({ documentId: "rename", path: "e\\f.md", content: "legacy" });
+
+    expect(await commit(server, "edit", "e2", edited.id, "a\\b.md")).toBe("ok");
+    expect(await commit(server, "delete", "d2", deleted.id, "c\\d.md", true)).toBe("ok");
+    expect(await commit(server, "rename", "r2", renamed.id, "e/f.md")).toBe("ok");
+  });
+
+  it("refuses to move a document to another backslash path, or to bring a tombstone back at one", async () => {
+    const server = new InMemoryServer();
+    const moved = server.commit({ documentId: "move", path: "a\\b.md", content: "legacy" });
+    server.commit({ documentId: "back", path: "c\\d.md", content: "legacy" });
+    const tombstone = server.commit({ documentId: "back", path: "c\\d.md", deleted: true });
+
+    expect(await commit(server, "move", "m2", moved.id, "a\\c.md")).toBe("InvalidArgument");
+    expect(await commit(server, "back", "b3", tombstone.id, "c\\d.md")).toBe("InvalidArgument");
+  });
+});
