@@ -78,7 +78,7 @@ func (buffer *syncBuffer) String() string {
 // instance is one running server process.
 type instance struct {
 	name    string
-	process *child
+	process *testinfra.Child
 	// databaseDSN is the deployment's DSN with its application_name set to
 	// applicationName, so the instance's PostgreSQL sessions can be told
 	// apart from any other instance's.
@@ -103,7 +103,7 @@ func (cluster *deployment) start(t *testing.T, name, binary string, extra ...str
 	testinfra.StartServer(t, name, 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
 		attempt := &instance{
 			name:            name,
-			process:         newChild(t, binary),
+			process:         testinfra.NewChild(t, binary),
 			databaseDSN:     withApplicationName(t, cluster.database.DSN, applicationName),
 			applicationName: applicationName,
 			apiURL:          "http://" + addresses.API,

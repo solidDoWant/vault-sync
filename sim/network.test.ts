@@ -11,11 +11,16 @@ import { errorCode, settle, SimNetwork } from "./network";
 
 type Settled = { state: "pending" } | { state: "ok"; seq: bigint } | { state: "failed"; code: Code };
 
-function setup() {
+function setup(commitRetryBackoff?: number) {
   const received: string[] = [];
+  /** Revision ids the server refuses, with the code it refuses them with. */
+  const refuse = new Map<string, Code>();
+  const violations: { invariant: string; detail: string }[] = [];
   const server = createRouterTransport(({ service }) => {
     service(SyncService, {
       commitRevision: (request) => {
+        const code = refuse.get(request.revisionId);
+        if (code !== undefined) throw new ConnectError("refused", code);
         received.push(request.revisionId);
         return { revision: { id: request.revisionId, seq: BigInt(received.length) } };
       },
@@ -24,6 +29,8 @@ function setup() {
   const network = new SimNetwork({
     describeRequest: (method, input) => `${method}(${(input as { revisionId: string }).revisionId})`,
     describeOutcome: (_method, outcome) => (outcome.ok ? "ok" : Code[ConnectError.from(outcome.error).code]),
+    violation: (invariant, detail) => violations.push({ invariant, detail }),
+    commitRetryBackoff,
   });
   const clients = [0, 1].map((index) => createProtocolClient({ transport: network.transport(index, server) }));
   /** Sends a commit from `client` and tracks how it settles. */
@@ -37,7 +44,7 @@ function setup() {
     );
     return result;
   };
-  return { network, received, commit };
+  return { network, received, refuse, violations, commit };
 }
 
 describe("SimNetwork", () => {
@@ -145,5 +152,115 @@ describe("SimNetwork", () => {
     expect(received).toEqual(["a"]);
     expect(call.current).toEqual({ state: "pending" });
     expect(network.incarnation(0)).toBe(1);
+  });
+
+  describe("a commit the server applied, retried with the same revision id (#110)", () => {
+    for (const code of [Code.FailedPrecondition, Code.AlreadyExists]) {
+      it(`reports a protocol violation when the retry is refused with ${Code[code]}`, async () => {
+        const { network, refuse, violations, commit } = setup();
+        commit(0, "a");
+        await settle();
+        await network.deliverRequest();
+        network.dropResponse(0);
+        await settle();
+
+        // The server now refuses the retry, as one whose idempotency check ran after the head comparison would.
+        refuse.set("a", code);
+        const retry = commit(0, "a");
+        await settle();
+        expect(await network.deliverRequest()).toContain(`-> ${Code[code]}`);
+        expect(violations.map((violation) => violation.invariant)).toEqual(["protocol"]);
+        expect(violations[0]?.detail).toContain("CommitRevision(a)");
+        expect(violations[0]?.detail).toContain("already applied");
+        network.deliverResponse();
+        await settle();
+        expect(retry.current).toEqual({ state: "failed", code });
+      });
+    }
+
+    it("reports nothing when the server never applied the refused revision (its request was lost)", async () => {
+      const { network, refuse, violations, commit } = setup();
+      refuse.set("a", Code.FailedPrecondition);
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toContain("-> FailedPrecondition");
+      expect(violations).toEqual([]);
+    });
+
+    it("reports nothing when a retry of an applied commit gets its revision back, or fails for another reason", async () => {
+      const { network, refuse, violations, commit } = setup();
+      commit(0, "a");
+      await settle();
+      await network.deliverRequest();
+      network.dropResponse(0);
+      await settle();
+
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toContain("-> ok");
+      network.deliverResponse();
+      await settle();
+
+      refuse.set("a", Code.InvalidArgument);
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toContain("-> InvalidArgument");
+      expect(violations).toEqual([]);
+    });
+  });
+
+  describe("commit retry backoff (#110)", () => {
+    it("holds a commit retried with a revision id it sent before for the backoff, and a first attempt not at all", async () => {
+      const { network, received, commit } = setup(30);
+      network.now = 5;
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toContain("CommitRevision(a) -> ok");
+      network.dropResponse(0);
+      await settle();
+
+      commit(0, "a");
+      commit(1, "b");
+      await settle();
+      // b, a first attempt, overtakes the retry.
+      expect(await network.deliverRequest()).toContain("CommitRevision(b)");
+      expect(await network.deliverRequest()).toBeUndefined();
+      network.now = 34;
+      expect(await network.deliverRequest()).toBeUndefined();
+      network.now = 35;
+      expect(await network.deliverRequest()).toContain("CommitRevision(a)");
+      expect(received).toEqual(["a", "b", "a"]);
+    });
+
+    it("delivers retries at once without a backoff", async () => {
+      const { network, commit } = setup();
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toContain("CommitRevision(a) -> ok");
+    });
+
+    it("lets heal end a retry's backoff", async () => {
+      const { network, commit } = setup(30);
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toBeUndefined();
+      network.heal();
+      expect(await network.deliverRequest()).toContain("CommitRevision(a) -> ok");
+    });
   });
 });

@@ -14,7 +14,11 @@ export interface SimEnvironment extends SimEndpoints {
   steps: number;
   /** Simulated clients per run (SIM_CLIENTS). */
   clients: number;
-  /** Engines per seeded run, each with a user making random changes (SIM_ENGINES). */
+  /**
+   * Engines per seeded run, each with a user making random changes
+   * (SIM_ENGINES). 0 means no engine users: one engine only pulls, and the
+   * schedule has no engine-operation steps, as before #22.
+   */
   engines: number;
   /** Most runs spent minimizing one failing seed (SIM_SHRINK_RUNS). */
   shrinkRuns: number;
