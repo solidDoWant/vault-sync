@@ -290,6 +290,13 @@ export class SyncEngine {
   private roundRenames = new Map<string, string>();
   /** The deleted files the running push round looks at: like roundRenames, for #254. */
   private roundDeleted = new Map<string, DeletedFile>();
+  /**
+   * Changed paths a push left alone because the merge path or a pending
+   * operation had them (#167): every later push looks at them again, so a
+   * change there never waits for a restart's full scan, whatever frees them.
+   * Kept apart from `changes`, so they schedule no push of their own.
+   */
+  private held = new Set<string>();
   private pushTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
   private readonly rateLimitBackoff: Backoff;
@@ -1490,6 +1497,8 @@ export class SyncEngine {
     // Classify every vault event so far, so the push sees the latest changes.
     await this.events;
     const summary: PushSummary = { committed: 0, conflicts: 0, pending: 0, rejected: [] };
+    for (const path of this.held) this.changes.paths.add(path);
+    this.held = new Set();
     await this.pullOnce();
     await this.retryMerges();
     await this.retryRefusedPaths();
@@ -1728,11 +1737,15 @@ export class SyncEngine {
     }
 
     for (const path of [...paths].sort()) {
-      if (handled.has(path) || busyPaths.has(path) || later.has(this.fileKey(path))) continue;
+      if (handled.has(path) || later.has(this.fileKey(path))) continue;
       // Outside the scope, a missing file is no delete and a changed one no edit (SPEC.md §8, config sync).
       if (!this.inScope(path)) continue;
       const state = await this.journal.findDocumentByPath(path);
-      if (state !== undefined && busyDocuments.has(state.documentId)) continue;
+      if (busyPaths.has(path) || (state !== undefined && busyDocuments.has(state.documentId))) {
+        // Looked at again by every later push, until whatever has it is done (#167).
+        this.held.add(path);
+        continue;
+      }
       const content = await this.readOrNull(path);
       if (state !== undefined) {
         if (content === null) removals.push(this.operation(state, state.path, null));

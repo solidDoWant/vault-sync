@@ -379,6 +379,25 @@ describe("SimNetwork", () => {
     });
   });
 
+  describe("a scripted refusal (#167)", () => {
+    it("answers a client's oldest request with the given error without it reaching the server, and asks for no backoff", async () => {
+      const { network, received, violations, commit } = setup();
+      const call = commit(0, "a");
+      await settle();
+
+      expect(network.refuse(0, new ConnectError("no", Code.InvalidArgument))).toContain("c0 CommitRevision(a) refused by the server -> InvalidArgument");
+      expect(network.deliverResponse()).toContain("reply delivered");
+      await settle();
+
+      expect(call.current).toEqual({ state: "failed", code: Code.InvalidArgument });
+      expect(received).toEqual([]);
+      expect(network.refuse(0, new ConnectError("no", Code.InvalidArgument))).toBeUndefined();
+      commit(0, "a");
+      await settle();
+      expect(violations).toEqual([]);
+    });
+  });
+
   describe("RESOURCE_EXHAUSTED from the per-user limit (#146)", () => {
     it("refuses a client's oldest request without it reaching the server", async () => {
       const { network, received, commit } = setup();

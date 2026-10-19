@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -701,6 +701,26 @@ describe.runIf(suites.has("scenarios"))("scripted case-only renames on a case-in
     expect(new Set(result.acknowledged.map((acknowledgement) => acknowledgement.documentId)).size, trace).toBe(1);
     for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["notes/c.md", "new\n"]]));
     expect(result.tombstoned, trace).toEqual([]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted busy-path scenario (#167)", () => {
+  it("pushes a change made at a path a refused operation held once the operation commits, without a restart", async () => {
+    const result = await changeAtBusyPathKept(environment);
+    const trace = tail(result.trace, 120);
+
+    expect(result.violations, trace).toEqual([]);
+    expect([...result.whileRefused.keys()], trace).toEqual(["note.md"]);
+    expect(result.vault, trace).toEqual(
+      new Map([
+        ["moved.md", "the note\n"],
+        ["note.md", "a new note\n"],
+      ]),
+    );
+    expect([...result.documents.keys()].sort(), trace).toEqual(["moved.md", "note.md"]);
+    // The rename kept the original note's id; the new note is a document of its own.
+    expect(result.documents.get("moved.md"), trace).toBe(result.whileRefused.get("note.md"));
+    expect(result.documents.get("note.md"), trace).not.toBe(result.whileRefused.get("note.md"));
   });
 });
 
