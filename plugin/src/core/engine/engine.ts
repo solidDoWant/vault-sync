@@ -1396,12 +1396,15 @@ export class SyncEngine {
       (record) => record.reason === "path-taken" && record.documentId === operation.documentId && record.path === operation.path && record.copyHash === operation.contentHash,
     );
     let record = logged.find((candidate) => candidate.copyPath !== null);
-    // The file at the path, unless it is another document's synced file: on
-    // a case-insensitive platform a path of another spelling names that
-    // document's file, which is never this operation's to move (#242).
+    // The file at the path, unless the journal has another document there:
+    // on a case-insensitive platform a path of another spelling names that
+    // document's file, which is never this operation's to move (#242). Its
+    // bytes are that document's, whatever they are now: change detection
+    // pushes them as its edit, and moving them would leave it no file, which
+    // the next push would take for a delete (decision #52, amended).
     const holder = await this.documentAt(operation.path);
     const found = await this.readOrNull(operation.path);
-    const othersFile = found !== null && holder !== undefined && holder.documentId !== operation.documentId && sha256Hex(found) === holder.baseHash;
+    const othersFile = found !== null && holder !== undefined && holder.documentId !== operation.documentId;
     const atPath = othersFile ? null : found;
     if (record === undefined) {
       if (atPath === null) {

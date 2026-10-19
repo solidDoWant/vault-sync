@@ -168,6 +168,35 @@ describe("SyncEngine collisions by path key", () => {
           ]);
         });
 
+        it(`keeps the other device's document at ${remote}, and the user's edit of it, when a journal from an earlier version still holds the create at ${local} (${platform})`, async () => {
+          const h = harness({ merge: "default", pathRules: { platform } });
+          await h.vault.write(local, bytes("same\n"));
+          // The create's content is uploaded, but its commit never gets through.
+          h.server.interceptor = (method) => {
+            if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+          };
+          await expect(h.engine.push()).rejects.toThrow();
+          h.server.interceptor = undefined;
+          const stale = await h.journal.listPending();
+          h.server.commit({ documentId: "theirs", path: remote, content: "same\n" });
+          await h.engine.pull();
+          // The journal as an engine without the fix above left it: the
+          // superseded create still pending at the other document's file.
+          for (const operation of stale) await h.journal.addPending(operation);
+          await h.vault.write(remote, bytes("edited\n"));
+
+          const summaries = await pushUntilQuiet(h);
+
+          // The refused create is dropped, and the edit is the other device's document's.
+          expect(h.server.liveFiles()).toEqual(new Map([[remote, "edited\n"]]));
+          expect(h.server.liveDocuments().get(remote)).toBe("theirs");
+          expect(h.server.history("theirs").map((revision) => revision.deleted)).toEqual([false, false]);
+          expect(await files(h.vault)).toEqual(h.server.liveFiles());
+          expect(await h.journal.listPending()).toEqual([]);
+          expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+          expect(summaries.at(-1)).toMatchObject({ committed: 0, conflicts: 0, pending: 0 });
+        });
+
         it(`keeps the other device's document at ${remote} when a known document's rename to ${local} holds the same content (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write("draft.md", bytes("same\n"));
