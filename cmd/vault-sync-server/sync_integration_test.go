@@ -15,11 +15,13 @@ import (
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
+	"github.com/solidDoWant/vault-sync/internal/testinfra"
 )
 
 // Helpers for driving revision commits and the change feed (SPEC.md §6)
@@ -127,7 +129,12 @@ func (client *syncClient) mustCommit(t *testing.T, server *instance, request *va
 
 // changes pages through the whole change feed, pageSize revisions at a time
 // (zero: the server default), sending page n to servers[n % len(servers)].
-// It returns the revisions and the head_seq of the last page.
+// It returns the revisions and the head_seq of the last page. Nothing may
+// commit to the vault while it pages.
+//
+// A pagination bug fails it at once rather than looping: every revision's
+// seq must be past the cursor and at most head_seq, and every page but the
+// last must hold a revision, so the feed ends within head_seq + 1 pages.
 func (client *syncClient) changes(t *testing.T, pageSize uint32, servers ...*instance) ([]*vaultsyncv1.Revision, uint64) {
 	t.Helper()
 
@@ -136,38 +143,51 @@ func (client *syncClient) changes(t *testing.T, pageSize uint32, servers ...*ins
 		since     uint64
 	)
 
-	for page := 0; ; page++ {
-		server := servers[page%len(servers)]
+	for page := uint64(0); ; page++ {
+		server := servers[page%uint64(len(servers))]
 
 		response, err := server.sync().ListChanges(t.Context(), authorized(&vaultsyncv1.ListChangesRequest{
 			VaultId: client.vaultID, SinceSeq: since, PageSize: pageSize,
 		}, client.token))
 		require.NoError(t, err, "list changes since %d on %s", since, server.name)
 
-		revisions = append(revisions, response.Msg.GetRevisions()...)
+		headSeq := response.Msg.GetHeadSeq()
+		require.LessOrEqual(t, page+1, headSeq+1, "the change feed must end within head_seq + 1 pages (%s, since %d)", server.name, since)
+
+		for _, revision := range response.Msg.GetRevisions() {
+			require.Greater(t, revision.GetSeq(), since, "the change feed must move past seq %d (%s, page %d)", since, server.name, page)
+			require.LessOrEqual(t, revision.GetSeq(), headSeq, "the change feed must not go past head_seq (%s, page %d)", server.name, page)
+
+			since = revision.GetSeq()
+			revisions = append(revisions, revision)
+		}
 
 		if !response.Msg.GetHasMore() {
-			return revisions, response.Msg.GetHeadSeq()
+			return revisions, headSeq
 		}
 
 		require.NotEmpty(t, response.Msg.GetRevisions(), "has_more without revisions on %s", server.name)
-
-		since = revisions[len(revisions)-1].GetSeq()
 	}
 }
 
 // history pages through a document's history, newest first, sending page n
-// to servers[n % len(servers)].
+// to servers[n % len(servers)]. Nothing may commit to the document while it
+// pages.
+//
+// A pagination bug fails it at once rather than looping: seqs must strictly
+// decrease across pages, and every page with a next_page_token must hold a
+// revision, so the history ends within as many pages as its newest seq.
 func (client *syncClient) history(t *testing.T, documentID string, pageSize uint32, servers ...*instance) []*vaultsyncv1.Revision {
 	t.Helper()
 
 	var (
 		revisions []*vaultsyncv1.Revision
 		token     string
+		maxPages  uint64
 	)
 
-	for page := 0; ; page++ {
-		server := servers[page%len(servers)]
+	for page := uint64(0); ; page++ {
+		server := servers[page%uint64(len(servers))]
 
 		response, err := server.sync().GetDocumentHistory(t.Context(), authorized(&vaultsyncv1.GetDocumentHistoryRequest{
 			VaultId: client.vaultID, DocumentId: documentID, PageSize: pageSize, PageToken: token,
@@ -175,12 +195,24 @@ func (client *syncClient) history(t *testing.T, documentID string, pageSize uint
 		require.NoError(t, err, "document history on %s", server.name)
 		require.Equal(t, documentID, response.Msg.GetDocument().GetId())
 
-		revisions = append(revisions, response.Msg.GetRevisions()...)
+		for _, revision := range response.Msg.GetRevisions() {
+			if len(revisions) == 0 {
+				maxPages = revision.GetSeq()
+			} else {
+				previous := revisions[len(revisions)-1].GetSeq()
+				require.Less(t, revision.GetSeq(), previous, "the history must move below seq %d (%s, page %d)", previous, server.name, page)
+			}
+
+			revisions = append(revisions, revision)
+		}
 
 		token = response.Msg.GetNextPageToken()
 		if token == "" {
 			return revisions
 		}
+
+		require.NotEmpty(t, response.Msg.GetRevisions(), "next_page_token without revisions on %s", server.name)
+		require.Less(t, page+1, maxPages, "the history must end within %d pages (%s)", maxPages, server.name)
 	}
 }
 
@@ -340,22 +372,24 @@ func backendPID(t *testing.T, conn *pgx.Conn) uint32 {
 	return pid
 }
 
-// blockedBackend waits until exactly one PostgreSQL backend is waiting for a
-// lock that the session with pid blocker holds, and returns that backend's
-// pid.
-func blockedBackend(t *testing.T, database *pgx.Conn, blocker uint32) uint32 {
+// blockedBackend waits until exactly one PostgreSQL backend of the instance
+// whose sessions have applicationName is waiting for a lock that the session
+// with pid blocker holds, and returns that backend's pid. Other instances'
+// sessions waiting for the same lock are ignored.
+func blockedBackend(t *testing.T, database *pgx.Conn, blocker uint32, applicationName string) uint32 {
 	t.Helper()
 
 	deadline := time.Now().Add(time.Minute)
 
 	for {
 		rows, err := database.Query(t.Context(), `
-			SELECT pid FROM pg_stat_activity WHERE $1::integer = ANY (pg_blocking_pids(pid))`, blocker)
+			SELECT pid FROM pg_stat_activity
+			WHERE application_name = $2 AND $1::integer = ANY (pg_blocking_pids(pid))`, blocker, applicationName)
 		require.NoError(t, err)
 
 		blocked, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
 		require.NoError(t, err)
-		require.LessOrEqual(t, len(blocked), 1, "only the commit under test may wait for the lock")
+		require.LessOrEqual(t, len(blocked), 1, "only the commit under test may wait for the lock on %s", applicationName)
 
 		if len(blocked) == 1 {
 			return blocked[0]
@@ -364,6 +398,92 @@ func blockedBackend(t *testing.T, database *pgx.Conn, blocker uint32) uint32 {
 		require.True(t, time.Now().Before(deadline), "the commit must reach the lock the test holds")
 		time.Sleep(pollInterval)
 	}
+}
+
+// The kill point the process-level tests pick with blockedBackend must be the
+// victim instance's session, even when another instance's session waits for
+// the same lock, and whichever of them started waiting first.
+func TestBlockedBackendOnlyConsidersTheVictimsSessions(t *testing.T) {
+	tests := []struct {
+		name string
+		// victimFirst makes the victim's session wait before the
+		// bystander's.
+		victimFirst bool
+	}{
+		{name: "bystander waits first"},
+		{name: "victim waits first", victimFirst: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cluster := &deployment{database: testinfra.PostgresConfig(t)}
+			database := cluster.connectDatabase(t)
+
+			holder := cluster.connectDatabase(t)
+
+			_, err := holder.Exec(t.Context(), `SELECT pg_advisory_lock(113, 0)`)
+			require.NoError(t, err)
+
+			holderPID := backendPID(t, holder)
+
+			victimName, bystanderName := instanceApplicationName("victim"), instanceApplicationName("bystander")
+			victim := connectAs(t, cluster, victimName)
+			bystander := connectAs(t, cluster, bystanderName)
+			victimPID, bystanderPID := backendPID(t, victim), backendPID(t, bystander)
+
+			first, firstPID, firstName := bystander, bystanderPID, bystanderName
+			second, secondPID, secondName := victim, victimPID, victimName
+
+			if test.victimFirst {
+				first, firstPID, firstName = victim, victimPID, victimName
+				second, secondPID, secondName = bystander, bystanderPID, bystanderName
+			}
+
+			// Shared locks do not conflict with each other: both sessions
+			// wait only for the holder.
+			firstDone := waitForSharedLock(t, first)
+			require.Equal(t, firstPID, blockedBackend(t, database, holderPID, firstName))
+
+			secondDone := waitForSharedLock(t, second)
+			require.Equal(t, secondPID, blockedBackend(t, database, holderPID, secondName))
+
+			assert.Equal(t, victimPID, blockedBackend(t, database, holderPID, victimName),
+				"the victim's session is picked while the bystander's waits too")
+
+			_, err = holder.Exec(t.Context(), `SELECT pg_advisory_unlock(113, 0)`)
+			require.NoError(t, err)
+			require.NoError(t, <-firstDone)
+			require.NoError(t, <-secondDone)
+		})
+	}
+}
+
+// connectAs opens a session on cluster's database whose application_name is
+// applicationName.
+func connectAs(t *testing.T, cluster *deployment, applicationName string) *pgx.Conn {
+	t.Helper()
+
+	conn, err := pgx.Connect(t.Context(), withApplicationName(t, cluster.database.DSN, applicationName))
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.Close(t.Context()) })
+
+	return conn
+}
+
+// waitForSharedLock makes conn take the advisory lock the test holds, shared,
+// in the background; the channel receives the outcome once it has it.
+func waitForSharedLock(t *testing.T, conn *pgx.Conn) <-chan error {
+	t.Helper()
+
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := conn.Exec(t.Context(), `SELECT pg_advisory_lock_shared(113, 0)`)
+		done <- err
+	}()
+
+	return done
 }
 
 // pollInterval is how often the tests poll PostgreSQL's view of sessions.

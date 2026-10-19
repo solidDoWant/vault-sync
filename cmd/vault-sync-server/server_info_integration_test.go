@@ -40,7 +40,10 @@ func TestGetServerInfoAdvertisesTheIdentityProviderWithoutSecrets(t *testing.T) 
 
 	databasePassword, _ := databaseURL.User.Password()
 
-	secrets := map[string]string{"database URL": cluster.database.DSN, "database password": databasePassword}
+	secrets := map[string]string{
+		"database URL": cluster.database.DSN, "database password": databasePassword,
+		"first's database URL": first.databaseDSN, "second's database URL": second.databaseDSN,
+	}
 
 	for name, path := range map[string]string{"S3 access key id": cluster.objects.AccessKeyIDFile, "S3 secret access key": cluster.objects.SecretAccessKeyFile} {
 		content, err := os.ReadFile(path)
