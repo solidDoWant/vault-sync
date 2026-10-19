@@ -44,8 +44,8 @@ var (
 	// ErrPathNotCurrent: the revision's path may only be kept, not given
 	// (NewRevision.PathMustBeCurrent), and the document is new, a
 	// tombstone, or at another path.
-	ErrPathNotCurrent = errors.New(`a new path must not contain "\"; ` +
-		`only a live document already at such a path may keep it (edit or delete it in place, or rename it to a path without "\")`)
+	ErrPathNotCurrent = errors.New(`a new path must not contain "\" or start with one character and ":"; ` +
+		`only a live document already at such a path may keep it (edit or delete it in place, or rename it to a path without either)`)
 )
 
 // HeadMovedError is returned when a commit's base is not the document's
@@ -78,7 +78,7 @@ type NewRevision struct {
 	// document's live head (an edit or a delete in place), never for a new
 	// document, a rename or a resurrection: ErrPathNotCurrent otherwise.
 	// Set for paths that a commit may no longer create but that documents
-	// committed before the rule may still hold (SPEC.md §6.2, #191).
+	// committed before the rules may still hold (SPEC.md §6.2, #191, #148).
 	PathMustBeCurrent bool
 	DeviceID          uuid.UUID
 	// UserID is the committing user; DeviceID must belong to them.

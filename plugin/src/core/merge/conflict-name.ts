@@ -1,9 +1,7 @@
 import { pathKey } from "../pathkey/pathkey";
 import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
-import { isVaultRelativePath } from "../vaultpath/vaultpath";
+import { isVaultRelativePath, maxPathBytes } from "../vaultpath/vaultpath";
 
-/** Most UTF-8 bytes of a plaintext path the server accepts (SPEC.md §6.2). */
-export const maxPathBytes = 4096;
 /** Most UTF-8 bytes of a normalized path (`path_key`) the server accepts (SPEC.md §6.2). */
 export const maxPathKeyBytes = 8192;
 /** Most UTF-8 bytes of one path segment: the file-name limit of every supported platform's filesystems. */

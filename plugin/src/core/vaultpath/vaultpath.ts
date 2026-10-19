@@ -6,7 +6,8 @@
  * may be empty or made only of dots and spaces (`.`, `..`, and forms such as
  * `.. ` or `...` that Windows reduces to them). Names that are merely
  * unmaterializable on Windows (`CON.md`, `ab:c.md`, trailing dots or spaces)
- * are accepted. Length and character-set limits are not checked here.
+ * are accepted. Length and character-set limits are checked separately, by
+ * {@link isPathText}.
  *
  * Must match internal/vaultpath (Go) exactly; testdata/paths/validity.json is
  * the shared conformance suite. Every path received from the server, including
@@ -19,16 +20,46 @@ export function isVaultRelativePath(path: string): boolean {
 
 /**
  * Reports whether a commit may create or rename a document into `path`
- * (SPEC.md §6.2, decision #191): it is vault-relative and contains no "\".
- * Windows reads "\" as a separator and other platforms as part of a name, so
- * `a/b` and `a\b` would otherwise be two live documents naming one file on
- * Windows. A document committed before the rule keeps its "\" path, which
- * still passes {@link isVaultRelativePath}; the server accepts it only as the
- * unchanged path of a live document (an edit or a delete in place).
+ * (SPEC.md §6.2): it is vault-relative, contains no "\" (decision #191) and
+ * does not start with one code point and a colon (decision #148). Windows
+ * reads "\" as a separator and other platforms as part of a name, so `a/b`
+ * and `a\b` would otherwise be two live documents naming one file on
+ * Windows; and Win32 reads any first character followed by ":" (`1:x.md`,
+ * `é:x.md`) as a drive. A document committed before these rules keeps its
+ * path, which still passes {@link isVaultRelativePath}; the server accepts it
+ * only as the unchanged path of a live document (an edit or a delete in
+ * place).
  *
  * Must match `CheckNew` in internal/vaultpath (Go) exactly, on the `new`
  * field of testdata/paths/validity.json.
  */
 export function isNewVaultPath(path: string): boolean {
-  return isVaultRelativePath(path) && !path.includes("\\");
+  // With the u flag, [^] is one code point, including a surrogate pair.
+  return isVaultRelativePath(path) && !path.includes("\\") && !/^[^]:/u.test(path);
+}
+
+/** The most UTF-8 bytes a plaintext path may have (SPEC.md §6.2; MaxBytes in internal/vaultpath). */
+export const maxPathBytes = 4096;
+
+const encoder = new TextEncoder();
+
+/** A UTF-16 surrogate that is not half of a pair: it has no UTF-8 form. */
+const loneSurrogate = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/;
+
+/**
+ * Reports whether `path` is 1 to {@link maxPathBytes} bytes of UTF-8 with no
+ * control character (Unicode category Cc: U+0000 to U+001F and U+007F to
+ * U+009F), the server's length and character-set rule for a plaintext path
+ * (SPEC.md §6.2, #148). A string with a lone surrogate, which has no UTF-8
+ * form, is refused. A client applies this, with
+ * {@link isVaultRelativePath}, to every path it receives before it touches
+ * the disk, including E2EE paths after decryption, which the server cannot
+ * check.
+ *
+ * Must match `CheckText` in internal/vaultpath (Go) exactly;
+ * testdata/paths/text.json is the shared conformance suite.
+ */
+export function isPathText(path: string): boolean {
+  if (path === "" || loneSurrogate.test(path) || /\p{Cc}/u.test(path)) return false;
+  return encoder.encode(path).length <= maxPathBytes;
 }
