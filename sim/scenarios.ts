@@ -1382,4 +1382,71 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
     .flat()
     .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, edited };
+
+export interface BackslashPathResult extends RunResult {
+  /** The server's live documents after the backslash files were pushed: path to document label. */
+  afterRefusal: Map<string, string>;
+  /** The second engine's vault then: path to content. */
+  secondAfterRefusal: Map<string, string>;
+  /** The paths the second engine's last push before the renames reported as rejected. */
+  rejected: string[];
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents after the run: path to document label. */
+  documents: Map<string, string>;
+}
+
+/**
+ * New paths containing "\" (#191, SPEC.md §6.2). Two POSIX engines. The first
+ * syncs a note `a/b` and a file `notes`. The second engine's user creates
+ * `a\b` and `notes\c.md`, which name `a/b` and a file under `notes` on
+ * Windows, and the engine pushes, crashes and pushes again. Neither may
+ * reach the server, and both files must stay on the second engine's disk,
+ * reported as rejected. Then the user renames them to `a/c` and
+ * `notes-c.md`: both must sync, and the vaults must converge.
+ */
+export async function backslashPathsRefused(endpoints: SimEndpoints): Promise<BackslashPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const contents = async (engine: typeof first) => {
+    const files = new Map<string, string>();
+    for (const path of await engine.list()) files.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+    return files;
+  };
+
+  log(await first.edit("a/b", encoder.encode("slash\n")));
+  log(await first.edit("notes", encoder.encode("a file\n")));
+  await push(first);
+  await pull(second);
+
+  log(await second.edit("a\\b", encoder.encode("backslash twin\n")));
+  log(await second.edit("notes\\c.md", encoder.encode("under the file\n")));
+  await push(second);
+  log(second.crash());
+  await push(second);
+  const rejected = (second.lastPush?.rejected ?? []).map(({ operation }) => operation.path).sort();
+  const afterRefusal = await liveDocuments(run);
+  const secondAfterRefusal = await contents(second);
+
+  log(await second.move("a\\b", "a/c"));
+  log(await second.move("notes\\c.md", "notes-c.md"));
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  return { ...result, afterRefusal, secondAfterRefusal, rejected, vaults: [await contents(first), await contents(second)], documents: await liveDocuments(run) };
 }

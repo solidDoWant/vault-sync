@@ -17,17 +17,19 @@ import (
 
 // TestCommitEnforcesSharedPathValidity drives every shared path validity
 // vector (testdata/paths/validity.json, also asserted by the TypeScript
-// client) through CommitRevision in a plaintext vault. It reproduces issue
-// #139: backslash ".." segments and drive or UNC prefixes were accepted.
+// client) through CommitRevision in a plaintext vault, as a create: it is
+// accepted exactly for the vectors that are new paths. It reproduces issues
+// #139 (backslash ".." segments and drive or UNC prefixes were accepted) and
+// #191 (a create at a path containing "\" was accepted).
 func TestCommitEnforcesSharedPathValidity(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "paths", "validity.json"))
 	require.NoError(t, err)
 
 	var file struct {
 		Vectors []struct {
-			Name  string `json:"name"`
-			Path  string `json:"path"`
-			Valid bool   `json:"valid"`
+			Name string `json:"name"`
+			Path string `json:"path"`
+			New  bool   `json:"new"`
 		} `json:"vectors"`
 	}
 
@@ -47,7 +49,7 @@ func TestCommitEnforcesSharedPathValidity(t *testing.T) {
 			documents := fixture.count(t, "documents", alice.vaultID)
 
 			_, err := alice.commit(t, alice.create(t, vector.Path, content))
-			if vector.Valid {
+			if vector.New {
 				require.NoError(t, err, "path %q", vector.Path)
 
 				accepted++

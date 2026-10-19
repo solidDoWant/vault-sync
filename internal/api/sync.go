@@ -328,7 +328,8 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 		errors.Is(err, store.ErrIDInUse),
 		errors.Is(err, store.ErrKindMismatch),
 		errors.Is(err, store.ErrBlobSizeMismatch),
-		errors.Is(err, store.ErrInvalidPath):
+		errors.Is(err, store.ErrInvalidPath),
+		errors.Is(err, store.ErrPathNotCurrent):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
 		return service.internal(ctx, "cannot commit revision", err)
@@ -394,6 +395,10 @@ func parseCommit(message *vaultsyncv1.CommitRevisionRequest) (store.NewRevision,
 		return store.NewRevision{}, err
 	}
 
+	// A vault-relative path with a "\" may no longer be created, but a
+	// document committed before that rule may keep it (SPEC.md §6.2, #191).
+	revision.PathMustBeCurrent = errors.Is(vaultpath.CheckNew(revision.Path), vaultpath.ErrBackslash)
+
 	revision.Deleted = message.GetDeleted()
 
 	return revision, nil
@@ -416,7 +421,9 @@ func parseClientID(value string) (uuid.UUID, error) {
 
 // checkPath validates a plaintext vault-relative path: 1 to MaxPathBytes
 // bytes of UTF-8 without control characters that is vault-relative on every
-// client platform (vaultpath.Check: "/" and "\" are both separators).
+// client platform (vaultpath.Check: "/" and "\" are both separators). Only
+// the stricter vaultpath.CheckNew paths may be created; parseCommit marks
+// the others.
 func checkPath(path []byte) (string, error) {
 	if len(path) == 0 || len(path) > MaxPathBytes {
 		return "", invalidArgument("path must be 1 to %d bytes", MaxPathBytes)
