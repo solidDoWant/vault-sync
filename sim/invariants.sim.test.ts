@@ -69,6 +69,35 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(first.trace.some((line) => / user (creates|edits|writes) /.test(line))).toBe(true);
   });
 
+  it("holds the invariants modulo the unmaterializable set: a Windows engine keeps its user's edit of a note renamed to a name Windows cannot hold", async () => {
+    const run = await SimRun.start(environment, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+    const [posix, windows] = run.observers;
+    if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
+    const drain = async () => {
+      await settle();
+      await run.drain();
+    };
+    run.context.log(await posix.edit("plan.md", encoder.encode("one\n")));
+    run.context.log(posix.startPush());
+    await drain();
+    run.context.log(windows.startPull());
+    await drain();
+    run.context.log(await windows.edit("plan.md", encoder.encode("one\nedited on windows\n")));
+    run.context.log(await posix.move("plan.md", "plan?.md"));
+    run.context.log(posix.startPush());
+    await drain();
+    run.context.log(windows.startPull());
+    await drain();
+    const result = await run.finish();
+
+    // The edit stays on Windows, unpushed, outside the live paths; nothing is lost, deleted or unconverged.
+    expect(result.violations, tail(result.trace)).toEqual([]);
+    expect(await windows.list()).toEqual(["plan.md"]);
+    expect(new TextDecoder().decode(await windows.read("plan.md"))).toBe("one\nedited on windows\n");
+    expect(await windows.unmaterializable()).toEqual(new Map([["plan?.md", "forbidden-character"]]));
+    expect(await posix.list()).toEqual(["plan?.md"]);
+  });
+
   it("passes the mutation tests' scenario without a mutation", async () => {
     const result = await twoEngines(environment, () => Promise.resolve("no mutation"));
     expect(result.violations, tail(result.trace)).toEqual([]);
