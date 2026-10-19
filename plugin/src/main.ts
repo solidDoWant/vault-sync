@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, Platform, Plugin, type App } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, TFile, type App } from "obsidian";
 
 import { VaultEncryption, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
@@ -7,13 +7,15 @@ import type { PullSummary } from "./core/engine/engine";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import type { PathRules } from "./core/vaultpath/platform";
 import { PROTOCOL_VERSION } from "./core/version";
+import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
 import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
 import { discoverIdentityProvider } from "./obsidian/discovery";
+import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
 import { webSocketConnector } from "./obsidian/realtime-socket";
-import { SyncSession, type SyncSessionOptions } from "./obsidian/session";
+import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, statusDescription, statusText, type SyncStatus } from "./obsidian/status";
@@ -79,6 +81,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.addCommand({ id: "sign-in", name: "Sign in", callback: () => void this.signIn() });
     this.addCommand({ id: "sign-out", name: "Sign out", callback: () => void this.signOut() });
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.controller?.syncNow() });
+    this.registerView(conflictViewType, (leaf) => new ConflictView(leaf, { problems: () => this.controller?.session ?? this.session }));
+    this.addCommand({ id: "show-conflicts", name: "Show conflicts", callback: () => void this.showConflicts() });
     // The status bar is desktop-only; on mobile this is how to see the status.
     this.addCommand({
       id: "show-status",
@@ -87,6 +91,28 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
         this.noticeStatus();
       },
     });
+    this.addCommand({
+      id: "show-file-history",
+      name: "Show file history",
+      checkCallback: (checking) => {
+        const file = this.app.workspace.getActiveFile();
+        if (file === null) return false;
+        if (!checking) void this.showHistory(file.path);
+        return true;
+      },
+    });
+    this.addCommand({ id: "browse-deleted-files", name: "Browse deleted files", callback: () => void this.browseDeletedFiles() });
+    this.registerEvent(
+      this.app.workspace.on("file-menu", (menu, file) => {
+        if (!(file instanceof TFile)) return;
+        menu.addItem((item) =>
+          item
+            .setTitle("Show sync history")
+            .setIcon("history")
+            .onClick(() => void this.showHistory(file.path)),
+        );
+      }),
+    );
     this.showStatus(this.status);
     // Not awaited: registering the device and opening the journal may wait
     // for the network, and Obsidian waits for onload.
@@ -210,6 +236,36 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.settingTab?.render();
   }
 
+  /** History browsing and restore of the running sync session, if one runs. */
+  vaultHistory(): VaultHistory | undefined {
+    return this.session?.history() ?? this.controller?.history();
+  }
+
+  /** Opens the history of the synced file at `path` (SPEC.md §11). */
+  async showHistory(path: string): Promise<void> {
+    const history = this.vaultHistory();
+    if (history === undefined) {
+      new Notice("Vault Sync: history is available while this vault syncs.");
+      return;
+    }
+    const documentId = await history.documentAt(path);
+    if (documentId === undefined) {
+      new Notice(`Vault Sync: ${path} has not been synced yet, so it has no history.`);
+      return;
+    }
+    new HistoryModal(this.app, history, documentId, path).open();
+  }
+
+  /** Lists the deleted files this device knows of, to find one and restore it (SPEC.md §11). */
+  async browseDeletedFiles(): Promise<void> {
+    const history = this.vaultHistory();
+    if (history === undefined) {
+      new Notice("Vault Sync: deleted files can be restored while this vault syncs.");
+      return;
+    }
+    new DeletedFilesModal(this.app, history, await history.deletedDocuments()).open();
+  }
+
   /** The vaults the signed-in user may connect this vault to. */
   listRemoteVaults(): Promise<Vault[]> {
     return listRemoteVaults(this.protocolClient());
@@ -286,6 +342,21 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     await session?.stop();
   }
 
+  /** Opens the conflict view in the right sidebar, or reveals it if it is open. */
+  async showConflicts(): Promise<void> {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(conflictViewType)[0];
+    if (leaf === undefined) {
+      leaf = workspace.getRightLeaf(false) ?? workspace.getLeaf("tab");
+      await leaf.setViewState({ type: conflictViewType, active: true });
+    }
+    await workspace.revealLeaf(leaf);
+  }
+
+  private refreshConflictViews(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType(conflictViewType)) if (leaf.view instanceof ConflictView) void leaf.view.refresh();
+  }
+
   private layoutReady(): Promise<void> {
     return new Promise<void>((resolve) => {
       this.app.workspace.onLayoutReady(resolve);
@@ -297,6 +368,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.statusBar?.setText(statusText(status));
     this.statusBar?.setAttribute("aria-label", statusDescription(status));
     this.settingTab?.showStatus();
+    this.refreshConflictViews();
   }
 
   private noticeStatus(): void {

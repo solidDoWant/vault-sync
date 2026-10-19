@@ -338,8 +338,13 @@ func TestReadyzHoldsAtMostOneDatabaseConnection(t *testing.T) {
 // vault and no commits happen.
 type idleRealtimeStore struct{}
 
-func (idleRealtimeStore) VaultRole(context.Context, uuid.UUID, uuid.UUID) (store.Role, error) {
-	return store.RoleOwner, nil
+func (idleRealtimeStore) VaultMembers(_ context.Context, _ uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
+	members := make(map[uuid.UUID]bool, len(userIDs))
+	for _, userID := range userIDs {
+		members[userID] = true
+	}
+
+	return members, nil
 }
 
 func (idleRealtimeStore) MemberHeadSeq(context.Context, uuid.UUID, uuid.UUID) (store.Role, int64, error) {

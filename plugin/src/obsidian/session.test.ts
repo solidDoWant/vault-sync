@@ -601,4 +601,97 @@ describe("SyncSession", () => {
       expect(server.liveFiles()).toEqual(new Map());
     });
   });
+
+  describe("conflict view", () => {
+    it("lists a conflict with both versions until the user deletes the copy", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "remote", path: "a.md", content: "remote version\n" });
+      const vault = new InMemoryVault();
+      await vault.write("a.md", bytes("local version\n"));
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+
+      const [entry, ...rest] = await running.conflicts();
+      expect(rest).toEqual([]);
+      expect(entry).toMatchObject({ record: { reason: "concurrent-create", path: "a.md" }, original: "a.md" });
+      const copy = entry?.copy ?? "";
+      expect(copy).toMatch(/^a \(conflict laptop .+\)\.md$/);
+      expect(new TextDecoder().decode(await vault.read(copy))).toBe("local version\n");
+
+      await vault.delete(copy);
+      expect(await running.conflicts()).toEqual([]);
+    });
+
+    it("lists documents the platform cannot hold with their remote path and reason", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "ok", path: "ok.md", content: "fine\n" });
+      server.commit({ documentId: "reserved", path: "notes/CON.md", content: "a reserved name\n" });
+      server.commit({ documentId: "colon", path: "a?.md", content: "a forbidden character\n" });
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal(), options: { pathRules: { platform: "windows" } } });
+      expect(await running.unmaterializable()).toEqual([]);
+      await running.start();
+
+      const listed = (await running.unmaterializable()).map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));
+      expect(listed).toEqual([
+        { path: "a?.md", reason: "forbidden-character" },
+        { path: "notes/CON.md", reason: "reserved-name" },
+      ]);
+      expect(await vault.list()).toEqual(["ok.md"]);
+    });
+
+    it("lists nothing once stopped", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "remote", path: "a.md", content: "remote version\n" });
+      server.commit({ documentId: "reserved", path: "CON.md", content: "a reserved name\n" });
+      const vault = new InMemoryVault();
+      await vault.write("a.md", bytes("local version\n"));
+      const running = session({ server, vault, journal: new InMemoryJournal(), options: { pathRules: { platform: "windows" } } });
+      await running.start();
+      expect(await running.conflicts()).toHaveLength(1);
+      expect(await running.unmaterializable()).toHaveLength(1);
+
+      await running.stop();
+
+      expect(await running.conflicts()).toEqual([]);
+      expect(await running.unmaterializable()).toEqual([]);
+    });
+  });
+
+  describe("history", () => {
+    it("is there only while the session runs", async () => {
+      const server = new InMemoryServer();
+      const running = session({ server, vault: new InMemoryVault(), journal: new InMemoryJournal() });
+      expect(running.history()).toBeUndefined();
+      await running.start();
+      expect(running.history()).toBeDefined();
+      await running.stop();
+      expect(running.history()).toBeUndefined();
+    });
+
+    it("finds a file's document, lists its history and restores a revision on disk", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+      await vault.write("plan.md", bytes("first"));
+      await running.syncNow();
+      await vault.write("plan.md", bytes("second"));
+      await running.syncNow();
+      const history = running.history();
+      if (history === undefined) throw new Error("no history");
+
+      const documentId = await history.documentAt("plan.md");
+      if (documentId === undefined) throw new Error("no document at plan.md");
+      const { entries } = await history.history(documentId);
+      const first = entries[1];
+      if (first === undefined) throw new Error("no first revision");
+      expect(new TextDecoder().decode(await history.readRevision(first))).toBe("first");
+      await history.restore(first);
+
+      expect(await files(vault)).toEqual(new Map([["plan.md", "first"]]));
+      expect(await history.documentAt("elsewhere.md")).toBeUndefined();
+      await running.stop();
+    });
+  });
 });

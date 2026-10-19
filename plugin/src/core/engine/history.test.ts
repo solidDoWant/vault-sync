@@ -1,0 +1,353 @@
+import { Code, ConnectError } from "@connectrpc/connect";
+import { bytesToHex } from "@noble/hashes/utils.js";
+import { describe, expect, it } from "vitest";
+
+import { sha256Hex } from "../hash";
+import { RestoreError, type HistoryEntry } from "./history";
+import { InMemoryServer } from "./memory-server";
+import { files, harness, moveHeadBeforeCommit, testDeviceId, type Harness } from "./testing";
+
+// History browsing and restore (SPEC.md §11, #26): a document's retained
+// revisions with time and device, any revision's content, and a restore that
+// commits the old content as a new head revision.
+
+const encoder = new TextEncoder();
+const decoder = new TextDecoder();
+const bytes = (value: string) => encoder.encode(value);
+
+/** A server whose clock starts at 2026-01-01T00:00Z and moves on one minute per revision. */
+function clockedServer(options: { maxHistoryPageSize?: number } = {}): { server: InMemoryServer; at: (minute: number) => Date } {
+  const start = Date.UTC(2026, 0, 1);
+  const at = (minute: number) => new Date(start + minute * 60_000);
+  let minute = 0;
+  const server = new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5, ...options, now: () => at(minute++) });
+  return { server, at };
+}
+
+/** Writes and pushes each version of `path` in turn; returns the document id. */
+async function pushVersions(h: Harness, path: string, ...versions: string[]): Promise<string> {
+  for (const version of versions) {
+    await h.vault.write(path, bytes(version));
+    await h.engine.push();
+  }
+  const document = await h.journal.findDocumentByPath(path);
+  if (document === undefined) throw new Error(`no document at ${path}`);
+  return document.documentId;
+}
+
+/** Every history entry of a document, newest first, across pages. */
+async function allEntries(h: Harness, documentId: string): Promise<HistoryEntry[]> {
+  const entries: HistoryEntry[] = [];
+  let pageToken = "";
+  for (let page = 0; page < 100; page++) {
+    const result = await h.engine.history(documentId, pageToken);
+    entries.push(...result.entries);
+    if (result.nextPageToken === "") return entries;
+    pageToken = result.nextPageToken;
+  }
+  throw new Error("history did not end");
+}
+
+function entryAt(entries: HistoryEntry[], index: number): HistoryEntry {
+  const entry = entries[index];
+  if (entry === undefined) throw new Error(`no history entry ${String(index)}`);
+  return entry;
+}
+
+describe("SyncEngine history (SPEC.md §11)", () => {
+  it("lists a document's revisions newest first, with the time, device and path of each", async () => {
+    const { server, at } = clockedServer();
+    const h = harness({ server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n");
+    server.commit({ documentId, path: "renamed.md", content: "three\n", deviceId: "phone" });
+    await h.engine.pull();
+
+    const page = await h.engine.history(documentId);
+
+    expect(page.documentId).toBe(documentId);
+    expect(page.headRevisionId).toBe(server.head(documentId)?.id);
+    expect(page.nextPageToken).toBe("");
+    expect(page.entries.map(({ path, deviceId, thisDevice, createdAt, deleted }) => ({ path, deviceId, thisDevice, createdAt, deleted }))).toEqual([
+      { path: "renamed.md", deviceId: "phone", thisDevice: false, createdAt: at(2), deleted: false },
+      { path: "plan.md", deviceId: testDeviceId, thisDevice: true, createdAt: at(1), deleted: false },
+      { path: "plan.md", deviceId: testDeviceId, thisDevice: true, createdAt: at(0), deleted: false },
+    ]);
+    expect(page.entries.map((entry) => entry.revisionId)).toEqual(
+      server
+        .history(documentId)
+        .map((revision) => revision.id)
+        .reverse(),
+    );
+  });
+
+  it("pages through a long history, newest first, every revision once", async () => {
+    const { server } = clockedServer({ maxHistoryPageSize: 2 });
+    const h = harness({ server });
+    const documentId = await pushVersions(h, "plan.md", "1\n", "2\n", "3\n", "4\n", "5\n");
+
+    const first = await h.engine.history(documentId);
+    const entries = await allEntries(h, documentId);
+
+    expect(first.entries).toHaveLength(2);
+    expect(first.nextPageToken).not.toBe("");
+    expect(entries.map((entry) => entry.revisionId)).toEqual(
+      server
+        .history(documentId)
+        .map((revision) => revision.id)
+        .reverse(),
+    );
+  });
+
+  it("shows a deleted document's tombstone as the newest entry", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "gone.md", "kept in history\n");
+    await h.vault.delete("gone.md");
+    await h.engine.push();
+
+    const entries = await allEntries(h, documentId);
+
+    expect(entries.map(({ path, deleted }) => ({ path, deleted }))).toEqual([
+      { path: "gone.md", deleted: true },
+      { path: "gone.md", deleted: false },
+    ]);
+  });
+
+  it("previews any revision's exact content", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "the first version, long enough for several ranges\n", "second\n");
+    const entries = await allEntries(h, documentId);
+
+    expect(decoder.decode(await h.engine.readRevision(entryAt(entries, 1)))).toBe("the first version, long enough for several ranges\n");
+    expect(decoder.decode(await h.engine.readRevision(entryAt(entries, 0)))).toBe("second\n");
+  });
+});
+
+describe("SyncEngine restore (SPEC.md §11)", () => {
+  it("commits the old content as a new head revision based on the current head, and the disk shows it", async () => {
+    const { server } = clockedServer();
+    const h = harness({ server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n", "three\n");
+    const before = server.history(documentId).map((revision) => revision.id);
+    const localChanges = h.localChanges.length;
+    const oldest = entryAt(await allEntries(h, documentId), 2);
+
+    const restored = await h.engine.restore(oldest);
+
+    const history = server.history(documentId);
+    expect(history.map((revision) => revision.id).slice(0, 3)).toEqual(before);
+    expect(history).toHaveLength(4);
+    const head = history[3];
+    expect(head?.id).toBe(restored.revisionId);
+    expect(head?.parentRevId).toBe(before[2]);
+    expect(head?.deviceId).toBe(testDeviceId);
+    expect(head?.deleted).toBe(false);
+    expect(bytesToHex(head?.contentRef?.blobId ?? new Uint8Array())).toBe(oldest.contentHash);
+    expect(server.liveFiles()).toEqual(new Map([["plan.md", "one\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "one\n"]]));
+    expect(await h.journal.listPending()).toEqual([]);
+    expect((await h.journal.getDocument(documentId))?.revisionId).toBe(restored.revisionId);
+    // The engine's own write is not taken for a user edit.
+    await h.engine.settled();
+    expect(h.localChanges).toHaveLength(localChanges);
+  });
+
+  it("keeps the document at its current path", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n");
+    await h.vault.rename("plan.md", "moved.md");
+    await h.engine.push();
+    const original = entryAt(await allEntries(h, documentId), 2);
+
+    await h.engine.restore(original);
+
+    expect(h.server.liveFiles()).toEqual(new Map([["moved.md", "one\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([["moved.md", "one\n"]]));
+  });
+
+  it("pushes unsynced local edits first, so they stay in history, never overwritten", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n");
+    const oldest = entryAt(await allEntries(h, documentId), 1);
+    await h.vault.write("plan.md", bytes("an edit not pushed yet\n"));
+
+    await h.engine.restore(oldest);
+
+    const contents = h.server.history(documentId).map((revision) => decoder.decode(h.server.contentOf(revision)));
+    expect(contents).toEqual(["one\n", "two\n", "an edit not pushed yet\n", "one\n"]);
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "one\n"]]));
+  });
+
+  it("lands on the newest head when another device moves it during the restore, losing neither", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n");
+    const oldest = entryAt(await allEntries(h, documentId), 1);
+    moveHeadBeforeCommit(h, () => h.server.commit({ documentId, path: "plan.md", content: "from another device\n", deviceId: "phone" }));
+
+    await h.engine.restore(oldest);
+
+    const contents = h.server.history(documentId).map((revision) => decoder.decode(h.server.contentOf(revision)));
+    expect(contents).toEqual(["one\n", "two\n", "from another device\n", "one\n"]);
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "one\n"]]));
+  });
+
+  it("uploads the previewed content again when blob garbage collection removed it", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n", "three\n");
+    const oldest = entryAt(await allEntries(h, documentId), 2);
+    const preview = await h.engine.readRevision(oldest);
+    // Retention purges the revision, and the collector its blob, after the preview.
+    h.server.purge(oldest.revisionId);
+    h.server.collectBlob(oldest.contentHash);
+
+    await h.engine.restore(oldest, preview);
+
+    expect(h.server.hasBlob(oldest.contentHash)).toBe(true);
+    expect(h.server.liveFiles()).toEqual(new Map([["plan.md", "one\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "one\n"]]));
+  });
+
+  it("downloads the content and uploads it again when the commit finds the blob not complete", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n");
+    const oldest = entryAt(await allEntries(h, documentId), 1);
+    // The first commit races a collection of the blob, which then completes again.
+    let refused = false;
+    const methods: string[] = [];
+    h.server.interceptor = (method) => {
+      methods.push(method);
+      if (method === "CommitRevision" && !refused) {
+        refused = true;
+        throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+      }
+    };
+
+    await h.engine.restore(oldest);
+
+    expect(methods.filter((method) => method === "CommitRevision")).toHaveLength(2);
+    expect(methods).toContain("DownloadBlob");
+    expect(methods).toContain("BeginBlob");
+    expect(h.server.liveFiles()).toEqual(new Map([["plan.md", "one\n"]]));
+  });
+
+  it("reports a revision whose content neither the server nor a preview has any more, committing nothing", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n", "three\n");
+    const oldest = entryAt(await allEntries(h, documentId), 2);
+    h.server.purge(oldest.revisionId);
+    h.server.collectBlob(oldest.contentHash);
+
+    const failure = h.engine.restore(oldest);
+
+    await expect(failure).rejects.toThrow(RestoreError);
+    await expect(failure).rejects.toMatchObject({ reason: "unavailable" });
+    expect(h.server.history(documentId)).toHaveLength(2);
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "three\n"]]));
+  });
+
+  it("ignores previewed content that does not match the revision", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "one\n", "two\n", "three\n");
+    const oldest = entryAt(await allEntries(h, documentId), 2);
+    h.server.purge(oldest.revisionId);
+    h.server.collectBlob(oldest.contentHash);
+
+    await expect(h.engine.restore(oldest, bytes("not what the revision held\n"))).rejects.toMatchObject({ reason: "unavailable" });
+    expect(h.server.liveFiles()).toEqual(new Map([["plan.md", "three\n"]]));
+    expect(h.server.hasBlob(sha256Hex(bytes("not what the revision held\n")))).toBe(false);
+  });
+});
+
+describe("SyncEngine deleted files (SPEC.md §11)", () => {
+  it("lists deleted documents, newest delete first, and restores one at its path", async () => {
+    const h = harness({ server: clockedServer().server });
+    const first = await pushVersions(h, "first.md", "first, deleted early\n");
+    const second = await pushVersions(h, "notes/second.md", "second, edited\n", "second, deleted later\n");
+    await pushVersions(h, "alive.md", "still here\n");
+    await h.vault.delete("first.md");
+    await h.engine.push();
+    await h.vault.delete("notes/second.md");
+    await h.engine.push();
+
+    const deleted = await h.engine.deletedDocuments();
+
+    expect(deleted.map(({ documentId, path }) => ({ documentId, path }))).toEqual([
+      { documentId: second, path: "notes/second.md" },
+      { documentId: first, path: "first.md" },
+    ]);
+
+    // The tombstone holds the content at the time of the delete.
+    const [tombstone] = (await h.engine.history(second)).entries;
+    if (tombstone === undefined) throw new Error("no tombstone");
+    expect(tombstone.deleted).toBe(true);
+    await h.engine.restore(tombstone);
+
+    expect(await files(h.vault)).toEqual(
+      new Map([
+        ["alive.md", "still here\n"],
+        ["notes/second.md", "second, deleted later\n"],
+      ]),
+    );
+    expect(h.server.head(second)?.deleted).toBe(false);
+    expect((await h.engine.deletedDocuments()).map((document) => document.documentId)).toEqual([first]);
+  });
+
+  it("restores an earlier version of a deleted document", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "the version to bring back\n", "the last version\n");
+    await h.vault.delete("plan.md");
+    await h.engine.push();
+    const earliest = entryAt(await allEntries(h, documentId), 2);
+
+    await h.engine.restore(earliest);
+
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "the version to bring back\n"]]));
+    expect(h.server.liveFiles()).toEqual(new Map([["plan.md", "the version to bring back\n"]]));
+  });
+
+  it("reports a deleted document whose path another document now holds, committing nothing", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "the old plan\n");
+    await h.vault.delete("plan.md");
+    await h.engine.push();
+    // Another device creates a new document at the freed path.
+    h.server.commit({ documentId: "new-plan", path: "plan.md", content: "a new plan\n", deviceId: "phone" });
+    await h.engine.pull();
+    const [tombstone] = (await h.engine.history(documentId)).entries;
+    if (tombstone === undefined) throw new Error("no tombstone");
+
+    const failure = h.engine.restore(tombstone);
+
+    await expect(failure).rejects.toThrow(RestoreError);
+    await expect(failure).rejects.toMatchObject({ reason: "path-taken", path: "plan.md" });
+    expect(h.server.head(documentId)?.deleted).toBe(true);
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", "a new plan\n"]]));
+  });
+
+  it("does not list a document this device only released because the platform cannot hold its path", async () => {
+    const h = harness({ merge: "default", pathRules: { platform: "windows" }, server: clockedServer().server });
+    h.server.commit({ documentId: "doc", path: "plan.md", content: "plan\n" });
+    await h.engine.pull();
+    h.server.commit({ documentId: "doc", path: "plan?.md" });
+    await h.engine.pull();
+
+    expect((await h.journal.getDocument("doc"))?.deleted).toBe(true);
+    expect(await h.engine.deletedDocuments()).toEqual([]);
+  });
+
+  it("does not list a deleted document that a local change not yet pushed brings back", async () => {
+    const h = harness({ server: clockedServer().server });
+    const documentId = await pushVersions(h, "plan.md", "the old plan\n");
+    await h.vault.delete("plan.md");
+    await h.engine.push();
+    expect((await h.engine.deletedDocuments()).map((document) => document.documentId)).toEqual([documentId]);
+    // The file is written again, but the server is unreachable when the push commits it.
+    await h.vault.write("plan.md", bytes("the plan, back again\n"));
+    h.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("try later", Code.Unavailable);
+    };
+    await expect(h.engine.push()).rejects.toThrow(/try later/);
+    expect((await h.journal.listPending()).map((operation) => ({ documentId: operation.documentId, deleted: operation.deleted }))).toEqual([{ documentId, deleted: false }]);
+
+    expect(await h.engine.deletedDocuments()).toEqual([]);
+  });
+});

@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -337,6 +337,26 @@ describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
 
     expect(result.violations, trace).toEqual([]);
     expect(result.trace.some((line) => line.includes(" as unmaterializable (")), trace).toBe(true);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", () => {
+  it("merges past a merge base that retention purged, without stalling the pull or losing either edit", async () => {
+    const result = await purgedMergeBase(environment);
+    const trace = tail(result.trace, 200);
+
+    // Convergence (the pull did not stall: cursor at the feed's end, nothing deferred), no lost acknowledged write but the purged base.
+    expect(result.violations, trace).toEqual([]);
+    expect(result.purged, trace).toEqual([result.base]);
+    const copy = "notes/plan (conflict e1 2026-01-02 030405).md";
+    const expected = new Map([
+      [copy, "one\ntwo (second engine, offline)\nthree\n"],
+      ["notes/later.md", "written after the purge\n"],
+      ["notes/plan.md", "one (first engine)\ntwo\nthree\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.conflicts[1], trace).toEqual([{ reason: "base-purged", path: "notes/plan.md", copyPath: copy }]);
   });
 });
 
