@@ -621,6 +621,34 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios of a new file at a j
     expect(result.tombstoned, trace).toEqual([]);
     expect(result.conflicts, trace).toEqual([]);
   });
+
+  it("never takes the user's rename of a new note for a remote document created at the path it vacated (#303)", async () => {
+    const result = await fileAtVacatedPath(environment, "remote-created-at-vacated-path");
+    const trace = traceOf(result);
+
+    expect(result.violations, trace).toEqual([]);
+    const remote = result.before.get("e.md");
+    expect(remote, trace).toBeDefined();
+    // The other device's note stays at e.md under its own id, with its own content, on both devices.
+    expect(result.documents.get("e.md"), trace).toBe(remote);
+    expect(result.vaults[0]?.get("e.md"), trace).toBe("first's note\n");
+    expect(result.vaults[1]?.get("e.md"), trace).toBe("first's note\n");
+    // The user's first note is a new document at the path it was renamed to.
+    expect(result.vaults[1]?.get("notes/f.md"), trace).toBe("second's first note\n");
+    const renamed = result.documents.get("notes/f.md");
+    expect(renamed, trace).toEqual(expect.any(String));
+    expect(renamed, trace).not.toBe(remote);
+    // The user's second note, which lost e.md to the remote note, is a conflict copy of its own.
+    const copies = [...result.documents.keys()].filter((path) => path !== "e.md" && path !== "notes/f.md");
+    expect(copies, trace).toEqual([expect.stringMatching(/^e \(conflict .*\)\.md$/)]);
+    const copy = copies[0] ?? "";
+    expect(result.vaults[1]?.get(copy), trace).toBe("second's second note\n");
+    expect(new Set([remote, renamed, result.documents.get(copy)]).size, trace).toBe(3);
+    expect(result.vaults[0], trace).toEqual(result.vaults[1]);
+    expect(result.vaults[1]?.size, trace).toBe(3);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.conflicts.map(({ path, copyPath }) => ({ path, copyPath })), trace).toEqual([{ path: "e.md", copyPath: copy }]);
+  });
 });
 
 describe.runIf(suites.has("scenarios"))("scripted backslash-path scenarios (#191)", () => {

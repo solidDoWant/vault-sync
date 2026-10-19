@@ -1385,7 +1385,7 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
 }
 
 /** The ways #254's user vacates a synced path and puts another file there before the next push. */
-export type VacatedPathVariant = "deleted-then-created" | "deleted-then-renamed-onto" | "deleted-then-case-variant-renamed-onto" | "case-variant-swap" | "renamed-away-while-created";
+export type VacatedPathVariant = "deleted-then-created" | "deleted-then-renamed-onto" | "deleted-then-case-variant-renamed-onto" | "case-variant-swap" | "renamed-away-while-created" | "remote-created-at-vacated-path";
 
 export interface VacatedPathResult extends HeldPathResult {
   /** The second engine's conflict log after the run. */
@@ -1411,6 +1411,11 @@ export interface VacatedPathResult extends HeldPathResult {
  * - `renamed-away-while-created` (macOS, seed 22): the user creates
  *   `STRASSE.md` and, while its create is being committed, renames it to
  *   `b.md` and creates `straße.md`, which has the same path key.
+ * - `remote-created-at-vacated-path` (POSIX, #303): nothing is synced. The
+ *   user creates `e.md`, renames it to `notes/f.md`, creates `x.md` and
+ *   renames it to `e.md`. Before the second engine pushes, the first engine
+ *   creates `e.md` and pushes. The remote document must never be taken for
+ *   the user's rename.
  */
 export async function fileAtVacatedPath(endpoints: SimEndpoints, variant: VacatedPathVariant): Promise<VacatedPathResult> {
   const platform = variant === "deleted-then-case-variant-renamed-onto" ? "windows" : variant === "case-variant-swap" || variant === "renamed-away-while-created" ? "macos" : "posix";
@@ -1446,11 +1451,12 @@ export async function fileAtVacatedPath(endpoints: SimEndpoints, variant: Vacate
       ["b.md", "b\n"],
     ],
     "renamed-away-while-created": [],
+    "remote-created-at-vacated-path": [],
   };
   for (const [path, content] of synced[variant]) log(await first.edit(path, encoder.encode(content)));
   await push(first);
   await pull(second);
-  const before = await liveDocuments(run);
+  let before = await liveDocuments(run);
 
   switch (variant) {
     case "deleted-then-created":
@@ -1485,6 +1491,15 @@ export async function fileAtVacatedPath(endpoints: SimEndpoints, variant: Vacate
       await run.drain(second.index);
       break;
     }
+    case "remote-created-at-vacated-path":
+      log(await second.edit("e.md", encoder.encode("second's first note\n")));
+      log(await second.move("e.md", "notes/f.md"));
+      log(await second.edit("x.md", encoder.encode("second's second note\n")));
+      log(await second.move("x.md", "e.md"));
+      log(await first.edit("e.md", encoder.encode("first's note\n")));
+      await push(first);
+      before = await liveDocuments(run);
+      break;
   }
   await push(second);
   await push(second);
