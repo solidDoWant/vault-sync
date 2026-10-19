@@ -1304,7 +1304,7 @@ export async function knownDocumentAtHeldPath(endpoints: SimEndpoints, variant: 
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts };
 }
 
-export interface LostRenameResult extends HeldPathResult {
+export interface LostRenameResult extends KnownHeldPathResult {
   /** The edited note's content, as the first engine's user wrote it. */
   edited: string;
 }
@@ -1320,8 +1320,16 @@ export interface LostRenameResult extends HeldPathResult {
  * lost to the delete (SPEC.md §2 principle 1, §7: an edit wins over a
  * concurrent delete): the note stays live at `note.md` with the edit in both
  * vaults, and `moved.md` holds the renamed content.
+ *
+ * With `deleted-note-path`, both engines also sync a second note at
+ * `moved.md`, and the second engine's user deletes that file just before the
+ * rename, so the crash loses the delete too. The restarted engine's full scan
+ * then sees `moved.md` changed, and takes the renamed content for an edit of
+ * the deleted note (#254 after a crash): the lost rename lands on the deleted
+ * note's id, and the renamed-away note gets the delete. The first engine's
+ * edit of the renamed-away note must survive that delete just the same.
  */
-export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-first" | "renamer-first"): Promise<LostRenameResult> {
+export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-first" | "renamer-first", variant: "free-path" | "deleted-note-path" = "free-path"): Promise<LostRenameResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -1341,10 +1349,12 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
 
   const edited = "one\ntwo (edited)\n";
   log(await first.edit("note.md", encoder.encode("one\ntwo\n")));
+  if (variant === "deleted-note-path") log(await first.edit("moved.md", encoder.encode("other\n")));
   await push(first);
   await pull(second);
   const before = await liveDocuments(run);
 
+  if (variant === "deleted-note-path") log(await second.remove("moved.md"));
   log(await second.move("note.md", "moved.md"));
   log(second.crash());
   log(await first.edit("note.md", encoder.encode(edited)));
@@ -1357,6 +1367,8 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
   }
   await push(second);
   await pull(first);
+  await push(first);
+  await pull(second);
 
   const result = await run.finish();
   const vaults = await Promise.all(
@@ -1366,5 +1378,8 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
       return contents;
     }),
   );
-  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), edited };
+  const conflicts = (await Promise.all([first, second].map((engine) => engine.conflicts())))
+    .flat()
+    .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, edited };
 }
