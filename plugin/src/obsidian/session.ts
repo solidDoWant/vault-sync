@@ -1,6 +1,7 @@
 import { SyncEngine, type PullSummary, type PushSummary } from "../core/engine/engine";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
+import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
 import type { Journal } from "../core/journal/journal";
 import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
@@ -41,6 +42,12 @@ export interface SyncSessionOptions {
   pathRules?: PathRules;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
+  /**
+   * The realtime channel (SPEC.md §6.4). When set, the started session
+   * subscribes to the vault and pulls after every (re)subscribe and every
+   * notification of it. The pull timer runs either way.
+   */
+  realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
 }
 
 export interface SessionStatus {
@@ -65,7 +72,8 @@ export class SessionStoppedError extends Error {
  * over the device's journal. It starts once `ready` resolves, resumes from
  * the journal's cursor (so disabling and re-enabling the plugin, or
  * restarting Obsidian, never starts a full resync), pulls, and pushes. It
- * then pushes after local changes (debounced) and on a timer.
+ * then pushes after local changes (debounced) and on a timer, and pulls when
+ * the realtime channel reports a remote change.
  *
  * Stopping never loses a local change: an edit the session had not pushed
  * yet stays on disk, and the next session's first push scans the whole vault
@@ -78,6 +86,7 @@ export class SyncSession {
   private starting: Promise<unknown> = Promise.resolve();
   private readonly abort = new AbortController();
   private timer: ReturnType<typeof setInterval> | undefined;
+  private realtime: RealtimeClient | undefined;
   private timerRun: Promise<unknown> | undefined;
   private busy = false;
   /** The last pull or push's failure; undefined after a success. */
@@ -123,6 +132,7 @@ export class SyncSession {
     this.stopped = true;
     this.abort.abort(new SessionStoppedError());
     if (this.timer !== undefined) clearInterval(this.timer);
+    this.realtime?.stop();
     this.engine?.dispose();
     this.stopping = (async () => {
       await this.starting;
@@ -172,6 +182,10 @@ export class SyncSession {
     // retries ran out, say) must not wait for the user's next edit.
     await this.attempt(() => engine.push());
     if (this.isStopped()) return undefined;
+    if (options.realtime !== undefined) {
+      this.realtime = new RealtimeClient({ ...options.realtime, vaultId: options.vaultId, onChange: () => this.attempt(() => engine.pull()) });
+      this.realtime.start();
+    }
     if (options.syncIntervalMs !== null) {
       this.timer = setInterval(() => {
         // One timer push at a time: on a slow network ticks never pile up.

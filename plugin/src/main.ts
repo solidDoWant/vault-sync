@@ -12,6 +12,7 @@ import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, 
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
+import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
@@ -21,8 +22,9 @@ import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
 /** How long after the last local change of a burst the engine pushes (#167 item 5: chosen here, not left to the engine's default). */
 const pushDebounceMs = 2000;
 /**
- * How often the plugin pulls and pushes on its own. Until the realtime
- * channel is wired (#193) this is how remote changes arrive, and it retries
+ * How often the plugin pulls and pushes on its own. Remote changes normally
+ * arrive at once over the realtime channel; this is the fallback when it is
+ * down (correctness never depends on it, SPEC.md §6.4), and it retries
  * pending operations that no edit would trigger.
  */
 const syncIntervalMs = 30_000;
@@ -56,6 +58,13 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       pushDebounceMs,
       syncIntervalMs,
       pathRules: localPathRules(this.app),
+      realtime: (serverUrl) => ({
+        connect: webSocketConnector(serverUrl),
+        accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
+        invalidate: (token) => {
+          this.tokens?.invalidate(token);
+        },
+      }),
       onStatus: (status) => {
         this.showStatus(status);
       },

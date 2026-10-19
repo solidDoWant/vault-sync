@@ -1,10 +1,14 @@
 import { FileView, MarkdownView, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
+import { hexToBytes } from "@noble/hashes/utils.js";
+
+import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
 import { sha256Hex } from "../../../src/core/hash";
 import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
 import { IndexedDbJournal } from "../../../src/core/journal/indexeddb";
 import { createProtocolClient } from "../../../src/core/protocol/client";
+import { uuidv7 } from "../../../src/core/uuid";
 import type { VaultEvent } from "../../../src/core/vault/adapter";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
@@ -339,6 +343,49 @@ export default class VaultSyncE2EHarness extends Plugin {
     if (!(file instanceof TFile)) throw new Error(`no file ${path}`);
     await this.app.vault.modify(file, text);
   }
+
+  /**
+   * Turns vault-sync's pull timer off for the sessions it starts from now on
+   * (realtime.e2e.ts), so a remote change can arrive only through a start's
+   * pull or the realtime channel.
+   */
+  disablePullTimer(): void {
+    const controller = (this.vaultSync() as unknown as { controller?: { options: { syncIntervalMs: number | null } } }).controller;
+    if (controller === undefined) throw new Error("vault-sync has no sync controller");
+    controller.options.syncIntervalMs = null;
+  }
+
+  /**
+   * Commits a new note to vault-sync's connected server vault as another
+   * device of the signed-in user would (realtime.e2e.ts): a device of its
+   * own, the blob upload, then CommitRevision. Resolves with the revision's seq.
+   */
+  async commitFromAnotherDevice(path: string, text: string): Promise<string> {
+    const plugin = this.vaultSync();
+    const vaultId = plugin.connectedVault?.id;
+    if (vaultId === undefined) throw new Error("vault-sync is not connected");
+    const client = plugin.protocolClient();
+    this.otherDeviceId ??= (await client.devices.registerDevice({ name: "e2e other device" })).device?.id;
+    if (this.otherDeviceId === undefined) throw new Error("the server registered no device");
+    const content = encoder.encode(text);
+    const blobId = hexToBytes(sha256Hex(content));
+    const size = BigInt(content.length);
+    await client.blobs.beginBlob({ vaultId, blobId, size });
+    await client.blobs.putBlobChunk({ vaultId, blobId, offset: 0n, data: content });
+    await client.blobs.commitBlob({ vaultId, blobId });
+    const response = await client.sync.commitRevision({
+      vaultId,
+      documentId: uuidv7(),
+      revisionId: uuidv7(),
+      kind: DocumentKind.TEXT,
+      contentRef: { blobId, size },
+      path: encoder.encode(path),
+      deviceId: this.otherDeviceId,
+    });
+    return String(response.revision?.seq ?? 0n);
+  }
+
+  private otherDeviceId: string | undefined;
 
   private vaultSync(): VaultSyncPlugin {
     const plugin = (this.app as unknown as PluginRegistry).plugins.plugins["vault-sync"];
