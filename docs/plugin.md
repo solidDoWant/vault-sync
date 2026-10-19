@@ -88,7 +88,23 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
 
-After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy.
+After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy. The [conflict view](#conflicts) lists them.
+
+### Conflicts
+
+When this device and another one changed the same note on the same lines, edited the same attachment, or created a file at the same path, vault-sync keeps both versions and never writes conflict markers into a note. The other device's version stays at the path, and this device's version is kept next to it as a conflict copy, `<name> (conflict <device> <date>).<ext>`. The copy is an ordinary file and syncs to your other devices.
+
+Run **Vault Sync: Show conflicts** to open the conflict view in the right sidebar. It lists each unresolved conflict, newest first, with:
+
+- why it happened and when;
+- a link to the version that stayed in place (it follows the note if it was renamed since) and a link to the conflict copy (Ctrl/Cmd-click opens it in a new tab);
+- **Compare side by side**, which opens the two versions next to each other in a new tab. On a phone, where Obsidian shows one pane at a time, both open and you switch between them.
+
+Copy what you need from the conflict copy into the note, then delete the copy. Deleting (or renaming) the copy resolves the conflict: its entry disappears from the view, and the status no longer counts it. The view only reads the sync journal, so resolving a conflict on another device (deleting the copy there) clears it here too once that delete has synced.
+
+When no conflict-copy name fits the path length limits (a very deep folder), nothing is copied: this device's version stays where it is, unsynced, and the view says so. Move the file to a shorter path to sync it.
+
+The view also lists **files this device cannot hold**: documents whose path on the server is not a valid file name on this device's platform, such as `CON.md` or a name with `?` on Windows, or a name longer than 255 bytes anywhere. Each shows its path on the server and why it cannot be written here, and links to the earlier version if this device still has one. Such a document is never dropped or renamed on the server. Rename it on another device and it arrives here. Until then, local changes to its earlier version are not synced.
 
 ## Identity provider setup (Authentik)
 
