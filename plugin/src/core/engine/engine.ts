@@ -495,9 +495,16 @@ export class SyncEngine {
       // The file at the path already holds the new document's content. If a
       // local move of a known document put it there, it is still that
       // document's: the merge path moves it to a conflict-copy path under its
-      // own id, as for any other content (#242).
-      const mover = await this.localMoveAt(remote.path, remote.documentId);
-      if (mover !== undefined) return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
+      // own id, as for any other content (#242). A file the journal has as
+      // another live document's (one whose remote rename away from it is
+      // deferred, say) is that document's too: taken here, the journal would
+      // hold two documents at one path, and the other's move would later
+      // tombstone this one (#264). The merge path lets the other document's
+      // merge go first (#172).
+      const holder = await this.documentAt(remote.path);
+      if ((holder !== undefined && holder.documentId !== remote.documentId) || (await this.localMoveAt(remote.path, remote.documentId)) !== undefined) {
+        return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
+      }
     }
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
@@ -935,6 +942,16 @@ export class SyncEngine {
    * has no live state for) that put a file at `path`, compared as the vault
    * compares paths. A known document's operations stay: its file is never
    * another document's (see localMoveAt).
+   *
+   * For a new document's revision the guard never decides anything: a known
+   * document's operation at the path (one the journal has live there, or a
+   * local move's) hands the revision to the merge path before it gets here
+   * (#264), so every operation left is a create. It decides only for a known
+   * document's own revision applied at a path another known document's
+   * pending operation names, which a rename of that other document onto the
+   * path and a remote revision with identical content there make; that
+   * operation is then left for the push, whose refusal handling decides
+   * (#259 item 1).
    */
   private async dropCreatesAt(path: string): Promise<void> {
     const key = this.fileKey(path);
