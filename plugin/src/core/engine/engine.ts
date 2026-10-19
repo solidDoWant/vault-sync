@@ -488,6 +488,14 @@ export class SyncEngine {
       if (deferred !== undefined && deferred.reason !== "local-changes" && deferred.revision.seq <= remote.seq) await this.journal.removeDeferred(remote.documentId);
       return "skipped";
     }
+    if (this.outOfScope(remote, state)) {
+      // Not this device's to sync now (e.g. a config file with config sync
+      // off): nothing touches the disk, and the revision waits for an engine
+      // start that finds it in scope (retryRefusedPaths).
+      if (state !== undefined && remote.seq <= state.seq) return "skipped";
+      if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
+      return this.defer(remote, !remote.deleted && !incoming.pathAllowed ? "invalid-path" : "out-of-scope");
+    }
     if (deferred?.reason === "local-changes" || pending.length > 0) {
       return this.handToMerge(remote, state, await this.localFile(state, remote));
     }
@@ -506,20 +514,30 @@ export class SyncEngine {
 
     const inspection = await this.inspect(state, remote);
     if (inspection.kind === "dirty") return this.handToMerge(remote, state, inspection);
-    if (inspection.kind === "applied" && !remote.deleted && (state === undefined || state.deleted)) {
-      // The file at the path already holds the new document's content. If a
-      // local move of a known document put it there, it is still that
+    if (inspection.kind === "applied" && !remote.deleted) {
+      // The file at the path already holds the revision's content. If a
+      // local move of another known document put it there, it is still that
       // document's: the merge path moves it to a conflict-copy path under its
-      // own id, as for any other content (#242). A file the journal has as
-      // another live document's (one whose remote rename away from it is
-      // deferred, say) is that document's too: taken here, the journal would
-      // hold two documents at one path, and the other's move would later
-      // tombstone this one (#264). The merge path lets the other document's
-      // merge go first (#172).
+      // own id, as for any other content (#242). That holds for a known
+      // document's own revision too (one whose file was deleted locally,
+      // say): taken here, the other document's next push would find its file
+      // gone and tombstone it (#267). A file the journal has as another live
+      // document's (one whose remote rename away from it is deferred, say) is
+      // that document's too: taken here, the journal would hold two
+      // documents at one path, and the other's move would later tombstone
+      // this one (#264). The merge path lets the other document's merge go
+      // first (#172).
       const holder = await this.documentAt(remote.path);
       if ((holder !== undefined && holder.documentId !== remote.documentId) || (await this.localMoveAt(remote.path, remote.documentId)) !== undefined) {
         return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
       }
+    }
+    if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
+      // The file at the document's synced path holds its synced content, but
+      // a local rename of another document put it there after this one moved
+      // away: it is that document's file, never this revision's to replace
+      // or delete. The merge path finds this document's own file.
+      return this.handToMerge(remote, state, { path: inspection.source, content: await this.readOrNull(inspection.source) });
     }
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
@@ -674,15 +692,29 @@ export class SyncEngine {
         found = { path: found.path, content: await this.readOrNull(found.path) };
       }
     }
-    if ((state === undefined || state.deleted) && found.content !== null) {
-      // This device has no file of its own for the document, so `found` is
-      // what occupies the remote path. A known document a local rename put
-      // there is not this document's local version: it moves on to a
-      // conflict-copy path under its own id, as a refused create would.
+    let elsewhere: { path: string; content: Uint8Array | null } | undefined;
+    if (found.content !== null) {
+      // `found` is what occupies the document's synced path, or for a
+      // document this device has no file of its own for, the remote path. A
+      // known document a local rename put there (after this document moved
+      // away from it, if it has a synced path there) is not this document's
+      // local version. If this document's own file is where a local rename
+      // moved it, that file is its local version: the local rename wins
+      // (SPEC.md §7), so the result never lands here and the other document
+      // keeps its place, whatever its content (review of #278; followRename
+      // would take a file holding the synced content for this one). Otherwise the
+      // result needs the path, and the other document moves on to a
+      // conflict-copy path under its own id, as a refused create would
+      // (#267). A known document's remote delete never needs the path, so
+      // the other document keeps its place.
       const mover = await this.localMoveAt(found.path, remote.documentId);
-      if (mover !== undefined && (await this.moveAside(mover.documentId, mover.path))) found = { path: found.path, content: await this.readOrNull(found.path) };
+      if (mover !== undefined) {
+        const own = state !== undefined && !state.deleted && found.path === state.path ? await this.followRename(state, { path: found.path, content: null }) : undefined;
+        if (own !== undefined && own.content !== null) elsewhere = own;
+        else if ((state === undefined || state.deleted || !remote.deleted) && (await this.moveAside(mover.documentId, mover.path))) found = { path: found.path, content: await this.readOrNull(found.path) };
+      }
     }
-    const local = await this.followRename(state, found);
+    const local = elsewhere ?? (await this.followRename(state, found));
     // A merge of this revision that was interrupted after its result reached
     // the disk is finished as it was, without asking the hook again.
     if (deferred?.revision.revisionId === remote.revisionId && deferred.merging !== undefined && (await this.resumeMerge(remote, state, deferred.merging))) return "merged";
@@ -740,11 +772,14 @@ export class SyncEngine {
    * a local rename there not yet pushed. Paths are compared as the vault
    * compares them, so on a case-insensitive platform a move to `Notes/C.md`
    * is found at `notes/c.md` (#242). A document the journal has at `path` is
-   * not a move.
+   * not a move, and while it stays there, the file is its own; once a local
+   * move took it away from `path` (a pending operation elsewhere, or a local
+   * rename not yet pushed), another document's move there is found (#267).
    */
   private async localMoveAt(path: string, documentId: string): Promise<{ documentId: string; path: string } | undefined> {
-    if ((await this.documentAt(path)) !== undefined) return undefined;
     const key = this.fileKey(path);
+    const synced = await this.documentAt(path);
+    if (synced !== undefined && !(await this.movedAway(synced))) return undefined;
     for (const operation of await this.journal.listPending()) {
       if (this.fileKey(operation.path) === key && !operation.deleted && operation.documentId !== documentId && (await this.journal.getDocument(operation.documentId)) !== undefined) {
         return { documentId: operation.documentId, path: operation.path };
@@ -756,6 +791,20 @@ export class SyncEngine {
       if (moved !== undefined && moved.documentId !== documentId) return { documentId: moved.documentId, path: to };
     }
     return undefined;
+  }
+
+  /**
+   * Whether a local move took the document away from its synced path: it
+   * has a pending operation at another path, or a local rename from that
+   * path not yet pushed. Paths are compared as the vault compares them.
+   */
+  private async movedAway(state: DocumentState): Promise<boolean> {
+    const key = this.fileKey(state.path);
+    for (const operation of await this.journal.listPending()) {
+      if (operation.documentId === state.documentId && !operation.deleted && this.fileKey(operation.path) !== key) return true;
+    }
+    for (const [to, from] of this.changes.renames) if (from === state.path && this.fileKey(to) !== key) return true;
+    return false;
   }
 
   /** The live document the journal has at `path`, compared as the vault compares paths (its own spelling first). */
@@ -863,6 +912,10 @@ export class SyncEngine {
         const mover = occupant === null || sameContent(occupant, outcome.content) ? undefined : await this.localMoveAt(outcome.path, remote.documentId);
         if (mover !== undefined && !(await this.moveAside(mover.documentId, mover.path))) return false;
         const remaining = mover === undefined ? occupant : await this.readOrNull(outcome.path);
+        // A file the journal has as another live document's is that
+        // document's, also if its content is the result's (#264, #267).
+        const owner = remaining === null ? undefined : await this.documentAt(outcome.path);
+        if (owner !== undefined && owner.documentId !== remote.documentId) return false;
         if (remaining !== null && !sameContent(remaining, outcome.content)) {
           if (await this.belongsToDocument(outcome.path)) return false;
           const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining });
@@ -958,15 +1011,12 @@ export class SyncEngine {
    * compares paths. A known document's operations stay: its file is never
    * another document's (see localMoveAt).
    *
-   * For a new document's revision the guard never decides anything: a known
-   * document's operation at the path (one the journal has live there, or a
-   * local move's) hands the revision to the merge path before it gets here
-   * (#264), so every operation left is a create. It decides only for a known
-   * document's own revision applied at a path another known document's
-   * pending operation names, which a rename of that other document onto the
-   * path and a remote revision with identical content there make; that
-   * operation is then left for the push, whose refusal handling decides
-   * (#259 item 1).
+   * The known-document guard has nothing left to decide: another known
+   * document at the path (one the journal has live there, or one a local
+   * move put there, also after the revision's own document moved away from
+   * it) hands the revision, a new document's (#264) or a known one's (#267),
+   * to the merge path before it gets here, so every operation left at the
+   * path is a create.
    */
   private async dropCreatesAt(path: string): Promise<void> {
     const key = this.fileKey(path);
@@ -1061,6 +1111,8 @@ export class SyncEngine {
       if (candidate === null) return null;
       const candidateKey = pathKey(candidate);
       if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some((ancestor) => files.has(ancestor))) continue;
+      // A file outside the sync scope is not listed, but it is there.
+      if (!this.inScope(candidate) && (await this.vault.stat(candidate)) !== null) continue;
       return candidate;
     }
     return null;
@@ -1149,6 +1201,8 @@ export class SyncEngine {
       } else if (state.revisionId === remote.revisionId) {
         // Same revision; renumber it, as the restored server's seq values may differ.
         if (state.seq !== remote.seq) await this.journal.putDocument({ ...state, seq: remote.seq });
+      } else if (this.outOfScope(remote, state)) {
+        this.count(summary, await this.defer(remote, "out-of-scope"));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
@@ -1186,6 +1240,8 @@ export class SyncEngine {
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason !== "local-changes") continue;
       const state = await this.journal.getDocument(deferred.revision.documentId);
+      // Out of scope since it was deferred: its next revision, or a start that finds it in scope again, takes it on.
+      if (this.outOfScope(deferred.revision, state)) continue;
       await this.handToMerge(deferred.revision, state, await this.localFile(state, deferred.revision));
     }
   }
@@ -1196,6 +1252,8 @@ export class SyncEngine {
     if (resume) {
       for (const operation of await this.journal.listPending()) {
         if (parked.documents.has(operation.documentId) || parked.paths.has(operation.path)) continue;
+        // Recorded while its path was in scope: it waits until it is again.
+        if (!this.inScope(operation.path)) continue;
         await this.commitOperation(operation, summary);
         parked = await this.parked();
       }
@@ -1214,7 +1272,8 @@ export class SyncEngine {
     const parked: Parked = { documents: new Set(), paths: new Set() };
     for (const deferred of await this.journal.listDeferred()) {
       // An unmaterializable document waits too: its local changes are not pushed, and the server never hears of its file.
-      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable") continue;
+      // So does one whose remote revision is out of scope.
+      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope") continue;
       const { revision } = deferred;
       parked.documents.add(revision.documentId);
       parked.paths.add(revision.path);
@@ -1248,6 +1307,8 @@ export class SyncEngine {
     const movedHere = new Set(changes.renames.keys());
     const renames: PendingOperation[] = [];
     for (const [to, from] of changes.renames) {
+      // A move into or out of the sync scope is a create or a delete of the side in it, which the path loop below sees.
+      if (!this.inScope(from) || !this.inScope(to)) continue;
       const state = await this.journal.findDocumentByPath(from);
       if (busyPaths.has(from) || busyPaths.has(to) || (state !== undefined && busyDocuments.has(state.documentId))) {
         // Not a known document's rename (an untracked file, or a create still
@@ -1303,6 +1364,8 @@ export class SyncEngine {
 
     for (const path of [...paths].sort()) {
       if (handled.has(path) || busyPaths.has(path)) continue;
+      // Outside the scope, a missing file is no delete and a changed one no edit (SPEC.md §8, config sync).
+      if (!this.inScope(path)) continue;
       const state = await this.journal.findDocumentByPath(path);
       if (state !== undefined && busyDocuments.has(state.documentId)) continue;
       const content = await this.readOrNull(path);
@@ -1634,7 +1697,8 @@ export class SyncEngine {
     const deferrals = (await this.journal.listDeferred()).filter(
       (deferred) =>
         (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
-        (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined),
+        (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
+        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)),
     );
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);
@@ -1712,6 +1776,16 @@ export class SyncEngine {
         throw error;
       });
     }
+  }
+
+  /** Whether the vault syncs `path` (VaultAdapter.isSynced). */
+  private inScope(path: string): boolean {
+    return this.vault.isSynced?.(path) ?? true;
+  }
+
+  /** Whether `remote` is not this device's to apply now: its path, or the path its document has here, is out of scope. */
+  private outOfScope(remote: RemoteRevision, state: DocumentState | undefined): boolean {
+    return !this.inScope(remote.path) || (state !== undefined && !state.deleted && !this.inScope(state.path));
   }
 
   private async readOrNull(path: string): Promise<Uint8Array | null> {

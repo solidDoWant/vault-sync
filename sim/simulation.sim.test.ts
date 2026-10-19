@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededPlatforms, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, backslashPathsRefused } from "./scenarios";
+import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -343,6 +343,23 @@ describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
   });
 });
 
+describe.runIf(suites.has("scenarios"))("config folder sync (#28)", () => {
+  it("syncs only the selected config files, applies nothing while off, and never deletes on the server when turned off", async () => {
+    const result = await configFolderSync(environment);
+    const trace = tail(result.trace, 200);
+
+    // Convergence of everything each engine syncs; config files outside its scope are deferred, never written.
+    expect(result.violations, trace).toEqual([]);
+    const synced = [".obsidian/community-plugins.json", ".obsidian/hotkeys.json", ".obsidian/plugins/dataview/main.js", ".obsidian/snippets/wide.css", "note.md"];
+    expect(result.liveAfterPush, trace).toEqual(synced);
+    expect(result.configWhileOff, trace).toEqual([]);
+    // A layout change, then edits and a delete with config sync off: no commit, nothing deleted on the server.
+    expect(result.commitsWhileOff, trace).toBe(0);
+    expect(result.liveAtEnd, trace).toEqual(synced);
+    expect(result.configAfterOn, trace).toEqual(["community-plugins.json", "hotkeys.json", "plugins/dataview/main.js", "snippets/wide.css"]);
+  });
+});
+
 describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", () => {
   it("merges past a merge base that retention purged, without stalling the pull or losing either edit", async () => {
     const result = await purgedMergeBase(environment);
@@ -381,6 +398,61 @@ describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)"
     expect(result.documents.get("moved.md"), trace).toBe(note);
     expect(result.documents.get("d.md"), trace).toBeDefined();
     expect(result.documents.get("d.md"), trace).not.toBe(note);
+    expect(result.tombstoned, trace).toEqual([]);
+  });
+
+  it.each([
+    { variant: "renamed-away-pushed", title: "a known document's new path" },
+    { variant: "renamed-away-unpushed", title: "the path a known document's unpushed rename left" },
+  ] as const)("moves a document a local rename put at $title to a path-taken copy, and tombstones neither (#267)", async ({ variant }) => {
+    const result = await knownDocumentAtHeldPath(environment, variant);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const a = result.before.get("a.md");
+    const b = result.before.get("b.md");
+    expect(a, trace).toBeDefined();
+    expect(b, trace).toBeDefined();
+    expect(result.conflicts, trace).toMatchObject([{ reason: "path-taken", path: "a.md", document: b }]);
+    const copy = result.conflicts[0]?.copyPath;
+    expect(copy, trace).toEqual(expect.any(String));
+    const expected = new Map([
+      ["a.md", "b\n"],
+      [copy ?? "", "b\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents, trace).toEqual(
+      new Map([
+        ["a.md", a],
+        [copy ?? "", b],
+      ]),
+    );
+    expect(result.tombstoned, trace).toEqual([]);
+  });
+
+  it("keeps a swap of two notes' names by local renames against a concurrent remote edit of the renamed-away note, with no conflict (review of #278)", async () => {
+    const result = await knownDocumentAtHeldPath(environment, "swapped-unpushed");
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const a = result.before.get("a.md");
+    const b = result.before.get("b.md");
+    expect(a, trace).toBeDefined();
+    expect(b, trace).toBeDefined();
+    expect(result.conflicts, trace).toEqual([]);
+    const expected = new Map([
+      ["a.md", "b\n"],
+      ["z.md", "a remote\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents, trace).toEqual(
+      new Map([
+        ["a.md", b],
+        ["z.md", a],
+      ]),
+    );
     expect(result.tombstoned, trace).toEqual([]);
   });
 });

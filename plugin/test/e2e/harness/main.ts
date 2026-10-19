@@ -3,6 +3,7 @@ import { FileView, MarkdownView, Plugin, TextFileView, TFile, TFolder, type App 
 import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
+import type { ConfigSyncSettings } from "../../../src/core/config/policy";
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
 import { sha256Hex } from "../../../src/core/hash";
 import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
@@ -12,7 +13,9 @@ import { uuidv7 } from "../../../src/core/uuid";
 import type { VaultEvent } from "../../../src/core/vault/adapter";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
+import { configFolderHost, ObsidianConfigAdapter } from "../../../src/obsidian/config-adapter";
 import { journalDatabaseName, localVaultId, openVaultJournal, type JournalKey } from "../../../src/obsidian/journal";
+import type { SyncSession } from "../../../src/obsidian/session";
 import { ObsidianVaultAdapter } from "../../../src/obsidian/vault-adapter";
 
 /** What the e2e specs get back from a case run inside Obsidian. */
@@ -340,6 +343,48 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** Commits `content` at `path` on the session's server, as another device would. */
   commitRemote(documentId: string, path: string, content: string): void {
     this.requireSession().server.commit({ documentId, path, content });
+  }
+
+  /** Sets vault-sync's config sync settings for the sessions startSession starts from now on (config.e2e.ts). */
+  setConfigSync(settings: ConfigSyncSettings | null): void {
+    const plugin = this.vaultSync();
+    if (settings === null) delete plugin.data.configSync;
+    else plugin.data.configSync = settings;
+  }
+
+  /** Pulls and pushes now in the session startSession started; resolves with what the push committed. */
+  async syncSession(): Promise<number> {
+    const session = (this.vaultSync() as unknown as { session: SyncSession | undefined }).session;
+    if (session === undefined) throw new Error("startSession() first");
+    const summary = await session.syncNow();
+    if (summary === undefined) throw new Error("the sync failed");
+    return summary.committed;
+  }
+
+  /** The session server's live paths, sorted, and its newest seq. */
+  serverState(): { paths: string[]; headSeq: string } {
+    const { server } = this.requireSession();
+    return { paths: [...server.liveFiles().keys()].sort(), headSeq: String(server.currentHeadSeq) };
+  }
+
+  /** Commits `content` at `path` on the session server as another device would, as a new revision of the document there if there is one. */
+  commitOnServer(path: string, content: string): void {
+    const { server } = this.requireSession();
+    server.commit({ documentId: server.liveDocuments().get(path) ?? `remote-${path}`, path, content });
+  }
+
+  /** Paths (relative to the config folder) a config folder adapter reported since watchConfigFolder(), in order. */
+  private readonly configEvents: string[] = [];
+
+  /** Starts recording the changes an Obsidian config folder adapter reports, to show they happen. */
+  watchConfigFolder(): void {
+    this.configEvents.length = 0;
+    this.register(new ObsidianConfigAdapter(configFolderHost(this.app)).watch((event) => this.configEvents.push(event.path)));
+  }
+
+  /** What watchConfigFolder() recorded. */
+  reportedConfigChanges(): string[] {
+    return [...this.configEvents];
   }
 
   /** Modifies a file the way a user edit lands on disk. */

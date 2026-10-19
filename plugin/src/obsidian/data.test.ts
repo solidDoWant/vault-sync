@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
+import { configSyncSettings, oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
 
 const complete: PluginData = { serverUrl: "https://sync.example", oidcIssuer: "https://auth.example/o/vs/", oidcClientId: "vault-sync", deviceName: "" };
 
@@ -31,6 +31,19 @@ describe("parsePluginData", () => {
       vault: { id: "", name: "Notes", serverUrl: "https://sync.example" },
     };
     expect(parsePluginData(stored)).toEqual({ serverUrl: "", oidcIssuer: "https://auth.example/", oidcClientId: "", deviceName: "" });
+  });
+});
+
+describe("config sync settings", () => {
+  it("are off when nothing is stored", () => {
+    expect(configSyncSettings(parsePluginData(null)).enabled).toBe(false);
+    expect(configSyncSettings(parsePluginData({ configSync: "yes" })).enabled).toBe(false);
+  });
+
+  it("keep what this device stored, turning a switch on only for true", () => {
+    const stored = { configSync: { enabled: true, categories: { themes: false, snippets: true, hotkeys: "yes", pluginList: true, plugins: 1 } } };
+    expect(configSyncSettings(parsePluginData(stored))).toEqual({ enabled: true, categories: { themes: false, snippets: true, hotkeys: true, pluginList: true, plugins: false } });
+    expect(configSyncSettings(parsePluginData({ configSync: { enabled: "true" } })).enabled).toBe(false);
   });
 });
 

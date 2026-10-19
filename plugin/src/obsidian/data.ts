@@ -1,4 +1,5 @@
 import { requireSecureUrl, type OidcClientConfig } from "../core/auth/oidc";
+import { configCategories, defaultConfigSyncSettings, type ConfigCategory, type ConfigSyncSettings } from "../core/config/policy";
 
 /**
  * What the plugin keeps in its plugin data (`data.json` in the plugin's
@@ -21,6 +22,12 @@ export interface PluginData {
   device?: RegisteredDevice;
   /** The server vault this local vault syncs with. */
   vault?: ConnectedVault;
+  /**
+   * This device's config folder sync settings for this vault (SPEC.md §8).
+   * Absent means the defaults: off. Kept only here, never synced or set by
+   * the server.
+   */
+  configSync?: ConfigSyncSettings;
 }
 
 /** An OIDC issuer and the client signed in as. */
@@ -75,7 +82,27 @@ export function parsePluginData(raw: unknown): PluginData {
   if (device !== undefined) data.device = device;
   const vault = record(stored.vault, ["id", "name", "serverUrl"]);
   if (vault !== undefined) data.vault = vault;
+  const configSync = parseConfigSync(stored.configSync);
+  if (configSync !== undefined) data.configSync = configSync;
   return data;
+}
+
+/** This device's config sync settings: the stored ones, or the defaults (off). */
+export function configSyncSettings(data: PluginData): ConfigSyncSettings {
+  return data.configSync ?? structuredClone(defaultConfigSyncSettings);
+}
+
+/** Stored config sync settings; anything but `true` turns a switch off, and a missing category takes its default. */
+function parseConfigSync(raw: unknown): ConfigSyncSettings | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const stored = raw as Record<string, unknown>;
+  const categories = typeof stored.categories === "object" && stored.categories !== null ? (stored.categories as Record<string, unknown>) : {};
+  const parsed = {} as Record<ConfigCategory, boolean>;
+  for (const category of configCategories) {
+    const value = categories[category];
+    parsed[category] = typeof value === "boolean" ? value : defaultConfigSyncSettings.categories[category];
+  }
+  return { enabled: stored.enabled === true, categories: parsed };
 }
 
 /** `raw` as a record of the non-empty string `fields`, or undefined if any is missing. */
