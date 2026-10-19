@@ -29,3 +29,40 @@ func TestLoadRequiresTheRequestLimitToFitOneRevision(t *testing.T) {
 	assert.NotContains(t, err.Error(), problem)
 	assert.Contains(t, err.Error(), config.BlobMaxChunkBytesEnv)
 }
+
+// The allowed range startup reports for the request limit starts at the
+// smallest limit it accepts, 16384 bytes, as docs/configuration.md says.
+func TestLoadReportsTheRequestLimitRangeItEnforces(t *testing.T) {
+	const allowedRange = "allowed range 16384 to 67108864 bytes"
+
+	tests := []struct {
+		value    string
+		rejected bool
+	}{
+		{value: "1023", rejected: true},
+		{value: "1024", rejected: true},
+		{value: "16383", rejected: true},
+		{value: "16384"},
+		{value: "67108864"},
+		{value: "67108865", rejected: true},
+	}
+
+	for _, test := range tests {
+		t.Run(test.value, func(t *testing.T) {
+			_, err := config.Load(lookup(withRequired(map[string]string{config.MaxRequestBytesEnv: test.value})))
+
+			if !test.rejected {
+				// 16384 still fails the chunk size check, which is not
+				// a range problem.
+				if err != nil {
+					assert.NotContains(t, err.Error(), allowedRange)
+				}
+
+				return
+			}
+
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), config.MaxRequestBytesEnv+": "+test.value+" is outside the "+allowedRange)
+		})
+	}
+}
