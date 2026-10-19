@@ -52,6 +52,17 @@ export interface EditorDeleteResult {
   disk: string | null;
 }
 
+/** The editor and the vault after a sync that ran while the editor held unsaved keystrokes (unsaved.e2e.ts). */
+export interface TypedSyncResult {
+  /** The sync's outcome: "ok" or the error's name and message. */
+  outcome: string;
+  /** The note on disk right after the typing, before the sync: without the keystrokes, which were unsaved. */
+  diskBefore: string;
+  editor: string;
+  /** Every file in the vault afterwards, by path. */
+  files: Record<string, string>;
+}
+
 /** A canvas view's state after a remote write to its file (editor.e2e.ts). */
 export interface ViewWriteResult {
   outcome: string;
@@ -341,9 +352,10 @@ export default class VaultSyncE2EHarness extends Plugin {
   /**
    * In the Markdown editor showing `path`: types `typed` at `cursor`
    * (unsaved), then deletes the file through the Obsidian adapter as the
-   * engine applies a remote delete, naming the content the disk had.
+   * engine applies a remote delete, naming the content the disk had (unless
+   * `expectBase` is false: no precondition).
    */
-  async typeThenDeleteRemote(path: string, cursor: { line: number; ch: number }, typed: string): Promise<EditorDeleteResult> {
+  async typeThenDeleteRemote(path: string, cursor: { line: number; ch: number }, typed: string, expectBase = true): Promise<EditorDeleteResult> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.markdownView(path);
@@ -353,12 +365,65 @@ export default class VaultSyncE2EHarness extends Plugin {
     editor.replaceSelection(typed);
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).delete(path, { expectedHash: sha256Hex(encoder.encode(diskBefore)) });
+      await new ObsidianVaultAdapter(this.app).delete(path, expectBase ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
     } catch (error) {
       outcome = describeError(error);
     }
     const after = this.app.vault.getFileByPath(path);
     return { outcome, editor: editor.getValue(), disk: after === null ? null : await this.app.vault.read(after) };
+  }
+
+  /**
+   * In the Markdown editor showing `path`: types `typed` at `cursor`
+   * (unsaved), then, in the same turn, has vault-sync's session (startSession)
+   * pull and push, as a remote change arriving while the user types would
+   * (unsaved.e2e.ts). Obsidian saves the typed text 2 s later at the
+   * earliest, and the in-memory server answers at once. With `create`, the
+   * note is first created with that text and opened in source mode, in the
+   * same turn, so vault-sync's debounced push cannot sync it before.
+   */
+  async typeThenSync(path: string, cursor: { line: number; ch: number }, typed: string, create?: string): Promise<TypedSyncResult> {
+    if (create !== undefined) {
+      const created = await this.app.vault.create(path, create);
+      await this.app.workspace.getLeaf(true).openFile(created, { active: true, state: { mode: "source" } });
+    }
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) throw new Error(`no file ${path}`);
+    const view = this.markdownView(path);
+    const { editor } = view;
+    editor.setCursor(cursor);
+    editor.replaceSelection(typed);
+    const diskBefore = await this.app.vault.read(file);
+    let outcome = "ok";
+    try {
+      await this.syncSession();
+    } catch (error) {
+      outcome = describeError(error);
+    }
+    return { outcome, diskBefore, editor: editor.getValue(), files: await this.vaultFiles() };
+  }
+
+  /** Every file in the vault, by path, with its text. */
+  async vaultFiles(): Promise<Record<string, string>> {
+    const files: Record<string, string> = {};
+    for (const file of this.app.vault.getFiles()) files[file.path] = await this.app.vault.read(file);
+    return files;
+  }
+
+  /** Commits a rename of the document at `from` to `to` on the session server, as another device would. */
+  renameOnServer(from: string, to: string): void {
+    const { server } = this.requireSession();
+    const documentId = server.liveDocuments().get(from);
+    if (documentId === undefined) throw new Error(`no document at ${from} on the server`);
+    server.commit({ documentId, path: to });
+  }
+
+  /** Commits a delete of the document at `path` on the session server, as another device would. */
+  deleteOnServer(path: string): void {
+    const { server } = this.requireSession();
+    const documentId = server.liveDocuments().get(path);
+    if (documentId === undefined) throw new Error(`no document at ${path} on the server`);
+    server.commit({ documentId, path, deleted: true });
   }
 
   private markdownView(path: string): MarkdownView {
@@ -470,7 +535,7 @@ export default class VaultSyncE2EHarness extends Plugin {
     const session = (this.vaultSync() as unknown as { session: SyncSession | undefined }).session;
     if (session === undefined) throw new Error("startSession() first");
     const summary = await session.syncNow();
-    if (summary === undefined) throw new Error("the sync failed");
+    if (summary === undefined) throw new Error(`the sync failed: ${describeError((session as unknown as { failure: unknown }).failure)}`);
     return summary.committed;
   }
 

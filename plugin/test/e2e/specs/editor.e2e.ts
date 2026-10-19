@@ -119,6 +119,24 @@ describe("Remote changes named against the disk the engine checked (#163)", func
 
     expect([result.outcome, result.disk]).toEqual(["ok", null]);
   });
+
+  it("refuse a delete with no precondition while the editor holds unsaved keystrokes, saving them instead (#181)", async function () {
+    await openNote("Typed unchecked note.md", base);
+    const result = await callHarness("typeThenDeleteRemote", "Typed unchecked note.md", { line: 3, ch: 4 }, " TYPED", false);
+
+    expect(result).toEqual({
+      outcome: "UnsavedEditsError: Typed unchecked note.md has unsaved edits that the incoming change cannot be merged with",
+      editor: typed,
+      disk: typed,
+    });
+  });
+
+  it("delete a note with no precondition and nothing unsaved", async function () {
+    await openNote("Idle unchecked note.md", base);
+    const result = await callHarness("typeThenDeleteRemote", "Idle unchecked note.md", { line: 3, ch: 4 }, "", false);
+
+    expect([result.outcome, result.disk]).toEqual(["ok", null]);
+  });
 });
 
 describe("Remote writes to a canvas open in its view", function () {
