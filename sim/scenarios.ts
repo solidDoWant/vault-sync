@@ -1133,8 +1133,14 @@ export interface KnownHeldPathResult extends HeldPathResult {
  * In the `renamed-away-unpushed` variant the second engine pushes neither
  * rename, so its journal still has `a` at `a.md` when the first engine's
  * edit of `a` there (with `b`'s content) arrives; the outcome must be the same.
+ *
+ * In the `swapped-unpushed` variant (review of #278) the second engine's user
+ * only swaps the names, keeping `z.md`, and pushes neither rename, while the
+ * first engine edits `a` at `a.md`. A local rename wins over a remote edit
+ * (SPEC.md §7): `a` must end at `z.md` with the edit, `b` must keep `a.md`,
+ * and no conflict may be logged.
  */
-export async function knownDocumentAtHeldPath(endpoints: SimEndpoints, variant: "renamed-away-pushed" | "renamed-away-unpushed"): Promise<KnownHeldPathResult> {
+export async function knownDocumentAtHeldPath(endpoints: SimEndpoints, variant: "renamed-away-pushed" | "renamed-away-unpushed" | "swapped-unpushed"): Promise<KnownHeldPathResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -1181,9 +1187,9 @@ export async function knownDocumentAtHeldPath(endpoints: SimEndpoints, variant: 
     log(await first.move("z.md", "a.md"));
   } else {
     log(await second.move("b.md", "a.md"));
-    log(await second.remove("z.md"));
+    if (variant === "renamed-away-unpushed") log(await second.remove("z.md"));
   }
-  log(await first.edit("a.md", encoder.encode("b\n")));
+  log(await first.edit("a.md", encoder.encode(variant === "swapped-unpushed" ? "a remote\n" : "b\n")));
   await push(first);
 
   await pull(second);

@@ -524,6 +524,13 @@ export class SyncEngine {
         return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
       }
     }
+    if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
+      // The file at the document's synced path holds its synced content, but
+      // a local rename of another document put it there after this one moved
+      // away: it is that document's file, never this revision's to replace
+      // or delete. The merge path finds this document's own file.
+      return this.handToMerge(remote, state, { path: inspection.source, content: await this.readOrNull(inspection.source) });
+    }
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
       else if (!remote.deleted) await this.matchSpelling(remote.path);
@@ -677,18 +684,29 @@ export class SyncEngine {
         found = { path: found.path, content: await this.readOrNull(found.path) };
       }
     }
-    if (found.content !== null && (state === undefined || state.deleted || !remote.deleted)) {
+    let elsewhere: { path: string; content: Uint8Array | null } | undefined;
+    if (found.content !== null) {
       // `found` is what occupies the document's synced path, or for a
       // document this device has no file of its own for, the remote path. A
       // known document a local rename put there (after this document moved
       // away from it, if it has a synced path there) is not this document's
-      // local version: it moves on to a conflict-copy path under its own id,
-      // as a refused create would (#267). A known document's remote delete
-      // never needs the path, so the other document keeps its place.
+      // local version. If this document's own file is where a local rename
+      // moved it, that file is its local version: the local rename wins
+      // (SPEC.md §7), so the result never lands here and the other document
+      // keeps its place, whatever its content (review of #278; followRename
+      // would take a file holding the synced content for this one). Otherwise the
+      // result needs the path, and the other document moves on to a
+      // conflict-copy path under its own id, as a refused create would
+      // (#267). A known document's remote delete never needs the path, so
+      // the other document keeps its place.
       const mover = await this.localMoveAt(found.path, remote.documentId);
-      if (mover !== undefined && (await this.moveAside(mover.documentId, mover.path))) found = { path: found.path, content: await this.readOrNull(found.path) };
+      if (mover !== undefined) {
+        const own = state !== undefined && !state.deleted && found.path === state.path ? await this.followRename(state, { path: found.path, content: null }) : undefined;
+        if (own !== undefined && own.content !== null) elsewhere = own;
+        else if ((state === undefined || state.deleted || !remote.deleted) && (await this.moveAside(mover.documentId, mover.path))) found = { path: found.path, content: await this.readOrNull(found.path) };
+      }
     }
-    const local = await this.followRename(state, found);
+    const local = elsewhere ?? (await this.followRename(state, found));
     // A merge of this revision that was interrupted after its result reached
     // the disk is finished as it was, without asking the hook again.
     if (deferred?.revision.revisionId === remote.revisionId && deferred.merging !== undefined && (await this.resumeMerge(remote, state, deferred.merging))) return "merged";

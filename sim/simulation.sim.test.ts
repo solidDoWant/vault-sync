@@ -413,6 +413,31 @@ describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)"
     );
     expect(result.tombstoned, trace).toEqual([]);
   });
+
+  it("keeps a swap of two notes' names by local renames against a concurrent remote edit of the renamed-away note, with no conflict (review of #278)", async () => {
+    const result = await knownDocumentAtHeldPath(environment, "swapped-unpushed");
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const a = result.before.get("a.md");
+    const b = result.before.get("b.md");
+    expect(a, trace).toBeDefined();
+    expect(b, trace).toBeDefined();
+    expect(result.conflicts, trace).toEqual([]);
+    const expected = new Map([
+      ["a.md", "b\n"],
+      ["z.md", "a remote\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents, trace).toEqual(
+      new Map([
+        ["a.md", b],
+        ["z.md", a],
+      ]),
+    );
+    expect(result.tombstoned, trace).toEqual([]);
+  });
 });
 
 describe.runIf(suites.has("determinism"))("determinism", () => {

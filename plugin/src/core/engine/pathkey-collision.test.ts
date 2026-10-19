@@ -512,6 +512,105 @@ describe("SyncEngine collisions by path key", () => {
     });
   });
 
+  describe("given a swap of two documents' names by local renames, with a concurrent remote edit of the renamed-away document (review of #278)", () => {
+    // A local rename wins over a remote edit (SPEC.md §7): A's edit follows
+    // it to z.md, so a.md is never needed for A and B keeps it.
+    const cases = [
+      { push: "not pushed", content: "b\n" },
+      { push: "pending", content: "b\n" },
+      // B's file holds A's synced content, so only the rename tells it apart.
+      { push: "not pushed", content: "a\n" },
+      { push: "pending", content: "a\n" },
+    ] as const;
+    for (const { push, content } of cases) {
+      it(`keeps the user's renames when the renames are ${push} and the renamed-in document holds ${content === "a\n" ? "the other's synced" : "its own"} content`, async () => {
+        const h = harness({ merge: "default" });
+        h.server.commit({ documentId: "A", path: "a.md", content: "a\n" });
+        h.server.commit({ documentId: "B", path: "b.md", content });
+        await h.engine.pull();
+        await h.vault.rename("a.md", "z.md");
+        await h.vault.rename("b.md", "a.md");
+        if (push === "pending") {
+          h.server.interceptor = (method) => {
+            if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+          };
+          await expect(h.engine.push()).rejects.toThrow();
+          h.server.interceptor = undefined;
+          expect(await h.journal.listPending()).not.toEqual([]);
+        } else {
+          await h.engine.settled();
+        }
+        h.server.commit({ documentId: "A", path: "a.md", content: "a remote\n" });
+
+        await h.engine.pull();
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["z.md", "A"],
+            ["a.md", "B"],
+          ]),
+        );
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["z.md", "a remote\n"],
+            ["a.md", content],
+          ]),
+        );
+        expect(h.server.history("A").every((revision) => !revision.deleted)).toBe(true);
+        expect(h.server.history("B").every((revision) => !revision.deleted)).toBe(true);
+        expect(await h.journal.listConflicts()).toEqual([]);
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+
+      it(`keeps both documents, each at the path the user gave it, when the renames are ${push}, the renamed-in document holds ${content === "a\n" ? "the other's synced" : "its own"} content and the remote revision deletes the renamed-away document`, async () => {
+        const h = harness({ merge: "default" });
+        h.server.commit({ documentId: "A", path: "a.md", content: "a\n" });
+        h.server.commit({ documentId: "B", path: "b.md", content });
+        await h.engine.pull();
+        await h.vault.rename("a.md", "z.md");
+        await h.vault.rename("b.md", "a.md");
+        if (push === "pending") {
+          h.server.interceptor = (method) => {
+            if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+          };
+          await expect(h.engine.push()).rejects.toThrow();
+          h.server.interceptor = undefined;
+        } else {
+          await h.engine.settled();
+        }
+        h.server.commit({ documentId: "A", path: "a.md", deleted: true });
+
+        await h.engine.pull();
+        const summaries = await pushUntilQuiet(h);
+
+        // A rename wins over a concurrent delete (SPEC.md §7): A's file stays
+        // at z.md (under a new id, as for any rename of a document deleted
+        // remotely), and B is never touched.
+        const documents = h.server.liveDocuments();
+        expect(documents.get("a.md")).toBe("B");
+        expect(documents.get("z.md")).toEqual(expect.any(String));
+        expect(documents.get("z.md")).not.toBe("B");
+        expect(documents.size).toBe(2);
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["z.md", "a\n"],
+            ["a.md", content],
+          ]),
+        );
+        expect(h.server.history("B").every((revision) => !revision.deleted)).toBe(true);
+        expect(await h.journal.listConflicts()).toEqual([]);
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+    }
+  });
+
   describe("given conflict copies whose names collide by path key (#243)", () => {
     it("gives two local files that collide with one remote document copies free by path key, and syncs both (posix)", async () => {
       const h = harness({ merge: "default" });
