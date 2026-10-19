@@ -8,7 +8,7 @@ import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/
 import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
-import { isVaultRelativePath } from "../vaultpath/vaultpath";
+import { isNewVaultPath, isVaultRelativePath } from "../vaultpath/vaultpath";
 
 export interface InMemoryServerOptions {
   vaultId?: string;
@@ -56,8 +56,9 @@ const encoder = new TextEncoder();
  * follows the protocol's paging, ranging, upload and commit rules (SPEC.md
  * §6.1, §6.2): resumable sequential chunks, hash verification, optimistic
  * concurrency with the head as a Document detail, idempotent retries by
- * revision id, and path-key uniqueness among live documents, including the
- * file/folder rule (a live document never at or under another's folder).
+ * revision id, path-key uniqueness among live documents, including the
+ * file/folder rule (a live document never at or under another's folder), and
+ * the backslash rule (no document created or moved into a path with a "\").
  */
 export class InMemoryServer {
   readonly vaultId: string;
@@ -355,6 +356,10 @@ export class InMemoryServer {
     if (BigInt(blob.length) !== request.contentRef?.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
     const path = new TextDecoder().decode(request.path);
     if (!isVaultRelativePath(path)) throw new ConnectError("path is not vault-relative", Code.InvalidArgument);
+    // A path with a "\" may only be kept by the live document already at it (#191).
+    if (!isNewVaultPath(path) && (head === undefined || head.deleted || new TextDecoder().decode(head.path) !== path)) {
+      throw new ConnectError('a new path must not contain "\\"', Code.InvalidArgument);
+    }
     if (!request.deleted) {
       const key = pathKey(path);
       // Only a new live path key can collide: a create, rename or
