@@ -137,6 +137,60 @@ describe("SyncEngine collisions by path key", () => {
           expect(h.localChanges).toEqual([{ type: "create", path: local }]);
         });
 
+        it(`keeps the other device's document at ${remote}, and the user's later edit of it, when a pull takes a refused create's identical file at ${local} for it (${platform})`, async () => {
+          const h = harness({ merge: "default", pathRules: { platform } });
+          await h.vault.write(local, bytes("same\n"));
+          // The create's content is uploaded, but its commit never gets through.
+          h.server.interceptor = (method) => {
+            if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+          };
+          await expect(h.engine.push()).rejects.toThrow();
+          h.server.interceptor = undefined;
+          h.server.commit({ documentId: "theirs", path: remote, content: "same\n" });
+
+          await h.engine.pull();
+          // The file is now the other device's document, so the create is superseded.
+          expect(await h.journal.listPending()).toEqual([]);
+          await h.vault.write(remote, bytes("edited\n"));
+          const summaries = await pushUntilQuiet(h);
+
+          // The edit is committed as the other device's document's, never tombstoning or moving it.
+          expect(h.server.liveFiles()).toEqual(new Map([[remote, "edited\n"]]));
+          expect(h.server.liveDocuments().get(remote)).toBe("theirs");
+          expect(h.server.history("theirs").map((revision) => revision.deleted)).toEqual([false, false]);
+          expect(await files(h.vault)).toEqual(h.server.liveFiles());
+          expect(await h.journal.listPending()).toEqual([]);
+          expect(await h.journal.listDeferred()).toEqual([]);
+          expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+          expect(h.localChanges).toEqual([
+            { type: "create", path: local },
+            { type: "modify", path: remote },
+          ]);
+        });
+
+        it(`keeps the other device's document at ${remote} when a known document's rename to ${local} holds the same content (${platform})`, async () => {
+          const h = harness({ merge: "default", pathRules: { platform } });
+          await h.vault.write("draft.md", bytes("same\n"));
+          await h.engine.push();
+          const mine = h.server.liveDocuments().get("draft.md");
+          await h.vault.rename("draft.md", local);
+          h.server.commit({ documentId: "theirs", path: remote, content: "same\n" });
+
+          await h.engine.pull();
+          const summaries = await pushUntilQuiet(h);
+
+          await expectRemoteKept(h, remote, summaries);
+          // The renamed document keeps its id and content, at a conflict-copy path of its own name.
+          const copy = [...h.server.liveDocuments()].find(([, documentId]) => documentId === mine)?.[0];
+          expect(copy).toBe(copyOf(local.slice(0, -".md".length), ".md"));
+          expect(h.server.liveFiles().get(copy ?? "")).toBe("same\n");
+          expect(h.server.history(mine ?? "").every((revision) => !revision.deleted)).toBe(true);
+          expect(h.localChanges).toEqual([
+            { type: "create", path: "draft.md" },
+            { type: "rename", path: local, oldPath: "draft.md" },
+          ]);
+        });
+
         it(`never moves the other device's document at ${remote} for a refused create at ${local} whose file the user deleted (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write(local, bytes("mine\n"));

@@ -444,6 +444,14 @@ export class SyncEngine {
 
     const inspection = await this.inspect(state, remote);
     if (inspection.kind === "dirty") return this.handToMerge(remote, state, inspection);
+    if (inspection.kind === "applied" && !remote.deleted && (state === undefined || state.deleted)) {
+      // The file at the path already holds the new document's content. If a
+      // local move of a known document put it there, it is still that
+      // document's: the merge path moves it to a conflict-copy path under its
+      // own id, as for any other content (#242).
+      const mover = await this.localMoveAt(remote.path, remote.documentId);
+      if (mover !== undefined) return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
+    }
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
       else if (!remote.deleted) await this.matchSpelling(remote.path);
@@ -457,6 +465,15 @@ export class SyncEngine {
         return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
       }
       throw error;
+    }
+    if (inspection.kind === "applied" && !remote.deleted) {
+      // The file is taken for the document as it is: a local create that put
+      // identical content there (on a case-insensitive platform, possibly
+      // under another spelling) is superseded. Left pending, it would later
+      // claim this document's file and move it away under its own id (#242).
+      // Dropped before the journal update: interrupted in between, the pull
+      // applies the revision again and finds the file applied.
+      await this.dropCreatesAt(remote.path);
     }
     // A newer revision supersedes one deferred for its path (or this is the
     // deferred one, applied by a retry after the cursor passed it). Removed
@@ -861,6 +878,24 @@ export class SyncEngine {
     const key = this.fileKey(path);
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId !== documentId && this.fileKey(operation.path) === key && !operation.deleted) await this.journal.removePending(operation.revisionId);
+    }
+  }
+
+  /**
+   * Drops the unacknowledged creates (operations of documents the journal
+   * has no live state for) that put a file at `path`, compared as the vault
+   * compares paths. A known document's operations stay: its file is never
+   * another document's (see localMoveAt).
+   */
+  private async dropCreatesAt(path: string): Promise<void> {
+    const key = this.fileKey(path);
+    for (const operation of await this.journal.listPending()) {
+      if (operation.deleted || this.fileKey(operation.path) !== key) continue;
+      const state = await this.journal.getDocument(operation.documentId);
+      if (state === undefined || state.deleted) {
+        await this.journal.removePending(operation.revisionId);
+        this.changes.paths.add(operation.path);
+      }
     }
   }
 
