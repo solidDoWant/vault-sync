@@ -337,6 +337,11 @@ export default class VaultSyncE2EHarness extends Plugin {
     return this.requireSession().localChanges.map((changes) => [...changes]);
   }
 
+  /** Commits `content` at `path` on the session's server, as another device would. */
+  commitRemote(documentId: string, path: string, content: string): void {
+    this.requireSession().server.commit({ documentId, path, content });
+  }
+
   /** Modifies a file the way a user edit lands on disk. */
   async modifyFile(path: string, text: string): Promise<void> {
     const file = this.app.vault.getAbstractFileByPath(path);

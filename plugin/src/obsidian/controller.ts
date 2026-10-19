@@ -204,6 +204,11 @@ export class SyncController {
     return run;
   }
 
+  /** The running session, if any. */
+  get session(): SyncSession | undefined {
+    return this.running?.session;
+  }
+
   /** Pulls and pushes now, if a session runs. */
   async syncNow(): Promise<void> {
     await this.running?.session.syncNow();
