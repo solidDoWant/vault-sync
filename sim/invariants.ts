@@ -13,7 +13,13 @@
 // - `phantom-delete`: every tombstone in the change feed was committed by a
 //   scripted client (which deletes only when its schedule says so) or by an
 //   engine whose user deleted that document's file. No file disappears
-//   without a delete.
+//   without a delete. One exception, the known limitation of #167 item 2: a
+//   rename the app was killed before it recorded is pushed as a delete plus a
+//   create, so the tombstone of a document whose file the user renamed away
+//   is excused when the engine crashed after the rename, before the
+//   tombstone, and then committed the renamed file, as the user left it,
+//   where the user put it, as another document: a new one, or one whose file
+//   the user deleted there (#254) (#280).
 // - `resurrected-delete`: every live revision that follows a tombstone of
 //   the same document was committed by a scripted client or by an engine
 //   whose user wrote or renamed a file at one of that document's paths and
@@ -60,6 +66,28 @@ export interface UserChange {
   at: string;
 }
 
+/**
+ * A user's rename, for the phantom-delete check, with what became of the
+ * renamed file: every path the user's later renames moved it to and every
+ * content it held there, until the user deleted it.
+ */
+export interface UserRename {
+  /** The documents the engine could take the renamed file for: its journal's at the old path, as the user's delete records them. */
+  documents: ReadonlySet<string>;
+  /** Every path the file had since, by path key on a case-insensitive platform. */
+  paths: Set<string>;
+  /** SHA-256 (hex) of every content the file held since. */
+  hashes: Set<string>;
+  /** Where the file is now (path key), or undefined once the user deleted it. */
+  current: string | undefined;
+}
+
+/** The app was killed: the server's head seq then, and how many renames the user had made by then. */
+export interface EngineCrash {
+  serverSeq: bigint;
+  renames: number;
+}
+
 /** What one engine's user did to its vault, and what the merge path made of local content. */
 export class UserLedger {
   readonly writes: UserWrite[] = [];
@@ -71,13 +99,47 @@ export class UserLedger {
   readonly deletedDocuments = new Set<string>();
   /** Every write and rename, in order. */
   readonly changes: UserChange[] = [];
+  /** Every rename, in order, for the phantom-delete check. */
+  readonly renames: UserRename[] = [];
+  /** Every time the app was killed, in order. */
+  readonly crashes: EngineCrash[] = [];
+
+  /** `platform`'s path matching, to follow a renamed file as its vault does. */
+  constructor(readonly platform: PathPlatform = "posix") {}
 
   write(write: UserWrite): void {
     this.writes.push(write);
+    for (const rename of this.at(write.path)) rename.hashes.add(write.hash);
   }
 
   changed(change: UserChange): void {
     this.changes.push(change);
+  }
+
+  /** The user renamed the file at `from`, which the engine could take for `documents`, to `to`, where it holds `hash`. */
+  renamed(from: string, to: string, documents: ReadonlySet<string>, hash: string): void {
+    const key = pathMatcher(this.platform)(to);
+    for (const rename of this.at(from)) {
+      rename.current = key;
+      rename.paths.add(key);
+      rename.hashes.add(hash);
+    }
+    this.renames.push({ documents, paths: new Set([key]), hashes: new Set([hash]), current: key });
+  }
+
+  /** The user deleted the file at `path`. */
+  deleted(path: string): void {
+    for (const rename of this.at(path)) rename.current = undefined;
+  }
+
+  /** The renames whose file is at `path` now. */
+  private at(path: string): UserRename[] {
+    const key = pathMatcher(this.platform)(path);
+    return this.renames.filter((rename) => rename.current === key);
+  }
+
+  crashed(serverSeq: bigint): void {
+    this.crashes.push({ serverSeq, renames: this.renames.length });
   }
 
   replace(hash: string): void {
@@ -148,31 +210,74 @@ export interface FeedRevision {
   size: bigint;
 }
 
-/** An engine's device, with the documents its user deleted. */
+/** An engine's device, with the documents its user deleted, its user's renames and its crashes. */
 export interface EngineDeletes {
   name: string;
   deviceId: string;
   deletedDocuments: ReadonlySet<string>;
+  platform: PathPlatform;
+  renames: readonly UserRename[];
+  crashes: readonly EngineCrash[];
 }
 
 /**
  * `phantom-delete`: the tombstones that no delete explains. A scripted
  * client's tombstone always is one (it deletes only when told to); an
- * engine's must be for a document its user deleted.
+ * engine's must be for a document its user deleted, or be the delete half of
+ * a rename lost to a crash (renameLostToCrash).
  */
 export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevices: ReadonlySet<string>, engines: readonly EngineDeletes[], label: (id: string) => string): Violation[] {
   const byDevice = new Map(engines.map((engine) => [engine.deviceId, engine]));
+  const firstSeq = new Map<string, bigint>();
+  for (const revision of feed) {
+    const first = firstSeq.get(revision.documentId);
+    if (first === undefined || revision.seq < first) firstSeq.set(revision.documentId, revision.seq);
+  }
   const violations: Violation[] = [];
   for (const revision of feed) {
     if (!revision.deleted || scriptedDevices.has(revision.deviceId)) continue;
     const engine = byDevice.get(revision.deviceId);
     if (engine?.deletedDocuments.has(revision.documentId) === true) continue;
+    if (engine !== undefined && renameLostToCrash(revision, engine, feed, firstSeq)) continue;
     violations.push({
       invariant: "phantom-delete",
       detail: `${engine?.name ?? `unknown device ${revision.deviceId}`} deleted ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) although ${engine === undefined ? "no client" : "its user never"} deleted it`,
     });
   }
   return violations;
+}
+
+/**
+ * Whether `tombstone` is the delete half of a rename the engine lost to a
+ * crash (#167 item 2): its user renamed the document's file away, the app was
+ * killed after that and before the tombstone was committed, and after the
+ * crash the engine committed the renamed file (a content it held, at a path
+ * the user's renames gave it) as another document: a new one (its first
+ * revision), or one whose file the user deleted, which the engine took the
+ * file for at that path (#254). The user sees the same file at the same path;
+ * only the document id changed. Nothing else is excused: not a rename the
+ * running engine lost, not a delete without that create.
+ */
+function renameLostToCrash(tombstone: FeedRevision, engine: EngineDeletes, feed: readonly FeedRevision[], firstSeq: ReadonlyMap<string, bigint>): boolean {
+  const key = pathMatcher(engine.platform);
+  return engine.renames.some((rename, index) => {
+    if (!rename.documents.has(tombstone.documentId)) return false;
+    return engine.crashes.some(
+      (crash) =>
+        crash.renames > index &&
+        crash.serverSeq < tombstone.seq &&
+        feed.some(
+          (create) =>
+            create.deviceId === engine.deviceId &&
+            !create.deleted &&
+            create.documentId !== tombstone.documentId &&
+            rename.hashes.has(create.contentHash) &&
+            rename.paths.has(key(create.path)) &&
+            create.seq > crash.serverSeq &&
+            (firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId)),
+        ),
+    );
+  });
 }
 
 /** An engine's device, with its platform and what its user wrote and renamed. */
@@ -184,7 +289,7 @@ export interface EngineChanges {
 }
 
 /** How `platform` matches paths: by path key where it ignores case and Unicode form (windows, macos), exactly under posix. */
-function pathMatcher(platform: PathPlatform): (path: string) => string {
+export function pathMatcher(platform: PathPlatform): (path: string) => string {
   return platform === "posix" ? (path: string) => path : pathKey;
 }
 

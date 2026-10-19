@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath } from "./scenarios";
+import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -454,6 +454,29 @@ describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)"
       ]),
     );
     expect(result.tombstoned, trace).toEqual([]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted lost-rename scenarios (#280)", () => {
+  it.each(["editor-first", "renamer-first"] as const)("never loses a concurrent edit to the delete a rename lost to a crash becomes (%s)", async (order) => {
+    const result = await renameLostToCrash(environment, order);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("note.md");
+    expect(note, trace).toBeDefined();
+    // The edit wins over the delete: the note is live where it was, with the edit, under its own id.
+    const expected = new Map([
+      ["moved.md", "one\ntwo\n"],
+      ["note.md", result.edited],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents.get("note.md"), trace).toBe(note);
+    expect(result.documents.get("moved.md"), trace).toBeDefined();
+    expect(result.documents.get("moved.md"), trace).not.toBe(note);
+    // Only when the delete reached the server first did it land at all, as a tombstone the edit then overrode.
+    expect(result.tombstoned, trace).toEqual(order === "renamer-first" ? [note] : []);
   });
 });
 

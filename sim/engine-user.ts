@@ -86,12 +86,15 @@ export class EngineUser {
   }
 
   async rename(from: string, to: string): Promise<string> {
+    const documents = await this.documentsAt(from);
     this.options.touched(from);
     this.options.touched(to);
     await this.options.vault.rename(from, to);
     const serverSeq = this.options.serverSeq();
     this.recordRename(from, to);
-    this.options.ledger.changed({ paths: [from, to], result: { path: to, hash: sha256Hex(await this.options.vault.read(to)) }, serverSeq, at: this.options.now() });
+    const hash = sha256Hex(await this.options.vault.read(to));
+    this.options.ledger.renamed(from, to, documents, hash);
+    this.options.ledger.changed({ paths: [from, to], result: { path: to, hash }, serverSeq, at: this.options.now() });
     return `${this.options.name} user renames ${from} to ${to}`;
   }
 
@@ -103,6 +106,7 @@ export class EngineUser {
     await this.options.vault.delete(path);
     if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
     for (const document of documents) this.options.ledger.deletedDocuments.add(document);
+    this.options.ledger.deleted(path);
     return `${this.options.name} user deletes ${path}`;
   }
 
