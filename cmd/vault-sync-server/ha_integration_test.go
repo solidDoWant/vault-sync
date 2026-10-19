@@ -399,7 +399,7 @@ func TestCommitRetryOnAnotherInstanceAfterSIGKILLMidCommit(t *testing.T) {
 
 	request := client.next(t, created, "note.md", edited, false)
 	conn := sendCommit(t, notApplied, token, request)
-	backend := blockedBackend(t, database, backendPID(t, locker))
+	backend := blockedBackend(t, database, backendPID(t, locker), notApplied.applicationName)
 
 	notApplied.kill(t)
 	requireNoAnswer(t, conn)
@@ -421,7 +421,7 @@ func TestCommitRetryOnAnotherInstanceAfterSIGKILLMidCommit(t *testing.T) {
 
 	request = client.next(t, edit, "renamed.md", edited, false)
 	conn = sendCommit(t, applied, token, request)
-	backend = blockedBackend(t, database, blocker)
+	backend = blockedBackend(t, database, blocker, applied.applicationName)
 
 	applied.kill(t)
 	requireNoAnswer(t, conn)

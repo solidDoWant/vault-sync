@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"net/http"
+	"net/url"
 	"strconv"
 	"sync"
 	"testing"
@@ -76,11 +77,16 @@ func (buffer *syncBuffer) String() string {
 
 // instance is one running server process.
 type instance struct {
-	name           string
-	process        *child
-	apiURL         string
-	metricsAddress string
-	logs           *syncBuffer
+	name    string
+	process *child
+	// databaseDSN is the deployment's DSN with its application_name set to
+	// applicationName, so the instance's PostgreSQL sessions can be told
+	// apart from any other instance's.
+	databaseDSN     string
+	applicationName string
+	apiURL          string
+	metricsAddress  string
+	logs            *syncBuffer
 }
 
 // start runs binary as a new instance of the deployment, with extra
@@ -90,19 +96,23 @@ func (cluster *deployment) start(t *testing.T, name, binary string, extra ...str
 
 	var server *instance
 
+	applicationName := instanceApplicationName(name)
+
 	// Starts a new process, with new addresses, if another process took
 	// one of the ports first.
 	testinfra.StartServer(t, name, 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
 		attempt := &instance{
-			name:           name,
-			process:        newChild(t, binary),
-			apiURL:         "http://" + addresses.API,
-			metricsAddress: addresses.Metrics,
-			logs:           &syncBuffer{},
+			name:            name,
+			process:         newChild(t, binary),
+			databaseDSN:     withApplicationName(t, cluster.database.DSN, applicationName),
+			applicationName: applicationName,
+			apiURL:          "http://" + addresses.API,
+			metricsAddress:  addresses.Metrics,
+			logs:            &syncBuffer{},
 		}
 
 		attempt.process.Command.Env = append([]string{
-			config.DatabaseURLEnv + "=" + cluster.database.DSN,
+			config.DatabaseURLEnv + "=" + attempt.databaseDSN,
 			config.ListenAddressEnv + "=" + addresses.API,
 			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
 			config.OIDCIssuerURLEnv + "=" + cluster.issuer.URL,
@@ -133,6 +143,28 @@ func (cluster *deployment) start(t *testing.T, name, binary string, extra ...str
 	})
 
 	return server
+}
+
+// instanceApplicationName is the PostgreSQL application_name of the instance
+// called name.
+func instanceApplicationName(name string) string {
+	return "vault-sync-test-" + name
+}
+
+// withApplicationName returns the postgres:// URL dsn with its
+// application_name set to name, which pg_stat_activity reports for every
+// session opened with it.
+func withApplicationName(t *testing.T, dsn, name string) string {
+	t.Helper()
+
+	databaseURL, err := url.Parse(dsn)
+	require.NoError(t, err, "the deployment's DSN must be a postgres:// URL")
+
+	query := databaseURL.Query()
+	query.Set("application_name", name)
+	databaseURL.RawQuery = query.Encode()
+
+	return databaseURL.String()
 }
 
 // kill kills the instance without warning (SIGKILL) and waits for it to die.
