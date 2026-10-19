@@ -40,7 +40,7 @@ import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
 import { checkEngineEchoes, UserLedger } from "./invariants";
-import { errorCode, StallError } from "./network";
+import { errorCode, settle, StallError } from "./network";
 import { Random } from "./random";
 import type { EngineOperation } from "./schedule";
 
@@ -160,11 +160,21 @@ export class EngineObserver {
     return `${this.name} starts pull`;
   }
 
-  /** Writes `content` to the observer's vault as its user would; the engine pushes it on the next push. */
-  async edit(path: string, content: Uint8Array): Promise<string> {
+  /**
+   * Writes `content` to the observer's vault as its user would; the engine
+   * pushes it on the next push. Waits for the engine's work to finish,
+   * unless `whileBusy` (a change made while the engine waits on the
+   * network): then only until the engine has seen the change.
+   */
+  async edit(path: string, content: Uint8Array, options: { whileBusy?: boolean } = {}): Promise<string> {
     const entry = await this.user.write(path, content);
-    await this.settled();
+    await this.afterChange(options);
     return entry;
+  }
+
+  private async afterChange(options: { whileBusy?: boolean }): Promise<void> {
+    if (options.whileBusy === true) await settle();
+    else await this.settled();
   }
 
   /**
@@ -187,10 +197,10 @@ export class EngineObserver {
     return this.engineVault.pending;
   }
 
-  /** Renames `from` to `to` in the observer's vault as its user would. */
-  async move(from: string, to: string): Promise<string> {
+  /** Renames `from` to `to` in the observer's vault as its user would; `whileBusy` as for edit. */
+  async move(from: string, to: string, options: { whileBusy?: boolean } = {}): Promise<string> {
     const entry = await this.user.rename(from, to);
-    await this.settled();
+    await this.afterChange(options);
     return entry;
   }
 

@@ -425,7 +425,7 @@ describe("SyncEngine structural operations (SPEC.md §6.3)", () => {
         h.server.interceptor = undefined;
       }
 
-      it("pushes the waiting rename's new path as a new file when a file is created at its old path meanwhile", async () => {
+      it("pushes the waiting rename, and the file created at its old path meanwhile as a new document (#254)", async () => {
         const h = harness({ merge: "default" });
         await renameWaitingForPendingEdit(h);
         await h.vault.write("a.md", bytes(lines("new note")));
@@ -433,15 +433,16 @@ describe("SyncEngine structural operations (SPEC.md §6.3)", () => {
         await h.engine.push();
         await h.engine.push();
 
-        // The rename no longer qualifies (a.md holds a new file), so d keeps
-        // a.md and b.md is a file of its own: nothing is left unsynced.
+        // a.md holds a new file, which the user created after moving d away:
+        // d moves to b.md under its own id, and a.md is a new document.
         expect(h.server.liveFiles()).toEqual(
           new Map([
             ["a.md", lines("new note")],
             ["b.md", lines("two")],
           ]),
         );
-        expect(h.server.liveDocuments().get("a.md")).toBe("d");
+        expect(h.server.liveDocuments().get("b.md")).toBe("d");
+        expect(h.server.liveDocuments().get("a.md")).not.toBe("d");
       });
 
       it("pushes the waiting rename once a pull acknowledges the pending edit, without another local change", async () => {
