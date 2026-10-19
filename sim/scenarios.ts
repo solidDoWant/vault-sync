@@ -5,7 +5,7 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { serverHeads } from "./engine-observer";
 import { settle } from "./network";
-import { SimRun, type RunResult, type SimEndpoints } from "./runner";
+import { seededCommitRetryBackoff, SimRun, type RunResult, type SimEndpoints } from "./runner";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -1613,4 +1613,62 @@ async function newPathsRefused(endpoints: SimEndpoints, files: { synced: [path: 
 
   const result = await run.finish();
   return { ...result, afterRefusal, secondAfterRefusal, rejected, reasons, refusalRequests, vaults: [await contents(first), await contents(second)], documents: await liveDocuments(run) };
+}
+
+export interface RetryAfterScheduleResult extends RunResult {
+  /** Label of the revision whose first CommitRevision request was lost. */
+  lost: string;
+}
+
+/**
+ * A commit retry left for the end of the run (#302, seed 21). With the
+ * seeded commit retry backoff, the engine's CommitRevision request and the
+ * push's own retries of it are lost on the last steps of the schedule, so the
+ * push gives up. Its next push, after the faults heal, sends the
+ * commit again with the same revision id, which the network holds for the
+ * backoff. Draining must let that time pass, so that the retry lands once and
+ * the run ends with no violation, instead of waiting for steps that never
+ * come.
+ */
+export async function commitRetryAfterSchedule(endpoints: SimEndpoints): Promise<RetryAfterScheduleResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 1, platforms: ["posix"], commitRetryBackoff: seededCommitRetryBackoff });
+  const { observer } = run;
+  run.context.log(await observer.edit("note.md", encoder.encode("one\n")));
+  await run.step({ kind: "engine-operation", engine: 0, operation: "push", arg: 0 });
+  for (let delivery = 0; run.context.network.pendingRequest(observer.index) !== "CommitRevision"; delivery++) {
+    if (delivery > 100) throw new Error("the engine never sent CommitRevision");
+    await run.step({ kind: "deliver-request", client: observer.index });
+    await run.step({ kind: "deliver-response", client: observer.index });
+  }
+  const lost = /CommitRevision\(\S+ (\S+) /.exec(run.context.network.describePending(observer.index))?.[1] ?? "?";
+  // Lose the request and every retry the push makes itself, until the push gives up.
+  for (let drop = 0; run.context.network.pendingRequest(observer.index) === "CommitRevision"; drop++) {
+    if (drop > 10) throw new Error("the engine never gave up its push");
+    await run.step({ kind: "drop-request", pick: 0 });
+  }
+  return { ...(await run.finish()), lost };
+}
+
+export interface StalledEngineResult extends RunResult {
+  /** What awaiting the stalled engine threw. */
+  error: unknown;
+}
+
+/**
+ * The harness waits for an engine that waits on the network, which nothing
+ * delivers meanwhile (#302): the engine's push has sent its first call, and
+ * the scenario then has the user edit another note, which waits for the
+ * engine to settle. That wait must fail as a stall naming the step, not hang
+ * the run. The run then finishes normally, its drain delivering the push.
+ */
+export async function stalledEngineReported(endpoints: SimEndpoints): Promise<StalledEngineResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 1, platforms: ["posix"] });
+  const { observer } = run;
+  run.context.log(await observer.edit("note.md", encoder.encode("one\n")));
+  await run.step({ kind: "engine-operation", engine: 0, operation: "push", arg: 0 });
+  const error = await observer.edit("other.md", encoder.encode("two\n")).then(
+    () => undefined,
+    (failure: unknown) => failure,
+  );
+  return { ...(await run.finish()), error };
 }

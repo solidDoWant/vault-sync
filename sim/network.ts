@@ -28,6 +28,8 @@ interface Message {
   phase: "request" | "response";
   /** Step number before which the message cannot be delivered. */
   heldUntil: number;
+  /** Whether heldUntil is a commit retry's backoff, which time passing while draining ends, rather than a fault's delay. */
+  retryBackoff: boolean;
   send: () => Promise<unknown>;
   outcome?: Outcome;
   settle: (outcome: Outcome) => void;
@@ -71,6 +73,22 @@ interface Timer {
   callback: () => void;
 }
 
+/**
+ * Event-loop turns (settle) that engine work the harness awaits may take with
+ * no network activity before the run counts as stalled (#302). While the
+ * harness awaits, nothing delivers messages, so work blocked on the network
+ * never finishes; work that is not blocked finishes within one turn, since the
+ * engine runs on promise chains alone (no real timers: its backoff runs on the
+ * network's clock and the push debounce is off), as settle already assumes.
+ * The bound counts turns, not time, so a loaded machine cannot trip it.
+ */
+export const stallTurns = 1000;
+
+/** Thrown when engine work the harness awaits can never finish (SimNetwork.untilSettled): the run is stalled. */
+export class StallError extends Error {
+  override name = "StallError";
+}
+
 /** Thrown to a client whose request or response the network lost. */
 export function networkError(reason: string): ConnectError {
   return new ConnectError(`simulated network fault: ${reason}`, Code.Unavailable);
@@ -98,6 +116,8 @@ export class SimNetwork {
   /** The current step; delays and partitions are measured in steps. */
   now = 0;
   private nextId = 0;
+  /** Counts what happens on the network (sends, deliveries, losses, timers firing), so a stall can be told from slow progress. */
+  private activity = 0;
   private messages: Message[] = [];
   private readonly incarnations = new Map<number, number>();
   private readonly partitionedUntil = new Map<number, number>();
@@ -146,6 +166,51 @@ export class SimNetwork {
   /** The method of the oldest request `client` has waiting, if any. */
   pendingRequest(client: number): string | undefined {
     return this.messages.find((message) => message.client === client && message.phase === "request")?.method;
+  }
+
+  /**
+   * What is still in the network (of `client`, if given), for a liveness
+   * report: each message and what holds it back, and each pending timer.
+   */
+  describePending(client?: number): string {
+    const entries = this.messages
+      .filter((message) => client === undefined || message.client === client)
+      .map((message) => {
+        const held = message.phase === "request" && message.heldUntil > this.now ? `, held until step ${String(message.heldUntil)}${message.retryBackoff ? " (retry backoff)" : ""}` : "";
+        const partitioned = this.isPartitioned(message.client) ? ", partitioned" : "";
+        return `${this.label(message)} (${message.phase}${held}${partitioned})`;
+      });
+    for (const timer of this.pendingTimers) {
+      if (client === undefined || timer.client === client) entries.push(`c${String(timer.client)} backoff timer due at step ${String(timer.due)}`);
+    }
+    return entries.length === 0 ? "nothing" : entries.join("; ");
+  }
+
+  /**
+   * Awaits `work` that only the network could finish, while no one delivers:
+   * engine work the harness waits for. Settles as `work` does, unless `work`
+   * is still pending after stallTurns turns with no network activity. Then it
+   * throws a StallError naming `describe()` and what the network still holds,
+   * instead of waiting forever (#302).
+   */
+  async untilSettled<T>(work: Promise<T>, describe: () => string): Promise<T> {
+    const result: { outcome?: Outcome } = {};
+    work.then(
+      (value) => (result.outcome = { ok: true, value }),
+      (error: unknown) => (result.outcome = { ok: false, error }),
+    );
+    let quiet = 0;
+    for (;;) {
+      const activity = this.activity;
+      await settle();
+      const outcome = result.outcome;
+      if (outcome !== undefined) {
+        if (!outcome.ok) throw outcome.error;
+        return outcome.value as T;
+      }
+      quiet = this.activity === activity ? quiet + 1 : 0;
+      if (quiet >= stallTurns) throw new StallError(`${describe()}; in the network: ${this.describePending()}`);
+    }
   }
 
   /** Delivers the oldest deliverable request (of `client`, if given) to the server. */
@@ -207,6 +272,27 @@ export class SimNetwork {
   }
 
   /**
+   * Lets time pass while draining, once nothing else can be delivered (of
+   * `client`, if given): the clock moves on to whichever comes first, the
+   * next backoff timer, which fires, or the end of the next commit retry's
+   * backoff, after which the retry can be delivered. Without this, a retry
+   * sent while draining would wait for steps that never come (#302). Fault
+   * delays and partitions do not end this way; heal lifts them.
+   */
+  passTime(client?: number): string | undefined {
+    const [timer] = this.pendingTimers.filter((candidate) => client === undefined || candidate.client === client).sort((left, right) => left.due - right.due || left.id - right.id);
+    const [retry] = this.messages
+      .filter((message) => message.phase === "request" && message.retryBackoff && message.heldUntil > this.now && !this.isPartitioned(message.client) && (client === undefined || message.client === client))
+      .sort((left, right) => left.heldUntil - right.heldUntil || left.id - right.id);
+    if (retry === undefined || (timer !== undefined && timer.due <= retry.heldUntil)) return this.fireNextTimer(client);
+    this.activity++;
+    this.clock = Math.max(this.timerClock(), retry.heldUntil);
+    retry.heldUntil = 0;
+    retry.retryBackoff = false;
+    return `${this.label(retry)} retry backoff elapsed`;
+  }
+
+  /**
    * The server's per-user limit refuses `client`'s oldest request with
    * RESOURCE_EXHAUSTED before the call runs (SPEC.md §12): the request never
    * reaches the server, and the refusal waits as its response.
@@ -214,6 +300,7 @@ export class SimNetwork {
   throttle(client: number): string | undefined {
     const message = this.messages.find((candidate) => candidate.client === client && candidate.phase === "request");
     if (message === undefined) return undefined;
+    this.activity++;
     message.phase = "response";
     message.outcome = { ok: false, error: throttledError() };
     return `${this.label(message)} refused by the server's per-user limit -> ResourceExhausted`;
@@ -240,6 +327,7 @@ export class SimNetwork {
     const message = candidates[pick % Math.max(1, candidates.length)];
     if (message === undefined) return undefined;
     message.heldUntil = this.now + steps;
+    message.retryBackoff = false;
     return `${this.label(message)} held for ${String(steps)} steps`;
   }
 
@@ -289,6 +377,8 @@ export class SimNetwork {
   private enqueue<T>(client: number, method: string, input: unknown, send: () => Promise<T>): Promise<T> {
     const revisionId = method === "CommitRevision" ? revisionIdOf(input) : undefined;
     this.checkBackoff(client, method);
+    this.activity++;
+    const heldUntil = this.backoff(revisionId);
     return new Promise<T>((resolve, reject) => {
       this.messages.push({
         id: this.nextId++,
@@ -298,7 +388,8 @@ export class SimNetwork {
         description: this.options.describeRequest(method, input),
         revisionId,
         phase: "request",
-        heldUntil: this.backoff(revisionId),
+        heldUntil,
+        retryBackoff: heldUntil > 0,
         send,
         settle: (outcome) => {
           if (outcome.ok) resolve(outcome.value as T);
@@ -329,6 +420,7 @@ export class SimNetwork {
   }
 
   private async send(message: Message): Promise<string> {
+    this.activity++;
     message.outcome = await message.send().then(
       (value): Outcome => ({ ok: true, value }),
       (error: unknown): Outcome => ({ ok: false, error }),
@@ -376,6 +468,7 @@ export class SimNetwork {
   }
 
   private fire(timer: Timer): string {
+    this.activity++;
     this.pendingTimers = this.pendingTimers.filter((candidate) => candidate !== timer);
     timer.callback();
     return `c${String(timer.client)} backoff timer fired`;
@@ -387,6 +480,7 @@ export class SimNetwork {
   }
 
   private remove(message: Message): void {
+    this.activity++;
     this.messages = this.messages.filter((candidate) => candidate !== message);
   }
 
