@@ -64,6 +64,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       pushDebounceMs,
       syncIntervalMs,
       pathRules: localPathRules(this.app),
+      maxDownloadBytes: localMaxDownloadBytes(),
       realtime: (serverUrl) => ({
         connect: webSocketConnector(serverUrl),
         accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
@@ -334,7 +335,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    */
   async startSync(options: Omit<SyncSessionOptions, "vault" | "ready" | "pushDebounceMs" | "syncIntervalMs"> & Partial<SyncSessionOptions>): Promise<PullSummary | undefined> {
     await this.stopSync();
-    const session = new SyncSession({ vault: this.syncedVault(), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, pathRules: localPathRules(this.app), ...options });
+    const session = new SyncSession({ vault: this.syncedVault(), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, pathRules: localPathRules(this.app), maxDownloadBytes: localMaxDownloadBytes(), ...options });
     this.session = session;
     return session.start();
   }
@@ -456,6 +457,15 @@ function platformName(): string {
   if (Platform.isWin) return "Windows";
   if (Platform.isLinux) return "Linux";
   return "Obsidian";
+}
+
+/**
+ * The largest remote content this device downloads (SPEC.md §8): 1 GiB on
+ * desktop, 256 MiB on mobile, whose memory is far smaller. A download is
+ * held in memory whole, so a larger revision is deferred instead.
+ */
+function localMaxDownloadBytes(): number {
+  return Platform.isMobile ? 256 * 1024 * 1024 : 1024 * 1024 * 1024;
 }
 
 /**

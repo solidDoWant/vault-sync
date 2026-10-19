@@ -39,6 +39,24 @@ export function unmaterializableReasonText(reason: UnmaterializableCause): strin
   }
 }
 
+/** Why a document is not downloaded on this device (#316): its size, in the user's words. */
+export function tooLargeText(size: bigint): string {
+  return `Its newest version is ${formatBytes(size)}, more than this device downloads.`;
+}
+
+/** `size` in bytes as B, KiB, MiB, GiB or TiB, with one decimal above bytes. */
+export function formatBytes(size: bigint): string {
+  const units = ["KiB", "MiB", "GiB", "TiB"];
+  if (size < 1024n) return `${String(size)} B`;
+  let value = Number(size) / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit++;
+  }
+  return `${value.toFixed(1)} ${units[unit] ?? "TiB"}`;
+}
+
 /** Why the server refuses a local file, in the user's words (#100); `detail` is the server's message, used for `refused`. */
 export function rejectedReasonText(reason: RejectedReason, detail: string): string {
   switch (reason) {
