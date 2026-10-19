@@ -1,4 +1,5 @@
 import { create } from "@bufbuild/protobuf";
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createRouterTransport, type Transport } from "@connectrpc/connect";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
@@ -17,6 +18,10 @@ export interface InMemoryServerOptions {
   maxDownloadBytes?: number;
   /** Largest PutBlobChunk the server accepts, reported by BeginBlob. */
   maxChunkBytes?: number;
+  /** Largest GetDocumentHistory page the server returns, whatever the client asks for. */
+  maxHistoryPageSize?: number;
+  /** The server clock: every revision's create_time. Defaults to the system clock. */
+  now?: () => Date;
 }
 
 export interface CommitInput {
@@ -26,6 +31,8 @@ export interface CommitInput {
   content?: Uint8Array | string;
   deleted?: boolean;
   kind?: DocumentKind;
+  /** The committing device; empty by default. */
+  deviceId?: string;
 }
 
 /** A call the server is about to handle; `fail` makes interceptors reject it. */
@@ -66,9 +73,14 @@ export class InMemoryServer {
   private readonly maxPageSize: number;
   private readonly maxDownloadBytes: number;
   readonly maxChunkBytes: number;
+  private readonly maxHistoryPageSize: number;
+  /** The server clock, read for every revision's create_time; replace it to move time on. */
+  now: () => Date;
 
   constructor(options: InMemoryServerOptions = {}) {
     this.vaultId = options.vaultId ?? "vault-1";
+    this.maxHistoryPageSize = options.maxHistoryPageSize ?? 1000;
+    this.now = options.now ?? (() => new Date());
     this.maxPageSize = options.maxPageSize ?? 1000;
     this.maxDownloadBytes = options.maxDownloadBytes ?? 1 << 20;
     this.maxChunkBytes = options.maxChunkBytes ?? 1 << 20;
@@ -93,8 +105,23 @@ export class InMemoryServer {
           this.checkVault(request.vaultId);
           return this.respond("CommitRevision", request, { revision: this.commitRequest(request) });
         },
-        getDocumentHistory: () => {
-          throw new ConnectError("not part of the in-memory server", Code.Unimplemented);
+        getDocumentHistory: (request) => {
+          this.intercept("GetDocumentHistory", request);
+          this.checkVault(request.vaultId);
+          // Newest first; the page token is the seq of the last revision returned.
+          const all = this.history(request.documentId).reverse();
+          const head = all[0];
+          if (head === undefined) throw new ConnectError("document not found", Code.NotFound);
+          const before = request.pageToken === "" ? undefined : BigInt(request.pageToken);
+          const older = before === undefined ? all : all.filter((revision) => revision.seq < before);
+          const limit = Math.min(request.pageSize === 0 ? 100 : request.pageSize, this.maxHistoryPageSize);
+          const page = older.slice(0, limit);
+          const last = page.at(-1);
+          return {
+            document: { id: head.documentId, vaultId: this.vaultId, kind: head.kind, headRevId: head.id },
+            revisions: page,
+            nextPageToken: older.length > limit && last !== undefined ? String(last.seq) : "",
+          };
         },
       });
       service(BlobService, {
@@ -187,9 +214,31 @@ export class InMemoryServer {
       contentRef: { blobId, size },
       path: encoder.encode(input.path),
       deleted: input.deleted ?? false,
+      deviceId: input.deviceId ?? "",
+      createTime: timestampFromDate(this.now()),
     });
     this.revisions.push(revision);
     return revision;
+  }
+
+  /**
+   * Purges a revision as the retention job does (SPEC.md §11): its child is
+   * re-parented onto its parent, and the revision is gone from the change
+   * feed, GetRevision and history. Its blob stays until collectBlob. A
+   * document's head is never purged.
+   */
+  purge(revisionId: string): void {
+    const revision = this.revisions.find((candidate) => candidate.id === revisionId);
+    if (revision === undefined) throw new Error(`no revision ${revisionId}`);
+    if (this.head(revision.documentId)?.id === revisionId) throw new Error(`revision ${revisionId} is its document's head`);
+    for (const child of this.revisions) if (child.documentId === revision.documentId && child.parentRevId === revisionId) child.parentRevId = revision.parentRevId;
+    this.revisions = this.revisions.filter((candidate) => candidate !== revision);
+  }
+
+  /** Garbage-collects a blob that no revision references any more (SPEC.md §11). */
+  collectBlob(blobId: string): void {
+    if (this.revisions.some((revision) => bytesToHex(revision.contentRef?.blobId ?? new Uint8Array()) === blobId)) throw new Error(`blob ${blobId} is still referenced`);
+    if (!this.blobs.delete(blobId)) throw new Error(`no blob ${blobId}`);
   }
 
   /** Appends a revision with a raw (possibly invalid UTF-8) path. */
@@ -255,7 +304,6 @@ export class InMemoryServer {
     return this.blobs.has(blobId);
   }
 
-  /** Every revision of `documentId`, oldest first. */
   /** Path to document id of every live document at its head: which document holds each path. */
   liveDocuments(): Map<string, string> {
     const documents = new Map<string, string>();
@@ -263,6 +311,7 @@ export class InMemoryServer {
     return documents;
   }
 
+  /** Every retained revision of `documentId`, oldest first. */
   history(documentId: string): Revision[] {
     return this.revisions.filter((revision) => revision.documentId === documentId);
   }
@@ -334,6 +383,7 @@ export class InMemoryServer {
       path: request.path,
       deleted: request.deleted,
       deviceId: request.deviceId,
+      createTime: timestampFromDate(this.now()),
     });
     this.revisions.push(revision);
     return revision;

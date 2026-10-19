@@ -77,8 +77,10 @@ type storedDocument struct {
 // checkInvariants reads the vault's state directly from PostgreSQL, in one
 // snapshot, and returns every server-side invariant (SPEC.md §13, Phase 1)
 // it violates. acknowledged lists every revision the server acknowledged to
-// a client during the run.
-func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, acknowledged []acknowledgement) ([]violation, error) {
+// a client during the run, and purged the revisions the run had retention
+// purge (ageAndPurge): their absence, the seq gaps they leave and their
+// children's new parents are not violations.
+func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, acknowledged []acknowledgement, purged []purgedRevision) ([]violation, error) {
 	var (
 		headSeq   int64
 		revisions []storedRevision
@@ -138,8 +140,8 @@ func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, a
 		violations = append(violations, violation{Invariant: invariant, Detail: fmt.Sprintf(format, arguments...)})
 	}
 
-	checkHistory(revisions, acknowledged, report)
-	checkSeq(headSeq, revisions, report)
+	checkHistory(revisions, acknowledged, purged, report)
+	checkSeq(headSeq, revisions, purged, report)
 	checkChains(revisions, report)
 	checkDocuments(documents, revisions, report)
 
@@ -149,14 +151,42 @@ func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, a
 type reporter func(invariant, format string, arguments ...any)
 
 // checkHistory: no acknowledged revision is missing from history (SPEC.md §2
-// principle 1), and each is stored exactly as it was acknowledged.
-func checkHistory(revisions []storedRevision, acknowledged []acknowledgement, report reporter) {
+// principle 1) unless the run had retention purge it, and each is stored
+// exactly as it was acknowledged, except that a purged parent is replaced by
+// the nearest retained ancestor (§11).
+func checkHistory(revisions []storedRevision, acknowledged []acknowledgement, purged []purgedRevision, report reporter) {
 	byID := make(map[string]storedRevision, len(revisions))
 	for _, revision := range revisions {
 		byID[revision.id.String()] = revision
 	}
 
+	purgedParents := make(map[string]string, len(purged))
+
+	for _, revision := range purged {
+		parent := ""
+		if revision.Parent.Valid {
+			parent = revision.Parent.UUID.String()
+		}
+
+		purgedParents[revision.ID.String()] = parent
+	}
+
 	for _, ack := range acknowledged {
+		if _, wasPurged := purgedParents[ack.RevisionID]; wasPurged {
+			continue
+		}
+
+		// The nearest ancestor retention kept. Bounded: each purged
+		// revision is followed at most once.
+		for range len(purged) {
+			parent, wasPurged := purgedParents[ack.ParentRevisionID]
+			if !wasPurged {
+				break
+			}
+
+			ack.ParentRevisionID = parent
+		}
+
 		stored, ok := byID[ack.RevisionID]
 		if !ok {
 			report(invariantHistory, "revision %s acknowledged to c%d (seq %s) is missing from history", ack.RevisionID, ack.Client, ack.Seq)
@@ -181,18 +211,34 @@ func checkHistory(revisions []storedRevision, acknowledged []acknowledgement, re
 }
 
 // checkSeq: seq values are exactly 1..head_seq (gapless, unique, and
-// monotonic in commit order; nothing is purged during a run).
-func checkSeq(headSeq int64, revisions []storedRevision, report reporter) {
-	for index, revision := range revisions {
-		if expected := int64(index) + 1; revision.seq != expected {
-			report(invariantSeq, "revision %s has seq %d where seq %d was expected (seq must be gapless)", revision.id, revision.seq, expected)
+// monotonic in commit order), but for those of the revisions the run had
+// retention purge.
+func checkSeq(headSeq int64, revisions []storedRevision, purged []purgedRevision, report reporter) {
+	gaps := make(map[int64]bool, len(purged))
+	for _, revision := range purged {
+		gaps[revision.Seq] = true
+	}
+
+	expected := int64(0)
+	next := func() int64 {
+		expected++
+		for gaps[expected] {
+			expected++
+		}
+
+		return expected
+	}
+
+	for _, revision := range revisions {
+		if want := next(); revision.seq != want {
+			report(invariantSeq, "revision %s has seq %d where seq %d was expected (seq must be gapless but for purged revisions)", revision.id, revision.seq, want)
 
 			return
 		}
 	}
 
-	if int64(len(revisions)) != headSeq {
-		report(invariantSeq, "head_seq is %d but the vault has %d revisions", headSeq, len(revisions))
+	if int64(len(revisions)+len(gaps)) != headSeq {
+		report(invariantSeq, "head_seq is %d but the vault has %d revisions and %d purged", headSeq, len(revisions), len(gaps))
 	}
 }
 
