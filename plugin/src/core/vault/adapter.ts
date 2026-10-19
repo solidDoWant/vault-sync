@@ -44,7 +44,9 @@ export interface VaultAdapter {
    * precondition, it deletes only a file whose content hash is
    * `expectedHash`, and rejects with "changed" otherwise, changing nothing.
    * An adapter that knows of unsaved state for the file (an open editor whose
-   * content differs from the disk) rejects with "changed" too.
+   * content differs from the disk) never discards it (#181): it deletes
+   * nothing and rejects, with "changed" under a precondition, and with an
+   * error of its own without one (the Obsidian adapter's UnsavedEditsError).
    */
   delete(path: string, precondition?: DeletePrecondition): Promise<void>;
 
