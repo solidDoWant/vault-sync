@@ -2,8 +2,9 @@ import { Modal, Notice, PluginSettingTab, Setting, type App, type Plugin } from 
 
 import type { Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
+import type { ConfigCategory, ConfigSyncSettings } from "../core/config/policy";
 import { connectProblem } from "./controller";
-import type { ConnectedVault, PluginData } from "./data";
+import { configSyncSettings, type ConnectedVault, type PluginData } from "./data";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
 /** What the settings tab needs from the plugin. */
@@ -23,7 +24,24 @@ export interface SettingsHost extends Plugin {
   createRemoteVault(name: string): Promise<Vault>;
   connectVault(vault: Vault, confirmed?: boolean): Promise<"connected" | "needs-confirmation">;
   disconnectVault(): Promise<void>;
+  /** The open vault's config folder (`.obsidian` unless renamed). */
+  readonly configDir: string;
+  /** Stores this device's config sync settings and restarts sync with them. */
+  setConfigSync(settings: ConfigSyncSettings): Promise<void>;
 }
+
+/** The config sync categories as the settings show them (docs/plugin.md). */
+const configCategorySettings: { category: ConfigCategory; name: string; description: (configDir: string) => string }[] = [
+  { category: "themes", name: "Themes", description: (dir) => `Installed themes (${dir}/themes) and the appearance settings, including the chosen theme and which snippets are on (${dir}/appearance.json).` },
+  { category: "snippets", name: "CSS snippets", description: (dir) => `CSS snippets (${dir}/snippets) and the appearance settings (${dir}/appearance.json).` },
+  { category: "hotkeys", name: "Hotkeys", description: (dir) => `Custom hotkeys (${dir}/hotkeys.json).` },
+  { category: "pluginList", name: "Enabled plugin list", description: (dir) => `Which core and community plugins are on (${dir}/core-plugins.json, ${dir}/community-plugins.json).` },
+  {
+    category: "plugins",
+    name: "Plugin code and data",
+    description: (dir) => `Installed community plugins (${dir}/plugins): their code and their settings. Plugin code synced from another device runs on this one. Vault Sync's own folder never syncs.`,
+  },
+];
 
 const accountDescriptions: Record<AuthState, string> = {
   "signed-out": "Not signed in.",
@@ -135,6 +153,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         }),
       );
 
+    this.renderConfigSync(containerEl);
+
     if (host.authState === "signed-in") this.renderVault(containerEl);
 
     new Setting(containerEl).setName("Sync").setHeading();
@@ -147,6 +167,42 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   showStatus(): void {
     const status = this.host.syncStatus;
     this.statusSetting?.setName(statusText(status)).setDesc(statusDescription(status));
+  }
+
+  /** This device's config folder sync settings for this vault (SPEC.md §8): off by default, with the security warning. */
+  private renderConfigSync(containerEl: HTMLElement): void {
+    const { host } = this;
+    const settings = configSyncSettings(host.data);
+    const dir = host.configDir;
+    const save = async (next: ConfigSyncSettings) => {
+      await host.setConfigSync(next);
+      this.render();
+    };
+    new Setting(containerEl).setName("Config folder sync").setHeading();
+    new Setting(containerEl)
+      .setName(`Sync the config folder (${dir})`)
+      .setDesc(
+        `Security risk: settings and plugins synced from other devices, including plugin code, run on this device. Turn this on only for vaults you trust, where you want this folder synced. Applies to this vault on this device only; other devices decide for themselves.`,
+      )
+      .addToggle((toggle) =>
+        toggle.setValue(settings.enabled).onChange(async (enabled) => {
+          await save({ ...settings, enabled });
+        }),
+      );
+    if (!settings.enabled) return;
+    for (const { category, name, description } of configCategorySettings) {
+      new Setting(containerEl)
+        .setName(name)
+        .setDesc(description(dir))
+        .addToggle((toggle) =>
+          toggle.setValue(settings.categories[category]).onChange(async (on) => {
+            await save({ ...settings, categories: { ...settings.categories, [category]: on } });
+          }),
+        );
+    }
+    new Setting(containerEl).setDesc(
+      `The layout (${dir}/workspace*.json), the graph view's state (${dir}/graph.json) and Vault Sync's own data never sync. Changes that arrive from other devices take effect after you reload Obsidian; Vault Sync tells you when.`,
+    );
   }
 
   private renderVault(containerEl: HTMLElement): void {

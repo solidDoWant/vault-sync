@@ -15,11 +15,18 @@
 // (SPEC.md §8). A live document may then be missing from its vault only if
 // the engine reports it as unmaterializable and the harness's own check
 // agrees that the platform cannot hold its path.
+//
+// A scenario may turn on config folder sync (#28, SPEC.md §8): the engine then
+// syncs a ConfigSyncVault over the vault and a config folder of its own, and
+// live documents outside what its settings sync are expected to be missing,
+// deferred as out-of-scope.
 
 import { Code } from "@connectrpc/connect";
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
+import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
+import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
 import { SyncEngine, type PushSummary } from "../plugin/src/core/engine/engine";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
@@ -27,7 +34,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import type { ConflictRecord } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
-import type { DeletePrecondition, VaultEvent } from "../plugin/src/core/vault/adapter";
+import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
@@ -63,6 +70,10 @@ export class EngineObserver {
   private readonly vault: InMemoryVault;
   /** What the engine sees: the vault, with a scenario's saves landing just before an engine write (#163). */
   private readonly engineVault: MutableVault;
+  /** The config folder, with paths relative to it; synced only after setConfigSync. */
+  private readonly config: InMemoryVault;
+  /** What the engine syncs: the vault, or after setConfigSync the vault plus the config folder. */
+  private synced: VaultAdapter;
   private readonly journal = new InMemoryJournal();
   private engine: SyncEngine;
   private busy = false;
@@ -88,6 +99,8 @@ export class EngineObserver {
   ) {
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.engineVault = new MutableVault(this.vault);
+    this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
+    this.synced = this.engineVault;
     this.engine = this.createEngine();
     this.user = new EngineUser({
       name: this.name,
@@ -221,6 +234,44 @@ export class EngineObserver {
   }
 
   /**
+   * Changes the config sync settings and restarts the engine over the same
+   * vault and journal, as the plugin restarts its session; call while idle.
+   */
+  async setConfigSync(settings: ConfigSyncSettings): Promise<string> {
+    await this.engine.settled();
+    this.engine.dispose();
+    this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config, settings, ownFolders: ["plugins/vault-sync"] });
+    this.engine = this.createEngine();
+    return `${this.name} config sync ${settings.enabled ? `on (${Object.entries(settings.categories).filter(([, on]) => on).map(([category]) => category).join(", ")})` : "off"}, engine restarted`;
+  }
+
+  /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
+  async editConfig(relative: string, content: Uint8Array): Promise<string> {
+    this.userEdited.add(`.obsidian/${relative}`);
+    await this.config.write(relative, content);
+    await this.engine.settled();
+    return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
+  }
+
+  /** Deletes `relative` from the config folder as Obsidian would. */
+  async removeConfig(relative: string): Promise<string> {
+    this.userEdited.add(`.obsidian/${relative}`);
+    await this.config.delete(relative);
+    await this.engine.settled();
+    return `${this.name} Obsidian deletes config ${relative}`;
+  }
+
+  /** The config folder's files, sorted (whether or not they sync). */
+  async configFiles(): Promise<string[]> {
+    return (await this.config.list()).sort();
+  }
+
+  /** The config folder's content at `relative`, or undefined. */
+  async readConfig(relative: string): Promise<Uint8Array | undefined> {
+    return (await this.config.stat(relative)) === null ? undefined : this.config.read(relative);
+  }
+
+  /**
    * Mutation for the harness's own tests: the engine's next delete of `path`
    * leaves the file where it is, as an engine that skips applying a remote
    * tombstone to its disk would; the engine believes it deleted the file.
@@ -285,11 +336,17 @@ export class EngineObserver {
     await this.engine.settled();
     const violations: Violation[] = [];
     const files = new Map<string, string>();
-    for (const path of await this.vault.list()) files.set(path, sha256Hex(await this.vault.read(path)));
+    for (const path of await this.synced.list()) files.set(path, sha256Hex(await this.synced.read(path)));
     const unmaterializable = await this.unmaterializable();
+    const outOfScope = new Set<string>();
     // Where the engine keeps an unmaterializable document's edited file (SPEC.md §8): not a live path, and not to be removed.
     const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath === undefined ? [] : [document.localPath])));
     for (const [path, hash] of heads.files) {
+      // Not this device's to sync (config sync off, or its category): deferred, never written.
+      if (this.synced.isSynced?.(path) === false) {
+        outOfScope.add(path);
+        continue;
+      }
       const local = files.get(path);
       const expectedMissing = harnessUnmaterializable(path, this.platform);
       if (expectedMissing && !unmaterializable.has(path)) {
@@ -312,6 +369,8 @@ export class EngineObserver {
     for (const deferred of await this.journal.listDeferred()) {
       // Checked above: tracked exactly for the live documents the platform cannot hold.
       if (deferred.reason === "unmaterializable") continue;
+      // Waiting for config sync to cover it again: fine for a live document out of scope, and for a tombstone.
+      if (deferred.reason === "out-of-scope" && (outOfScope.has(deferred.revision.path) || deferred.revision.deleted)) continue;
       violations.push({ invariant: "engine-deferred", detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes` });
     }
     violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEdited, this.platform));
@@ -324,7 +383,7 @@ export class EngineObserver {
       vaultId: this.context.vaultId,
       deviceId: this.deviceId,
       api: this.api,
-      vault: this.engineVault,
+      vault: this.synced,
       journal: this.journal,
       onLocalChange: (event) => this.localChanges.push(event),
       onAcknowledged: (revision) => {

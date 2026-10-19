@@ -488,6 +488,14 @@ export class SyncEngine {
       if (deferred !== undefined && deferred.reason !== "local-changes" && deferred.revision.seq <= remote.seq) await this.journal.removeDeferred(remote.documentId);
       return "skipped";
     }
+    if (this.outOfScope(remote, state)) {
+      // Not this device's to sync now (e.g. a config file with config sync
+      // off): nothing touches the disk, and the revision waits for an engine
+      // start that finds it in scope (retryRefusedPaths).
+      if (state !== undefined && remote.seq <= state.seq) return "skipped";
+      if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
+      return this.defer(remote, !remote.deleted && !incoming.pathAllowed ? "invalid-path" : "out-of-scope");
+    }
     if (deferred?.reason === "local-changes" || pending.length > 0) {
       return this.handToMerge(remote, state, await this.localFile(state, remote));
     }
@@ -1061,6 +1069,8 @@ export class SyncEngine {
       if (candidate === null) return null;
       const candidateKey = pathKey(candidate);
       if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some((ancestor) => files.has(ancestor))) continue;
+      // A file outside the sync scope is not listed, but it is there.
+      if (!this.inScope(candidate) && (await this.vault.stat(candidate)) !== null) continue;
       return candidate;
     }
     return null;
@@ -1149,6 +1159,8 @@ export class SyncEngine {
       } else if (state.revisionId === remote.revisionId) {
         // Same revision; renumber it, as the restored server's seq values may differ.
         if (state.seq !== remote.seq) await this.journal.putDocument({ ...state, seq: remote.seq });
+      } else if (this.outOfScope(remote, state)) {
+        this.count(summary, await this.defer(remote, "out-of-scope"));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
@@ -1186,6 +1198,8 @@ export class SyncEngine {
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason !== "local-changes") continue;
       const state = await this.journal.getDocument(deferred.revision.documentId);
+      // Out of scope since it was deferred: its next revision, or a start that finds it in scope again, takes it on.
+      if (this.outOfScope(deferred.revision, state)) continue;
       await this.handToMerge(deferred.revision, state, await this.localFile(state, deferred.revision));
     }
   }
@@ -1196,6 +1210,8 @@ export class SyncEngine {
     if (resume) {
       for (const operation of await this.journal.listPending()) {
         if (parked.documents.has(operation.documentId) || parked.paths.has(operation.path)) continue;
+        // Recorded while its path was in scope: it waits until it is again.
+        if (!this.inScope(operation.path)) continue;
         await this.commitOperation(operation, summary);
         parked = await this.parked();
       }
@@ -1214,7 +1230,8 @@ export class SyncEngine {
     const parked: Parked = { documents: new Set(), paths: new Set() };
     for (const deferred of await this.journal.listDeferred()) {
       // An unmaterializable document waits too: its local changes are not pushed, and the server never hears of its file.
-      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable") continue;
+      // So does one whose remote revision is out of scope.
+      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope") continue;
       const { revision } = deferred;
       parked.documents.add(revision.documentId);
       parked.paths.add(revision.path);
@@ -1248,6 +1265,8 @@ export class SyncEngine {
     const movedHere = new Set(changes.renames.keys());
     const renames: PendingOperation[] = [];
     for (const [to, from] of changes.renames) {
+      // A move into or out of the sync scope is a create or a delete of the side in it, which the path loop below sees.
+      if (!this.inScope(from) || !this.inScope(to)) continue;
       const state = await this.journal.findDocumentByPath(from);
       if (busyPaths.has(from) || busyPaths.has(to) || (state !== undefined && busyDocuments.has(state.documentId))) {
         // Not a known document's rename (an untracked file, or a create still
@@ -1303,6 +1322,8 @@ export class SyncEngine {
 
     for (const path of [...paths].sort()) {
       if (handled.has(path) || busyPaths.has(path)) continue;
+      // Outside the scope, a missing file is no delete and a changed one no edit (SPEC.md §8, config sync).
+      if (!this.inScope(path)) continue;
       const state = await this.journal.findDocumentByPath(path);
       if (state !== undefined && busyDocuments.has(state.documentId)) continue;
       const content = await this.readOrNull(path);
@@ -1619,7 +1640,8 @@ export class SyncEngine {
     const deferrals = (await this.journal.listDeferred()).filter(
       (deferred) =>
         (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
-        (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined),
+        (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
+        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)),
     );
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);
@@ -1697,6 +1719,16 @@ export class SyncEngine {
         throw error;
       });
     }
+  }
+
+  /** Whether the vault syncs `path` (VaultAdapter.isSynced). */
+  private inScope(path: string): boolean {
+    return this.vault.isSynced?.(path) ?? true;
+  }
+
+  /** Whether `remote` is not this device's to apply now: its path, or the path its document has here, is out of scope. */
+  private outOfScope(remote: RemoteRevision, state: DocumentState | undefined): boolean {
+    return !this.inScope(remote.path) || (state !== undefined && !state.deleted && !this.inScope(state.path));
   }
 
   private async readOrNull(path: string): Promise<Uint8Array | null> {
