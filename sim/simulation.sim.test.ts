@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
-import { platformForSeed, runSeed, runSteps, seededCommitRetryBackoff, type RunResult } from "./runner";
+import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
 import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -40,6 +40,8 @@ function summarize(trace: readonly string[]): string {
     // Steps that did nothing: an operation for a busy client, a delivery with nothing to deliver.
     ["operations skipped (busy)", " skipped"],
     ["idle deliveries", ": no deliverable"],
+    ["engine user changes", " user "],
+    ["engine pushes completed", " pushed: "],
   ];
   return events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`).join(", ");
 }
@@ -50,9 +52,9 @@ function describeViolations(result: RunResult): string {
 
 describe.runIf(suites.has("seeds"))("seeded schedules", () => {
   it.each(environment.seeds)("seed %i keeps every invariant", async (seed) => {
-    const options = { seed, clients: environment.clients, commitRetryBackoff: seededCommitRetryBackoff };
+    const options = { seed, clients: environment.clients, engines: environment.engines, platforms: seededPlatforms(seed, environment.engines), commitRetryBackoff: seededCommitRetryBackoff };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
-    console.log(`seed ${String(seed)} (${platformForSeed(seed)} path rules): ${summarize(result.trace)}`);
+    console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
     if (result.violations.length === 0) return;
 
     // Minimize: keep removing steps while a violation of the same kind remains.
@@ -61,7 +63,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
-    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}`, seed, clients: options.clients, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
+    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
 
     expect.fail(
       [
@@ -70,7 +72,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
         `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
         describeViolations(final),
         `Regression case written to ${written}.`,
-        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)}`,
+        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(options.engines)}`,
         "Trace of the minimized schedule (last lines):",
         tail(final.trace),
       ].join("\n"),
@@ -80,7 +82,8 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
 
 describe.runIf(suites.has("regressions") && environment.regressions.length > 0)("committed regression cases", () => {
   it.each(environment.regressions.map((regression) => [regression.name, regression] as const))("%s keeps every invariant", async (_name, regression) => {
-    const result = await runSteps(environment, { seed: regression.seed, clients: regression.clients, commitRetryBackoff: regression.commitRetryBackoff }, regression.steps);
+    const engines = regression.engines ?? 1;
+    const result = await runSteps(environment, { seed: regression.seed, clients: regression.clients, engines, platforms: seededPlatforms(regression.seed, engines), commitRetryBackoff: regression.commitRetryBackoff }, regression.steps);
     expect(result.violations, tail(result.trace)).toEqual([]);
   });
 });

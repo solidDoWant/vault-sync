@@ -40,6 +40,8 @@ const single = process.env.SIM_SEED;
 const seeds = single !== undefined && single !== "" ? [integer("SIM_SEED", 0)] : Array.from({ length: integer("SIM_SEEDS", 10) }, (_, index) => firstSeed + index);
 const clients = integer("SIM_CLIENTS", 3);
 if (clients < 1) throw new Error("SIM_CLIENTS must be at least 1");
+const engines = integer("SIM_ENGINES", 2);
+if (engines < 1) throw new Error("SIM_ENGINES must be at least 1");
 
 export default defineConfig({
   test: {
@@ -55,6 +57,7 @@ export default defineConfig({
         seeds,
         steps: integer("SIM_STEPS", 1000),
         clients,
+        engines,
         shrinkRuns: integer("SIM_SHRINK_RUNS", 150),
         regressions,
         suites,

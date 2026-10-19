@@ -14,6 +14,10 @@ import { Random } from "./random";
 export const operations = ["create", "edit", "rename", "delete", "pull"] as const;
 export type Operation = (typeof operations)[number];
 
+/** What an engine's user does to its vault, or a push of the engine (#22). */
+export const engineOperations = ["create", "edit", "rename", "delete", "push"] as const;
+export type EngineOperation = (typeof engineOperations)[number];
+
 export type Step =
   /** `client` starts `operation` (if it is idle); `arg` seeds its choices (document, path, content). */
   | { kind: "operation"; client: number; operation: Operation; arg: number }
@@ -32,7 +36,14 @@ export type Step =
   /** `client` loses the network for `steps` steps; its in-flight messages are lost. */
   | { kind: "partition"; client: number; steps: number }
   /** `client` crashes and restarts, losing all in-memory state. */
-  | { kind: "crash"; client: number };
+  | { kind: "crash"; client: number }
+  /**
+   * Engine `engine`'s user changes its vault, or the engine starts a push;
+   * `arg` seeds the user's choices. Generated only for runs with engines, so
+   * a schedule without them, and every regression case recorded before #22,
+   * is unchanged.
+   */
+  | { kind: "engine-operation"; engine: number; operation: EngineOperation; arg: number };
 
 export type StepKind = Step["kind"];
 
@@ -40,6 +51,8 @@ export interface ScheduleOptions {
   seed: number;
   steps: number;
   clients: number;
+  /** Engines whose users make random changes; with 0 (the default) no engine-operation step is generated. */
+  engines?: number;
 }
 
 /** Relative frequency of each step kind in a generated schedule. */
@@ -61,6 +74,18 @@ export const stepWeights: Readonly<Record<StepKind, number>> = {
   "drop-response": 3,
   partition: 0.75,
   crash: 0.75,
+  // Last, and drawn only when the run has engines: with weight 0 every other
+  // kind's draws, and so every engine-less schedule, are exactly as before #22.
+  "engine-operation": 10,
+};
+
+/** Relative frequency of each engine operation. */
+export const engineOperationWeights: Readonly<Record<EngineOperation, number>> = {
+  create: 20,
+  edit: 35,
+  rename: 10,
+  delete: 8,
+  push: 27,
 };
 
 /** Relative frequency of each operation. */
@@ -80,16 +105,19 @@ export const maxFaultSteps = 12;
 export function generateSchedule(options: ScheduleOptions): Step[] {
   if (!Number.isInteger(options.clients) || options.clients < 1) throw new RangeError("clients must be a positive integer");
   if (!Number.isInteger(options.steps) || options.steps < 0) throw new RangeError("steps must be a non-negative integer");
+  const engines = options.engines ?? 0;
+  if (!Number.isInteger(engines) || engines < 0) throw new RangeError("engines must be a non-negative integer");
+  const weights = engines === 0 ? { ...stepWeights, "engine-operation": 0 } : stepWeights;
   const random = Random.derive(options.seed, "schedule");
   const steps: Step[] = [];
   for (let index = 0; index < options.steps; index++) {
-    steps.push(generateStep(random, options.clients));
+    steps.push(generateStep(random, weights, options.clients, engines));
   }
   return steps;
 }
 
-function generateStep(random: Random, clients: number): Step {
-  const kind = random.weighted(stepWeights);
+function generateStep(random: Random, weights: Readonly<Record<StepKind, number>>, clients: number, engines: number): Step {
+  const kind = random.weighted(weights);
   switch (kind) {
     case "operation":
       return { kind, client: random.int(clients), operation: random.weighted(operationWeights), arg: random.uint32() };
@@ -106,5 +134,7 @@ function generateStep(random: Random, clients: number): Step {
       return { kind, client: random.int(clients), steps: 1 + random.int(maxFaultSteps) };
     case "crash":
       return { kind, client: random.int(clients) };
+    case "engine-operation":
+      return { kind, engine: random.int(engines), operation: random.weighted(engineOperationWeights), arg: random.uint32() };
   }
 }

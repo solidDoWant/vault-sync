@@ -16,6 +16,12 @@ export interface RegressionCase {
   clients: number;
   /** The run's RunOptions.commitRetryBackoff; absent in cases recorded before #110, which retried at once. */
   commitRetryBackoff?: number;
+  /**
+   * Engines, each with a user making random changes, following
+   * seededPlatforms(seed, engines). Absent in cases recorded before #22: one
+   * engine without a user.
+   */
+  engines?: number;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];

@@ -1,11 +1,11 @@
 # Sync simulation
 
-The simulation harness (`sim/`, SPEC.md §13) checks sync correctness with seeded, multi-client schedules and fault injection, run against a real `vault-sync-server` backed by real PostgreSQL and S3. In Phase 1 the clients are scripted protocol clients and the invariants are server-side. Phase 2 plugs the real `plugin/src/core` engine in. Its pull side already runs as the engine observer (below), with convergence invariants. The full engine-level invariants are #22.
+The simulation harness (`sim/`, SPEC.md §13) checks sync correctness with seeded, multi-client schedules and fault injection, run against a real `vault-sync-server` backed by real PostgreSQL and S3. In Phase 1 the clients are scripted protocol clients and the invariants are server-side. Phase 2 plugs the real `plugin/src/core` engine in: engine-driven clients (below), whose users make random changes, with user-visible invariants (#22).
 
 ## Running
 
 ```sh
-make test-sim                                   # default: 10 seeds × 1000 steps, 3 clients
+make test-sim                                   # default: 10 seeds × 1000 steps, 3 clients, 2 engines
 make test-sim SIM_SEEDS=200 SIM_STEPS=2000      # longer
 make test-sim SIM_SEED=1234                     # replay one seed
 ```
@@ -16,14 +16,15 @@ make test-sim SIM_SEED=1234                     # replay one seed
 | `SIM_FIRST_SEED` | `1` | First seed. |
 | `SIM_SEED` | unset | Run only this seed (overrides the two above). |
 | `SIM_STEPS` | `1000` | Steps per seeded schedule. |
-| `SIM_CLIENTS` | `3` | Simulated clients (devices of one user) per run. |
+| `SIM_CLIENTS` | `3` | Simulated scripted clients (devices of one user) per run. |
+| `SIM_ENGINES` | `2` | Engine-driven clients per seeded run, each with a user making random changes (at least 1). |
 | `SIM_SHRINK_RUNS` | `150` | Most re-runs spent minimizing a failing seed. |
 | `SIM_REGRESSION_DIR` | `sim/regressions` | Where minimized failing seeds are written, and which regression cases are replayed. A relative path is relative to the repository root (where `make test-sim` runs), wherever you invoke it from. The run fails, naming the variable, if the directory does not exist or holds no `*.json` case. |
 | `SIM_TIMEOUT` | `60m` | `go test -timeout` for the whole run. |
 
 `make test-sim` exits non-zero on any violation. The output names the seed (`SIM FAILURE: seed N ...`), lists the violations, gives the replay command, and shows the end of the minimized schedule's trace. Docker is required. Unlike `make test-integration`, the simulation never skips.
 
-CI runs a short simulation (`SIM_SEEDS=5 SIM_STEPS=1000`) on every pull request, as the `Simulation` step of the required `checks` job. Nightly long runs are tracked in #22.
+CI runs a short simulation (`SIM_SEEDS=5 SIM_STEPS=1000`) on every pull request, as the `Simulation` step of the required `checks` job. A nightly job runs a long simulation (see [Nightly](#nightly)).
 
 ## How it fits together
 
@@ -45,7 +46,8 @@ In seeded schedules (and the regression cases recorded from them) a commit retri
 | `drop-request` | A request is lost before the server sees it. The client gets `UNAVAILABLE`. |
 | `drop-response` | A response is lost after the server applied the request. The client gets `UNAVAILABLE`. |
 | `partition` | A client is cut off for N steps. Everything it has in flight is lost, and new calls wait. |
-| `crash` | A client loses all in-memory state and restarts. Requests it already sent may still reach the server, and it never hears their replies. |
+| `crash` | A client loses all in-memory state and restarts. Requests it already sent may still reach the server, and it never hears their replies. Engine i crashes with client `i % SIM_CLIENTS`. |
+| `engine-operation` | Engine N's user creates, edits, renames or deletes a file in its vault, or the engine starts a push. Generated only for runs with engine users. |
 
 The schedule is a pure function of the seed (`sim/schedule.ts`), so the same seed always replays the same operation and fault schedule. Changing the step weights (`stepWeights`, `operationWeights`) changes the schedule of every seed, so `SIM_SEED=N` before and after such a change are different schedules; committed regression cases store their steps and replay unchanged. The weights were last tuned in #110: about 35 acknowledged revisions, 7 rebases after `FAILED_PRECONDITION` and 9 conflict paths after `ALREADY_EXISTS` per 1000-step seed with 3 clients. A client has one call in flight at a time and about a third of the delivery steps find nothing of their kind to deliver, so the weights move these numbers only a little; longer schedules (`SIM_STEPS`) or more clients (`SIM_CLIENTS`) raise them. Steps choose their targets relative to what is pending at that moment, so any subsequence of a schedule is still valid. Raw ids are random, because one database serves every run. Traces use symbolic labels instead (`c1.d3`: client 1's third document), so a replayed seed produces the identical trace. The determinism test re-runs a seed and compares the two traces.
 
@@ -61,22 +63,36 @@ The scripted clients (`sim/client.ts`) follow the protocol's commit discipline (
 
 Paths come from a small pool with case and Unicode collisions (`a.md`/`A.md`, `straße.md`/`STRASSE.md`) and three names Windows cannot hold (`CON.md`, `ab:c.md`, `trailing.`). Contents are often shared between clients, so clients upload identical blobs, and a content is occasionally larger than one chunk. The harness, not the clients, records every revision the server acknowledged, so acknowledgements survive crashes.
 
-## The engine observer
+## The engines
 
-Each run also has one client driven by the real sync engine (`sim/engine-observer.ts`), with its own registered device. It is labelled `e<N>`, where N is the number of scripted clients, and it reaches the server through the same simulated network, so drops, reordering and delays hit its `ListChanges`, `DownloadBlob` and `GetRevision` calls too. It starts a pull whenever a schedule step asks any client to pull (if it is idle), and it crashes whenever client 0 crashes. A crash discards the engine and its in-flight calls but keeps its in-memory vault and journal, as a killed app keeps its disk. In seeded schedules it never edits locally. Only scripted scenarios edit its vault and make it push (random engine edits are #22), and their edits are excluded from the `engine-echo` check. A scenario may also start more than one engine (`RunOptions.engines`). Every engine pulls when a step asks a client to pull, and every engine is checked at the end. Only the first one crashes with client 0. The revisions its pushes get acknowledged are recorded like the scripted clients' ones, so the `history` invariant covers them. Adding it did not change the schedule format, so committed regression cases replay unchanged, though their traces now include its calls.
+Each run also has clients driven by the real sync engine (`sim/engine-observer.ts`), each with its own registered device. They are labelled `e<N>` and come after the scripted clients (with 3 scripted clients, `e3` and `e4`). They reach the server through the same simulated network, so drops, reordering and delays hit their calls too. Every engine starts a pull whenever a schedule step asks any client to pull (if it is idle). Engine i crashes whenever client `i % SIM_CLIENTS` crashes. A crash discards the engine and its in-flight calls but keeps its in-memory vault and journal, as a killed app keeps its disk.
 
-Each engine follows one platform's path rules (SPEC.md §8, #20): its engine gets the `pathRules` option and its in-memory vault refuses what that platform cannot hold. Under `windows` and `macos` rules the vault also matches paths ignoring case and Unicode form. Seeded runs rotate the platform with the seed (`platformForSeed`: seed 0 and every third seed after it `posix`, then `windows`, then `macos`), so CI's five seeds cover all three. Scenarios choose per engine (`RunOptions.platforms`). Under Windows rules, documents at the pool's illegal names (and their conflict paths) are tracked as unmaterializable, which the trace shows as `tracks … as unmaterializable (…)`.
+In seeded runs each of the `SIM_ENGINES` engines has a user (`sim/engine-user.ts`). On `engine-operation` steps the user creates, edits, renames or deletes files, at any moment, also while the engine is pulling or pushing, as a person would in Obsidian. Paths come from the scripted clients' pool. Contents are mostly unique, sometimes shared with the scripted clients or larger than one chunk, and an edit often appends a line, so three-way merges happen. A change the vault refuses (a name the platform cannot hold, a file in the way) simply does not happen. The same steps also make an engine push. Scripted scenarios drive the engines themselves (`RunOptions.engines`). The revisions the engines' pushes get acknowledged are recorded like the scripted clients' ones, so the `history` invariant covers them. Schedules without engine users are generated exactly as before #22 (a unit test pins one), and regression cases recorded before #22 (no `engines` field) replay with one engine without a user, as they were recorded.
 
-At the end of the run it pulls once more without faults, and the harness checks it against the server's live heads, which it reads itself with fault-free `ListChanges` calls, independently of the engine:
+Each engine follows one platform's path rules (SPEC.md §8, #20): its engine gets the `pathRules` option and its in-memory vault refuses what that platform cannot hold. Under `windows` and `macos` rules the vault also matches paths ignoring case and Unicode form. In seeded runs engine i follows `platformForSeed(seed + i)` (`seededPlatforms`): seed 0 and every third seed after it `posix`, then `windows`, then `macos`. With two engines, two of every three seeds put Windows rules next to another platform, and CI's five seeds cover all three. Scenarios choose per engine (`RunOptions.platforms`). Under Windows rules, documents at the pool's illegal names (and their conflict paths) are tracked as unmaterializable, which the trace shows as `tracks … as unmaterializable (…)`.
+
+After the faults heal, every engine pushes, in rounds, until a round commits nothing (`liveness` if that takes more than 8 rounds). Then every engine pulls once more without faults, and the harness checks each one against the server's live heads, which it reads itself with fault-free `ListChanges` calls, independently of the engine. Since all engines must match the same heads, they converge to identical content and structure:
 
 | Invariant | Check |
 |---|---|
-| `engine-convergence` | The observer's vault holds exactly the live documents' paths with their head content (by hash), except those its platform cannot hold, and its cursor is the feed's last `seq`. |
+| `engine-convergence` | The engine's vault holds exactly the live documents' paths with their head content (by hash), and its cursor is the feed's last `seq`. Modulo the unmaterializable set: documents its platform cannot hold are absent, and the edited file the engine keeps for such a document (SPEC.md §8) may stay. |
 | `engine-unmaterializable` | It reports exactly the live documents whose paths its platform cannot hold as unmaterializable, by the harness's own check (`harnessUnmaterializable`, independent of the engine's rules). |
-| `engine-deferred` | It deferred no revision other than those unmaterializable ones. It has no local changes, so every other deferral would be a bug. |
-| `engine-echo` | It reported none of its own writes, renames or deletes as local changes. |
+| `engine-deferred` | It deferred no revision other than those unmaterializable ones. Every local change has been pushed, so every other deferral would be a bug. |
+| `engine-echo` | It reported none of its own writes, renames or deletes as local changes. Only paths its user changed may be reported. Under `windows` and `macos` rules those paths match as the vault matches them, by path key: the user's write of `STRASSE.md` over `straße.md` is reported as a modify of `straße.md` (#247). Under `posix` they must match exactly. |
 
-An `engine` violation means one of its pulls failed with something other than a network fault.
+An `engine` violation means one of its pulls or pushes failed with something other than a network fault.
+
+### User-visible invariants (#22)
+
+The harness records what each engine's user did, as it happened (`UserLedger`, `sim/invariants.ts`). It records each write's content hash, the contents the user overwrote or deleted themselves, the documents whose files the user deleted (by the engine's journal at that moment, including documents the user's own earlier renames moved there), and every write and rename with the server's head `seq` at that moment. The harness knows the head exactly, because every call goes through the simulated network, which sees every reply; feed `seq`s then order the user's changes against the revisions without a clock. A scenario's save just before an engine write (#163) is recorded as a user write too. Every merge the engine asks its merge hook for is recorded too: the local content, and the merged result and conflict copy it became. After the engine checks:
+
+| Invariant | Check |
+|---|---|
+| `lost-write` | Every user write survives, unless that user overwrote or deleted it themselves. It survives if its content is in a final vault, in history, or in what a merge made of it (the merged result or the conflict copy, which must survive in turn). Content found only in history counts once it downloads (fault-free `DownloadBlob`) and matches its hash. This covers every edit the engine reported as acknowledged, and also any the engine never pushed. |
+| `phantom-delete` | Every tombstone in the change feed was committed by a scripted client (which deletes only when its schedule says so) or by an engine whose user deleted that document's file. No file disappears without a delete. |
+| `resurrected-delete` | Every live revision that directly follows a tombstone of the same document (a deleted document brought back) was committed by a scripted client, or by an engine whose user wrote or renamed a file at one of the document's paths (any path it held up to then, compared by path key on a case-insensitive platform). That change must come before the revision was committed, and no earlier revision of the document from the same engine may already carry it: none committed after it that is a tombstone or holds what the file held after it or after a later change there. A deleted document comes back only through a concurrent edit (SPEC.md §4) or the user re-creating the file (§8), never because an engine failed to apply a delete and then pushed the file it kept. |
+
+The checks are pure functions with unit tests (`sim/invariants.test.ts`). `sim/invariants.sim.test.ts` proves each one catches the bug it exists for, against the real server. Two engines sync two notes, and the second engine's user edits one. Unchanged, the run has no violation. Then the harness overwrites the edited note behind the user's back, as an engine that loses a write would, and the run must report exactly `lost-write`. Or the harness deletes the other note behind the user's back, as an engine that drops a file would, and the run must report `phantom-delete` (plus `engine-echo`, since the engine then reports that delete as the user's). A third scenario has a macOS engine whose user writes `STRASSE.md` over the synced `straße.md`. The run must have no violation, and the write must reach the other engine as an edit of `straße.md`. With an unsuppressed engine write of `NOTES/B.md` added, the run must report exactly `engine-echo` for `notes/b.md`. For `resurrected-delete` (#276), two engines sync two notes, the first engine's user deletes one, the second engine pulls the delete, then crashes and pushes, which makes its next push a full scan. Unchanged, the run has no violation and nothing comes back. When the second engine's delete of that note leaves the file on disk (the engine skipping a remote tombstone), the full scan pushes it back, every vault converges on it, and the run must report exactly `resurrected-delete`. The same scenario with the second engine's user editing the note before the pull (a concurrent edit, which wins) or writing it again after it must bring the note back with no violation. The same file runs a seeded schedule with users on a Windows and a POSIX engine, which must keep every invariant, and replays a seed with engine users to compare the traces.
 
 ## Invariants
 
@@ -98,6 +114,10 @@ The clients also report `protocol` violations: a gap or reordering seen in `List
 `TestSimulationDetectsBrokenServer` builds the server with the `simfault` build tag. In that build `internal/store` skips CommitRevision's base-revision check (`skipBaseRevisionCheck`, `internal/store/simfault_on.go`). The test always runs the schedule of CI's short run (seeds 1 to 5, 1000 steps, 3 clients), whatever the `SIM_*` variables say, and requires a `stale-base` violation. Pinning it means a local replay of one seed or a shorter run cannot make the check fail. It then replays the minimized case the harness wrote and requires that the case reproduces the violation. The switch exists only as a build tag. No flag or environment variable reaches it, and `TestDefaultBuildChecksBaseRevision` proves the default build keeps the check. The driver also verifies from each binary's build info that it was built with exactly the tags it asked for.
 
 `TestSimulationDetectsRefusedRetry` does the same with the `simfault_retry` build tag (#110). In that build CommitRevision refuses a retry of a revision it already applied with `FAILED_PRECONDITION` once the document's head has moved past it (`refuseAppliedRetryAfterHeadMoved`, `internal/store/simfault_retry_on.go`), the #12 bug. Every server-side invariant still holds in such a run, so only the network's retry check can catch it. The test runs the same pinned schedule, requires that a seeded schedule (not only the scripted #12 scenario) reports the refused retry as a `protocol` violation, and replays the minimized case. `TestDefaultBuildReturnsAppliedRetries` proves the default build never refuses such a retry.
+
+## Nightly
+
+`.github/workflows/sim-nightly.yml` runs a long simulation every night on master, and on demand (`workflow_dispatch`, with the seed count, steps and first seed as inputs). It runs 50 seeds × 3000 steps with 3 scripted clients and 2 engine users, and `SIM_SHRINK_RUNS=10`. The first seed moves with the run number, so every night covers new seeds. Failing seeds are minimized into a copy of the committed cases (`build/sim-regressions`), which is uploaded as the run's `sim-regressions` artifact. The job then files an issue titled `sim: nightly simulation failed (seeds …)`, listing each failing seed's violations and its replay command (`scripts/sim-nightly-report.sh`, tested by `make test`). While such an issue is open, later failures are added to it as comments. The job's token can only read the repository and write issues (`permissions: contents: read, issues: write`), the checkout does not persist it, and the issue copies only the harness's failure lines, never the traces.
 
 ## Failing seeds and regression cases
 

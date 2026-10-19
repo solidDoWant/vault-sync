@@ -6,6 +6,8 @@ import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
+import { downloadContent } from "../plugin/src/core/engine/remote";
+import { sha256Hex } from "../plugin/src/core/hash";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
@@ -13,6 +15,7 @@ import { ScriptedClient, type Acknowledgement, type RunContext, type Violation }
 import { Control } from "./control";
 import { EngineObserver, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
+import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed } from "./invariants";
 import { settle, SimNetwork, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 
@@ -53,6 +56,11 @@ export interface RunOptions {
  */
 export const seededCommitRetryBackoff = 30;
 
+/** The engines' platforms in a seeded run with `engines` engines: engine i follows `platformForSeed(seed + i)`, so most seeds mix platforms. */
+export function seededPlatforms(seed: number, engines: number): PathPlatform[] {
+  return Array.from({ length: engines }, (_, engine) => platformForSeed(seed + engine));
+}
+
 const platforms: readonly PathPlatform[] = ["posix", "windows", "macos"];
 
 /** The platform the engines of a seeded run follow: seeds rotate through POSIX, Windows and macOS rules. */
@@ -70,6 +78,8 @@ export interface RunResult {
 
 /** Bound on deliveries while draining, far above what any schedule needs. */
 const maxDrainDeliveries = 100_000;
+/** Bound on the rounds of pushes after the schedule; each round lets every engine push what the previous ones merged. */
+const maxPushRounds = 8;
 
 export class SimRun {
   private stepNumber = 0;
@@ -96,6 +106,7 @@ export class SimRun {
 
     const ids = new Ids();
     const trace: string[] = [];
+    let serverSeq = 0n;
     const run: { stepNumber: () => number } = { stepNumber: () => 0 };
     const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
     const violations: Violation[] = [];
@@ -107,8 +118,21 @@ export class SimRun {
         violations.push({ invariant, detail });
         log(`VIOLATION ${invariant}: ${detail}`);
       },
+      observeOutcome: (method, outcome) => {
+        const seq = replySeq(method, outcome);
+        if (seq !== undefined && seq > serverSeq) serverSeq = seq;
+      },
     });
-    const context: RunContext = { vaultId: vault.id, ids, network, acknowledged: [], violations, log };
+    const context: RunContext = {
+      vaultId: vault.id,
+      ids,
+      network,
+      acknowledged: [],
+      violations,
+      log,
+      stepNumber: () => run.stepNumber(),
+      serverSeq: () => serverSeq,
+    };
     const clients: ScriptedClient[] = [];
     for (let index = 0; index < options.clients; index++) {
       const device = (await setup.devices.registerDevice({ name: `sim client ${String(index)}` })).device;
@@ -185,6 +209,7 @@ export class SimRun {
     this.context.network.heal();
     this.context.log("quiesce");
     await this.drain();
+    await this.pushEverything();
     for (const client of this.clients) this.context.log(client.start("pull", 0));
     await settle();
     await this.drain();
@@ -194,12 +219,65 @@ export class SimRun {
     await this.drain();
     const heads = await serverHeads(this.direct, this.context.vaultId);
     for (const observer of this.observers) this.context.violations.push(...(await observer.check(heads)));
+    for (const violation of await this.checkUsers()) {
+      this.context.violations.push(violation);
+      this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
+    }
     const violations = await this.control.check(this.context.vaultId, this.context.acknowledged);
     for (const violation of violations) {
       this.context.violations.push({ invariant: violation.invariant, detail: this.context.ids.relabel(violation.detail) });
       this.context.log(`VIOLATION ${violation.invariant}: ${this.context.ids.relabel(violation.detail)}`);
     }
     return { vaultId: this.context.vaultId, trace: this.trace, acknowledged: this.context.acknowledged, violations: this.context.violations };
+  }
+
+  /**
+   * Has every engine push until a round commits nothing, so every local
+   * change has reached the server (or is held for a reason the engine
+   * reports, as for unmaterializable documents).
+   */
+  private async pushEverything(): Promise<void> {
+    for (let round = 0; round < maxPushRounds; round++) {
+      for (const observer of this.observers) observer.lastPush = undefined;
+      for (const observer of this.observers) this.context.log(observer.startPush());
+      await settle();
+      await this.drain();
+      if (this.observers.every((observer) => observer.lastPush?.committed === 0 && observer.lastPush.conflicts === 0)) return;
+    }
+    this.context.violations.push({ invariant: "liveness", detail: `the engines still committed after ${String(maxPushRounds)} rounds of pushes` });
+  }
+
+  /** The user-visible invariants (sim/invariants.ts): no lost write, no file gone without a delete, no delete undone without a user's change. */
+  private async checkUsers(): Promise<Violation[]> {
+    const feed = await serverFeed(this.direct, this.context.vaultId);
+    const sizes = new Map(feed.map((revision) => [revision.contentHash, revision.size]));
+    const present = new Set<string>();
+    for (const observer of this.observers) {
+      for (const path of await observer.list()) {
+        const content = await observer.read(path);
+        if (content !== undefined) present.add(sha256Hex(content));
+      }
+    }
+    // A content in history counts once it downloads and matches its hash.
+    for (const observer of this.observers) {
+      for (const hash of observer.ledger.owed()) {
+        const size = sizes.get(hash);
+        if (present.has(hash) || size === undefined) continue;
+        try {
+          await downloadContent(this.direct, this.context.vaultId, hash, size);
+          present.add(hash);
+        } catch (error) {
+          this.context.log(`history content ${hash.slice(0, 8)} did not download: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      }
+    }
+    const violations = this.observers.flatMap((observer) => checkLostWrites(observer.name, observer.ledger, present));
+    const scripted = new Set(this.clients.map((client) => client.deviceId));
+    const engines = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, deletedDocuments: observer.ledger.deletedDocuments }));
+    violations.push(...checkPhantomDeletes(feed, scripted, engines, (id) => this.context.ids.label(id)));
+    const changes = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, platform: observer.platform, changes: observer.ledger.changes }));
+    violations.push(...checkResurrections(feed, scripted, changes, (id) => this.context.ids.label(id)));
+    return violations;
   }
 
   private async execute(step: Step): Promise<string> {
@@ -229,8 +307,14 @@ export class SimRun {
         const client = this.client(step.client);
         client.crash();
         const entry = `c${String(step.client)} crashed and restarted with empty memory`;
-        // The engine shares its device's fate with client 0.
-        return client.index === 0 ? `${entry}; ${this.observer.crash()}` : entry;
+        // Engine i shares its device's fate with client i % clients: with one engine, client 0.
+        const crashed = this.observers.filter((_, engine) => engine % this.clients.length === client.index).map((observer) => observer.crash());
+        return [entry, ...crashed].join("; ");
+      }
+      case "engine-operation": {
+        const observer = this.observers[step.engine % this.observers.length];
+        if (observer === undefined) return "engine-operation: no engine";
+        return observer.userOperation(step.operation, step.arg);
       }
     }
   }
@@ -251,7 +335,8 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
 
 /** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
-  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients });
+  // Without `engines` the engine has no user, as before #22.
+  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0 });
   return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 
@@ -280,6 +365,14 @@ function describeRequest(ids: Ids, method: string, input: unknown): string {
     default:
       return method;
   }
+}
+
+/** The server's head seq a reply shows: a committed revision's seq, or the feed's head. */
+function replySeq(method: string, outcome: Outcome): bigint | undefined {
+  if (!outcome.ok) return undefined;
+  const message = ((outcome.value as { message?: unknown }).message ?? {}) as Fields;
+  const seq = method === "CommitRevision" ? ((message.revision ?? {}) as Fields).seq : method === "ListChanges" ? message.headSeq : undefined;
+  return typeof seq === "bigint" ? seq : undefined;
 }
 
 function describeOutcome(ids: Ids, method: string, outcome: Outcome): string {
