@@ -612,6 +612,9 @@ export class SyncEngine {
       return this.handToMerge(remote, state, await this.localFile(state, remote));
     }
     if (state !== undefined && remote.seq <= state.seq) return "skipped";
+    // A resync found the server had lost this document (seq 0): the content
+    // here may exist nowhere else, so a new revision is merged, not applied.
+    if (state !== undefined && state.seq === 0n && !state.deleted) return this.handToMerge(remote, state, await this.localFile(state, remote));
     if (!remote.deleted && !incoming.pathAllowed) return this.defer(remote, "invalid-path");
     const unmaterializable = remote.deleted ? undefined : unmaterializableReason(remote.path, this.pathRules);
     if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
@@ -1329,6 +1332,12 @@ export class SyncEngine {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
       }
+    }
+    // A document the restored server lacks keeps the old server's seq, under
+    // which the restored server's own revisions of it would look applied:
+    // seq 0 is no revision of this server (see applyRevision).
+    for (const state of await this.journal.listDocuments()) {
+      if (!heads.has(state.documentId) && state.seq !== 0n) await this.journal.putDocument({ ...state, seq: 0n });
     }
     await this.journal.resetCursor(seq);
     summary.cursor = seq;
