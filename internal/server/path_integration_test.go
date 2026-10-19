@@ -127,3 +127,63 @@ func TestCommitEnforcesSharedPathText(t *testing.T) {
 	assert.Positive(t, refused)
 	assert.NotContains(t, fixture.logs.String(), `"level":"ERROR"`, "bad paths are not internal errors")
 }
+
+// TestCommitEnforcesSharedPathKeyLength drives every shared normalized path
+// length vector (testdata/paths/key.json, also asserted by the TypeScript
+// client, #100) through CommitRevision in a plaintext vault, as a create: it
+// is accepted exactly for the valid vectors, and an invalid one writes
+// nothing.
+func TestCommitEnforcesSharedPathKeyLength(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "paths", "key.json"))
+	require.NoError(t, err)
+
+	var file struct {
+		Vectors []struct {
+			Name         string `json:"name"`
+			Path         string `json:"path"`
+			Repeat       int    `json:"repeat"`
+			Suffix       string `json:"suffix"`
+			SuffixRepeat int    `json:"suffixRepeat"`
+			Valid        bool   `json:"valid"`
+		} `json:"vectors"`
+	}
+
+	require.NoError(t, json.Unmarshal(data, &file))
+	require.NotEmpty(t, file.Vectors)
+
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.client(t, "alice", "")
+	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
+	content := alice.content(t, "content")
+
+	accepted, refused := 0, 0
+
+	for _, vector := range file.Vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			path := strings.Repeat(vector.Path, max(vector.Repeat, 1)) + strings.Repeat(vector.Suffix, max(vector.SuffixRepeat, 1))
+			revisions := fixture.count(t, "revisions", alice.vaultID)
+			documents := fixture.count(t, "documents", alice.vaultID)
+
+			_, err := alice.commit(t, alice.create(t, path, content))
+			if vector.Valid {
+				require.NoError(t, err, "path of %d bytes", len(path))
+
+				accepted++
+
+				assert.Equal(t, revisions+1, fixture.count(t, "revisions", alice.vaultID))
+
+				return
+			}
+
+			refused++
+
+			requireCode(t, connect.CodeInvalidArgument, err, "path of %d bytes", len(path))
+			assert.Equal(t, revisions, fixture.count(t, "revisions", alice.vaultID), "nothing is written")
+			assert.Equal(t, documents, fixture.count(t, "documents", alice.vaultID), "nothing is written")
+		})
+	}
+
+	assert.Positive(t, accepted)
+	assert.Positive(t, refused)
+	assert.NotContains(t, fixture.logs.String(), `"level":"ERROR"`, "bad paths are not internal errors")
+}

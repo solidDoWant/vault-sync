@@ -10,7 +10,7 @@ import { pathKey } from "../pathkey/pathkey";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
-import { isNewVaultPath, isVaultRelativePath } from "../vaultpath/vaultpath";
+import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "./history";
@@ -132,12 +132,23 @@ export interface PullSummary {
 }
 
 /**
- * A local operation the server refused for good; it stays pending (surfacing
- * it is #100): INVALID_ARGUMENT, or ALREADY_EXISTS when no conflict-copy name
- * for the document fits the path limits.
+ * Why a local operation cannot be synced (#100): a rule of the server's that
+ * its path breaks, found before anything is sent (SPEC.md §6.2); `path-taken`
+ * when another document holds its path and no conflict-copy name fits the
+ * path limits or the server refused the name it was moved to (§6.3); or
+ * `refused` when the server refused it as invalid for a reason the engine did
+ * not foresee (the error says which).
+ */
+export type RejectedReason = PathProblem | "path-taken" | "refused";
+
+/**
+ * A local operation the server refuses for good. It stays pending in the
+ * journal and its file where it is, and every push reports it again (sending
+ * nothing for a refused path) until the user renames or removes the file.
  */
 export interface RejectedOperation {
   operation: PendingOperation;
+  reason: RejectedReason;
   error: ConnectError;
 }
 
@@ -1532,19 +1543,22 @@ export class SyncEngine {
       await this.journal.removePending(operation.revisionId);
       return;
     }
-    if (!isNewVaultPath(operation.path) && (state === undefined || state.deleted || state.path !== operation.path)) {
-      // A path with a "\" or a drive-like prefix may only be kept by the live
-      // document already at it, never given to a new, moved or deleted one
-      // (SPEC.md §6.2, decisions #191, #148): the server would refuse it, so nothing is sent. The
-      // operation stays pending and its file where it is, unless the file is
-      // gone, which a later push then sees as any other change.
+    const problem = pathProblem(operation.path, state !== undefined && !state.deleted && state.path === operation.path);
+    if (problem !== undefined) {
+      // The server would refuse the path (SPEC.md §6.2, #100), so nothing is
+      // sent, on this push or any later one. A path with a "\" or a
+      // drive-like prefix may still be kept by the live document already at
+      // it, never given to a new, moved or deleted one (decisions #191,
+      // #148). The operation stays pending and its file where it is, and
+      // every push reports it, unless the file is gone (renamed or removed),
+      // which a later push then sees as any other change.
       if (!operation.deleted && (await this.readOrNull(operation.path)) === null) {
         await this.journal.removePending(operation.revisionId);
         this.changes.paths.add(operation.path);
         if (state !== undefined && !state.deleted) this.changes.paths.add(state.path);
         return;
       }
-      summary.rejected.push({ operation, error: new ConnectError('a new path must not contain "\\" or start with one character and ":"', Code.InvalidArgument) });
+      summary.rejected.push({ operation, reason: problem, error: new ConnectError(`the server refuses this path (${problem})`, Code.InvalidArgument) });
       return;
     }
     // A rename or delete keeps the base's content, which the server already holds.
@@ -1669,7 +1683,7 @@ export class SyncEngine {
       return;
     }
     if (error.code === Code.InvalidArgument) {
-      summary.rejected.push({ operation, error });
+      summary.rejected.push({ operation, reason: "refused", error });
       return;
     }
     throw error;
@@ -1707,7 +1721,7 @@ export class SyncEngine {
       // on from name to name would not end, so it stays pending and is
       // reported. A known document that took the copy's path after the move
       // (by path key, #243) is fixed by a new name, below.
-      summary.rejected.push({ operation, error });
+      summary.rejected.push({ operation, reason: "path-taken", error });
       return;
     }
     const logged = conflicts.filter(
@@ -1748,7 +1762,7 @@ export class SyncEngine {
       const copyPath = await this.freeConflictPath(origin, await this.takenFolder(origin));
       if (copyPath === null) {
         if (logged.length === 0) await this.journal.putConflict(this.conflictRecord(operation.documentId, operation.path, "path-taken", null, operation.contentHash, ""));
-        summary.rejected.push({ operation, error });
+        summary.rejected.push({ operation, reason: "path-taken", error });
         return;
       }
       record = this.conflictRecord(operation.documentId, operation.path, "path-taken", copyPath, operation.contentHash, "");

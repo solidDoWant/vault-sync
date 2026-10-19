@@ -1,3 +1,5 @@
+import { pathKey } from "../pathkey/pathkey";
+
 /**
  * Reports whether `path` is vault-relative on every supported platform
  * (SPEC.md §6.2): "/" and "\" are both separators; the path must not start
@@ -62,4 +64,49 @@ const loneSurrogate = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\
 export function isPathText(path: string): boolean {
   if (path === "" || loneSurrogate.test(path) || /\p{Cc}/u.test(path)) return false;
   return encoder.encode(path).length <= maxPathBytes;
+}
+
+/** The most UTF-8 bytes of a normalized path (`path_key`, SPEC.md §5) the server accepts (SPEC.md §6.2; MaxPathKeyBytes in internal/api). */
+export const maxPathKeyBytes = 8192;
+
+/**
+ * Reports whether `path`'s `path_key` (SPEC.md §5) is at most
+ * {@link maxPathKeyBytes} bytes of UTF-8, the server's limit on a normalized
+ * plaintext path (SPEC.md §6.2). Normalization can grow a path: U+1D160
+ * decomposes into three code points that NFC does not recompose.
+ *
+ * Must match CommitRevision exactly; testdata/paths/key.json is the shared
+ * conformance suite.
+ */
+export function fitsPathKeyLimit(path: string): boolean {
+  return encoder.encode(pathKey(path)).length <= maxPathKeyBytes;
+}
+
+/**
+ * Why the server would refuse a commit at a path (SPEC.md §6.2), one rule at
+ * a time: `empty` and `too-long` (more than {@link maxPathBytes} bytes) and
+ * `invalid-character` (a control character, or no UTF-8 form) are
+ * {@link isPathText}; `not-vault-relative` is {@link isVaultRelativePath};
+ * `too-long-normalized` is {@link fitsPathKeyLimit}; `backslash` and
+ * `drive-prefix` are {@link isNewVaultPath}'s further rules.
+ */
+export type PathProblem = "empty" | "too-long" | "invalid-character" | "not-vault-relative" | "too-long-normalized" | "backslash" | "drive-prefix";
+
+/**
+ * The first rule of the server's (SPEC.md §6.2) that a commit giving a
+ * document `path` breaks, or undefined if it would accept the path. With
+ * `kept`, the path is the document's unchanged live path, which only the
+ * new-path rules (`backslash`, `drive-prefix`) spare: a document committed
+ * before them stays editable and deletable in place.
+ */
+export function pathProblem(path: string, kept = false): PathProblem | undefined {
+  if (path === "") return "empty";
+  if (loneSurrogate.test(path) || /\p{Cc}/u.test(path)) return "invalid-character";
+  if (encoder.encode(path).length > maxPathBytes) return "too-long";
+  if (!isVaultRelativePath(path)) return "not-vault-relative";
+  if (!fitsPathKeyLimit(path)) return "too-long-normalized";
+  if (kept) return undefined;
+  if (path.includes("\\")) return "backslash";
+  if (!isNewVaultPath(path)) return "drive-prefix";
+  return undefined;
 }

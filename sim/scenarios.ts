@@ -1482,6 +1482,10 @@ export interface BackslashPathResult extends RunResult {
   secondAfterRefusal: Map<string, string>;
   /** The paths the second engine's last push before the renames reported as rejected. */
   rejected: string[];
+  /** Why, per rejected path (#100). */
+  reasons: Map<string, string>;
+  /** Uploads and commits the second engine sent while its files were refused (before the renames). */
+  refusalRequests: string[];
   /** Each engine's vault after the run: path to content. */
   vaults: Map<string, string>[];
   /** The server's live documents after the run: path to document label. */
@@ -1532,6 +1536,32 @@ export async function drivePrefixPathsRefused(endpoints: SimEndpoints): Promise<
 }
 
 /**
+ * Local files whose paths the server refuses under any rule (#100, SPEC.md
+ * §6.2). Two POSIX engines. The first syncs a note `notes/a.md`. The second
+ * engine's user creates `notes/line⏎break.md` (a control character),
+ * `notes/.../dots.md` (a segment of dots) and a path of 11 folders and a
+ * name that grows past 8192 bytes once normalized, though the path itself is
+ * 2,830 bytes. The engine pushes, crashes and pushes again. None may reach
+ * the server, the engine may send no upload or commit for them, and all must
+ * stay on its disk, reported as rejected with the rule each breaks. Then the
+ * user renames them to valid paths: all must sync, and the vaults must
+ * converge.
+ */
+export async function serverRefusedPathsSurfaced(endpoints: SimEndpoints): Promise<BackslashPathResult> {
+  return newPathsRefused(endpoints, {
+    synced: [["notes/a.md", "synced\n"]],
+    refused: [
+      ["notes/line\nbreak.md", "control character\n", "notes/line break.md"],
+      ["notes/.../dots.md", "dots\n", "notes/dots.md"],
+      [normalizedTooLongPath, "grows when normalized\n", "notes/long.md"],
+    ],
+  });
+}
+
+/** 11 folders of 63 U+1D160 (each 252 bytes, a legal name) and a short name: 2,830 bytes, 8,462 once normalized (testdata/paths/key.json). */
+export const normalizedTooLongPath = `${Array.from({ length: 11 }, () => "\u{1d160}".repeat(63)).join("/")}/${"\u{1d160}".repeat(11)}.md`;
+
+/**
  * The shape of backslashPathsRefused and drivePrefixPathsRefused: the first
  * engine syncs `synced`, the second creates each `refused` file at a path a
  * commit may not give a document, pushes, crashes and pushes again, then
@@ -1565,10 +1595,15 @@ async function newPathsRefused(endpoints: SimEndpoints, files: { synced: [path: 
   await pull(second);
 
   for (const [path, content] of files.refused) log(await second.edit(path, encoder.encode(content)));
+  const refusalStart = run.trace.length;
   await push(second);
   log(second.crash());
   await push(second);
+  // A request's trace entries read `<step>: drain: #<message> c<client> <method>(…`.
+  const uploadOrCommit = new RegExp(` #\\d+ c${String(second.index)} (BeginBlob|PutBlobChunk|CommitBlob|CommitRevision)\\(`);
+  const refusalRequests = run.trace.slice(refusalStart).filter((entry) => uploadOrCommit.test(entry));
   const rejected = (second.lastPush?.rejected ?? []).map(({ operation }) => operation.path).sort();
+  const reasons = new Map((second.lastPush?.rejected ?? []).map(({ operation, reason }) => [operation.path, reason]));
   const afterRefusal = await liveDocuments(run);
   const secondAfterRefusal = await contents(second);
 
@@ -1577,5 +1612,5 @@ async function newPathsRefused(endpoints: SimEndpoints, files: { synced: [path: 
   await pull(first);
 
   const result = await run.finish();
-  return { ...result, afterRefusal, secondAfterRefusal, rejected, vaults: [await contents(first), await contents(second)], documents: await liveDocuments(run) };
+  return { ...result, afterRefusal, secondAfterRefusal, rejected, reasons, refusalRequests, vaults: [await contents(first), await contents(second)], documents: await liveDocuments(run) };
 }

@@ -128,4 +128,10 @@ describe("InMemoryServer's path text rule (SPEC.md §6.2, #148)", () => {
   it("accepts a path of exactly 4096 bytes", async () => {
     expect(await commit(new InMemoryServer(), "x", "x1", "", "é".repeat(2048))).toBe("ok");
   });
+
+  // U+1D160 decomposes into three 4-byte code points (testdata/paths/key.json, #100).
+  it("refuses a path longer than 8192 bytes once normalized, and accepts one of exactly 8192", async () => {
+    expect(await commit(new InMemoryServer(), "x", "x1", "", "\u{1d160}".repeat(682) + "a".repeat(9))).toBe("InvalidArgument");
+    expect(await commit(new InMemoryServer(), "x", "x1", "", "\u{1d160}".repeat(682) + "a".repeat(8))).toBe("ok");
+  });
 });

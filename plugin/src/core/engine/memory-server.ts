@@ -8,7 +8,7 @@ import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/
 import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
-import { isNewVaultPath, isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
+import { fitsPathKeyLimit, isNewVaultPath, isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
 
 export interface InMemoryServerOptions {
   vaultId?: string;
@@ -365,6 +365,7 @@ export class InMemoryServer {
     }
     if (!isPathText(path)) throw new ConnectError("path must be 1 to 4096 bytes without control characters", Code.InvalidArgument);
     if (!isVaultRelativePath(path)) throw new ConnectError("path is not vault-relative", Code.InvalidArgument);
+    if (!fitsPathKeyLimit(path)) throw new ConnectError("path is too long once normalized (at most 8192 bytes)", Code.InvalidArgument);
     // A path with a "\" (#191) or a drive-like prefix (#148) may only be kept by the live document already at it.
     if (!isNewVaultPath(path) && (head === undefined || head.deleted || new TextDecoder().decode(head.path) !== path)) {
       throw new ConnectError('a new path must not contain "\\" or start with one character and ":"', Code.InvalidArgument);

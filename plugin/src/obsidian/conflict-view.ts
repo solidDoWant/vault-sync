@@ -1,22 +1,24 @@
 import { ItemView, TFile, type WorkspaceLeaf } from "obsidian";
 
 import type { OpenConflict } from "../core/engine/conflicts";
-import type { UnmaterializableDocument } from "../core/engine/engine";
-import { conflictReasonText, unmaterializableReasonText } from "./conflict-text";
+import type { RejectedOperation, UnmaterializableDocument } from "../core/engine/engine";
+import { conflictReasonText, rejectedReasonText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
 
 /** Where the view reads what it lists: the running sync session, if any. */
 export interface ConflictSource {
   /** Undefined while sync is not running. */
-  problems(): { conflicts(): Promise<OpenConflict[]>; unmaterializable(): Promise<UnmaterializableDocument[]> } | undefined;
+  problems(): { conflicts(): Promise<OpenConflict[]>; unmaterializable(): Promise<UnmaterializableDocument[]>; rejected(): Promise<RejectedOperation[]> } | undefined;
 }
 
 /**
  * The conflict view (SPEC.md §7, §8): the open conflicts of the conflict
  * log, each with a link to both versions and a button that opens them side
- * by side, and the documents this device's platform cannot hold, each with
- * its server path and why. It reads the journal through the session and
+ * by side, the documents this device's platform cannot hold, each with its
+ * server path and why, and the local files the server refuses (#100), each
+ * with its path and why. It reads the journal through the session and
  * keeps no state of its own; deleting a conflict copy resolves its entry.
  */
 export class ConflictView extends ItemView {
@@ -65,10 +67,11 @@ export class ConflictView extends ItemView {
     const problems = this.conflictSource.problems();
     let conflicts: OpenConflict[] = [];
     let unmaterializable: UnmaterializableDocument[] = [];
+    let rejected: RejectedOperation[] = [];
     let failure: string | undefined;
     if (problems !== undefined) {
       try {
-        [conflicts, unmaterializable] = await Promise.all([problems.conflicts(), problems.unmaterializable()]);
+        [conflicts, unmaterializable, rejected] = await Promise.all([problems.conflicts(), problems.unmaterializable(), problems.rejected()]);
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
@@ -96,6 +99,17 @@ export class ConflictView extends ItemView {
       root.createEl("p", { text: "These documents are synced, but their path on the server is not a valid file name here. Rename them on another device to bring them here. Local changes to them are not synced until then." });
       const list = root.createEl("ul", { cls: "vault-sync-unmaterializable" });
       for (const document of unmaterializable) this.renderUnmaterializable(list.createEl("li", { cls: "vault-sync-unmaterializable-document" }), document);
+    }
+
+    if (rejected.length > 0) {
+      root.createEl("h4", { text: "Files that are not synced" });
+      root.createEl("p", { text: "The server does not accept these files' paths, so they stay on this device only. Rename or move a file to a valid path to sync it." });
+      const list = root.createEl("ul", { cls: "vault-sync-rejected" });
+      for (const { operation, reason, error } of rejected) {
+        const item = list.createEl("li", { cls: "vault-sync-rejected-file" });
+        this.fileLine(item, operation.deleted ? "Deleted file" : "File", operation.path, "vault-sync-rejected-path", visiblePath(operation.path));
+        item.createDiv({ text: rejectedReasonText(reason, errorMessage(error)), cls: "vault-sync-rejected-reason" });
+      }
     }
   }
 
@@ -125,14 +139,14 @@ export class ConflictView extends ItemView {
   }
 
   /** A label and a link that opens `path`, or "no longer exists". */
-  private fileLine(parent: HTMLElement, label: string, path: string | null, cls: string): void {
+  private fileLine(parent: HTMLElement, label: string, path: string | null, cls: string, text = path ?? ""): void {
     const line = parent.createDiv();
     line.appendText(`${label}: `);
     if (path === null) {
       line.createSpan({ text: "no longer exists", cls });
       return;
     }
-    const link = line.createEl("a", { text: path, href: "#", cls });
+    const link = line.createEl("a", { text, href: "#", cls });
     link.addEventListener("click", (event) => {
       event.preventDefault();
       void this.openPath(path, event.ctrlKey || event.metaKey);
