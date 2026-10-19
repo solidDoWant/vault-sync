@@ -166,8 +166,10 @@ export interface DeferredRevision {
  * - `path-taken`: the server refused a local create (or rename) because another
  *   document holds the path (ALREADY_EXISTS, SPEC.md §6.3); the local document
  *   itself moved to the conflict copy's path.
+ * - `base-purged`: concurrent edits whose common base retention purged from
+ *   the server (SPEC.md §11), so they could not be merged.
  */
-export type ConflictReason = "overlapping-edits" | "binary" | "concurrent-create" | "path-taken";
+export type ConflictReason = "overlapping-edits" | "binary" | "concurrent-create" | "path-taken" | "base-purged";
 
 /** One entry of the conflict log. */
 export interface ConflictRecord {

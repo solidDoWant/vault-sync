@@ -2,6 +2,7 @@
 // must never import `obsidian` or src/obsidian (lint-enforced).
 export { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type SyncEngineOptions, type UnmaterializableDocument } from "./engine/engine";
 export { openConflicts, type OpenConflict } from "./engine/conflicts";
+export { RestoreError, type HistoryEntry, type HistoryPage, type RestoreFailure } from "./engine/history";
 export { deferMerge, threeWayMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
 export { classifyByExtension, classifyByExtensions, defaultTextExtensions, RemoteContentError, type PullApi } from "./engine/remote";
 export { sha256Hex } from "./hash";
