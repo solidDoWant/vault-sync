@@ -67,6 +67,33 @@ func TestPortAllocatorNeverReturnsAPortTwice(t *testing.T) {
 	assert.Equal(t, 7, *closed, "every probe listener is closed")
 }
 
+func TestPortAllocatorKeepsProbesOpenUntilItHasAllPorts(t *testing.T) {
+	t.Parallel()
+
+	closed := 0
+	closedAtProbe := []int{}
+	next := uint16(3001)
+
+	ports := newPortAllocator(func() (net.Listener, error) {
+		closedAtProbe = append(closedAtProbe, closed)
+		port := next
+		next++
+
+		return fakeListener{
+			address: net.TCPAddrFromAddrPort(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)),
+			closed:  &closed,
+		}, nil
+	})
+
+	_, err := ports.take(3)
+	require.NoError(t, err)
+
+	// While a probe listener is open the kernel cannot offer its port to
+	// the next probe.
+	assert.Equal(t, []int{0, 0, 0}, closedAtProbe, "no probe listener is closed before the last probe")
+	assert.Equal(t, 3, closed, "every probe listener is closed afterwards")
+}
+
 func TestPortAllocatorGivesUpAfterBoundedProbes(t *testing.T) {
 	t.Parallel()
 
