@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, remoteRenameOntoLocalFolder } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoLocalFolder } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -742,6 +742,26 @@ describe.runIf(suites.has("scenarios"))("scripted liveness scenarios (#302)", ()
     expect(result.trace.some((line) => line.startsWith("1: STALLED: run stalled at step 1")), trace).toBe(true);
     // Once something delivers the engine's calls again, the run goes on and ends cleanly.
     expect(result.violations, trace).toEqual([]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted document-kind scenarios (#306)", () => {
+  it("lets a scripted client edit, rename and delete an engine's binary document, each commit keeping the document's kind", async () => {
+    const result = await scriptedChangesOfBinary(environment);
+    const trace = tail(result.trace);
+
+    expect(result.violations, trace).toEqual([]);
+    const scripted = result.acknowledged.filter((acknowledgement) => acknowledgement.client === 0 && acknowledgement.documentId === result.documentId);
+    expect(
+      scripted.map(({ path, deleted }) => ({ path, deleted })),
+      trace,
+    ).toEqual([
+      { path: "trailing.", deleted: false },
+      { path: expect.not.stringMatching(/^trailing\.$/) as unknown, deleted: false },
+      { path: expect.any(String) as unknown, deleted: true },
+    ]);
+    expect(result.revisions.map(({ kind }) => kind), trace).toEqual(["BLOB", "BLOB", "BLOB", "BLOB"]);
+    expect(result.revisions.map(({ deleted }) => deleted), trace).toEqual([false, false, false, true]);
   });
 });
 
