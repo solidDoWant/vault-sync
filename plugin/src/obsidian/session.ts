@@ -47,7 +47,9 @@ export interface SyncSessionOptions {
   /**
    * The realtime channel (SPEC.md §6.4). When set, the started session
    * subscribes to the vault and pulls after every (re)subscribe and every
-   * notification of it. The pull timer runs either way.
+   * notification of it whose head is above the journal's cursor (not, then,
+   * for its own commits, nor for a subscribe with nothing new). The pull
+   * timer runs either way.
    */
   realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
 }
@@ -222,7 +224,11 @@ export class SyncSession {
     await this.attempt(() => engine.push());
     if (this.isStopped()) return undefined;
     if (options.realtime !== undefined) {
-      this.realtime = new RealtimeClient({ ...options.realtime, vaultId: options.vaultId, onChange: () => this.attempt(() => engine.pull()) });
+      this.realtime = new RealtimeClient({
+        ...options.realtime,
+        vaultId: options.vaultId,
+        onChange: (seq) => this.attempt(() => engine.pullIfBehind(seq)),
+      });
       this.realtime.start();
     }
     if (options.syncIntervalMs !== null) {
@@ -242,11 +248,11 @@ export class SyncSession {
     return this.stopped;
   }
 
-  /** Runs a pull or push, recording its outcome for the status. */
-  private async attempt<T extends PullSummary | PushSummary>(task: () => Promise<T>): Promise<T | undefined> {
+  /** Runs a pull or push, recording its outcome for the status; a task that resolves with undefined did nothing and changes no status. */
+  private async attempt<T extends PullSummary | PushSummary>(task: () => Promise<T | undefined>): Promise<T | undefined> {
     try {
       const result = await task();
-      this.succeeded(result);
+      if (result !== undefined) this.succeeded(result);
       return result;
     } catch (error) {
       this.failed(error);
