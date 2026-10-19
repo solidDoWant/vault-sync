@@ -645,6 +645,7 @@ describe.runIf(suites.has("scenarios"))("scripted remote renames onto another sp
         ]),
       );
     }
+    expect(result.noteContents, trace).not.toHaveLength(0);
     expect(result.noteContents, trace).not.toContain("my own new note\n");
     expect(result.tombstoned, trace).toEqual([]);
   });
