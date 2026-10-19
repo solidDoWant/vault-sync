@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { platformForSeed, runSeed, runSteps, type RunResult } from "./runner";
-import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath } from "./scenarios";
+import { enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -378,6 +378,36 @@ describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)"
     expect(result.documents.get("moved.md"), trace).toBe(note);
     expect(result.documents.get("d.md"), trace).toBeDefined();
     expect(result.documents.get("d.md"), trace).not.toBe(note);
+    expect(result.tombstoned, trace).toEqual([]);
+  });
+
+  it.each([
+    { variant: "renamed-away-pushed", title: "a known document's new path" },
+    { variant: "renamed-away-unpushed", title: "the path a known document's unpushed rename left" },
+  ] as const)("moves a document a local rename put at $title to a path-taken copy, and tombstones neither (#267)", async ({ variant }) => {
+    const result = await knownDocumentAtHeldPath(environment, variant);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const a = result.before.get("a.md");
+    const b = result.before.get("b.md");
+    expect(a, trace).toBeDefined();
+    expect(b, trace).toBeDefined();
+    expect(result.conflicts, trace).toMatchObject([{ reason: "path-taken", path: "a.md", document: b }]);
+    const copy = result.conflicts[0]?.copyPath;
+    expect(copy, trace).toEqual(expect.any(String));
+    const expected = new Map([
+      ["a.md", "b\n"],
+      [copy ?? "", "b\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.documents, trace).toEqual(
+      new Map([
+        ["a.md", a],
+        [copy ?? "", b],
+      ]),
+    );
     expect(result.tombstoned, trace).toEqual([]);
   });
 });
