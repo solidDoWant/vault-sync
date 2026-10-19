@@ -158,7 +158,8 @@ export class EngineObserver {
     this.userEdited.add(path);
     this.engineVault.beforeNextChange(path, async () => {
       this.context.log(`${this.name} user saves ${path} (${String(content.length)} B) just before the engine changes it`);
-      await this.vault.write(path, content);
+      // As the user: the ledger records the save, which replaces what the user had written there.
+      await this.user.write(path, content);
     });
     return `${this.name} user will save ${path} just before the engine's next change of it`;
   }
