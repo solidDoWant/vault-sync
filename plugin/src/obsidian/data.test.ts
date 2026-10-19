@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
+import { oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
 
 const complete: PluginData = { serverUrl: "https://sync.example", oidcIssuer: "https://auth.example/o/vs/", oidcClientId: "vault-sync", deviceName: "" };
 
@@ -14,6 +14,7 @@ describe("parsePluginData", () => {
       ...complete,
       deviceName: "Laptop",
       refreshToken: "secret",
+      identityProvider: { issuer: "https://auth.example/o/vs/", clientId: "vault-sync" },
       device: { id: "device-1", serverUrl: "https://sync.example", issuer: "https://auth.example/o/vs/", subject: "user-1" },
       vault: { id: "vault-1", name: "Notes", serverUrl: "https://sync.example" },
     };
@@ -25,6 +26,7 @@ describe("parsePluginData", () => {
       serverUrl: 5,
       oidcIssuer: "https://auth.example/",
       refreshToken: "",
+      identityProvider: { issuer: "https://auth.example/" },
       device: { id: "device-1", serverUrl: "https://sync.example", issuer: "https://auth.example/" },
       vault: { id: "", name: "Notes", serverUrl: "https://sync.example" },
     };
@@ -37,10 +39,13 @@ describe("signInProblem", () => {
     expect(signInProblem(complete)).toBeUndefined();
   });
 
-  it("asks for each missing setting", () => {
+  it("asks for the server URL", () => {
     expect(signInProblem({ ...complete, serverUrl: " " })).toBe("Enter the server URL.");
-    expect(signInProblem({ ...complete, oidcIssuer: "" })).toBe("Enter the OIDC issuer URL.");
-    expect(signInProblem({ ...complete, oidcClientId: "" })).toBe("Enter the OIDC client ID.");
+  });
+
+  it("needs only the server URL: the issuer and client id are optional overrides of what the server advertises", () => {
+    expect(signInProblem({ ...complete, oidcIssuer: "", oidcClientId: "" })).toBeUndefined();
+    expect(signInProblem({ ...complete, oidcIssuer: " ", oidcClientId: "" })).toBeUndefined();
   });
 
   it("refuses plain http except to localhost, so tokens never travel in the clear", () => {
@@ -48,6 +53,17 @@ describe("signInProblem", () => {
     expect(signInProblem({ ...complete, oidcIssuer: "http://auth.example/" })).toMatch(/issuer URL must use https/);
     expect(signInProblem({ ...complete, serverUrl: "http://127.0.0.1:8080", oidcIssuer: "http://localhost:9000/" })).toBeUndefined();
     expect(signInProblem({ ...complete, serverUrl: "sync.example" })).toMatch(/not a valid URL/);
+  });
+});
+
+describe("oidcConfig", () => {
+  it("is the identity provider resolved at sign-in while one is stored, whatever the settings say", () => {
+    const identityProvider = { issuer: "https://discovered.example/", clientId: "discovered" };
+    expect(oidcConfig({ ...complete, identityProvider })).toEqual(identityProvider);
+  });
+
+  it("falls back to the settings, trimmed, for a sign-in from before the provider was stored", () => {
+    expect(oidcConfig({ ...complete, oidcIssuer: " https://auth.example/o/vs/ ", oidcClientId: " vault-sync " })).toEqual({ issuer: "https://auth.example/o/vs/", clientId: "vault-sync" });
   });
 });
 

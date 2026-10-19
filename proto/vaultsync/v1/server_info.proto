@@ -6,10 +6,13 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 
 // ServerInfoService exposes server metadata. It is the only unauthenticated
 // service: clients call it before signing in to check that they speak a
-// compatible protocol version.
+// compatible protocol version and to discover the identity provider to sign
+// in with.
 service ServerInfoService {
-  // GetServerInfo returns the server build version and protocol version. It
-  // requires no authentication and reveals nothing about vaults or users.
+  // GetServerInfo returns the server build version, the protocol version,
+  // limits clients need, and OIDC discovery data. It requires no
+  // authentication and reveals nothing about vaults or users, and nothing
+  // secret: the issuer and the public client id are public by design.
   rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse) {}
 }
 
@@ -27,4 +30,15 @@ message GetServerInfoResponse {
   // subscribe to (SPEC.md §6.4). Zero means the server does not offer the
   // realtime channel.
   uint32 max_realtime_subscriptions = 3;
+  // The OIDC issuer identifier whose access tokens the server accepts
+  // (VAULT_SYNC_OIDC_ISSUER_URL), exactly as configured, including any
+  // trailing slash (SPEC.md §9.1). Clients discover the identity provider's
+  // endpoints from `<issuer>/.well-known/openid-configuration`. Empty from
+  // servers older than this field.
+  string oidc_issuer_url = 4;
+  // The public OAuth client id the plugin signs in as with the device
+  // authorization grant (VAULT_SYNC_OIDC_CLIENT_ID, by default the
+  // audience). A public client has no secret. Empty when the server
+  // advertises none; the user then enters it.
+  string oidc_client_id = 5;
 }

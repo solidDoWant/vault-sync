@@ -22,6 +22,7 @@ The `vault-sync-server export` subcommand reads the database, S3 and log-level v
 | `VAULT_SYNC_LOG_LEVEL` | `info` | Minimum log level: `debug`, `info`, `warn` or `error`. |
 | `VAULT_SYNC_OIDC_ISSUER_URL` | (required) | OIDC issuer identifier, for example `https://auth.example.com/application/o/vault-sync/` for Authentik. Access tokens' `iss` claim must equal it exactly (including any trailing slash). The signing keys are discovered from `<issuer>/.well-known/openid-configuration`. Must be `https`; plain `http` is accepted only for a loopback host (`localhost`, `127.0.0.1`, `::1`) for local development. |
 | `VAULT_SYNC_OIDC_AUDIENCE` | (required) | Audience that access tokens' `aud` claim must contain; for Authentik, the client ID of the vault-sync provider. The plugin signs in as that client with the device flow; see `docs/plugin.md` for the provider setup. |
+| `VAULT_SYNC_OIDC_CLIENT_ID` | the audience | The public OAuth client ID the plugin signs in as. `GetServerInfo` advertises it, together with `VAULT_SYNC_OIDC_ISSUER_URL`, to clients that are not signed in yet, so users only need to enter the server URL. Set it when the plugin's client differs from `VAULT_SYNC_OIDC_AUDIENCE` (an identity provider that puts an API audience, not the client ID, in access tokens). It must be a public client: it is shown to anyone who can reach the server, so never use a confidential client or put a secret here. 1 to 255 printable ASCII characters. When unset, the audience is advertised if it fits those rules, and otherwise no client ID is advertised and users enter it in the plugin. |
 | `VAULT_SYNC_S3_BUCKET` | unset | S3 bucket holding every vault's blobs. It must already exist. Required when any `VAULT_SYNC_S3_*` variable is set. When no `VAULT_SYNC_S3_*` variable is set, the server starts without an object store, logs a warning, and every `BlobService` RPC returns `unimplemented`. |
 | `VAULT_SYNC_S3_ENDPOINT` | unset (AWS S3) | Base URL of the S3-compatible store, for example `https://rgw.example.com`. Must be `http` or `https`, without credentials, query or fragment. |
 | `VAULT_SYNC_S3_REGION` | `us-east-1` | Region of the bucket. Ceph RGW accepts any region by default. |
@@ -43,7 +44,7 @@ The `vault-sync-server export` subcommand reads the database, S3 and log-level v
 
 ### Authentication
 
-Every RPC except `vaultsync.v1.ServerInfoService/GetServerInfo` requires an `Authorization: Bearer` header carrying a JWT access token from the issuer. A token is accepted only if:
+Every RPC except `vaultsync.v1.ServerInfoService/GetServerInfo` requires an `Authorization: Bearer` header carrying a JWT access token from the issuer. `GetServerInfo` returns only public data: the build and protocol versions, the realtime subscription limit, the issuer URL and the plugin's client ID. A token is accepted only if:
 
 - it is at most 16 KiB;
 - it is signed with RS256, ES256 or EdDSA (never `none` or an HMAC algorithm) by a key in the issuer's key set;
