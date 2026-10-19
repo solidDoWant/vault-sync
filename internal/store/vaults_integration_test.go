@@ -164,6 +164,76 @@ func TestCreateVaultRequiresAnExistingUser(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrUserNotFound)
 }
 
+func TestVaultMembersReturnsOnlyTheMembersAmongTheGivenUsers(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+
+	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	require.NoError(t, err)
+
+	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob")
+	require.NoError(t, err)
+
+	carol, err := queries.UpsertUser(t.Context(), testIssuer, "carol")
+	require.NoError(t, err)
+
+	vault, err := queries.CreateVault(t.Context(), alice, store.NewVault{Name: "Vault", Encryption: store.EncryptionNone}, 10)
+	require.NoError(t, err)
+
+	other, err := queries.CreateVault(t.Context(), carol, store.NewVault{Name: "Other", Encryption: store.EncryptionNone}, 10)
+	require.NoError(t, err)
+
+	// Membership management is Phase 3; seed memberships directly.
+	_, err = pool.Exec(t.Context(), `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, 'viewer')`, vault.ID, bob)
+	require.NoError(t, err)
+
+	tests := []struct {
+		name    string
+		vaultID uuid.UUID
+		users   []uuid.UUID
+		members map[uuid.UUID]bool
+	}{
+		{
+			name:    "members and a member of another vault",
+			vaultID: vault.ID,
+			users:   []uuid.UUID{alice, bob, carol},
+			members: map[uuid.UUID]bool{alice: true, bob: true},
+		},
+		{
+			name:    "only users asked about",
+			vaultID: vault.ID,
+			users:   []uuid.UUID{bob, uuid.New()},
+			members: map[uuid.UUID]bool{bob: true},
+		},
+		{
+			name:    "no users",
+			vaultID: vault.ID,
+			users:   []uuid.UUID{},
+			members: map[uuid.UUID]bool{},
+		},
+		{
+			name:    "the other vault",
+			vaultID: other.ID,
+			users:   []uuid.UUID{alice, bob, carol},
+			members: map[uuid.UUID]bool{carol: true},
+		},
+		{
+			name:    "a vault that does not exist",
+			vaultID: uuid.New(),
+			users:   []uuid.UUID{alice, bob, carol},
+			members: map[uuid.UUID]bool{},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			members, err := queries.VaultMembers(t.Context(), test.vaultID, test.users)
+			require.NoError(t, err)
+			assert.Equal(t, test.members, members)
+		})
+	}
+}
+
 // TestVaultStoreCannotReachAnotherVault proves that ids from one vault cannot
 // be used through another vault's handle (issue #10, criterion 5).
 func TestVaultStoreCannotReachAnotherVault(t *testing.T) {

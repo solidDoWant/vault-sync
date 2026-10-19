@@ -1,7 +1,6 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
-import { DocumentSchema } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import type { ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
 import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
@@ -11,8 +10,10 @@ import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapt
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
+import { blobMissing, headMoved } from "./errors";
+import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
-import { classifyByExtension, downloadContent, kindValue, RemoteContentError, revisionContent, toIncoming, type IncomingRevision, type PullApi } from "./remote";
+import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
 export interface SyncEngineOptions {
@@ -294,6 +295,52 @@ export class SyncEngine {
       if (deferred.reason === "unmaterializable") documents.push(await this.unmaterializableDocument(deferred.revision, deferred.unmaterializable ?? "refused-by-vault"));
     }
     return documents;
+  }
+
+  /** One page of a document's retained history, newest first, with each revision's time and device (SPEC.md §11). */
+  history(documentId: string, pageToken = ""): Promise<HistoryPage> {
+    return documentHistory(this.api, this.vaultId, this.deviceId, documentId, pageToken);
+  }
+
+  /** A history entry's content, for a preview. */
+  readRevision(entry: HistoryEntry): Promise<Uint8Array> {
+    return readRevision(this.api, this.vaultId, entry);
+  }
+
+  /**
+   * Restores `entry`: commits its content as a new head revision of its
+   * document, at the document's current path, bringing a deleted document
+   * back (SPEC.md §11). It runs between pulls and pushes. It pushes first,
+   * so local edits not yet pushed are in the document's history rather than
+   * overwritten, and pulls afterwards, so the disk shows the restored
+   * content. Pass the content of a preview as `content`: if garbage
+   * collection removed the revision's blob since, it is uploaded again.
+   * Rejects with RestoreError when the restore cannot be done (nothing is
+   * committed then).
+   */
+  restore(entry: HistoryEntry, content?: Uint8Array): Promise<RemoteRevision> {
+    this.cancelScheduledPush();
+    return this.serialize(async () => {
+      await this.pushOnce();
+      const restored = await commitRestore(this.api, this.vaultId, this.deviceId, entry, this.newId(), content);
+      await this.pullOnce();
+      return restored;
+    });
+  }
+
+  /**
+   * The documents deleted on the server that this device knows of, most
+   * recently deleted first: what the user can find and restore (SPEC.md
+   * §11). A document this device only released because the platform cannot
+   * hold its path (§8) is not deleted, and one being brought back by a local
+   * change still to be pushed is not listed either.
+   */
+  async deletedDocuments(): Promise<DocumentState[]> {
+    const released = new Set((await this.journal.listDeferred()).filter((deferred) => deferred.reason === "unmaterializable").map((deferred) => deferred.revision.documentId));
+    const pending = new Set((await this.journal.listPending()).map((operation) => operation.documentId));
+    return (await this.journal.listDocuments())
+      .filter((state) => state.deleted && !released.has(state.documentId) && !pending.has(state.documentId))
+      .sort((left, right) => (left.seq > right.seq ? -1 : left.seq < right.seq ? 1 : 0));
   }
 
   private async unmaterializableDocument(revision: RemoteRevision, reason: UnmaterializableCause): Promise<UnmaterializableDocument> {
@@ -622,8 +669,10 @@ export class SyncEngine {
       base: state,
       local: { path: local.path, content: local.content },
       readRemoteContent: () => (remote.deleted ? Promise.resolve(null) : downloadContent(this.api, this.vaultId, remote.contentHash, remote.size)),
-      // A tombstone has no content of its own to merge against.
-      readBaseContent: () => (state === undefined || state.deleted ? Promise.resolve(null) : revisionContent(this.api, this.vaultId, state.revisionId)),
+      // A tombstone has no content of its own to merge against, and a base
+      // retention purged has none any more (SPEC.md §11): never a reason to
+      // stop the pull.
+      readBaseContent: () => (state === undefined || state.deleted ? Promise.resolve(null) : baseContent(this.api, this.vaultId, state.revisionId)),
     });
     if (outcome.status === "merged" && outcome.content !== null) {
       // The result cannot be written here: the remote path never touches the
@@ -1271,15 +1320,16 @@ export class SyncEngine {
     }
     // A rename or delete keeps the base's content, which the server already holds.
     const keepsContent = state !== undefined && state.revisionId === operation.baseRevisionId && state.baseHash === operation.contentHash;
-    const upload = keepsContent
-      ? "complete"
-      : await uploadContent(this.api, this.vaultId, operation.contentHash, operation.size, () => (operation.deleted ? Promise.resolve(null) : this.readOrNull(operation.path)));
-    if (upload === "missing") {
+    const upload = () => uploadContent(this.api, this.vaultId, operation.contentHash, operation.size, () => (operation.deleted ? Promise.resolve(null) : this.readOrNull(operation.path)));
+    const contentMissing = async () => {
       // The file changed before its content was uploaded, so this revision
       // was never committed (the server commits only complete blobs). The
       // file's current content replaces it.
       await this.journal.removePending(operation.revisionId);
       this.changes.paths.add(operation.path);
+    };
+    if (!keepsContent && (await upload()) === "missing") {
+      await contentMissing();
       return;
     }
     const request = {
@@ -1301,6 +1351,16 @@ export class SyncEngine {
         // The response may have been lost after the server committed: the
         // identical request returns that revision instead of a conflict.
         if (isTransient(error) && attempt < maxCommitAttempts) continue;
+        // Blob garbage collection removed the content since it was uploaded
+        // or found complete (SPEC.md §11): upload it again. A tombstone's
+        // content is the base's, which its head still references.
+        if (blobMissing(error) && !operation.deleted && attempt < maxCommitAttempts) {
+          if ((await upload()) === "missing") {
+            await contentMissing();
+            return;
+          }
+          continue;
+        }
         await this.commitFailed(operation, error, summary);
         return;
       }
@@ -1339,7 +1399,7 @@ export class SyncEngine {
    */
   private async commitFailed(operation: PendingOperation, error: unknown, summary: PushSummary): Promise<void> {
     if (!(error instanceof ConnectError)) throw error;
-    if (error.code === Code.FailedPrecondition && error.findDetails(DocumentSchema).length > 0) {
+    if (headMoved(error)) {
       summary.conflicts++;
       await this.pullOnce();
       return;

@@ -27,7 +27,8 @@ export interface MergeRequest {
   readRemoteContent(): Promise<Uint8Array | null>;
   /**
    * Fetches the base revision's content from the server by revision id
-   * (SPEC.md §8); null without a base or when the base is a tombstone.
+   * (SPEC.md §8); null without a base, when the base is a tombstone, or when
+   * retention purged the base (§11), so the versions have no common base.
    */
   readBaseContent(): Promise<Uint8Array | null>;
 }
@@ -103,7 +104,8 @@ export const threeWayMerge: MergeHook = async (request) => {
   const keepBoth = (reason: ConflictReason): MergeOutcome => ({ status: "merged", path, content: remote, conflict: { reason, content: local.content ?? new Uint8Array() } });
   if (!ownFile) return keepBoth("concurrent-create");
   const baseContent = await request.readBaseContent();
-  if (baseContent === null) return keepBoth("concurrent-create");
+  // The device synced a base, but the server no longer has it (purged by retention).
+  if (baseContent === null) return keepBoth("base-purged");
   if (sameBytes(local.content, baseContent)) return { status: "merged", path, content: remote };
   if (sameBytes(remote, baseContent)) return { status: "merged", path, content: local.content };
   if (revision.kind !== "text" || base.kind !== "text") return keepBoth("binary");

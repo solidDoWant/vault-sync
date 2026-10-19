@@ -25,3 +25,38 @@
 .vault-sync-connect-warning {
   color: var(--text-warning);
 }
+
+/* The history view (SPEC.md §11): the revision list, then the preview. */
+.vault-sync-history-list {
+  max-height: 40vh;
+  overflow-y: auto;
+  margin-bottom: var(--size-4-3);
+}
+
+.vault-sync-history-entry {
+  padding: var(--size-4-1) var(--size-4-2);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+
+.vault-sync-history-entry:hover,
+.vault-sync-history-entry.is-selected {
+  background-color: var(--background-modifier-hover);
+}
+
+.vault-sync-history-current,
+.vault-sync-history-hint {
+  color: var(--text-muted);
+}
+
+.vault-sync-history-text {
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-small);
+}
+
+.vault-sync-history-error {
+  color: var(--text-error);
+}
