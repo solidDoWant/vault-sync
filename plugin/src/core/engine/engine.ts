@@ -1424,15 +1424,18 @@ export class SyncEngine {
    * Moves the cursor onto this device's just-acknowledged revision if it is
    * the next seq after the cursor, so its own vault_changed starts no pull
    * (SPEC.md §6.1, §6.4). Seqs are gapless, so nothing is skipped; if another
-   * device committed in between, the cursor stays for the next pull. The
-   * revision goes through the pull's own apply step first (it finds it
-   * applied, and clears a deferral it supersedes), so the cursor ends where a
-   * pull would have left it. Interrupted before the cursor moves, the next
-   * pull lists the revision and skips it.
+   * device committed in between, the cursor stays for the next pull.
+   * Interrupted before the cursor moves, the next pull lists the revision and
+   * skips it. The revision does not go through the pull's apply step: the
+   * journal already records it as applied, so that step would only remove a
+   * deferral (path conflict, invalid path) of an older revision of the
+   * document, and a document with one cannot have a commit acknowledged here
+   * (its base is behind the server's head, so the commit is refused as head
+   * moved). A stale path-conflict deferral would be removed by its retry
+   * anyway, which finds it superseded.
    */
   private async advancePastOwnCommit(revision: Revision): Promise<void> {
     if ((await this.journal.getCursor()) !== revision.seq - 1n) return;
-    await this.applyRevision(toIncoming(revision));
     await this.journal.setCursor(revision.seq);
   }
 

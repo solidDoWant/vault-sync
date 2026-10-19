@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { InMemoryServer } from "../core/engine/memory-server";
@@ -38,7 +39,8 @@ class ManualTimers implements RealtimeTimers {
 
 function setup(options: Partial<SyncSessionOptions> & { tokens?: () => Promise<string>; invalidate?: (token: string) => void } = {}) {
   const server = new InMemoryServer();
-  const realtime = new InMemoryRealtimeServer();
+  // Like the real hub, subscribed reports the vault's head.
+  const realtime = new InMemoryRealtimeServer({ headSeq: () => server.currentHeadSeq });
   const vault = new InMemoryVault();
   const timers = new ManualTimers();
   const { tokens, invalidate, ...sessionOptions } = options;
@@ -63,6 +65,13 @@ function setup(options: Partial<SyncSessionOptions> & { tokens?: () => Promise<s
   });
   return { server, realtime, vault, timers, session };
 }
+
+/**
+ * Lets every queued microtask run: the in-memory server, journal, vault and
+ * realtime hub use no timers, so everything they started has settled by the
+ * next macrotask.
+ */
+const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 /** Lets queued promises, microtasks and the in-memory server's calls run. */
 const flush = async () => {
@@ -184,6 +193,98 @@ describe("SyncSession with the realtime channel", () => {
           ]),
         );
       });
+      await session.stop();
+    });
+  });
+
+  describe("given a subscribe that completes only after the startup sync", () => {
+    /** A session whose startup pull and push are done (idle) while its subscribe is held back, and what it does from the returned point on. */
+    async function startedBeforeSubscribed(before: (vault: InMemoryVault) => Promise<void> = () => Promise.resolve()) {
+      const statuses: SessionStatus["state"][] = [];
+      const devices = setup({
+        onStatus: (status) => {
+          statuses.push(status.state);
+        },
+      });
+      const { server, realtime, vault, session } = devices;
+      realtime.holdSubscribes = true;
+      await before(vault);
+      await session.start();
+      await vi.waitFor(() => {
+        expect(realtime.heldSubscribes).toBe(1);
+        expect(statuses.at(-1)).toBe("idle");
+      });
+      await settle();
+      const calls: string[] = [];
+      server.interceptor = (method) => {
+        calls.push(method);
+      };
+      statuses.length = 0;
+      return { ...devices, statuses, calls };
+    }
+
+    it("does not pull when the subscribed head is the cursor, and the status stays idle", async () => {
+      const { server, realtime, session, statuses, calls } = await startedBeforeSubscribed((vault) => vault.write("mine.md", new TextEncoder().encode("written before the start")));
+      // The startup push committed the file: the head is the device's own commit.
+      expect(server.currentHeadSeq).toBe(1n);
+      expect(server.liveFiles()).toEqual(new Map([["mine.md", "written before the start"]]));
+
+      realtime.releaseSubscribes();
+      await settle();
+
+      expect([...(realtime.open[0]?.subscriptions ?? [])]).toEqual([server.vaultId]);
+      expect(realtime.open[0]?.sent.map((frame) => frame.frame.case)).toEqual(["subscribed"]);
+      expect(calls).toEqual([]);
+      expect(statuses).toEqual([]);
+      await session.stop();
+    });
+
+    it("pulls when the subscribed head is above the cursor", async () => {
+      const { server, realtime, vault, session, calls } = await startedBeforeSubscribed();
+      // Committed by another device after the startup pull, before the subscription: no notification.
+      server.commit({ documentId: "theirs", path: "theirs.md", content: "committed before the subscription" });
+
+      realtime.releaseSubscribes();
+      await vi.waitFor(async () => {
+        expect(await files(vault)).toEqual(new Map([["theirs.md", "committed before the subscription"]]));
+      });
+      expect(calls).toContain("ListChanges");
+      await session.stop();
+    });
+  });
+
+  describe.each([
+    { state: "offline", error: () => new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable) },
+    { state: "error", error: () => new ConnectError("server exploded", Code.Internal) },
+  ])("given an earlier $state status", ({ state, error }) => {
+    it("keeps it when a notification needs no pull", async () => {
+      const statuses: SessionStatus["state"][] = [];
+      const { server, realtime, vault, session } = setup({
+        onStatus: (status) => {
+          statuses.push(status.state);
+        },
+      });
+      await session.start();
+      await vi.waitFor(() => {
+        expect([...(realtime.open[0]?.subscriptions ?? [])]).toEqual([server.vaultId]);
+        expect(statuses.at(-1)).toBe("idle");
+      });
+      await vault.write("mine.md", new TextEncoder().encode("written here"));
+      await session.syncNow();
+      expect(server.currentHeadSeq).toBe(1n);
+      server.interceptor = (method) => {
+        if (method === "ListChanges") throw error();
+      };
+      await session.syncNow();
+      await settle();
+      expect(statuses.at(-1)).toBe(state);
+      statuses.length = 0;
+
+      // At the cursor: nothing to pull, and nothing learned about the server.
+      realtime.notify(server.vaultId, server.currentHeadSeq);
+      await settle();
+
+      expect(statuses).toEqual([]);
       await session.stop();
     });
   });

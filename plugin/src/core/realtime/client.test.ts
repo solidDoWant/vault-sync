@@ -140,9 +140,9 @@ describe("RealtimeClient", () => {
       expect(releases).toHaveLength(2);
     });
 
-    it("tells the caller the highest notified seq, and that a pull after a subscribe is due whatever the cursor", async () => {
+    it("tells the caller the highest head announced, by a subscribe or a notification", async () => {
       const server = new InMemoryRealtimeServer({ headSeq: () => 4n });
-      const calls: (bigint | undefined)[] = [];
+      const calls: bigint[] = [];
       const releases: (() => void)[] = [];
       const { client } = setup({
         server,
@@ -157,8 +157,8 @@ describe("RealtimeClient", () => {
       });
       client.start();
       await flush();
-      // After subscribed: no seq, so the caller pulls even at head_seq.
-      expect(calls).toEqual([undefined]);
+      // After subscribed: the head the subscription started at.
+      expect(calls).toEqual([4n]);
 
       // Coalesced during the running pull, whatever their order: the highest one.
       server.notify(vaultId, 6n);
@@ -167,23 +167,23 @@ describe("RealtimeClient", () => {
       await flush();
       releases[0]?.();
       await flush();
-      expect(calls).toEqual([undefined, 9n]);
+      expect(calls).toEqual([4n, 9n]);
 
-      // A subscribe coalesced with notifications still forces the pull.
+      // A subscribe coalesced with notifications: the highest of all of them.
       server.notify(vaultId, 10n);
-      server.connections[0]?.send(create(ServerFrameSchema, { frame: { case: "subscribed", value: { vaultId, headSeq: 10n } } }));
+      server.connections[0]?.send(create(ServerFrameSchema, { frame: { case: "subscribed", value: { vaultId, headSeq: 12n } } }));
       server.notify(vaultId, 11n);
       await flush();
       releases[1]?.();
       await flush();
-      expect(calls).toEqual([undefined, 9n, undefined]);
+      expect(calls).toEqual([4n, 9n, 12n]);
 
       // Nothing carries over from a coalesced batch into the next one.
       releases[2]?.();
       await flush();
       server.notify(vaultId, 3n);
       await flush();
-      expect(calls).toEqual([undefined, 9n, undefined, 3n]);
+      expect(calls).toEqual([4n, 9n, 12n, 3n]);
     });
 
     it("keeps pulling on notifications after a pull failed", async () => {

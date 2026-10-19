@@ -47,8 +47,9 @@ export interface SyncSessionOptions {
   /**
    * The realtime channel (SPEC.md §6.4). When set, the started session
    * subscribes to the vault and pulls after every (re)subscribe and every
-   * notification of it whose seq is above the journal's cursor (not, then,
-   * for its own commits). The pull timer runs either way.
+   * notification of it whose head is above the journal's cursor (not, then,
+   * for its own commits, nor for a subscribe with nothing new). The pull
+   * timer runs either way.
    */
   realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
 }
@@ -226,7 +227,7 @@ export class SyncSession {
       this.realtime = new RealtimeClient({
         ...options.realtime,
         vaultId: options.vaultId,
-        onChange: (seq) => this.attempt(() => (seq === undefined ? engine.pull() : engine.pullIfBehind(seq))),
+        onChange: (seq) => this.attempt(() => engine.pullIfBehind(seq)),
       });
       this.realtime.start();
     }
