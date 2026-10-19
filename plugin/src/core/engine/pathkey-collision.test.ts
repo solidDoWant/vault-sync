@@ -245,6 +245,57 @@ describe("SyncEngine collisions by path key", () => {
     }
   });
 
+  describe("given a known document's edited file at the path of another device's new document with the same content (#264)", () => {
+    const cases = [
+      { platform: "posix", remote: "d.md" },
+      { platform: "macos", remote: "D.md" },
+      { platform: "windows", remote: "D.md" },
+    ] as const;
+    for (const { platform, remote } of cases) {
+      it(`keeps both documents live when the known document's remote rename was deferred and the new document arrives at ${remote} (${platform})`, async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "d", path: "d.md", content: "base\n" });
+        await h.engine.pull();
+        await h.vault.write("d.md", bytes("same\n"));
+        // A folder of the user's is in the way of the document's remote rename.
+        await h.vault.write("moved.md/x.md", bytes("x\n"));
+        // The edit's content is uploaded, but its commit never gets through.
+        h.server.interceptor = (method) => {
+          if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+        };
+        await expect(h.engine.push()).rejects.toThrow();
+        h.server.interceptor = undefined;
+        h.server.commit({ documentId: "d", path: "moved.md", content: "base\n" });
+        h.server.commit({ documentId: "theirs", path: remote, content: "same\n" });
+
+        await h.engine.pull();
+        await h.vault.delete("moved.md/x.md");
+        const summaries = await pushUntilQuiet(h);
+
+        // The known document moved with its edit; the other device's document is untouched.
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["moved.md", "d"],
+            [remote, "theirs"],
+          ]),
+        );
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["moved.md", "same\n"],
+            [remote, "same\n"],
+          ]),
+        );
+        expect(h.server.history("theirs")).toHaveLength(1);
+        expect(h.server.history("d").every((revision) => !revision.deleted)).toBe(true);
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+        expect(summaries.at(-1)).toMatchObject({ committed: 0, conflicts: 0, pending: 0 });
+      });
+    }
+  });
+
   describe("given conflict copies whose names collide by path key (#243)", () => {
     it("gives two local files that collide with one remote document copies free by path key, and syncs both (posix)", async () => {
       const h = harness({ merge: "default" });
