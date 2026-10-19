@@ -154,6 +154,33 @@ func TestGetServerInfoRequiresNoAuthentication(t *testing.T) {
 	assert.Equal(t, uint32(1), response.Msg.GetProtocolVersion())
 }
 
+func TestGetServerInfoAdvertisesTheIdentityProvider(t *testing.T) {
+	tests := []struct {
+		name         string
+		issuer       string
+		clientID     string
+		wantClientID string
+	}{
+		{name: "issuer and client id", issuer: "https://auth.example/application/o/vault-sync/", clientID: "obsidian-plugin", wantClientID: "obsidian-plugin"},
+		{name: "no client id advertised", issuer: "https://auth.example/", wantClientID: ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			running := startServer(t, server.Options{OIDCIssuerURL: test.issuer, OIDCClientID: test.clientID})
+
+			client := vaultsyncv1connect.NewServerInfoServiceClient(http.DefaultClient, running.apiURL())
+
+			// No Authorization header: signed-out clients discover the provider.
+			response, err := client.GetServerInfo(t.Context(), connect.NewRequest(&vaultsyncv1.GetServerInfoRequest{}))
+			require.NoError(t, err)
+
+			assert.Equal(t, test.issuer, response.Msg.GetOidcIssuerUrl())
+			assert.Equal(t, test.wantClientID, response.Msg.GetOidcClientId())
+		})
+	}
+}
+
 func TestGetServerInfoReportsTheRealtimeSubscriptionCap(t *testing.T) {
 	tests := []struct {
 		name    string

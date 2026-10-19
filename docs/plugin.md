@@ -9,20 +9,20 @@ Open **Settings → Vault Sync**.
 | Setting | Meaning |
 |---|---|
 | Server URL | The vault-sync server's base URL, for example `https://sync.example.com`. |
-| OIDC issuer URL | The issuer your server trusts: the server's `VAULT_SYNC_OIDC_ISSUER_URL`, character for character (including any trailing slash), for example `https://auth.example.com/application/o/vault-sync/` for Authentik. |
-| OIDC client ID | The OAuth client the plugin signs in as (see below). The access tokens it receives must carry the server's `VAULT_SYNC_OIDC_AUDIENCE`. |
+| OIDC issuer URL | Optional. Leave it empty: the plugin uses the issuer the server advertises (its `VAULT_SYNC_OIDC_ISSUER_URL`). Enter it only for a server too old to advertise one, character for character (including any trailing slash), for example `https://auth.example.com/application/o/vault-sync/` for Authentik. An issuer that differs from the one the server advertises is refused, because the server accepts no other issuer's tokens. |
+| OIDC client ID | Optional. Leave it empty to sign in as the client the server advertises (its `VAULT_SYNC_OIDC_CLIENT_ID`, by default its audience). Enter a client ID to sign in as another public client instead (see below). The access tokens it receives must carry the server's `VAULT_SYNC_OIDC_AUDIENCE`. |
 | Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
 | Remote vault | Shown while signed in: the server vault this vault syncs with, or controls to connect to one of your vaults or create a new one (see [Connecting a vault](#connecting-a-vault)). |
 
-All three URLs must use `https`. Plain `http` works only for `localhost`, `127.0.0.1` and `::1`, for local development. While you are signed in, and while a sign-in is in progress, these settings are locked, because the refresh token belongs to that identity provider. Sign out to change them.
+Usually the server URL is all you enter. The server URL and the issuer, whether entered or advertised by the server, must use `https`. Plain `http` works only for `localhost`, `127.0.0.1` and `::1`, for local development. While you are signed in, and while a sign-in is in progress, these settings are locked, because the refresh token belongs to that identity provider. Sign out to change them. While signed in, the empty issuer and client ID fields show the ones in use.
 
-The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-sync/`. That file also holds the refresh token while you are signed in, so treat it as a secret. It also holds this device's registration and the connected vault. vault-sync never syncs it.
+The settings live in the plugin's `data.json` under `.obsidian/plugins/vault-sync/`. That file also holds the refresh token while you are signed in, so treat it as a secret, together with the issuer and client ID it was issued for, so that refreshing it never depends on reaching the server. It also holds this device's registration and the connected vault. vault-sync never syncs it.
 
 ## Signing in
 
 Click **Sign in** in the settings, or run the **Vault Sync: Sign in** command. The plugin signs in with the OAuth 2.0 Device Authorization Grant (RFC 8628), which works the same on desktop and Android and needs no redirect back into Obsidian. While signed in, **Sign in** is refused: sign out first. A sign-in goes like this:
 
-1. The plugin calls the server's `GetServerInfo` to check that the server speaks a compatible protocol.
+1. The plugin calls the server's `GetServerInfo`, which needs no sign-in, to check that the server speaks a compatible protocol and to learn the issuer and client ID to sign in with (unless the settings override them). If neither the server nor the settings name one of them, the dialog says which one to enter in the settings.
 2. It discovers the identity provider's endpoints from `<issuer>/.well-known/openid-configuration` and asks for a device code with the scopes `openid offline_access`.
 3. A dialog shows a link to the verification page and a user code. Open the page in any browser, on this device or another one, sign in there and enter the code. **Copy code** and **Open page** help on mobile.
 4. The plugin polls the identity provider at the interval it asks for, and slows down when told to. Once you approve, it stores the refresh token in plugin data and closes the dialog. Closing the dialog cancels the sign-in and leaves the device as it was (for example still needing a sign-in). If you deny the request or the code expires, the dialog says so. Start again to get a new code.
@@ -88,5 +88,5 @@ Create an OAuth2/OpenID provider and an application for vault-sync:
 - **Client type:** public. The plugin cannot keep a client secret.
 - **Device code flow:** enabled (in Authentik, the brand's *Device code flow* setting). If the provider's OpenID configuration has no `device_authorization_endpoint`, the plugin reports that the device authorization grant is not supported.
 - **Scopes:** include `offline_access`, so that a refresh token is issued. The plugin refuses a sign-in that returns no refresh token.
-- **Audience:** Authentik puts the client ID in the access token's `aud`, so set the server's `VAULT_SYNC_OIDC_AUDIENCE` to the client ID, and enter the same client ID in the plugin.
+- **Audience:** Authentik puts the client ID in the access token's `aud`, so set the server's `VAULT_SYNC_OIDC_AUDIENCE` to the client ID. The server then advertises that client ID to the plugin, and nothing needs to be entered in the plugin besides the server URL. With a provider whose access tokens carry another audience, also set the server's `VAULT_SYNC_OIDC_CLIENT_ID` to the plugin's client ID.
 - **Token lifetimes:** any access-token lifetime works, because the plugin refreshes ahead of expiry. The refresh-token lifetime decides how long a device that stays offline remains signed in.

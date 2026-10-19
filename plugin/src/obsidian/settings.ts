@@ -73,13 +73,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
           }),
       );
 
+    // Optional: empty uses what the server advertises. While signed in, the
+    // placeholders show the provider in use.
+    const provider = host.data.identityProvider;
     new Setting(containerEl).setName("Identity provider").setHeading();
     new Setting(containerEl)
       .setName("OIDC issuer URL")
-      .setDesc("The issuer your server trusts, e.g. https://auth.example.com/application/o/vault-sync/.")
+      .setDesc("Optional. Leave empty to use the issuer the server advertises; needed only for servers that advertise none.")
       .addText((text) =>
         text
-          .setPlaceholder("https://auth.example.com/application/o/vault-sync/")
+          .setPlaceholder(provider?.issuer ?? "From the server")
           .setValue(host.data.oidcIssuer)
           .setDisabled(locked)
           .onChange(async (value) => {
@@ -89,9 +92,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       );
     new Setting(containerEl)
       .setName("OIDC client ID")
-      .setDesc("The public OAuth client with the device code grant enabled.")
+      .setDesc("Optional. Leave empty to use the client the server advertises, or enter the public OAuth client (with the device code grant enabled) to sign in as instead.")
       .addText((text) =>
         text
+          .setPlaceholder(provider?.clientId ?? "From the server")
           .setValue(host.data.oidcClientId)
           .setDisabled(locked)
           .onChange(async (value) => {
