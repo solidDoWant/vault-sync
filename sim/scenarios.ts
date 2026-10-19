@@ -1917,6 +1917,61 @@ export async function remoteRenameOntoSpellingOfUnpushedFile(endpoints: SimEndpo
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), noteContents };
 }
 
+/**
+ * A case-only rename on a case-insensitive client (#304). In the `remote-edit`
+ * variant both engines share `a.md`; the second engine's user renames it to
+ * `A.md`, and the first engine edits `a.md` and pushes before the second
+ * engine pushes. In the `first-push` variant the second engine's user
+ * creates `Notes/C.md` and renames it to `notes/c.md` before the first push.
+ * The user's spelling must reach the server and stay in the vault.
+ */
+export async function caseOnlyRename(endpoints: SimEndpoints, platform: "windows" | "macos", variant: "remote-edit" | "first-push"): Promise<HeldPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  let before = new Map<string, string>();
+  if (variant === "remote-edit") {
+    log(await first.edit("a.md", encoder.encode("a\n")));
+    await push(first);
+    await pull(second);
+    before = await liveDocuments(run);
+    log(await second.move("a.md", "A.md"));
+    log(await first.edit("a.md", encoder.encode("a\nremote edit\n")));
+    await push(first);
+    await push(second);
+    await pull(first);
+  } else {
+    log(await second.edit("Notes/C.md", encoder.encode("new\n")));
+    log(await second.move("Notes/C.md", "notes/c.md"));
+    await push(second);
+    await pull(first);
+  }
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run) };
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];
