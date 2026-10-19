@@ -7,6 +7,7 @@ import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "../plugin/src/core/protocol/client";
+import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
 import { ScriptedClient, type Acknowledgement, type RunContext, type Violation } from "./client";
 import { Control } from "./control";
@@ -31,6 +32,18 @@ export interface RunOptions {
    * make real engines edit concurrently.
    */
   engines?: number;
+  /**
+   * Each engine's platform path rules (SPEC.md §8). By default every engine
+   * gets `platformForSeed(seed)`, so seeded runs cover all three platforms.
+   */
+  platforms?: PathPlatform[];
+}
+
+const platforms: readonly PathPlatform[] = ["posix", "windows", "macos"];
+
+/** The platform the engines of a seeded run follow: seeds rotate through POSIX, Windows and macOS rules. */
+export function platformForSeed(seed: number): PathPlatform {
+  return platforms[seed % platforms.length] ?? "posix";
 }
 
 export interface RunResult {
@@ -91,7 +104,8 @@ export class SimRun {
       const observerIndex = options.clients + engine;
       const observerDevice = (await setup.devices.registerDevice({ name: `sim engine ${String(engine)}` })).device;
       if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
-      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context));
+      const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
+      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform));
     }
     const simRun = new SimRun(context, clients, observers, control, setup, trace);
     run.stepNumber = () => simRun.stepNumber;

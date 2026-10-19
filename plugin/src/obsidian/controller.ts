@@ -6,6 +6,7 @@ import type { AuthState } from "../core/auth/tokens";
 import type { Journal } from "../core/journal/journal";
 import type { ProtocolClient } from "../core/protocol/client";
 import type { VaultAdapter } from "../core/vault/adapter";
+import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
 import type { JournalKey } from "./journal";
 import { SyncSession, type SyncSessionOptions } from "./session";
@@ -143,6 +144,8 @@ export interface SyncControllerOptions {
   ready?: () => Promise<void>;
   pushDebounceMs: number | null;
   syncIntervalMs: number | null;
+  /** The local platform's file-name rules, passed to every session (SyncSessionOptions.pathRules). */
+  pathRules?: PathRules;
   onStatus: (status: SyncStatus) => void;
   /** Builds the session; tests replace it to observe sessions. Defaults to `new SyncSession(options)`. */
   createSession?: (options: SyncSessionOptions) => SyncSession;
@@ -256,6 +259,7 @@ export class SyncController {
         ...(this.options.ready === undefined ? {} : { ready: this.options.ready }),
         pushDebounceMs: this.options.pushDebounceMs,
         syncIntervalMs: this.options.syncIntervalMs,
+        ...(this.options.pathRules === undefined ? {} : { pathRules: this.options.pathRules }),
         onStatus: (status) => {
           if (this.running?.session === session) this.publish(status);
         },

@@ -657,3 +657,209 @@ async function liveDocuments(run: SimRun): Promise<Map<string, string>> {
   for (const [documentId, head] of heads) if (!head.deleted) documents.set(head.path, run.context.ids.label(documentId));
   return documents;
 }
+
+export interface UnmaterializableResult extends RunResult {
+  /** What the Windows engine reported as unmaterializable after it first pulled: server path to reason. */
+  reportedAfterCreate: Map<string, string>;
+  /** The Windows engine's vault then: its paths. */
+  windowsFilesAfterCreate: string[];
+  /** What it reported once a synced note had been renamed to a name Windows cannot hold, and its vault then. */
+  reportedAfterRename: Map<string, string>;
+  windowsFilesAfterRename: Map<string, string>;
+  /** CommitRevision paths the Windows engine sent while its documents could not be materialized. */
+  windowsCommitsWhileTracked: string[];
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents before the illegal names and after the run: path to document label. */
+  before: Map<string, string>;
+  documents: Map<string, string>;
+}
+
+/** Over MAX_PATH (259 UTF-16 code units) with every name under 255. */
+const overlongPath = `${"long".repeat(50)}/${"b".repeat(56)}.md`;
+
+/**
+ * Platform path rules (#20, SPEC.md §8) between a POSIX engine and a Windows
+ * engine (an engine and in-memory vault under Windows rules, which are also
+ * case-insensitive). The POSIX engine creates notes Windows cannot hold (a
+ * reserved device name, a colon, a trailing dot, a path over MAX_PATH) and
+ * renames two synced notes to names with a `?` and a `*`, one of which the
+ * Windows engine's user has edited and not pushed. The Windows engine must
+ * track each of them as unmaterializable, write none of them, keep the edited
+ * note's file where it was with the edit, remove the unchanged one (its
+ * content is on the server), and commit nothing for any of them: never a
+ * rename or a delete on the server, and not the edit while the note cannot be
+ * written. Faults: it crashes after its
+ * first pull and pushes after the restart (a full scan). Once the POSIX engine
+ * renames them all to legal names, every one materializes on Windows, the
+ * edit is merged and committed, and both vaults end identical.
+ */
+export async function unmaterializableOnWindows(endpoints: SimEndpoints): Promise<UnmaterializableResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+  const [posix, windows] = run.observers;
+  if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+  const push = async (engine: typeof posix) => {
+    log(engine.startPush());
+    await drain(engine.index);
+  };
+  const pull = async (engine: typeof posix) => {
+    log(engine.startPull());
+    await drain(engine.index);
+  };
+  // The network labels an engine's calls by its index, as `c<index>`.
+  const windowsCommits = () => [
+    ...new Set(run.trace.filter((line) => line.includes(` c${String(windows.index)} CommitRevision(`)).map((line) => /CommitRevision\(\S+ \S+ base=\S+ "([^"]*)"/.exec(line)?.[1] ?? line)),
+  ];
+
+  log(await posix.edit("ok.md", encoder.encode(textLines("fine"))));
+  log(await posix.edit("plan.md", encoder.encode(textLines("one", "two"))));
+  await push(posix);
+  await pull(windows);
+  const before = await liveDocuments(run);
+
+  const illegal: [string, string][] = [
+    ["CON.md", "console.md"],
+    ["notes/a:b.md", "notes/a-b.md"],
+    ["trailing.", "trailing.txt"],
+    [overlongPath, "short.md"],
+  ];
+  for (const [index, [path]] of illegal.entries()) log(await posix.edit(path, encoder.encode(textLines(`illegal ${String(index)}`))));
+  await push(posix);
+  await pull(windows);
+  const reportedAfterCreate = await windows.unmaterializable();
+  const windowsFilesAfterCreate = await windows.list();
+  log(windows.crash());
+  await push(windows);
+
+  // Two synced notes renamed to names Windows cannot hold: one the Windows
+  // user has edited and not pushed yet, one unchanged there.
+  log(await windows.edit("plan.md", encoder.encode(textLines("one", "two (edited on windows)"))));
+  log(await posix.move("plan.md", "plan?.md"));
+  log(await posix.move("ok.md", "ok*.md"));
+  await push(posix);
+  await pull(windows);
+  await push(windows);
+  const reportedAfterRename = await windows.unmaterializable();
+  const windowsFilesAfterRename = new Map<string, string>();
+  for (const path of await windows.list()) windowsFilesAfterRename.set(path, decoder.decode((await windows.read(path)) ?? new Uint8Array()));
+  const windowsCommitsWhileTracked = windowsCommits();
+
+  // Every one renamed to a legal name: each materializes on Windows.
+  for (const [from, to] of [...illegal, ["plan?.md", "plan 2.md"] as [string, string], ["ok*.md", "ok 2.md"] as [string, string]]) log(await posix.move(from, to));
+  await push(posix);
+  await push(windows);
+  await pull(posix);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [posix, windows].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return {
+    ...result,
+    reportedAfterCreate,
+    windowsFilesAfterCreate,
+    reportedAfterRename,
+    windowsFilesAfterRename,
+    windowsCommitsWhileTracked,
+    vaults,
+    before,
+    documents: await liveDocuments(run),
+  };
+}
+
+export interface FreedPathResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents before the renames and after the run: path to document label. */
+  before: Map<string, string>;
+  documents: Map<string, string>;
+}
+
+/**
+ * A path freed by an unmaterializable rename is reused (review of #217,
+ * SPEC.md §8). The POSIX engine renames three notes the Windows engine has
+ * synced, unchanged, to names Windows cannot hold, so the Windows engine
+ * removes their files. Then the POSIX engine creates a different note at one
+ * freed path and an empty note, of the same content as the empty original,
+ * at another, while the Windows user creates a new note at the third and the
+ * Windows engine crashes. Once the POSIX engine renames the originals to
+ * legal names, every one of the six notes must be live on the server, with
+ * its own content, and in both vaults: none merged into another, deleted,
+ * or left unpushed.
+ */
+export async function freedPathReused(endpoints: SimEndpoints): Promise<FreedPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+  const [posix, windows] = run.observers;
+  if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof posix) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof posix) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const moveAll = async (moves: [string, string][]) => {
+    for (const [from, to] of moves) log(await posix.move(from, to));
+    await push(posix);
+  };
+
+  log(await posix.edit("plan.md", encoder.encode(textLines("one", "two"))));
+  log(await posix.edit("empty.md", new Uint8Array()));
+  log(await posix.edit("draft.md", encoder.encode(textLines("draft"))));
+  await push(posix);
+  await pull(windows);
+  const before = await liveDocuments(run);
+
+  await moveAll([
+    ["plan.md", "plan?.md"],
+    ["empty.md", "empty?.md"],
+    ["draft.md", "draft?.md"],
+  ]);
+  await pull(windows);
+
+  // Another note at one freed path, an empty one at another, and a new local note at the third.
+  log(await posix.edit("plan.md", encoder.encode(textLines("another note"))));
+  log(await posix.edit("empty.md", new Uint8Array()));
+  await push(posix);
+  log(await windows.edit("draft.md", encoder.encode(textLines("brand new"))));
+  await pull(windows);
+  log(windows.crash());
+  await push(windows);
+  await pull(windows);
+
+  await moveAll([
+    ["plan?.md", "plan 2.md"],
+    ["empty?.md", "empty 2.md"],
+    ["draft?.md", "draft 2.md"],
+  ]);
+  await pull(windows);
+  await push(windows);
+  await pull(posix);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [posix, windows].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, before, documents: await liveDocuments(run) };
+}

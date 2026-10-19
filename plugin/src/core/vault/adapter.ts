@@ -5,9 +5,11 @@
  * implementation must pass the conformance suite in ./conformance.ts.
  *
  * Paths are vault-relative, "/"-separated, without a leading or trailing
- * slash, and case-sensitive as given (collision handling is the engine's job,
- * via path keys). Only files are modelled; folders exist implicitly as the
- * ancestors of files.
+ * slash, and given as the engine means them. On a case-insensitive platform
+ * the vault may resolve a path of another spelling to the same file, and
+ * keeps the spelling the file has (collision handling is the engine's job,
+ * via path keys and its platform path rules, SPEC.md §8). Only files are
+ * modelled; folders exist implicitly as the ancestors of files.
  */
 export interface VaultAdapter {
   /** Lists the paths of all files in the vault, in no particular order. */
@@ -20,15 +22,16 @@ export interface VaultAdapter {
    * Creates or overwrites a file, creating missing parent folders. Rejects
    * with VaultError "path-conflict" if the path or one of its ancestors is
    * occupied by the other kind of entry (a folder where the file should go, or
-   * a file where a folder should go).
+   * a file where a folder should go), and with "unmaterializable" if the
+   * platform cannot hold a file at the path.
    */
   write(path: string, data: Uint8Array): Promise<void>;
 
   /**
    * Moves a file. Rejects with "not-found" if `from` does not exist,
    * "already-exists" if a different file already exists at `to`, and
-   * "path-conflict" as for write. A rename that changes only letter case is
-   * allowed.
+   * "path-conflict" and "unmaterializable" as for write. A rename that
+   * changes only letter case is allowed.
    */
   rename(from: string, to: string): Promise<void>;
 
@@ -66,7 +69,14 @@ export type VaultEvent =
 
 export type VaultListener = (event: VaultEvent) => void;
 
-export type VaultErrorCode = "not-found" | "already-exists" | "path-conflict";
+/**
+ * - `not-found`, `already-exists`, `path-conflict`: as documented per method.
+ * - `unmaterializable`: the local platform cannot hold a file at the path
+ *   (SPEC.md §8, platform path rules), e.g. a Windows reserved name. A write
+ *   or rename may reject with it; the engine then tracks the document as
+ *   unmaterializable instead of failing.
+ */
+export type VaultErrorCode = "not-found" | "already-exists" | "path-conflict" | "unmaterializable";
 
 /** The error every VaultAdapter rejects with for the documented failure cases. */
 export class VaultError extends Error {

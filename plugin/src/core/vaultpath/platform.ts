@@ -1,0 +1,81 @@
+/**
+ * The local platform's file-name rules (SPEC.md §8, platform path rules). A
+ * path the server accepts (§6.2) may still be impossible to create on the
+ * device: the engine tracks such a document as unmaterializable instead of
+ * writing it, and never renames it on the server.
+ *
+ * - `posix` (Linux, Android): names of at most 255 UTF-8 bytes, absolute
+ *   paths below PATH_MAX (4096 bytes), no NUL.
+ * - `macos` (macOS, iOS): names of at most 255 UTF-8 bytes, absolute paths
+ *   below PATH_MAX (1024 bytes), no NUL. The filesystem is case- and
+ *   normalization-insensitive.
+ * - `windows`: no `<>:"|?*`, `\` or control characters; no reserved device
+ *   names (`CON`, `PRN`, `AUX`, `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9` and their
+ *   superscript forms, `CONIN$`, `CONOUT$`; with or without an extension, in
+ *   any case); no name ending in a dot or a space; names of at most 255
+ *   UTF-16 code units; absolute paths below MAX_PATH (260 UTF-16 code units).
+ *   The filesystem is case-insensitive.
+ */
+export type PathPlatform = "posix" | "windows" | "macos";
+
+export interface PathRules {
+  platform: PathPlatform;
+  /**
+   * The vault folder's absolute path, if known, so the length limits count
+   * it (with the separator before the vault-relative path). Without it only
+   * the vault-relative path is counted.
+   */
+  root?: string;
+}
+
+/** Why a path cannot be created on the local platform. */
+export type UnmaterializableReason = "reserved-name" | "forbidden-character" | "trailing-dot-or-space" | "name-too-long" | "path-too-long";
+
+/**
+ * Why the engine tracks a document as unmaterializable: a reason the rules
+ * found, or `refused-by-vault` when the rules allow the path but the vault
+ * refused it anyway (VaultError "unmaterializable").
+ */
+export type UnmaterializableCause = UnmaterializableReason | "refused-by-vault";
+
+/** The rules of a platform where every path the server accepts can be created (up to the length limits). */
+export const posixPathRules: PathRules = { platform: "posix" };
+
+const encoder = new TextEncoder();
+const utf8Length = (text: string) => encoder.encode(text).length;
+
+const maxNameLength = 255;
+/** Longest absolute path, terminator excluded, in the platform's units: UTF-16 code units on Windows, UTF-8 bytes elsewhere. */
+const maxPathLength: Record<PathPlatform, number> = { posix: 4095, macos: 1023, windows: 259 };
+
+// Control characters, the characters Win32 forbids in names, and "\", which
+// Windows would take as a separator (a different file than the one named).
+// eslint-disable-next-line no-control-regex
+const windowsForbidden = /[\u0000-\u001f<>:"|?*\\]/;
+const windowsReserved = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9¹²³])$/i;
+
+/**
+ * Why `path` (vault-relative, "/"-separated) cannot be created on the
+ * platform `rules` describe, or undefined if it can.
+ */
+export function unmaterializableReason(path: string, rules: PathRules): UnmaterializableReason | undefined {
+  const windows = rules.platform === "windows";
+  const segments = path.split("/");
+  for (const segment of segments) {
+    if (windows ? windowsForbidden.test(segment) : segment.includes("\u0000")) return "forbidden-character";
+  }
+  if (windows) {
+    for (const segment of segments) {
+      // NUL.txt and NUL .txt are NUL too: Windows ignores what follows the first dot, and trailing spaces before it.
+      const stem = segment.split(".")[0]?.trimEnd() ?? "";
+      if (windowsReserved.test(stem)) return "reserved-name";
+    }
+    if (segments.some((segment) => segment.endsWith(".") || segment.endsWith(" "))) return "trailing-dot-or-space";
+  }
+  const length = windows ? (text: string) => text.length : utf8Length;
+  if (segments.some((segment) => length(segment) > maxNameLength)) return "name-too-long";
+  const root = rules.root ?? "";
+  const separator = root === "" || /[/\\]$/.test(root) ? 0 : 1;
+  if (length(root) + separator + length(path) > maxPathLength[rules.platform]) return "path-too-long";
+  return undefined;
+}

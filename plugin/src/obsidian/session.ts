@@ -3,6 +3,7 @@ import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
 import type { Journal } from "../core/journal/journal";
 import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
+import type { PathRules } from "../core/vaultpath/platform";
 import { errorMessage, isOffline } from "./status";
 
 // No Obsidian import: the plugin passes the Obsidian adapter and its
@@ -36,6 +37,8 @@ export interface SyncSessionOptions {
    * for the user's next edit; null turns the timer off.
    */
   syncIntervalMs: number | null;
+  /** The local platform's file-name rules (SyncEngineOptions.pathRules); the engine defaults to POSIX. */
+  pathRules?: PathRules;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
 }
@@ -150,6 +153,7 @@ export class SyncSession {
       ...(options.merge === undefined ? {} : { merge: options.merge }),
       ...(options.onLocalChange === undefined ? {} : { onLocalChange: options.onLocalChange }),
       pushDebounceMs: options.pushDebounceMs,
+      ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
       onBusyChange: (busy) => {
         this.busy = busy;
         void this.report();
