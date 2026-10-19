@@ -195,6 +195,23 @@ export class SyncController {
     return run;
   }
 
+  /**
+   * Stops the running session, if any, and starts the one now wanted, even if
+   * the account and vault did not change: for settings that the session's
+   * vault is built from, such as config sync (SPEC.md §8).
+   */
+  restart(): Promise<void> {
+    this.cancelRetry();
+    const generation = ++this.generation;
+    const run = this.queue.then(async () => {
+      if (generation !== this.generation) return;
+      await this.stopRunning();
+      await this.apply(generation);
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
   /** Stops sync, and resolves once the session's engine has settled. */
   stop(): Promise<void> {
     this.cancelRetry();
