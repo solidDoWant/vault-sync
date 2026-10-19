@@ -1,0 +1,35 @@
+# Placeholder values for `make chart-lint` (scripts/chart_test.sh): every
+# required value is set and every Secret reference is used. None of these
+# objects exist anywhere; helm lint and helm template do not need them to.
+config:
+  database:
+    url:
+      secretKeyRef:
+        name: vault-sync-database
+        key: dsn
+    tls:
+      clientCertificate:
+        secretName: vault-sync-database-client
+      caCert:
+        secretKeyRef:
+          name: postgres-ca
+          key: ca.crt
+  s3:
+    bucket: vault-sync
+    endpoint: https://rgw.example.com
+    credentials:
+      secretName: vault-sync-bucket
+    caCert:
+      secretKeyRef:
+        name: rgw-ca
+        key: ca.crt
+  oidc:
+    issuerUrl: https://auth.example.com/application/o/vault-sync/
+    audience: vault-sync
+  export:
+    output:
+      persistence:
+        type: persistentVolumeClaim
+        existingClaim: vault-sync-export
+    escrow:
+      secretName: vault-sync-escrow-key

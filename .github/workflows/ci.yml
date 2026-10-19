@@ -100,6 +100,24 @@ jobs:
       - name: Integration tests on PostgreSQL 14
         run: nix develop -c make test-integration-postgres14
 
+  # Release artifacts (docs/deployment.md): the Helm chart's lint and
+  # rendered-manifest checks, and the Nix-built server image, whose binary
+  # build-images checks with govulncheck. Building the image also fails when
+  # go.mod/go.sum changed without updating vendorHash in nix/server.nix.
+  # Nothing is pushed.
+  release-artifacts:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Chart lint and rendered-manifest checks
+        run: nix develop -c make chart-lint
+      - name: Build the server image (not pushed)
+        run: nix develop -c make build-images
+
   # A short sync simulation (docs/testing/simulation.md): a few seeds
   # against the real server, plus the check that the harness catches a
   # deliberately broken server (issue #15: under 5 minutes).
@@ -190,7 +208,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e]
+    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts]
     if: always()
     runs-on: ubuntu-latest
     steps:

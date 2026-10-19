@@ -1,0 +1,27 @@
+/*
+ * Vault Sync plugin styles. Obsidian loads this file next to main.js; it is
+ * shipped in every GitHub release (make release) so BRAT installs it too.
+ * Only Obsidian's CSS variables are used, so every theme applies.
+ */
+
+/* The device-flow code the user types on the identity provider's page. */
+.vault-sync-user-code {
+  font-family: var(--font-monospace);
+  font-size: var(--font-ui-large);
+  letter-spacing: 0.15em;
+  margin: var(--size-4-3) 0;
+  text-align: center;
+  user-select: all;
+}
+
+.vault-sync-verification-uri {
+  word-break: break-all;
+}
+
+.vault-sync-sign-in-error {
+  color: var(--text-error);
+}
+
+.vault-sync-connect-warning {
+  color: var(--text-warning);
+}
