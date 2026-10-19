@@ -2,6 +2,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
+import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 import { sha256Hex } from "../hash";
 import type { ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
 import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
@@ -11,7 +12,7 @@ import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapt
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isNewVaultPath, isVaultRelativePath } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
-import { blobMissing, headMoved } from "./errors";
+import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
@@ -75,6 +76,28 @@ export interface SyncEngineOptions {
   pathRules?: PathRules;
   /** Called whenever a remote revision is tracked as unmaterializable (SPEC.md §8): what the UI shows. */
   onUnmaterializable?: (document: UnmaterializableDocument) => void;
+  /**
+   * How long the engine waits after the server refused a call with
+   * RESOURCE_EXHAUSTED (its per-user limits, SPEC.md §12) before its next
+   * pull or push calls the server: backoffDelay of the consecutive refusals,
+   * reset by a pull or push that succeeds. Defaults to defaultRateLimitBackoff.
+   */
+  rateLimitBackoff?: Backoff;
+  /** The timers of that wait. Defaults to the global ones. */
+  timers?: Timers;
+  /** Uniform in [0, 1); spreads the waits of a user's devices out. Defaults to Math.random. */
+  random?: () => number;
+}
+
+/** The engine's wait after RESOURCE_EXHAUSTED: 0.5 to 1 s after the first refusal, doubling up to 30 to 60 s. */
+export const defaultRateLimitBackoff: Readonly<Backoff> = { initialMs: 1000, maxMs: 60_000 };
+
+/** What a pull or push waiting out a RESOURCE_EXHAUSTED backoff rejects with when the engine is disposed. */
+export class EngineDisposedError extends Error {
+  override readonly name = "EngineDisposedError";
+  constructor() {
+    super("the sync engine was disposed");
+  }
 }
 
 /**
@@ -157,7 +180,7 @@ const defaultPageSize = 500;
 const defaultPushDebounceMs = 2000;
 /** Rounds of one push: a merge or a superseded upload leaves changes the next round pushes. */
 const maxPushRounds = 4;
-/** Attempts of one CommitRevision within a push after transient failures; backing off is #146. */
+/** Attempts of one CommitRevision within a push after transient failures (UNAVAILABLE, DEADLINE_EXCEEDED). */
 const maxCommitAttempts = 3;
 /** Numbered conflict-copy names tried before giving up on finding a free one. */
 const maxConflictNameAttempts = 100;
@@ -213,6 +236,13 @@ export class SyncEngine {
   private changes: Changes = { all: true, paths: new Set(), renames: new Map() };
   private pushTimer: ReturnType<typeof setTimeout> | undefined;
   private disposed = false;
+  private readonly rateLimitBackoff: Backoff;
+  private readonly timers: Timers;
+  private readonly random: () => number;
+  /** Consecutive pulls and pushes the server refused with RESOURCE_EXHAUSTED. */
+  private throttled = 0;
+  /** The running RESOURCE_EXHAUSTED backoff: the next pull or push waits for `over` before it calls the server. */
+  private backoff: { timer: unknown; over: Promise<void>; abandon: () => void } | undefined;
 
   constructor(options: SyncEngineOptions) {
     this.vaultId = options.vaultId;
@@ -241,15 +271,19 @@ export class SyncEngine {
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
     this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
+    this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
+    this.timers = options.timers ?? globalTimers;
+    this.random = options.random ?? Math.random;
     this.unsubscribe = this.vault.watch((event) => {
       this.events = this.events.then(() => this.handleEvent(event));
     });
   }
 
-  /** Stops watching the vault and cancels a scheduled push. */
+  /** Stops watching the vault and cancels a scheduled push; a pull or push waiting out a backoff rejects with EngineDisposedError. */
   dispose(): void {
     this.disposed = true;
     this.cancelScheduledPush();
+    this.backoff?.abandon();
     this.unsubscribe();
   }
 
@@ -427,11 +461,60 @@ export class SyncEngine {
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     if (this.queued++ === 0) this.onBusyChange(true);
-    const run = this.work.then(task).finally(() => {
+    const run = this.work.then(() => this.throttle(task)).finally(() => {
       if (--this.queued === 0) this.onBusyChange(false);
     });
     this.work = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * Runs `task` once a RESOURCE_EXHAUSTED backoff is over. If the server
+   * refuses one of its calls with RESOURCE_EXHAUSTED, a backoff starts. The
+   * server refuses such a call before doing anything (SPEC.md §12), and what
+   * was not acknowledged stays pending in the journal, so the next pull or
+   * push only waits before it tries again. A pull or push that succeeds
+   * resets the backoff's doubling.
+   */
+  private async throttle<T>(task: () => Promise<T>): Promise<T> {
+    if (this.backoff !== undefined) await this.backoff.over;
+    try {
+      const result = await task();
+      this.throttled = 0;
+      return result;
+    } catch (error) {
+      if (errorCode(error) === Code.ResourceExhausted) this.startBackoff();
+      throw error;
+    }
+  }
+
+  /** Starts the next backoff. Once it is over the engine pushes, if it pushes on its own and no pull or push is queued. */
+  private startBackoff(): void {
+    if (this.disposed) return;
+    this.throttled++;
+    const delay = backoffDelay(this.throttled, this.rateLimitBackoff, this.random());
+    let end: () => void = () => undefined;
+    let fail: (error: Error) => void = () => undefined;
+    const over = new Promise<void>((resolve, reject) => {
+      end = resolve;
+      fail = reject;
+    });
+    // Rejected only by dispose(), for a task that waits on it.
+    over.catch(() => undefined);
+    const backoff = {
+      over,
+      timer: this.timers.setTimeout(() => {
+        if (this.backoff === backoff) this.backoff = undefined;
+        end();
+        if (this.queued === 0 && this.pushDebounceMs !== null && !this.disposed) this.automaticPush();
+      }, delay),
+      abandon: () => {
+        this.timers.clearTimeout(backoff.timer);
+        if (this.backoff === backoff) this.backoff = undefined;
+        fail(new EngineDisposedError());
+      },
+    };
+    this.backoff = backoff;
   }
 
   private async pullOnce(): Promise<PullSummary> {
@@ -1739,15 +1822,20 @@ export class SyncEngine {
     this.cancelScheduledPush();
     this.pushTimer = setTimeout(() => {
       this.pushTimer = undefined;
-      this.push().then(
-        (summary) => {
-          this.onPushComplete(summary);
-        },
-        (error: unknown) => {
-          this.onPushError(error);
-        },
-      );
+      this.automaticPush();
     }, this.pushDebounceMs);
+  }
+
+  /** A push the engine starts on its own; its outcome goes to onPushComplete or onPushError. */
+  private automaticPush(): void {
+    this.push().then(
+      (summary) => {
+        this.onPushComplete(summary);
+      },
+      (error: unknown) => {
+        this.onPushError(error);
+      },
+    );
   }
 
   private cancelScheduledPush(): void {

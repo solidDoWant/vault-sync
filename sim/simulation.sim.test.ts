@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused } from "./scenarios";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -127,6 +127,34 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
     // The restarted engine resumed the upload where the server's session stood.
     expect(result.chunksBeforeCrash, trace).toEqual(["0"]);
     expect(result.chunksAfterCrash, trace).toEqual(["65536", "131072"]);
+  });
+
+  it("backs the engine off, bounded and jittered, when the server's per-user limit refuses its calls, and loses no write", async () => {
+    const result = await engineBacksOffWhenThrottled(environment);
+    const trace = tail(result.trace, 160);
+
+    // Includes the network's check that the engine sent nothing while it backed off.
+    expect(result.violations, trace).toEqual([]);
+    expect(result.refused, trace).toEqual(["CommitRevision", "ListChanges", "BeginBlob", "CommitRevision", "ListChanges"]);
+    // Half of a ceiling that doubles from 1 s with each consecutive refusal, plus a random part of the other half; a push that succeeded starts it over.
+    const bounds = [
+      [500, 1000],
+      [1000, 2000],
+      [2000, 4000],
+      [4000, 8000],
+      [500, 1000],
+    ];
+    expect(result.delays, trace).toHaveLength(bounds.length);
+    result.delays.forEach((delay, index) => {
+      expect(delay, `backoff ${String(index + 1)}\n${trace}`).toBeGreaterThanOrEqual(bounds[index]?.[0] ?? Infinity);
+      expect(delay, `backoff ${String(index + 1)}\n${trace}`).toBeLessThanOrEqual(bounds[index]?.[1] ?? -Infinity);
+    });
+    // The first edit went out three times with one revision id, and was acknowledged once; the second edit once.
+    const [first, second] = result.engineAcknowledged;
+    expect(result.engineAcknowledged, trace).toHaveLength(2);
+    expect(result.commitLabels, trace).toEqual([first, first, first, second]);
+    expect(result.serverContent, trace).toBe("written while the server is busy\nand again\n");
+    expect(result.engineContent, trace).toBe(result.serverContent);
   });
 
   it("merges two engines' concurrent edits, keeping overlapping and binary ones as conflict copies", async () => {

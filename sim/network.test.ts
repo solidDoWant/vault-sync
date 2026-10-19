@@ -263,4 +263,77 @@ describe("SimNetwork", () => {
       expect(await network.deliverRequest()).toContain("CommitRevision(a) -> ok");
     });
   });
+
+  describe("RESOURCE_EXHAUSTED from the per-user limit (#146)", () => {
+    it("refuses a client's oldest request without it reaching the server", async () => {
+      const { network, received, commit } = setup();
+      const call = commit(0, "a");
+      await settle();
+
+      expect(network.throttle(0)).toContain("c0 CommitRevision(a) refused by the server's per-user limit -> ResourceExhausted");
+      expect(network.deliverResponse()).toContain("reply delivered");
+      await settle();
+
+      expect(call.current).toEqual({ state: "failed", code: Code.ResourceExhausted });
+      expect(received).toEqual([]);
+      expect(network.throttle(0)).toBeUndefined();
+    });
+
+    it("reports a client that sends again without setting a backoff timer first", async () => {
+      const { network, violations, commit } = setup();
+      commit(0, "a");
+      await settle();
+      network.throttle(0);
+      network.deliverResponse();
+      await settle();
+
+      commit(0, "a");
+      await settle();
+
+      expect(violations).toEqual([{ invariant: "backoff", detail: "c0 sent CommitRevision after RESOURCE_EXHAUSTED without backing off first" }]);
+    });
+
+    it("reports a client that sends while its backoff timer is pending, and not once it fired", async () => {
+      const { network, violations, commit } = setup();
+      commit(0, "a");
+      await settle();
+      network.throttle(0);
+      network.deliverResponse();
+      await settle();
+      let fired = false;
+      network.timers(0).setTimeout(() => (fired = true), 2500);
+
+      commit(1, "b");
+      await settle();
+      expect(violations).toEqual([]);
+      commit(0, "a");
+      await settle();
+      expect(violations).toEqual([{ invariant: "backoff", detail: "c0 sent CommitRevision while backing off after RESOURCE_EXHAUSTED" }]);
+
+      // 2.5 s is three steps.
+      network.now = 2;
+      expect(network.fireDueTimers()).toEqual([]);
+      network.now = 3;
+      expect(network.fireDueTimers()).toEqual(["c0 backoff timer fired"]);
+      expect(fired).toBe(true);
+      commit(0, "a");
+      await settle();
+      expect(violations).toHaveLength(1);
+    });
+
+    it("lets draining move the timers' clock on to the next timer, and forgets cleared ones", () => {
+      const { network } = setup();
+      const order: string[] = [];
+      network.timers(1).setTimeout(() => order.push("late"), 9000);
+      network.timers(0).setTimeout(() => order.push("early"), 1);
+      const cleared = network.timers(0).setTimeout(() => order.push("cleared"), 500);
+      network.timers(0).clearTimeout(cleared);
+
+      expect(network.fireNextTimer(1)).toBe("c1 backoff timer fired");
+      // The clock is now at step 9, so the other timer is overdue.
+      expect(network.fireDueTimers()).toEqual(["c0 backoff timer fired"]);
+      expect(network.fireNextTimer()).toBeUndefined();
+      expect(order).toEqual(["late", "early"]);
+    });
+  });
 });

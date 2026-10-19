@@ -9,6 +9,8 @@
 
 import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 
+import type { Timers } from "../plugin/src/core/backoff";
+
 /** How a call ended, as seen on the wire. */
 export type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
 
@@ -50,6 +52,25 @@ export interface NetworkOptions {
 /** CommitRevision refusals that a retry of a revision the server already applied must never get (SPEC.md §6.2). */
 const refusedRetryCodes: readonly Code[] = [Code.FailedPrecondition, Code.AlreadyExists];
 
+/**
+ * Engine time per step: a timer from SimNetwork.timers set for `ms` fires
+ * `ceil(ms / msPerStep)` steps later (at least one).
+ */
+export const msPerStep = 1000;
+
+/** What the server's per-user limit on concurrent requests answers (SPEC.md §12), without running the call. */
+export function throttledError(): ConnectError {
+  return new ConnectError("simulated server limit: too many concurrent requests from this user; retry once earlier requests complete", Code.ResourceExhausted);
+}
+
+interface Timer {
+  id: number;
+  client: number;
+  /** The timer step at which it fires. */
+  due: number;
+  callback: () => void;
+}
+
 /** Thrown to a client whose request or response the network lost. */
 export function networkError(reason: string): ConnectError {
   return new ConnectError(`simulated network fault: ${reason}`, Code.Unavailable);
@@ -88,6 +109,14 @@ export class SimNetwork {
   private readonly appliedRevisions = new Set<string>();
   /** Revision ids of every CommitRevision request sent so far (for the retry backoff). */
   private readonly sentRevisions = new Set<string>();
+  /** The clients' timers (SimNetwork.timers), on a clock that follows `now` and that draining moves on. */
+  private pendingTimers: Timer[] = [];
+  private nextTimer = 0;
+  private clock = 0;
+  /** Clients told RESOURCE_EXHAUSTED that have not set a backoff timer since. */
+  private readonly awaitingBackoff = new Set<number>();
+  /** Every delay a client set a timer for, in order: what scenarios check the backoff against. */
+  readonly timerDelays: { client: number; ms: number }[] = [];
 
   constructor(private readonly options: NetworkOptions) {}
 
@@ -135,6 +164,61 @@ export class SimNetwork {
     return `out of order: ${await this.send(message)}`;
   }
 
+  /**
+   * Timers for `client`'s RESOURCE_EXHAUSTED backoff (SyncEngineOptions.timers),
+   * measured in steps (msPerStep), so a run replays identically whatever the
+   * clock does. A client the network told RESOURCE_EXHAUSTED must set one
+   * before its next request, and must send nothing while one is pending: a
+   * protocol violation otherwise (#146).
+   */
+  timers(client: number): Timers {
+    return {
+      setTimeout: (callback, ms) => {
+        const id = ++this.nextTimer;
+        this.awaitingBackoff.delete(client);
+        this.timerDelays.push({ client, ms });
+        this.pendingTimers.push({ id, client, due: this.timerClock() + Math.max(1, Math.ceil(ms / msPerStep)), callback });
+        return id;
+      },
+      clearTimeout: (handle) => {
+        this.pendingTimers = this.pendingTimers.filter((timer) => timer.id !== handle);
+      },
+    };
+  }
+
+  /** Whether `client` (any client, if not given) has a timer pending. */
+  hasTimers(client?: number): boolean {
+    return this.pendingTimers.some((timer) => client === undefined || timer.client === client);
+  }
+
+  /** Fires every timer due at the current step; returns their trace entries. */
+  fireDueTimers(): string[] {
+    const now = this.timerClock();
+    const due = this.pendingTimers.filter((timer) => timer.due <= now).sort((left, right) => left.due - right.due || left.id - right.id);
+    return due.map((timer) => this.fire(timer));
+  }
+
+  /** Moves the timers' clock on to the next pending timer (of `client`, if given) and fires it: what draining does once nothing else can happen. */
+  fireNextTimer(client?: number): string | undefined {
+    const [next] = this.pendingTimers.filter((timer) => client === undefined || timer.client === client).sort((left, right) => left.due - right.due || left.id - right.id);
+    if (next === undefined) return undefined;
+    this.clock = Math.max(this.timerClock(), next.due);
+    return this.fire(next);
+  }
+
+  /**
+   * The server's per-user limit refuses `client`'s oldest request with
+   * RESOURCE_EXHAUSTED before the call runs (SPEC.md §12): the request never
+   * reaches the server, and the refusal waits as its response.
+   */
+  throttle(client: number): string | undefined {
+    const message = this.messages.find((candidate) => candidate.client === client && candidate.phase === "request");
+    if (message === undefined) return undefined;
+    message.phase = "response";
+    message.outcome = { ok: false, error: throttledError() };
+    return `${this.label(message)} refused by the server's per-user limit -> ResourceExhausted`;
+  }
+
   /** Delivers the oldest deliverable response (to `client`, if given). */
   deliverResponse(client?: number): string | undefined {
     const message = this.messages.find(
@@ -145,6 +229,7 @@ export class SimNetwork {
     const outcome = message.outcome;
     if (outcome === undefined) throw new Error("unreachable: response without an outcome");
     const live = message.incarnation === this.incarnation(message.client);
+    if (live && !outcome.ok && errorCode(outcome.error) === Code.ResourceExhausted) this.awaitingBackoff.add(message.client);
     if (live) message.settle(outcome);
     return `${this.label(message)} reply delivered${live ? "" : " to a crashed incarnation, discarded"}`;
   }
@@ -191,6 +276,8 @@ export class SimNetwork {
    */
   crash(client: number): void {
     this.incarnations.set(client, this.incarnation(client) + 1);
+    // A restarted app knows nothing of the backoff its predecessor was in.
+    this.awaitingBackoff.delete(client);
   }
 
   /** Ends every partition and delay (used to quiesce at the end of a run). */
@@ -201,6 +288,7 @@ export class SimNetwork {
 
   private enqueue<T>(client: number, method: string, input: unknown, send: () => Promise<T>): Promise<T> {
     const revisionId = method === "CommitRevision" ? revisionIdOf(input) : undefined;
+    this.checkBackoff(client, method);
     return new Promise<T>((resolve, reject) => {
       this.messages.push({
         id: this.nextId++,
@@ -271,6 +359,26 @@ export class SimNetwork {
         `${this.label(message)} was refused with ${Code[code]}, although the server already applied this revision id (a retry must get the revision back)`,
       );
     }
+  }
+
+  /** A request from `client` must neither ignore a RESOURCE_EXHAUSTED it was told nor go out during the backoff that followed (#146). */
+  private checkBackoff(client: number, method: string): void {
+    if (this.awaitingBackoff.has(client)) {
+      this.options.violation("backoff", `c${String(client)} sent ${method} after RESOURCE_EXHAUSTED without backing off first`);
+      this.awaitingBackoff.delete(client);
+    }
+    if (this.hasTimers(client)) this.options.violation("backoff", `c${String(client)} sent ${method} while backing off after RESOURCE_EXHAUSTED`);
+  }
+
+  private timerClock(): number {
+    this.clock = Math.max(this.clock, this.now);
+    return this.clock;
+  }
+
+  private fire(timer: Timer): string {
+    this.pendingTimers = this.pendingTimers.filter((candidate) => candidate !== timer);
+    timer.callback();
+    return `c${String(timer.client)} backoff timer fired`;
   }
 
   private fail(message: Message, reason: string): void {
