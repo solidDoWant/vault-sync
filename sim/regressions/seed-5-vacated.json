@@ -1,0 +1,63 @@
+{
+  "name": "seed-5-vacated",
+  "seed": 5,
+  "clients": 3,
+  "engines": 2,
+  "commitRetryBackoff": 30,
+  "violations": [
+    {
+      "invariant": "engine-convergence",
+      "detail": "e4 holds e.md, which is not a live document"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 2327680102
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 838553985
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 2445712244
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 1530061358
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 5917543
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 316543000
+    }
+  ]
+}
