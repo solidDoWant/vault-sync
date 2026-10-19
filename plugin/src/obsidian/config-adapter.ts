@@ -1,7 +1,8 @@
 import type { App, DataAdapter, EventRef } from "obsidian";
 
 import { configReloadMessage } from "../core/config/policy";
-import { VaultError, type FileStat, type VaultAdapter, type VaultListener } from "../core/vault/adapter";
+import { sha256Hex } from "../core/hash";
+import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
 
 // Type-only Obsidian imports: the unit tests run this on a fake DataAdapter.
 
@@ -46,6 +47,12 @@ export function configFolderHost(app: App): ConfigFolderHost {
  * the path: the engine tells by content hash whether the file was created,
  * changed or deleted. Where Obsidian reports no raw events (the mobile apps),
  * changes are found by the scan of every engine start.
+ *
+ * Write and delete preconditions (SPEC.md §8) are checked by reading the file
+ * just before the write or delete. DataAdapter has no compare-and-swap for
+ * binary files, so a write Obsidian makes in between is not caught; config
+ * files are written by Obsidian only when a setting changes, never by an
+ * editor's autosave, so that window is small.
  */
 export class ObsidianConfigAdapter implements VaultAdapter {
   constructor(private readonly host: ConfigFolderHost) {}
@@ -77,8 +84,13 @@ export class ObsidianConfigAdapter implements VaultAdapter {
     return stat?.type === "file" ? { size: stat.size, mtime: stat.mtime } : null;
   }
 
-  async write(path: string, data: Uint8Array): Promise<void> {
-    if ((await this.adapter.stat(this.full(path)))?.type === "folder") throw new VaultError("path-conflict", path);
+  async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    const existing = await this.adapter.stat(this.full(path));
+    if (existing?.type === "folder") throw new VaultError("path-conflict", path);
+    if (precondition !== undefined) {
+      const current = existing === null ? null : sha256Hex(await this.read(path));
+      if (current !== precondition.expectedHash) throw new VaultError("changed", path);
+    }
     await this.ensureParentFolders(path);
     await this.adapter.writeBinary(this.full(path), new Uint8Array(data).buffer);
   }
@@ -94,8 +106,9 @@ export class ObsidianConfigAdapter implements VaultAdapter {
     await this.adapter.rename(this.full(from), this.full(to));
   }
 
-  async delete(path: string): Promise<void> {
+  async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     await this.requireFile(path);
+    if (precondition !== undefined && sha256Hex(await this.read(path)) !== precondition.expectedHash) throw new VaultError("changed", path);
     await this.adapter.remove(this.full(path));
   }
 

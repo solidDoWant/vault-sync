@@ -40,7 +40,66 @@ async function command(id: string): Promise<void> {
   }, id);
 }
 
+/**
+ * The open settings tab's rows that have a toggle (the config sync rows):
+ * name, description, and the toggle's state. Read from the tab's own element,
+ * since Obsidian does not render the settings in the main document.
+ */
+async function configSyncRows(): Promise<{ name: string; description: string; on: boolean }[]> {
+  return browser.executeObsidian(({ app }) =>
+    [...((app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab?.containerEl.querySelectorAll(".setting-item") ?? [])]
+      .map((item) => ({
+        name: item.querySelector(".setting-item-name")?.textContent ?? "",
+        description: item.querySelector(".setting-item-description")?.textContent ?? "",
+        toggle: item.querySelector(".checkbox-container"),
+      }))
+      .filter((row) => row.toggle !== null)
+      .map((row) => ({ name: row.name, description: row.description, on: row.toggle?.classList.contains("is-enabled") === true })),
+  );
+}
+
 describe("Config folder sync", function () {
+  it("is off by default, warns about the risk, and stores the choice in this vault's plugin data", async function () {
+    await browser.executeObsidian(({ app }, id) => {
+      const setting = (app as unknown as { setting: { open(): void; openTabById(id: string): void } }).setting;
+      setting.open();
+      setting.openTabById(id);
+    }, pluginId);
+    const [toggle, ...categories] = await configSyncRows();
+    expect(toggle?.name).toMatch(/^Sync the config folder/u);
+    expect(toggle?.on).toBe(false);
+    expect(toggle?.description).toContain("Security risk");
+    expect(toggle?.description).toContain("plugin code, run on this device");
+    expect(toggle?.description).toContain("only for vaults you trust");
+    expect(categories).toEqual([]);
+
+    await browser.executeObsidian(({ app }) => {
+      const tab = (app as unknown as { setting: { activeTab?: { containerEl: HTMLElement } } }).setting.activeTab;
+      tab?.containerEl.querySelector<HTMLElement>(".setting-item .checkbox-container")?.click();
+    });
+    await browser.waitUntil(async () => (await configSyncRows()).length > 1, { timeoutMsg: "the categories never showed" });
+    expect((await configSyncRows()).map(({ name, on }) => ({ name, on }))).toEqual([
+      { name: expect.stringMatching(/^Sync the config folder/u) as unknown as string, on: true },
+      { name: "Themes", on: true },
+      { name: "CSS snippets", on: true },
+      { name: "Hotkeys", on: true },
+      { name: "Enabled plugin list", on: false },
+      { name: "Plugin code and data", on: false },
+    ]);
+    const stored = await browser.executeObsidian(async ({ app }, id) => {
+      const plugin = (app as unknown as { plugins: { plugins: Record<string, { loadData(): Promise<unknown> }> } }).plugins.plugins[id];
+      return JSON.stringify(await plugin?.loadData());
+    }, pluginId);
+    expect((JSON.parse(stored) as { configSync?: { enabled: boolean } }).configSync?.enabled).toBe(true);
+  });
+
+  afterEach(async function () {
+    // An open settings window must not outlive the test that opened it, even when it failed.
+    await browser.executeObsidian(({ app }) => {
+      (app as unknown as { setting: { close(): void } }).setting.close();
+    });
+  });
+
   it("uploads nothing from the config folder while off, whatever categories are selected", async function () {
     await settingsWritten();
     await callHarness("setUpSession");

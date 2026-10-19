@@ -1,4 +1,4 @@
-import { isVaultError, VaultError, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener } from "../vault/adapter";
+import { isVaultError, VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../vault/adapter";
 import { configPathSynced, neverSynced, type ConfigSyncSettings } from "./policy";
 
 /**
@@ -84,11 +84,11 @@ export class ConfigSyncVault implements VaultAdapter {
     return this.inConfig(path, () => this.config.stat(relative));
   }
 
-  async write(path: string, data: Uint8Array): Promise<void> {
+  async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
     const relative = configRelative(path);
-    if (relative === undefined) return this.notes.write(path, data);
+    if (relative === undefined) return this.notes.write(path, data, precondition);
     if (!this.accessible(relative)) throw new VaultError("path-conflict", path);
-    await this.inConfig(path, () => this.config.write(relative, data));
+    await this.inConfig(path, () => this.config.write(relative, data, precondition));
     this.changed(relative);
   }
 
@@ -108,11 +108,11 @@ export class ConfigSyncVault implements VaultAdapter {
     this.changed(target);
   }
 
-  async delete(path: string): Promise<void> {
+  async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     const relative = configRelative(path);
-    if (relative === undefined) return this.notes.delete(path);
+    if (relative === undefined) return this.notes.delete(path, precondition);
     if (!this.accessible(relative)) throw new VaultError("not-found", path);
-    await this.inConfig(path, () => this.config.delete(relative));
+    await this.inConfig(path, () => this.config.delete(relative, precondition));
     this.changed(relative);
   }
 

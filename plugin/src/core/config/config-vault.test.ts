@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { copyOf, files, harness, testStamp, type Harness } from "../engine/testing";
 import { InMemoryServer } from "../engine/memory-server";
+import { sha256Hex } from "../hash";
 import { runConformanceCase, vaultAdapterConformance } from "../vault/conformance";
 import { InMemoryVault } from "../vault/memory";
 import { ConfigSyncVault } from "./config-vault";
@@ -368,6 +369,24 @@ describe("config folder sync (SPEC.md §8)", () => {
       await expect(vault.rename(".obsidian/hotkeys.json", "hotkeys.json")).rejects.toMatchObject({ code: "path-conflict" });
       expect(await files(notes)).toEqual(new Map([["note.md", "x"]]));
       expect(await files(config)).toEqual(new Map([["hotkeys.json", "y"]]));
+    });
+
+    it("refuses a config file write or delete that expects content the file no longer has, as for a note", async () => {
+      const notes = new InMemoryVault();
+      const config = new InMemoryVault();
+      const vault = new ConfigSyncVault({ notes, config, settings: everything });
+      await config.write("hotkeys.json", bytes("saved by Obsidian"));
+      const stale = { expectedHash: sha256Hex(bytes("base")) };
+
+      await expect(vault.write(".obsidian/hotkeys.json", bytes("remote"), stale)).rejects.toMatchObject({ code: "changed", path: ".obsidian/hotkeys.json" });
+      await expect(vault.write(".obsidian/hotkeys.json", bytes("remote"), { expectedHash: null })).rejects.toMatchObject({ code: "changed" });
+      await expect(vault.delete(".obsidian/hotkeys.json", stale)).rejects.toMatchObject({ code: "changed" });
+      expect(await files(config)).toEqual(new Map([["hotkeys.json", "saved by Obsidian"]]));
+
+      await vault.write(".obsidian/hotkeys.json", bytes("remote"), { expectedHash: sha256Hex(bytes("saved by Obsidian")) });
+      expect(await files(config)).toEqual(new Map([["hotkeys.json", "remote"]]));
+      await vault.delete(".obsidian/hotkeys.json", { expectedHash: sha256Hex(bytes("remote")) });
+      expect(await files(config)).toEqual(new Map());
     });
 
     it("never touches the config folder while config sync is off", async () => {
