@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { PathRules } from "../vaultpath/platform";
 import type { MergeHook, MergeRequest } from "./merge";
 import { copyOf, files, harness, InterleavingVault, text, type Harness } from "./testing";
 
@@ -17,10 +18,11 @@ const remoteEdit = lines("ONE", "two", "three");
 const localSave = lines("one", "two", "THREE");
 const merged = lines("ONE", "two", "THREE");
 
-function interleaved(): { h: Harness; vault: InterleavingVault } {
+function interleaved(pathRules?: PathRules): { h: Harness; vault: InterleavingVault } {
   let vault: InterleavingVault | undefined;
   const h = harness({
     merge: "default",
+    ...(pathRules === undefined ? {} : { pathRules }),
     wrapVault: (inner) => {
       vault = new InterleavingVault(inner);
       return vault;
@@ -200,5 +202,31 @@ describe("SyncEngine, given a local save between its check of the disk and its c
     const contents = [...(await files(h.vault)).values()].sort();
     expect(contents).toEqual([lines("one", "TWO", "three"), lines("one", "zwei", "three"), "the user's own file\n"].sort());
     expect([...h.server.liveFiles().values()].sort()).toEqual(contents);
+  });
+
+  it("keeps a save that lands before it releases the file of a document a remote rename gives a name the platform cannot hold", async () => {
+    const { h, vault } = interleaved({ platform: "windows" });
+    h.server.commit({ documentId: "a", path: "a.md", content: base });
+    await h.engine.pull();
+    // Renamed and edited remotely to a name Windows cannot hold: the engine
+    // removes the unchanged file (SPEC.md §8), and the save lands just before.
+    h.server.commit({ documentId: "a", path: "a?.md", content: remoteEdit });
+    vault.beforeNextChange("a.md", save(h, "a.md", localSave));
+
+    await h.engine.pull();
+    await h.engine.settled();
+
+    expect(vault.pending).toBe(false);
+    expect(await files(h.vault)).toEqual(new Map([["a.md", localSave]]));
+    // Not released: the kept file is still the document's, as any locally edited one is.
+    expect((await h.engine.unmaterializable()).map(({ path, localPath }) => ({ path, localPath }))).toEqual([{ path: "a?.md", localPath: "a.md" }]);
+    expect(await h.journal.getDocument("a")).toMatchObject({ path: "a.md", deleted: false });
+
+    // Once a later rename gives the document a legal name, the save is merged into it.
+    h.server.commit({ documentId: "a", path: "b.md" });
+    await h.engine.push();
+
+    expect(await files(h.vault)).toEqual(new Map([["b.md", merged]]));
+    expect(h.server.liveFiles()).toEqual(new Map([["b.md", merged]]));
   });
 });

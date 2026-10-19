@@ -195,6 +195,7 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios: a local save betwee
       ["notes/edit.md", "ONE\ntwo\nTHREE\n"],
       ["notes/gone.md", "keep\nme\nedited\n"],
       ["notes/merge.md", "ALPHA\nbeta\nGAMMA\nDELTA\n"],
+      ["notes/released.md", "left\nas\nsynced\nthen\nsaved\n"],
     ]);
     // The engines converged on the server's heads (engine-convergence), so these are the server's too.
     expect(result.vaults[1], trace).toEqual(expected);

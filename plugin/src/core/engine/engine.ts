@@ -327,7 +327,9 @@ export class SyncEngine {
    * server or the user puts there. The file is removed if it still holds the
    * synced content (which the server has) and no local operation of the
    * document is pending; a file with local changes stays, with them, until
-   * the document materializes and the merge path takes it.
+   * the document materializes and the merge path takes it. So does a file
+   * saved after the check: the delete expects the synced content, and the
+   * vault refuses it with "changed" otherwise (#163).
    *
    * The release is recorded in the journal by storing the document's state
    * as `deleted` (no file of its own on this device; SPEC.md §8), so nothing
@@ -349,7 +351,13 @@ export class SyncEngine {
       const content = await this.readOrNull(state.path);
       if (content !== null) {
         if (sha256Hex(content) !== state.baseHash) return;
-        await this.echoed(this.echoes.expectDelete(state.path), () => this.vault.delete(state.path));
+        try {
+          await this.echoed(this.echoes.expectDelete(state.path), () => this.vault.delete(state.path, { expectedHash: state.baseHash }));
+        } catch (error) {
+          // Saved locally since the check (#163): a local edit, so the file stays, as above.
+          if (isVaultError(error, "changed")) return;
+          throw error;
+        }
       }
     }
     await this.journal.putDocument({ ...state, deleted: true });

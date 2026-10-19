@@ -446,9 +446,13 @@ export interface SaveBeforeEngineWriteResult extends RunResult {
  * 3. Before the write of a merge result (the second engine already had an
  *    unpushed edit, merged with the first engine's): the newer save must be
  *    merged too.
+ * 4. Before the second engine, which follows Windows' path rules, removes the
+ *    unchanged file of a note the first engine renamed to a name Windows
+ *    cannot hold (releasing it, SPEC.md §8): the file must stay as a local
+ *    edit, merged once a later rename gives the note a legal name.
  */
 export async function saveBeforeEngineWrite(endpoints: SimEndpoints): Promise<SaveBeforeEngineWriteResult> {
-  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2 });
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
   const log = (entry: string) => {
@@ -472,6 +476,8 @@ export async function saveBeforeEngineWrite(endpoints: SimEndpoints): Promise<Sa
   log(await first.edit("notes/gone.md", lines("keep", "me")));
   // 3. A merge result.
   log(await first.edit("notes/merge.md", lines("alpha", "beta", "gamma", "delta")));
+  // 4. A release of an unmaterializable note's file.
+  log(await first.edit("notes/release.md", lines("left", "as", "synced")));
   log(first.startPush());
   await drain(first.index);
   log(second.startPull());
@@ -480,6 +486,7 @@ export async function saveBeforeEngineWrite(endpoints: SimEndpoints): Promise<Sa
   log(await first.edit("notes/edit.md", lines("ONE", "two", "three")));
   log(await first.remove("notes/gone.md"));
   log(await first.edit("notes/merge.md", lines("ALPHA", "beta", "gamma", "delta")));
+  log(await first.move("notes/release.md", "notes/release?.md"));
   log(first.startPush());
   await drain(first.index);
 
@@ -487,6 +494,17 @@ export async function saveBeforeEngineWrite(endpoints: SimEndpoints): Promise<Sa
   log(second.saveBeforeNextEngineChange("notes/edit.md", lines("one", "two", "THREE")));
   log(second.saveBeforeNextEngineChange("notes/gone.md", lines("keep", "me", "edited")));
   log(second.saveBeforeNextEngineChange("notes/merge.md", lines("alpha", "beta", "GAMMA", "DELTA")));
+  log(second.saveBeforeNextEngineChange("notes/release.md", lines("left", "as", "synced", "then", "saved")));
+  await pull();
+  log(second.startPush());
+  await drain(second.index);
+  log(first.startPull());
+  await drain(first.index);
+
+  // The note gets a legal name again, and the second engine merges the kept save into it.
+  log(await first.move("notes/release?.md", "notes/released.md"));
+  log(first.startPush());
+  await drain(first.index);
   await pull();
   log(second.startPush());
   await drain(second.index);
