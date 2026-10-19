@@ -635,6 +635,23 @@ export class SyncEngine {
       this.schedulePush();
       return "applied";
     }
+    const rebased = (operation: PendingOperation) => operation.baseRevisionId === "" || operation.baseRevisionId === remote.revisionId;
+    if (state === undefined && !remote.deleted && remote.parentRevisionId === "" && pending.length > 0 && pending.every(rebased)) {
+      // This device's own create, which it moved on (to a path-taken copy,
+      // #286) before learning that the commit had landed: document ids are
+      // this device's own. The moved create becomes the document's next
+      // revision, a rename, on top of it; then the document is taken as
+      // created. Interrupted in between, the pull finds it here again.
+      for (const operation of pending) {
+        if (operation.baseRevisionId !== "") continue;
+        await this.journal.addPending({ ...operation, revisionId: this.newId(), baseRevisionId: remote.revisionId });
+        await this.journal.removePending(operation.revisionId);
+      }
+      await this.journal.putDocument(syncedState(remote));
+      for (const operation of pending) this.changes.paths.add(operation.path);
+      this.schedulePush();
+      return "applied";
+    }
     const deferred = await this.journal.getDeferred(remote.documentId);
     if (state?.revisionId === remote.revisionId) {
       // Applied before an interruption that came before its deferral was removed.
@@ -968,8 +985,21 @@ export class SyncEngine {
     }
     for (const [to, from] of this.localRenames()) {
       if (this.fileKey(to) !== key) continue;
-      const moved = await this.journal.findDocumentByPath(from);
+      const moved = (await this.journal.findDocumentByPath(from)) ?? (await this.pendingCreateAt(from));
       if (moved !== undefined && moved.documentId !== documentId) return { documentId: moved.documentId, path: to };
+    }
+    return undefined;
+  }
+
+  /**
+   * The pending create at `path` of a document the journal does not have yet:
+   * its content uploaded and its commit not acknowledged (#286). A local
+   * rename from `path` moved that document's file, as it would a known one's.
+   */
+  private async pendingCreateAt(path: string): Promise<PendingOperation | undefined> {
+    for (const operation of await this.journal.listPending()) {
+      if (operation.path !== path || operation.deleted || operation.baseRevisionId !== "") continue;
+      if ((await this.journal.getDocument(operation.documentId)) === undefined) return operation;
     }
     return undefined;
   }
@@ -1042,7 +1072,21 @@ export class SyncEngine {
     if (from !== undefined) {
       this.changes.renames.delete(path);
       this.roundRenames.delete(path);
-      this.changes.renames.set(target, from);
+      // A pending create the rename moved is committed at the copy's path,
+      // never at the path its file left (#286). Should the create have
+      // landed after all (its response lost), the pull rebases this one
+      // onto it (applyRevision).
+      const create = await this.pendingCreateAt(from);
+      if (create?.documentId === documentId) {
+        const copied = await this.readOrNull(target);
+        await this.journal.addPending({
+          ...create,
+          revisionId: this.newId(),
+          path: target,
+          ...(copied === null ? {} : { contentHash: sha256Hex(copied), size: BigInt(copied.length) }),
+        });
+        await this.journal.removePending(create.revisionId);
+      } else this.changes.renames.set(target, from);
     }
     this.changes.paths.add(target);
     this.schedulePush();
@@ -1769,6 +1813,16 @@ export class SyncEngine {
       // file's current content replaces it.
       await this.journal.removePending(operation.revisionId);
       this.changes.paths.add(operation.path);
+      // A rename the operation carried goes on to the next round with the
+      // file, unless the user moved the file on since (that later rename
+      // carries it). Dropped, the file at the new path would be a new
+      // document, and the old one would stay where its file was (#286).
+      if (state === undefined || state.deleted || operation.deleted || this.fileKey(state.path) === this.fileKey(operation.path)) return;
+      this.changes.paths.add(state.path);
+      const from = this.roundRenames.get(operation.path) ?? state.path;
+      if (!this.changes.renames.has(operation.path) && ![...this.changes.renames.values()].includes(from) && (await this.readOrNull(operation.path)) !== null) {
+        this.changes.renames.set(operation.path, from);
+      }
     };
     if (!keepsContent && (await upload()) === "missing") {
       await contentMissing();
