@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
-import { conflictReasonText, rejectedReasonText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import { conflictReasonText, formatBytes, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
 
 describe("conflict view wording", () => {
   it.each<[ConflictReason, RegExp]>([
@@ -39,6 +39,23 @@ describe("conflict view wording", () => {
     ["refused", /^The server refused it: the server's words$/],
   ])("explains why the server refuses a local file: %s", (reason, expected) => {
     expect(rejectedReasonText(reason, "the server's words")).toMatch(expected);
+  });
+
+  it.each<[bigint, string]>([
+    [0n, "0 B"],
+    [1023n, "1023 B"],
+    [1024n, "1.0 KiB"],
+    [1536n, "1.5 KiB"],
+    [256n * 1024n * 1024n + 1n, "256.0 MiB"],
+    [1024n * 1024n * 1024n + 1n, "1.0 GiB"],
+    [80n * 1024n * 1024n * 1024n, "80.0 GiB"],
+    [2048n * 1024n * 1024n * 1024n * 1024n, "2048.0 TiB"],
+  ])("writes %s bytes as %s", (size, expected) => {
+    expect(formatBytes(size)).toBe(expected);
+  });
+
+  it("explains that a document is too large to download, with its size", () => {
+    expect(tooLargeText(1024n * 1024n * 1024n + 1n)).toBe("Its newest version is 1.0 GiB, more than this device downloads.");
   });
 
   it("writes out the control characters and lone surrogates of a path, and changes nothing else", () => {

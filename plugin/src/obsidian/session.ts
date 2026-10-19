@@ -1,5 +1,5 @@
 import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
-import { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type UnmaterializableDocument } from "../core/engine/engine";
+import { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type TooLargeDocument, type UnmaterializableDocument } from "../core/engine/engine";
 import type { HistoryEntry, HistoryPage } from "../core/engine/history";
 import type { MergeHook } from "../core/engine/merge";
 import type { PullApi } from "../core/engine/remote";
@@ -43,6 +43,8 @@ export interface SyncSessionOptions {
   syncIntervalMs: number | null;
   /** The local platform's file-name rules (SyncEngineOptions.pathRules); the engine defaults to POSIX. */
   pathRules?: PathRules;
+  /** The largest remote content the engine downloads (SyncEngineOptions.maxDownloadBytes); the engine defaults to 1 GiB. */
+  maxDownloadBytes?: number;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
   /**
@@ -207,6 +209,7 @@ export class SyncSession {
       ...(options.onLocalChange === undefined ? {} : { onLocalChange: options.onLocalChange }),
       pushDebounceMs: options.pushDebounceMs,
       ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
+      ...(options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: options.maxDownloadBytes }),
       onBusyChange: (busy) => {
         this.busy = busy;
         void this.report();
@@ -343,6 +346,13 @@ export class SyncSession {
     const engine = this.engine;
     if (engine === undefined || this.stopped) return [];
     return engine.unmaterializable();
+  }
+
+  /** The documents whose remote revision is larger than the download cap (SPEC.md §8), for the conflict view. Empty before the session started and once it is stopped. */
+  async tooLarge(): Promise<TooLargeDocument[]> {
+    const engine = this.engine;
+    if (engine === undefined || this.stopped) return [];
+    return engine.tooLarge();
   }
 
   /**

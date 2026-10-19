@@ -682,6 +682,22 @@ describe("SyncSession", () => {
       expect(await vault.list()).toEqual(["ok.md"]);
     });
 
+    it("lists documents larger than its download cap with their remote path and size, until stopped (#316)", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "ok", path: "ok.md", content: "fine\n" });
+      server.commit({ documentId: "big", path: "big.bin", content: "x".repeat(11) });
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal(), options: { maxDownloadBytes: 10 } });
+      expect(await running.tooLarge()).toEqual([]);
+      await running.start();
+
+      expect((await running.tooLarge()).map(({ path, size }) => ({ path, size }))).toEqual([{ path: "big.bin", size: 11n }]);
+      expect(await vault.list()).toEqual(["ok.md"]);
+
+      await running.stop();
+      expect(await running.tooLarge()).toEqual([]);
+    });
+
     it("lists the local files the server refuses with their path and reason until the user removes them (#100)", async () => {
       const server = new InMemoryServer();
       const vault = new InMemoryVault();

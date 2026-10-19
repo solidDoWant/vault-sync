@@ -1,6 +1,6 @@
 // Public surface of the platform-independent sync engine (SPEC.md §4). It
 // must never import `obsidian` or src/obsidian (lint-enforced).
-export { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type RejectedReason, type SyncEngineOptions, type UnmaterializableDocument } from "./engine/engine";
+export { defaultMaxDownloadBytes, SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type RejectedReason, type SyncEngineOptions, type TooLargeDocument, type UnmaterializableDocument } from "./engine/engine";
 export { openConflicts, type OpenConflict } from "./engine/conflicts";
 export { RestoreError, type HistoryEntry, type HistoryPage, type RestoreFailure } from "./engine/history";
 export { deferMerge, threeWayMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
