@@ -5,7 +5,7 @@
 # scripts/with-test-stack.sh) and runs the TypeScript harness against it.
 #
 # Tuning (environment): SIM_SEEDS, SIM_FIRST_SEED, SIM_SEED, SIM_STEPS,
-# SIM_CLIENTS, SIM_SHRINK_RUNS, SIM_REGRESSION_DIR (relative to the repository
+# SIM_CLIENTS, SIM_ENGINES, SIM_SHRINK_RUNS, SIM_REGRESSION_DIR (relative to the repository
 # root; a missing or empty directory fails the run); SIM_TIMEOUT bounds the
 # whole run (default 60m). Extra arguments are passed to `go test`.
 #
