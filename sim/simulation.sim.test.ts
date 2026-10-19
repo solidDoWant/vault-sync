@@ -8,7 +8,8 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, backslashPathsRefused, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported } from "./scenarios";
+import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
@@ -582,6 +583,34 @@ describe.runIf(suites.has("scenarios"))("scripted server-refused path scenarios 
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
     expect([...result.documents.keys()].sort(), trace).toEqual([...expected.keys()].sort());
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted liveness scenarios (#302)", () => {
+  it("lets a commit retry sent after the schedule wait out its backoff while draining, so it lands once", async () => {
+    const result = await commitRetryAfterSchedule(environment);
+    const trace = tail(result.trace);
+
+    expect(result.violations, trace).toEqual([]);
+    expect(result.lost, trace).not.toBe("?");
+    // The retry reused the lost request's revision id, and the drain ended its backoff rather than the schedule.
+    expect(result.trace.some((line) => line.includes(` ${result.lost} base=- "note.md" `) && line.endsWith("retry backoff elapsed")), trace).toBe(true);
+    expect(result.trace.filter((line) => line.includes(`acknowledged ${result.lost} `)), trace).toHaveLength(1);
+    expect(result.acknowledged, trace).toHaveLength(1);
+  });
+
+  it("reports an engine the harness waits for while nothing delivers its calls as a stall naming the step, instead of hanging", async () => {
+    const result = await stalledEngineReported(environment);
+    const trace = tail(result.trace);
+
+    expect(result.error, trace).toBeInstanceOf(StallError);
+    const message = result.error instanceof Error ? result.error.message : "";
+    expect(message, trace).toMatch(/^run stalled at step 1: e1's engine work never finished/);
+    expect(message, trace).toContain("c1 ListChanges(since=0) (request)");
+    expect(message, trace).toContain("Trace (last lines):\n");
+    expect(result.trace.some((line) => line.startsWith("1: STALLED: run stalled at step 1")), trace).toBe(true);
+    // Once something delivers the engine's calls again, the run goes on and ends cleanly.
+    expect(result.violations, trace).toEqual([]);
   });
 });
 
