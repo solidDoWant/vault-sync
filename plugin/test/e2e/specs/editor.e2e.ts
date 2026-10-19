@@ -84,6 +84,43 @@ describe("Remote writes to a note open in the editor", function () {
   });
 });
 
+describe("Remote changes named against the disk the engine checked (#163)", function () {
+  const base = lines("# Title", "line one", "line two", "line three", "line four", "last line");
+  // Touches no line the user types on, so a merge would apply it.
+  const remote = lines("# Title", "line one", "line two", "line three", "line four", "last line, edited remotely");
+  const typed = lines("# Title", "line one", "line two", "line TYPED three", "line four", "last line");
+
+  it("are refused once the editor saved after the check, keeping the saved text", async function () {
+    await openNote("Saved note.md", base);
+    // Obsidian's autosave lands between the engine's check and its write.
+    const result = await callHarness("typeThenWriteRemote", "Saved note.md", { line: 3, ch: 4 }, " TYPED", remote, { save: true, expectBase: true });
+
+    expect(result).toEqual({ outcome: "VaultError: changed: Saved note.md", diskBefore: base, editor: typed, cursor: { line: 3, ch: 10 }, disk: typed });
+  });
+
+  it("are merged with unsaved keystrokes when nothing was saved since the check", async function () {
+    await openNote("Unsaved note.md", base);
+    const result = await callHarness("typeThenWriteRemote", "Unsaved note.md", { line: 3, ch: 4 }, " TYPED", remote, { expectBase: true });
+
+    const merged = lines("# Title", "line one", "line two", "line TYPED three", "line four", "last line, edited remotely");
+    expect(result).toEqual({ outcome: "ok", diskBefore: base, editor: merged, cursor: { line: 3, ch: 10 }, disk: merged });
+  });
+
+  it("refuse a delete while the editor holds unsaved keystrokes, saving them instead", async function () {
+    await openNote("Typed note.md", base);
+    const result = await callHarness("typeThenDeleteRemote", "Typed note.md", { line: 3, ch: 4 }, " TYPED");
+
+    expect(result).toEqual({ outcome: "VaultError: changed: Typed note.md", editor: typed, disk: typed });
+  });
+
+  it("delete a note with nothing unsaved", async function () {
+    await openNote("Idle note.md", base);
+    const result = await callHarness("typeThenDeleteRemote", "Idle note.md", { line: 3, ch: 4 }, "");
+
+    expect([result.outcome, result.disk]).toEqual(["ok", null]);
+  });
+});
+
 describe("Remote writes to a canvas open in its view", function () {
   const canvas = (...texts: string[]) =>
     JSON.stringify({
@@ -116,6 +153,19 @@ describe("Remote writes to a canvas open in its view", function () {
     expect(result.view).toContain("unsaved node");
     expect(result.disk).toBe(result.view);
     expect(result.disk).not.toContain("remote node");
+  });
+
+  it("are refused once the canvas saved after the engine's check (#163)", async function () {
+    const base = canvas("base node");
+    await openCanvas("Saved board.canvas", base);
+    const remote = canvas("base node", "remote node");
+    const result = await callHarness("addCanvasNodeThenWriteRemote", "Saved board.canvas", "saved node", remote, { save: true, expectBase: true });
+
+    expect(result.outcome).toBe("VaultError: changed: Saved board.canvas");
+    expect(result.diskBefore).toBe(base);
+    expect(result.disk).toContain("saved node");
+    expect(result.disk).not.toContain("remote node");
+    expect(result.view).toBe(result.disk);
   });
 
   it("are applied when the canvas has nothing unsaved", async function () {

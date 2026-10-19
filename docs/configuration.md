@@ -172,7 +172,7 @@ The server is designed to run as several identical replicas behind one Service, 
 - A replica killed without warning (`SIGKILL`, a node crash) loses only its in-flight requests. Every RPC is safe to retry on another replica, and anything already acknowledged is kept.
 - During a rolling upgrade the previous release and the new one run side by side. The new release's migrations are backward-compatible with the previous release (SPEC.md §12), and an integration test runs both releases against one database.
 
-Recommended Kubernetes settings (the Helm chart will adopt these):
+Recommended Kubernetes settings, which the Helm chart uses by default (see [deployment.md](deployment.md)):
 
 - **At least 2 replicas** (`replicas: 2` or more), spread across nodes, for example with `topologySpreadConstraints` on `kubernetes.io/hostname`.
 - **A PodDisruptionBudget** with `maxUnavailable: 1` (or `minAvailable: 1`), so a node drain never evicts every replica at once.

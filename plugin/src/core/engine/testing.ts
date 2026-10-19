@@ -5,7 +5,7 @@
 import { createProtocolClient } from "../protocol/client";
 import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState, PendingOperation, RemoteRevision } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
-import type { FileStat, VaultAdapter, VaultEvent, VaultListener } from "../vault/adapter";
+import type { DeletePrecondition, FileStat, VaultAdapter, VaultEvent, VaultListener, WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
 import type { PathRules } from "../vaultpath/platform";
 import { SyncEngine, type UnmaterializableDocument } from "./engine";
@@ -51,14 +51,14 @@ export class CrashingVault implements VaultAdapter {
   watch(listener: VaultListener): () => void {
     return this.inner.watch(listener);
   }
-  write(path: string, data: Uint8Array): Promise<void> {
-    return this.points.durable(() => this.inner.write(path, data));
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    return this.points.durable(() => this.inner.write(path, data, precondition));
   }
   rename(from: string, to: string): Promise<void> {
     return this.points.durable(() => this.inner.rename(from, to));
   }
-  delete(path: string): Promise<void> {
-    return this.points.durable(() => this.inner.delete(path));
+  delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    return this.points.durable(() => this.inner.delete(path, precondition));
   }
 }
 
@@ -108,14 +108,68 @@ export class LateEventsVault implements VaultAdapter {
       this.listeners.delete(subscription);
     };
   }
-  write(path: string, data: Uint8Array): Promise<void> {
-    return this.inner.write(path, data);
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    return this.inner.write(path, data, precondition);
   }
   rename(from: string, to: string): Promise<void> {
     return this.inner.rename(from, to);
   }
-  delete(path: string): Promise<void> {
-    return this.inner.delete(path);
+  delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    return this.inner.delete(path, precondition);
+  }
+}
+
+/**
+ * A VaultAdapter that lands a change of the test's just before the engine's
+ * next write or delete of a path reaches the vault: what Obsidian's autosave
+ * does when it saves the user's typing after the engine checked the disk and
+ * before it writes (#163). The change goes to `inner` directly, as the user's
+ * would, and is reported to the engine as a vault event.
+ */
+export class InterleavingVault implements VaultAdapter {
+  private readonly armed = new Map<string, () => Promise<void>>();
+
+  constructor(readonly inner: VaultAdapter) {}
+
+  /** Runs `change` once, right before the next write or delete of `path`. */
+  beforeNextChange(path: string, change: () => Promise<void>): void {
+    this.armed.set(path, change);
+  }
+
+  /** Whether an armed change has not run yet. */
+  get pending(): boolean {
+    return this.armed.size > 0;
+  }
+
+  list(): Promise<string[]> {
+    return this.inner.list();
+  }
+  read(path: string): Promise<Uint8Array> {
+    return this.inner.read(path);
+  }
+  stat(path: string): Promise<FileStat | null> {
+    return this.inner.stat(path);
+  }
+  watch(listener: VaultListener): () => void {
+    return this.inner.watch(listener);
+  }
+  async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    await this.interleave(path);
+    await this.inner.write(path, data, precondition);
+  }
+  rename(from: string, to: string): Promise<void> {
+    return this.inner.rename(from, to);
+  }
+  async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    await this.interleave(path);
+    await this.inner.delete(path, precondition);
+  }
+
+  private async interleave(path: string): Promise<void> {
+    const change = this.armed.get(path);
+    if (change === undefined) return;
+    this.armed.delete(path);
+    await change();
   }
 }
 
