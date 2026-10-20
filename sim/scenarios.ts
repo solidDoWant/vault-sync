@@ -2327,6 +2327,62 @@ export async function renameOntoDeletedNotePath(endpoints: SimEndpoints, platfor
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
 }
 
+/**
+ * Both devices rename a note onto the path of a note they moved away or
+ * deleted, and both edit it (#462). The first (POSIX) engine edits the
+ * synced note `c.md`, moves it to `d.md`, moves the synced note `x.md` to
+ * `c.md`, edits it and pushes. The second engine deletes `c.md`, moves
+ * `x.md` to `c.md`, edits it and pushes. The second engine's edit of the
+ * moved note must stay live on the server and in both vaults, merged in or
+ * as a conflict copy (SPEC.md §2 principle 1, §7).
+ */
+export async function bothRenameOntoVacatedPath(endpoints: SimEndpoints, platform: "posix" | "windows" | "macos"): Promise<RespelledRenameResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("x.md", encoder.encode("x\n")));
+  log(await first.edit("c.md", encoder.encode("c\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await first.edit("c.md", encoder.encode("c\nremote\n")));
+  log(await first.move("c.md", "d.md"));
+  log(await first.move("x.md", "c.md"));
+  log(await first.edit("c.md", encoder.encode("x\nremote\n")));
+  await push(first);
+  log(await second.remove("c.md"));
+  log(await second.move("x.md", "c.md"));
+  log(await second.edit("c.md", encoder.encode("x\nlocal\n")));
+  for (let round = 0; round < 3; round++) await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];
@@ -2923,4 +2979,72 @@ export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "
     .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
   const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
+}
+
+export interface RecreatedNoteMergeCrashResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents after the run: path to document label. */
+  documents: Map<string, string>;
+  /** Whether the app was killed before the merge's deferral was removed. */
+  killed: boolean;
+}
+
+/**
+ * A pull that brings a deleted note's tombstone and a new document at its
+ * path, onto a device whose user edited the deleted note, killed after the
+ * merge of the tombstone rebased the document and before it removed the
+ * deferral (#453). The first engine creates and pushes `Notes/C.md`, then
+ * its user deletes it; the second engine pulls the note and its user edits
+ * it; the first engine's user writes a new `Notes/C.md`, and its push sends
+ * the tombstone and the new document. The second engine's pull is killed
+ * there, and it restarts. The engines must converge with the edit kept and
+ * nothing deferred (the `engine-deferred` invariant). Both engines follow
+ * `platform`'s rules.
+ */
+export async function recreatedNoteMergeCrash(endpoints: SimEndpoints, platform: "posix" | "windows"): Promise<RecreatedNoteMergeCrashResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: [platform, platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("Notes/C.md", encoder.encode("w1\n")));
+  await push(first);
+  log(await first.remove("Notes/C.md"));
+  await pull(second);
+  log(await second.edit("Notes/C.md", encoder.encode("w2\n")));
+  log(await first.edit("Notes/C.md", encoder.encode("w3\n")));
+  await push(first);
+
+  const killed = second.haltOnDeferralRemoval();
+  await pull(second);
+  log(second.crash());
+  for (let round = 0; round < 3; round++) {
+    await push(second);
+    await push(first);
+  }
+  await pull(first);
+  await pull(second);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, documents: await liveDocuments(run), killed: killed() };
 }

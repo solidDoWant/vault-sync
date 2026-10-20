@@ -677,8 +677,13 @@ export class SyncEngine {
     }
     const deferred = await this.journal.getDeferred(remote.documentId);
     if (state?.revisionId === remote.revisionId) {
-      // Applied before an interruption that came before its deferral was removed.
-      if (deferred !== undefined && deferred.reason !== "local-changes" && deferred.revision.seq <= remote.seq) await this.journal.removeDeferred(remote.documentId);
+      // Applied before an interruption that came before its deferral was
+      // removed. A merge of this very revision interrupted after its rebase
+      // is finished too: its result is on disk as an ordinary local edit
+      // (applyMerge), and kept, the deferral would wait for good once another
+      // document takes the path (#453).
+      const finished = deferred?.reason === "local-changes" ? deferred.revision.revisionId === remote.revisionId : deferred !== undefined && deferred.revision.seq <= remote.seq;
+      if (finished) await this.journal.removeDeferred(remote.documentId);
       return "skipped";
     }
     if (this.outOfScope(remote, state)) {
@@ -1355,7 +1360,7 @@ export class SyncEngine {
     // rename wins (SPEC.md §7), and the journal keeps this document at the
     // remote path, so it never holds two documents at one path.
     const holder = await this.documentAt(local.path);
-    if (holder !== undefined && holder.documentId !== remote.documentId && !(await this.renamedOntoVacated(state, remote, local.path, holder))) return false;
+    if (holder !== undefined && holder.documentId !== remote.documentId && !(await this.renamedOntoVacated(remote, local.path, holder))) return false;
     const copyPaths: string[] = [];
     // A result path that is the document's own file under another spelling
     // (a remote case-only rename on a case-insensitive platform) is no file
@@ -1470,13 +1475,16 @@ export class SyncEngine {
    * Whether `path`, which the journal has as `holder`'s, holds the merged
    * document's own file because a local rename of it followed there
    * (followRename) after `holder` moved away or its file was deleted, and
-   * the remote revision does not put the document there.
+   * the remote revision does not put the document there. A merged document
+   * this device has no live state for has no file of its own to follow, so
+   * its merge always looks at the remote path, and a document's synced path
+   * that the journal has as another document's would be two live documents
+   * at one path, which the journal never holds (#264, #379): a path the
+   * remote revision does not put the document at is one a local rename
+   * brought its file to (#462).
    */
-  private async renamedOntoVacated(state: DocumentState | undefined, remote: RemoteRevision, path: string, holder: DocumentState): Promise<boolean> {
-    if (state === undefined || state.deleted) return false;
-    const key = this.fileKey(path);
-    if (this.fileKey(state.path) === key || this.fileKey(remote.path) === key) return false;
-    return this.movedAway(holder);
+  private async renamedOntoVacated(remote: RemoteRevision, path: string, holder: DocumentState): Promise<boolean> {
+    return this.fileKey(remote.path) !== this.fileKey(path) && (await this.movedAway(holder));
   }
 
   /**
@@ -1538,7 +1546,11 @@ export class SyncEngine {
    */
   private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, merged?: MergedDocument): Promise<string | null> {
     const hash = sha256Hex(conflict.content);
-    const logged = (await this.journal.listConflicts()).filter((record) => record.documentId === remote.documentId && record.copyHash === hash);
+    // A `path-taken` record names where the document's own file moved
+    // (moveAside, moveToConflictPath), never a copy: reused, the copy would
+    // be the document's own file, which the merge result then overwrites,
+    // and the local version would be lost (#462).
+    const logged = (await this.journal.listConflicts()).filter((record) => record.documentId === remote.documentId && record.copyHash === hash && record.reason !== "path-taken");
     let copyPath: string | null = null;
     for (const record of logged) {
       if (record.copyPath === null) continue;
