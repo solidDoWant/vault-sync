@@ -224,6 +224,43 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
       expect(await files(h.vault)).toEqual(new Map([["plan.md", "another note\n"]]));
       expect(await h.journal.listDeferred()).toEqual([expect.objectContaining({ reason: "unmaterializable" })]);
     });
+
+    // #379: the kept edited file used to block the other document for good,
+    // deferred as local-changes although no push ever committed anything.
+    describe.each([
+      { name: "the same spelling", other: "plan.md" },
+      { name: "another spelling", other: "PLAN.md" },
+    ])("when the server puts another document at its kept edited file's path under $name", ({ other }) => {
+      async function occupied() {
+        const h = await renamedAway("one (edited)\ntwo\n");
+        h.server.commit({ documentId: "other", path: other, content: "another note\n" });
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        return h;
+      }
+
+      it("writes the other document at its path and keeps the edit as a conflict copy the server gets", async () => {
+        const h = await occupied();
+
+        const vault = await files(h.vault);
+        expect(vault.get(other)).toBe("another note\n");
+        const copies = [...vault].filter(([path]) => path !== other);
+        expect(copies).toEqual([[expect.stringMatching(/^plan \(conflict .*\)\.md$/i), "one (edited)\ntwo\n"]]);
+        const live = h.server.liveFiles();
+        expect(live.get(other)).toBe("another note\n");
+        expect(live.get(copies[0]?.[0] ?? "")).toBe("one (edited)\ntwo\n");
+        expect(live.get("plan?.md")).toBe("one\ntwo\nthree\n");
+      });
+
+      it("leaves no revision deferred but the unmaterializable one, which no longer claims a file", async () => {
+        const h = await occupied();
+
+        expect((await h.journal.listDeferred()).map(({ reason, revision }) => [reason, revision.documentId])).toEqual([["unmaterializable", "doc"]]);
+        expect(await reported(h)).toEqual([{ path: "plan?.md", reason: "forbidden-character", localPath: undefined }]);
+        expect(await h.journal.listPending()).toEqual([]);
+      });
+    });
   });
 
   // Once its file is removed, the parked document has nothing at its old
