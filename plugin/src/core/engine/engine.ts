@@ -287,7 +287,7 @@ export class SyncEngine {
   private readonly maxDownloadBytes: bigint;
   /** Maps a path to what the vault takes as the same file: its path key on a case-insensitive platform. */
   private readonly fileKey: (path: string) => string;
-  private readonly echoes: EchoSuppressor;
+  private readonly echoes = new EchoSuppressor();
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
   /** Documents being merged right now, so resolving one first never loops back to another. */
@@ -347,7 +347,6 @@ export class SyncEngine {
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
-    this.echoes = new EchoSuppressor(this.fileKey);
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
@@ -537,7 +536,7 @@ export class SyncEngine {
       if (content !== null) {
         if (sha256Hex(content) !== state.baseHash) return;
         try {
-          await this.echoed(this.echoes.expectDelete(state.path), () => this.vault.delete(state.path, { expectedHash: state.baseHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(state.path)), () => this.vault.delete(state.path, { expectedHash: state.baseHash }));
         } catch (error) {
           // Saved locally since the check (#163): a local edit, so the file stays, as above.
           if (isVaultError(error, "changed")) return;
@@ -837,16 +836,16 @@ export class SyncEngine {
     if (remote.deleted) {
       if (source === undefined) return;
       if (expectedHash === null) throw new Error(`no base hash for ${source}`);
-      await this.echoed(this.echoes.expectDelete(source), () => this.vault.delete(source, { expectedHash }));
+      await this.echoed(this.echoes.expectDelete(await this.heldSpelling(source)), () => this.vault.delete(source, { expectedHash }));
       return;
     }
     if (source !== undefined && source !== remote.path) {
-      await this.echoed(this.echoes.expectRename(source, remote.path), () => this.vault.rename(source, remote.path));
+      await this.echoed(this.echoes.expectRename(await this.heldSpelling(source), remote.path), () => this.vault.rename(source, remote.path));
     }
     if (inspection.sourceHash === remote.contentHash) return;
     if (content === undefined) throw new Error(`content of ${remote.revisionId} was not downloaded`);
     await this.matchSpelling(remote.path, remote.documentId);
-    await this.echoed(this.echoes.expectWrite(remote.path, remote.contentHash), () => this.vault.write(remote.path, content, { expectedHash }));
+    await this.echoed(this.echoes.expectWrite(await this.heldSpelling(remote.path), remote.contentHash), () => this.vault.write(remote.path, content, { expectedHash }));
   }
 
   /**
@@ -874,6 +873,23 @@ export class SyncEngine {
       if (to === path && (await this.journal.findDocumentByPath(from))?.documentId === documentId) return true;
     }
     return (await this.journal.listPending()).some((operation) => operation.documentId === documentId && operation.path === path && !operation.deleted);
+  }
+
+  /**
+   * The spelling the vault holds the file at `path` under, for an echo
+   * expectation of a change the engine is about to make there (SPEC.md §8):
+   * `path` itself if the vault lists it, otherwise the one listed spelling
+   * the vault takes as the same file, otherwise `path`. The expectation then
+   * matches events exactly, so a user's change of another file whose spelling
+   * merely has the same path key is never taken for the engine's (#380).
+   */
+  private async heldSpelling(path: string): Promise<string> {
+    if (this.pathRules.platform === "posix") return path;
+    const listed = await this.vault.list();
+    if (listed.includes(path)) return path;
+    const key = this.fileKey(path);
+    const candidates = listed.filter((candidate) => this.fileKey(candidate) === key);
+    return candidates.length === 1 ? (candidates[0] ?? path) : path;
   }
 
   private async echoed(cancel: () => void, change: () => Promise<void>): Promise<void> {
@@ -1114,7 +1130,7 @@ export class SyncEngine {
       await this.journal.putConflict(this.conflictRecord(documentId, path, "path-taken", copyPath, hash, ""));
     }
     const target = copyPath;
-    if ((await this.vault.stat(target)) === null) await this.echoed(this.echoes.expectRename(path, target), () => this.vault.rename(path, target));
+    if ((await this.vault.stat(target)) === null) await this.echoed(this.echoes.expectRename(await this.heldSpelling(path), target), () => this.vault.rename(path, target));
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId !== documentId || operation.path !== path || operation.deleted) continue;
       await this.journal.addPending({ ...operation, revisionId: this.newId(), path: target });
@@ -1228,7 +1244,7 @@ export class SyncEngine {
           await this.dropOperationsAt(outcome.path, remote.documentId);
           if (!sameContent(await this.readOrNull(outcome.path), remaining)) return false;
           const expectedHash = sha256Hex(remaining);
-          await this.echoed(this.echoes.expectDelete(outcome.path), () => this.vault.delete(outcome.path, { expectedHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(outcome.path)), () => this.vault.delete(outcome.path, { expectedHash }));
         }
       }
       await this.journal.putDeferred({
@@ -1244,13 +1260,13 @@ export class SyncEngine {
       if (outcome.content === null) {
         if (current !== null) {
           const expectedHash = sha256Hex(current);
-          await this.echoed(this.echoes.expectDelete(local.path), () => this.vault.delete(local.path, { expectedHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(local.path)), () => this.vault.delete(local.path, { expectedHash }));
         }
       } else {
         let there = outcome.path === local.path ? current : await this.readOrNull(outcome.path);
         if (outcome.path !== local.path && current !== null) {
           if (there !== null && !respelled) return false;
-          await this.echoed(this.echoes.expectRename(local.path, outcome.path), () => this.vault.rename(local.path, outcome.path));
+          await this.echoed(this.echoes.expectRename(await this.heldSpelling(local.path), outcome.path), () => this.vault.rename(local.path, outcome.path));
           there = current;
         }
         const merged = outcome.content;
@@ -1258,7 +1274,7 @@ export class SyncEngine {
         await this.matchSpelling(outcome.path, remote.documentId);
         if (there === null || sha256Hex(there) !== hash) {
           const expectedHash = there === null ? null : sha256Hex(there);
-          await this.echoed(this.echoes.expectWrite(outcome.path, hash), () => this.vault.write(outcome.path, merged, { expectedHash }));
+          await this.echoed(this.echoes.expectWrite(await this.heldSpelling(outcome.path), hash), () => this.vault.write(outcome.path, merged, { expectedHash }));
         }
       }
     } catch (error) {
@@ -2166,7 +2182,7 @@ export class SyncEngine {
     // Already moved before an interruption, if the copy's path holds a file;
     // a file at the old path is then a new one, which the next round pushes.
     if (atPath !== null && (await this.vault.stat(copyPath)) === null) {
-      await this.echoed(this.echoes.expectRename(operation.path, copyPath), () => this.vault.rename(operation.path, copyPath));
+      await this.echoed(this.echoes.expectRename(await this.heldSpelling(operation.path), copyPath), () => this.vault.rename(operation.path, copyPath));
     }
     const content = await this.readOrNull(copyPath);
     if (content === null) return;
