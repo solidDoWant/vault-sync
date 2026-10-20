@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -81,6 +81,45 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
         tail(final.trace),
       ].join("\n"),
     );
+  });
+});
+
+describe.runIf(suites.has("retention"))("seeded schedules with retention purges (#229)", () => {
+  // The same seeds, with the retention job between steps: revisions age
+  // past the policy and the server's own purge removes them (SPEC.md §11).
+  const purged: string[] = [];
+
+  it.each(environment.seeds)("seed %i keeps every invariant while retention purges", async (seed) => {
+    const engines = environment.engines === 0 ? undefined : environment.engines;
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true };
+    const result = await runSeed(environment, { ...options, steps: environment.steps });
+    purged.push(...result.purged);
+    console.log(`seed ${String(seed)} with retention (${options.platforms.join(", ")} path rules): ${String(result.purged.length)} revisions purged, ${summarize(result.trace)}`);
+    if (result.violations.length === 0) return;
+
+    const invariants = new Set(result.violations.map((violation) => violation.invariant));
+    const stillFails = async (steps: Step[]) => (await runSteps(environment, options, steps)).violations.some((violation) => invariants.has(violation.invariant));
+    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
+    const replay = await runSteps(environment, options, minimized.items);
+    const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
+    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}-retention`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
+
+    expect.fail(
+      [
+        `SIM FAILURE: seed ${String(seed)} with retention violated invariants (${String(environment.steps)} steps, ${String(options.clients)} clients):`,
+        describeViolations(result),
+        `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
+        describeViolations(final),
+        `Regression case written to ${written}.`,
+        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}`,
+        "Trace of the minimized schedule (last lines):",
+        tail(final.trace),
+      ].join("\n"),
+    );
+  });
+
+  it("purged at least one revision", () => {
+    expect(purged.length, `no seed's retention steps purged anything; run more steps (SIM_STEPS=${String(environment.steps)})`).toBeGreaterThan(0);
   });
 });
 
@@ -407,6 +446,27 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     const expected = new Map([
       [copy, "one\ntwo (second engine, offline)\nthree\n"],
       ["notes/later.md", "written after the purge\n"],
+      ["notes/plan.md", "one (first engine)\ntwo\nthree\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.conflicts[1], trace).toEqual([{ reason: "base-purged", path: "notes/plan.md", copyPath: copy }]);
+  });
+
+  it("keeps an edit made offline whose merge base retention purged before the engine reconnected, as a conflict copy (#229)", async () => {
+    const result = await purgedMergeBaseWhileOffline(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    expect(result.purged, trace).toEqual([result.base]);
+    // The push started offline pulls first on reconnect and finds its merge base gone.
+    expect(
+      result.trace.some((line) => line.includes("GetRevision -> NotFound")),
+      trace,
+    ).toBe(true);
+    const copy = "notes/plan (conflict e1 2026-01-02 030405).md";
+    const expected = new Map([
+      [copy, "one\ntwo (second engine, offline)\nthree\n"],
       ["notes/plan.md", "one (first engine)\ntwo\nthree\n"],
     ]);
     expect(result.vaults[0], trace).toEqual(expected);

@@ -34,6 +34,10 @@ const (
 	// invariantDocumentHead: a document row does not mirror its head
 	// revision (head_rev_id, deleted, path_key).
 	invariantDocumentHead = "document-head"
+	// invariantFeedHead: after its last pull, a scripted client does not
+	// know a document's current head: the change feed skipped a head, or
+	// delivered a document or revision the vault does not have.
+	invariantFeedHead = "feed-head"
 )
 
 // acknowledgement is a revision the server acknowledged to a simulated
@@ -48,6 +52,14 @@ type acknowledgement struct {
 	Deleted          bool   `json:"deleted"`
 	BlobID           string `json:"blobId"`
 	Size             string `json:"size"`
+}
+
+// clientHeads is what a scripted client learned from the change feed: each
+// document it knows of, with the head it last pulled (sim/control.ts
+// ClientHeads).
+type clientHeads struct {
+	Client int               `json:"client"`
+	Heads  map[string]string `json:"heads"`
 }
 
 // violation is a broken invariant (sim/client.ts Violation).
@@ -79,8 +91,9 @@ type storedDocument struct {
 // it violates. acknowledged lists every revision the server acknowledged to
 // a client during the run, and purged the revisions the run had retention
 // purge (ageAndPurge): their absence, the seq gaps they leave and their
-// children's new parents are not violations.
-func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, acknowledged []acknowledgement, purged []purgedRevision) ([]violation, error) {
+// children's new parents are not violations. heads are the scripted
+// clients' known document heads after their last pull.
+func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, acknowledged []acknowledgement, purged []purgedRevision, heads []clientHeads) ([]violation, error) {
 	var (
 		headSeq   int64
 		revisions []storedRevision
@@ -144,6 +157,7 @@ func checkInvariants(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, a
 	checkSeq(headSeq, revisions, purged, report)
 	checkChains(revisions, report)
 	checkDocuments(documents, revisions, report)
+	checkFeedHeads(documents, heads, report)
 
 	return violations, nil
 }
@@ -264,6 +278,37 @@ func checkChains(revisions []storedRevision, report reporter) {
 		}
 
 		heads[revision.documentID] = revision.id
+	}
+}
+
+// checkFeedHeads: each scripted client, after its last pull, knows exactly
+// the vault's documents, each at its current head. The change feed may skip
+// the seqs of purged revisions (SPEC.md §11) but never a document's head,
+// so this holds however much retention purged; it is checked against the
+// documents table, not against ListChanges itself.
+func checkFeedHeads(documents []storedDocument, heads []clientHeads, report reporter) {
+	stored := make(map[string]string, len(documents))
+	for _, document := range documents {
+		stored[document.id.String()] = document.head.String()
+	}
+
+	for _, client := range heads {
+		for _, document := range documents {
+			known, ok := client.Heads[document.id.String()]
+
+			switch {
+			case !ok:
+				report(invariantFeedHead, "c%d never pulled document %s, whose head is %s", client.Client, document.id, document.head)
+			case known != document.head.String():
+				report(invariantFeedHead, "c%d pulled %s as the head of document %s, whose head is %s", client.Client, known, document.id, document.head)
+			}
+		}
+
+		for document, head := range client.Heads {
+			if _, ok := stored[document]; !ok {
+				report(invariantFeedHead, "c%d pulled document %s (head %s), which the vault does not have", client.Client, document, head)
+			}
+		}
 	}
 }
 

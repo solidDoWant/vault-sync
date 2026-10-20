@@ -43,7 +43,15 @@ export type Step =
    * a schedule without them, and every regression case recorded before #22,
    * is unchanged.
    */
-  | { kind: "engine-operation"; engine: number; operation: EngineOperation; arg: number };
+  | { kind: "engine-operation"; engine: number; operation: EngineOperation; arg: number }
+  /**
+   * The retention job runs (SPEC.md §11), as if the revisions with the
+   * lowest seqs of the feed had aged past the policy: `pick` selects how
+   * many of them (at least one). Generated only for schedules with
+   * retention (#229), so every other schedule, and every regression case
+   * recorded before it, is unchanged.
+   */
+  | { kind: "retention"; pick: number };
 
 export type StepKind = Step["kind"];
 
@@ -53,6 +61,8 @@ export interface ScheduleOptions {
   clients: number;
   /** Engines whose users make random changes; with 0 (the default) no engine-operation step is generated. */
   engines?: number;
+  /** Whether the retention job runs between steps (#229); without it (the default) no retention step is generated. */
+  retention?: boolean;
 }
 
 /** Relative frequency of each step kind in a generated schedule. */
@@ -74,6 +84,9 @@ export const stepWeights: Readonly<Record<StepKind, number>> = {
   "drop-response": 3,
   partition: 0.75,
   crash: 0.75,
+  // Never drawn: withRetention inserts retention steps into a schedule
+  // (#229). With weight 0 it never changes another kind's draw.
+  retention: 0,
   // Last, and drawn only when the run has engines: with weight 0 every other
   // kind's draws, and so every engine-less schedule, are exactly as before #22.
   "engine-operation": 10,
@@ -113,7 +126,27 @@ export function generateSchedule(options: ScheduleOptions): Step[] {
   for (let index = 0; index < options.steps; index++) {
     steps.push(generateStep(random, weights, options.clients, engines));
   }
-  return steps;
+  return options.retention === true ? withRetention(options.seed, steps) : steps;
+}
+
+/** On average, a schedule with retention runs the retention job once in this many steps (#229). */
+export const retentionInterval = 200;
+
+/**
+ * `steps` with the retention job run between them (#229): after each step,
+ * with probability 1/retentionInterval, a `retention` step drawn from the
+ * seed's own stream. Every other step is the seed's plain schedule, in its
+ * order, so a schedule with retention that fails where the plain one passes
+ * fails because of what the purges did.
+ */
+function withRetention(seed: number, steps: readonly Step[]): Step[] {
+  const random = Random.derive(seed, "retention");
+  const result: Step[] = [];
+  for (const step of steps) {
+    result.push(step);
+    if (random.int(retentionInterval) === 0) result.push({ kind: "retention", pick: random.uint32() });
+  }
+  return result;
 }
 
 function generateStep(random: Random, weights: Readonly<Record<StepKind, number>>, clients: number, engines: number): Step {
@@ -127,6 +160,7 @@ function generateStep(random: Random, weights: Readonly<Record<StepKind, number>
     case "reorder":
     case "drop-request":
     case "drop-response":
+    case "retention":
       return { kind, pick: random.uint32() };
     case "delay":
       return { kind, pick: random.uint32(), steps: 1 + random.int(maxFaultSteps) };

@@ -15,7 +15,7 @@ import { ScriptedClient, type Acknowledgement, type RunContext, type Violation }
 import { Control } from "./control";
 import { EngineObserver, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
-import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed } from "./invariants";
+import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed, type FeedRevision } from "./invariants";
 import { settle, SimNetwork, StallError, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 
@@ -47,6 +47,12 @@ export interface RunOptions {
    * recorded before #110, retry at once (0, the default).
    */
   commitRetryBackoff?: number;
+  /**
+   * Whether a seeded schedule runs the retention job between steps
+   * (ScheduleOptions.retention, #229). Only runSeed reads it: a recorded
+   * schedule carries its retention steps.
+   */
+  retention?: boolean;
 }
 
 /**
@@ -74,6 +80,8 @@ export interface RunResult {
   trace: string[];
   acknowledged: Acknowledgement[];
   violations: Violation[];
+  /** Labels of the revisions retention purged during the run. */
+  purged: string[];
 }
 
 /** Bound on deliveries while draining, far above what any schedule needs. */
@@ -83,6 +91,8 @@ const maxPushRounds = 8;
 
 export class SimRun {
   private stepNumber = 0;
+  /** The revisions retention purged during the run (SimRun.purge), by id. */
+  readonly purged = new Map<string, FeedRevision>();
 
   private constructor(
     readonly context: RunContext,
@@ -93,6 +103,7 @@ export class SimRun {
     /** Fault-free access for the harness's own checks. */
     readonly direct: ProtocolClient,
     readonly trace: string[],
+    private readonly purges: { seqs: Set<bigint>; revisions: Set<string> },
   ) {}
 
   /** Creates a vault for a new user and registers one device per client. */
@@ -110,6 +121,7 @@ export class SimRun {
     const run: { stepNumber: () => number } = { stepNumber: () => 0 };
     const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
     const violations: Violation[] = [];
+    const purges = { seqs: new Set<bigint>(), revisions: new Set<string>() };
     const network = new SimNetwork({
       describeRequest: (method, input) => describeRequest(ids, method, input),
       describeOutcome: (method, outcome) => describeOutcome(ids, method, outcome),
@@ -133,6 +145,8 @@ export class SimRun {
       trace,
       stepNumber: () => run.stepNumber(),
       serverSeq: () => serverSeq,
+      purgedSeqs: purges.seqs,
+      purgedRevisions: purges.revisions,
     };
     const clients: ScriptedClient[] = [];
     for (let index = 0; index < options.clients; index++) {
@@ -149,7 +163,7 @@ export class SimRun {
       const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
       observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform));
     }
-    const simRun = new SimRun(context, clients, observers, control, setup, trace);
+    const simRun = new SimRun(context, clients, observers, control, setup, trace, purges);
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
   }
@@ -209,7 +223,26 @@ export class SimRun {
    * expect exactly these to be gone.
    */
   async purge(revisionIds: readonly string[]): Promise<string[]> {
+    const before = await serverFeed(this.direct, this.context.vaultId);
+    const feed = new Map(before.map((revision) => [revision.revisionId, revision]));
+    // Each document's head (live or tombstone) before the purge: the last of its revisions in the feed.
+    const heads = new Set(new Map(before.map((revision) => [revision.documentId, revision.revisionId])).values());
     const purged = await this.control.purge(this.context.vaultId, revisionIds);
+    for (const id of purged) {
+      const revision = feed.get(id);
+      if (revision === undefined) throw new Error(`retention purged ${id}, which was not in the change feed`);
+      if (heads.has(id)) {
+        // Retention never purges a head, not even a tombstone (SPEC.md §11).
+        // Such a revision is not excused: the checks it would break must fire.
+        const violation = { invariant: "retention-head", detail: `retention purged ${this.context.ids.label(id)}, the head of its document` };
+        this.context.violations.push(violation);
+        this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
+        continue;
+      }
+      this.purged.set(id, revision);
+      this.purges.seqs.add(revision.seq);
+      this.purges.revisions.add(id);
+    }
     this.context.log(`retention purged ${purged.map((id) => this.context.ids.label(id)).join(", ") || "nothing"}`);
     return purged;
   }
@@ -258,16 +291,25 @@ export class SimRun {
         this.context.violations.push({ invariant: "liveness", detail: error.message.split("\n")[0] ?? error.message });
       }
     }
+    // After their last pull every scripted client must know every document's
+    // current head: the feed skips purged revisions, never a head (§11).
+    const clientHeads = this.clients.map((client) => ({ client: client.index, heads: client.knownHeads() }));
     for (const violation of await this.checkUsers()) {
       this.context.violations.push(violation);
       this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
     }
-    const violations = await this.control.check(this.context.vaultId, this.context.acknowledged);
+    const violations = await this.control.check(this.context.vaultId, this.context.acknowledged, clientHeads);
     for (const violation of violations) {
       this.context.violations.push({ invariant: violation.invariant, detail: this.context.ids.relabel(violation.detail) });
       this.context.log(`VIOLATION ${violation.invariant}: ${this.context.ids.relabel(violation.detail)}`);
     }
-    return { vaultId: this.context.vaultId, trace: this.trace, acknowledged: this.context.acknowledged, violations: this.context.violations };
+    return {
+      vaultId: this.context.vaultId,
+      trace: this.trace,
+      acknowledged: this.context.acknowledged,
+      violations: this.context.violations,
+      purged: [...this.purged.keys()].map((id) => this.context.ids.label(id)),
+    };
   }
 
   /**
@@ -290,7 +332,9 @@ export class SimRun {
   private async checkUsers(): Promise<Violation[]> {
     const feed = await serverFeed(this.direct, this.context.vaultId);
     const sizes = new Map(feed.map((revision) => [revision.contentHash, revision.size]));
-    const present = new Set<string>();
+    // Content only a purged revision held is gone by policy (§2 principle
+    // 1, §11), not lost; it counts as present, but only if the run purged it.
+    const present = new Set<string>([...this.purged.values()].map((revision) => revision.contentHash));
     for (const observer of this.observers) {
       for (const path of await observer.list()) {
         const content = await observer.read(path);
@@ -313,9 +357,13 @@ export class SimRun {
     const violations = this.observers.flatMap((observer) => checkLostWrites(observer.name, observer.ledger, present));
     const scripted = new Set(this.clients.map((client) => client.deviceId));
     const engines = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, deletedDocuments: observer.ledger.deletedDocuments, platform: observer.platform, renames: observer.ledger.renames, crashes: observer.ledger.crashes }));
-    violations.push(...checkPhantomDeletes(feed, scripted, engines, (id) => this.context.ids.label(id)));
+    // The whole history: the feed and the revisions retention purged from it,
+    // so a purge never hides a tombstone, nor the revision that brought a
+    // deleted document back, from these checks.
+    const history = [...feed, ...this.purged.values()].sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
+    violations.push(...checkPhantomDeletes(history, scripted, engines, (id) => this.context.ids.label(id)));
     const changes = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, platform: observer.platform, changes: observer.ledger.changes }));
-    violations.push(...checkResurrections(feed, scripted, changes, (id) => this.context.ids.label(id)));
+    violations.push(...checkResurrections(history, scripted, changes, (id) => this.context.ids.label(id)));
     return violations;
   }
 
@@ -350,6 +398,14 @@ export class SimRun {
         const crashed = this.observers.filter((_, engine) => engine % this.clients.length === client.index).map((observer) => observer.crash());
         return [entry, ...crashed].join("; ");
       }
+      case "retention": {
+        // Fault-free, like the job itself: it runs in the server, not through a client's network.
+        const feed = await serverFeed(this.direct, this.context.vaultId);
+        if (feed.length === 0) return "retention: no revisions";
+        const aged = feed.slice(0, 1 + (step.pick % feed.length));
+        await this.purge(aged.map((revision) => revision.revisionId));
+        return `retention aged the ${String(aged.length)} oldest of ${String(feed.length)} revisions`;
+      }
       case "engine-operation": {
         const observer = this.observers[step.engine % this.observers.length];
         if (observer === undefined) return "engine-operation: no engine";
@@ -375,7 +431,7 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
 /** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
   // Without `engines` the engine has no user, as before #22.
-  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0 });
+  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention });
   return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 

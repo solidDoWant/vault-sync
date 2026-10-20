@@ -60,6 +60,13 @@ export interface RunContext {
    * goes through the network, which sees every reply, so it is exact.
    */
   serverSeq: () => bigint;
+  /**
+   * The seqs of the revisions retention purged during the run (SPEC.md
+   * §11): the only seqs the change feed may skip.
+   */
+  purgedSeqs: ReadonlySet<bigint>;
+  /** The ids of the revisions retention purged during the run. */
+  purgedRevisions: ReadonlySet<string>;
 }
 
 /**
@@ -227,7 +234,17 @@ export class ScriptedClient {
     });
   }
 
-  /** Pulls every change since the cursor (§6.1), checking that the feed is gapless and ascending. */
+  /** Every document this client knows of, with the head it last learned: after a full pull, every document's current head. */
+  knownHeads(): Record<string, string> {
+    return Object.fromEntries([...this.documents.values()].map((document) => [document.id, document.head]));
+  }
+
+  /**
+   * Pulls every change since the cursor (§6.1), checking that the feed is
+   * strictly ascending and skips no seq but those of purged revisions (§11).
+   * That it delivers every document's head is checked after quiescence
+   * against the database (SimRun.finish).
+   */
   private async pull(): Promise<void> {
     for (let page = 0; page < maxPages; page++) {
       let response;
@@ -238,8 +255,13 @@ export class ScriptedClient {
         return this.context.log(`${this.name} pull interrupted: ${Code[errorCode(error)]}`);
       }
       for (const revision of response.revisions) {
-        if (revision.seq !== this.cursor + 1n) {
+        if (revision.seq <= this.cursor) {
           this.violation("seq", `${this.name} pulled seq ${String(revision.seq)} right after seq ${String(this.cursor)}`);
+        }
+        for (let skipped = this.cursor + 1n; skipped < revision.seq; skipped++) {
+          if (this.context.purgedSeqs.has(skipped)) continue;
+          this.violation("seq", `${this.name} pulled seq ${String(revision.seq)} right after seq ${String(this.cursor)}, skipping seq ${String(skipped)}, which retention did not purge`);
+          break;
         }
         this.cursor = revision.seq;
         this.learn(revision);
@@ -326,7 +348,9 @@ export class ScriptedClient {
 
   private acknowledge(revision: Revision, fields: CommitFields): void {
     const label = this.context.ids.label(revision.id);
-    if (revision.documentId !== fields.documentId || revision.parentRevId !== fields.baseRevisionId || revision.deleted !== fields.deleted) {
+    // A retry whose base retention purged since gets the re-parented revision back (SPEC.md §6.2, §11).
+    const parentMatches = revision.parentRevId === fields.baseRevisionId || (this.context.purgedRevisions.has(fields.baseRevisionId) && !this.context.purgedRevisions.has(revision.parentRevId));
+    if (revision.documentId !== fields.documentId || !parentMatches || revision.deleted !== fields.deleted) {
       this.violation("protocol", `acknowledged ${label} differs from the commit request`);
     }
     this.context.acknowledged.push({

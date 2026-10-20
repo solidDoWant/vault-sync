@@ -149,6 +149,7 @@ func (control *control) check(writer http.ResponseWriter, request *http.Request)
 	var body struct {
 		VaultID      string            `json:"vaultId"`
 		Acknowledged []acknowledgement `json:"acknowledged"`
+		Heads        []clientHeads     `json:"heads"`
 	}
 
 	if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
@@ -168,7 +169,7 @@ func (control *control) check(writer http.ResponseWriter, request *http.Request)
 	purged := append([]purgedRevision(nil), control.purged[vaultID]...)
 	control.mu.Unlock()
 
-	violations, err := checkInvariants(request.Context(), control.db, vaultID, body.Acknowledged, purged)
+	violations, err := checkInvariants(request.Context(), control.db, vaultID, body.Acknowledged, purged, body.Heads)
 	if err != nil {
 		http.Error(writer, err.Error(), http.StatusInternalServerError)
 
@@ -226,7 +227,9 @@ func (control *control) purge(writer http.ResponseWriter, request *http.Request)
 		control.purged = map[uuid.UUID][]purgedRevision{}
 	}
 
-	control.purged[vaultID] = append(control.purged[vaultID], purged...)
+	// Every purged revision is returned, so the harness reports a purged
+	// head (retention-head), but only the others are excused.
+	control.purged[vaultID] = append(control.purged[vaultID], excusable(purged)...)
 	control.mu.Unlock()
 
 	ids := make([]string, len(purged))
