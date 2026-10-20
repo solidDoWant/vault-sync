@@ -1994,7 +1994,15 @@ export class SyncEngine {
       // The file is no longer what this round found there: a merge moved it
       // aside, or the user changed it. The next round looks again, with the
       // rename that brought it there if it is still the round's (#280).
-      if (!operation.deleted && !sameHash(await this.readOrNull(operation.path), operation.contentHash)) {
+      // Or an earlier commit's pull merged a remote revision of the document
+      // (a delete the local edit wins over, say) and moved its base on: the
+      // operation's base is no longer the head, so its commit would be
+      // refused for good, as the pull after the refusal finds nothing left
+      // to merge (#482). The next round looks again, from the new base.
+      if (
+        (!operation.deleted && !sameHash(await this.readOrNull(operation.path), operation.contentHash)) ||
+        ((await this.journal.getDocument(operation.documentId))?.revisionId ?? "") !== operation.baseRevisionId
+      ) {
         this.changes.paths.add(operation.path);
         const from = changes.renames.get(operation.path);
         if (from !== undefined && !this.changes.renames.has(operation.path)) this.changes.renames.set(operation.path, from);

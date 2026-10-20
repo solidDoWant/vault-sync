@@ -2562,6 +2562,79 @@ export interface RecreatedNoteResult extends RespelledRenameResult {
   recreated: string | undefined;
 }
 
+export interface MergedDuringPushResult extends RunResult {
+  /** Path to text content of each engine's vault. */
+  vaults: Map<string, string>[];
+  /** Live documents by path, read directly from the server. */
+  documents: Map<string, string>;
+  /** The second engine's push summaries, in order. */
+  pushes: string[];
+}
+
+/**
+ * A pull in the middle of a push that merges a remote revision of a
+ * document the push has yet to commit (#482). Both engines sync `a.md` and
+ * `b.md`; the second engine's user edits both, and the second engine starts
+ * a push. Once the push has pulled and is about to send its first commit,
+ * the first engine's user edits `a.md` and deletes `b.md`, and that push
+ * lands. The second engine's first commit is refused because the head moved,
+ * and the pull after it merges both remote revisions: the edit of `b.md`
+ * wins over the delete (SPEC.md §7) and leaves its file as it was. The push
+ * detected its operation for `b.md` against the old base, and committing it
+ * as it was would be refused for good. The engines must quiesce (no
+ * `liveness` violation), with both edits live.
+ */
+export async function mergedDuringPush(endpoints: SimEndpoints, platform: "posix" | "windows" | "macos"): Promise<MergedDuringPushResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("a.md", encoder.encode("a\n")));
+  log(await first.edit("b.md", encoder.encode("b\n")));
+  await push(first);
+  await pull(second);
+
+  log(await second.edit("a.md", encoder.encode("a\nmine\n")));
+  log(await second.edit("b.md", encoder.encode("b\nmine\n")));
+  log(second.startPush());
+  await settle();
+  for (let delivery = 0; run.context.network.pendingRequest(second.index) !== "CommitRevision"; delivery++) {
+    if (delivery > 200) throw new Error(`${second.name} never sent CommitRevision`);
+    await run.step({ kind: "deliver-request", client: second.index });
+    await run.step({ kind: "deliver-response", client: second.index });
+  }
+  log(await first.edit("a.md", encoder.encode("theirs\na\n")));
+  log(await first.remove("b.md"));
+  await push(first);
+  await run.drain(second.index);
+  for (let round = 0; round < 2; round++) await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, documents: await liveDocuments(run), pushes };
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];
