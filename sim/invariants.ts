@@ -272,11 +272,29 @@ function renameLostToCrash(tombstone: FeedRevision, engine: EngineDeletes, feed:
             !create.deleted &&
             create.documentId !== tombstone.documentId &&
             rename.hashes.has(create.contentHash) &&
-            rename.paths.has(key(create.path)) &&
+            [create.path, ...copiedFrom(create.path, engine.name)].some((path) => rename.paths.has(key(path))) &&
             create.seq > crash.serverSeq &&
             (firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId)),
         ),
     );
+  });
+}
+
+/**
+ * The paths whose conflict copy, made by the engine `device`, `path` is: one
+ * segment of it carries the name conflictCopyPath or conflictFolderPath gives
+ * (` (conflict <device> <date>[ <counter>])`, before a file's extension), and
+ * the path without it is the original. A create the server refuses because
+ * the path is taken is kept at such a path (SPEC.md §6.3), by the outermost
+ * folder in the way if it is a folder (#359), as a rename there would be.
+ */
+function copiedFrom(path: string, device: string): string[] {
+  const escaped = device.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+  const suffix = new RegExp(` \\(conflict ${escaped} \\d{4}-\\d{2}-\\d{2} \\d{6}(?: \\d+)?\\)(?=(?:\\.[^/]*)?$)`, "u");
+  const segments = path.split("/");
+  return segments.flatMap((segment, index) => {
+    const original = segment.replace(suffix, "");
+    return original === segment || original === "" ? [] : [[...segments.slice(0, index), original, ...segments.slice(index + 1)].join("/")];
   });
 }
 

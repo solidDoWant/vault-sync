@@ -166,6 +166,46 @@ func TestDuplicateCommitsOfOneSessionComposeOnce(t *testing.T) {
 	fixture.bob.requireBlob(t, service, bobSum[:], bobContent)
 }
 
+// A duplicate commit that waited for the first commit's reservation finds
+// the blob complete once it holds the reservation, and answers from that:
+// it takes no replica compose slot and reads none of the staged objects
+// (#483). Without the check it would compose an upload already finished.
+func TestADuplicateCommitThatWaitedForTheReservationDoesNotCompose(t *testing.T) {
+	fixture, alice := newFairnessFixture(t)
+	service, objects := alice.instance(t)
+
+	content := []byte("a note committed twice")
+	sum := sha256.Sum256(content)
+	blobID := sum[:]
+	alice.send(t, blobID, content, service)
+
+	fixture.block(objects)
+
+	first := make(chan error, 1)
+
+	go func() { first <- alice.commit(as(t.Context(), fixture.aliceID), service, blobID) }()
+
+	receive(t, fixture.composing, "the first commit to compose")
+
+	duplicate := make(chan error, 1)
+
+	go func() { duplicate <- alice.commit(as(t.Context(), fixture.aliceID), service, blobID) }()
+
+	deadline := time.Now().Add(hangGuard)
+	for blobstore.ClaimWaiting(objects) < 1 {
+		require.True(t, time.Now().Before(deadline), "the duplicate commit never waited for the first")
+		time.Sleep(time.Millisecond)
+	}
+
+	fixture.open()
+	require.NoError(t, receive(t, first, "the first commit"))
+	require.NoError(t, receive(t, duplicate, "the duplicate commit"))
+
+	assert.Equal(t, int64(1), blobstore.ReplicaSlotsTaken(objects), "replica compose slots taken by both commits")
+	assert.Equal(t, int64(1), fixture.reads.Load(), "staged objects read by both commits")
+	alice.requireBlob(t, service, blobID, content)
+}
+
 // One user committing as many blobs as there are compose slots cannot keep
 // another user's commit on the same replica waiting.
 func TestOneUsersCommitsLeaveAComposeSlotForOthers(t *testing.T) {

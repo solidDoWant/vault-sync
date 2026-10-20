@@ -128,6 +128,16 @@ func (fixture *fixture) revision(t *testing.T, head *store.Revision, path string
 	return committed
 }
 
+// forgetScans forgets the retention job's complete scans, so its next run
+// considers every document: revisions backdated past an age, as tests do,
+// never crossed it since the last scan.
+func (fixture *fixture) forgetScans(t *testing.T) {
+	t.Helper()
+
+	_, err := fixture.pool.Exec(t.Context(), `DELETE FROM retention_scans`)
+	require.NoError(t, err)
+}
+
 // releasedAgo sets every released blob's release to the SQL interval ago.
 func (fixture *fixture) releasedAgo(t *testing.T, ago string) {
 	t.Helper()
@@ -175,6 +185,7 @@ func (fixture *fixture) releasedBlob(t *testing.T, content string) []byte {
 
 	first := fixture.revision(t, nil, content+".md", blobID, len(content), oldDay+` + interval '1 hour'`)
 	fixture.revision(t, &first, content+".md", kept, len("kept "+content), oldDay+` + interval '2 hours'`)
+	fixture.forgetScans(t)
 
 	result, err := fixture.job().RunOnce(t.Context())
 	require.NoError(t, err)
@@ -277,7 +288,11 @@ func TestReuploadedBlobKeepsItsObject(t *testing.T) {
 
 	// Without an upload, the pending deletion deletes the object.
 	other := fixture.releasedBlob(t, "other")
-	fixture.releasedAgo(t, "2 hours")
+
+	// Only other: the re-uploaded blob, which no revision references, is
+	// within its own grace period.
+	_, err = fixture.pool.Exec(t.Context(), `UPDATE blobs SET released_at = now() - interval '2 hours' WHERE blob_id = $1`, other)
+	require.NoError(t, err)
 
 	collected, err = fixture.vault.CollectBlob(t.Context(), other, grace)
 	require.NoError(t, err)

@@ -82,6 +82,8 @@ type Objects struct {
 	waiting atomic.Int64
 	// claimWaiting counts the ClaimCompose calls waiting for a claim.
 	claimWaiting atomic.Int64
+	// replicaSlotsTaken counts the replica compose slots ever taken.
+	replicaSlotsTaken atomic.Int64
 
 	// afterPart, if set (by tests only), runs after each multipart part is
 	// uploaded and before progress is reported.
@@ -500,6 +502,8 @@ func (objects *Objects) acquireReplicaSlot(ctx context.Context, progress Progres
 	}
 
 	replicaSlot = true
+
+	objects.replicaSlotsTaken.Add(1)
 
 	if err := progress(ctx); err != nil {
 		return nil, err

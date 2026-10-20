@@ -116,7 +116,7 @@ func ageAndPurge(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, revis
 
 		documents[revision.document] = true
 
-		if _, err := vault.PurgeRevisions(ctx, revision.document, agedPolicy, 1000); err != nil {
+		if _, _, err := vault.PurgeRevisions(ctx, revision.document, agedPolicy, 1000); err != nil {
 			return nil, fmt.Errorf("purge document %s: %w", revision.document, err)
 		}
 	}

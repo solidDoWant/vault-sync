@@ -213,6 +213,22 @@ describe("checkPhantomDeletes", () => {
       expect(phantoms([revision({}), tombstone, revision({ ...create, path: "B.md" })], lostRename())).toEqual(reported);
     });
 
+    it("excuses it when the server refused the create at that path and the engine kept the file as its own conflict copy (#485)", () => {
+      const at = (path: string) => revision({ ...create, path });
+      expect(phantoms([revision({}), tombstone, at("b (conflict e1 2026-01-02 030405).md")], lostRename())).toEqual([]);
+      expect(phantoms([revision({}), tombstone, at("b (conflict e1 2026-01-02 030405 2).md")], lostRename())).toEqual([]);
+      expect(phantoms([revision({}), tombstone, at("B (conflict e1 2026-01-02 030405).md")], lostRename({ platform: "windows" }))).toEqual([]);
+      // The outermost folder in the way takes the conflict name (#359).
+      const intoFolder = (ledger: UserLedger) => ledger.renamed("b.md", "notes/c.md", new Set(), "aa");
+      expect(phantoms([revision({}), tombstone, at("notes (conflict e1 2026-01-02 030405)/c.md")], lostRename({ then: intoFolder }))).toEqual([]);
+      // Never another device's copy, a copy of another path, or a copy that is not one by its name.
+      expect(phantoms([revision({}), tombstone, at("b (conflict e9 2026-01-02 030405).md")], lostRename())).toEqual(reported);
+      expect(phantoms([revision({}), tombstone, at("d (conflict e1 2026-01-02 030405).md")], lostRename())).toEqual(reported);
+      expect(phantoms([revision({}), tombstone, at("B (conflict e1 2026-01-02 030405).md")], lostRename())).toEqual(reported);
+      expect(phantoms([revision({}), tombstone, at("b (conflict e1).md")], lostRename())).toEqual(reported);
+      expect(phantoms([revision({}), tombstone, at("notes (conflict e1 2026-01-02 030405)/d.md")], lostRename({ then: intoFolder }))).toEqual(reported);
+    });
+
     it("excuses it when the engine took the renamed file for a document whose file the user deleted at that path (#254)", () => {
       const replaced = revision({ revisionId: "r3", documentId: "d2", seq: 3n, path: "b.md" });
       const feed = [revision({}), revision({ revisionId: "r0", documentId: "d2", seq: 0n, path: "b.md", contentHash: "cc" }), tombstone, replaced];
