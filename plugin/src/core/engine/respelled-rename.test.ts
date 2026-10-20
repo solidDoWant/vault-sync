@@ -39,9 +39,8 @@ describe.each(["posix", "macos", "windows"] as const)("a rename of a note's file
     await h.engine.pull();
     await h.vault.rename("Foo.md", "foo.md");
     h.restart();
-    await h.engine.push();
-    expect(h.server.liveDocuments()).toEqual(new Map([["Foo.md", "X"]]));
-
+    // The rename meets the restart's scan, which finds the note's file under
+    // the vault's spelling (a scan alone would commit that spelling, #481).
     await h.vault.rename("foo.md", "b.md");
     await h.engine.push();
 
@@ -134,10 +133,10 @@ describe.each(["macos", "windows"] as const)("a late-reported rename of a respel
     await h.engine.pull();
     await flush();
     // A case-only rename lost to a restart: its event never reaches an engine.
+    // No push follows before the later changes: a scan alone would commit
+    // the vault's spelling (#481), and the journal would no longer differ.
     await h.vault.rename("Foo.md", "foo.md");
     h.restart();
-    await h.engine.push();
-    expect(h.server.liveDocuments().get("Foo.md")).toBe("X");
   }
 
   it("is the note's rename when the user creates a file at the note's old spelling before the event arrives", async () => {
