@@ -1009,6 +1009,74 @@ func TestDocumentHistoryPages(t *testing.T) {
 	}
 }
 
+// Issue #420: history names the devices that made its revisions, for every
+// member (a viewer included), and only them; a non-member learns nothing.
+func TestDocumentHistoryNamesDevices(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.client(t, "alice", "")
+	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
+	content := alice.content(t, "content")
+	created := alice.mustCommit(t, alice.create(t, "note.md", content))
+
+	bob := fixture.client(t, "bob", alice.vaultID)
+	carol := fixture.client(t, "carol", alice.vaultID)
+	mallory := fixture.client(t, "mallory", alice.vaultID)
+
+	fixture.addMember(t, alice.vaultID, "bob", store.RoleEditor)
+	fixture.addMember(t, alice.vaultID, "carol", store.RoleViewer)
+
+	edited := bob.mustCommit(t, bob.next(t, created, "note.md", content, false))
+	head := alice.mustCommit(t, alice.next(t, edited, "note.md", content, false))
+
+	// Bob's other device, which made no revision of the note, is not named.
+	other := fixture.client(t, "bob", alice.vaultID)
+	other.mustCommit(t, other.create(t, "other.md", content))
+
+	names := func(page *vaultsyncv1.GetDocumentHistoryResponse) map[string]string {
+		named := make(map[string]string)
+		for _, device := range page.GetDeviceNames() {
+			_, duplicate := named[device.GetDeviceId()]
+			assert.False(t, duplicate, "device %s named twice", device.GetDeviceId())
+
+			named[device.GetDeviceId()] = device.GetName()
+		}
+
+		return named
+	}
+
+	want := map[string]string{alice.deviceID: "alice's laptop", bob.deviceID: "bob's laptop"}
+
+	for _, member := range []*syncClient{alice, bob, carol} {
+		page, err := member.historyPage(t, created.GetDocumentId(), 0, "")
+		require.NoError(t, err)
+		assert.Equal(t, []string{head.GetId(), edited.GetId(), created.GetId()}, revisionIDs(page.GetRevisions()))
+		assert.Equal(t, want, names(page))
+	}
+
+	// A page names only the devices of its own revisions.
+	first, err := alice.historyPage(t, created.GetDocumentId(), 2, "")
+	require.NoError(t, err)
+	assert.Equal(t, want, names(first))
+
+	second, err := alice.historyPage(t, created.GetDocumentId(), 1, first.GetNextPageToken())
+	require.NoError(t, err)
+	assert.Equal(t, []string{created.GetId()}, revisionIDs(second.GetRevisions()))
+	assert.Equal(t, map[string]string{alice.deviceID: "alice's laptop"}, names(second))
+
+	// A non-member is refused and learns no device name.
+	refused, err := mallory.historyPage(t, created.GetDocumentId(), 0, "")
+	requireCode(t, connect.CodeNotFound, err)
+	assert.Empty(t, refused.GetDeviceNames())
+
+	// Nor does a vault of their own name devices of another vault's
+	// revisions.
+	mallory.vaultID = fixture.createVault(t, mallory.token, "Mine").GetId()
+	theirs := mallory.mustCommit(t, mallory.create(t, "mine.md", mallory.content(t, "mine")))
+	page, err := mallory.historyPage(t, theirs.GetDocumentId(), 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{mallory.deviceID: "mallory's laptop"}, names(page))
+}
+
 func TestSyncRequestsAreValidated(t *testing.T) {
 	fixture := newSyncFixture(t, api.SyncLimits{})
 	alice := fixture.client(t, "alice", "")

@@ -13,7 +13,7 @@ import { posixPathRules, sameFilesystemName, unmaterializableReason, type PathRu
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
-import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "./history";
+import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
@@ -453,13 +453,16 @@ export class SyncEngine {
    * content. Pass the content of a preview as `content`: if garbage
    * collection removed the revision's blob since, it is uploaded again.
    * Rejects with RestoreError when the restore cannot be done (nothing is
-   * committed then).
+   * committed then). Pass `path` to restore the document there instead of
+   * at its current path, when another document took that (#420).
    */
-  restore(entry: HistoryEntry, content?: Uint8Array): Promise<RemoteRevision> {
+  restore(entry: HistoryEntry, content?: Uint8Array, path?: string): Promise<RemoteRevision> {
+    const invalid = path === undefined ? undefined : restorePathProblem(path, this.pathRules, (candidate) => this.inScope(candidate));
+    if (invalid !== undefined) return Promise.reject(invalid);
     this.cancelScheduledPush();
     return this.serialize(async () => {
       await this.pushOnce();
-      const restored = await commitRestore(this.api, this.vaultId, this.deviceId, entry, this.newId(), content);
+      const restored = await commitRestore(this.api, this.vaultId, this.deviceId, entry, this.newId(), content, path);
       await this.pullOnce();
       return restored;
     });

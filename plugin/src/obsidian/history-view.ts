@@ -32,11 +32,36 @@ export function previewOf(content: Uint8Array): Preview {
   return { kind: "binary", size: content.length };
 }
 
-/** Who committed a revision: this device, or another one, by id (the server does not report other devices' names). */
-export function deviceLabel(entry: Pick<HistoryEntry, "deviceId" | "thisDevice">): string {
+/**
+ * Who committed a revision: this device, or another one by the name the
+ * server reports (quoted, so another user's name cannot pass for "this
+ * device"), or by id when it reports none.
+ */
+export function deviceLabel(entry: Pick<HistoryEntry, "deviceId" | "deviceName" | "thisDevice">): string {
   if (entry.thisDevice) return "this device";
+  const name = entry.deviceName?.trim() ?? "";
+  if (name !== "") return `device “${name}”`;
   if (entry.deviceId === "") return "an unknown device";
   return `device ${entry.deviceId.slice(0, 8)}`;
+}
+
+/**
+ * A path to suggest for restoring a document at `path` when another file
+ * took that (#420): the same folder and extension, the name marked
+ * `(restored)`, numbered past every path `taken` reports.
+ */
+export function alternativePath(path: string, taken: (path: string) => boolean): string {
+  const slash = path.lastIndexOf("/");
+  const folder = path.slice(0, slash + 1);
+  const name = path.slice(slash + 1);
+  const dot = name.lastIndexOf(".");
+  const [stem, extension] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
+  const candidate = (attempt: number) => `${folder}${stem} (restored${attempt === 1 ? "" : ` ${String(attempt)}`})${extension}`;
+  // Bounded: past that the user edits the suggestion, and the restore still checks it.
+  for (let attempt = 1; attempt < 1000; attempt++) {
+    if (!taken(candidate(attempt))) return candidate(attempt);
+  }
+  return candidate(1000);
 }
 
 /** A byte count for people. */

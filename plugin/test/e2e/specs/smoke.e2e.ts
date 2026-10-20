@@ -57,6 +57,21 @@ describe("vault-sync in Obsidian", function () {
     expect(platform.isDesktopApp).toBe(true);
   });
 
+  it("shows the sync status without opening the settings: in the status bar on desktop, as a ribbon icon on mobile (#420)", async function () {
+    const shown = await browser.executeObsidian(() => ({
+      bar: [...document.querySelectorAll(".status-bar .vault-sync-status")].map((element) => element.textContent),
+      ribbon: [...document.querySelectorAll(".vault-sync-status-ribbon")].map((element) => element.getAttribute("aria-label")),
+    }));
+    if (e2eEnvironment.emulateMobile) {
+      expect(shown.ribbon).toHaveLength(1);
+      expect(shown.ribbon[0]).toMatch(/^Vault Sync: /);
+    } else {
+      expect(shown.bar).toHaveLength(1);
+      expect(shown.bar[0]).toMatch(/^Vault Sync: /);
+      expect(shown.ribbon).toEqual([]);
+    }
+  });
+
   it("loads and enables the built plugin", async function () {
     expect(await pluginState()).toEqual({ enabled: true, loaded: true, version: manifest.version });
     // Its onload completes without throwing.

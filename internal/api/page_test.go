@@ -58,6 +58,8 @@ func TestOneRevisionResponsesFitTheMinimumLimit(t *testing.T) {
 			Revisions: []*vaultsyncv1.Revision{revision},
 			// Tokens are 11 characters; leave ample room.
 			NextPageToken: strings.Repeat("A", 64),
+			// The revision's device, with the name JSON expands most.
+			DeviceNames: []*vaultsyncv1.DeviceName{{DeviceId: id, Name: strings.Repeat(`"`, api.MaxDeviceNameBytes)}},
 		},
 		"ListVaultsResponse": &vaultsyncv1.ListVaultsResponse{
 			Vaults: []*vaultsyncv1.Vault{{

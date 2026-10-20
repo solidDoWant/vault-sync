@@ -66,6 +66,30 @@ export function statusText(status: SyncStatus): string {
   return parts.join(" · ");
 }
 
+const icons: Record<SyncState, string> = {
+  "signed-out": "log-in",
+  "sign-in-required": "log-in",
+  "not-connected": "unlink",
+  starting: "loader",
+  "waiting-for-journal": "loader",
+  syncing: "refresh-cw",
+  idle: "check-circle",
+  offline: "wifi-off",
+  error: "alert-circle",
+};
+
+/**
+ * The status as an icon (a Lucide icon id), for the ribbon on mobile, which
+ * has no status bar (#420). Unresolved conflicts show over `idle` and
+ * `syncing`, and local changes waiting to be pushed over `idle`.
+ */
+export function statusIcon(status: SyncStatus): string {
+  const running = status.state === "idle" || status.state === "syncing";
+  if (running && status.conflicts > 0) return "alert-triangle";
+  if (status.state === "idle" && status.pending > 0) return "upload-cloud";
+  return icons[status.state];
+}
+
 /** A longer description, for the status bar's tooltip and the settings. */
 export function statusDescription(status: SyncStatus): string {
   const detail: Record<SyncState, string> = {
