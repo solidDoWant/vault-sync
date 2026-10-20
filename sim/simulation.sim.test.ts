@@ -9,6 +9,7 @@ import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
 import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName, respelledNoteRenamed } from "./scenarios";
+import { localRenameOverRemoteRenameIntoRespelledFolder } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { StallError } from "./network";
@@ -809,6 +810,32 @@ describe.runIf(suites.has("scenarios"))("scripted renames of a note respelled be
     const expected = variant === "free-path" ? new Map([["b.md", note]]) : new Map([["b.md", note], ["c.md", result.before.get("b.md")]]);
     expect(result.documents, trace).toEqual(expected);
     const files = variant === "free-path" ? new Map([["b.md", "x\n"]]) : new Map([["b.md", "x\n"], ["c.md", "p\n"]]);
+    for (const vault of result.vaults) expect(vault, trace).toEqual(files);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted local rename over a remote rename into a respelled folder (#375)", () => {
+  it.each([
+    ["posix", "free-path"],
+    ["macos", "free-path"],
+    ["windows", "free-path"],
+    ["posix", "vacated-path"],
+    ["macos", "vacated-path"],
+    ["windows", "vacated-path"],
+  ] as const)("commits the local rename, with no stray copy (%s, %s)", async (platform, variant) => {
+    const result = await localRenameOverRemoteRenameIntoRespelledFolder(environment, platform, variant);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const moved = result.before.get("notes/C.md");
+    const note = result.before.get("notes/b.md");
+    expect(moved, trace).toBeDefined();
+    expect(note, trace).toBeDefined();
+    const expected = variant === "free-path" ? new Map([["notes/C.md", moved], ["z.md", note]]) : new Map([["moved/C.md", moved], ["notes/C.md", note]]);
+    expect(result.documents, trace).toEqual(expected);
+    const files = variant === "free-path" ? new Map([["notes/C.md", "a\n"], ["z.md", "b\n"]]) : new Map([["moved/C.md", "a\n"], ["notes/C.md", "b\n"]]);
     for (const vault of result.vaults) expect(vault, trace).toEqual(files);
     expect(result.tombstoned, trace).toEqual([]);
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
