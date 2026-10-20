@@ -13,7 +13,7 @@ import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { configFolderHost, ObsidianConfigAdapter, reloadNotifier } from "./obsidian/config-adapter";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
-import { configSyncSettings, oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type PluginData } from "./obsidian/data";
+import { configSyncSettings, oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
@@ -209,11 +209,11 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       // sign-out from here on reaches the new manager, which drops the
       // sign-in. The new manager refreshes against the provider that issued
       // these tokens (its settings are locked from the start of the sign-in).
-      const manager = this.createTokenManager(config, { stored: false });
+      // The provider is stored with the refresh token (and only if that is
+      // saved), so later refreshes (after a restart too) go to this provider
+      // without asking the server again.
+      const manager = this.createTokenManager(config, { stored: false, provider: { issuer: config.issuer, clientId: config.clientId } });
       this.tokens = manager;
-      // Stored with the refresh token, so later refreshes (after a restart
-      // too) go to this provider without asking the server again.
-      this.data.identityProvider = { issuer: config.issuer, clientId: config.clientId };
       await manager.signIn(tokens);
       modal.close();
       new Notice("Vault Sync: signed in");
@@ -415,20 +415,17 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     new Notice(`${statusText(this.status)}\n${statusDescription(this.status)}`);
   }
 
-  /** A token manager for `config`'s provider, starting from the stored refresh token unless `stored` is false. */
-  private createTokenManager(config = oidcConfig(this.data), options: { stored: boolean } = { stored: true }): TokenManager {
+  /**
+   * A token manager for `config`'s provider, starting from the stored
+   * refresh token unless `stored` is false. Its refresh tokens are stored
+   * with `provider`, if given (see persistRefreshToken).
+   */
+  private createTokenManager(config = oidcConfig(this.data), options: { stored: boolean; provider?: IdentityProvider } = { stored: true }): TokenManager {
     const stored = options.stored ? this.data.refreshToken : undefined;
     return new TokenManager({
       ...(stored === undefined ? {} : { refreshToken: stored }),
       refresh: oidcRefresher(requestUrlHttpClient, config),
-      persist: async (refreshToken) => {
-        if (refreshToken === undefined) {
-          delete this.data.refreshToken;
-          // The next sign-in asks the server again.
-          delete this.data.identityProvider;
-        } else this.data.refreshToken = refreshToken;
-        await this.saveSettings();
-      },
+      persist: (refreshToken) => persistRefreshToken(this.data, refreshToken, options.provider, () => this.saveSettings()),
       onStateChange: (state) => {
         if (state === "sign-in-required") {
           new Notice("Vault Sync: your session ended. Sync is paused until you sign in again; your local changes are kept.", 0);

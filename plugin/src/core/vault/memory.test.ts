@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import shared from "../../../../testdata/paths/vectors.json";
 import { sha256Hex } from "../hash";
-import { isVaultError, type VaultAdapter, type VaultEvent } from "./adapter";
+import { isVaultError, type VaultAdapter, type VaultEvent, type VaultListener } from "./adapter";
 import { ConformanceFailure, runConformanceCase, vaultAdapterConformance, type ConformanceCase } from "./conformance";
 import { InMemoryVault } from "./memory";
 
@@ -238,6 +238,21 @@ describe("VaultAdapter conformance suite", () => {
     }
   }
 
+  class LateDeleteVault extends InMemoryVault {
+    // Reports deletes a task later than everything else, as a watcher that
+    // queues some events might: each event arrives, but not in change order.
+    override watch(listener: VaultListener): () => void {
+      return super.watch((event) => {
+        if (event.type === "delete") {
+          setTimeout(() => {
+            listener(event);
+          }, 0);
+        }
+        else listener(event);
+      });
+    }
+  }
+
   class FlatVault extends InMemoryVault {
     override async write(path: string, data: Uint8Array): Promise<void> {
       await super.write(path.replaceAll("/", "_"), data);
@@ -246,6 +261,7 @@ describe("VaultAdapter conformance suite", () => {
 
   const mutants: [string, () => VaultAdapter, string][] = [
     ["an adapter that never reports events", () => new SilentVault(), "changes are reported as events in order"],
+    ["an adapter that reports a delete after the create that followed it", () => new LateDeleteVault(), "changes at one path are reported as events in the order they happened, a rename onto it too"],
     ["an adapter whose rename overwrites", () => new ClobberingVault(), "rename onto an existing file fails and changes nothing"],
     ["an adapter that aliases caller buffers", () => new AliasingVault(), "stored content is isolated from caller buffers"],
     ["an adapter that mangles folder paths", () => new FlatVault(), "write creates missing parent folders"],
