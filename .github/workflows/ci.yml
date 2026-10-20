@@ -16,11 +16,14 @@ concurrency:
 jobs:
   # Decides whether anything that can affect build or test results changed.
   # Docs-only and agent-playbook-only changes skip every test job; the
-  # required `checks` job below still runs and passes.
+  # required `checks` job below still runs and passes. `chart` covers the
+  # docs the chart's coverage check reads (make chart-lint), so a docs-only
+  # change to them still runs that check.
   changes:
     runs-on: ubuntu-latest
     outputs:
       code: ${{ steps.filter.outputs.code }}
+      chart: ${{ steps.filter.outputs.chart }}
     steps:
       - uses: actions/checkout@v5
       - id: filter
@@ -37,6 +40,8 @@ jobs:
               - '!LICENSE'
               - '!.github/renovate.json5'
               - '!.github/renovate/**'
+            chart:
+              - 'docs/{configuration,deployment}.md'
 
   # The test tiers run as parallel jobs (they used to be sequential steps of
   # one ~9 minute job). Everything runs inside the flake's dev shell so CI
@@ -104,10 +109,12 @@ jobs:
   # rendered-manifest checks, and the Nix-built server image, whose binary
   # build-images checks with govulncheck. Building the image also fails when
   # go.mod/go.sum changed without updating vendorHash in nix/server.nix.
-  # Nothing is pushed.
+  # Nothing is pushed. A docs-only change to docs/configuration.md or
+  # docs/deployment.md runs the chart checks (which check that every
+  # documented variable can be set through the chart) but not the image.
   release-artifacts:
     needs: changes
-    if: needs.changes.outputs.code == 'true'
+    if: needs.changes.outputs.code == 'true' || needs.changes.outputs.chart == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -116,6 +123,7 @@ jobs:
       - name: Chart lint and rendered-manifest checks
         run: nix develop -c make chart-lint
       - name: Build the server image (not pushed)
+        if: needs.changes.outputs.code == 'true'
         run: nix develop -c make build-images
 
   # A short sync simulation (docs/testing/simulation.md): a few seeds
@@ -175,8 +183,10 @@ jobs:
       # toolchain comes from setup-* actions, PostgreSQL runs natively, and
       # scripts/with-native-s3.sh runs the pinned versitygw release natively
       # as the S3-compatible store.
+      # v6 installs the version of go.mod's `toolchain` directive (the
+      # minimum patched Go, also read by flake.nix), not its `go` line.
       - if: runner.os != 'Linux'
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
       - if: runner.os != 'Linux'
