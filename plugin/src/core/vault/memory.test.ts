@@ -146,7 +146,7 @@ describe("InMemoryVault", () => {
         it("names one file by two of the shared vectors' paths exactly when the server gives them one path key", async () => {
           const paths = shared.vectors.map((vector) => vector.path).filter((path) => path !== "" && !path.endsWith("/") && path.split("/").every((segment) => segment !== ""));
           const keyOf = new Map(shared.vectors.map((vector) => [vector.path, vector.path_key]));
-          let sameFile = 0;
+          let matched = 0;
           for (const first of paths) {
             for (const second of paths) {
               if (first.startsWith(`${second}/`) || second.startsWith(`${first}/`)) continue;
@@ -162,11 +162,11 @@ describe("InMemoryVault", () => {
               if (!written) continue;
               const found = (await vault.stat(second)) !== null;
               expect(found, `${JSON.stringify(first)} and ${JSON.stringify(second)}`).toBe(keyOf.get(first) === keyOf.get(second));
-              if (found && first !== second) sameFile++;
+              if (found && first !== second) matched++;
             }
           }
           // The vectors must hold pairs that differ only by case or Unicode form, or this proves nothing.
-          expect(sameFile).toBeGreaterThan(0);
+          expect(matched).toBeGreaterThan(0);
         });
       });
     }

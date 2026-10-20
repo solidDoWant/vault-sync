@@ -1,5 +1,5 @@
 import { sha256Hex } from "../hash";
-import { pathKey } from "../pathkey/pathkey";
+import { PathSpace } from "../engine/pathspace";
 import { posixPathRules, unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "./adapter";
 
@@ -11,7 +11,7 @@ export interface InMemoryVaultOptions {
    * Writes and renames to a path the platform cannot hold reject with
    * "unmaterializable". Under `windows` and `macos` rules, paths are matched
    * as those platforms' filesystems match them, ignoring case and Unicode
-   * form (by path key, SPEC.md §5), and a file keeps the spelling it was
+   * form (by the engine's file key, PathSpace), and a file keeps the spelling it was
    * created with. Defaults to `posix`, which is case-sensitive.
    */
   pathRules?: PathRules;
@@ -30,7 +30,7 @@ interface StoredFile {
  * Preconditions are checked synchronously with the change, so atomically.
  */
 export class InMemoryVault implements VaultAdapter {
-  /** Files by lookup key: the path itself, or its path key on a case-insensitive platform. */
+  /** Files by lookup key: the path itself, or its file key (PathSpace) on a case-insensitive platform. */
   private readonly files = new Map<string, StoredFile>();
   private readonly listeners = new Set<VaultListener>();
   private readonly now: () => number;
@@ -51,7 +51,7 @@ export class InMemoryVault implements VaultAdapter {
   constructor(options: InMemoryVaultOptions = {}) {
     this.now = options.now ?? Date.now;
     this.pathRules = options.pathRules ?? posixPathRules;
-    this.key = this.pathRules.platform === "posix" ? (path) => path : pathKey;
+    this.key = new PathSpace(this.pathRules).fileKey;
   }
 
   list(): Promise<string[]> {

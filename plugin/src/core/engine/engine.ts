@@ -6,15 +6,15 @@ import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backof
 import { sha256Hex } from "../hash";
 import type { ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
 import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
-import { pathKey } from "../pathkey/pathkey";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
-import { posixPathRules, sameFilesystemName, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
+import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
+import { PathSpace } from "./pathspace";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
@@ -285,8 +285,8 @@ export class SyncEngine {
   private readonly pathRules: PathRules;
   private readonly onUnmaterializable: (document: UnmaterializableDocument) => void;
   private readonly maxDownloadBytes: bigint;
-  /** Maps a path to what the vault takes as the same file: its path key on a case-insensitive platform. */
-  private readonly fileKey: (path: string) => string;
+  /** How paths compare: server keys, file keys, filesystem names and folders. */
+  private readonly pathSpace: PathSpace;
   private readonly echoes = new EchoSuppressor();
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
@@ -346,7 +346,7 @@ export class SyncEngine {
     this.pathRules = options.pathRules ?? posixPathRules;
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
-    this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
+    this.pathSpace = new PathSpace(this.pathRules);
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
@@ -532,8 +532,8 @@ export class SyncEngine {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return;
     if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return;
-    const key = this.fileKey(state.path);
-    const taken = (await this.journal.listDocuments()).some((other) => other.documentId !== documentId && !other.deleted && this.fileKey(other.path) === key);
+    const key = this.pathSpace.fileKey(state.path);
+    const taken = (await this.journal.listDocuments()).some((other) => other.documentId !== documentId && !other.deleted && this.pathSpace.fileKey(other.path) === key);
     if (!taken) {
       const content = await this.readOrNull(state.path);
       if (content !== null) {
@@ -930,8 +930,8 @@ export class SyncEngine {
    */
   private async matchSpelling(path: string, documentId: string): Promise<void> {
     if (this.pathRules.platform === "posix" || (await this.vault.stat(path)) === null) return;
-    const key = this.fileKey(path);
-    const actual = (await this.vault.list()).find((candidate) => candidate !== path && this.fileKey(candidate) === key);
+    const key = this.pathSpace.fileKey(path);
+    const actual = (await this.vault.list()).find((candidate) => candidate !== path && this.pathSpace.fileKey(candidate) === key);
     if (actual === undefined || (await this.localSpelling(actual, documentId))) return;
     await this.echoed(this.echoes.expectRename(actual, path), () => this.vault.rename(actual, path));
   }
@@ -956,8 +956,8 @@ export class SyncEngine {
     if (this.pathRules.platform === "posix") return path;
     const listed = await this.vault.list();
     if (listed.includes(path)) return path;
-    const key = this.fileKey(path);
-    const candidates = listed.filter((candidate) => this.fileKey(candidate) === key);
+    const key = this.pathSpace.fileKey(path);
+    const candidates = listed.filter((candidate) => this.pathSpace.fileKey(candidate) === key);
     return candidates.length === 1 ? (candidates[0] ?? path) : path;
   }
 
@@ -1092,9 +1092,9 @@ export class SyncEngine {
   private async releaseKeptFile(documentId: string): Promise<boolean> {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return false;
-    const key = this.fileKey(state.path);
+    const key = this.pathSpace.fileKey(state.path);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
-    if (pending.some((operation) => operation.deleted || this.fileKey(operation.path) !== key)) return false;
+    if (pending.some((operation) => operation.deleted || this.pathSpace.fileKey(operation.path) !== key)) return false;
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
     return true;
@@ -1124,11 +1124,11 @@ export class SyncEngine {
   private async releaseParkedPath(documentId: string): Promise<void> {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return;
-    const key = this.fileKey(state.path);
+    const key = this.pathSpace.fileKey(state.path);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId && !operation.deleted);
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
-    for (const operation of pending) if (this.fileKey(operation.path) !== key) this.changes.paths.add(operation.path);
+    for (const operation of pending) if (this.pathSpace.fileKey(operation.path) !== key) this.changes.paths.add(operation.path);
     this.forgetRenamesFrom(state.path);
   }
 
@@ -1141,7 +1141,7 @@ export class SyncEngine {
    * looked at as they are (a create, if a file is there).
    */
   private forgetRenamesFrom(path: string): void {
-    const key = this.fileKey(path);
+    const key = this.pathSpace.fileKey(path);
     for (const renames of [this.changes.renames, this.roundRenames]) {
       for (const [to, from] of [...renames]) {
         // Defensive: a rename is recorded from the journal's spelling of a
@@ -1149,7 +1149,7 @@ export class SyncEngine {
         // (syncedSpelling), so `from === path` holds in every case known;
         // the key keeps a rename recorded from another spelling of the file
         // from outliving the document (#513).
-        if (this.fileKey(from) !== key) continue;
+        if (this.pathSpace.fileKey(from) !== key) continue;
         renames.delete(to);
         // Its new path is looked at again: a rename held back for a busy
         // document (detectChanges) is recorded without it.
@@ -1171,13 +1171,13 @@ export class SyncEngine {
    * taking the conflict name, #359) and the deferred revision is written.
    */
   private async releaseKeptFilesAround(path: string, documentId: string): Promise<void> {
-    const key = this.fileKey(path);
-    const folders = new Set(ancestors(key));
+    const key = this.pathSpace.fileKey(path);
+    const folders = new Set(this.pathSpace.ancestors(key));
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason !== "unmaterializable" || deferred.revision.documentId === documentId) continue;
       const state = await this.journal.getDocument(deferred.revision.documentId);
       if (state === undefined || state.deleted) continue;
-      const kept = this.fileKey(state.path);
+      const kept = this.pathSpace.fileKey(state.path);
       if (!folders.has(kept) && !kept.startsWith(`${key}/`)) continue;
       if (await this.releaseKeptFile(state.documentId)) this.changes.paths.add(state.path);
     }
@@ -1211,11 +1211,11 @@ export class SyncEngine {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted || (await this.vault.stat(state.path)) !== null) return false;
     if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return false;
-    const key = this.fileKey(state.path);
+    const key = this.pathSpace.fileKey(state.path);
     let follow: string | undefined;
     for (const renames of [this.changes.renames, this.roundRenames]) {
       for (const [to, from] of [...renames]) {
-        if (this.fileKey(from) !== key) continue;
+        if (this.pathSpace.fileKey(from) !== key) continue;
         renames.delete(to);
         follow ??= to;
       }
@@ -1244,16 +1244,16 @@ export class SyncEngine {
    * document's move there is found (#267).
    */
   private async localMoveAt(path: string, documentId: string): Promise<{ documentId: string; path: string } | undefined> {
-    const key = this.fileKey(path);
+    const key = this.pathSpace.fileKey(path);
     const synced = await this.documentAt(path);
     if (synced !== undefined && !(await this.movedAway(synced))) return undefined;
     for (const operation of await this.journal.listPending()) {
-      if (this.fileKey(operation.path) === key && !operation.deleted && operation.documentId !== documentId && (await this.journal.getDocument(operation.documentId)) !== undefined) {
+      if (this.pathSpace.fileKey(operation.path) === key && !operation.deleted && operation.documentId !== documentId && (await this.journal.getDocument(operation.documentId)) !== undefined) {
         return { documentId: operation.documentId, path: operation.path };
       }
     }
     for (const [to, from] of this.localRenames()) {
-      if (this.fileKey(to) !== key) continue;
+      if (this.pathSpace.fileKey(to) !== key) continue;
       const moved = (await this.journal.findDocumentByPath(from)) ?? (await this.pendingCreateAt(from));
       if (moved !== undefined && moved.documentId !== documentId) return { documentId: moved.documentId, path: to };
     }
@@ -1282,16 +1282,16 @@ export class SyncEngine {
   private async movedAway(state: DocumentState): Promise<boolean> {
     // The user deleted its file: a file at its path since then is another one (#254).
     if (this.fileDeleted(state)) return true;
-    const key = this.fileKey(state.path);
+    const key = this.pathSpace.fileKey(state.path);
     for (const operation of await this.journal.listPending()) {
-      if (operation.documentId === state.documentId && !operation.deleted && this.fileKey(operation.path) !== key) return true;
+      if (operation.documentId === state.documentId && !operation.deleted && this.pathSpace.fileKey(operation.path) !== key) return true;
     }
     for (const [to, from] of this.localRenames()) {
-      if (from === state.path && this.fileKey(to) !== key) return true;
+      if (from === state.path && this.pathSpace.fileKey(to) !== key) return true;
       // Another file renamed onto its path, and still there: its own file
       // was gone by then, deleted even if a restart lost the mark of that
       // delete (#526).
-      if (this.fileKey(to) === key && this.renamedOnto(to, from, this.changes.vacated)) return true;
+      if (this.pathSpace.fileKey(to) === key && this.renamedOnto(to, from, this.changes.vacated)) return true;
     }
     return false;
   }
@@ -1305,7 +1305,7 @@ export class SyncEngine {
    * file that was there, so it tells nothing of another file.
    */
   private renamedOnto(to: string, from: string, vacated: ReadonlySet<string>): boolean {
-    return this.fileKey(from) !== this.fileKey(to) && !vacated.has(to);
+    return this.pathSpace.fileKey(from) !== this.pathSpace.fileKey(to) && !vacated.has(to);
   }
 
 
@@ -1317,7 +1317,7 @@ export class SyncEngine {
   /**
    * The live document whose file the vault holds at `path`, compared as the
    * vault compares paths (its own spelling first). A document at another
-   * spelling with the same path key is not found if the filesystem holds the
+   * spelling with the same file key is not found if the filesystem holds the
    * two spellings as two files (decision #52, #399): with `bySpelling`, when
    * the filesystem does not fold one into the other (for a vault event, which
    * may arrive after later changes are on disk); otherwise, when the vault
@@ -1326,29 +1326,20 @@ export class SyncEngine {
   private async documentAt(path: string, bySpelling = false): Promise<DocumentState | undefined> {
     const exact = await this.journal.findDocumentByPath(path);
     if (exact !== undefined || this.pathRules.platform === "posix") return exact;
-    const key = this.fileKey(path);
-    const state = (await this.journal.listDocuments()).find((candidate) => !candidate.deleted && this.fileKey(candidate.path) === key);
-    if (state === undefined || sameFilesystemName(state.path, path, this.pathRules.platform)) return state;
+    const key = this.pathSpace.fileKey(path);
+    const state = (await this.journal.listDocuments()).find((candidate) => !candidate.deleted && this.pathSpace.fileKey(candidate.path) === key);
+    if (state === undefined || this.pathSpace.oneFile(state.path, path)) return state;
     if (bySpelling || (await this.heldApart(state.path, path))) return undefined;
     return state;
   }
 
   /**
-   * Whether `a` and `b` name one file on the device, decided from the two
-   * spellings alone: one path key, and a name the filesystem folds into one
-   * (decision #52, #399). For vault events, which never read the listing.
-   */
-  private sameFile(a: string, b: string): boolean {
-    return this.fileKey(a) === this.fileKey(b) && sameFilesystemName(a, b, this.pathRules.platform);
-  }
-
-  /**
-   * Whether the vault holds `a` and `b`, two spellings with one path key, as
+   * Whether the vault holds `a` and `b`, two spellings with one file key, as
    * two files: it lists both. Path keys fold `ß`/`SS`, and NFC/NFD on
    * Windows, which the filesystem does not (decision #52).
    */
   private async heldApart(a: string, b: string, listed?: ReadonlySet<string>): Promise<boolean> {
-    if (sameFilesystemName(a, b, this.pathRules.platform)) return false;
+    if (this.pathSpace.oneFile(a, b)) return false;
     const files = listed ?? new Set(await this.vault.list());
     return files.has(a) && files.has(b);
   }
@@ -1362,8 +1353,8 @@ export class SyncEngine {
    * changes, which look at the vault as they act.
    */
   private async heldAsOne(a: string, b: string): Promise<boolean> {
-    if (this.fileKey(a) !== this.fileKey(b)) return false;
-    if (sameFilesystemName(a, b, this.pathRules.platform)) return true;
+    if (this.pathSpace.fileKey(a) !== this.pathSpace.fileKey(b)) return false;
+    if (this.pathSpace.oneFile(a, b)) return true;
     const listed = new Set(await this.vault.list());
     if (listed.has(a) === listed.has(b)) return false;
     return (await this.vault.stat(listed.has(a) ? b : a)) !== null;
@@ -1599,10 +1590,10 @@ export class SyncEngine {
    * Compared as the vault compares paths.
    */
   private renameFollowsCopy(path: string, copyPath: string): void {
-    const key = this.fileKey(path);
+    const key = this.pathSpace.fileKey(path);
     for (const renames of [this.changes.renames, this.roundRenames]) {
       for (const [to, from] of [...renames]) {
-        if (this.fileKey(to) !== key) continue;
+        if (this.pathSpace.fileKey(to) !== key) continue;
         renames.delete(to);
         this.changes.renames.set(copyPath, from);
       }
@@ -1622,7 +1613,7 @@ export class SyncEngine {
    * brought its file to (#462).
    */
   private async renamedOntoVacated(remote: RemoteRevision, path: string, holder: DocumentState): Promise<boolean> {
-    return this.fileKey(remote.path) !== this.fileKey(path) && (await this.movedAway(holder));
+    return this.pathSpace.fileKey(remote.path) !== this.pathSpace.fileKey(path) && (await this.movedAway(holder));
   }
 
   /**
@@ -1631,9 +1622,9 @@ export class SyncEngine {
    * file at `notes/c.md` on a case-insensitive platform, #242); deletes stay.
    */
   private async dropOperationsAt(path: string, documentId: string): Promise<void> {
-    const key = this.fileKey(path);
+    const key = this.pathSpace.fileKey(path);
     for (const operation of await this.journal.listPending()) {
-      if (operation.documentId !== documentId && this.fileKey(operation.path) === key && !operation.deleted) await this.journal.removePending(operation.revisionId);
+      if (operation.documentId !== documentId && this.pathSpace.fileKey(operation.path) === key && !operation.deleted) await this.journal.removePending(operation.revisionId);
     }
   }
 
@@ -1651,9 +1642,9 @@ export class SyncEngine {
    * path is a create.
    */
   private async dropCreatesAt(path: string): Promise<void> {
-    const key = this.fileKey(path);
+    const key = this.pathSpace.fileKey(path);
     for (const operation of await this.journal.listPending()) {
-      if (operation.deleted || this.fileKey(operation.path) !== key) continue;
+      if (operation.deleted || this.pathSpace.fileKey(operation.path) !== key) continue;
       const state = await this.journal.getDocument(operation.documentId);
       if (state === undefined || state.deleted) {
         await this.journal.removePending(operation.revisionId);
@@ -1745,16 +1736,16 @@ export class SyncEngine {
   private async freeConflictPath(path: string, folder?: string, merged?: MergedDocument): Promise<string | null> {
     const date = this.now();
     const taken = new Set<string>();
-    for (const operation of await this.journal.listPending()) taken.add(pathKey(operation.path));
-    for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(pathKey(record.copyPath));
+    for (const operation of await this.journal.listPending()) taken.add(this.pathSpace.serverKey(operation.path));
+    for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(this.pathSpace.serverKey(record.copyPath));
     const files = await this.knownFileKeys(merged);
     // A folder is any file's ancestor.
     const folders = new Set<string>();
-    for (const file of files) for (const ancestor of ancestors(file)) folders.add(ancestor);
+    for (const file of files) for (const ancestor of this.pathSpace.ancestors(file)) folders.add(ancestor);
     // The merge result's folders are folders whatever else is named like
     // them: a file there by path key (a new file NOTES, next to a result in
     // notes/ under POSIX rules) cannot keep a copy out of them (#352).
-    const resultFolders = new Set(merged === undefined || merged.result === null ? [] : ancestors(pathKey(merged.result)));
+    const resultFolders = new Set(merged === undefined || merged.result === null ? [] : this.pathSpace.ancestors(this.pathSpace.serverKey(merged.result)));
     const blocks = (ancestor: string) => files.has(ancestor) && !resultFolders.has(ancestor);
     // A file named like one of the path's own folders leaves no free name in
     // that folder (every name there is under the file by path key), so that
@@ -1762,15 +1753,15 @@ export class SyncEngine {
     // remote rename of Notes/C.md to NOTES keeps the local edit at
     // `Notes (conflict …)/C.md` (#359). The outermost such folder, so the
     // copy is under none of them.
-    const named = folder ?? ancestors(path).find((ancestor) => blocks(pathKey(ancestor)));
+    const named = folder ?? this.pathSpace.ancestors(path).find((ancestor) => blocks(this.pathSpace.serverKey(ancestor)));
     for (let attempt = 1; attempt <= maxConflictNameAttempts; attempt++) {
       const candidate =
         named === undefined
           ? conflictCopyPath(path, this.deviceName, date, attempt, this.pathRules)
           : conflictFolderPath(named, path.slice(named.length + 1), this.deviceName, date, attempt, this.pathRules);
       if (candidate === null) return null;
-      const candidateKey = pathKey(candidate);
-      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some(blocks)) continue;
+      const candidateKey = this.pathSpace.serverKey(candidate);
+      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || this.pathSpace.ancestors(candidateKey).some(blocks)) continue;
       // A file outside the sync scope is not listed, but it is there.
       if (!this.inScope(candidate) && (await this.vault.stat(candidate)) !== null) continue;
       return candidate;
@@ -1786,13 +1777,13 @@ export class SyncEngine {
    * its synced path unless the merge result goes there.
    */
   private async knownFileKeys(merged?: MergedDocument): Promise<Set<string>> {
-    const keys = new Set((await this.vault.list()).filter((path) => path !== merged?.file).map(pathKey));
+    const keys = new Set((await this.vault.list()).filter((path) => path !== merged?.file).map((path) => this.pathSpace.serverKey(path)));
     for (const state of await this.journal.listDocuments()) {
       if (state.deleted) continue;
-      if (state.documentId === merged?.documentId && (merged.result === null || pathKey(state.path) !== pathKey(merged.result))) continue;
-      keys.add(pathKey(state.path));
+      if (state.documentId === merged?.documentId && (merged.result === null || this.pathSpace.serverKey(state.path) !== this.pathSpace.serverKey(merged.result))) continue;
+      keys.add(this.pathSpace.serverKey(state.path));
     }
-    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
+    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(this.pathSpace.serverKey(deferred.revision.path));
     return keys;
   }
 
@@ -2079,18 +2070,18 @@ export class SyncEngine {
     // may hold the file another rename moved there, and its new path may be
     // where a document that moved on is still synced.
     // Compared as the vault compares paths.
-    const movedAway = new Set([...changes.renames.values()].map((path) => this.fileKey(path)));
-    const movedHere = new Set([...changes.renames.keys()].map((path) => this.fileKey(path)));
+    const movedAway = new Set([...changes.renames.values()].map((path) => this.pathSpace.fileKey(path)));
+    const movedHere = new Set([...changes.renames.keys()].map((path) => this.pathSpace.fileKey(path)));
     // Documents at a rename's new path whose file the user deleted (#254).
     const displaced: DocumentState[] = [];
     // Paths a rename recorded since this round began moved a file from or
     // to: the next round looks at them, with that rename (#280).
-    const later = new Set([...this.changes.renames].flat().map((path) => this.fileKey(path)));
+    const later = new Set([...this.changes.renames].flat().map((path) => this.pathSpace.fileKey(path)));
     const renames: PendingOperation[] = [];
     for (const [to, from] of changes.renames) {
       // A move into or out of the sync scope is a create or a delete of the side in it, which the path loop below sees.
       if (!this.inScope(from) || !this.inScope(to)) continue;
-      if (later.has(this.fileKey(from)) || later.has(this.fileKey(to))) {
+      if (later.has(this.pathSpace.fileKey(from)) || later.has(this.pathSpace.fileKey(to))) {
         // Unless a later rename continues it, it goes to the next round as it is.
         if (!this.changes.renames.has(to) && ![...this.changes.renames.values()].includes(from)) this.changes.renames.set(to, from);
         handled.add(from);
@@ -2130,7 +2121,7 @@ export class SyncEngine {
         // the vault refuses a rename onto an existing file (#526). Not if the
         // path holds that document's synced content: the engine wrote its
         // file there after the renamed file moved on.
-        if (movedAway.has(this.fileKey(to)) || this.fileDeleted(holder, [changes.deleted]) || (this.renamedOnto(to, from, changes.vacated) && !sameHash(await this.readOrNull(to), holder.baseHash))) freed = holder;
+        if (movedAway.has(this.pathSpace.fileKey(to)) || this.fileDeleted(holder, [changes.deleted]) || (this.renamedOnto(to, from, changes.vacated) && !sameHash(await this.readOrNull(to), holder.baseHash))) freed = holder;
         else if (holder.path === to) continue;
       }
       const content = await this.readOrNull(to);
@@ -2140,7 +2131,7 @@ export class SyncEngine {
       handled.add(to);
       if (freed === undefined) continue;
       handled.add(freed.path);
-      if (!movedAway.has(this.fileKey(to))) displaced.push(freed);
+      if (!movedAway.has(this.pathSpace.fileKey(to))) displaced.push(freed);
     }
     edits.push(...dependencyOrder(renames, (operation) => changes.renames.get(operation.path)));
 
@@ -2149,20 +2140,20 @@ export class SyncEngine {
     // document is renamed or deleted under its own id, never given the new
     // file's content. A file there that a rename brought is that rename's.
     const renamed = new Set(renames.map((operation) => operation.documentId));
-    const arrived = (path: string) => movedHere.has(this.fileKey(path));
+    const arrived = (path: string) => movedHere.has(this.pathSpace.fileKey(path));
     const replacements = new Map<string, string>();
     for (const operation of renames) {
       const from = changes.renames.get(operation.path);
-      if (from === undefined || this.fileKey(from) === this.fileKey(operation.path) || arrived(from)) continue;
+      if (from === undefined || this.pathSpace.fileKey(from) === this.pathSpace.fileKey(operation.path) || arrived(from)) continue;
       const actual = await this.fileAt(from);
-      if (actual !== undefined) replacements.set(this.fileKey(from), actual);
+      if (actual !== undefined) replacements.set(this.pathSpace.fileKey(from), actual);
     }
     for (const holder of displaced) {
       if (!renamed.has(holder.documentId)) removals.push(this.operation(holder, holder.path, null));
     }
     const displacedIds = new Set(displaced.map((holder) => holder.documentId));
     for (const state of await this.journal.listDocuments()) {
-      const key = this.fileKey(state.path);
+      const key = this.pathSpace.fileKey(state.path);
       if (state.deleted || renamed.has(state.documentId) || displacedIds.has(state.documentId) || !this.fileDeleted(state, [changes.deleted])) continue;
       if (handled.has(state.path) || busyPaths.has(state.path) || busyDocuments.has(state.documentId) || later.has(key)) {
         // Its delete waits with the document: the push that frees it looks again.
@@ -2206,15 +2197,15 @@ export class SyncEngine {
     if (this.pathRules.platform !== "posix") {
       // On a case-insensitive platform a path of another spelling than a
       // document's names that document's file, never a new one.
-      const live = new Map(documents.filter((state) => !state.deleted).map((state) => [this.fileKey(state.path), state.path]));
+      const live = new Map(documents.filter((state) => !state.deleted).map((state) => [this.pathSpace.fileKey(state.path), state.path]));
       // A path no document has names the file the vault holds under its
       // own spelling: a file renamed by case before its first push is one
       // create, at its new spelling (#304).
       const listed = await this.vault.list();
-      const onDisk = new Map(listed.map((path) => [this.fileKey(path), path]));
+      const onDisk = new Map(listed.map((path) => [this.pathSpace.fileKey(path), path]));
       const held = new Set(listed);
       for (const path of [...paths]) {
-        const own = live.get(this.fileKey(path)) ?? onDisk.get(this.fileKey(path));
+        const own = live.get(this.pathSpace.fileKey(path)) ?? onDisk.get(this.pathSpace.fileKey(path));
         // Two files the vault holds apart are two files, each pushed as itself:
         // a new one's create is refused at the path key and kept as a conflict copy (#399).
         if (own === undefined || own === path || (await this.heldApart(own, path, held))) continue;
@@ -2224,7 +2215,7 @@ export class SyncEngine {
     }
 
     for (const path of [...paths].sort()) {
-      if (handled.has(path) || later.has(this.fileKey(path))) continue;
+      if (handled.has(path) || later.has(this.pathSpace.fileKey(path))) continue;
       // Outside the scope, a missing file is no delete and a changed one no edit (SPEC.md §8, config sync).
       if (!this.inScope(path)) continue;
       const state = await this.journal.findDocumentByPath(path);
@@ -2264,8 +2255,8 @@ export class SyncEngine {
   private async fileAt(path: string): Promise<string | undefined> {
     if ((await this.readOrNull(path)) === null) return undefined;
     if (this.pathRules.platform === "posix") return path;
-    const key = this.fileKey(path);
-    return (await this.vault.list()).find((candidate) => this.fileKey(candidate) === key) ?? path;
+    const key = this.pathSpace.fileKey(path);
+    return (await this.vault.list()).find((candidate) => this.pathSpace.fileKey(candidate) === key) ?? path;
   }
 
   /** A new revision of a known document: `content` at `path`, or a tombstone (null). */
@@ -2326,7 +2317,7 @@ export class SyncEngine {
       // file, unless the user moved the file on since (that later rename
       // carries it). Dropped, the file at the new path would be a new
       // document, and the old one would stay where its file was (#286).
-      if (state === undefined || state.deleted || operation.deleted || this.fileKey(state.path) === this.fileKey(operation.path)) return;
+      if (state === undefined || state.deleted || operation.deleted || this.pathSpace.fileKey(state.path) === this.pathSpace.fileKey(operation.path)) return;
       this.changes.paths.add(state.path);
       const from = this.roundRenames.get(operation.path) ?? state.path;
       if (!this.changes.renames.has(operation.path) && ![...this.changes.renames.values()].includes(from) && (await this.readOrNull(operation.path)) !== null) {
@@ -2566,12 +2557,7 @@ export class SyncEngine {
    * file: what the server refuses `path` for (SPEC.md §5, §6.3).
    */
   private async takenByAnother(path: string, documentId: string): Promise<boolean> {
-    const key = pathKey(path);
-    const folders = new Set(ancestors(key));
-    const collides = (other: string) => {
-      const otherKey = pathKey(other);
-      return otherKey === key || folders.has(otherKey) || otherKey.startsWith(`${key}/`);
-    };
+    const collides = (other: string) => this.pathSpace.collides(path, other, "server");
     for (const state of await this.journal.listDocuments()) if (state.documentId !== documentId && !state.deleted && collides(state.path)) return true;
     for (const { revision } of await this.journal.listDeferred()) if (revision.documentId !== documentId && !revision.deleted && collides(revision.path)) return true;
     return false;
@@ -2589,12 +2575,12 @@ export class SyncEngine {
    * whenever a file copy name cannot be.
    */
   private async takenFolder(path: string): Promise<string | undefined> {
-    const folders = ancestors(path);
+    const folders = this.pathSpace.ancestors(path);
     if (folders.length === 0) return undefined;
     const keys = new Set<string>();
-    for (const state of await this.journal.listDocuments()) if (!state.deleted) keys.add(pathKey(state.path));
-    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
-    return folders.find((folder) => keys.has(pathKey(folder)));
+    for (const state of await this.journal.listDocuments()) if (!state.deleted) keys.add(this.pathSpace.serverKey(state.path));
+    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(this.pathSpace.serverKey(deferred.revision.path));
+    return folders.find((folder) => keys.has(this.pathSpace.serverKey(folder)));
   }
 
   /**
@@ -2621,10 +2607,10 @@ export class SyncEngine {
     }
     if (deferrals.length === 0) return;
     const files = new Set(await this.vault.list());
-    const folders = new Set([...files].flatMap((file) => ancestors(file)));
+    const folders = new Set([...files].flatMap((file) => this.pathSpace.ancestors(file)));
     for (const deferred of deferrals) {
       const { path } = deferred.revision;
-      if (!deferred.revision.deleted && (folders.has(path) || ancestors(path).some((ancestor) => files.has(ancestor)))) continue;
+      if (!deferred.revision.deleted && (folders.has(path) || this.pathSpace.ancestors(path).some((ancestor) => files.has(ancestor)))) continue;
       this.retried.add(deferred.revision.revisionId);
       const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true });
       // Already superseded: a newer revision of the document was applied.
@@ -2648,7 +2634,7 @@ export class SyncEngine {
    * since (a remote revision that brought it back, say).
    */
   private fileDeleted(state: DocumentState, marks: readonly Map<string, DeletedFile>[] = [this.changes.deleted, this.roundDeleted]): boolean {
-    const key = this.fileKey(state.path);
+    const key = this.pathSpace.fileKey(state.path);
     return marks.some((deleted) => {
       const file = deleted.get(key);
       return file !== undefined && file.documentId === state.documentId && file.revisionId === state.revisionId;
@@ -2667,8 +2653,8 @@ export class SyncEngine {
   private async ownFileAt(path: string): Promise<boolean> {
     try {
       // A local rename took that file away already: this one came after it.
-      if (this.localRenames().some(([, from]) => this.sameFile(from, path))) return false;
-      if ((await this.journal.listPending()).some((operation) => !operation.deleted && this.sameFile(operation.path, path))) return true;
+      if (this.localRenames().some(([, from]) => this.pathSpace.oneFile(from, path))) return false;
+      if ((await this.journal.listPending()).some((operation) => !operation.deleted && this.pathSpace.oneFile(operation.path, path))) return true;
       const state = await this.documentAt(path, true);
       return state !== undefined && !(await this.movedAway(state));
     } catch {
@@ -2686,8 +2672,8 @@ export class SyncEngine {
     try {
       const state = await this.documentAt(path, true);
       if (state === undefined || (await this.movedAway(state))) return undefined;
-      const key = this.fileKey(path);
-      if (this.localRenames().some(([to]) => this.fileKey(to) === key)) return undefined;
+      const key = this.pathSpace.fileKey(path);
+      if (this.localRenames().some(([to]) => this.pathSpace.fileKey(to) === key)) return undefined;
       return { documentId: state.documentId, revisionId: state.revisionId };
     } catch {
       // In doubt, a delete like any other: a later file at the path is pushed as before.
@@ -2749,12 +2735,12 @@ export class SyncEngine {
         this.changes.renames.delete(event.path);
       } else if (origin !== event.path) this.changes.renames.set(event.path, origin);
       // The file is back where it was synced: it was never deleted.
-      else this.changes.deleted.delete(this.fileKey(event.path));
+      else this.changes.deleted.delete(this.pathSpace.fileKey(event.path));
     } else if (event.type === "delete" && this.changes.renames.has(event.path)) {
       // The file a rename put here is gone: a later file here is another one, never part of that rename (#280).
       this.changes.vacated.add(event.path);
-    } else if (deleted !== undefined && !this.changes.deleted.has(this.fileKey(event.path))) {
-      this.changes.deleted.set(this.fileKey(event.path), deleted);
+    } else if (deleted !== undefined && !this.changes.deleted.has(this.pathSpace.fileKey(event.path))) {
+      this.changes.deleted.set(this.pathSpace.fileKey(event.path), deleted);
     }
     this.schedulePush();
   }
@@ -2855,12 +2841,6 @@ function syncedState(remote: RemoteRevision): DocumentState {
     kind: remote.kind,
     deleted: remote.deleted,
   };
-}
-
-/** The folders `path` is in, outermost first. */
-function ancestors(path: string): string[] {
-  const segments = path.split("/");
-  return segments.slice(1).map((_, index) => segments.slice(0, index + 1).join("/"));
 }
 
 /**
