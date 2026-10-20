@@ -809,4 +809,62 @@ describe("SyncEngine collisions by path key", () => {
       expect(await h.journal.listDeferred()).toEqual([]);
     });
   });
+
+  describe("given a merge that moves a document away from a synced path whose path key names a folder of the copy (#299)", () => {
+    // Simulation retention seeds 1 (Windows engine) and 5 (macOS engine) of
+    // #229: the journal still has the document at its synced path NOTES, but
+    // the merge puts it elsewhere, so NOTES never makes notes/ a file's path
+    // by path key that no conflict copy can go in.
+    for (const platform of ["posix", "macos", "windows"] as const) {
+      it(`keeps the user's file in the way as a conflict copy when the user deleted the document's file (${platform})`, async () => {
+        // Seed 1: the user's delete of NOTES loses to the remote edit, which
+        // also renames the document to notes/f.md, where the user created a file.
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "N", path: "NOTES", content: "theirs\n" });
+        await h.engine.pull();
+        await h.vault.delete("NOTES");
+        h.server.commit({ documentId: "N", path: "notes/f.md", content: "theirs, edited\n" });
+        await h.vault.write("notes/f.md", bytes("mine\n"));
+
+        await h.engine.pull();
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["notes/f.md", "theirs, edited\n"],
+            [`notes/${copyOf("f", ".md")}`, "mine\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments().get("notes/f.md")).toBe("N");
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+
+      it(`keeps the local version as a conflict copy when a local rename moved the document's file into the folder (${platform})`, async () => {
+        // Seed 5: the user renamed NOTES to notes/f.md and edited it, while
+        // another device renamed and edited it too. The local rename wins,
+        // and the two edits conflict.
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "N", path: "NOTES", content: "base\n" });
+        await h.engine.pull();
+        await h.vault.rename("NOTES", "notes/f.md");
+        await h.vault.write("notes/f.md", bytes("mine\n"));
+        h.server.commit({ documentId: "N", path: "notes/c.md", content: "theirs\n" });
+
+        await h.engine.pull();
+        const summaries = await pushUntilQuiet(h);
+
+        const live = h.server.liveFiles();
+        expect([...live.values()].sort()).toEqual(["mine\n", "theirs\n"]);
+        expect([...live.keys()].every((path) => path.startsWith("notes/"))).toBe(true);
+        expect(h.server.history("N").every((revision) => !revision.deleted)).toBe(true);
+        expect(await files(h.vault)).toEqual(live);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+    }
+  });
 });
