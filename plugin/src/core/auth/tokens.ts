@@ -76,14 +76,27 @@ export class TokenManager {
     return this.current;
   }
 
-  /** Records the tokens of a completed sign-in. A grant without a refresh token is refused: the device could not stay signed in. */
+  /**
+   * Records the tokens of a completed sign-in. A grant without a refresh
+   * token is refused: the device could not stay signed in. The previous
+   * session's tokens are forgotten at once, so while the new refresh token
+   * is being stored no caller gets the previous session's access token; if
+   * storing it fails, the manager is signed out.
+   */
   async signIn(tokens: TokenSet): Promise<void> {
     if (tokens.refreshToken === undefined) {
       throw new Error("the identity provider issued no refresh token; allow the offline_access scope for this client");
     }
     const generation = ++this.generation;
     this.refreshing = undefined;
-    await this.save(generation, tokens.refreshToken);
+    this.refreshToken = undefined;
+    this.cached = undefined;
+    try {
+      await this.save(generation, tokens.refreshToken);
+    } catch (error) {
+      if (generation === this.generation) this.setState("signed-out");
+      throw error;
+    }
     if (generation !== this.generation) throw new Error("signed out, or signed in again, before the sign-in completed");
     this.refreshToken = tokens.refreshToken;
     this.cached = this.cache(tokens);

@@ -148,6 +148,25 @@ func TestSchemaEveryDocumentCarriesKind(t *testing.T) {
 	}
 }
 
+// GetServerInfo is the one procedure an unauthenticated caller reaches
+// (SPEC.md §9.1), so every field of its response must be public by design.
+// The full field set is pinned here by hand, so adding a field, even one not
+// yet populated, fails `make test` until it is reviewed and listed. Keep
+// publicServerInfoFields in cmd/vault-sync-server/server_info_integration_test.go
+// in step.
+func TestSchemaServerInfoResponseHasOnlyPublicFields(t *testing.T) {
+	public := []string{"version", "protocol_version", "max_realtime_subscriptions", "oidc_issuer_url", "oidc_client_id"}
+
+	fields := findMessage(t, "GetServerInfoResponse").Fields()
+
+	names := make([]string, 0, fields.Len())
+	for index := range fields.Len() {
+		names = append(names, string(fields.Get(index).Name()))
+	}
+
+	assert.ElementsMatch(t, public, names, "GetServerInfoResponse is returned without authentication; list a new field here only if it is public")
+}
+
 // Encrypted-capable fields must be bytes so that E2EE vaults (SPEC.md §9.3) can
 // carry ciphertext / HMAC values without a breaking schema change.
 func TestSchemaEncryptedCapableFieldsAreBytes(t *testing.T) {
