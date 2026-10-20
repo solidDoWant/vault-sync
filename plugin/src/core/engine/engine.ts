@@ -803,6 +803,8 @@ export class SyncEngine {
     // after the journal update: interrupted in between, the revision is found
     // applied and its deferral removed then, so it is never dropped unapplied.
     await this.journal.putDocument(syncedState(remote));
+    // A local rename of the deleted document is a rename of nothing now.
+    if (remote.deleted && state !== undefined && !state.deleted) this.forgetRenamesFrom(state.path);
     if (deferred !== undefined) await this.journal.removeDeferred(remote.documentId);
     return "applied";
   }
@@ -1096,6 +1098,19 @@ export class SyncEngine {
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
     for (const operation of pending) if (this.fileKey(operation.path) !== key) this.changes.paths.add(operation.path);
+    this.forgetRenamesFrom(state.path);
+  }
+
+  /**
+   * Drops the local renames not pushed yet that moved a file away from
+   * `path`, compared as the vault compares paths, once the document they
+   * moved has no live state there any more (#486): left in place, the next
+   * push would take a document a later pull brings to `path` for the moved
+   * one and rename it, with the moved file's content. Their new paths are
+   * looked at as they are (a create, if a file is there).
+   */
+  private forgetRenamesFrom(path: string): void {
+    const key = this.fileKey(path);
     for (const renames of [this.changes.renames, this.roundRenames]) {
       for (const [to, from] of [...renames]) {
         if (this.fileKey(from) !== key) continue;
@@ -1502,6 +1517,9 @@ export class SyncEngine {
     }
     if (!ownFile) await this.dropOperationsAt(local.path, remote.documentId);
     await this.journal.putDocument(syncedState(remote));
+    // A local rename of the deleted document is a rename of nothing now: the
+    // file it moved, if kept, is pushed as a new document.
+    if (remote.deleted && ownFile) this.forgetRenamesFrom(state.path);
     await this.journal.removeDeferred(remote.documentId);
     this.changes.paths.add(local.path);
     this.changes.paths.add(outcome.path);
