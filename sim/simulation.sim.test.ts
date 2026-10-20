@@ -15,6 +15,7 @@ import { bothRenameOntoVacatedPath } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
+import { recreatedNoteMergeCrash } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -1265,6 +1266,23 @@ describe.runIf(suites.has("scenarios"))("scripted parked note's edit against ano
     expect(result.tombstoned, trace).toEqual([]);
     // Nothing stays pending: the Windows engine's last push had nothing left to do.
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted crash in a pull that brings a deleted and recreated note (#453)", () => {
+  it.each(["posix", "windows"] as const)("converges with the edit kept and nothing deferred under %s rules", async (platform) => {
+    const result = await recreatedNoteMergeCrash(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.killed, trace).toBe(true);
+    // engine-deferred among them: a deferral left behind is reported.
+    expect(result.violations, trace).toEqual([]);
+    const contents = result.vaults[1] ?? new Map<string, string>();
+    expect([...contents.keys()].sort(), trace).toEqual([...result.documents.keys()].sort());
+    expect(contents.get("Notes/C.md"), trace).toBe("w3\n");
+    // The user's edit of the deleted note is kept, once.
+    expect([...contents.values()].filter((content) => content === "w2\n"), trace).toHaveLength(1);
+    expect(result.vaults[0], trace).toEqual(result.vaults[1]);
   });
 });
 
