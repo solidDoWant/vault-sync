@@ -125,6 +125,8 @@ config:
       maxUploadsPerVault: ""
       # VAULT_SYNC_BLOB_UPLOAD_TTL.
       uploadTtl: ""
+      # VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE.
+      uploadReclaimIdle: ""
       # VAULT_SYNC_BLOB_GC_GRACE.
       gcGrace: ""
     retention:

@@ -85,11 +85,13 @@ func (vault *VaultStore) CompleteBlob(ctx context.Context, blobID []byte) (Blob,
 
 // BeginBlobUpload reports whether blobID is already complete in this vault
 // and otherwise returns its active upload session, creating one for size
-// bytes when there is none. Resuming a session counts as activity. It
-// returns ErrBlobUploadLimit instead of creating a session when the vault
-// already has limit active sessions. The caller checks that an existing
-// session's size matches.
-func (vault *VaultStore) BeginBlobUpload(ctx context.Context, blobID []byte, size int64, limit int) (BlobUploadStart, error) {
+// bytes when there is none. Resuming a session counts as activity. When the
+// vault already has limit active sessions, it first reclaims those idle for
+// longer than reclaimIdle (zero: none), finishing them so that the cleanup
+// routine removes their staged objects, and returns ErrBlobUploadLimit
+// instead of creating a session only if none could be reclaimed (SPEC.md
+// §6.2). The caller checks that an existing session's size matches.
+func (vault *VaultStore) BeginBlobUpload(ctx context.Context, blobID []byte, size int64, limit int, reclaimIdle time.Duration) (BlobUploadStart, error) {
 	var start BlobUploadStart
 
 	err := pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
@@ -145,6 +147,23 @@ func (vault *VaultStore) BeginBlobUpload(ctx context.Context, blobID []byte, siz
 			vault.vaultID).Scan(&active)
 		if err != nil {
 			return fmt.Errorf("count blob uploads: %w", err)
+		}
+
+		if active >= limit && reclaimIdle > 0 {
+			// Still under the vault lock, so concurrent callers do not both
+			// count a reclaimed slot. A chunk or commit touching a session
+			// concurrently either commits first (the row no longer matches)
+			// or finds the session finished and is refused.
+			tag, err := tx.Exec(ctx, `
+				UPDATE blob_uploads SET state = 'finished'
+				WHERE vault_id = $1 AND state = 'uploading'
+					AND updated_at < now() - $2 * interval '1 microsecond'`,
+				vault.vaultID, reclaimIdle.Microseconds())
+			if err != nil {
+				return fmt.Errorf("reclaim idle blob uploads: %w", err)
+			}
+
+			active -= int(tag.RowsAffected())
 		}
 
 		if active >= limit {

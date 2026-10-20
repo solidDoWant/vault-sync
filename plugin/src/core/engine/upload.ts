@@ -20,12 +20,17 @@ export type UploadResult = "complete" | "missing";
  * bytes the server already holds, in chunks of at most the server's
  * max_chunk_size, then CommitBlob. An already-complete blob short-circuits,
  * and an interrupted upload resumes where the server's session stands, so no
- * chunk the server stored is sent again. The content is read only if bytes
- * are still missing, and only uploaded if it still hashes to `contentHash`.
+ * chunk the server stored is sent again. The content is read and checked
+ * against `contentHash` before BeginBlob, so content that changed or
+ * disappeared since the operation was recorded never opens an upload session
+ * (#370): the blob is then only looked up, with a zero-length DownloadBlob,
+ * and is `complete` if the server already holds it, `missing` otherwise.
  *
  * A FAILED_PRECONDITION or NOT_FOUND from PutBlobChunk or CommitBlob means
  * another uploader of the same blob advanced, finished or lost the shared
- * session; the upload then resumes from BeginBlob, a bounded number of times.
+ * session, or that the server reclaimed the session after it sat idle with
+ * the vault at its session limit (SPEC.md §6.2); the upload then resumes
+ * from BeginBlob, with a new session if needed, a bounded number of times.
  */
 export async function uploadContent(
   api: PullApi,
@@ -35,15 +40,11 @@ export async function uploadContent(
   readContent: () => Promise<Uint8Array | null>,
 ): Promise<UploadResult> {
   const blobId = hexToBytes(contentHash);
-  let content: Uint8Array | undefined;
+  const content = await readContent();
+  if (content === null || BigInt(content.length) !== size || sha256Hex(content) !== contentHash) return (await isComplete(api, vaultId, blobId, size)) ? "complete" : "missing";
   for (let attempt = 1; ; attempt++) {
     const begin = await api.blobs.beginBlob({ vaultId, blobId, size });
     if (begin.complete) return "complete";
-    if (content === undefined) {
-      const read = await readContent();
-      if (read === null || BigInt(read.length) !== size || sha256Hex(read) !== contentHash) return "missing";
-      content = read;
-    }
     if (begin.maxChunkSize === 0) throw new RemoteContentError("BeginBlob reported a maximum chunk size of 0");
     if (begin.receivedSize > size) throw new RemoteContentError(`BeginBlob reported ${String(begin.receivedSize)} bytes received of ${String(size)}`);
     try {
@@ -63,5 +64,18 @@ export async function uploadContent(
       const raced = code === Code.FailedPrecondition || code === Code.NotFound;
       if (!raced || attempt >= maxUploadAttempts) throw error;
     }
+  }
+}
+
+/** Whether the server holds the blob complete, looked up without opening an upload session or reading its content. */
+async function isComplete(api: PullApi, vaultId: string, blobId: Uint8Array, size: bigint): Promise<boolean> {
+  try {
+    // A range starting at the blob's end returns no bytes, only its size.
+    const response = await api.blobs.downloadBlob({ vaultId, blobId, offset: size, length: 1 });
+    if (response.size !== size) throw new RemoteContentError(`blob has size ${String(response.size)}, expected ${String(size)}`);
+    return true;
+  } catch (error) {
+    if (errorCode(error) === Code.NotFound) return false;
+    throw error;
   }
 }
