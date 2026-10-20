@@ -2,9 +2,9 @@
 
 Status: **proposal for owner review** (#552). Nothing here is implemented. It is a spec for the implementers of the follow-up issues, not a description of today's engine. Where it describes today's engine, it cites `plugin/src/core/engine/engine.ts` at `cf0bb04` (2,872 lines).
 
-## Decisions needed
+## Decisions (accepted 2026-10-20)
 
-Each item has a recommendation. The rest of the document assumes the recommendation is accepted.
+The owner accepted every recommendation below. Refactor steps R0–R12 (§9.2) are tracked as issues under the Phase 2 epic.
 
 1. **Rewrite the engine's ownership core, migrated in steps, instead of more point fixes.** The core is local file identity, path claims, the remote-revision decision and the crash recovery of multi-step changes: about 1,500 of the 2,872 lines (§8.1). The protocol client, upload, merge hook, history/restore, echo suppression, resync/anchors and the journal's IndexedDB layer stay. *Recommended: yes.* The alternative is to keep fixing seeds one at a time. The evidence (§1) says that does not converge.
 2. **Keep the point-fix freeze until refactor step R7 lands.** Engine-bug issues stay blocked. *Recommended:* merge #530 (it fixes a real identity bug and adds a regression). Do **not** merge #535's widening of the phantom-delete excuse to edits of existing documents (seed 100117), because the model counts that as an identity violation (§5.5 X-8). Its harness-side tracking of engine writes may merge on its own. #531/#540/#503/#551 fold into refactor step R10.
