@@ -539,6 +539,32 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
   });
+
+  it("keeps an unpushed local edit of a device whose cursor's purge marker retention pruned past the horizon (#519)", async () => {
+    const result = await purgedCursor(environment, { pruneMarkers: true, localEdit: true });
+    const trace = tail(result.trace, 200);
+
+    expect(result.prunedMarkers, trace).toBe(2);
+    expect(result.resynced, trace).toBe(true);
+    // As without the edit, the resync brings back the deleted note; the
+    // only invariant it breaks, as documented (SPEC.md §11).
+    expect(
+      result.violations.map((violation) => violation.invariant),
+      trace,
+    ).toEqual(["resurrected-delete"]);
+    // The edit's merge base was purged: the first engine's version stays in
+    // place, and the device's edit is kept next to it as a conflict copy on
+    // both devices and the server (principle 1).
+    const copy = "notes/kept (conflict e1 2026-01-02 030405).md";
+    const expected = new Map([
+      ["notes/gone.md", "deleted by the first engine\n"],
+      [copy, "one\nedited offline\n"],
+      ["notes/kept.md", "two\n"],
+    ]);
+    expect(result.live, trace).toEqual(["notes/gone.md", copy, "notes/kept.md"]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+  });
 });
 
 describe.runIf(suites.has("scenarios"))("scripted server restore scenarios (#155)", () => {
