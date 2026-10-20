@@ -162,6 +162,12 @@ helm install vault-sync oci://ghcr.io/soliddowant/charts/vault-sync --version <v
 
 The chart then renders: the server Deployment and its PodDisruptionBudget, the export CronJob, the `main` (8080) and `metrics` (9090) Services, a ServiceMonitor, and a ServiceAccount without an API token. It creates no Secrets.
 
+## Upgrading
+
+Upgrade with `helm upgrade` and the new chart version. The server rolls out replica by replica: the new release's migrations run on startup and are backward-compatible with the previous release, so both serve side by side during the rollout (configuration.md, Startup and shutdown; SPEC.md §12).
+
+**Upgrade the server before the plugin, or together with it.** Users update the Obsidian plugin on their own, so a plugin can run against an older server. The plugin's sync engine relies on the server's purge markers (SPEC.md §6.1, §11): a plugin newer than the server, against a server from before purge markers, takes every retention purge of a revision a device last synced as a server restore and merges every note it holds with the server's. Nothing is lost, but a note another device deleted can come back (an edit wins over a delete), and a note whose merge base was purged gets a conflict copy instead of a merge. This lasts until the server is upgraded. Upgrade the server first, then tell users to update the plugin.
+
 ## Chart values
 
 The chart has two top-level keys. `config` is the chart's own interface, described below; every empty value leaves its variable unset, so the server's default applies. `resources` is passed to the [bjw-s common library chart](https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common) (5.3.0) and deep-merged over what the chart computes, so anything that library supports can be overridden or added there (see [Overriding the computed resources](#overriding-the-computed-resources)).

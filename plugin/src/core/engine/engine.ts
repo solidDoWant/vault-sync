@@ -1141,8 +1141,15 @@ export class SyncEngine {
     const key = this.fileKey(path);
     for (const renames of [this.changes.renames, this.roundRenames]) {
       for (const [to, from] of [...renames]) {
+        // Defensive: a rename is recorded from the journal's spelling of a
+        // document's path where the vault spells the same file otherwise
+        // (syncedSpelling), so `from === path` holds in every case known;
+        // the key keeps a rename recorded from another spelling of the file
+        // from outliving the document (#513).
         if (this.fileKey(from) !== key) continue;
         renames.delete(to);
+        // Its new path is looked at again: a rename held back for a busy
+        // document (detectChanges) is recorded without it.
         this.changes.paths.add(to);
       }
     }
