@@ -47,6 +47,7 @@ Use the agent definitions in `.claude/agents/`:
 - **`pr-reviewer`** — independently reviews one PR against its issue, `SPEC.md`, and `CLAUDE.md`; runs the tests; merges, requests changes, or rejects. **Never** let the agent that wrote a PR review it.
 - **`bug-hunter`** — phase-end hunt over a focus area; files issues.
 - **`security-auditor`** — phase-end adversarial review of the attack surface; files issues.
+- **`release-manager`** — cuts a release **candidate** (pre-release) after its own gates (milestone, CI, long sim, upgrade, vulncheck, dry run). Dispatch it when a phase closes, or when a `/pm release` instruction asks for one; at most one at a time. It opens a version-bump PR that goes through the normal reviewer. Post its report (release URL, gates, known issues) on the `pm:status` issue and ask the human to try and promote it.
 
 Every brief must be self-contained: the subagent has not seen your context. Include the issue number, the goal, constraints, decisions, and what to report back.
 
@@ -64,7 +65,7 @@ Label the issue `needs-human`, comment on it with exactly what is needed, mentio
 
 - Never push to `master` directly; never force-push `master`; never rewrite published history.
 - Never change repository settings, branch protection, secrets, visibility, or collaborators.
-- Never touch anything outside this repository and its VM (no cluster access, no other repos).
+- Never touch anything outside this repository and its VM (no cluster access, no other repos). The one exception is publishing release **candidates** through the `release-manager` (pre-release GitHub releases and versioned ghcr.io images/charts). Final releases, `:latest`, deleting or moving tags, and deploying are the human's.
 - Never disable, skip, or weaken tests or CI to get a PR merged.
 - Never merge a PR with failing required checks.
 - At most **5 concurrent subagents** in total (the VM has 16 GiB RAM and no swap; builds are memory-hungry, and every extra agent burns the human's usage limit faster). Default split: 3 `issue-worker` + 2 `pr-reviewer`. **When 3 or more PRs are awaiting review** (CI finished, no review since the last push), shift to 2 workers + 3 reviewers and start **no new filler work** until the review queue is below 3. Critical-path PRs are reviewed before filler PRs.
@@ -77,7 +78,7 @@ A phase is complete when every issue in its milestone — as listed live from Gi
 1. **Bug hunt.** Dispatch 3–4 `bug-hunter` subagents in parallel, each with a distinct focus area appropriate to the phase (e.g. sync correctness via long simulation runs; client edge cases — platform paths, crash/resume, large files; server robustness — concurrency, migrations, resource bounds; docs-vs-behavior drift). For phases that touch the attack surface (1, 2, 3, 4, and 5's realtime channel), also dispatch a `security-auditor`. Phase 4 additionally gets a dedicated crypto review.
 2. **Triage.** Hunters file issues labelled `bughunt` + `phase:N` with a severity. Critical and high must be fixed before the phase closes; medium and low may be deferred to a later milestone with a logged decision.
 3. **Fix** through the normal worker/reviewer cycle.
-4. **Close.** Close the milestone, post a phase summary on the `pm:status` issue (what was built, what was deferred, known risks), and open the next phase. Before starting a phase, decompose its parent issue into atomic sub-issues (`.claude/commands/start-issue.md`'s decomposition rules) if that has not been done.
+4. **Close.** Close the milestone, dispatch the `release-manager` for the phase's release candidate, post a phase summary on the `pm:status` issue (what was built, what was deferred, known risks), and open the next phase. Before starting a phase, decompose its parent issue into atomic sub-issues (`.claude/commands/start-issue.md`'s decomposition rules) if that has not been done.
 
 ## Failure handling
 

@@ -86,9 +86,12 @@ publish)
 		die "$asset_dir/manifest.json has version '$manifest_version', not '$version' (Obsidian and BRAT require them to match)"
 	fi
 
+	# A pre-release is never marked "latest", so BRAT users who don't track
+	# pre-releases (and anything else that follows the latest release) keep
+	# the last promoted version.
 	prerelease=()
 	if [[ $version == *-* ]]; then
-		prerelease=(--prerelease)
+		prerelease=(--prerelease --latest=false)
 	fi
 
 	run git tag -a "$version" -m "Release $version"
