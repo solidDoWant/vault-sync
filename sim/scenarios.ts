@@ -2582,3 +2582,82 @@ export async function remoteRenameOntoFolderName(endpoints: SimEndpoints, platfo
   const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
 }
+
+export interface InterruptedConflictMoveResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents after the run: path to document label. */
+  documents: Map<string, string>;
+  /** The conflict copy the interrupted move left in the second engine's vault, if any. */
+  copy: string | undefined;
+  /** The second engine's push summaries, in order. */
+  pushes: string[];
+}
+
+/**
+ * A create refused with ALREADY_EXISTS whose move to its conflict copy the
+ * app dies in (#371, #372). The first engine syncs the folder `NOTES/`; the
+ * second engine's user creates the file `notes`, which the server refuses
+ * (path keys ignore case on every platform), so the push moves it to
+ * `notes (conflict …)`. The app is killed `when` the journal records the
+ * copy's operation: `before` (the file is already moved) or `after` (the
+ * refused operation is not removed yet). Then the first engine renames
+ * `NOTES/d.md` to `A.md`, so the path frees up (`holder-leaves`), or the
+ * user deletes the copy (`delete-copy`) or moves it to `kept.md`
+ * (`move-copy`). The engines must converge with nothing left pending
+ * (SPEC.md §7). Both engines follow `platform`'s rules.
+ */
+export async function interruptedConflictMove(
+  endpoints: SimEndpoints,
+  platform: "posix" | "macos" | "windows",
+  when: "before" | "after",
+  then: "holder-leaves" | "delete-copy" | "move-copy",
+): Promise<InterruptedConflictMoveResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: [platform, platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("NOTES/d.md", encoder.encode("other\n")));
+  await push(first);
+  log(await second.edit("notes", encoder.encode("mine\n")));
+  await pull(second);
+
+  second.haltOnPending(when, (operation) => operation.path.includes("(conflict "));
+  await push(second);
+  log(second.crash());
+  const copy = (await second.list()).find((path) => path.includes("(conflict "));
+  if (then === "holder-leaves") {
+    log(await first.move("NOTES/d.md", "A.md"));
+    await push(first);
+  } else if (copy !== undefined) {
+    log(then === "delete-copy" ? await second.remove(copy) : await second.move(copy, "kept.md"));
+  }
+  await push(second);
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, documents: await liveDocuments(run), copy, pushes };
+}

@@ -1567,6 +1567,7 @@ export class SyncEngine {
     const summary: PushSummary = { committed: 0, conflicts: 0, pending: 0, rejected: [] };
     for (const path of this.held) this.changes.paths.add(path);
     this.held = new Set();
+    await this.finishConflictMoves();
     await this.pullOnce();
     await this.retryMerges();
     await this.retryRefusedPaths();
@@ -1589,6 +1590,55 @@ export class SyncEngine {
     summary.pending = (await this.journal.listPending()).length;
     if (this.changes.all || this.changes.paths.size > 0) this.schedulePush();
     return summary;
+  }
+
+  /**
+   * Finishes a move to a `path-taken` conflict copy (moveToConflictPath) that
+   * a crash interrupted after the file moved, before anything is committed:
+   * resumed as it was, the refused operation would take the original path
+   * once that is free, with the file at the copy's path (#371). If the
+   * document already has an operation pending at the copy's path, the crash
+   * came before the refused one was removed, which is all that is left to do.
+   * Otherwise, if the file left the original path, the copy's operation
+   * replaces the refused one, or, if the user has deleted or moved the copy
+   * since, the refused one is dropped and its paths are looked at again (a
+   * moved copy is a new file where it is now, #372).
+   */
+  private async finishConflictMoves(): Promise<void> {
+    const pending = await this.journal.listPending();
+    if (pending.length === 0) return;
+    const conflicts = await this.journal.listConflicts();
+    const parked = await this.parked();
+    for (const operation of pending) {
+      if (operation.deleted || parked.documents.has(operation.documentId)) continue;
+      const record = conflicts.find(
+        (candidate) =>
+          candidate.reason === "path-taken" &&
+          candidate.documentId === operation.documentId &&
+          candidate.path === operation.path &&
+          candidate.copyHash === operation.contentHash &&
+          candidate.copyPath !== null &&
+          candidate.copyPath !== operation.path,
+      );
+      if (record?.copyPath == null) continue;
+      const copyPath = record.copyPath;
+      const replaced = pending.some((candidate) => candidate.revisionId !== operation.revisionId && candidate.documentId === operation.documentId && candidate.path === copyPath && !candidate.deleted);
+      if (!replaced) {
+        // Not moved yet if the file is still at the path (another document's file there is not this one's).
+        const holder = await this.documentAt(operation.path);
+        if ((holder === undefined || holder.documentId === operation.documentId) && (await this.readOrNull(operation.path)) !== null) continue;
+        const content = await this.readOrNull(copyPath);
+        if (content !== null) {
+          await this.journal.addPending({ ...operation, revisionId: this.newId(), path: copyPath, contentHash: sha256Hex(content), size: BigInt(content.length) });
+        } else {
+          const state = await this.journal.getDocument(operation.documentId);
+          if (state !== undefined && !state.deleted) this.changes.paths.add(state.path);
+          this.changes.paths.add(copyPath);
+        }
+      }
+      await this.journal.removePending(operation.revisionId);
+      this.changes.paths.add(operation.path);
+    }
   }
 
   /** Asks the merge hook again about every document it deferred: a merge may now succeed. */
