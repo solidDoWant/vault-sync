@@ -10,6 +10,7 @@ import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
 import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName, respelledNoteRenamed } from "./scenarios";
 import { localRenameOverRemoteRenameIntoRespelledFolder } from "./scenarios";
+import { renameOntoDeletedNotePath } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
@@ -839,6 +840,23 @@ describe.runIf(suites.has("scenarios"))("scripted local rename over a remote ren
     const files = variant === "free-path" ? new Map([["notes/C.md", "a\n"], ["z.md", "b\n"]]) : new Map([["moved/C.md", "a\n"], ["notes/C.md", "b\n"]]);
     for (const vault of result.vaults) expect(vault, trace).toEqual(files);
     expect(result.tombstoned, trace).toEqual([]);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted rename onto a just-deleted note's path (#451)", () => {
+  it.each(["posix", "macos", "windows"] as const)("commits the delete and the rename over a remote edit of the renamed note (%s)", async (platform) => {
+    const result = await renameOntoDeletedNotePath(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const renamed = result.before.get("x.md");
+    const deleted = result.before.get("c.md");
+    expect(renamed, trace).toBeDefined();
+    expect(deleted, trace).toBeDefined();
+    expect(result.documents, trace).toEqual(new Map([["c.md", renamed]]));
+    for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["c.md", "x\nremote\n"]]));
+    expect(result.tombstoned, trace).toEqual([deleted]);
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });

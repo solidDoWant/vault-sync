@@ -2262,6 +2262,59 @@ export async function localRenameOverRemoteRenameIntoRespelledFolder(endpoints: 
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
 }
 
+/**
+ * A local rename onto the path of a note the user just deleted, against a
+ * concurrent remote edit of the renamed note (#451). Both engines sync
+ * `x.md` and `c.md`. The first (POSIX) engine edits `x.md` and pushes; the
+ * second engine's user then deletes `c.md` and renames `x.md` to `c.md`
+ * before its next push. The local rename wins (SPEC.md §7): `c.md`'s note is
+ * tombstoned, `x.md`'s note is live at `c.md` with the remote edit merged
+ * in, both vaults equal the server, and the last push commits nothing
+ * (SPEC.md §2 principle 1).
+ */
+export async function renameOntoDeletedNotePath(endpoints: SimEndpoints, platform: "posix" | "windows" | "macos"): Promise<RespelledRenameResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("x.md", encoder.encode("x\n")));
+  log(await first.edit("c.md", encoder.encode("c\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await first.edit("x.md", encoder.encode("x\nremote\n")));
+  await push(first);
+  log(await second.remove("c.md"));
+  log(await second.move("x.md", "c.md"));
+  for (let round = 0; round < 3; round++) await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];

@@ -81,7 +81,8 @@ export class TokenManager {
    * token is refused: the device could not stay signed in. The previous
    * session's tokens are forgotten at once, so while the new refresh token
    * is being stored no caller gets the previous session's access token; if
-   * storing it fails, the manager is signed out.
+   * storing it fails, the manager is signed out and the stored refresh token
+   * is removed (best effort), so a restart is signed out too.
    */
   async signIn(tokens: TokenSet): Promise<void> {
     if (tokens.refreshToken === undefined) {
@@ -94,7 +95,16 @@ export class TokenManager {
     try {
       await this.save(generation, tokens.refreshToken);
     } catch (error) {
-      if (generation === this.generation) this.setState("signed-out");
+      if (generation === this.generation) {
+        this.setState("signed-out");
+        // The failed write may have left the previous session's refresh
+        // token on disk, and a restart would resume that session: remove it.
+        try {
+          await this.save(generation, undefined);
+        } catch {
+          // Best effort, as in requireSignIn; the sign-in's error is the one reported.
+        }
+      }
       throw error;
     }
     if (generation !== this.generation) throw new Error("signed out, or signed in again, before the sign-in completed");
@@ -159,9 +169,11 @@ export class TokenManager {
     if (tokens.refreshToken !== undefined && tokens.refreshToken !== refreshToken) {
       // Rotated: the provider may already refuse the old one, so the new
       // one is stored before anything relies on it. A sign-in or sign-out
-      // while it is being stored wins: the write is skipped if it has not
-      // started, the sign-out's own write is queued behind it if it has,
-      // and these tokens are dropped either way.
+      // while it is being stored wins: its own write is queued behind this
+      // one, and these tokens are dropped. (Every earlier write settled
+      // before the refresh token this one rotates was set, and one refresh
+      // runs at a time, so this write starts at once; save() would still
+      // skip it if a sign-in or sign-out had replaced the session first.)
       await this.save(generation, tokens.refreshToken);
       if (generation !== this.generation) return this.superseded();
       this.refreshToken = tokens.refreshToken;
