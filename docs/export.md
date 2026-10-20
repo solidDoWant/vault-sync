@@ -70,7 +70,7 @@ DIR/
 
 A document goes to `<vault-id>.unplaced/<document-id>`, a file named by its document id that holds its bytes, when its path cannot be created in the vault's directory:
 
-- the path conflicts with another document's file or directory. For example, with live documents `a` and `a/b.md`, the document with the lower id is placed and the other goes to the unplaced tree. data the server already holds can contain such collisions;
+- the path conflicts with another document's file or directory. For example, with live documents `a` and `a/b.md`, the document with the lower id is placed and the other goes to the unplaced tree. Data the server already holds can contain such collisions;
 - the filesystem cannot represent the path, for example a name longer than 255 bytes;
 - the path is not vault-relative (see [Path safety](#path-safety)), or is not valid UTF-8;
 - a symbolic link has been planted in the export's tree while it runs.
@@ -136,7 +136,7 @@ This requires that:
 - `DIR`, if it exists and is not empty, holds a previous export (its `.vault-sync-export` marker). The export refuses to replace any other directory, so a mistyped `-out` cannot destroy unrelated data;
 - the volume has room for two full exports while a run is in progress.
 
-A lock file (`.<name>.lock` in the parent) makes a second concurrent run against the same `DIR` fail at once. If `.<name>.lock` is a symbolic link, the run fails rather than follow it; remove the link. A run removes staging directories left by interrupted runs before it starts: only entries named exactly `.<name>.staging-` followed by digits, so the lock file and staging directories of an export to a sibling directory (for example `-out /backup/out.staging-1`) are left alone. This holds for any `<name>`, including one that contains `*`.
+A lock file (`.<name>.lock` in the parent) makes a second concurrent run against the same `DIR` fail at once. If `.<name>.lock` is a symbolic link, the run fails rather than follow it; remove the link. The run also fails, leaving the entry untouched, if `.<name>.lock` is anything but a regular file with a single hard link owned by the user running the export (for example a hard link to another file, a FIFO or a directory); remove it. A run removes staging directories left by interrupted runs before it starts: only entries named exactly `.<name>.staging-` followed by digits, so the lock file and staging directories of an export to a sibling directory (for example `-out /backup/out.staging-1`) are left alone. This holds for any `<name>`, including one that contains `*`. If the staging name a run picks is already taken (by a directory, file or symbolic link created after that cleanup), the run leaves that entry alone and picks another, failing after 100 taken names.
 
 Archival tooling should read `DIR` while no export runs, or tolerate the tree being swapped between two reads.
 
