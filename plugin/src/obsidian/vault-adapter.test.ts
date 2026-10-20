@@ -10,8 +10,9 @@ vi.mock("obsidian", () => {
   class TAbstractFile {
     constructor(readonly path: string) {}
   }
-  class View {}
-  class EditableFileView extends View {}
+  class EditableFileView {
+    file: unknown = null;
+  }
   class TextFileView extends EditableFileView {}
   class MarkdownView extends TextFileView {}
   return { TAbstractFile, TFile: class extends TAbstractFile {}, TFolder: class extends TAbstractFile {}, EditableFileView, TextFileView, MarkdownView, normalizePath: (path: string) => path };

@@ -99,7 +99,7 @@ describe("mergeCanvas", () => {
   const unfaithful: { name: string; text: string }[] = [
     { name: "a duplicate top-level key", text: `{"nodes":[],"edges":[],"meta":1,"meta":2}` },
     { name: "a duplicate key inside a node", text: `{"nodes":[{"id":"a","text":"one","text":"two"}],"edges":[]}` },
-    { name: "a duplicate key spelled with an escape", text: `{"nodes":[{"id":"a","text":"one","\u0074ext":"two"}],"edges":[]}` },
+    { name: "a duplicate key spelled with an escape", text: `{"nodes":[{"id":"a","text":"one","\\u0074ext":"two"}],"edges":[]}` },
     { name: "an integer beyond 2^53", text: `{"nodes":[{"id":"a","x":9007199254740993}],"edges":[]}` },
     { name: "a number written in a form JSON.stringify does not keep", text: `{"nodes":[{"id":"a","x":1.0}],"edges":[]}` },
   ];
@@ -112,9 +112,9 @@ describe("mergeCanvas", () => {
     });
   }
 
-  it("keeps a key that is the same string as a value elsewhere, and equal keys in different objects", () => {
-    const remote = `{"nodes":[{"id":"text","text":"id"},{"id":"b","text":"x"}],"edges":[]}`;
-    expect(mergeCanvas(canvas([]), canvas([]), remote)).not.toBeNull();
+  it("keeps a key that is the same string as a value elsewhere, equal keys in different objects, and strings that look like JSON", () => {
+    const remote = `{"nodes":[{"id":"text","text":"id"},{"id":"b","text":"a \\"text\\": {\\"id\\": 1.0}, \\\\"}],"edges":[]}`;
+    expect(parsed(mergeCanvas(canvas([]), canvas([]), remote))).toEqual(JSON.parse(remote));
   });
 
   it("merges into an empty canvas file", () => {
