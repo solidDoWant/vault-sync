@@ -200,6 +200,7 @@ func TestRetentionRunsAreCounted(t *testing.T) {
 	require.NoError(t, err)
 
 	fixture.releasedAgo(t, "2 hours")
+	fixture.markersPurgedAgo(t, "366 days")
 
 	_, err = job.RunOnce(t.Context())
 	require.NoError(t, err)
@@ -222,7 +223,9 @@ func TestRetentionRunsAreCounted(t *testing.T) {
 		// The blob never committed; the others are still referenced.
 		"vault_sync_retention_blobs_collected_total": 1,
 		"vault_sync_retention_objects_deleted_total": 1,
-		"vault_sync_retention_run_failures_total":    1,
+		// The purges' markers, once past the horizon.
+		"vault_sync_retention_purge_markers_pruned_total": 2,
+		"vault_sync_retention_run_failures_total":         1,
 	}, counters())
 }
 

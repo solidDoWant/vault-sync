@@ -38,6 +38,16 @@ const (
 	// DefaultBlobsPerRun bounds how many blobs one run collects, and how
 	// many objects it deletes.
 	DefaultBlobsPerRun = 1000
+	// DefaultMarkerHorizon is how long a purge marker is kept: a device
+	// that has not pulled for this long after a purge resyncs once instead
+	// of pulling on (SPEC.md §11).
+	DefaultMarkerHorizon = 365 * 24 * time.Hour
+	// DefaultMarkersPerBatch bounds how many purge markers one statement
+	// prunes.
+	DefaultMarkersPerBatch = 1000
+	// DefaultMarkersPerRun bounds how many purge markers one run prunes,
+	// so a backlog is worked off over several runs.
+	DefaultMarkersPerRun = 100_000
 )
 
 // Job purges revisions and collects blobs.
@@ -60,6 +70,11 @@ type Job struct {
 	DocumentsPerRun      int
 	RevisionsPerDocument int
 	BlobsPerRun          int
+	MarkersPerBatch      int
+	MarkersPerRun        int
+	// MarkerHorizon is how long a purge marker is kept after its purge;
+	// zero selects DefaultMarkerHorizon.
+	MarkerHorizon time.Duration
 	// RunTimeout bounds each run started by Run; zero selects
 	// DefaultRunTimeout.
 	RunTimeout time.Duration
@@ -76,10 +91,12 @@ type Result struct {
 	BlobsCollected int
 	// ObjectsDeleted counts collected blobs' objects this run deleted.
 	ObjectsDeleted int
+	// MarkersPruned counts purge markers this run deleted.
+	MarkersPruned int
 }
 
-// RunOnce performs one bounded pass: purge, then collect, then delete
-// collected objects, and records it in Metrics. A run that fails in part
+// RunOnce performs one bounded pass: purge, then prune purge markers past
+// the horizon, then collect, then delete collected objects, and records it in Metrics. A run that fails in part
 // counts as a failure unless ctx was canceled (the server is stopping).
 // Not safe for concurrent use with itself; separate server processes may
 // run it concurrently.
@@ -150,6 +167,13 @@ func (job *Job) runOnce(ctx context.Context) (Result, error) {
 		if err := job.Store.CompleteRetentionScan(ctx, job.Policy, scan.Started); err != nil {
 			problems = append(problems, err)
 		}
+	}
+
+	pruned, err := job.pruneMarkers(ctx)
+	result.MarkersPruned = pruned
+
+	if err != nil {
+		problems = append(problems, err)
 	}
 
 	if job.Objects == nil {
@@ -230,7 +254,7 @@ func (job *Job) Run(ctx context.Context, interval time.Duration) {
 
 		if result != (Result{}) {
 			logger.InfoContext(ctx, "applied the retention policy",
-				"revisions", result.RevisionsPurged, "blobs", result.BlobsCollected, "objects", result.ObjectsDeleted)
+				"revisions", result.RevisionsPurged, "purge_markers", result.MarkersPruned, "blobs", result.BlobsCollected, "objects", result.ObjectsDeleted)
 		}
 
 		select {
@@ -239,6 +263,38 @@ func (job *Job) Run(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// pruneMarkers deletes purge markers older than the horizon in batches,
+// until a batch finds fewer than it may delete or the run's bound is
+// reached.
+func (job *Job) pruneMarkers(ctx context.Context) (int, error) {
+	horizon := job.MarkerHorizon
+	if horizon <= 0 {
+		horizon = DefaultMarkerHorizon
+	}
+
+	batch := orDefault(job.MarkersPerBatch, DefaultMarkersPerBatch)
+	remaining := orDefault(job.MarkersPerRun, DefaultMarkersPerRun)
+	pruned := 0
+
+	for remaining > 0 {
+		limit := min(batch, remaining)
+
+		deleted, err := job.Store.PruneMarkers(ctx, horizon, limit)
+		pruned += deleted
+		remaining -= limit
+
+		if err != nil {
+			return pruned, err
+		}
+
+		if deleted < limit {
+			break
+		}
+	}
+
+	return pruned, nil
 }
 
 func orDefault(value, fallback int) int {

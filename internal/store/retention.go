@@ -305,6 +305,40 @@ func (vault *VaultStore) purgeRevision(ctx context.Context, tx pgx.Tx, documentI
 	return content, nil
 }
 
+// PruneMarkers deletes up to limit purge markers, across all vaults, that
+// were written more than horizon ago (by the database clock), oldest first,
+// and returns how many it deleted.
+//
+// A marker is only consulted by a device that has not completed a pull since
+// the purge: a pull moves its cursor past the purged revision's successor,
+// and its own commit is behind the cursor once applied. Once the marker is
+// gone, such a device's anchor check reports divergence and it resyncs,
+// merging every note (SPEC.md §6.1, §8), so pruning never loses content.
+//
+// The markers are locked with SKIP LOCKED in the deleting statement, so
+// concurrent calls by several server processes take disjoint markers and
+// never wait for or fail on each other; a marker another call deleted first
+// is simply not counted.
+//
+// Like RetentionCandidates, it is not scoped to a vault: it serves the
+// background retention job, never a request.
+func (store *Store) PruneMarkers(ctx context.Context, horizon time.Duration, limit int) (int, error) {
+	tag, err := store.pool.Exec(ctx, `
+		DELETE FROM purged_revisions marker USING (
+			SELECT vault_id, seq FROM purged_revisions
+			WHERE purged_at < now() - $1 * interval '1 microsecond'
+			ORDER BY purged_at
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		) AS old
+		WHERE marker.vault_id = old.vault_id AND marker.seq = old.seq`, horizon.Microseconds(), limit)
+	if err != nil {
+		return 0, fmt.Errorf("prune purge markers: %w", err)
+	}
+
+	return int(tag.RowsAffected()), nil
+}
+
 // releaseBlobs starts the garbage-collection grace period of blobs, in a
 // fixed order so that concurrent purges sharing blobs cannot deadlock.
 func (vault *VaultStore) releaseBlobs(ctx context.Context, tx pgx.Tx, blobs [][]byte) error {

@@ -509,6 +509,35 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
   });
+
+  it("resyncs a device whose cursor's purge marker retention pruned past the horizon, and keeps every file (#514)", async () => {
+    const result = await purgedCursor(environment, { pruneMarkers: true });
+    const trace = tail(result.trace, 200);
+
+    expect(result.purged, trace).toHaveLength(2);
+    expect(result.prunedMarkers, trace).toBe(2);
+    // Neither the cursor's revision nor its marker is left: a false-positive divergence.
+    expect(result.resynced, trace).toBe(true);
+    // The resync merges every note the device holds (SPEC.md §8): its
+    // unchanged copy of the note the first engine deleted wins over the
+    // delete, so the next push brings it back (the only invariant the
+    // resync breaks, as documented), and the other note, whose merge base
+    // was purged, keeps the device's version as a conflict copy next to the
+    // first engine's edit. Nothing is lost.
+    expect(
+      result.violations.map((violation) => violation.invariant),
+      trace,
+    ).toEqual(["resurrected-delete"]);
+    const copy = "notes/kept (conflict e1 2026-01-02 030405).md";
+    const expected = new Map([
+      ["notes/gone.md", "deleted by the first engine\n"],
+      [copy, "one\n"],
+      ["notes/kept.md", "two\n"],
+    ]);
+    expect(result.live, trace).toEqual(["notes/gone.md", copy, "notes/kept.md"]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+  });
 });
 
 describe.runIf(suites.has("scenarios"))("scripted server restore scenarios (#155)", () => {

@@ -69,7 +69,7 @@ func TestLoadDefaults(t *testing.T) {
 			UploadReclaimIdle:  10 * time.Minute,
 		},
 		Realtime:  config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128},
-		Retention: config.RetentionConfig{KeepAll: 90 * 24 * time.Hour, KeepDaily: 365 * 24 * time.Hour, BlobGrace: 24 * time.Hour},
+		Retention: config.RetentionConfig{KeepAll: 90 * 24 * time.Hour, KeepDaily: 365 * 24 * time.Hour, BlobGrace: 24 * time.Hour, PurgeMarkerHorizon: 365 * 24 * time.Hour},
 	}, cfg)
 }
 
@@ -432,7 +432,7 @@ func TestLoadRealtimeSettings(t *testing.T) {
 func TestLoadRetentionSettings(t *testing.T) {
 	const day = 24 * time.Hour
 
-	defaults := config.RetentionConfig{KeepAll: 90 * day, KeepDaily: 365 * day, BlobGrace: day}
+	defaults := config.RetentionConfig{KeepAll: 90 * day, KeepDaily: 365 * day, BlobGrace: day, PurgeMarkerHorizon: 365 * day}
 
 	tests := []struct {
 		name string
@@ -448,8 +448,9 @@ func TestLoadRetentionSettings(t *testing.T) {
 				config.RetentionKeepAllEnv:   "720h",
 				config.RetentionKeepDailyEnv: "2160h",
 				config.BlobGCGraceEnv:        "6h",
+				config.PurgeMarkerHorizonEnv: "17520h",
 			},
-			want: config.RetentionConfig{KeepAll: 30 * day, KeepDaily: 90 * day, BlobGrace: 6 * time.Hour},
+			want: config.RetentionConfig{KeepAll: 30 * day, KeepDaily: 90 * day, BlobGrace: 6 * time.Hour, PurgeMarkerHorizon: 730 * day},
 		},
 		{
 			name: "the smallest values",
@@ -457,8 +458,9 @@ func TestLoadRetentionSettings(t *testing.T) {
 				config.RetentionKeepAllEnv:   "24h",
 				config.RetentionKeepDailyEnv: "24h",
 				config.BlobGCGraceEnv:        "1h",
+				config.PurgeMarkerHorizonEnv: "24h",
 			},
-			want: config.RetentionConfig{KeepAll: day, KeepDaily: day, BlobGrace: time.Hour},
+			want: config.RetentionConfig{KeepAll: day, KeepDaily: day, BlobGrace: time.Hour, PurgeMarkerHorizon: day},
 		},
 		{
 			name:         "keep-all too short",
@@ -481,13 +483,19 @@ func TestLoadRetentionSettings(t *testing.T) {
 			wantProblems: []string{config.BlobGCGraceEnv},
 		},
 		{
+			name:         "purge marker horizon too short",
+			env:          map[string]string{config.PurgeMarkerHorizonEnv: "23h59m59s"},
+			wantProblems: []string{config.PurgeMarkerHorizonEnv},
+		},
+		{
 			name: "not durations",
 			env: map[string]string{
 				config.RetentionKeepAllEnv:   "90 days",
 				config.RetentionKeepDailyEnv: "1y",
 				config.BlobGCGraceEnv:        "1 day",
+				config.PurgeMarkerHorizonEnv: "1y",
 			},
-			wantProblems: []string{config.RetentionKeepAllEnv, config.RetentionKeepDailyEnv, config.BlobGCGraceEnv},
+			wantProblems: []string{config.RetentionKeepAllEnv, config.RetentionKeepDailyEnv, config.BlobGCGraceEnv, config.PurgeMarkerHorizonEnv},
 		},
 	}
 

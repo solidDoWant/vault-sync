@@ -67,6 +67,7 @@ func (control *control) handler() http.Handler {
 	mux.HandleFunc("POST /check", control.check)
 	mux.HandleFunc("POST /report", control.report)
 	mux.HandleFunc("POST /purge", control.purge)
+	mux.HandleFunc("POST /prune-markers", control.pruneMarkers)
 	mux.HandleFunc("POST /snapshot", control.snapshot)
 	mux.HandleFunc("POST /restore", control.restore)
 
@@ -238,6 +239,28 @@ func (control *control) purge(writer http.ResponseWriter, request *http.Request)
 	}
 
 	respond(writer, map[string][]string{"purged": ids})
+}
+
+// pruneMarkers ages every purge marker of a vault past the default marker
+// horizon and prunes them with the server's own retention code
+// (PruneMarkers), as the retention job would once that much time had passed
+// since the purges (SPEC.md §11, #514). It returns how many it pruned.
+func (control *control) pruneMarkers(writer http.ResponseWriter, request *http.Request) {
+	vaultID, err := vaultIDFromBody(request)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusBadRequest)
+
+		return
+	}
+
+	pruned, err := ageAndPruneMarkers(request.Context(), control.db, vaultID)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+
+		return
+	}
+
+	respond(writer, map[string]int{"pruned": pruned})
 }
 
 // report writes a minimized failing schedule to the regression directory,

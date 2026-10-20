@@ -247,6 +247,13 @@ export class SimRun {
     return purged;
   }
 
+  /** Has retention prune the run's vault's purge markers, as if past their horizon (Control.pruneMarkers). */
+  async pruneMarkers(): Promise<number> {
+    const pruned = await this.control.pruneMarkers(this.context.vaultId);
+    this.context.log(`retention pruned ${String(pruned)} purge markers`);
+    return pruned;
+  }
+
   /** Backs up the run's vault in the database (Control.snapshot). */
   async snapshot(): Promise<bigint> {
     const headSeq = await this.control.snapshot(this.context.vaultId);
