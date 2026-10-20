@@ -20,6 +20,7 @@ import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
 import { restoreWindow } from "./restore-scenarios";
+import { mergedDuringPush } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -991,6 +992,25 @@ describe.runIf(suites.has("scenarios"))("scripted unpushed rename of a note dele
     }
     expect(result.vaults[1], trace).toEqual(result.vaults[0]);
     expect(result.documents.size, trace).toBe(result.vaults[0]?.size);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted merge of a later operation's document during a push (#482)", () => {
+  it.each(["posix", "macos", "windows"] as const)("commits the edit on top of the remote delete and quiesces (%s)", async (platform) => {
+    const result = await mergedDuringPush(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    expect([...result.documents.keys()].sort(), trace).toEqual(["a.md", "b.md"]);
+    for (const vault of result.vaults) {
+      expect(vault, trace).toEqual(
+        new Map([
+          ["a.md", "theirs\na\nmine\n"],
+          ["b.md", "b\nmine\n"],
+        ]),
+      );
+    }
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
