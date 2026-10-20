@@ -1438,6 +1438,7 @@ export class SyncEngine {
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
           this.changes.paths.add(copyPath);
+          this.renameFollowsCopy(outcome.path, copyPath);
           // The copy now holds the file's content, so its unacknowledged
           // operations (a create not yet committed) are superseded. They go
           // before the file does, so none is ever left pointing at the merged
@@ -1457,6 +1458,9 @@ export class SyncEngine {
         const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict, merged);
         if (copyPath === null) return false;
         copyPaths.push(copyPath);
+        // A local file at the remote path that is no document's own (this
+        // device has no live state for the merged document) moves to the copy.
+        if (state === undefined || state.deleted) this.renameFollowsCopy(local.path, copyPath);
       }
       if (outcome.content === null) {
         if (current !== null) {
@@ -1507,6 +1511,27 @@ export class SyncEngine {
     // A merge made by a pull is pushed like a local edit.
     this.schedulePush();
     return true;
+  }
+
+  /**
+   * Moves a local rename not yet pushed that brought a file to `path` on to
+   * `copyPath`, where a merge just kept that file as a conflict copy (#479).
+   * The file is no live document's: a local rename of a document deleted on
+   * the server, say, whose rename stays recorded. Left pointing at `path`,
+   * the record would take the merged document's file written there for the
+   * renamed one, so a later local rename of that file would be pushed as a
+   * delete of the merged document plus a create (SPEC.md §2 principle 1).
+   * Compared as the vault compares paths.
+   */
+  private renameFollowsCopy(path: string, copyPath: string): void {
+    const key = this.fileKey(path);
+    for (const renames of [this.changes.renames, this.roundRenames]) {
+      for (const [to, from] of [...renames]) {
+        if (this.fileKey(to) !== key) continue;
+        renames.delete(to);
+        this.changes.renames.set(copyPath, from);
+      }
+    }
   }
 
   /**
