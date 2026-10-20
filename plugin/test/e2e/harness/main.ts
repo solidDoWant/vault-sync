@@ -46,6 +46,39 @@ export interface RemoteWriteOptions {
   expectBase?: boolean;
 }
 
+/** RemoteWriteOptions for a canvas; `awaitReload` also waits for Obsidian's reload of the view after the write and reports the view after it. */
+export interface CanvasWriteOptions extends RemoteWriteOptions {
+  awaitReload?: boolean;
+}
+
+/**
+ * Records the reloads of `view` (TextFileView.loadFileInternal, internal to
+ * Obsidian 1.14.4) until restore(). settled() waits for the first reload to
+ * start (Obsidian starts it on the modify event once a write has landed),
+ * throwing if none does within 5 s, then for every recorded one to finish.
+ */
+function trackReloads(view: TextFileView): { reloads: Promise<void>[]; settled(): Promise<void>; restore(): void } {
+  const internal = view as unknown as { loadFileInternal: (this: unknown, file: TFile, clear: boolean) => Promise<void> };
+  const reloads: Promise<void>[] = [];
+  const original = internal.loadFileInternal;
+  internal.loadFileInternal = function (this: unknown, ...args: [TFile, boolean]) {
+    const reload = original.apply(this, args);
+    reloads.push(reload);
+    return reload;
+  };
+  return {
+    reloads,
+    async settled() {
+      for (let attempt = 0; reloads.length === 0 && attempt < 200; attempt++) await new Promise((resolve) => window.setTimeout(resolve, 25));
+      if (reloads.length === 0) throw new Error("Obsidian did not reload the view after the write");
+      await Promise.all(reloads);
+    },
+    restore() {
+      internal.loadFileInternal = original;
+    },
+  };
+}
+
 /** The editor and disk after a remote delete of an open note (editor.e2e.ts). */
 export interface EditorDeleteResult {
   outcome: string;
@@ -464,7 +497,7 @@ export default class VaultSyncE2EHarness extends Plugin {
    * can come in between. The node is added through the canvas's internal API
    * (not in Obsidian's typings), as a user's click does.
    */
-  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string, options: RemoteWriteOptions = {}): Promise<ViewWriteResult> {
+  async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string, options: CanvasWriteOptions = {}): Promise<ViewWriteResult & { reloads?: number; viewAfterReload?: string }> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.canvasView(path);
@@ -474,13 +507,21 @@ export default class VaultSyncE2EHarness extends Plugin {
       canvas.createTextNode({ pos: { x: 0, y: 200 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
     }
     if (options.save === true) await view.save();
+    const tracker = options.awaitReload === true ? trackReloads(view) : undefined;
     let outcome = "ok";
     try {
       await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
     } catch (error) {
       outcome = describeError(error);
     }
-    return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file) };
+    const result = { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file) };
+    if (tracker === undefined) return result;
+    try {
+      await tracker.settled();
+    } finally {
+      tracker.restore();
+    }
+    return { ...result, reloads: tracker.reloads.length, viewAfterReload: view.getViewData() };
   }
 
   /**
@@ -495,27 +536,19 @@ export default class VaultSyncE2EHarness extends Plugin {
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.canvasView(path);
     const diskBefore = await this.app.vault.read(file);
-    const internal = view as unknown as { loadFileInternal: (this: unknown, file: TFile, clear: boolean) => Promise<void>; canvas: { createTextNode(options: object): unknown } };
-    const reloads: Promise<void>[] = [];
-    const original = internal.loadFileInternal;
-    internal.loadFileInternal = function (this: unknown, ...args: [TFile, boolean]) {
-      const reload = original.apply(this, args);
-      reloads.push(reload);
-      return reload;
-    };
+    const { canvas } = view as unknown as { canvas: { createTextNode(options: object): unknown } };
+    const tracker = trackReloads(view);
     let outcome = "ok";
     try {
       await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
-      internal.canvas.createTextNode({ pos: { x: 0, y: 400 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
-      // The modify event's reload: started once the write has landed.
-      for (let attempt = 0; reloads.length === 0 && attempt < 200; attempt++) await new Promise((resolve) => window.setTimeout(resolve, 25));
-      await Promise.all(reloads);
+      canvas.createTextNode({ pos: { x: 0, y: 400 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
+      await tracker.settled();
     } catch (error) {
       outcome = describeError(error);
     } finally {
-      internal.loadFileInternal = original;
+      tracker.restore();
     }
-    return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file), reloads: reloads.length };
+    return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file), reloads: tracker.reloads.length };
   }
 
   /**
