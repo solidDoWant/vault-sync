@@ -168,7 +168,21 @@ Upgrade with `helm upgrade` and the new chart version. The server rolls out repl
 
 **Some migrations pause sync while they run.** A migration that takes an exclusive lock on a table blocks every replica, of both releases, on that table until it commits; clients retry and nothing is lost, but sync stalls meanwhile. The longest is migration 0006 (adding the cursor anchor): it rewrites every row of `revisions` while holding an exclusive lock on it, so on a large `revisions` table every commit and pull waits for the whole backfill, which grows with the number of revisions (as a rough guide, about as long as an `UPDATE` of every row of that table takes on your database). Plan such an upgrade for a quiet time. configuration.md (Startup and shutdown) lists what each migration blocks.
 
+**Set per-vault retention overrides only once every replica runs a release that has them.** During a rollout, replicas of the previous release still purge every vault under the deployment-wide policy, so an override longer than that policy would not protect the vault's history until they are gone.
+
 **Upgrade the server before the plugin, or together with it.** Users update the Obsidian plugin on their own, so a plugin can run against an older server. The plugin's sync engine relies on the server's purge markers (SPEC.md §6.1, §11): a plugin newer than the server, against a server from before purge markers, takes every retention purge of a revision a device last synced as a server restore and merges every note it holds with the server's. Nothing is lost, but a note another device deleted can come back (an edit wins over a delete), and a note whose merge base was purged gets a conflict copy instead of a merge. This lasts until the server is upgraded. Upgrade the server first, then tell users to update the plugin.
+
+## Per-vault retention
+
+To give one vault its own retention policy (configuration.md, Per-vault overrides), run the server binary's `retention` subcommand with the server's database settings, for example in a running server pod (here the Deployment of a release named `vault-sync`; the image has no shell, so call the binary directly):
+
+```sh
+kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention set -vault 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 -keep-all 4320h -keep-daily 17520h
+kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention list
+kubectl exec deploy/vault-sync -- /bin/vault-sync-server retention unset -vault 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12
+```
+
+Every replica applies the change from its next hourly run. The chart has no values for overrides: they live in PostgreSQL. To refuse overrides shorter than a floor, set `config.server.retention.overrideMinKeepAll` (and `config.server.retention.overrideMinKeepDaily`): they put `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` and `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY` into the server's environment, which the subcommand run in its pod reads (the server itself ignores them). The export's read-only role cannot set overrides.
 
 ## Chart values
 
@@ -236,6 +250,8 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.retention.keepAll` | `VAULT_SYNC_RETENTION_KEEP_ALL` |
 | `config.server.retention.keepDaily` | `VAULT_SYNC_RETENTION_KEEP_DAILY` |
 | `config.server.retention.purgeMarkerHorizon` | `VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON` |
+| `config.server.retention.overrideMinKeepAll` | `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL` (read only by `retention set`, see [Per-vault retention](#per-vault-retention)) |
+| `config.server.retention.overrideMinKeepDaily` | `VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY` (likewise) |
 | `config.server.realtime.maxConnections` | `VAULT_SYNC_REALTIME_MAX_CONNECTIONS` |
 | `config.server.realtime.maxConnectionsPerUser` | `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER` |
 | `config.server.realtime.maxSubscriptions` | `VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS` |

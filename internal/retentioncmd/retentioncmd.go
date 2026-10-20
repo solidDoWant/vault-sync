@@ -65,6 +65,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	}
 
 	given := map[string]bool{}
+
 	flags.Visit(func(f *flag.Flag) { given[f.Name] = true })
 
 	var vaultID uuid.UUID

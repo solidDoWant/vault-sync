@@ -24,6 +24,7 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 
 	var code int
+
 	switch {
 	case len(os.Args) > 1 && os.Args[1] == "export":
 		code = export.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
