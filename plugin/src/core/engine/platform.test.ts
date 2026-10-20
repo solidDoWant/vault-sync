@@ -498,6 +498,148 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
       expect(await reported(h)).toEqual([]);
       expect(await h.journal.listPending()).toEqual([]);
     });
+
+    // #391: the kept file, with the edit still pending at its path, used to
+    // hold another document the server puts there off its path for good.
+    describe("when the server then puts another document at the edited file's path", () => {
+      /** The edit (or with `deleted`, a delete) pending at plan.md, `doc` renamed to plan|draft.md; then `other` committed at plan.md. */
+      async function parkedWithPendingEdit(h: Harness = windowsDevice(), deleted = false) {
+        h.server.commit({ documentId: "doc", path: "plan.md", content: "one\ntwo\n" });
+        await h.engine.pull();
+        if (deleted) await h.vault.delete("plan.md");
+        else await h.vault.write("plan.md", bytes("one\ntwo (edited)\n"));
+        let renamed = false;
+        h.server.interceptor = (method) => {
+          if (method !== "CommitRevision" || renamed) return;
+          renamed = true;
+          h.server.commit({ documentId: "doc", path: "plan|draft.md" });
+        };
+        await h.engine.push();
+        h.server.interceptor = undefined;
+        expect(await h.journal.listPending()).toEqual([expect.objectContaining({ documentId: "doc", path: "plan.md", deleted })]);
+        h.server.commit({ documentId: "other", path: "plan.md", content: "another note\n" });
+        return h;
+      }
+
+      /** Asserts the converged state: `other` at plan.md, the edit in a conflict copy on both sides, `doc` untouched on the server. */
+      async function expectConverged(h: Harness, label?: string) {
+        const vault = await files(h.vault);
+        expect(vault.get("plan.md"), label).toBe("another note\n");
+        const copies = [...vault].filter(([path]) => path !== "plan.md");
+        expect(copies, label).toEqual([[expect.stringMatching(/^plan \(conflict .*\)\.md$/), "one\ntwo (edited)\n"]]);
+        expect(h.server.liveFiles(), label).toEqual(
+          new Map([
+            ["plan.md", "another note\n"],
+            [copies[0]?.[0] ?? "", "one\ntwo (edited)\n"],
+            ["plan|draft.md", "one\ntwo\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments().get("plan|draft.md"), label).toBe("doc");
+        expect((await h.journal.listDeferred()).map(({ reason, revision }) => [reason, revision.documentId]), label).toEqual([["unmaterializable", "doc"]]);
+        expect(await reported(h), label).toEqual([{ path: "plan|draft.md", reason: "forbidden-character", localPath: undefined }]);
+        expect(await h.journal.listPending(), label).toEqual([]);
+      }
+
+      it("drops the pending edit, writes the other document at its path and pushes the edit as a conflict copy", async () => {
+        const h = await parkedWithPendingEdit();
+
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        await h.engine.push();
+
+        await expectConverged(h);
+      });
+
+      it("keeps a pending delete of the file, and writes the other document at the path", async () => {
+        const h = await parkedWithPendingEdit(windowsDevice(), true);
+
+        await h.engine.pull();
+        await h.engine.push();
+
+        expect(await files(h.vault)).toEqual(new Map([["plan.md", "another note\n"]]));
+        // The user's delete is not dropped with the release: it waits for the document to come back.
+        expect(await h.journal.listPending()).toEqual([expect.objectContaining({ documentId: "doc", deleted: true })]);
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["plan.md", "other"],
+            ["plan|draft.md", "doc"],
+          ]),
+        );
+      });
+
+      it("commits a pending local rename and edit as the document's own, and writes the other document at the old path", async () => {
+        const h = windowsDevice();
+        h.server.commit({ documentId: "doc", path: "plan.md", content: "one\ntwo\n" });
+        await h.engine.pull();
+        await h.vault.rename("plan.md", "notes.md");
+        await h.vault.write("notes.md", bytes("one\ntwo (edited)\n"));
+        let renamed = false;
+        h.server.interceptor = (method) => {
+          if (method !== "CommitRevision" || renamed) return;
+          renamed = true;
+          h.server.commit({ documentId: "doc", path: "plan|draft.md" });
+        };
+        await h.engine.push();
+        h.server.interceptor = undefined;
+        h.server.commit({ documentId: "other", path: "plan.md", content: "another note\n" });
+
+        await h.engine.pull();
+        await h.engine.push();
+
+        expect(await files(h.vault)).toEqual(
+          new Map([
+            ["notes.md", "one\ntwo (edited)\n"],
+            ["plan.md", "another note\n"],
+          ]),
+        );
+        // The rename and the edit are the document's, committed under its id: neither became a copy.
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["notes.md", "doc"],
+            ["plan.md", "other"],
+          ]),
+        );
+        expect(h.server.liveFiles().get("notes.md")).toBe("one\ntwo (edited)\n");
+        expect(await h.journal.listPending()).toEqual([]);
+      });
+
+      it("converges with the edit kept when interrupted at any durable change of the release", async () => {
+        let crashed = 0;
+        let released = 0;
+        for (let crashAfter = 1; ; crashAfter++) {
+          const points = new CrashPoints();
+          const h = await parkedWithPendingEdit(harness({ merge: "default", pathRules: windows, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) }));
+          points.count = 0;
+          points.crashAfter = crashAfter;
+          const outcome = await h.engine.pull().then(
+            () => "finished",
+            (error: unknown) => {
+              if (!(error instanceof Crash)) throw error;
+              return "crashed";
+            },
+          );
+          if (outcome === "finished") break;
+          crashed++;
+          points.crashAfter = 0;
+          await h.engine.settled();
+          // The window between the release record and the conflict copy's write.
+          const vault = await files(h.vault);
+          if ((await h.journal.getDocument("doc"))?.deleted === true && vault.size === 1 && vault.get("plan.md") === "one\ntwo (edited)\n") released++;
+          h.restart();
+
+          await h.engine.push();
+          await h.engine.pull();
+          await h.engine.push();
+          await h.engine.pull();
+
+          await expectConverged(h, `crash after durable change ${String(crashAfter)}`);
+        }
+        // At least: the dropped operation, the release record, and the conflict copy's write.
+        expect(crashed).toBeGreaterThanOrEqual(3);
+        expect(released).toBeGreaterThanOrEqual(1);
+      });
+    });
   });
 
   describe("given a vault that refuses a path the rules allow", () => {
