@@ -17,6 +17,7 @@ import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
+import { purgedCursor } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -491,6 +492,19 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.conflicts[1], trace).toEqual([{ reason: "base-purged", path: "notes/plan.md", copyPath: copy }]);
+  });
+
+  it("applies another device's delete of an unchanged note after retention purged the cursor's revision, and never commits it back (#480)", async () => {
+    const result = await purgedCursor(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    expect(result.purged, trace).toHaveLength(2);
+    expect(result.resynced, trace).toBe(true);
+    const expected = new Map([["notes/kept.md", "two\n"]]);
+    expect(result.live, trace).toEqual(["notes/kept.md"]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
   });
 });
 

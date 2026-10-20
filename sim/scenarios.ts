@@ -3108,3 +3108,75 @@ export async function recreatedNoteMergeCrash(endpoints: SimEndpoints, platform:
   );
   return { ...result, vaults, documents: await liveDocuments(run), killed: killed() };
 }
+
+export interface PurgedCursorResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live paths after the run. */
+  live: string[];
+  /** Labels of the revisions retention purged. */
+  purged: string[];
+  /** Whether the second engine's pull resynced. */
+  resynced: boolean;
+}
+
+/**
+ * Retention purged the revision at an engine's cursor (#480, SPEC.md §6.1,
+ * §8, §11). Both engines sync two notes; the second engine's cursor sits on
+ * the later one's revision. The first engine deletes the other note and edits
+ * the later one, and retention purges both notes' older revisions, the
+ * second engine's cursor among them. The second engine's pull finds its
+ * cursor diverged and resyncs: the server lost nothing, so the delete of a
+ * note its user never changed is applied, not merged as a delete against an
+ * edit, and its next push never brings the note back.
+ */
+export async function purgedCursor(endpoints: SimEndpoints): Promise<PurgedCursorResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("notes/gone.md", encoder.encode(textLines("deleted by the first engine"))));
+  await push(first);
+  log(await first.edit("notes/kept.md", encoder.encode(textLines("one"))));
+  await push(first);
+  await pull(second);
+
+  log(await first.remove("notes/gone.md"));
+  log(await first.edit("notes/kept.md", encoder.encode(textLines("two"))));
+  await push(first);
+
+  // Age every revision: retention purges all but the heads, the second engine's cursor among them.
+  const revisions = (await run.direct.sync.listChanges({ vaultId: run.context.vaultId, sinceSeq: 0n })).revisions;
+  if (revisions.length !== 4) throw new Error(`expected four revisions, got ${String(revisions.length)}`);
+  const purged = (await run.purge(revisions.map((revision) => revision.id))).map((id) => run.context.ids.label(id));
+
+  second.lastPull = undefined;
+  await pull(second);
+  const lastPull = () => second.lastPull;
+  const resynced = lastPull()?.resynced === true;
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, live: await liveFiles(run), purged, resynced };
+}
