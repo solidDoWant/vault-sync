@@ -1,4 +1,4 @@
-import { FileSystemAdapter, normalizePath, Notice, Platform, Plugin, TFile, type App } from "obsidian";
+import { FileSystemAdapter, normalizePath, Notice, Platform, Plugin, setIcon, TFile, type App } from "obsidian";
 
 import { VaultEncryption, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
@@ -22,7 +22,7 @@ import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
-import { initialStatus, statusDescription, statusText, type SyncStatus } from "./obsidian/status";
+import { initialStatus, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
 
 /** How long after the last local change of a burst the engine pushes (#167 item 5: chosen here, not left to the engine's default). */
@@ -44,6 +44,8 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   private settingTab: VaultSyncSettingTab | undefined;
   private signInModal: SignInModal | undefined;
   private statusBar: HTMLElement | undefined;
+  /** The status on mobile, which has no status bar (#420). */
+  private statusRibbon: HTMLElement | undefined;
   private signingIn = false;
   private status: SyncStatus = initialStatus;
 
@@ -81,6 +83,14 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.statusBar.onClickEvent(() => {
       this.noticeStatus();
     });
+    // Mobile has no status bar: a ribbon icon shows the status there, and
+    // tapping it shows the details (#420).
+    if (Platform.isMobile) {
+      this.statusRibbon = this.addRibbonIcon(statusIcon(this.status), statusText(this.status), () => {
+        this.noticeStatus();
+      });
+      this.statusRibbon.addClass("vault-sync-status-ribbon");
+    }
     this.settingTab = new VaultSyncSettingTab(this.app, this);
     this.addSettingTab(this.settingTab);
     this.addCommand({ id: "sign-in", name: "Sign in", callback: () => void this.signIn() });
@@ -88,7 +98,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.controller?.syncNow() });
     this.registerView(conflictViewType, (leaf) => new ConflictView(leaf, { problems: () => this.controller?.session ?? this.session }));
     this.addCommand({ id: "show-conflicts", name: "Show conflicts", callback: () => void this.showConflicts() });
-    // The status bar is desktop-only; on mobile this is how to see the status.
+    // The status bar is desktop-only; on mobile this and the ribbon icon show the status.
     this.addCommand({
       id: "show-status",
       name: "Show sync status",
@@ -407,6 +417,10 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     this.status = status;
     this.statusBar?.setText(statusText(status));
     this.statusBar?.setAttribute("aria-label", statusDescription(status));
+    if (this.statusRibbon !== undefined) {
+      setIcon(this.statusRibbon, statusIcon(status));
+      this.statusRibbon.setAttribute("aria-label", statusText(status));
+    }
     this.settingTab?.showStatus();
     this.refreshConflictViews();
   }

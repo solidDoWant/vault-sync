@@ -15,7 +15,7 @@ Mark each manual check passed or failed, with a note for every failure. A failed
 
 ## How to read the tables
 
-Each row is one check and its expected result. **Automated** rows name the test that covers it (file, then the test's name), so nothing needs doing on the device. **Manual** rows say in one line why they need a physical device. The e2e specs listed run in both CI jobs, `plugin-e2e (ubuntu-latest)` (desktop UI) and `plugin-e2e (emulated-mobile)`.
+Each row is one check and its expected result. **Automated** rows name the test that covers it (file, then the test's name), so nothing needs doing on the device. **Manual** rows say in one line why they need a physical device. The e2e specs listed run in every plugin-e2e job, including emulated-mobile: `plugin-e2e (ubuntu-latest)`, `plugin-e2e (windows-latest)` and `plugin-e2e (macos-latest)` (desktop UI) and `plugin-e2e (emulated-mobile)`.
 
 ## 1. Install via BRAT
 

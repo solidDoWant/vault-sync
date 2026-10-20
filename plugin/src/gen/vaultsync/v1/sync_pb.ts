@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/sync.proto.
  */
 export const file_vaultsync_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIpUBChJMaXN0Q2hhbmdlc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJc2luY2Vfc2VxGAIgASgEEhEKCXBhZ2Vfc2l6ZRgDIAEoDRIUCgxzaW5jZV9hbmNob3IYBCABKAwSFgoOb3duX2NvbW1pdF9zZXEYBSABKAQSGQoRb3duX2NvbW1pdF9hbmNob3IYBiABKAwidgoTTGlzdENoYW5nZXNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SEAoIaGFzX21vcmUYAiABKAgSEAoIaGVhZF9zZXEYAyABKAQSEAoIZGl2ZXJnZWQYBCABKAgiOwoSR2V0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJIj8KE0dldFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24ihQIKFUNvbW1pdFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRITCgtyZXZpc2lvbl9pZBgDIAEoCRITCgtiYXNlX3Jldl9pZBgEIAEoCRIoCgRraW5kGAUgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmEgwKBHBhdGgYByABKAwSEAoIcGF0aF9rZXkYCCABKAwSDwoHZGVsZXRlZBgJIAEoCBIRCglkZXZpY2VfaWQYCiABKAkiQgoWQ29tbWl0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiJpChlHZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhEKCXBhZ2Vfc2l6ZRgDIAEoDRISCgpwYWdlX3Rva2VuGAQgASgJIooBChpHZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZRIoCghkb2N1bWVudBgBIAEoCzIWLnZhdWx0c3luYy52MS5Eb2N1bWVudBIpCglyZXZpc2lvbnMYAiADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAMgASgJMoMDCgtTeW5jU2VydmljZRJUCgtMaXN0Q2hhbmdlcxIgLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1JlcXVlc3QaIS52YXVsdHN5bmMudjEuTGlzdENoYW5nZXNSZXNwb25zZSIAElQKC0dldFJldmlzaW9uEiAudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVxdWVzdBohLnZhdWx0c3luYy52MS5HZXRSZXZpc2lvblJlc3BvbnNlIgASXQoOQ29tbWl0UmV2aXNpb24SIy52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXF1ZXN0GiQudmF1bHRzeW5jLnYxLkNvbW1pdFJldmlzaW9uUmVzcG9uc2UiABJpChJHZXREb2N1bWVudEhpc3RvcnkSJy52YXVsdHN5bmMudjEuR2V0RG9jdW1lbnRIaXN0b3J5UmVxdWVzdBooLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
+  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIpUBChJMaXN0Q2hhbmdlc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJc2luY2Vfc2VxGAIgASgEEhEKCXBhZ2Vfc2l6ZRgDIAEoDRIUCgxzaW5jZV9hbmNob3IYBCABKAwSFgoOb3duX2NvbW1pdF9zZXEYBSABKAQSGQoRb3duX2NvbW1pdF9hbmNob3IYBiABKAwidgoTTGlzdENoYW5nZXNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SEAoIaGFzX21vcmUYAiABKAgSEAoIaGVhZF9zZXEYAyABKAQSEAoIZGl2ZXJnZWQYBCABKAgiOwoSR2V0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJIj8KE0dldFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24ihQIKFUNvbW1pdFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRITCgtyZXZpc2lvbl9pZBgDIAEoCRITCgtiYXNlX3Jldl9pZBgEIAEoCRIoCgRraW5kGAUgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmEgwKBHBhdGgYByABKAwSEAoIcGF0aF9rZXkYCCABKAwSDwoHZGVsZXRlZBgJIAEoCBIRCglkZXZpY2VfaWQYCiABKAkiQgoWQ29tbWl0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiJpChlHZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhEKCXBhZ2Vfc2l6ZRgDIAEoDRISCgpwYWdlX3Rva2VuGAQgASgJIroBChpHZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZRIoCghkb2N1bWVudBgBIAEoCzIWLnZhdWx0c3luYy52MS5Eb2N1bWVudBIpCglyZXZpc2lvbnMYAiADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAMgASgJEi4KDGRldmljZV9uYW1lcxgEIAMoCzIYLnZhdWx0c3luYy52MS5EZXZpY2VOYW1lIi0KCkRldmljZU5hbWUSEQoJZGV2aWNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkygwMKC1N5bmNTZXJ2aWNlElQKC0xpc3RDaGFuZ2VzEiAudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1Jlc3BvbnNlIgASVAoLR2V0UmV2aXNpb24SIC52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVzcG9uc2UiABJdCg5Db21taXRSZXZpc2lvbhIjLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlcXVlc3QaJC52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXNwb25zZSIAEmkKEkdldERvY3VtZW50SGlzdG9yeRInLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
 
 /**
  * ListChangesRequest asks for revisions after a vault-wide cursor.
@@ -370,6 +370,15 @@ export type GetDocumentHistoryResponse = Message<"vaultsync.v1.GetDocumentHistor
    * @generated from field: string next_page_token = 3;
    */
   nextPageToken: string;
+
+  /**
+   * The name of each device that committed one of revisions, once per
+   * device, so a member sees which device made each revision (SPEC.md §11).
+   * Only devices with a revision on this page are named.
+   *
+   * @generated from field: repeated vaultsync.v1.DeviceName device_names = 4;
+   */
+  deviceNames: DeviceName[];
 };
 
 /**
@@ -378,6 +387,34 @@ export type GetDocumentHistoryResponse = Message<"vaultsync.v1.GetDocumentHistor
  */
 export const GetDocumentHistoryResponseSchema: GenMessage<GetDocumentHistoryResponse> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_sync, 7);
+
+/**
+ * DeviceName names a device that committed a revision in a vault.
+ *
+ * @generated from message vaultsync.v1.DeviceName
+ */
+export type DeviceName = Message<"vaultsync.v1.DeviceName"> & {
+  /**
+   * Device id (UUIDv7), as in Revision.device_id.
+   *
+   * @generated from field: string device_id = 1;
+   */
+  deviceId: string;
+
+  /**
+   * The device's name, as registered (RegisterDeviceRequest.name).
+   *
+   * @generated from field: string name = 2;
+   */
+  name: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.DeviceName.
+ * Use `create(DeviceNameSchema)` to create a new message.
+ */
+export const DeviceNameSchema: GenMessage<DeviceName> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_sync, 8);
 
 /**
  * SyncService pulls and pushes document revisions (SPEC.md §6).
@@ -466,7 +503,9 @@ export const SyncService: GenService<{
    * (SPEC.md §11). The head is always retained, including a tombstone, so a
    * deleted document's history is never empty. Restoring a revision is a
    * new CommitRevision with the revision's content_ref (and deleted false),
-   * based on the current head.
+   * based on the current head. The response names the devices that
+   * committed the page's revisions; device names are visible to every member
+   * of the vault.
    *
    * Errors: NOT_FOUND if the vault or document does not exist, or the caller
    * is not a member.

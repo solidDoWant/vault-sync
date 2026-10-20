@@ -80,6 +80,25 @@ describe("SyncEngine history (SPEC.md §11)", () => {
     );
   });
 
+  it("names the devices that made the revisions, as the server reports them (#420)", async () => {
+    const { server } = clockedServer({ maxHistoryPageSize: 2 });
+    const h = harness({ server });
+    server.deviceNames.set(testDeviceId, "Laptop");
+    server.deviceNames.set("phone", "Phone");
+    const documentId = await pushVersions(h, "plan.md", "one\n");
+    server.commit({ documentId, path: "plan.md", content: "two\n", deviceId: "phone" });
+    server.commit({ documentId, path: "plan.md", content: "three\n", deviceId: "tablet" });
+
+    const entries = await allEntries(h, documentId);
+
+    expect(entries.map(({ deviceId, deviceName, thisDevice }) => ({ deviceId, deviceName, thisDevice }))).toEqual([
+      // A device the server does not name.
+      { deviceId: "tablet", deviceName: undefined, thisDevice: false },
+      { deviceId: "phone", deviceName: "Phone", thisDevice: false },
+      { deviceId: testDeviceId, deviceName: "Laptop", thisDevice: true },
+    ]);
+  });
+
   it("pages through a long history, newest first, every revision once", async () => {
     const { server } = clockedServer({ maxHistoryPageSize: 2 });
     const h = harness({ server });
@@ -327,6 +346,80 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
     await expect(failure).rejects.toMatchObject({ reason: "path-taken", path: "plan.md" });
     expect(h.server.head(documentId)?.deleted).toBe(true);
     expect(await files(h.vault)).toEqual(new Map([["plan.md", "a new plan\n"]]));
+  });
+
+  describe("at another path, when its own is taken (#420)", () => {
+    /** A deleted plan.md whose path a new document of another device holds; returns the tombstone's history entry. */
+    async function takenPlan(h: Harness): Promise<{ documentId: string; tombstone: HistoryEntry }> {
+      const documentId = await pushVersions(h, "plan.md", "the old plan\n");
+      await h.vault.delete("plan.md");
+      await h.engine.push();
+      h.server.commit({ documentId: "new-plan", path: "plan.md", content: "a new plan\n", deviceId: "phone" });
+      await h.engine.pull();
+      const tombstone = entryAt(await allEntries(h, documentId), 0);
+      await expect(h.engine.restore(tombstone)).rejects.toMatchObject({ reason: "path-taken", path: "plan.md" });
+      return { documentId, tombstone };
+    }
+
+    it("brings the document back at the path the user chose, leaving the other file alone", async () => {
+      const h = harness({ server: clockedServer().server });
+      const { documentId, tombstone } = await takenPlan(h);
+
+      const restored = await h.engine.restore(tombstone, undefined, "plans/plan (restored).md");
+
+      expect(restored).toMatchObject({ documentId, path: "plans/plan (restored).md", deleted: false });
+      expect(h.server.head(documentId)).toMatchObject({ id: restored.revisionId, deleted: false });
+      expect(h.server.liveFiles()).toEqual(
+        new Map([
+          ["plan.md", "a new plan\n"],
+          ["plans/plan (restored).md", "the old plan\n"],
+        ]),
+      );
+      expect(await files(h.vault)).toEqual(h.server.liveFiles());
+      // The document kept its id and history: the tombstone is still there.
+      expect((await allEntries(h, documentId)).map(({ path, deleted }) => ({ path, deleted }))).toEqual([
+        { path: "plans/plan (restored).md", deleted: false },
+        { path: "plan.md", deleted: true },
+        { path: "plan.md", deleted: false },
+      ]);
+    });
+
+    it("reports a chosen path that is taken too, committing nothing", async () => {
+      const h = harness({ server: clockedServer().server });
+      const { documentId, tombstone } = await takenPlan(h);
+      h.server.commit({ documentId: "other", path: "plan 2.md", content: "another\n", deviceId: "phone" });
+      await h.engine.pull();
+      const revisions = h.server.revisionCount;
+
+      const failure = h.engine.restore(tombstone, undefined, "plan 2.md");
+
+      await expect(failure).rejects.toMatchObject({ reason: "path-taken", path: "plan 2.md" });
+      expect(h.server.revisionCount).toBe(revisions);
+      expect(h.server.head(documentId)?.deleted).toBe(true);
+    });
+
+    it.each([
+      ["an empty path", "", undefined],
+      ["a backslash path", "plans\\plan.md", undefined],
+      ["a drive-like path", "1:plan.md", undefined],
+      ["a name Windows cannot hold, on Windows", "con.md", "windows"],
+      ["a path this vault does not sync now", ".obsidian/plan.md", undefined],
+    ] as const)("refuses %s before committing anything", async (_, path, platform) => {
+      const h = harness({
+        server: clockedServer().server,
+        ...(platform === undefined ? {} : { pathRules: { platform } }),
+        wrapVault: (vault) => Object.assign(Object.create(vault) as typeof vault, { isSynced: (candidate: string) => !candidate.startsWith(".obsidian/") }),
+      });
+      const { documentId, tombstone } = await takenPlan(h);
+      const revisions = h.server.revisionCount;
+
+      const failure = h.engine.restore(tombstone, undefined, path);
+
+      await expect(failure).rejects.toThrow(RestoreError);
+      await expect(failure).rejects.toMatchObject({ reason: "invalid-path", path });
+      expect(h.server.revisionCount).toBe(revisions);
+      expect(h.server.head(documentId)?.deleted).toBe(true);
+    });
   });
 
   it.each([
