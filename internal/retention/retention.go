@@ -63,7 +63,9 @@ type Job struct {
 	// RunTimeout bounds each run started by Run; zero selects
 	// DefaultRunTimeout.
 	RunTimeout time.Duration
-	Logger     *slog.Logger
+	// Metrics, if set, count the work and failures of runs started by Run.
+	Metrics *Metrics
+	Logger  *slog.Logger
 }
 
 // Result reports one run's work.
@@ -77,25 +79,75 @@ type Result struct {
 }
 
 // RunOnce performs one bounded pass: purge, then collect, then delete
-// collected objects. Not safe for concurrent use with itself; separate
-// server processes may run it concurrently.
+// collected objects, and records it in Metrics. A run that fails in part
+// counts as a failure unless ctx was canceled (the server is stopping).
+// Not safe for concurrent use with itself; separate server processes may
+// run it concurrently.
 func (job *Job) RunOnce(ctx context.Context) (Result, error) {
+	result, err := job.runOnce(ctx)
+	job.Metrics.observe(result, err != nil && !errors.Is(ctx.Err(), context.Canceled))
+
+	return result, err
+}
+
+func (job *Job) runOnce(ctx context.Context) (Result, error) {
 	var (
 		result   Result
 		problems []error
 	)
 
-	refs, err := job.Store.RetentionCandidates(ctx, job.Policy, orDefault(job.DocumentsPerRun, DefaultDocumentsPerRun))
+	documents := orDefault(job.DocumentsPerRun, DefaultDocumentsPerRun)
+
+	scan, err := job.Store.RetentionCandidates(ctx, job.Policy, documents)
+	// The scan is complete if it found every candidate and every one was
+	// purged fully; later scans then only consider what changed since.
+	complete := err == nil && len(scan.Documents) < documents
+
 	if err != nil {
 		problems = append(problems, err)
 	}
 
-	for _, ref := range refs {
-		purged, err := job.Store.InVault(ref.VaultID).PurgeRevisions(ctx, ref.DocumentID, job.Policy,
-			orDefault(job.RevisionsPerDocument, DefaultRevisionsPerDocument))
+	revisions := orDefault(job.RevisionsPerDocument, DefaultRevisionsPerDocument)
+
+	var skipped []store.DocumentRef
+
+	for _, ref := range scan.Documents {
+		purged, done, err := job.Store.InVault(ref.VaultID).PurgeRevisions(ctx, ref.DocumentID, job.Policy, revisions)
 		result.RevisionsPurged += purged
 
+		switch {
+		case err != nil:
+			complete = false
+
+			problems = append(problems, err)
+		case !done && purged == 0:
+			// Locked by a commit or by another server process's purge.
+			skipped = append(skipped, ref)
+		case !done:
+			complete = false
+		}
+	}
+
+	// Only worth waiting for if the scan can complete: another server
+	// process purging the same documents (every replica runs the job at
+	// about the same time) leaves them done, and a commit holds the lock
+	// briefly.
+	for _, ref := range skipped {
+		if !complete {
+			break
+		}
+
+		purged, done, err := job.Store.InVault(ref.VaultID).PurgeRevisionsWaiting(ctx, ref.DocumentID, job.Policy, revisions)
+		result.RevisionsPurged += purged
+		complete = done && err == nil
+
 		if err != nil {
+			problems = append(problems, err)
+		}
+	}
+
+	if complete {
+		if err := job.Store.CompleteRetentionScan(ctx, job.Policy, scan.Started); err != nil {
 			problems = append(problems, err)
 		}
 	}

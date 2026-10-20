@@ -64,38 +64,112 @@ const purgeableRevisions = `
 	JOIN documents d ON d.vault_id = ranked.vault_id AND d.id = ranked.document_id
 	WHERE ranked.rank > 1 AND ranked.id <> d.head_rev_id`
 
+// RetentionScan is one retention scan's candidates.
+type RetentionScan struct {
+	// Documents have revisions the policy purges.
+	Documents []DocumentRef
+	// Started is the database time the scan started. Once every candidate
+	// of a scan that found fewer than its limit is purged fully, pass it to
+	// CompleteRetentionScan.
+	Started time.Time
+}
+
 // RetentionCandidates returns up to limit documents, across all vaults, that
 // have revisions policy purges.
+//
+// After a complete scan under the same policy (CompleteRetentionScan), only
+// documents with revisions that crossed policy.KeepAll or policy.KeepDaily
+// since that scan started are considered: a revision only becomes
+// purgeable when it, or a newer revision of its bucket, crosses one of
+// these ages. Otherwise every document is.
 //
 // Like ReapableBlobUploads, it is not scoped to a vault: it serves the
 // background retention job, never a request, and only names documents; the
 // job purges each through InVault.
-func (store *Store) RetentionCandidates(ctx context.Context, policy RetentionPolicy, limit int) ([]DocumentRef, error) {
-	rows, err := store.pool.Query(ctx, `
-		SELECT DISTINCT purgeable.vault_id, purgeable.document_id
-		FROM (`+fmt.Sprintf(purgeableRevisions, "true")+`) AS purgeable
-		LIMIT $3`, policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds(), limit)
-	if err != nil {
-		return nil, fmt.Errorf("list retention candidates: %w", err)
-	}
+func (store *Store) RetentionCandidates(ctx context.Context, policy RetentionPolicy, limit int) (RetentionScan, error) {
+	var scan RetentionScan
 
-	refs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DocumentRef, error) {
-		var ref DocumentRef
+	// One transaction, so the scan's start is the now() its query uses.
+	err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
+		if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&scan.Started); err != nil {
+			return fmt.Errorf("read database time: %w", err)
+		}
 
-		err := row.Scan(&ref.VaultID, &ref.DocumentID)
+		// $4 is the end of the last complete scan under this policy, if
+		// any. Ages are relative to now(), so a revision crossed keep_all
+		// since then if its created_at is in [$4 - keep_all, now() -
+		// keep_all), and likewise for keep_daily.
+		scope := `($4::timestamptz IS NULL OR r.document_id IN (
+			SELECT crossed.document_id FROM revisions crossed
+			WHERE crossed.created_at >= $4::timestamptz - $1 * interval '1 microsecond'
+				AND crossed.created_at < now() - $1 * interval '1 microsecond'
+			UNION
+			SELECT crossed.document_id FROM revisions crossed
+			WHERE crossed.created_at >= $4::timestamptz - $2 * interval '1 microsecond'
+				AND crossed.created_at < now() - $2 * interval '1 microsecond'))`
 
-		return ref, err
+		var scanned *time.Time
+
+		err := tx.QueryRow(ctx, `SELECT scanned_through FROM retention_scans WHERE keep_all = $1 AND keep_daily = $2`,
+			policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds()).Scan(&scanned)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			return fmt.Errorf("read retention scan: %w", err)
+		}
+
+		rows, err := tx.Query(ctx, `
+			SELECT DISTINCT purgeable.vault_id, purgeable.document_id
+			FROM (`+fmt.Sprintf(purgeableRevisions, scope)+`) AS purgeable
+			LIMIT $3`, policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds(), limit, scanned)
+		if err != nil {
+			return fmt.Errorf("list retention candidates: %w", err)
+		}
+
+		scan.Documents, err = pgx.CollectRows(rows, func(row pgx.CollectableRow) (DocumentRef, error) {
+			var ref DocumentRef
+
+			err := row.Scan(&ref.VaultID, &ref.DocumentID)
+
+			return ref, err
+		})
+		if err != nil {
+			return fmt.Errorf("list retention candidates: %w", err)
+		}
+
+		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("list retention candidates: %w", err)
+		return RetentionScan{}, err
 	}
 
-	return refs, nil
+	return scan, nil
+}
+
+// CompleteRetentionScan records that every revision policy purged as of
+// started (a RetentionScan's Started) is purged, so later scans under the
+// same policy are incremental. Recording an earlier start than one already
+// recorded under the same policy changes nothing, so concurrent server
+// processes may each record their own scans; recording under a different
+// policy replaces the record.
+func (store *Store) CompleteRetentionScan(ctx context.Context, policy RetentionPolicy, started time.Time) error {
+	_, err := store.pool.Exec(ctx, `
+		INSERT INTO retention_scans (keep_all, keep_daily, scanned_through) VALUES ($1, $2, $3)
+		ON CONFLICT (id) DO UPDATE SET keep_all = EXCLUDED.keep_all, keep_daily = EXCLUDED.keep_daily,
+			scanned_through = CASE
+				WHEN retention_scans.keep_all = EXCLUDED.keep_all AND retention_scans.keep_daily = EXCLUDED.keep_daily
+				THEN greatest(retention_scans.scanned_through, EXCLUDED.scanned_through)
+				ELSE EXCLUDED.scanned_through
+			END`, policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds(), started)
+	if err != nil {
+		return fmt.Errorf("record retention scan: %w", err)
+	}
+
+	return nil
 }
 
 // PurgeRevisions deletes up to limit of document documentID's revisions that
 // policy no longer keeps, oldest first, in one transaction, and returns how
-// many it deleted. The head revision is never deleted.
+// many it deleted and whether the document is done: it has no revisions
+// left that policy purges. The head revision is never deleted.
 //
 // The purged revision's child is re-parented onto the purged revision's
 // parent first (issue #58), so parent_rev_id always names a revision that
@@ -105,19 +179,43 @@ func (store *Store) RetentionCandidates(ctx context.Context, policy RetentionPol
 //
 // The document row is locked with SKIP LOCKED: if a commit to the document,
 // or another server process's purge of it, holds the lock, PurgeRevisions
-// returns 0 and nil at once, and a later run retries. Concurrent purges by
+// returns 0, not done and nil at once, and a later run retries. Concurrent purges by
 // several server processes therefore never wait for or conflict with each
 // other.
-func (vault *VaultStore) PurgeRevisions(ctx context.Context, documentID uuid.UUID, policy RetentionPolicy, limit int) (int, error) {
-	purged := 0
+func (vault *VaultStore) PurgeRevisions(ctx context.Context, documentID uuid.UUID, policy RetentionPolicy, limit int) (int, bool, error) {
+	return vault.purgeRevisions(ctx, documentID, policy, limit, "SKIP LOCKED")
+}
+
+// PurgeRevisionsWaiting is PurgeRevisions, except that it waits for the
+// document's lock instead of skipping the document. The retention job uses
+// it for the documents PurgeRevisions skipped, once it holds no lock
+// itself, to find out whether they are done.
+func (vault *VaultStore) PurgeRevisionsWaiting(ctx context.Context, documentID uuid.UUID, policy RetentionPolicy, limit int) (int, bool, error) {
+	return vault.purgeRevisions(ctx, documentID, policy, limit, "")
+}
+
+func (vault *VaultStore) purgeRevisions(ctx context.Context, documentID uuid.UUID, policy RetentionPolicy, limit int, wait string) (int, bool, error) {
+	purged, done := 0, false
 
 	err := pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
 		var head uuid.UUID
 
 		err := tx.QueryRow(ctx, `
-			SELECT head_rev_id FROM documents WHERE vault_id = $1 AND id = $2 FOR NO KEY UPDATE SKIP LOCKED`,
+			SELECT head_rev_id FROM documents WHERE vault_id = $1 AND id = $2 FOR NO KEY UPDATE `+wait,
 			vault.vaultID, documentID).Scan(&head)
 		if errors.Is(err, pgx.ErrNoRows) {
+			// Locked by another transaction, or no such document: tell
+			// them apart without the lock.
+			var exists bool
+
+			err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM documents WHERE vault_id = $1 AND id = $2)`,
+				vault.vaultID, documentID).Scan(&exists)
+			if err != nil {
+				return fmt.Errorf("check document: %w", err)
+			}
+
+			done = !exists
+
 			return nil
 		}
 
@@ -139,6 +237,8 @@ func (vault *VaultStore) PurgeRevisions(ctx context.Context, documentID uuid.UUI
 		}
 
 		var released [][]byte
+
+		done = len(ids) < limit
 
 		for _, id := range ids {
 			if id == head {
@@ -163,10 +263,10 @@ func (vault *VaultStore) PurgeRevisions(ctx context.Context, documentID uuid.UUI
 		return vault.releaseBlobs(ctx, tx, released)
 	})
 	if err != nil {
-		return 0, err
+		return 0, false, err
 	}
 
-	return purged, nil
+	return purged, done, nil
 }
 
 // purgeRevision re-parents revision id's children onto its parent and
@@ -214,7 +314,8 @@ func (vault *VaultStore) releaseBlobs(ctx context.Context, tx pgx.Tx, blobs [][]
 }
 
 // ReleasedBlobs returns up to limit blobs, across all vaults, whose last
-// release by a purge is older than grace, longest released first. They are
+// release is older than grace (a blob is released when it is stored, and
+// when a purge removes a revision referencing it), longest released first. They are
 // candidates for CollectBlob, which checks that no revision references them.
 //
 // Not scoped to a vault, like RetentionCandidates.
@@ -260,8 +361,9 @@ func collectBlobRefs(rows pgx.Rows) ([]BlobRef, error) {
 	return refs, nil
 }
 
-// CollectBlob deletes blob blobID's row if no revision references it and a
-// purge released it more than grace ago, and records that its object must
+// CollectBlob deletes blob blobID's row if no revision references it and it
+// was released (stored, or a purge removed a revision referencing it) more
+// than grace ago, and records that its object must
 // be deleted (DeleteBlobObject). It reports whether this call deleted the
 // row. A blob found referenced again is no longer considered released.
 //
