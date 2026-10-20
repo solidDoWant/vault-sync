@@ -20,9 +20,10 @@ make test-sim SIM_SEED=1234                     # replay one seed
 | `SIM_ENGINES` | `2` | Engine-driven clients per seeded run, each with a user making random changes. `0` runs without engine users: one engine only pulls and the schedule has no `engine-operation` steps, as seeded runs did before #22. |
 | `SIM_SHRINK_RUNS` | `150` | Most re-runs spent minimizing a failing seed. |
 | `SIM_REGRESSION_DIR` | `sim/regressions` | Where minimized failing seeds are written, and which regression cases are replayed. A relative path is relative to the repository root (where `make test-sim` runs), wherever you invoke it from. The run fails, naming the variable, if the directory does not exist or holds no `*.json` case. |
+| `VAULT_SYNC_SIM_SUITES` | all | Comma-separated suites to run: `seeds`, `retention`, `regressions`, `scenarios`, `determinism`. An unknown name fails the run. |
 | `SIM_TIMEOUT` | `15m` | `go test -timeout` for the whole run. Long deliberate runs (nightly, many seeds) set it explicitly. |
 
-`make test-sim` exits non-zero on any violation. The output names the seed (`SIM FAILURE: seed N ...`), lists the violations, gives the replay command, and shows the end of the minimized schedule's trace. Docker is required. Unlike `make test-integration`, the simulation never skips.
+`make test-sim` exits non-zero on any violation. The output names the seed (`SIM FAILURE: seed N ...`), lists the violations, gives the replay command, and shows the end of the minimized schedule's trace. Docker is required. Unlike `make test-integration`, the simulation never skips: a full run fails if any test was skipped or left as a todo, so no suite or committed regression case drops out silently. A run of a subset (`VAULT_SYNC_SIM_SUITES=scenarios make test-sim`) skips the other suites on purpose and exits zero when every selected test passes (#393). It still fails if it passed no test, or if a test was skipped inside a top-level `describe` block that also ran tests, which is a skip within a selected suite (`checkSuiteRun`, `sim/suiteguard_test.go`).
 
 CI runs a short simulation (`SIM_SEEDS=5 SIM_STEPS=1000`) on every pull request, as the `Simulation` step of the required `checks` job. A nightly job runs a long simulation (see [Nightly](#nightly)).
 

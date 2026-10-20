@@ -189,7 +189,7 @@ type suiteResult struct {
 	err    error
 	output string
 	total  int
-	passed int
+	report vitestReport
 }
 
 // runSuite runs the harness's networked vitest suite against the
@@ -239,14 +239,8 @@ func (simulation *simulation) runSuite(t *testing.T, stream bool, extraEnv []str
 	result := suiteResult{err: suite.Wait()}
 	result.output = output.String()
 
-	var summary struct {
-		NumTotalTests  int `json:"numTotalTests"`
-		NumPassedTests int `json:"numPassedTests"`
-	}
-
-	if raw, err := os.ReadFile(report); err == nil && json.Unmarshal(raw, &summary) == nil {
-		result.total = summary.NumTotalTests
-		result.passed = summary.NumPassedTests
+	if raw, err := os.ReadFile(report); err == nil && json.Unmarshal(raw, &result.report) == nil {
+		result.total = result.report.NumTotalTests
 	}
 
 	return result
@@ -256,7 +250,7 @@ func (simulation *simulation) runSuite(t *testing.T, stream bool, extraEnv []str
 // SIM_CLIENTS), the committed regression cases, the scripted scenarios and
 // the determinism check against the real server. A failing seed is
 // minimized and written to sim/regressions/ (or SIM_REGRESSION_DIR), and the
-// test fails naming it.
+// test fails naming it. VAULT_SYNC_SIM_SUITES runs only some of the suites.
 func TestSimulation(t *testing.T) {
 	repoRoot, err := filepath.Abs("..")
 	require.NoError(t, err)
@@ -272,8 +266,9 @@ func TestSimulation(t *testing.T) {
 	}
 
 	require.NoError(t, result.err, "simulation suite failed (see its output above)")
-	require.Positive(t, result.total, "the simulation suite ran no tests")
-	require.Equal(t, result.total, result.passed, "every simulation test must run and pass, none skipped")
+	// A subset selected with VAULT_SYNC_SIM_SUITES skips the other suites
+	// on purpose; a full run skips nothing (#393).
+	require.NoError(t, checkSuiteRun(result.report, os.Getenv(suitesEnv)))
 }
 
 // TestSimulationDetectsBrokenServer proves the harness has teeth (issue
