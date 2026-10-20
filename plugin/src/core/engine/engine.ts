@@ -1286,9 +1286,28 @@ export class SyncEngine {
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId === state.documentId && !operation.deleted && this.fileKey(operation.path) !== key) return true;
     }
-    for (const [to, from] of this.localRenames()) if (from === state.path && this.fileKey(to) !== key) return true;
+    for (const [to, from] of this.localRenames()) {
+      if (from === state.path && this.fileKey(to) !== key) return true;
+      // Another file renamed onto its path, and still there: its own file
+      // was gone by then, deleted even if a restart lost the mark of that
+      // delete (#526).
+      if (this.fileKey(to) === key && this.renamedOnto(to, from, this.changes.vacated)) return true;
+    }
     return false;
   }
+
+  /**
+   * Whether a local rename from `from` brought another file to `to`, and
+   * that file is still there (the user did not delete it since, `vacated`).
+   * The vault refuses a rename onto an existing file, so whatever file was
+   * at `to` before was gone by then. A rename to another spelling of the
+   * same path (a case-only rename on a case-insensitive platform) moved the
+   * file that was there, so it tells nothing of another file.
+   */
+  private renamedOnto(to: string, from: string, vacated: ReadonlySet<string>): boolean {
+    return this.fileKey(from) !== this.fileKey(to) && !vacated.has(to);
+  }
+
 
   /** The local renames not pushed yet: those recorded since the push round began, and those the round has not committed. */
   private localRenames(): [string, string][] {
@@ -2106,7 +2125,12 @@ export class SyncEngine {
         // its file (#254, then it is deleted below). Another spelling of the
         // path that neither explains goes to the server, which refuses it if
         // that document still holds it (SPEC.md §6.3).
-        if (movedAway.has(this.fileKey(to)) || this.fileDeleted(holder, [changes.deleted])) freed = holder;
+        // A rename onto its path from another, whose file is still there,
+        // tells the same even when a restart lost the mark of the delete:
+        // the vault refuses a rename onto an existing file (#526). Not if the
+        // path holds that document's synced content: the engine wrote its
+        // file there after the renamed file moved on.
+        if (movedAway.has(this.fileKey(to)) || this.fileDeleted(holder, [changes.deleted]) || (this.renamedOnto(to, from, changes.vacated) && !sameHash(await this.readOrNull(to), holder.baseHash))) freed = holder;
         else if (holder.path === to) continue;
       }
       const content = await this.readOrNull(to);
