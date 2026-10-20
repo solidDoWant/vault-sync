@@ -164,7 +164,7 @@ func (job *Job) runOnce(ctx context.Context) (Result, error) {
 	}
 
 	if complete {
-		if err := job.Store.CompleteRetentionScan(ctx, job.Policy, scan.Started); err != nil {
+		if err := job.Store.CompleteRetentionScan(ctx, job.Policy, scan); err != nil {
 			problems = append(problems, err)
 		}
 	}
