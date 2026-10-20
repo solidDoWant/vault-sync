@@ -1283,7 +1283,13 @@ export class SyncEngine {
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId === state.documentId && !operation.deleted && this.fileKey(operation.path) !== key) return true;
     }
-    for (const [to, from] of this.localRenames()) if (from === state.path && this.fileKey(to) !== key) return true;
+    for (const [to, from] of this.localRenames()) {
+      if (from === state.path && this.fileKey(to) !== key) return true;
+      // Another file renamed onto its path, and still there: the vault
+      // refuses a rename onto an existing file, so its own file was gone by
+      // then, deleted even if a restart lost the mark of that delete (#526).
+      if (this.fileKey(to) === key && this.fileKey(from) !== key && !this.changes.vacated.has(to)) return true;
+    }
     return false;
   }
 
