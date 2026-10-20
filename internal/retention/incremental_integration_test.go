@@ -4,6 +4,7 @@ package retention_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -275,61 +276,156 @@ func TestAPartlyPurgedDocumentLeavesTheScanIncomplete(t *testing.T) {
 
 // A document the run skipped because a commit (or another server process)
 // held its lock is purged again, waiting for the lock, before the scan
-// counts as complete.
+// counts as complete. If that purge reaches RevisionsPerDocument, the scan
+// is not recorded either: the next run considers the document again and
+// purges the rest.
 func TestALockedDocumentIsPurgedBeforeTheScanIsRecorded(t *testing.T) {
-	fixture := newFixture(t)
-
-	content := fixture.blob(t, "a.md")
-	older := fixture.revision(t, nil, "a.md", content, len("a.md"), oldDay+` + interval '1 hour'`)
-	newer := fixture.revision(t, &older, "a.md", content, len("a.md"), oldDay+` + interval '2 hours'`)
-	fixture.revision(t, &newer, "a.md", content, len("a.md"), `now()`)
-
-	holder, err := fixture.pool.Begin(t.Context())
-	require.NoError(t, err)
-
-	defer func() { _ = holder.Rollback(context.WithoutCancel(t.Context())) }()
-
-	var holderPID int32
-	require.NoError(t, holder.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&holderPID))
-
-	_, err = holder.Exec(t.Context(), `SELECT 1 FROM documents WHERE id = $1 FOR NO KEY UPDATE`, older.DocumentID)
-	require.NoError(t, err)
-
-	type outcome struct {
-		result retention.Result
-		err    error
+	tests := []struct {
+		name string
+		// purgeable is how many revisions of the locked document, on one
+		// UTC day past KeepAll, are purgeable; one more that day is kept.
+		purgeable            int
+		revisionsPerDocument int
+		// waited is what the run that waited for the lock purges.
+		waited int
+		// recorded is whether that run records the scan.
+		recorded bool
+		// later is what each following run purges, in order; after the
+		// last, the scan is recorded.
+		later []int
+		// errorAssertion checks the error of the run that waited;
+		// defaults to require.NoError.
+		errorAssertion require.ErrorAssertionFunc
+	}{
+		{
+			name:      "purged fully",
+			purgeable: 1,
+			waited:    1,
+			recorded:  true,
+		},
+		{
+			name:                 "purged in part",
+			purgeable:            2,
+			revisionsPerDocument: 1,
+			waited:               1,
+			// The rest, at the limit again; then a run finding nothing
+			// left.
+			later: []int{1, 0},
+		},
 	}
 
-	finished := make(chan outcome, 1)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if test.errorAssertion == nil {
+				test.errorAssertion = require.NoError
+			}
 
-	go func() {
-		result, err := fixture.job().RunOnce(t.Context())
-		finished <- outcome{result, err}
-	}()
+			fixture := newFixture(t)
 
-	// Wait until the run waits for the lock this test holds; a run that
-	// finishes first did not wait for it.
-	for waiting := false; !waiting; {
-		select {
-		case run := <-finished:
-			require.Failf(t, "the run finished without waiting for the locked document",
-				"result %+v, error %v", run.result, run.err)
-		case <-t.Context().Done():
-			require.FailNow(t, "the test ended before the run waited for the lock")
-		default:
-		}
+			content := fixture.blob(t, "a.md")
 
+			var parent *store.Revision
+
+			for hour := 1; hour <= test.purgeable+1; hour++ {
+				revision := fixture.revision(t, parent, "a.md", content, len("a.md"),
+					fmt.Sprintf(`%s + interval '%d hours'`, oldDay, hour))
+				parent = &revision
+			}
+
+			fixture.revision(t, parent, "a.md", content, len("a.md"), `now()`)
+
+			job := fixture.job()
+			job.RevisionsPerDocument = test.revisionsPerDocument
+
+			holder, err := fixture.pool.Begin(t.Context())
+			require.NoError(t, err)
+
+			defer func() { _ = holder.Rollback(context.WithoutCancel(t.Context())) }()
+
+			var holderPID int32
+			require.NoError(t, holder.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&holderPID))
+
+			_, err = holder.Exec(t.Context(), `SELECT 1 FROM documents WHERE id = $1 FOR NO KEY UPDATE`, parent.DocumentID)
+			require.NoError(t, err)
+
+			type outcome struct {
+				result retention.Result
+				err    error
+			}
+
+			finished := make(chan outcome, 1)
+
+			go func() {
+				result, err := job.RunOnce(t.Context())
+				finished <- outcome{result, err}
+			}()
+
+			// Wait until the run waits for the lock this test holds; a run
+			// that finishes first did not wait for it.
+			fixture.awaitBlockedBy(t, holderPID, func() {
+				select {
+				case run := <-finished:
+					require.Failf(t, "the run finished without waiting for the locked document",
+						"result %+v, error %v", run.result, run.err)
+				default:
+				}
+			})
+
+			assert.Zero(t, fixture.scans(t), "not recorded while the document is locked")
+
+			require.NoError(t, holder.Commit(t.Context()))
+
+			run := <-finished
+			test.errorAssertion(t, run.err)
+			assert.Equal(t, retention.Result{RevisionsPurged: test.waited}, run.result, "the locked document is purged once released")
+
+			if test.recorded {
+				assert.Equal(t, 1, fixture.scans(t), "the scan is complete")
+			} else {
+				assert.Zero(t, fixture.scans(t), "a scan that left the locked document partly purged is not recorded")
+			}
+
+			for index, purged := range test.later {
+				result, err := job.RunOnce(t.Context())
+				require.NoError(t, err)
+				assert.Equal(t, retention.Result{RevisionsPurged: purged}, result, "run %d after the wait", index+1)
+			}
+
+			assert.Equal(t, 1, fixture.scans(t), "the document is done: the scan is complete")
+		})
+	}
+}
+
+// awaitBlockedBy returns once a PostgreSQL backend waits for a lock that
+// the backend pid holds, calling check before each poll. Polls back off to
+// at most 50ms apart, so waiting does not keep a pool connection busy; the
+// delay only spaces the polls, so nothing depends on it.
+func (fixture *fixture) awaitBlockedBy(t *testing.T, pid int32, check func()) {
+	t.Helper()
+
+	backoff := time.Millisecond
+
+	for {
+		check()
+
+		var waiting bool
 		require.NoError(t, fixture.pool.QueryRow(t.Context(),
 			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY (pg_blocking_pids(pid)))`,
-			holderPID).Scan(&waiting))
+			pid).Scan(&waiting))
+
+		if waiting {
+			return
+		}
+
+		timer := time.NewTimer(backoff)
+
+		select {
+		case <-t.Context().Done():
+			timer.Stop()
+			require.FailNow(t, "the test ended before a backend waited for the lock")
+		case <-timer.C:
+		}
+
+		backoff = min(2*backoff, 50*time.Millisecond)
 	}
-
-	assert.Zero(t, fixture.scans(t), "not recorded while the document is locked")
-
-	require.NoError(t, holder.Commit(t.Context()))
-
-	run := <-finished
-	require.NoError(t, run.err)
-	assert.Equal(t, retention.Result{RevisionsPurged: 1}, run.result, "the locked document is purged once released")
-	assert.Equal(t, 1, fixture.scans(t), "the scan is complete")
 }
