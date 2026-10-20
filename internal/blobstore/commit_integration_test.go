@@ -13,11 +13,13 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/store"
@@ -45,9 +47,18 @@ func (fixture *cleanupFixture) instance(t *testing.T) (*api.BlobService, *blobst
 	}, objects
 }
 
+// authorized returns ctx authorized for the fixture's vault, as the user ctx
+// carries or, if it carries none, as defaultUser.
 func (fixture *cleanupFixture) authorized(ctx context.Context) context.Context {
+	if _, ok := auth.UserFromContext(ctx); !ok {
+		ctx = auth.WithUser(ctx, auth.User{ID: defaultUser})
+	}
+
 	return authz.WithMembership(ctx, authz.Membership{VaultID: fixture.vault.VaultID(), Role: store.RoleOwner})
 }
+
+// defaultUser is the user of requests whose test names none.
+var defaultUser = uuid.MustParse("00000000-0000-4000-8000-000000000001")
 
 // multipartContent is a blob composed from four multipart parts.
 func multipartContent(t *testing.T) ([]byte, []byte) {

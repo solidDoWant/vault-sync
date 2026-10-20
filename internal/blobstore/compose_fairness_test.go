@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -144,8 +145,13 @@ func awaitSettled(t *testing.T, objects *blobstore.Objects, gate *composeGate, t
 	}
 }
 
-func source(name string) []blobstore.Part {
-	return []blobstore.Part{{Key: "vaults/x/uploads/" + name, Length: stagedObjectBytes}}
+func source(name string) blobstore.Sources {
+	return parts(blobstore.Part{Key: "vaults/x/uploads/" + name, Length: stagedObjectBytes})
+}
+
+// parts returns Sources listing list.
+func parts(list ...blobstore.Part) blobstore.Sources {
+	return func(context.Context) ([]blobstore.Part, error) { return list, nil }
 }
 
 func TestOneOwnerCannotHoldEveryComposeSlot(t *testing.T) {
@@ -406,5 +412,79 @@ func TestComposeWhoseFirstProgressFailsGivesBackItsSlots(t *testing.T) {
 	assert.Zero(t, blobstore.ComposeSlotsHeld(objects), "a failed composition kept a replica slot")
 
 	// Both gave their owner's slots back.
+	requireOwnerComposesTwice(t, objects, "failing")
+}
+
+func TestComposeWhoseProgressPanicsGivesBackItsSlots(t *testing.T) {
+	objects := objectsAt(t, answeringEndpoint(t), time.Minute, 1)
+
+	// The progress reported on getting a slot panics (a store call gone
+	// wrong), for as many compositions as an owner has slots.
+	for index := range 2 {
+		name := fmt.Sprintf("panicking/%d", index)
+
+		require.PanicsWithValue(t, "progress failed", func() {
+			_ = objects.Compose(t.Context(), "panicking", "vaults/x/blobs/"+name, source(name), stagedObjectBytes, nil,
+				func(context.Context) error { panic("progress failed") })
+		})
+	}
+
+	assert.Zero(t, blobstore.ComposeSlotsHeld(objects), "a panicking composition kept a replica slot")
+
+	// Both gave their owner's slots back.
+	requireOwnerComposesTwice(t, objects, "panicking")
+}
+
+func TestComposeListsItsSourcesOnlyOnceItHoldsASlot(t *testing.T) {
+	objects := objectsAt(t, answeringEndpoint(t), time.Minute, 1)
+	gate := newComposeGate(t, objects)
+
+	var group sync.WaitGroup
+
+	// The owner holds both of its slots.
+	for index := range 2 {
+		group.Go(func() {
+			name := fmt.Sprintf("busy/%d", index)
+			assert.NoError(t, objects.Compose(t.Context(), "busy", "vaults/x/blobs/"+name, source(name), stagedObjectBytes, nil, nil))
+		})
+	}
+
+	require.Len(t, awaitSettled(t, objects, gate, 2), 2)
+
+	// A third composition of the owner waits for a slot without listing its
+	// sources.
+	var listed atomic.Bool
+
+	waiting := make(chan error, 1)
+
+	go func() {
+		waiting <- objects.Compose(t.Context(), "busy", "vaults/x/blobs/third", func(ctx context.Context) ([]blobstore.Part, error) {
+			listed.Store(true)
+
+			return source("busy/third")(ctx)
+		}, stagedObjectBytes, nil, nil)
+	}()
+
+	awaitSettled(t, objects, gate, 3)
+	assert.False(t, listed.Load(), "a composition waiting for a slot listed its sources")
+
+	gate.open()
+	require.NoError(t, receive(t, waiting, "the third composition"))
+	group.Wait()
+	assert.True(t, listed.Load())
+}
+
+func TestComposeWhoseSourcesFailGivesBackItsSlots(t *testing.T) {
+	objects := objectsAt(t, answeringEndpoint(t), time.Minute, 1)
+	errList := errors.New("cannot list chunks")
+
+	for range 2 {
+		err := objects.Compose(t.Context(), "failing", "vaults/x/blobs/failing", func(context.Context) ([]blobstore.Part, error) {
+			return nil, errList
+		}, stagedObjectBytes, nil, nil)
+		require.ErrorIs(t, err, errList)
+	}
+
+	assert.Zero(t, blobstore.ComposeSlotsHeld(objects))
 	requireOwnerComposesTwice(t, objects, "failing")
 }

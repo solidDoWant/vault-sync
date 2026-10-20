@@ -199,3 +199,50 @@ func TestBlobChunkLimitsHoldInEveryCodec(t *testing.T) {
 		}
 	}
 }
+
+// #161: a client accepting gzip downloads incompressible content (as E2EE
+// content is) in full ranges, in either codec, even when the chunk limit
+// leaves only the smallest slack below the request and send limit, where
+// gzip's framing makes a compressed response larger than its message.
+func TestGzipDownloadsOfIncompressibleRangesFitTheSendLimit(t *testing.T) {
+	const maxRequestBytes = config.MaxMaxRequestBytes
+
+	limits := api.BlobLimits{
+		MaxChunkBytes:      maxRequestBytes - config.ChunkRequestOverheadBytes,
+		MaxBlobBytes:       config.DefaultBlobMaxSizeBytes,
+		MaxUploadsPerVault: config.DefaultBlobMaxUploadsPerVault,
+	}
+
+	fixture := newBlobFixtureWithRequestLimit(t, limits, maxRequestBytes)
+	token := fixture.token(t, "alice")
+	vault := fixture.createVault(t, token, "Notes")
+
+	content := randomBytes(t, int(limits.MaxChunkBytes))
+	blobID := blobIDOf(content)
+	require.NoError(t, fixture.upload(t, token, vault.GetId(), blobID, content))
+
+	// Both clients ask for gzip (Connect clients do by default) and get it.
+	gzipped := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	clients := map[string]vaultsyncv1connect.BlobServiceClient{
+		"binary": vaultsyncv1connect.NewBlobServiceClient(gzipped, fixture.running.apiURL()),
+		"json":   vaultsyncv1connect.NewBlobServiceClient(gzipped, fixture.running.apiURL(), connect.WithProtoJSON()),
+	}
+
+	for name, client := range clients {
+		t.Run(name, func(t *testing.T) {
+			var downloaded []byte
+
+			for len(downloaded) < len(content) {
+				response, err := client.DownloadBlob(t.Context(), authorized(&vaultsyncv1.DownloadBlobRequest{
+					VaultId: vault.GetId(), BlobId: blobID, Offset: uint64(len(downloaded)), Length: math.MaxUint32,
+				}, token))
+				require.NoError(t, err, "range at %d", len(downloaded))
+				require.NotEmpty(t, response.Msg.GetData(), "download made no progress")
+
+				downloaded = append(downloaded, response.Msg.GetData()...)
+			}
+
+			require.Equal(t, content, downloaded)
+		})
+	}
+}

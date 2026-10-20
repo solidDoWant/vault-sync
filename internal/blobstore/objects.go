@@ -229,8 +229,13 @@ type Part struct {
 // error stops the composition, and nothing becomes visible at the key.
 type Progress func(ctx context.Context) error
 
-// Compose concatenates sources, which total size bytes, into the object at
-// key. It hashes the content with SHA-256 and passes the digest to verify
+// Sources lists the staged objects a composition concatenates. Compose calls
+// it once it holds its compose slots, so a composition waiting for a slot
+// holds no list of parts.
+type Sources func(ctx context.Context) ([]Part, error)
+
+// Compose concatenates the parts sources lists, which total size bytes, into
+// the object at key. It hashes the content with SHA-256 and passes the digest to verify
 // before anything becomes visible at key: if verify (or anything else)
 // fails, key is not written. A nil verify accepts any content; a nil
 // progress is not called.
@@ -239,7 +244,7 @@ type Progress func(ctx context.Context) error
 // owner (the user it is done for) hold at most composeSlotsPerOwner of them
 // at once: a further composition of that owner waits, holding no slot, so
 // one user cannot keep another's compositions waiting.
-func (objects *Objects) Compose(ctx context.Context, owner, key string, sources []Part, size int64, verify func(sum []byte) error, progress Progress) error {
+func (objects *Objects) Compose(ctx context.Context, owner, key string, sources Sources, size int64, verify func(sum []byte) error, progress Progress) error {
 	if size > MaxBlobBytes {
 		return fmt.Errorf("blob of %d bytes exceeds the composable maximum of %d", size, int64(MaxBlobBytes))
 	}
@@ -255,7 +260,12 @@ func (objects *Objects) Compose(ctx context.Context, owner, key string, sources 
 
 	defer release()
 
-	reader := &sourceReader{ctx: ctx, objects: objects, sources: sources, hash: sha256.New()}
+	parts, err := sources(ctx)
+	if err != nil {
+		return err
+	}
+
+	reader := &sourceReader{ctx: ctx, objects: objects, sources: parts, hash: sha256.New()}
 
 	if size <= PartSize {
 		return objects.composeSingle(ctx, key, reader, size, verify, progress)
@@ -348,41 +358,51 @@ func (objects *Objects) leaveOwner(owner string, slots *ownerSlots) {
 
 // acquireComposeSlot waits for one of owner's slots and then for one of the
 // replica's, reporting progress while it waits: a commit queued behind
-// others is still in progress. release gives both back.
-func (objects *Objects) acquireComposeSlot(ctx context.Context, owner string, progress Progress) (release func(), err error) {
+// others is still in progress. release gives both back. Every slot taken is
+// given back on any way out, a panic included, unless release is returned.
+func (objects *Objects) acquireComposeSlot(ctx context.Context, owner string, progress Progress) (func(), error) {
 	slots := objects.joinOwner(owner)
+
+	var ownerSlot, replicaSlot, acquired bool
+
+	release := func() {
+		if replicaSlot {
+			<-objects.compose
+		}
+
+		if ownerSlot {
+			<-slots.slots
+		}
+
+		objects.leaveOwner(owner, slots)
+	}
+
+	defer func() {
+		if !acquired {
+			release()
+		}
+	}()
 
 	ticker := time.NewTicker(ProgressInterval)
 	defer ticker.Stop()
 
 	if err := objects.awaitSlot(ctx, slots.slots, ticker, progress); err != nil {
-		objects.leaveOwner(owner, slots)
-
 		return nil, err
 	}
 
-	release = func() {
-		<-slots.slots
-		objects.leaveOwner(owner, slots)
-	}
+	ownerSlot = true
 
 	if err := objects.awaitSlot(ctx, objects.compose, ticker, progress); err != nil {
-		release()
-
 		return nil, err
 	}
 
-	release = func() {
-		<-objects.compose
-		<-slots.slots
-		objects.leaveOwner(owner, slots)
-	}
+	replicaSlot = true
 
 	if err := progress(ctx); err != nil {
-		release()
-
 		return nil, err
 	}
+
+	acquired = true
 
 	return release, nil
 }

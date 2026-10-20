@@ -302,6 +302,27 @@ func TestRetentionPolicyBoundaries(t *testing.T) {
 		assert.Equal(t, 5, fixture.purge(t, policy))
 		assert.Equal(t, revisionIDsOf(revisions, 1, 3, 5, 7, 9, 10), fixture.retained(t, revisions[0].DocumentID))
 	})
+
+	t.Run("each document has its own buckets", func(t *testing.T) {
+		fixture := newCommitFixture(t)
+
+		// Two documents with revisions in the same UTC day: each keeps the
+		// newest of its own day, not only the vault's newest.
+		first := fixture.history(t, "a.md", []string{
+			dailyDay + ` + interval '1 hour'`,
+			dailyDay + ` + interval '2 hours'`,
+			`now()`,
+		})
+		second := fixture.history(t, "b.md", []string{
+			dailyDay + ` + interval '3 hours'`,
+			dailyDay + ` + interval '4 hours'`,
+			`now()`,
+		})
+
+		assert.Equal(t, 2, fixture.purge(t, defaultPolicy))
+		assert.Equal(t, revisionIDsOf(first, 1, 2), fixture.retained(t, first[0].DocumentID))
+		assert.Equal(t, revisionIDsOf(second, 1, 2), fixture.retained(t, second[0].DocumentID))
+	})
 }
 
 // Issue #58: a commit whose response was lost, retried after retention

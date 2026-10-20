@@ -147,10 +147,7 @@ func (cleaner *Cleaner) Run(ctx context.Context, interval time.Duration) {
 		logger = slog.New(slog.DiscardHandler)
 	}
 
-	runTimeout := cleaner.RunTimeout
-	if runTimeout <= 0 {
-		runTimeout = DefaultRunTimeout
-	}
+	runTimeout := cleaner.runTimeout()
 
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -176,6 +173,15 @@ func (cleaner *Cleaner) Run(ctx context.Context, interval time.Duration) {
 		case <-ticker.C:
 		}
 	}
+}
+
+// runTimeout is the bound on each run started by Run.
+func (cleaner *Cleaner) runTimeout() time.Duration {
+	if cleaner.RunTimeout <= 0 {
+		return DefaultRunTimeout
+	}
+
+	return cleaner.RunTimeout
 }
 
 // RemoveFinishedUpload deletes up to budget staged objects of the finished

@@ -185,10 +185,10 @@ var objectOperations = []struct {
 		return err
 	}},
 	{name: "compose a single object", readsBody: true, call: func(ctx context.Context, objects *blobstore.Objects) error {
-		return objects.Compose(ctx, "owner", "vaults/x/blobs/00", []blobstore.Part{{Key: "vaults/x/uploads/y/z", Length: 10}}, 10, nil, nil)
+		return objects.Compose(ctx, "owner", "vaults/x/blobs/00", parts(blobstore.Part{Key: "vaults/x/uploads/y/z", Length: 10}), 10, nil, nil)
 	}},
 	{name: "compose a multipart object", readsBody: true, call: func(ctx context.Context, objects *blobstore.Objects) error {
-		return objects.Compose(ctx, "owner", "vaults/x/blobs/00", []blobstore.Part{{Key: "vaults/x/uploads/y/z", Length: blobstore.PartSize + 1}}, blobstore.PartSize+1, nil, nil)
+		return objects.Compose(ctx, "owner", "vaults/x/blobs/00", parts(blobstore.Part{Key: "vaults/x/uploads/y/z", Length: blobstore.PartSize + 1}), blobstore.PartSize+1, nil, nil)
 	}},
 }
 
@@ -237,7 +237,7 @@ func TestStalledComposeReleasesItsSlot(t *testing.T) {
 		}
 
 		err := returnsWithin(t, func() error {
-			return objects.Compose(t.Context(), "owner", "vaults/x/blobs/00", []blobstore.Part{{Key: "vaults/x/uploads/y/z", Length: 10}}, 10, nil, progress)
+			return objects.Compose(t.Context(), "owner", "vaults/x/blobs/00", parts(blobstore.Part{Key: "vaults/x/uploads/y/z", Length: 10}), 10, nil, progress)
 		})
 		require.ErrorIs(t, err, os.ErrDeadlineExceeded, "attempt %d", attempt)
 		require.True(t, slotAcquired, "attempt %d got a compose slot", attempt)
