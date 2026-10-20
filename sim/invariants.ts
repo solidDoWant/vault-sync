@@ -127,6 +127,19 @@ export class UserLedger {
     this.renames.push({ documents, paths: new Set([key]), hashes: new Set([hash]), current: key });
   }
 
+  /**
+   * The engine moved the file at `from` to `to`, its own conflict copy
+   * (#509): the renamed file is followed there, as through a rename of the
+   * user's, with the content it already had.
+   */
+  movedByEngine(from: string, to: string): void {
+    const key = pathMatcher(this.platform)(to);
+    for (const rename of this.at(from)) {
+      rename.current = key;
+      rename.paths.add(key);
+    }
+  }
+
   /** The user deleted the file at `path`. */
   deleted(path: string): void {
     for (const rename of this.at(path)) rename.current = undefined;
@@ -288,7 +301,7 @@ function renameLostToCrash(tombstone: FeedRevision, engine: EngineDeletes, feed:
  * the path is taken is kept at such a path (SPEC.md §6.3), by the outermost
  * folder in the way if it is a folder (#359), as a rename there would be.
  */
-function copiedFrom(path: string, device: string): string[] {
+export function copiedFrom(path: string, device: string): string[] {
   const escaped = device.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const suffix = new RegExp(` \\(conflict ${escaped} \\d{4}-\\d{2}-\\d{2} \\d{6}(?: \\d+)?\\)(?=(?:\\.[^/]*)?$)`, "u");
   const segments = path.split("/");

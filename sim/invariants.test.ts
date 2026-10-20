@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 
+import { InMemoryJournal } from "../plugin/src/core/journal/memory";
+import { InMemoryVault } from "../plugin/src/core/vault/memory";
+import { EngineUser } from "./engine-user";
 import { checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
 
 const at = "step 1";
@@ -266,6 +269,61 @@ describe("checkPhantomDeletes", () => {
       expect(phantoms([revision({}), tombstone, revision({ ...create, documentId: "d1", seq: 4n })], lostRename())).toEqual(reported);
       // Created before the crash.
       expect(phantoms([revision({}), revision({ ...create, seq: 1n }), revision({ ...tombstone, seq: 3n })], lostRename({ crash: 2n }))).toEqual(["e1 deleted d1 at a.md (seq 3, r2) although its user never deleted it"]);
+    });
+  });
+
+  // #509: the user renames synced d1 from a.md to b.md, and before the
+  // rename is pushed another device's d2 arrives at b.md: the engine moves
+  // the user's file aside to its own conflict copy and writes d2 at b.md.
+  // The copy is d1's file, so the user's delete of it is the user deleting d1.
+  describe("given the engine's move of the user's renamed file to its own conflict copy (#509)", () => {
+    const copy = "b (conflict e1 2026-01-02 030405).md";
+    const tombstone = revision({ revisionId: "r2", seq: 2n, deleted: true });
+    const encode = (content: string) => new TextEncoder().encode(content);
+    const setup = async () => {
+      const vault = new InMemoryVault();
+      const journal = new InMemoryJournal();
+      const ledger = new UserLedger();
+      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, touched: () => undefined, serverSeq: () => 1n });
+      await vault.write("a.md", encode("aa"));
+      await journal.putDocument({ documentId: "d1", path: "a.md", revisionId: "r1", seq: 1n, baseHash: "aa", size: 2n, kind: "text", deleted: false });
+      await user.rename("a.md", "b.md");
+      /** The engine moves b.md to `to` and writes d2 at b.md, as its pull does. */
+      const engineMoves = async (to: string) => {
+        await user.engineRenamed("b.md", to, () => vault.rename("b.md", to));
+        await vault.write("b.md", encode("theirs"));
+        await journal.putDocument({ documentId: "d2", path: "b.md", revisionId: "r3", seq: 3n, baseHash: "bb", size: 6n, kind: "text", deleted: false });
+      };
+      const phantoms = () =>
+        checkPhantomDeletes([revision({}), tombstone], new Set(), [{ name: "e1", deviceId: "engine", deletedDocuments: ledger.deletedDocuments, platform: "posix", renames: ledger.renames, crashes: ledger.crashes }], label).map(
+          (violation) => violation.detail,
+        );
+      return { user, ledger, engineMoves, phantoms };
+    };
+    const reported = ["e1 deleted d1 at a.md (seq 2, r2) although its user never deleted it"];
+
+    it("excuses the tombstone of the document whose file the user deleted at the copy, and follows the renamed file there", async () => {
+      const { user, ledger, engineMoves, phantoms } = await setup();
+      await engineMoves(copy);
+      expect(ledger.renames[0]?.current).toBe(copy);
+      await user.remove(copy);
+      expect(phantoms()).toEqual([]);
+      expect(ledger.renames[0]?.current).toBeUndefined();
+      // The other device's note now at b.md is not the deleted one.
+      expect(ledger.deletedDocuments.has("d2")).toBe(false);
+    });
+
+    it("still reports the tombstone when the user deleted another file, or the engine's move was not to its own conflict copy", async () => {
+      const kept = await setup();
+      await kept.engineMoves(copy);
+      await kept.user.remove("b.md");
+      expect(kept.phantoms()).toEqual(reported);
+
+      const elsewhere = await setup();
+      const notACopy = "b (conflict e9 2026-01-02 030405).md";
+      await elsewhere.engineMoves(notACopy);
+      await elsewhere.user.remove(notACopy);
+      expect(elsewhere.phantoms()).toEqual(reported);
     });
   });
 });
