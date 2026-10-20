@@ -66,6 +66,22 @@ describe("deferredDocuments (the conflict view's \"Files that are not synced\", 
     expect(await listed(h, withoutConfig(h.vault))).toEqual([]);
   });
 
+  it("does not list an out-of-scope revision of a config file synced earlier whose file is still on disk, once config sync is off (#527)", async () => {
+    let configSync = true;
+    const h = harness({ wrapVault: (vault) => Object.assign(Object.create(vault) as InMemoryVault, { isSynced: (path: string) => configSync || !path.startsWith(".obsidian/") }) });
+    h.server.commit({ documentId: "snippet", path: ".obsidian/s.css", content: "a{}" });
+    await h.engine.pull();
+    expect(await h.vault.read(".obsidian/s.css")).toEqual(bytes("a{}"));
+
+    configSync = false;
+    h.server.commit({ documentId: "snippet", path: ".obsidian/s.css", content: "b{}" });
+    await h.engine.pull();
+
+    expect((await h.journal.listDeferred()).map(({ reason }) => reason)).toEqual(["out-of-scope"]);
+    expect(await h.vault.read(".obsidian/s.css")).toEqual(bytes("a{}"));
+    expect(await listed(h, withoutConfig(h.vault))).toEqual([]);
+  });
+
   it("does not list a revision the merge path owns", async () => {
     const h = harness();
     h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" });

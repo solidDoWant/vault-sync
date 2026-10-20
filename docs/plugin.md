@@ -181,7 +181,7 @@ The server keeps every revision of every file until its retention policy thins o
 - Choose a revision to preview it. Text is shown as it is (the start of a very long file only); other files by size.
 - **Restore this version** makes the chosen revision the file's current content again. Nothing is overwritten: the restore is a new revision on top of the current one, so the version it replaces stays in the history, and it reaches your other devices like any edit. Local edits not synced yet are pushed first, so they are in the history too. The file keeps its current name and folder.
 - **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was. Config files are listed only while config sync and their category are on: restored with sync of them off, they would not show up on this device.
-- Members with the `viewer` role can browse history and preview versions but not restore them, so the modal offers no **Restore this version** button to them.
+- Members with the `viewer` role can browse history and preview versions but not restore them, so the modal offers no **Restore this version** button to them. If the plugin cannot read the role (the server is unreachable, say), it offers the button and the server decides.
 
 A deleted file cannot be restored while another file has taken its path; move that file away first. History is only available while the vault syncs (signed in and connected).
 
