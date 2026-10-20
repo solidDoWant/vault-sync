@@ -747,13 +747,20 @@ export class SyncEngine {
       // as its local version, and this document's next move would find its
       // file another's for good (#379). The merge path lets the other
       // document's merge go first. One the platform cannot hold is handled
-      // as its kept file is (releaseKeptFile, #391). One whose revision waits
-      // for a reason no pull or push retries gives the path up there too
-      // (resolveFirst, releaseIdleClaim), so this revision is written.
+      // as its kept file is (releaseKeptFile, #391), here with no file to
+      // keep: its edit still pending at the path, after the user deleted the
+      // file, would otherwise count as a local move of it there, and its
+      // later merge would take this document's file for its own (#398). One
+      // whose revision waits for a reason no pull or push retries gives the
+      // path up there too (resolveFirst, releaseIdleClaim), so this revision
+      // is written.
       const holder = await this.documentAt(remote.path);
-      if (holder !== undefined && holder.documentId !== remote.documentId && (await this.journal.getDeferred(holder.documentId))?.reason !== "unmaterializable") {
-        const path = inspection.source ?? remote.path;
-        return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+      if (holder !== undefined && holder.documentId !== remote.documentId) {
+        if ((await this.journal.getDeferred(holder.documentId))?.reason === "unmaterializable") await this.releaseParkedPath(holder.documentId);
+        else {
+          const path = inspection.source ?? remote.path;
+          return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+        }
       }
     }
     if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
@@ -819,8 +826,11 @@ export class SyncEngine {
       if (targetHash === remote.contentHash) return { kind: "applied" };
       return { kind: "dirty", path: target, content: targetContent };
     }
-    // The same file, also when only its spelling changes on a case-insensitive platform.
-    if (this.fileKey(basePath) === this.fileKey(target)) {
+    // The same file, also when only its spelling changes on a case-insensitive
+    // platform, but only if the vault holds the two spellings as one file:
+    // on NTFS or APFS `straße/` and `STRASSE/` are two folders, so that is a
+    // rename, and an edit at the synced path is the note's (#447).
+    if (await this.heldAsOne(basePath, target)) {
       if (targetHash === remote.contentHash) return { kind: "applied" };
       if (baseOnDisk) return { kind: "clean", source: basePath, sourceHash: baseHash };
       // Edited, or deleted or moved away locally (content null): a local
@@ -1053,6 +1063,31 @@ export class SyncEngine {
   }
 
   /**
+   * Gives up an unmaterializable document's claim on its old path once its
+   * file there is gone (the user deleted it while the document was parked)
+   * and the server puts another document there (#398). Its operations still
+   * pending at that path stop counting as a claim on it: an edit is dropped,
+   * as the user's delete superseded its content, and a delete stays pending,
+   * so it meets the document's next revision as any local delete does. The
+   * state is recorded `deleted`, as releaseFile records a release, so the
+   * document materializes as a new one would and never takes the other
+   * document's file for its own. A document with an operation pending at
+   * another path, or a local rename from the path not yet pushed, keeps its
+   * claim: the rename moved its file, which is its own where the rename put
+   * it, and released, the rename would be taken for the other document's.
+   */
+  private async releaseParkedPath(documentId: string): Promise<void> {
+    const state = await this.journal.getDocument(documentId);
+    if (state === undefined || state.deleted) return;
+    const key = this.fileKey(state.path);
+    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
+    if (pending.some((operation) => this.fileKey(operation.path) !== key)) return;
+    if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return;
+    for (const operation of pending) if (!operation.deleted) await this.journal.removePending(operation.revisionId);
+    await this.journal.putDocument({ ...state, deleted: true });
+  }
+
+  /**
    * Gives up the claim on its synced path of a document whose file is not
    * there any more and whose remote revision waits for a reason no pull or
    * push retries (`out-of-scope`, `too-large`, `invalid-path`), once the
@@ -1204,6 +1239,22 @@ export class SyncEngine {
   }
 
   /**
+   * Whether `a` and `b` name one file the vault holds now: the same file by
+   * their spellings, or two spellings with one path key of which the vault
+   * lists one and finds a file at the other too (it folds them as path keys
+   * do). On NTFS or APFS the other spelling of `straße/b.md`, `STRASSE/b.md`,
+   * is another file or none (decision #52, #447). For the engine's own
+   * changes, which look at the vault as they act.
+   */
+  private async heldAsOne(a: string, b: string): Promise<boolean> {
+    if (this.fileKey(a) !== this.fileKey(b)) return false;
+    if (sameFilesystemName(a, b, this.pathRules.platform)) return true;
+    const listed = new Set(await this.vault.list());
+    if (listed.has(a) === listed.has(b)) return false;
+    return (await this.vault.stat(listed.has(a) ? b : a)) !== null;
+  }
+
+  /**
    * Moves the file a local move of `documentId` put at `path` on to a
    * conflict-copy path, as the document's own (SPEC.md §6.3): its pending
    * operations and unpushed rename follow it, so it is committed there under
@@ -1309,8 +1360,10 @@ export class SyncEngine {
     // A result path that is the document's own file under another spelling
     // (a remote case-only rename on a case-insensitive platform) is no file
     // in the way: the vault holds one file there, the document's, which the
-    // rename below respells (#343).
-    const respelled = outcome.content !== null && outcome.path !== local.path && this.fileKey(outcome.path) === this.fileKey(local.path);
+    // rename below respells (#343). Only if the vault holds the two as one:
+    // on NTFS or APFS a file at `STRASSE/b.md` is another one than
+    // `straße/b.md`, so it is in the way (#447).
+    const respelled = outcome.content !== null && outcome.path !== local.path && (await this.heldAsOne(outcome.path, local.path));
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).

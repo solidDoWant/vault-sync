@@ -568,6 +568,112 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         );
       });
 
+      // #398: the stale edit pending at plan.md, with the file deleted, made
+      // the document take the other document's file there for its own once a
+      // remote rename gave it a legal name again.
+      it("never takes the other document's file for the parked document's own after the user deleted the edited file", async () => {
+        const h = await parkedWithPendingEdit();
+        await h.vault.delete("plan.md");
+
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        await h.engine.push();
+
+        expect(await files(h.vault)).toEqual(new Map([["plan.md", "another note\n"]]));
+        expect(await h.journal.listPending()).toEqual([]);
+
+        h.server.commit({ documentId: "doc", path: "draft.md" });
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        await h.engine.push();
+
+        expect(await files(h.vault)).toEqual(
+          new Map([
+            ["draft.md", "one\ntwo\n"],
+            ["plan.md", "another note\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["draft.md", "doc"],
+            ["plan.md", "other"],
+          ]),
+        );
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["draft.md", "one\ntwo\n"],
+            ["plan.md", "another note\n"],
+          ]),
+        );
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(await reported(h)).toEqual([]);
+      });
+
+      it("lets a parked document follow its file a local rename moved, the other document untouched", async () => {
+        const h = await parkedWithPendingEdit();
+        await h.vault.rename("plan.md", "notes.md");
+
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        await h.engine.push();
+        h.server.commit({ documentId: "doc", path: "draft.md" });
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        await h.engine.push();
+
+        // The local rename wins over the remote one, with the edit: the other document keeps its path and id.
+        expect(await files(h.vault)).toEqual(
+          new Map([
+            ["notes.md", "one\ntwo (edited)\n"],
+            ["plan.md", "another note\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["notes.md", "doc"],
+            ["plan.md", "other"],
+          ]),
+        );
+        expect(h.server.liveFiles().get("notes.md")).toBe("one\ntwo (edited)\n");
+        expect(h.server.liveFiles().get("plan.md")).toBe("another note\n");
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+      });
+
+      it("brings the parked document back at its legal name with its pending delete, the other document untouched", async () => {
+        const h = await parkedWithPendingEdit(windowsDevice(), true);
+
+        await h.engine.pull();
+        await h.engine.push();
+        h.server.commit({ documentId: "doc", path: "draft.md" });
+        await h.engine.pull();
+        await h.engine.push();
+        await h.engine.pull();
+        await h.engine.push();
+
+        // The remote rename wins over the concurrent local delete (SPEC.md §6.3): the document stays, at its new path.
+        expect(await files(h.vault)).toEqual(
+          new Map([
+            ["draft.md", "one\ntwo\n"],
+            ["plan.md", "another note\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["draft.md", "doc"],
+            ["plan.md", "other"],
+          ]),
+        );
+        expect(h.server.liveFiles().get("plan.md")).toBe("another note\n");
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+      });
+
       it("commits a pending local rename and edit as the document's own, and writes the other document at the old path", async () => {
         const h = windowsDevice();
         h.server.commit({ documentId: "doc", path: "plan.md", content: "one\ntwo\n" });

@@ -14,6 +14,7 @@ import { renameOntoDeletedNotePath } from "./scenarios";
 import { bothRenameOntoVacatedPath } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
+import { parkedEditAtReusedPath } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -1232,6 +1233,37 @@ describe.runIf(suites.has("scenarios"))("scripted crash while a refused create m
     for (const path of others) expect(result.vaults[1]?.get(path), trace).toBe("mine\n");
     expect(result.vaults[0], trace).toEqual(result.vaults[1]);
     // Nothing stays pending: the second engine's last push had nothing left to do.
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted parked note's edit against another note at its old path (#391, #398)", () => {
+  it.each(["kept-file", "deleted-file"] as const)("keeps the other note at plan.md and brings the parked note back at draft.md under its own id (%s)", async (variant) => {
+    const result = await parkedEditAtReusedPath(environment, variant);
+    const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("plan.md");
+    expect(note, trace).toBeDefined();
+    // The parked note is back at its new name under its own id, and the other note keeps plan.md under another.
+    expect(result.documents.get("draft.md"), trace).toBe(note);
+    expect(result.documents.get("plan.md"), trace).toBeDefined();
+    expect(result.documents.get("plan.md"), trace).not.toBe(note);
+    const expected = new Map([
+      ["draft.md", "one\ntwo\n"],
+      ["plan.md", "another note\n"],
+    ]);
+    if (variant === "kept-file") {
+      // The edit the user kept is live as a conflict copy.
+      const copyPaths = [...result.documents.keys()].filter((path) => !expected.has(path));
+      expect(copyPaths, trace).toEqual([expect.stringMatching(/^plan \(conflict .*\)\.md$/)]);
+      expected.set(copyPaths[0] ?? "", "one\ntwo (edited)\n");
+    }
+    expect(result.documents.size, trace).toBe(expected.size);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.tombstoned, trace).toEqual([]);
+    // Nothing stays pending: the Windows engine's last push had nothing left to do.
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
