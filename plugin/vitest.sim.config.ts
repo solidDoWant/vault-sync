@@ -55,6 +55,7 @@ export default defineConfig({
     provide: {
       sim: {
         serverUrl: required("VAULT_SYNC_SIM_SERVER_URL"),
+        limitedServerUrl: required("VAULT_SYNC_SIM_LIMITED_SERVER_URL"),
         controlUrl: required("VAULT_SYNC_SIM_CONTROL_URL"),
         seeds,
         steps: integer("SIM_STEPS", 1000),
