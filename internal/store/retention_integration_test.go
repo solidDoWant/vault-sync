@@ -64,15 +64,15 @@ func (fixture *commitFixture) purge(t *testing.T, policy store.RetentionPolicy) 
 	total := 0
 
 	for range 10 {
-		refs, err := queries.RetentionCandidates(t.Context(), policy, 100)
+		scan, err := queries.RetentionCandidates(t.Context(), policy, 100)
 		require.NoError(t, err)
 
-		if len(refs) == 0 {
+		if len(scan.Documents) == 0 {
 			return total
 		}
 
-		for _, ref := range refs {
-			purged, err := queries.InVault(ref.VaultID).PurgeRevisions(t.Context(), ref.DocumentID, policy, 1000)
+		for _, ref := range scan.Documents {
+			purged, _, err := queries.InVault(ref.VaultID).PurgeRevisions(t.Context(), ref.DocumentID, policy, 1000)
 			require.NoError(t, err)
 
 			total += purged
@@ -232,14 +232,15 @@ func TestRetentionNeverPurgesHeads(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrNotFound, "a tombstone that is not the head is purged")
 
 	// Nothing is left to purge, however often retention runs.
-	refs, err := store.New(fixture.pool).RetentionCandidates(t.Context(), defaultPolicy, 100)
+	scan, err := store.New(fixture.pool).RetentionCandidates(t.Context(), defaultPolicy, 100)
 	require.NoError(t, err)
-	assert.Empty(t, refs)
+	assert.Empty(t, scan.Documents)
 
 	for _, head := range []store.Revision{lone[0], live, goneHead, deletedHead} {
-		purged, err := fixture.vault.PurgeRevisions(t.Context(), head.DocumentID, defaultPolicy, 1000)
+		purged, done, err := fixture.vault.PurgeRevisions(t.Context(), head.DocumentID, defaultPolicy, 1000)
 		require.NoError(t, err)
 		assert.Zero(t, purged)
+		assert.True(t, done, "nothing is left to purge")
 	}
 }
 
@@ -377,15 +378,17 @@ func TestPurgeSkipsALockedDocument(t *testing.T) {
 	_, err = tx.Exec(t.Context(), `SELECT 1 FROM documents WHERE id = $1 FOR NO KEY UPDATE`, documentID)
 	require.NoError(t, err)
 
-	purged, err := fixture.vault.PurgeRevisions(t.Context(), documentID, defaultPolicy, 1000)
+	purged, done, err := fixture.vault.PurgeRevisions(t.Context(), documentID, defaultPolicy, 1000)
 	require.NoError(t, err)
 	assert.Zero(t, purged, "the locked document is skipped")
+	assert.False(t, done, "a skipped document is not done")
 
 	require.NoError(t, tx.Rollback(t.Context()))
 
-	purged, err = fixture.vault.PurgeRevisions(t.Context(), documentID, defaultPolicy, 1000)
+	purged, done, err = fixture.vault.PurgeRevisions(t.Context(), documentID, defaultPolicy, 1000)
 	require.NoError(t, err)
 	assert.Equal(t, 1, purged)
+	assert.True(t, done)
 }
 
 // A purge is bounded per transaction; the rest is purged by later calls.
@@ -399,10 +402,14 @@ func TestPurgeIsBounded(t *testing.T) {
 
 	revisions := fixture.history(t, "a.md", created)
 
-	for _, want := range []int{2, 2, 1, 0} {
-		purged, err := fixture.vault.PurgeRevisions(t.Context(), revisions[0].DocumentID, defaultPolicy, 2)
+	for index, want := range []struct {
+		purged int
+		done   bool
+	}{{2, false}, {2, false}, {1, true}, {0, true}} {
+		purged, done, err := fixture.vault.PurgeRevisions(t.Context(), revisions[0].DocumentID, defaultPolicy, 2)
 		require.NoError(t, err)
-		assert.Equal(t, want, purged)
+		assert.Equal(t, want.purged, purged, "call %d", index)
+		assert.Equal(t, want.done, done, "call %d", index)
 	}
 
 	assert.Equal(t, revisionIDsOf(revisions, 5), fixture.retained(t, revisions[0].DocumentID))

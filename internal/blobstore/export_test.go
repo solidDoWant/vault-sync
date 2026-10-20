@@ -25,6 +25,12 @@ func ComposeSlotsHeld(objects *Objects) int {
 	return len(objects.compose)
 }
 
+// ReplicaSlotsTaken returns how many times a composition took one of the
+// replica's compose slots.
+func ReplicaSlotsTaken(objects *Objects) int64 {
+	return objects.replicaSlotsTaken.Load()
+}
+
 // ComposeWaiting returns how many compositions wait for a compose slot.
 func ComposeWaiting(objects *Objects) int {
 	return int(objects.waiting.Load())
