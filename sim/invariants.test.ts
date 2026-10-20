@@ -293,6 +293,17 @@ describe("checkPhantomDeletes", () => {
       expect(phantoms([revision({}), tombstone], lostRename({ then: engineMoved }))).toEqual(reported);
     });
 
+    it("reports it when the engine had committed the rename before the crash", () => {
+      // d1 at b.md (seq 2) before the app was killed (head seq 2): the rename was not lost, so tombstoning d1 while the user still had b.md is a phantom delete, whatever the user did with the file later.
+      const committed = [revision({}), revision({ revisionId: "r2", seq: 2n, path: "b.md" }), revision({ revisionId: "r3", seq: 3n, path: "b.md", deleted: true })];
+      const deletedLater = (ledger: UserLedger) => {
+        ledger.deleted("b.md", 3n);
+      };
+      expect(phantoms(committed, lostRename({ then: deletedLater, crash: 2n }))).toEqual(["e1 deleted d1 at b.md (seq 3, r3) although its user never deleted it"]);
+      // Without that commit, the same delete excuses it.
+      expect(phantoms([revision({}), revision({ revisionId: "r3", seq: 3n, path: "a.md", deleted: true })], lostRename({ then: deletedLater, crash: 2n }))).toEqual([]);
+    });
+
     // Seed 100117 (#531): two renames lost to one crash, the second onto the path the first vacated.
     describe("given a rename chain lost to a crash", () => {
       // The user renamed c.md (d2, content cc) to e.md, then a.md (d1, content aa) onto the vacated c.md, then the app was killed.
@@ -318,6 +329,44 @@ describe("checkPhantomDeletes", () => {
         expect(phantoms([d2, d3, revision({}), tombstone, { ...landed, documentId: "d3" }], chain())).toEqual(reported);
         // The second rename's content must still be what landed.
         expect(phantoms([d2, revision({}), tombstone, { ...landed, contentHash: "dd" }], chain())).toEqual(reported);
+      });
+
+      // #540: the earlier rename must have moved the document away from the create's path, before the second rename, and been lost to the same crash.
+      const engines = (steps: (ledger: UserLedger) => void) => {
+        const ledger = new UserLedger();
+        steps(ledger);
+        return [{ name: "e1", deviceId: "engine", deletedDocuments: ledger.deletedDocuments, platform: ledger.platform, renames: ledger.renames, crashes: ledger.crashes }];
+      };
+
+      it("reports it when the rename that moved the document moved it from another path than the create's", () => {
+        // d2 was never at c.md.
+        const elsewhere = engines((ledger) => {
+          ledger.renamed("x.md", "e.md", new Set(["d2"]), "cc");
+          ledger.renamed("a.md", "c.md", new Set(["d1"]), "aa");
+          ledger.crashed(1n);
+        });
+        expect(phantoms([{ ...d2, path: "x.md" }, revision({}), tombstone, landed], elsewhere)).toEqual(reported);
+      });
+
+      it("reports it when the rename that moved the document was lost to an earlier crash", () => {
+        // The restart after that crash rescanned the vault before the second rename.
+        const earlierCrash = engines((ledger) => {
+          ledger.renamed("c.md", "e.md", new Set(["d2"]), "cc");
+          ledger.crashed(0n);
+          ledger.renamed("a.md", "c.md", new Set(["d1"]), "aa");
+          ledger.crashed(1n);
+        });
+        expect(phantoms([d2, revision({}), tombstone, landed], earlierCrash)).toEqual(reported);
+      });
+
+      it("reports it when only a later rename moved the document", () => {
+        // When the user renamed a.md onto c.md, d2's file was still there.
+        const later = engines((ledger) => {
+          ledger.renamed("a.md", "c.md", new Set(["d1"]), "aa");
+          ledger.renamed("c.md", "e.md", new Set(["d2"]), "aa");
+          ledger.crashed(1n);
+        });
+        expect(phantoms([d2, revision({}), tombstone, landed], later)).toEqual(reported);
       });
     });
 

@@ -77,6 +77,8 @@ export interface UserChange {
 export interface UserRename {
   /** The documents the engine could take the renamed file for: its journal's at the old path, as the user's delete records them. */
   documents: ReadonlySet<string>;
+  /** The path it moved the file away from, by path key on a case-insensitive platform. */
+  from: string;
   /** Every path the file had since, by path key on a case-insensitive platform. */
   paths: Set<string>;
   /** SHA-256 (hex) of every content the file held since. */
@@ -123,13 +125,14 @@ export class UserLedger {
 
   /** The user renamed the file at `from`, which the engine could take for `documents`, to `to`, where it holds `hash`. */
   renamed(from: string, to: string, documents: ReadonlySet<string>, hash: string): void {
-    const key = pathMatcher(this.platform)(to);
+    const match = pathMatcher(this.platform);
+    const key = match(to);
     for (const rename of this.at(from)) {
       rename.current = key;
       rename.paths.add(key);
       rename.hashes.add(hash);
     }
-    this.renames.push({ documents, paths: new Set([key]), hashes: new Set([hash]), current: key, deletedAt: undefined });
+    this.renames.push({ documents, from: match(from), paths: new Set([key]), hashes: new Set([hash]), current: key, deletedAt: undefined });
   }
 
   /**
@@ -282,13 +285,16 @@ export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevic
  * crash (#167 item 2): its user renamed the document's file away, the app was
  * killed after that and before the tombstone was committed, and either the
  * user deleted the renamed file (renamed again or not) after the tombstone,
- * so no create is owed (#531), or after the crash the engine committed the renamed file (a
+ * so no create is owed (#531), as long as the engine had not committed the
+ * document at a path the renamed file had by the crash (then the crash did
+ * not lose the rename), or after the crash the engine committed the renamed file (a
  * content it held, at a path the user's renames gave it) as another
  * document. That document is a new one (its first revision); or one whose
  * file the user deleted, which the engine took the file for at that path
- * (#254); or one whose file an earlier rename, lost to the same crash, moved
- * away from that path, which the engine took the file for the same way
- * (#531). The user sees the same file at the same path; only the document id
+ * (#254); or one whose file an earlier rename moved away from that path,
+ * which the engine took the file for the same way (#531): a rename before
+ * this one with no crash between them, which the engine had not committed by
+ * the crash, so lost to the same crash (#540). The user sees the same file at the same path; only the document id
  * changed. Nothing else is excused: not a rename the running engine lost,
  * not a delete without that create or the user's delete.
  */
@@ -298,25 +304,28 @@ function renameLostToCrash(tombstone: FeedRevision, engine: EngineDeletes, feed:
     if (!rename.documents.has(tombstone.documentId)) return false;
     return engine.crashes.some((crash) => {
       if (crash.renames <= index || crash.serverSeq >= tombstone.seq) return false;
-      // Deleted after the tombstone was committed, when the engine no longer knew the document for the file (before, the user's delete records it).
-      if (rename.deletedAt !== undefined && rename.deletedAt >= tombstone.seq) return true;
-      // An earlier rename of the document's file that the engine had not committed by the crash: lost to it too.
-      const movedAwayByLostRename = (document: string) =>
-        engine.renames.slice(0, index).some(
-          (earlier) =>
-            earlier.documents.has(document) &&
-            !feed.some((revision) => revision.documentId === document && revision.deviceId === engine.deviceId && revision.seq <= crash.serverSeq && earlier.paths.has(key(revision.path))),
-        );
-      return feed.some(
-        (create) =>
-          create.deviceId === engine.deviceId &&
-          !create.deleted &&
-          create.documentId !== tombstone.documentId &&
-          rename.hashes.has(create.contentHash) &&
-          [create.path, ...copiedFrom(create.path, engine.name)].some((path) => rename.paths.has(key(path))) &&
-          create.seq > crash.serverSeq &&
-          (firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId) || movedAwayByLostRename(create.documentId)),
-      );
+      // Whether the engine had committed `document` at one of `paths` by the crash: then the crash did not lose the rename that took its file there.
+      const committed = (document: string, paths: ReadonlySet<string>) =>
+        feed.some((revision) => revision.documentId === document && revision.deviceId === engine.deviceId && revision.seq <= crash.serverSeq && paths.has(key(revision.path)));
+      // Deleted after the tombstone was committed, when the engine no longer knew the document for the file (before, the user's delete records it), and the rename was lost: the engine had not committed it.
+      if (rename.deletedAt !== undefined && rename.deletedAt >= tombstone.seq) return !committed(tombstone.documentId, rename.paths);
+      // A rename before this one, with no crash between them, that moved the document's file away from `path` and that the engine had not committed by the crash: lost to it too.
+      const movedAwayByLostRename = (document: string, path: string) =>
+        engine.renames
+          .slice(0, index)
+          .some(
+            (earlier, earlierIndex) =>
+              earlier.documents.has(document) &&
+              earlier.from === path &&
+              !engine.crashes.some((between) => between.renames > earlierIndex && between.renames <= index) &&
+              !committed(document, earlier.paths),
+          );
+      return feed.some((create) => {
+        if (create.deviceId !== engine.deviceId || create.deleted || create.documentId === tombstone.documentId || create.seq <= crash.serverSeq || !rename.hashes.has(create.contentHash)) return false;
+        const paths = [create.path, ...copiedFrom(create.path, engine.name)].map(key).filter((path) => rename.paths.has(path));
+        if (paths.length === 0) return false;
+        return firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId) || paths.some((path) => movedAwayByLostRename(create.documentId, path));
+      });
     });
   });
 }
