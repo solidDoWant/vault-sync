@@ -286,12 +286,14 @@ nix develop -c make release VERSION=1.2.3 PUSH_ALL=true  # releases
 
 `make release` checks the version and `gh auth status` first (and, for a real release, that the tree is clean and the tag is new), then runs:
 
-1. `make build-images`: builds the image with Nix, runs `govulncheck -mode=binary` on its binary (a known vulnerability fails the build), loads it into Docker and tags it `ghcr.io/soliddowant/vault-sync:<VERSION>`; with `PUSH_ALL=true` also `:latest`, and pushes both.
+1. `make build-images`: builds the image with Nix, runs `govulncheck -mode=binary` on its binary (a known vulnerability fails the build), loads it into Docker and tags it `ghcr.io/soliddowant/vault-sync:<VERSION>`; with `PUSH_ALL=true` pushes it, and also tags and pushes `:latest` unless the version is a pre-release.
 2. `make helm`: packages the chart as version `<VERSION>` into `bin/helm/`; with `PUSH_ALL=true` pushes it to `oci://ghcr.io/soliddowant/charts`.
 3. `make plugin-release-assets`: builds the plugin and collects `main.js`, `manifest.json` (its `version` set to `<VERSION>`) and `styles.css` in `bin/release/`.
-4. Tags `HEAD` as `<VERSION>`, pushes the tag and creates the GitHub release `<VERSION>` with generated notes and the three plugin files attached (a version with `-` is marked as a pre-release). In a dry run these commands are only printed.
+4. Tags `HEAD` as `<VERSION>`, pushes the tag and creates the GitHub release `<VERSION>` with generated notes and the three plugin files attached (a version with `-` is marked as a pre-release and never as the latest release). In a dry run these commands are only printed.
 
 The tag has no `v` because Obsidian and BRAT require the release tag, the release name and the released `manifest.json` version to be the same string. The plugin is installed from these releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat): add the beta plugin `solidDoWant/vault-sync`, and BRAT downloads the three files from the latest release.
+
+**Agent release candidates.** The `release-manager` agent (`.claude/agents/release-manager.md`) cuts **release candidates only** (`0.N.0-rc.K`) when a phase closes or on a `/pm release` instruction, after its own gate checks. They are GitHub pre-releases, never "latest", and never move `:latest`. To promote one, cut the final version from the same commit yourself: check out the candidate's tag and run `make release VERSION=0.N.0 PUSH_ALL=true`.
 
 Pushing needs credentials for `ghcr.io` in the Docker daemon (`docker login ghcr.io`) and for Helm (`helm registry login ghcr.io`).
 
