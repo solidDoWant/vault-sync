@@ -237,6 +237,18 @@ const maxCommitAttempts = 3;
 const maxConflictNameAttempts = 100;
 
 /**
+ * A document a merge rebases onto its remote revision (applyMerge), as
+ * freeConflictPath sees it: `file` is its own file that the merge moves away
+ * from or deletes, if there is one, and `result` the path the merge result
+ * goes to, or null for a delete.
+ */
+interface MergedDocument {
+  documentId: string;
+  file: string | undefined;
+  result: string | null;
+}
+
+/**
  * The platform-independent sync engine (SPEC.md §4). It pulls the change feed
  * from the journal's cursor and applies it to the vault without ever
  * overwriting unsynced local edits (§6.1, §8), and pushes local changes with
@@ -1141,8 +1153,13 @@ export class SyncEngine {
     if (holder !== undefined && holder.documentId !== remote.documentId) return false;
     const copyPaths: string[] = [];
     // The document's own file, which the result moves away from (or
-    // deletes): it takes no name from a conflict copy (#319).
-    const leaving = current !== null && (outcome.content === null || outcome.path !== local.path) ? local.path : undefined;
+    // deletes), and its synced path, where the result does not go: neither
+    // takes a name from a conflict copy (#319, #299).
+    const merged: MergedDocument = {
+      documentId: remote.documentId,
+      file: current !== null && (outcome.content === null || outcome.path !== local.path) ? local.path : undefined,
+      result: outcome.content === null ? null : outcome.path,
+    };
     try {
       // A file in the way at the result's new path. If it is no document's, it
       // was created here concurrently with the remote document's move there:
@@ -1162,7 +1179,7 @@ export class SyncEngine {
         if (owner !== undefined && owner.documentId !== remote.documentId) return false;
         if (remaining !== null && !sameContent(remaining, outcome.content)) {
           if (await this.belongsToDocument(outcome.path)) return false;
-          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining }, leaving);
+          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining }, merged);
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
           this.changes.paths.add(copyPath);
@@ -1182,7 +1199,7 @@ export class SyncEngine {
         merging: { path: outcome.path, contentHash: outcome.content === null ? null : sha256Hex(outcome.content) },
       });
       if (outcome.conflict !== undefined) {
-        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict, leaving);
+        const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict, merged);
         if (copyPath === null) return false;
         copyPaths.push(copyPath);
       }
@@ -1291,10 +1308,10 @@ export class SyncEngine {
    * crash is finished under the same name rather than written twice. Returns
    * the copy's path, or null if no name fits the path limits: the conflict is
    * then logged without a copy and nothing is written, so the local version
-   * stays where it is. `leaving` is the path of the document's own file that
-   * the merge moves away or deletes (see freeConflictPath).
+   * stays where it is. `merged` is the document the merge rebases (see
+   * freeConflictPath).
    */
-  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, leaving?: string): Promise<string | null> {
+  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, merged?: MergedDocument): Promise<string | null> {
     const hash = sha256Hex(conflict.content);
     const logged = (await this.journal.listConflicts()).filter((record) => record.documentId === remote.documentId && record.copyHash === hash);
     let copyPath: string | null = null;
@@ -1307,7 +1324,7 @@ export class SyncEngine {
       }
     }
     if (copyPath === null) {
-      copyPath = await this.freeConflictPath(localPath, undefined, leaving === undefined ? undefined : { documentId: remote.documentId, path: leaving });
+      copyPath = await this.freeConflictPath(localPath, undefined, merged);
       const unresolved = copyPath === null && logged.some((record) => record.copyPath === null && record.remoteRevisionId === remote.revisionId);
       if (!unresolved) {
         await this.journal.putConflict(this.conflictRecord(remote.documentId, remote.path, conflict.reason, copyPath, hash, remote.revisionId));
@@ -1339,19 +1356,21 @@ export class SyncEngine {
    * would be refused again (#243). That also keeps a copy off a file of
    * another spelling on a case-insensitive platform.
    *
-   * `leaving` is a document's own file that the caller moves away from its
-   * path or deletes (a merge of the document's remote rename): the server
-   * already has the document elsewhere, so that file takes no name. Counted,
-   * a file `NOTES` would leave no free name in `notes/` for the copy of a
-   * file in the way of the document's move to `notes/c.md`, and the move
-   * would wait forever (#319).
+   * `merged` is the document a merge rebases onto its remote revision: the
+   * server already has it where the remote revision puts it, so neither its
+   * own file that the merge moves away from or deletes nor its synced path,
+   * where the result does not go, takes a name. Counted, a file `NOTES` would
+   * leave no free name in `notes/` for the copy of a file in the way of the
+   * document's move to `notes/c.md`, and the move would wait forever (#319).
+   * So would its synced path `NOTES` once its file is gone, or once a local
+   * rename moved the file into `notes/` (#299).
    */
-  private async freeConflictPath(path: string, folder?: string, leaving?: { documentId: string; path: string }): Promise<string | null> {
+  private async freeConflictPath(path: string, folder?: string, merged?: MergedDocument): Promise<string | null> {
     const date = this.now();
     const taken = new Set<string>();
     for (const operation of await this.journal.listPending()) taken.add(pathKey(operation.path));
     for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(pathKey(record.copyPath));
-    const files = await this.knownFileKeys(leaving);
+    const files = await this.knownFileKeys(merged);
     // A folder is any file's ancestor.
     const folders = new Set<string>();
     for (const file of files) for (const ancestor of ancestors(file)) folders.add(ancestor);
@@ -1374,12 +1393,15 @@ export class SyncEngine {
    * The path keys of every file this device knows of: the vault's files, the
    * live documents the journal has, and the paths of remote revisions it
    * holds deferred (documents the server has there, though this vault does
-   * not show them). Without `leaving`'s file and its document's state there.
+   * not show them). Without `merged`'s file that its merge moves away, nor
+   * its synced path unless the merge result goes there.
    */
-  private async knownFileKeys(leaving?: { documentId: string; path: string }): Promise<Set<string>> {
-    const keys = new Set((await this.vault.list()).filter((path) => path !== leaving?.path).map(pathKey));
+  private async knownFileKeys(merged?: MergedDocument): Promise<Set<string>> {
+    const keys = new Set((await this.vault.list()).filter((path) => path !== merged?.file).map(pathKey));
     for (const state of await this.journal.listDocuments()) {
-      if (!state.deleted && !(state.documentId === leaving?.documentId && state.path === leaving.path)) keys.add(pathKey(state.path));
+      if (state.deleted) continue;
+      if (state.documentId === merged?.documentId && (merged.result === null || pathKey(state.path) !== pathKey(merged.result))) continue;
+      keys.add(pathKey(state.path));
     }
     for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(pathKey(deferred.revision.path));
     return keys;
