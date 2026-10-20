@@ -287,7 +287,7 @@ export class SyncEngine {
   private readonly maxDownloadBytes: bigint;
   /** Maps a path to what the vault takes as the same file: its path key on a case-insensitive platform. */
   private readonly fileKey: (path: string) => string;
-  private readonly echoes = new EchoSuppressor();
+  private readonly echoes: EchoSuppressor;
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
   /** Documents being merged right now, so resolving one first never loops back to another. */
@@ -347,6 +347,7 @@ export class SyncEngine {
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.fileKey = this.pathRules.platform === "posix" ? (path) => path : pathKey;
+    this.echoes = new EchoSuppressor(this.fileKey);
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
