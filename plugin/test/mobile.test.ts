@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import { describe, expect, it } from "vitest";
 
+import { releaseExternals } from "../scripts/externals";
+
 // What lets the plugin install and load on Obsidian mobile (Android), which
 // the desktop and emulated-mobile e2e cannot show: both run on Electron, with
 // Node available (docs/testing/android.md).
@@ -25,8 +27,11 @@ describe("the plugin on Obsidian mobile", () => {
 
   it("loads no module that only desktop has (Node built-ins, Electron)", async () => {
     // Bundles src/main.ts as the release build does, leaving every module the
-    // release build leaves to Obsidian unbundled, and lists what the bundle
-    // still loads at runtime. On Android, `require` has only Obsidian's own.
+    // release build leaves to Obsidian (the same list) unbundled, and lists
+    // what the bundle still loads at runtime. On Android, `require` has only
+    // Obsidian's own. The `node:` spellings of the built-ins are left
+    // unbundled too, only so an import of one is listed here: the release
+    // build fails on it instead.
     const result = await build({
       absWorkingDir: pluginDir,
       entryPoints: ["src/main.ts"],
@@ -36,7 +41,7 @@ describe("the plugin on Obsidian mobile", () => {
       format: "cjs",
       target: "es2022",
       logLevel: "silent",
-      external: ["obsidian", "electron", "@codemirror/*", "@lezer/*", ...builtinModules, ...builtinModules.map((name) => `node:${name}`)],
+      external: [...releaseExternals, ...builtinModules.map((name) => `node:${name}`)],
     });
     const loaded = new Set(
       Object.values(result.metafile.outputs)

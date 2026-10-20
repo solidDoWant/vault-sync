@@ -357,6 +357,44 @@ describe("SyncSession", () => {
       expect(await files(vault)).toEqual(new Map([["a.md", "first"]]));
     });
 
+    it("refuses the stopped engine's next vault call", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "a", path: "a.md", content: "remote" });
+      const inner = new InMemoryVault();
+      // Holds the pull's look at a.md: the engine's next step is the vault
+      // write of a.md, with no journal or server call in between.
+      let release: () => void = () => undefined;
+      let held = false;
+      const vaultCalls: string[] = [];
+      const vault = new Proxy(inner, {
+        get: (target, property, receiver) => {
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (typeof value !== "function" || property === "watch") return value;
+          return async (...args: unknown[]) => {
+            vaultCalls.push(`${String(property)} ${String(args[0])}`);
+            if (property === "read" && args[0] === "a.md" && !held) {
+              held = true;
+              await new Promise<void>((resolve) => (release = resolve));
+            }
+            return (value as (...values: unknown[]) => unknown).apply(target, args);
+          };
+        },
+      });
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      void running.start();
+      await vi.waitFor(() => {
+        expect(held).toBe(true);
+      });
+
+      const stopping = running.stop();
+      const callsAtStop = vaultCalls.length;
+      release();
+      await stopping;
+
+      expect(vaultCalls.slice(callsAtStop)).toEqual([]);
+      expect(await files(inner)).toEqual(new Map());
+    });
+
     it("waits for an automatic push's local step in progress before it resolves", async () => {
       const server = new InMemoryServer();
       const vault = new InMemoryVault();
