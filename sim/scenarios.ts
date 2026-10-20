@@ -2778,3 +2778,84 @@ export async function interruptedConflictMove(
   const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
   return { ...result, vaults, documents: await liveDocuments(run), copy, pushes };
 }
+
+/**
+ * A parked note's edit, still pending at its old path, against another note
+ * the server puts there (#391, #398). Both engines sync `plan.md`. The second
+ * engine follows Windows rules; its user edits `plan.md`, and while that
+ * push is committing the first (POSIX) engine renames the note to
+ * `plan?.md`, which Windows cannot hold: the second engine parks the note
+ * (unmaterializable, SPEC.md §8) with its edit pending at `plan.md`. With
+ * `deleted-file` its user then deletes `plan.md`. The first engine creates
+ * another note at `plan.md`, and later renames the parked note to
+ * `draft.md`. The other note must stay live at `plan.md` under its own id,
+ * the renamed note must come back at `draft.md` under its id, and with
+ * `kept-file` the edit must be live as a conflict copy (SPEC.md §2
+ * principle 1); nothing may stay pending or deferred.
+ */
+export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "kept-file" | "deleted-file"): Promise<RenameOntoLocalFolderResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "windows"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const sync = async (engine: typeof first) => {
+    await pull(engine);
+    await push(engine);
+    await pull(engine);
+    await push(engine);
+  };
+
+  log(await first.edit("plan.md", encoder.encode(textLines("one", "two"))));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.edit("plan.md", encoder.encode(textLines("one", "two (edited)"))));
+  log(second.startPush());
+  await settle();
+  for (let delivery = 0; run.context.network.pendingRequest(second.index) !== "CommitRevision"; delivery++) {
+    if (delivery > 100) throw new Error("the second engine never sent CommitRevision");
+    await run.step({ kind: "deliver-request", client: second.index });
+    await run.step({ kind: "deliver-response", client: second.index });
+  }
+  // The rename commits just before the second engine's CommitRevision reaches the server.
+  log(await first.move("plan.md", "plan?.md"));
+  await push(first);
+  await run.drain(second.index);
+  if (variant === "deleted-file") log(await second.remove("plan.md"));
+
+  log(await first.edit("plan.md", encoder.encode(textLines("another note"))));
+  await push(first);
+  await sync(second);
+
+  log(await first.move("plan?.md", "draft.md"));
+  await push(first);
+  await sync(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = (await Promise.all([first, second].map((engine) => engine.conflicts())))
+    .flat()
+    .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
+}
