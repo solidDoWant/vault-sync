@@ -522,11 +522,14 @@ type History struct {
 	Revisions []Revision
 	// HasMore reports whether older revisions exist.
 	HasMore bool
+	// DeviceNames maps the id of each device that committed one of
+	// Revisions to its registered name.
+	DeviceNames map[uuid.UUID]string
 }
 
 // DocumentHistory returns the document documentID and up to limit of its
 // revisions with seq < before (all of them if before is zero), newest first,
-// read from one snapshot. It returns ErrNotFound if the document does not
+// and the names of the devices that committed them, read from one snapshot. It returns ErrNotFound if the document does not
 // exist in this vault.
 func (vault *VaultStore) DocumentHistory(ctx context.Context, documentID uuid.UUID, before int64, limit int) (History, error) {
 	var history History
@@ -552,11 +555,45 @@ func (vault *VaultStore) DocumentHistory(ctx context.Context, documentID uuid.UU
 		history.HasMore = len(revisions) > limit
 		history.Revisions = revisions[:min(len(revisions), limit)]
 
-		return nil
+		history.DeviceNames, err = deviceNames(ctx, tx, history.Revisions)
+
+		return err
 	})
 	if err != nil {
 		return History{}, err
 	}
 
 	return history, nil
+}
+
+// deviceNames returns the names of the devices that committed revisions.
+// It reads only those devices, so it names no device without a revision the
+// caller may read.
+func deviceNames(ctx context.Context, tx pgx.Tx, revisions []Revision) (map[uuid.UUID]string, error) {
+	ids := make([]uuid.UUID, 0, len(revisions))
+	for _, revision := range revisions {
+		ids = append(ids, revision.DeviceID)
+	}
+
+	rows, err := tx.Query(ctx, `SELECT id, name FROM devices WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read device names: %w", err)
+	}
+
+	type deviceName struct {
+		ID   uuid.UUID
+		Name string
+	}
+
+	devices, err := pgx.CollectRows(rows, pgx.RowToStructByPos[deviceName])
+	if err != nil {
+		return nil, fmt.Errorf("read device names: %w", err)
+	}
+
+	names := make(map[uuid.UUID]string, len(devices))
+	for _, device := range devices {
+		names[device.ID] = device.Name
+	}
+
+	return names, nil
 }

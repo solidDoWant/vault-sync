@@ -1024,5 +1024,36 @@ describe("SyncSession", () => {
       expect(await history.documentAt("elsewhere.md")).toBeUndefined();
       await running.stop();
     });
+
+    it("restores a deleted file at another path when another file took its own (#420)", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+      await vault.write("plan.md", bytes("old plan"));
+      await running.syncNow();
+      const history = running.history();
+      if (history === undefined) throw new Error("no history");
+      const documentId = await history.documentAt("plan.md");
+      if (documentId === undefined) throw new Error("no document at plan.md");
+      await vault.delete("plan.md");
+      await running.syncNow();
+      server.commit({ documentId: "new-plan", path: "plan.md", content: "new plan" });
+      await running.syncNow();
+      const [tombstone] = (await history.history(documentId)).entries;
+      if (tombstone === undefined) throw new Error("no tombstone");
+
+      await expect(history.restore(tombstone)).rejects.toMatchObject({ reason: "path-taken" });
+      await history.restore(tombstone, undefined, "plan (restored).md");
+
+      expect(await files(vault)).toEqual(
+        new Map([
+          ["plan.md", "new plan"],
+          ["plan (restored).md", "old plan"],
+        ]),
+      );
+      expect(await history.documentAt("plan (restored).md")).toBe(documentId);
+      await running.stop();
+    });
   });
 });

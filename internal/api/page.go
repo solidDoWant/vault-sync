@@ -11,7 +11,8 @@ import (
 
 // MinResponseLimitBytes is the smallest send limit the server may run with:
 // a ListChanges or GetDocumentHistory response carrying one revision, with
-// a MaxPathBytes path and every other field at its largest, and a
+// a MaxPathBytes path and every other field at its largest (in history,
+// with its device's MaxDeviceNameBytes name), and a
 // ListVaults response carrying one vault, with a MaxVaultNameBytes name,
 // fit it in either encoding (binary protobuf or JSON), compressed or not.
 // Every page holds at least one entry, so a smaller limit could make a page
@@ -61,14 +62,19 @@ func isJSONContentType(contentType string) bool {
 	return strings.HasSuffix(strings.TrimSpace(mediaType), "json")
 }
 
-// admit reports whether entry, a repeated message field of the response,
-// fits the page, and charges it to the budget if so.
-func (budget *pageBudget) admit(entry proto.Message) bool {
+// admit reports whether entries, repeated message fields of the response
+// that go into the page together (a revision and the name of its device,
+// say), fit the page, and charges them to the budget if so.
+func (budget *pageBudget) admit(entries ...proto.Message) bool {
 	if !budget.limited {
 		return true
 	}
 
-	size := budget.entryBytes(entry)
+	size := 0
+	for _, entry := range entries {
+		size += budget.entryBytes(entry)
+	}
+
 	if budget.admitted > 0 && size > budget.remaining {
 		return false
 	}

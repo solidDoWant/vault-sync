@@ -7,6 +7,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -53,9 +54,18 @@ func TestPagesOfRevisionsFitTheSendLimitInEveryEncoding(t *testing.T) {
 
 	document := store.Document{ID: uuid.New(), VaultID: uuid.New(), Kind: "markdown", HeadRevID: revisions[0].ID, CreatedAt: createdAt}
 
+	// Every revision from its own device, with the name JSON expands most,
+	// so each one also brings a device name into the page.
+	deviceNames := make(map[uuid.UUID]string, len(revisions))
+	for _, revision := range revisions {
+		deviceNames[revision.DeviceID] = strings.Repeat(`"`, MaxDeviceNameBytes)
+	}
+
 	responses := []struct {
 		name string
 		page func(header http.Header, limit int) (proto.Message, int)
+		// named is whether each entry also brings a device name.
+		named bool
 	}{
 		{
 			name: "ListChangesResponse",
@@ -68,10 +78,11 @@ func TestPagesOfRevisionsFitTheSendLimitInEveryEncoding(t *testing.T) {
 		{
 			name: "GetDocumentHistoryResponse",
 			page: func(header http.Header, limit int) (proto.Message, int) {
-				response := historyPage(header, limit, store.History{Document: document, Revisions: revisions, HasMore: true})
+				response := historyPage(header, limit, store.History{Document: document, Revisions: revisions, HasMore: true, DeviceNames: deviceNames})
 
 				return response, len(response.GetRevisions())
 			},
+			named: true,
 		},
 	}
 
@@ -90,10 +101,18 @@ func TestPagesOfRevisionsFitTheSendLimitInEveryEncoding(t *testing.T) {
 		one, err := encoding.marshal(revisionMessage(revisions[0]))
 		require.NoError(t, err)
 
+		name, err := encoding.marshal(&vaultsyncv1.DeviceName{DeviceId: revisions[0].DeviceID.String(), Name: deviceNames[revisions[0].DeviceID]})
+		require.NoError(t, err)
+
 		for _, response := range responses {
 			t.Run(encoding.name+"/"+response.name, func(t *testing.T) {
+				entryBytes := len(one)
+				if response.named {
+					entryBytes += len(name)
+				}
+
 				for _, length := range []int{1, 2, 3, 4, 5, 16, 100, 240, MaxChangesPageSize} {
-					limit := tightestLimit(t, length, len(one), func(limit int) int {
+					limit := tightestLimit(t, length, entryBytes, func(limit int) int {
 						_, got := response.page(header, limit)
 
 						return got
