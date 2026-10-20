@@ -3314,6 +3314,8 @@ export interface PurgedCursorResult extends RunResult {
   purged: string[];
   /** Whether the second engine's pull resynced. */
   resynced: boolean;
+  /** How many purge markers retention pruned (with `pruneMarkers`). */
+  prunedMarkers: number;
 }
 
 /**
@@ -3325,8 +3327,13 @@ export interface PurgedCursorResult extends RunResult {
  * cursor diverged and resyncs: the server lost nothing, so the delete of a
  * note its user never changed is applied, not merged as a delete against an
  * edit, and its next push never brings the note back.
+ *
+ * With `pruneMarkers`, the purges' markers then age past the marker horizon
+ * and retention prunes them (#514) before the second engine pulls: its
+ * anchor check finds neither the revision nor a marker, so it resyncs and
+ * merges every note it holds, keeping every file.
  */
-export async function purgedCursor(endpoints: SimEndpoints): Promise<PurgedCursorResult> {
+export async function purgedCursor(endpoints: SimEndpoints, options: { pruneMarkers?: boolean } = {}): Promise<PurgedCursorResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -3358,6 +3365,7 @@ export async function purgedCursor(endpoints: SimEndpoints): Promise<PurgedCurso
   const revisions = (await run.direct.sync.listChanges({ vaultId: run.context.vaultId, sinceSeq: 0n })).revisions;
   if (revisions.length !== 4) throw new Error(`expected four revisions, got ${String(revisions.length)}`);
   const purged = (await run.purge(revisions.map((revision) => revision.id))).map((id) => run.context.ids.label(id));
+  const prunedMarkers = options.pruneMarkers === true ? await run.pruneMarkers() : 0;
 
   second.lastPull = undefined;
   await pull(second);
@@ -3374,5 +3382,5 @@ export async function purgedCursor(endpoints: SimEndpoints): Promise<PurgedCurso
       return contents;
     }),
   );
-  return { ...result, vaults, live: await liveFiles(run), purged, resynced };
+  return { ...result, vaults, live: await liveFiles(run), purged, resynced, prunedMarkers };
 }

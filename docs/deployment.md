@@ -227,6 +227,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.blob.gcGrace` | `VAULT_SYNC_BLOB_GC_GRACE` |
 | `config.server.retention.keepAll` | `VAULT_SYNC_RETENTION_KEEP_ALL` |
 | `config.server.retention.keepDaily` | `VAULT_SYNC_RETENTION_KEEP_DAILY` |
+| `config.server.retention.purgeMarkerHorizon` | `VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON` |
 | `config.server.realtime.maxConnections` | `VAULT_SYNC_REALTIME_MAX_CONNECTIONS` |
 | `config.server.realtime.maxConnectionsPerUser` | `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER` |
 | `config.server.realtime.maxSubscriptions` | `VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS` |

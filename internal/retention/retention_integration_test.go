@@ -146,6 +146,26 @@ func (fixture *fixture) releasedAgo(t *testing.T, ago string) {
 	require.NoError(t, err)
 }
 
+// markersPurgedAgo backdates every purge marker's purge by ago, a
+// PostgreSQL interval.
+func (fixture *fixture) markersPurgedAgo(t *testing.T, ago string) {
+	t.Helper()
+
+	_, err := fixture.pool.Exec(t.Context(), `UPDATE purged_revisions SET purged_at = now() - $1::interval`, ago)
+	require.NoError(t, err)
+}
+
+// markerCount counts the purge markers.
+func (fixture *fixture) markerCount(t *testing.T) int {
+	t.Helper()
+
+	var count int
+
+	require.NoError(t, fixture.pool.QueryRow(t.Context(), `SELECT count(*) FROM purged_revisions`).Scan(&count))
+
+	return count
+}
+
 // stored reports whether blobID has a row and whether it has an object.
 func (fixture *fixture) stored(t *testing.T, blobID []byte) (bool, bool) {
 	t.Helper()
@@ -395,6 +415,7 @@ func TestRetentionJobsOnEveryInstanceActAsOne(t *testing.T) {
 		jobs[index] = &retention.Job{
 			Store: store.New(pool), Objects: objects, Policy: policy, Grace: grace,
 			DocumentsPerRun: 3, RevisionsPerDocument: 1, BlobsPerRun: 2,
+			MarkersPerBatch: 2, MarkersPerRun: 3,
 		}
 	}
 
@@ -415,6 +436,7 @@ func TestRetentionJobsOnEveryInstanceActAsOne(t *testing.T) {
 					total.RevisionsPurged += result.RevisionsPurged
 					total.BlobsCollected += result.BlobsCollected
 					total.ObjectsDeleted += result.ObjectsDeleted
+					total.MarkersPruned += result.MarkersPruned
 					mutex.Unlock()
 				}
 			})
@@ -426,6 +448,12 @@ func TestRetentionJobsOnEveryInstanceActAsOne(t *testing.T) {
 	}
 
 	assert.Equal(t, retention.Result{RevisionsPurged: 2 * documents}, runAll(), "each purgeable revision is purged once")
+	assert.Equal(t, 2*documents, fixture.markerCount(t), "each purge leaves one marker")
+
+	fixture.markersPurgedAgo(t, "366 days")
+
+	assert.Equal(t, retention.Result{MarkersPruned: 2 * documents}, runAll(), "each marker past the horizon is pruned once")
+	assert.Zero(t, fixture.markerCount(t))
 
 	fixture.releasedAgo(t, "2 hours")
 

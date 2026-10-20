@@ -61,10 +61,12 @@ const (
 	RetentionKeepAllEnv   = "VAULT_SYNC_RETENTION_KEEP_ALL"
 	RetentionKeepDailyEnv = "VAULT_SYNC_RETENTION_KEEP_DAILY"
 	BlobGCGraceEnv        = "VAULT_SYNC_BLOB_GC_GRACE"
+	PurgeMarkerHorizonEnv = "VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON"
 )
 
 // Retention bounds; the defaults are retention.DefaultKeepAll,
-// retention.DefaultKeepDaily and retention.DefaultGrace.
+// retention.DefaultKeepDaily, retention.DefaultGrace and
+// retention.DefaultMarkerHorizon.
 const (
 	// MinRetentionKeepAll keeps at least a day of complete history, so a
 	// device that was offline briefly still finds the base of its edits.
@@ -72,6 +74,10 @@ const (
 	// MinBlobGCGrace leaves a client that just read a purged revision time
 	// to restore it without uploading its content again.
 	MinBlobGCGrace = time.Hour
+	// MinPurgeMarkerHorizon keeps a purge marker for at least a day, so a
+	// device that was offline briefly across a purge pulls on instead of
+	// resyncing.
+	MinPurgeMarkerHorizon = 24 * time.Hour
 )
 
 // RetentionConfig is the retention policy and blob garbage collection
@@ -85,6 +91,9 @@ type RetentionConfig struct {
 	// BlobGrace is how long a blob no revision references is kept after
 	// the purge of the last revision referencing it.
 	BlobGrace time.Duration
+	// PurgeMarkerHorizon is how long a purge marker is kept after its
+	// purge; a device that has not pulled for longer resyncs (SPEC.md §11).
+	PurgeMarkerHorizon time.Duration
 }
 
 // Realtime bounds.
@@ -301,6 +310,8 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			KeepAll:   retention.DefaultKeepAll,
 			KeepDaily: retention.DefaultKeepDaily,
 			BlobGrace: retention.DefaultGrace,
+
+			PurgeMarkerHorizon: retention.DefaultMarkerHorizon,
 		},
 	}
 
@@ -669,6 +680,7 @@ func loadRetention(get func(string) string, cfg *RetentionConfig) []error {
 	keepAll := parseDuration(RetentionKeepAllEnv, MinRetentionKeepAll, &cfg.KeepAll)
 	keepDaily := parseDuration(RetentionKeepDailyEnv, 0, &cfg.KeepDaily)
 	parseDuration(BlobGCGraceEnv, MinBlobGCGrace, &cfg.BlobGrace)
+	parseDuration(PurgeMarkerHorizonEnv, MinPurgeMarkerHorizon, &cfg.PurgeMarkerHorizon)
 
 	if keepAll && keepDaily && cfg.KeepDaily < cfg.KeepAll {
 		problems = append(problems, fmt.Errorf("%s (%s) must not be below %s (%s)",
