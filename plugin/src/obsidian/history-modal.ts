@@ -2,7 +2,7 @@ import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
 
 import { RestoreError, type HistoryEntry } from "../core/engine/history";
 import type { DocumentState } from "../core/journal/journal";
-import { alternativePath, entryLabel, previewOf, sizeLabel } from "./history-view";
+import { entryLabel, otherPathValue, previewOf, sizeLabel } from "./history-view";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
 
@@ -157,18 +157,21 @@ export class HistoryModal extends Modal {
       const message = error instanceof RestoreError ? error.message : errorMessage(error);
       new Notice(`Vault Sync: the version could not be restored: ${message}`);
       const otherPath = error instanceof RestoreError && (error.reason === "path-taken" || (error.reason === "invalid-path" && path !== undefined));
-      if (otherPath && this.selected?.entry === entry) this.offerOtherPath(entry, content, error.path);
+      if (otherPath && this.selected?.entry === entry) this.offerOtherPath(entry, content, error, path);
     }
   }
 
-  /** A path field, filled with a free path beside `taken`, and a button that restores `entry` there. */
-  private offerOtherPath(entry: HistoryEntry, content: Uint8Array | undefined, taken: string): void {
+  /**
+   * A path field and a button that restores `entry` there, after a restore
+   * at `typed` (or at its own path, if undefined) failed (otherPathValue).
+   */
+  private offerOtherPath(entry: HistoryEntry, content: Uint8Array | undefined, failure: RestoreError, typed: string | undefined): void {
     this.previewEl.querySelector(".vault-sync-history-other-path")?.remove();
     const container = this.previewEl.createDiv({ cls: "vault-sync-history-other-path" });
-    let target = alternativePath(taken, (path) => this.app.vault.getAbstractFileByPath(path) !== null);
+    let target = otherPathValue(failure, typed, (path) => this.app.vault.getAbstractFileByPath(path) !== null);
     new Setting(container)
       .setName("Restore at another path")
-      .setDesc("Its own path is taken by another file. Restore it at this path instead.")
+      .setDesc(typed === undefined ? "Its own path is taken by another file. Restore it at this path instead." : failure.reason === "invalid-path" ? "That path cannot be used. Correct it and restore again." : "That path is taken by another file too. Restore it at this path instead.")
       .addText((text) =>
         text.setValue(target).onChange((value) => {
           target = value.trim();

@@ -1,4 +1,5 @@
-import type { HistoryEntry } from "../core/engine/history";
+import type { HistoryEntry, RestoreError } from "../core/engine/history";
+import { withoutInvisibleCharacters } from "./device-name";
 
 // What the history views show for a revision (SPEC.md §11). No Obsidian
 // import, so it is unit-tested; history-modal.ts renders it.
@@ -32,14 +33,21 @@ export function previewOf(content: Uint8Array): Preview {
   return { kind: "binary", size: content.length };
 }
 
+/** Double quotation marks, which could close the label's quotes early. */
+const doubleQuotes = /["«»“”„‟″‶〝〞〟＂]/gu;
+
 /**
  * Who committed a revision: this device, or another one by the name the
  * server reports (quoted, so another user's name cannot pass for "this
- * device"), or by id when it reports none.
+ * device"), or by id when it reports none. The name loses invisible
+ * characters that could reorder or hide parts of the label, and its double
+ * quotes become `'`, so it cannot end the quotes early (#548).
  */
 export function deviceLabel(entry: Pick<HistoryEntry, "deviceId" | "deviceName" | "thisDevice">): string {
   if (entry.thisDevice) return "this device";
-  const name = entry.deviceName?.trim() ?? "";
+  const name = withoutInvisibleCharacters(entry.deviceName ?? "")
+    .replace(doubleQuotes, "'")
+    .trim();
   if (name !== "") return `device “${name}”`;
   if (entry.deviceId === "") return "an unknown device";
   return `device ${entry.deviceId.slice(0, 8)}`;
@@ -62,6 +70,18 @@ export function alternativePath(path: string, taken: (path: string) => boolean):
     if (!taken(candidate(attempt))) return candidate(attempt);
   }
   return candidate(1000);
+}
+
+/**
+ * What the "Restore at another path" field offers after a restore failed
+ * with `failure` (#420, #548): a free path beside the document's own path
+ * when that was taken (`typed` undefined), the user's own text, to correct,
+ * when the path they typed cannot be used, and a free path beside theirs
+ * when another file has taken it too.
+ */
+export function otherPathValue(failure: Pick<RestoreError, "reason" | "path">, typed: string | undefined, taken: (path: string) => boolean): string {
+  if (typed !== undefined && failure.reason === "invalid-path") return typed;
+  return alternativePath(failure.path, taken);
 }
 
 /** A byte count for people. */

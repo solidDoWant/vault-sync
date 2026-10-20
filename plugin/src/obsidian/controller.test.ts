@@ -195,6 +195,18 @@ describe("ensureDevice", () => {
     expect(server.registered).toEqual(["Laptop"]);
   });
 
+  it.each([
+    ["registers the name without the invisible characters the server refuses (#548)", "\u202eWork\u200d laptop\u2069\u2028", "Work laptop"],
+    ["registers the default name when the setting holds nothing visible (#548)", "\u200b\u202e \u2066", "desktop"],
+  ])("%s", async (_, deviceName, registered) => {
+    const server = fakeServer();
+    const options = { data: { ...settings, deviceName }, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+
+    expect(await ensureDevice(options)).toBe("device-1");
+
+    expect(server.registered).toEqual([registered]);
+  });
+
   it("registers a device of its own for another account or server", async () => {
     const server = fakeServer();
     const data = { ...settings };

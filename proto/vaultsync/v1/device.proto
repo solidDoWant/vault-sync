@@ -19,8 +19,10 @@ service DeviceService {
 
 // RegisterDeviceRequest describes the device to register.
 message RegisterDeviceRequest {
-  // Human-readable device name. Must be non-empty; the server bounds its
-  // length.
+  // Human-readable device name. Must be non-blank, at most 256 bytes, and
+  // free of control characters (Unicode category Cc), format characters (Cf,
+  // such as bidi controls and zero-width characters) and line or paragraph
+  // separators (Zl, Zp).
   string name = 1;
   // The device's X25519 public key (SPEC.md §5): exactly 32 bytes, or empty
   // for a device registered without one.
