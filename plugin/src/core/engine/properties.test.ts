@@ -143,7 +143,7 @@ describe("engine properties (design §9.3)", { timeout: 300_000 }, () => {
   });
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.
-  // Fails today (flips in R7 #571, PO-11): the engine's own file of a remote note holds the folder that note's next path needs, and the revision stays deferred (path-conflict) for good.
+  // Fails today (#583, blocked by R7 #571; PO-11): the engine's own file of a remote note holds the folder that note's next path needs, and the revision stays deferred (path-conflict) for good.
   it.fails("P6: the device converges with the server within bounded rounds", async () => {
     await holds(async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
   });
