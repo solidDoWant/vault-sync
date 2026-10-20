@@ -168,11 +168,14 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(result.violations, trace).toEqual([]);
     // The schedule exercised what the invariants are about.
     const count = (needle: RegExp) => result.trace.filter((line) => needle.test(line)).length;
-    expect(count(/e[34] user (creates|edits|writes)/), trace).toBeGreaterThan(10);
-    expect(count(/e[34] user renames/), trace).toBeGreaterThan(0);
-    expect(count(/e[34] user deletes/), trace).toBeGreaterThan(0);
-    expect(count(/e[34] acknowledged /), trace).toBeGreaterThan(10);
-    expect(count(/e3 tracks .* as unmaterializable/), trace).toBeGreaterThan(0);
+    // The engines are named after the scripted clients (`SIM_CLIENTS` changes how many): the first, with Windows rules, and the second.
+    const windows = `e${String(environment.clients)}`;
+    const engines = `(?:${windows}|e${String(environment.clients + 1)})`;
+    expect(count(new RegExp(`${engines} user (creates|edits|writes)`)), trace).toBeGreaterThan(10);
+    expect(count(new RegExp(`${engines} user renames`)), trace).toBeGreaterThan(0);
+    expect(count(new RegExp(`${engines} user deletes`)), trace).toBeGreaterThan(0);
+    expect(count(new RegExp(`${engines} acknowledged `)), trace).toBeGreaterThan(10);
+    expect(count(new RegExp(`${windows} tracks .* as unmaterializable`)), trace).toBeGreaterThan(0);
     expect(count(/restarted with its vault and journal/), trace).toBeGreaterThan(0);
     expect(count(/lost/), trace).toBeGreaterThan(0);
   });
