@@ -21,7 +21,10 @@ export const file_vaultsync_v1_vault: GenFile = /*@__PURE__*/
  */
 export type CreateVaultRequest = Message<"vaultsync.v1.CreateVaultRequest"> & {
   /**
-   * Human-readable name. Must be non-empty; the server bounds its length.
+   * Human-readable name. Must be non-blank, at most 256 bytes, and free of
+   * control characters (Unicode category Cc), format characters (Cf, such as
+   * bidi controls and zero-width characters) and line or paragraph
+   * separators (Zl, Zp).
    *
    * @generated from field: string name = 1;
    */

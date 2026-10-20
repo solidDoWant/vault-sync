@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { HistoryEntry } from "../core/engine/history";
-import { alternativePath, changeLabel, deviceLabel, entryLabel, maxPreviewBytes, previewOf, sizeLabel } from "./history-view";
+import { alternativePath, changeLabel, deviceLabel, entryLabel, maxPreviewBytes, otherPathValue, previewOf, sizeLabel } from "./history-view";
 
 const encoder = new TextEncoder();
 
@@ -81,6 +81,30 @@ describe("history view", () => {
       expect(entryLabel(entry({ thisDevice: true }), undefined, formatTime)).toBe("2026-01-02T03:04:00.000Z · this device · earliest kept version of plan.md (12 B)");
       expect(entryLabel(entry({ createdAt: undefined }), undefined, formatTime)).toMatch(/^unknown time · /);
     });
+
+    // Names registered before the server refused these characters (#548)
+    // still reach the history list.
+    it.each([
+      ["a right-to-left override", "Laptop\u202e ecived siht", "device “Laptop ecived siht”"],
+      ["bidi embeddings and isolates", "\u202aA\u202b\u202c\u202dB\u2066C\u2067D\u2068E\u2069", "device “ABCDE”"],
+      ["a right-to-left mark", "Phone\u200f", "device “Phone”"],
+      ["zero-width characters and a byte order mark", "\ufeffPh\u200bo\u200cn\u200de\u2060", "device “Phone”"],
+      ["a line separator", "Phone\u2028this device", "device “Phonethis device”"],
+      ["a control character", "Phone\u0085", "device “Phone”"],
+      ["quotes that would close the label early", "x” · this device · “y", "device “x' · this device · 'y”"],
+      ["straight, low and angle double quotes", "\"a\" „b‟ «c» ＂d＂ 〝e〞〟", "device “'a' 'b' 'c' 'd' 'e''”"],
+    ])("removes %s from another device's name", (_, deviceName, label) => {
+      expect(deviceLabel(entry({ deviceName }))).toBe(label);
+    });
+
+    it("keeps apostrophes and letters of every script in another device's name", () => {
+      expect(deviceLabel(entry({ deviceName: "Fred’s iPhone" }))).toBe("device “Fred’s iPhone”");
+      expect(deviceLabel(entry({ deviceName: "Zoë's 日本 حاسوب 😀" }))).toBe("device “Zoë's 日本 حاسوب 😀”");
+    });
+
+    it("names a device by id when its name is nothing but invisible characters", () => {
+      expect(deviceLabel(entry({ deviceName: "\u202e\u200b\u2066\u2069" }))).toBe("device 0190a5c4");
+    });
   });
 
   describe("another path for a restore whose path is taken (#420)", () => {
@@ -95,6 +119,27 @@ describe("history view", () => {
     it("numbers the suggestion past every path already taken", () => {
       const taken = new Set(["plan (restored).md", "plan (restored 2).md"]);
       expect(alternativePath("plan.md", (path) => taken.has(path))).toBe("plan (restored 3).md");
+    });
+  });
+
+  describe("the path field after a failed restore (#420, #548)", () => {
+    const free = () => false;
+
+    it("suggests a free path beside the document's own path when that is taken", () => {
+      expect(otherPathValue({ reason: "path-taken", path: "notes/plan.md" }, undefined, free)).toBe("notes/plan (restored).md");
+    });
+
+    it.each([
+      ["a path the server refuses", "plans\\plan.md"],
+      ["a path this device cannot hold", "con.md"],
+      ["an empty path", ""],
+    ])("keeps what the user typed when it is %s, for them to correct", (_, typed) => {
+      expect(otherPathValue({ reason: "invalid-path", path: typed }, typed, free)).toBe(typed);
+    });
+
+    it("suggests a free path beside the user's path when that is taken too", () => {
+      const taken = new Set(["plans/plan 2 (restored).md"]);
+      expect(otherPathValue({ reason: "path-taken", path: "plans/plan 2.md" }, "plans/plan 2.md", (path) => taken.has(path))).toBe("plans/plan 2 (restored 2).md");
     });
   });
 });

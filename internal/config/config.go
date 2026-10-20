@@ -62,6 +62,9 @@ const (
 	RetentionKeepDailyEnv = "VAULT_SYNC_RETENTION_KEEP_DAILY"
 	BlobGCGraceEnv        = "VAULT_SYNC_BLOB_GC_GRACE"
 	PurgeMarkerHorizonEnv = "VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON"
+
+	RetentionOverrideMinKeepAllEnv   = "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL"
+	RetentionOverrideMinKeepDailyEnv = "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY"
 )
 
 // Retention bounds; the defaults are retention.DefaultKeepAll,
@@ -483,6 +486,71 @@ func LoadExport(lookup func(string) (string, bool)) (ExportConfig, error) {
 
 	if err := errors.Join(problems...); err != nil {
 		return ExportConfig{}, err
+	}
+
+	return cfg, nil
+}
+
+// RetentionCommandConfig is the configuration of the retention subcommand,
+// which manages per-vault retention overrides (SPEC.md §11).
+type RetentionCommandConfig struct {
+	// Database is the PostgreSQL connection configuration.
+	Database store.Config
+	// MinKeepAll and MinKeepDaily are the least KeepAll and KeepDaily an
+	// override may have. MinKeepAll is never below MinRetentionKeepAll.
+	MinKeepAll   time.Duration
+	MinKeepDaily time.Duration
+}
+
+// LoadRetentionCommand reads the retention subcommand's configuration
+// through lookup, like Load. Only the database is required; the object
+// store, API, OIDC, log and limit variables are ignored.
+func LoadRetentionCommand(lookup func(string) (string, bool)) (RetentionCommandConfig, error) {
+	get := func(name string) string {
+		value, _ := lookup(name)
+
+		return strings.TrimSpace(value)
+	}
+
+	cfg := RetentionCommandConfig{
+		Database: store.Config{
+			DSN:         get(DatabaseURLEnv),
+			TLSCertFile: get(DatabaseTLSCertFileEnv),
+			TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
+			TLSCAFile:   get(DatabaseTLSCAFileEnv),
+		},
+		MinKeepAll: MinRetentionKeepAll,
+	}
+
+	problems := []error{checkDatabase(cfg.Database)}
+
+	for _, minimum := range []struct {
+		name   string
+		floor  time.Duration
+		target *time.Duration
+	}{
+		{RetentionOverrideMinKeepAllEnv, MinRetentionKeepAll, &cfg.MinKeepAll},
+		{RetentionOverrideMinKeepDailyEnv, 0, &cfg.MinKeepDaily},
+	} {
+		raw := get(minimum.name)
+		if raw == "" {
+			continue
+		}
+
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 2160h)", minimum.name, raw))
+		case value < minimum.floor:
+			problems = append(problems, fmt.Errorf("%s: must be at least %s, got %s", minimum.name, minimum.floor, raw))
+		default:
+			*minimum.target = value
+		}
+	}
+
+	if err := errors.Join(problems...); err != nil {
+		return RetentionCommandConfig{}, err
 	}
 
 	return cfg, nil

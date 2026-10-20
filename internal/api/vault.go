@@ -77,8 +77,8 @@ func (service VaultService) CreateVault(ctx context.Context, request *connect.Re
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("name must be at most %d bytes", MaxVaultNameBytes))
 	}
 
-	if !textcheck.Printable(name) {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control characters"))
+	if !textcheck.DisplayName(name) {
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("name must be valid UTF-8 without control, format or line separator characters"))
 	}
 
 	var encryption store.Encryption
