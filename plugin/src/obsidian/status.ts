@@ -83,6 +83,6 @@ export function statusDescription(status: SyncStatus): string {
   const lines = [detail[status.state]];
   if (status.message !== undefined && status.message !== "") lines.push(status.message);
   if (status.pending > 0) lines.push(`${String(status.pending)} local ${status.pending === 1 ? "change is" : "changes are"} waiting to be pushed.`);
-  if (status.conflicts > 0) lines.push(`${String(status.conflicts)} ${status.conflicts === 1 ? "conflict copy needs" : "conflict copies need"} your attention.`);
+  if (status.conflicts > 0) lines.push(`${String(status.conflicts)} ${status.conflicts === 1 ? "conflict needs" : "conflicts need"} your attention.`);
   return lines.join(" ");
 }
