@@ -2,6 +2,7 @@ package blobstore_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -310,4 +311,100 @@ func receive[T any](t *testing.T, channel <-chan T, what string) T {
 
 		return zero
 	}
+}
+
+// requireOwnerComposesTwice requires two compositions of owner to hold a
+// compose slot at once, which they can only if every slot of owner and two
+// of the replica's are free.
+func requireOwnerComposesTwice(t *testing.T, objects *blobstore.Objects, owner string) {
+	t.Helper()
+
+	gate := newComposeGate(t, objects)
+
+	// A failing test stops the compositions still waiting.
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var group sync.WaitGroup
+
+	want := map[string]bool{}
+	errs := make(chan error, 2)
+
+	for index := range 2 {
+		name := fmt.Sprintf("%s/again/%d", owner, index)
+		want["vaults/x/uploads/"+name] = true
+
+		group.Go(func() {
+			errs <- objects.Compose(ctx, owner, "vaults/x/blobs/"+name, source(name), stagedObjectBytes, nil, nil)
+		})
+	}
+
+	gate.awaitEntered(t, want)
+	gate.open()
+	group.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	assert.Zero(t, blobstore.ComposeSlotsHeld(objects))
+}
+
+func TestComposeStoppedWaitingForAReplicaSlotGivesBackItsOwnersSlot(t *testing.T) {
+	objects := objectsAt(t, answeringEndpoint(t), time.Minute, 1)
+	gate := newComposeGate(t, objects)
+
+	var group sync.WaitGroup
+
+	// Two users hold every slot of the replica.
+	for index := range blobstore.ComposeSlots {
+		group.Go(func() {
+			owner := fmt.Sprintf("holder%d", index%2)
+			name := fmt.Sprintf("%s/%d", owner, index)
+			assert.NoError(t, objects.Compose(t.Context(), owner, "vaults/x/blobs/"+name, source(name), stagedObjectBytes, nil, nil))
+		})
+	}
+
+	require.Len(t, awaitSettled(t, objects, gate, blobstore.ComposeSlots), blobstore.ComposeSlots)
+
+	// A third user's composition takes one of its own slots and waits for
+	// one of the replica's until it is cancelled.
+	ctx, cancel := context.WithCancel(t.Context())
+	stopped := make(chan error, 1)
+
+	go func() {
+		stopped <- objects.Compose(ctx, "third", "vaults/x/blobs/third", source("third/0"), stagedObjectBytes, nil, nil)
+	}()
+
+	awaitSettled(t, objects, gate, blobstore.ComposeSlots+1)
+	cancel()
+	require.ErrorIs(t, receive(t, stopped, "the cancelled composition"), context.Canceled)
+
+	gate.open()
+	group.Wait()
+	assert.False(t, gate.held()["vaults/x/uploads/third/0"])
+
+	// The cancelled composition gave its owner's slot back.
+	requireOwnerComposesTwice(t, objects, "third")
+}
+
+func TestComposeWhoseFirstProgressFailsGivesBackItsSlots(t *testing.T) {
+	objects := objectsAt(t, answeringEndpoint(t), time.Minute, 1)
+	errGone := errors.New("session gone")
+
+	// The progress reported on getting a slot fails, as when the session
+	// was finished meanwhile, for as many compositions as an owner has
+	// slots.
+	for index := range 2 {
+		name := fmt.Sprintf("failing/%d", index)
+		err := objects.Compose(t.Context(), "failing", "vaults/x/blobs/"+name, source(name), stagedObjectBytes, nil,
+			func(context.Context) error { return errGone })
+		require.ErrorIs(t, err, errGone)
+	}
+
+	assert.Zero(t, blobstore.ComposeSlotsHeld(objects), "a failed composition kept a replica slot")
+
+	// Both gave their owner's slots back.
+	requireOwnerComposesTwice(t, objects, "failing")
 }
