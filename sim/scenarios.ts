@@ -2383,6 +2383,62 @@ export async function bothRenameOntoVacatedPath(endpoints: SimEndpoints, platfor
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
 }
 
+/**
+ * An unpushed local rename onto the path of a note another device creates
+ * there (#479, seed 100073). Both engines sync `b.md`. The second engine's
+ * user renames it to `NOTES` and edits it without pushing, while the first
+ * (POSIX) engine deletes `b.md`, creates another note at `NOTES` and pushes.
+ * The second engine pulls, keeping its user's file apart from the other note,
+ * and its user then renames the file at `NOTES` to `x.md`. That rename is the
+ * other note's: no push tombstones it, the user's edit stays live, both
+ * vaults equal the server, and the last push commits nothing (SPEC.md §2
+ * principle 1).
+ */
+export async function renameOntoRemoteCreate(endpoints: SimEndpoints, platform: "posix" | "windows" | "macos"): Promise<RespelledRenameResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("b.md", encoder.encode("b\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.move("b.md", "NOTES"));
+  log(await second.edit("NOTES", encoder.encode("b\nmine\n")));
+  log(await first.remove("b.md"));
+  log(await first.edit("NOTES", encoder.encode("theirs\n")));
+  await push(first);
+  await pull(second);
+  log(await second.move("NOTES", "x.md"));
+  for (let round = 0; round < 3; round++) await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];
@@ -2907,14 +2963,16 @@ export async function interruptedConflictMove(
  * push is committing the first (POSIX) engine renames the note to
  * `plan?.md`, which Windows cannot hold: the second engine parks the note
  * (unmaterializable, SPEC.md §8) with its edit pending at `plan.md`. With
- * `deleted-file` its user then deletes `plan.md`. The first engine creates
- * another note at `plan.md`, and later renames the parked note to
+ * `deleted-file` its user then deletes `plan.md`; with `renamed-file` the
+ * user renames it to `notes.md`, and once the second engine has synced the
+ * other note below, its app is killed and restarted (#459). The first engine
+ * creates another note at `plan.md`, and later renames the parked note to
  * `draft.md`. The other note must stay live at `plan.md` under its own id,
  * the renamed note must come back at `draft.md` under its id, and with
  * `kept-file` the edit must be live as a conflict copy (SPEC.md §2
  * principle 1); nothing may stay pending or deferred.
  */
-export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "kept-file" | "deleted-file"): Promise<RenameOntoLocalFolderResult> {
+export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "kept-file" | "deleted-file" | "renamed-file"): Promise<RenameOntoLocalFolderResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "windows"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -2956,10 +3014,12 @@ export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "
   await push(first);
   await run.drain(second.index);
   if (variant === "deleted-file") log(await second.remove("plan.md"));
+  if (variant === "renamed-file") log(await second.move("plan.md", "notes.md"));
 
   log(await first.edit("plan.md", encoder.encode(textLines("another note"))));
   await push(first);
   await sync(second);
+  if (variant === "renamed-file") log(second.crash());
 
   log(await first.move("plan?.md", "draft.md"));
   await push(first);
