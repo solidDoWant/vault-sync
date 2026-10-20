@@ -30,7 +30,9 @@ govulncheck -mode=binary "$server/bin/vault-sync-server"
 local_ref="vault-sync:$version"
 
 tags=("$image:$version")
-if [[ $push_all == "true" ]]; then
+# A pre-release (a version with "-", e.g. 0.2.0-rc.1) never moves :latest:
+# release candidates are cut by agents and promoted by a human.
+if [[ $push_all == "true" && $version != *-* ]]; then
 	tags+=("$image:latest")
 fi
 for tag in "${tags[@]}"; do
