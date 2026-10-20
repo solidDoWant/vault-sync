@@ -118,7 +118,7 @@ func runExport(ctx context.Context, output string, lookup func(string) (string, 
 		logger.ErrorContext(ctx, "export failed; the previous export is untouched", "error", err)
 	} else {
 		logger.InfoContext(ctx, "export finished", "status", summary.Status, "vaults", summary.Vaults,
-			"files", summary.Files, "bytes", summary.Bytes, "document_errors", summary.DocumentErrors)
+			"files", summary.Files, "bytes", summary.Bytes, "unplaced", summary.Unplaced, "document_errors", summary.DocumentErrors)
 	}
 
 	return summary, err

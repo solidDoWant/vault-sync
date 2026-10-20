@@ -203,6 +203,16 @@ func (deployment *deployment) state(t *testing.T) string {
 func runMain(t *testing.T, ctx context.Context, env map[string]string, output string) (int, export.Summary) {
 	t.Helper()
 
+	code, summary, _ := runMainWithLogs(t, ctx, env, output)
+
+	return code, summary
+}
+
+// runMainWithLogs is runMain that also returns the JSON log lines written to
+// stderr.
+func runMainWithLogs(t *testing.T, ctx context.Context, env map[string]string, output string) (int, export.Summary, []map[string]any) {
+	t.Helper()
+
 	var stdout, stderr bytes.Buffer
 
 	code := export.Main(ctx, []string{"-out", output}, func(name string) (string, bool) {
@@ -217,7 +227,33 @@ func runMain(t *testing.T, ctx context.Context, env map[string]string, output st
 	var summary export.Summary
 	require.NoError(t, json.Unmarshal([]byte(lines[0]), &summary))
 
-	return code, summary
+	var logs []map[string]any
+
+	for line := range strings.Lines(stderr.String()) {
+		var record map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &record), "every log line is JSON: %q", line)
+
+		logs = append(logs, record)
+	}
+
+	return code, summary, logs
+}
+
+// logRecord returns the one log record with message msg.
+func logRecord(t *testing.T, logs []map[string]any, msg string) map[string]any {
+	t.Helper()
+
+	var found []map[string]any
+
+	for _, record := range logs {
+		if record["msg"] == msg {
+			found = append(found, record)
+		}
+	}
+
+	require.Len(t, found, 1, "one %q log line", msg)
+
+	return found[0]
 }
 
 func TestExportAgainstPostgreSQLAndS3(t *testing.T) {
@@ -355,11 +391,16 @@ func TestExportKeepsDocumentsWhosePathsCannotCoexistAgainstPostgreSQLAndS3(t *te
 
 	output := filepath.Join(t.TempDir(), "export")
 
-	code, summary := runMain(t, t.Context(), deployment.env(), output)
+	code, summary, logs := runMainWithLogs(t, t.Context(), deployment.env(), output)
 
 	assert.Equal(t, 0, code)
 	assert.Equal(t, export.StatusOK, summary.Status, summary.Error)
 	assert.EqualValues(t, 2, summary.Unplaced)
+
+	// Operators alerting on logs see the collisions (issue #430 item 3).
+	finished := logRecord(t, logs, "export finished")
+	assert.EqualValues(t, 2, finished["unplaced"])
+	assert.EqualValues(t, 0, finished["document_errors"])
 
 	want := map[string]string{
 		notes.String() + "/a":                              "a file",
