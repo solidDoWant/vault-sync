@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -965,6 +965,34 @@ describe.runIf(suites.has("scenarios"))("scripted remote rename into a folder na
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.tombstoned, trace).toEqual([]);
     // Nothing stays pending: the case-insensitive engine's last push had nothing left to do.
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted new file at a renamed-away note's synced path (#352)", () => {
+  it("keeps the local rename with the remote edit, the local edit as a conflict copy and the new file NOTES as a path-taken copy, with nothing deferred", async () => {
+    const result = await newFileAtRenamedAwayPath(environment);
+    const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("NOTES");
+    expect(note, trace).toBeDefined();
+    // The local rename wins: the note is live at notes/f.md with the remote edit.
+    expect(result.documents.get("notes/f.md"), trace).toBe(note);
+    const others = [...result.documents.keys()].filter((path) => path !== "notes/f.md").sort();
+    // The local edit is a conflict copy in notes/, and the new file NOTES,
+    // which the server takes for the folder notes/, a path-taken copy.
+    expect(others, trace).toEqual([expect.stringMatching(/^NOTES \(conflict .*\)$/), expect.stringMatching(/^notes\/f \(conflict .*\)\.md$/)]);
+    const [otherPath = "", minePath = ""] = others;
+    const expected = new Map([
+      ["notes/f.md", "theirs\n"],
+      [minePath, "mine\n"],
+      [otherPath, "other\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.tombstoned, trace).toEqual([]);
+    // Nothing stays deferred or pending: the user's engine's last push had nothing left to do.
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
