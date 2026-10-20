@@ -24,7 +24,10 @@ const (
 // CreateVaultRequest describes the vault to create.
 type CreateVaultRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Human-readable name. Must be non-empty; the server bounds its length.
+	// Human-readable name. Must be non-blank, at most 256 bytes, and free of
+	// control characters (Unicode category Cc), format characters (Cf, such as
+	// bidi controls and zero-width characters) and line or paragraph
+	// separators (Zl, Zp).
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// Encryption mode. Cannot be changed later.
 	Encryption VaultEncryption `protobuf:"varint,2,opt,name=encryption,proto3,enum=vaultsync.v1.VaultEncryption" json:"encryption,omitempty"`

@@ -8,6 +8,7 @@ import type { ProtocolClient } from "../core/protocol/client";
 import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
+import { deviceNameOf } from "./device-name";
 import type { JournalKey } from "./journal";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./session";
 import { errorMessage, isOffline, type SyncStatus } from "./status";
@@ -56,7 +57,7 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
   const account = await currentAccount(data, options.accessToken);
   const stored = data.device;
   if (stored !== undefined && stored.serverUrl === account.serverUrl && stored.issuer === account.issuer && stored.subject === account.subject) return stored.id;
-  const name = data.deviceName.trim() === "" ? options.defaultDeviceName : data.deviceName.trim();
+  const name = deviceNameOf(data.deviceName, options.defaultDeviceName);
   let id: string | undefined;
   try {
     id = (await options.client.devices.registerDevice({ name })).device?.id;
@@ -298,7 +299,7 @@ export class SyncController {
         journal.close();
         return;
       }
-      const deviceName = data.deviceName.trim() === "" ? this.options.defaultDeviceName : data.deviceName.trim();
+      const deviceName = deviceNameOf(data.deviceName, this.options.defaultDeviceName);
       const realtime = this.options.realtime?.(serverBaseUrl(data));
       const sessionOptions: SyncSessionOptions = {
         ...(realtime === undefined ? {} : { realtime }),

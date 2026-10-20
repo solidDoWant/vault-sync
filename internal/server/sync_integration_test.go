@@ -1077,6 +1077,32 @@ func TestDocumentHistoryNamesDevices(t *testing.T) {
 	assert.Equal(t, map[string]string{mallory.deviceID: "mallory's laptop"}, names(page))
 }
 
+// TestDeviceNamedBeforeTheFormatRuleKeepsWorking: RegisterDevice now refuses
+// format characters in names (#548), but a device registered before that
+// keeps its name and keeps committing; nothing is migrated.
+func TestDeviceNamedBeforeTheFormatRuleKeepsWorking(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.client(t, "alice", "")
+	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
+
+	legacy := "laptop\u202e\u2066 this device\u2069\u200b”"
+	_, err := fixture.registerDevice(t, alice.token, &vaultsyncv1.RegisterDeviceRequest{Name: legacy})
+	requireCode(t, connect.CodeInvalidArgument, err)
+
+	_, err = fixture.pool.Exec(t.Context(), `UPDATE devices SET name = $1 WHERE id = $2`, legacy, alice.deviceID)
+	require.NoError(t, err)
+
+	created := alice.mustCommit(t, alice.create(t, "note.md", alice.content(t, "content")))
+	edited := alice.mustCommit(t, alice.next(t, created, "note.md", alice.content(t, "edited"), false))
+
+	page, err := alice.historyPage(t, created.GetDocumentId(), 0, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{edited.GetId(), created.GetId()}, revisionIDs(page.GetRevisions()))
+	require.Len(t, page.GetDeviceNames(), 1)
+	assert.Equal(t, alice.deviceID, page.GetDeviceNames()[0].GetDeviceId())
+	assert.Equal(t, legacy, page.GetDeviceNames()[0].GetName())
+}
+
 func TestSyncRequestsAreValidated(t *testing.T) {
 	fixture := newSyncFixture(t, api.SyncLimits{})
 	alice := fixture.client(t, "alice", "")

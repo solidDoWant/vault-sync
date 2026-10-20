@@ -398,6 +398,31 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
       expect(h.server.head(documentId)?.deleted).toBe(true);
     });
 
+    it("surfaces a viewer's PERMISSION_DENIED, committing nothing and writing nothing (#548)", async () => {
+      const h = harness({ server: clockedServer().server });
+      const { documentId, tombstone } = await takenPlan(h);
+      const revisions = h.server.revisionCount;
+      const before = await files(h.vault);
+      // The server refuses every write of a viewer (SPEC.md §6.2), whatever the path.
+      const writes = new Set(["BeginBlob", "PutBlobChunk", "CommitBlob", "CommitRevision"]);
+      const refused: string[] = [];
+      h.server.interceptor = (method) => {
+        if (!writes.has(method)) return;
+        refused.push(method);
+        throw new ConnectError("viewers cannot change this vault", Code.PermissionDenied);
+      };
+
+      const failure = h.engine.restore(tombstone, undefined, "plans/plan (restored).md");
+
+      await expect(failure).rejects.toMatchObject({ code: Code.PermissionDenied });
+      expect(refused).toContain("CommitRevision");
+      expect(h.server.revisionCount).toBe(revisions);
+      expect(h.server.head(documentId)?.deleted).toBe(true);
+      expect(h.server.liveFiles()).toEqual(new Map([["plan.md", "a new plan\n"]]));
+      expect(await files(h.vault)).toEqual(before);
+      expect(await h.journal.listPending()).toEqual([]);
+    });
+
     it.each([
       ["an empty path", "", undefined],
       ["a backslash path", "plans\\plan.md", undefined],

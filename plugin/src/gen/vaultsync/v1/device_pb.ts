@@ -21,8 +21,10 @@ export const file_vaultsync_v1_device: GenFile = /*@__PURE__*/
  */
 export type RegisterDeviceRequest = Message<"vaultsync.v1.RegisterDeviceRequest"> & {
   /**
-   * Human-readable device name. Must be non-empty; the server bounds its
-   * length.
+   * Human-readable device name. Must be non-blank, at most 256 bytes, and
+   * free of control characters (Unicode category Cc), format characters (Cf,
+   * such as bidi controls and zero-width characters) and line or paragraph
+   * separators (Zl, Zp).
    *
    * @generated from field: string name = 1;
    */
