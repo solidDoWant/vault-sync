@@ -11,7 +11,7 @@ Open **Settings → Vault Sync**.
 | Server URL | The vault-sync server's base URL, for example `https://sync.example.com`. |
 | OIDC issuer URL | Optional. Leave it empty: the plugin uses the issuer the server advertises (its `VAULT_SYNC_OIDC_ISSUER_URL`). Enter it only for a server too old to advertise one, character for character (including any trailing slash), for example `https://auth.example.com/application/o/vault-sync/` for Authentik. An issuer that differs from the one the server advertises is refused, because the server accepts no other issuer's tokens. |
 | OIDC client ID | Optional. Leave it empty to sign in as the client the server advertises (its `VAULT_SYNC_OIDC_CLIENT_ID`, by default its audience). Enter a client ID to sign in as another public client instead (see below). The access tokens it receives must carry the server's `VAULT_SYNC_OIDC_AUDIENCE`. |
-| Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
+| Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. In a copy's name, characters that some platform does not allow in file names, and `(` and `)`, become `-`, the name is cut to 40 characters, and a name with nothing left becomes `device`. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
 | Remote vault | Shown while signed in: the server vault this vault syncs with, or controls to connect to one of your vaults or create a new one (see [Connecting a vault](#connecting-a-vault)). |
 | Sync the config folder | Off by default. Syncs the selected parts of this vault's config folder on this device (see [Config folder sync](#config-folder-sync)). Turning it on is a security risk: plugins and settings synced from other devices, plugin code included, run on this device. |
 
@@ -83,6 +83,7 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 
 | Status | Meaning |
 |---|---|
+| `starting` | Sync is starting: the plugin registers this device with the server and opens its sync journal. |
 | `idle` | The last sync succeeded. |
 | `syncing` | A pull or push is running. |
 | `offline` | The server or the identity provider could not be reached. Local changes are kept, and the next sync pushes them. |
@@ -91,11 +92,13 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
 
-After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy. The [conflict view](#conflicts) lists them.
+After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts the conflicts not yet resolved: conflict copies that still exist, and conflicts logged without a copy (when no conflict-copy name fits, see below) whose other device's version still waits. A conflict counts as resolved once you delete or rename its copy, or, for one without a copy, once the other device's version no longer waits. The [conflict view](#conflicts) lists them.
 
 ### Conflicts
 
 When this device and another one changed the same note on the same lines, edited the same attachment, or created a file at the same path, vault-sync keeps both versions and never writes conflict markers into a note. The other device's version stays at the path, and this device's version is kept next to it as a conflict copy, `<name> (conflict <device> <date>).<ext>`. The copy is an ordinary file and syncs to your other devices.
+
+Only `.md`, `.txt`, `.css` and `.js` files are merged line by line, so edits on different lines of such a file on two devices combine without a conflict. Every other file (attachments, `.json`, `.csv`, `.canvas` and any other text file) is handled as a whole: concurrent edits of it always make a conflict copy, even on different lines (SPEC.md §7).
 
 Run **Vault Sync: Show conflicts** to open the conflict view in the right sidebar. It lists each unresolved conflict, newest first, with:
 
