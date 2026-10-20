@@ -10,9 +10,15 @@
 -- during a rolling upgrade (SPEC.md §12): its retention job never names
 -- purged_revisions, and the column has a default for any insert that does
 -- not name it. Markers written before this migration get its time, which
--- only delays their pruning. The index serves the bounded prune scan; the
--- table is small (one row per purged revision), so building it in the
--- migration's transaction blocks purges only briefly.
+-- only delays their pruning. The index serves the bounded prune scan.
+--
+-- ADD COLUMN takes an ACCESS EXCLUSIVE lock on purged_revisions, held
+-- through the index build until the migration commits: while it is applied,
+-- purges and every ListChanges anchor check (which reads the table) block on
+-- every replica of this release. The table is small (one row per purged
+-- revision, and 0008 was never released without this migration), so the
+-- block is brief. (Comment corrected by #519; the SQL is unchanged, and the
+-- runner checks only each applied migration's version and name.)
 ALTER TABLE purged_revisions ADD COLUMN purged_at timestamptz NOT NULL DEFAULT now();
 
 CREATE INDEX purged_revisions_purged_at ON purged_revisions (purged_at);
