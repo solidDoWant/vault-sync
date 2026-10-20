@@ -2145,6 +2145,68 @@ export async function caseOnlyRename(endpoints: SimEndpoints, platform: "windows
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run) };
 }
 
+export interface RespelledRenameResult extends HeldPathResult {
+  /** The case-insensitive engine's push summaries, in order. */
+  pushes: string[];
+}
+
+/**
+ * A live rename of a note whose file the vault holds under another spelling
+ * than the note's synced path (#374). Both engines sync `Foo.md` (and, in the
+ * `vacated-path` variant, `b.md`). The second engine follows Windows or macOS
+ * rules; its user renames `Foo.md` to `foo.md` by case only, and the app is
+ * killed before the engine records it, so the restarted engine's push keeps
+ * the note at `Foo.md`. The user then renames `foo.md` to `b.md`, in the
+ * `vacated-path` variant after renaming the other note away from `b.md` to
+ * `c.md`. Each rename must be committed as a rename of its note: no
+ * tombstone, no new document, both vaults equal to the server, and the last
+ * push commits nothing (SPEC.md §2 principle 1).
+ */
+export async function respelledNoteRenamed(endpoints: SimEndpoints, platform: "windows" | "macos", variant: "free-path" | "vacated-path"): Promise<RespelledRenameResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("Foo.md", encoder.encode("x\n")));
+  if (variant === "vacated-path") log(await first.edit("b.md", encoder.encode("p\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.move("Foo.md", "foo.md"));
+  log(second.crash());
+  await push(second);
+  if (variant === "vacated-path") log(await second.move("b.md", "c.md"));
+  log(await second.move("foo.md", "b.md"));
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];

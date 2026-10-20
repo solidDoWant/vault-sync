@@ -41,6 +41,34 @@ export type UnmaterializableCause = UnmaterializableReason | "refused-by-vault";
 /** The rules of a platform where every path the server accepts can be created (up to the length limits). */
 export const posixPathRules: PathRules = { platform: "posix" };
 
+/**
+ * Whether the platform's filesystem takes `a` and `b` (vault-relative
+ * paths) for one file: on `windows` when they differ only by case, as NTFS
+ * compares names (each UTF-16 code unit by its simple upper-case mapping,
+ * never `ß` to `SS`); on `macos` when they differ only by case or Unicode
+ * normalization (NFC/NFD), as APFS and HFS+ do; on `posix` only when they
+ * are equal. This is narrower than the path key (§5), which also folds
+ * `ß`/`SS` and, on Windows, NFC/NFD: two spellings with one path key can be
+ * two files on the device (decision #52).
+ */
+export function sameFilesystemName(a: string, b: string, platform: PathPlatform): boolean {
+  if (a === b) return true;
+  if (platform === "posix") return false;
+  return filesystemFold(a, platform) === filesystemFold(b, platform);
+}
+
+function filesystemFold(path: string, platform: "windows" | "macos"): string {
+  const decomposed = platform === "macos" ? path.normalize("NFD") : path;
+  let folded = "";
+  for (let index = 0; index < decomposed.length; index++) {
+    const unit = decomposed.charAt(index);
+    const upper = unit.toUpperCase();
+    // A mapping to more than one unit (ß to SS, say) is full case folding, which neither filesystem does.
+    folded += upper.length === 1 ? upper : unit;
+  }
+  return platform === "macos" ? folded.normalize("NFD") : folded;
+}
+
 const encoder = new TextEncoder();
 const utf8Length = (text: string) => encoder.encode(text).length;
 
