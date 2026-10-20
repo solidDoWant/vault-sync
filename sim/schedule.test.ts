@@ -63,6 +63,28 @@ describe("generateSchedule", () => {
     expect(generateSchedule({ seed: 4242, steps: 2000, clients: 3, engines: 0 })).toEqual(schedule);
   });
 
+  it("generates exactly the schedules of before #229 when the run has no retention", () => {
+    // The digest of seed 4242's 2000 steps for 3 clients and 2 engines,
+    // computed with the generator from before retention steps existed.
+    const schedule = generateSchedule({ seed: 4242, steps: 2000, clients: 3, engines: 2 });
+    expect(bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(schedule))))).toBe("9570346746379d65eb865a659dfcdfe58c6cde458990d5be7cb21b11971effd5");
+    expect(generateSchedule({ seed: 4242, steps: 2000, clients: 3, engines: 2, retention: false })).toEqual(schedule);
+    expect(schedule.some((step) => step.kind === "retention")).toBe(false);
+  });
+
+  it("runs the retention job between the steps of the seed's plain schedule when the run has retention", () => {
+    const options = { seed: 99, steps: 3000, clients: 3, engines: 2 };
+    const plain = generateSchedule(options);
+    const schedule = generateSchedule({ ...options, retention: true });
+    const retention = schedule.filter((step) => step.kind === "retention");
+    // About one in two hundred steps.
+    expect(retention.length).toBeGreaterThanOrEqual(5);
+    expect(retention.length).toBeLessThanOrEqual(40);
+    expect(schedule.filter((step) => step.kind !== "retention")).toEqual(plain);
+    expect(generateSchedule({ ...options, retention: true })).toEqual(schedule);
+    expect(JSON.parse(JSON.stringify(schedule))).toEqual(schedule);
+  });
+
   it("has every engine's user make every kind of change when the run has engines", () => {
     const schedule = generateSchedule({ seed: 99, steps: 3000, clients: 3, engines: 2 });
     const engineSteps = schedule.flatMap((step) => (step.kind === "engine-operation" ? [step] : []));
