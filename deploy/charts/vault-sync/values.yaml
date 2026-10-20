@@ -138,6 +138,11 @@ config:
       keepDaily: ""
       # VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON.
       purgeMarkerHorizon: ""
+      # VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL: only read by the
+      # `retention set` subcommand run in a server pod (docs/deployment.md).
+      overrideMinKeepAll: ""
+      # VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY, likewise.
+      overrideMinKeepDaily: ""
     realtime:
       # VAULT_SYNC_REALTIME_MAX_CONNECTIONS.
       maxConnections: ""

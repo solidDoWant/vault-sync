@@ -242,6 +242,8 @@
   "VAULT_SYNC_RETENTION_KEEP_ALL" $config.server.retention.keepAll
   "VAULT_SYNC_RETENTION_KEEP_DAILY" $config.server.retention.keepDaily
   "VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON" $config.server.retention.purgeMarkerHorizon
+  "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_ALL" $config.server.retention.overrideMinKeepAll
+  "VAULT_SYNC_RETENTION_OVERRIDE_MIN_KEEP_DAILY" $config.server.retention.overrideMinKeepDaily
   "VAULT_SYNC_REALTIME_MAX_CONNECTIONS" $config.server.realtime.maxConnections
   "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER" $config.server.realtime.maxConnectionsPerUser
   "VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS" $config.server.realtime.maxSubscriptions
