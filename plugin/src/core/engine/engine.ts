@@ -1164,12 +1164,34 @@ export class SyncEngine {
     return [...this.changes.renames, ...this.roundRenames];
   }
 
-  /** The live document the journal has at `path`, compared as the vault compares paths (its own spelling first). */
-  private async documentAt(path: string): Promise<DocumentState | undefined> {
+  /**
+   * The live document whose file the vault holds at `path`, compared as the
+   * vault compares paths (its own spelling first). A document at another
+   * spelling with the same path key is not found if the filesystem holds the
+   * two spellings as two files (decision #52, #399): with `bySpelling`, when
+   * the filesystem does not fold one into the other (for a vault event, which
+   * may arrive after later changes are on disk); otherwise, when the vault
+   * lists both now.
+   */
+  private async documentAt(path: string, bySpelling = false): Promise<DocumentState | undefined> {
     const exact = await this.journal.findDocumentByPath(path);
     if (exact !== undefined || this.pathRules.platform === "posix") return exact;
     const key = this.fileKey(path);
-    return (await this.journal.listDocuments()).find((state) => !state.deleted && this.fileKey(state.path) === key);
+    const state = (await this.journal.listDocuments()).find((candidate) => !candidate.deleted && this.fileKey(candidate.path) === key);
+    if (state === undefined || sameFilesystemName(state.path, path, this.pathRules.platform)) return state;
+    if (bySpelling || (await this.heldApart(state.path, path))) return undefined;
+    return state;
+  }
+
+  /**
+   * Whether the vault holds `a` and `b`, two spellings with one path key, as
+   * two files: it lists both. Path keys fold `ß`/`SS`, and NFC/NFD on
+   * Windows, which the filesystem does not (decision #52).
+   */
+  private async heldApart(a: string, b: string, listed?: ReadonlySet<string>): Promise<boolean> {
+    if (sameFilesystemName(a, b, this.pathRules.platform)) return false;
+    const files = listed ?? new Set(await this.vault.list());
+    return files.has(a) && files.has(b);
   }
 
   /**
@@ -1939,10 +1961,14 @@ export class SyncEngine {
       // A path no document has names the file the vault holds under its
       // own spelling: a file renamed by case before its first push is one
       // create, at its new spelling (#304).
-      const onDisk = new Map((await this.vault.list()).map((path) => [this.fileKey(path), path]));
+      const listed = await this.vault.list();
+      const onDisk = new Map(listed.map((path) => [this.fileKey(path), path]));
+      const held = new Set(listed);
       for (const path of [...paths]) {
         const own = live.get(this.fileKey(path)) ?? onDisk.get(this.fileKey(path));
-        if (own === undefined || own === path) continue;
+        // Two files the vault holds apart are two files, each pushed as itself:
+        // a new one's create is refused at the path key and kept as a conflict copy (#399).
+        if (own === undefined || own === path || (await this.heldApart(own, path, held))) continue;
         paths.delete(path);
         paths.add(own);
       }
@@ -2384,7 +2410,7 @@ export class SyncEngine {
       // A local rename took that file away already: this one came after it.
       if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return false;
       if ((await this.journal.listPending()).some((operation) => !operation.deleted && this.fileKey(operation.path) === key)) return true;
-      const state = await this.documentAt(path);
+      const state = await this.documentAt(path, true);
       return state !== undefined && !(await this.movedAway(state));
     } catch {
       // In doubt, a rename like any other.
@@ -2399,7 +2425,7 @@ export class SyncEngine {
    */
   private async deletedFile(path: string): Promise<DeletedFile | undefined> {
     try {
-      const state = await this.documentAt(path);
+      const state = await this.documentAt(path, true);
       if (state === undefined || (await this.movedAway(state))) return undefined;
       const key = this.fileKey(path);
       if (this.localRenames().some(([to]) => this.fileKey(to) === key)) return undefined;
@@ -2420,14 +2446,13 @@ export class SyncEngine {
   private async syncedSpelling(path: string): Promise<string | undefined> {
     if (this.pathRules.platform === "posix") return undefined;
     try {
-      const state = await this.documentAt(path);
-      if (state === undefined || state.path === path) return undefined;
       // Decided from the two spellings alone, never from what the vault holds
       // now: events arrive late, so the vault may already show later actions.
       // Path keys fold more than the filesystem (ß and SS; NFC/NFD on Windows):
       // two such spellings can be two files, so the one at `path` is not the
       // document's (decision #52).
-      return sameFilesystemName(state.path, path, this.pathRules.platform) ? state.path : undefined;
+      const state = await this.documentAt(path, true);
+      return state === undefined || state.path === path ? undefined : state.path;
     } catch {
       // In doubt, the rename is recorded from the vault's spelling, as before.
       return undefined;
