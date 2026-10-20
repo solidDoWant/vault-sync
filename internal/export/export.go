@@ -276,6 +276,10 @@ func (run *run) run(ctx context.Context) error {
 // maxStagingAttempts bounds the names mkdirStaging tries.
 const maxStagingAttempts = 100
 
+// stagingSuffix returns the random number of a staging directory's name;
+// tests replace it.
+var stagingSuffix = rand.Uint32
+
 // mkdirStaging creates a new directory in parent named prefix followed by a
 // random decimal number, the only names removeStale removes. It does not use
 // os.MkdirTemp, whose pattern puts the number in place of the last "*" of
@@ -283,7 +287,7 @@ const maxStagingAttempts = 100
 // recognize the directory a killed run left behind.
 func mkdirStaging(parent, prefix string) (string, error) {
 	for range maxStagingAttempts {
-		staging := filepath.Join(parent, prefix+strconv.FormatUint(uint64(rand.Uint32()), 10))
+		staging := filepath.Join(parent, prefix+strconv.FormatUint(uint64(stagingSuffix()), 10))
 
 		err := os.Mkdir(staging, dirMode)
 		if errors.Is(err, fs.ErrExist) {
