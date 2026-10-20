@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -1053,6 +1053,33 @@ describe.runIf(suites.has("scenarios"))("scripted new file at a renamed-away not
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.tombstoned, trace).toEqual([]);
     // Nothing stays deferred or pending: the user's engine's last push had nothing left to do.
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted local rename into a folder named like a remote rename's path (#344)", () => {
+  it.each(["posix", "macos", "windows"] as const)("keeps the local rename to Notes/C.md and the local edit as a conflict copy in Notes/, with nothing deferred, under %s rules", async (platform) => {
+    const result = await localRenameIntoRemoteRenamesFolder(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("a.md");
+    expect(note, trace).toBeDefined();
+    // The local rename wins over the remote one: the note is live at Notes/C.md with the remote content.
+    expect(result.documents.get("Notes/C.md"), trace).toBe(note);
+    // The overlapping local edit is kept, as a new document at a conflict-copy path in Notes/.
+    const copyPaths = [...result.documents.keys()].filter((path) => path !== "Notes/C.md");
+    expect(copyPaths, trace).toEqual([expect.stringMatching(/^Notes\/C \(conflict .*\)\.md$/)]);
+    const copyPath = copyPaths[0] ?? "";
+    const expected = new Map([
+      ["Notes/C.md", "theirs\n"],
+      [copyPath, "mine\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.conflicts.map(({ reason, copyPath: copy }) => [reason, copy]), trace).toEqual([["overlapping-edits", copyPath]]);
+    // Nothing stays pending: the second engine's last push had nothing left to do.
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
