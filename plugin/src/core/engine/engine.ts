@@ -1789,7 +1789,10 @@ export class SyncEngine {
    */
   private async resync(summary: PullSummary): Promise<void> {
     summary.resynced = true;
+    const cursor = summary.cursor;
     const heads = new Map<string, IncomingRevision>();
+    /** The revision id at each seq the feed holds. */
+    const feed = new Map<bigint, string>();
     let seq = 0n;
     let anchor: Uint8Array | undefined;
     for (;;) {
@@ -1797,12 +1800,24 @@ export class SyncEngine {
       for (const revision of response.revisions) {
         if (revision.seq <= seq) throw new RemoteContentError(`change feed went from seq ${String(seq)} back to ${String(revision.seq)}`);
         heads.set(revision.documentId, toIncoming(revision));
+        feed.set(revision.seq, revision.id);
         seq = revision.seq;
         anchor = cursorAnchor(revision);
       }
       if (!response.hasMore) break;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
     }
+    // Seqs are gapless but for purged revisions (§11), so a seq the feed
+    // skips is one retention purged. With the cursor's own seq skipped, the
+    // divergence is a purge of the cursor's revision, not a restore below it
+    // (§6.1). A document whose synced revision the feed still holds at its
+    // seq, or whose seq it skips too, was then lost by no restore: the
+    // server's head descends from it, and is applied as an ordinary pull
+    // would apply it (merged only if the user changed the document). Merged
+    // regardless, a remote delete would keep the unchanged file and the next
+    // push would bring the note back (#480).
+    const purgedCursor = cursor > 0n && cursor <= seq && !feed.has(cursor);
+    const lostNothing = (state: DocumentState) => purgedCursor && state.seq > 0n && state.seq <= seq && (feed.get(state.seq) ?? state.revisionId) === state.revisionId;
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
@@ -1816,6 +1831,8 @@ export class SyncEngine {
         this.count(summary, await this.defer(remote, "out-of-scope"));
       } else if (this.overCap(remote)) {
         this.count(summary, await this.defer(remote, "too-large"));
+      } else if (lostNothing(state)) {
+        this.count(summary, await this.applyRevision(incoming));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
