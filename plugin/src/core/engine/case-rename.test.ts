@@ -62,3 +62,62 @@ describe.each(["windows", "macos"] as const)("a case-only rename on %s (#304)", 
     expect(await files(h.vault)).toEqual(h.server.liveFiles());
   });
 });
+
+// A remote case-only rename of a note the user edited (#343): the file at the
+// new spelling is the note's own, not a file in the way, so the engine merges
+// the rename with the edit instead of putting the revision off forever, and
+// the edit is pushed (SPEC.md §2, principle 1).
+describe.each(["windows", "macos"] as const)("a remote case-only rename of a locally edited note on %s (#343)", (platform) => {
+  it.each(["push", "pull"] as const)("merges the rename with the edit when the %s meets it", async (first) => {
+    const h = harness({ merge: "default", pathRules: { platform } });
+    h.server.commit({ documentId: "note", path: "Notes/C.md", content: "c\n" });
+    await h.engine.pull();
+
+    await h.vault.write("Notes/C.md", new TextEncoder().encode("c\nlocal edit\n"));
+    h.server.commit({ documentId: "note", path: "notes/c.md", content: "c\n" });
+    await h.engine[first]();
+    await h.engine.push();
+
+    expect(h.server.liveDocuments()).toEqual(new Map([["notes/c.md", "note"]]));
+    expect(h.server.liveFiles()).toEqual(new Map([["notes/c.md", "c\nlocal edit\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([["notes/c.md", "c\nlocal edit\n"]]));
+    expect(await h.journal.getDeferred("note")).toBeUndefined();
+    expect(await h.journal.listPending()).toEqual([]);
+
+    // Quiet: nothing more to push, and the vault still matches the server.
+    expect(await h.engine.push()).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
+    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+  });
+
+  it.each([
+    ["only renames it", "one\ntwo\nthree\nfour\n", "one\ntwo\nthree\nfour\nlocal edit\n"],
+    ["renames and edits it", "remote edit\none\ntwo\nthree\nfour\n", "remote edit\none\ntwo\nthree\nfour\nlocal edit\n"],
+  ])("merges the local edit when the other device %s while the push commits the edit, so the server refuses the commit", async (_change, remoteContent, mergedContent) => {
+    const h = harness({ merge: "default", pathRules: { platform } });
+    h.server.commit({ documentId: "note", path: "Notes/C.md", content: "one\ntwo\nthree\nfour\n" });
+    await h.engine.pull();
+
+    await h.vault.write("Notes/C.md", new TextEncoder().encode("one\ntwo\nthree\nfour\nlocal edit\n"));
+    // Another device renames the note by case just before the edit's commit
+    // reaches the server, so its base is no longer the head.
+    h.server.interceptor = (method) => {
+      if (method !== "CommitRevision") return;
+      h.server.interceptor = undefined;
+      h.server.commit({ documentId: "note", path: "notes/c.md", content: remoteContent });
+    };
+    await h.engine.push();
+    await h.engine.push();
+
+    expect(h.server.liveDocuments()).toEqual(new Map([["notes/c.md", "note"]]));
+    expect(h.server.liveFiles()).toEqual(new Map([["notes/c.md", mergedContent]]));
+    // One file, at the new spelling: no conflict copy.
+    expect(await files(h.vault)).toEqual(new Map([["notes/c.md", mergedContent]]));
+    expect(await h.journal.getDeferred("note")).toBeUndefined();
+    expect(await h.journal.listPending()).toEqual([]);
+
+    // Quiet: nothing more to pull or push, and the vault still matches the server.
+    await h.engine.pull();
+    expect(await h.engine.push()).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
+    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+  });
+});

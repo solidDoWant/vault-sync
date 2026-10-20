@@ -1156,6 +1156,11 @@ export class SyncEngine {
     const holder = await this.documentAt(local.path);
     if (holder !== undefined && holder.documentId !== remote.documentId) return false;
     const copyPaths: string[] = [];
+    // A result path that is the document's own file under another spelling
+    // (a remote case-only rename on a case-insensitive platform) is no file
+    // in the way: the vault holds one file there, the document's, which the
+    // rename below respells (#343).
+    const respelled = outcome.content !== null && outcome.path !== local.path && this.fileKey(outcome.path) === this.fileKey(local.path);
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).
@@ -1170,7 +1175,7 @@ export class SyncEngine {
       // the remote document takes the path and the file is kept as a conflict
       // copy. Cleared before the merge is recorded, so a file at the recorded
       // path is always this document's (see followRename).
-      if (outcome.content !== null && outcome.path !== local.path) {
+      if (outcome.content !== null && outcome.path !== local.path && !respelled) {
         const occupant = await this.readOrNull(outcome.path);
         // A known document a local move put there moves on to a
         // conflict-copy path under its own id, as a refused create would.
@@ -1215,7 +1220,7 @@ export class SyncEngine {
       } else {
         let there = outcome.path === local.path ? current : await this.readOrNull(outcome.path);
         if (outcome.path !== local.path && current !== null) {
-          if (there !== null) return false;
+          if (there !== null && !respelled) return false;
           await this.echoed(this.echoes.expectRename(local.path, outcome.path), () => this.vault.rename(local.path, outcome.path));
           there = current;
         }
