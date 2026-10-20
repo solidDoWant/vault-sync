@@ -232,7 +232,16 @@ jobs:
         name: Plugin e2e (native)
         env:
           VAULT_SYNC_TEST_DATABASE_URL: ${{ steps.postgres-macos.outputs.connection-uri || steps.postgres-windows.outputs.connection-uri }}
+          VAULT_SYNC_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
         run: ./scripts/with-native-s3.sh go test -count=1 -tags e2e -timeout 20m -run TestPluginE2E -v ./cmd/vault-sync-server/
+      # WebdriverIO and verbose chromedriver logs, with Obsidian's own
+      # stderr, for telling a crashed Obsidian from a failed test (#457).
+      - if: failure() && runner.os != 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.name }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/e2e-logs
+          retention-days: 14
 
   # The single required status check (it also covers the plugin-e2e matrix,
   # whose per-OS check names are not reported when the job is skipped). It
