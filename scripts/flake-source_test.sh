@@ -11,12 +11,16 @@
 #      holds none of its gitignored directories.
 #   2. `nix develop` in a git worktree containing both caches succeeds, and
 #      the store copy of the source excludes them.
-#   3. Evaluating that worktree as a path flake -- `nix develop path:...` and
-#      `builtins.getFlake (toString ./.)`, the call that copied the cache in
-#      #158 -- fails with the flake's explanation.
+#   3. Evaluating that worktree's dev shell as a path flake -- `nix develop
+#      path:...` and `builtins.getFlake (toString ./.)`, the call that copied
+#      the cache in #158 -- fails with the flake's explanation. Only flake
+#      outputs can be guarded: `inputs` and `outPath` of a path flake (for
+#      example `(builtins.getFlake (toString ./.)).inputs.nixpkgs.rev`) are
+#      attached by Nix itself and still evaluate, after the copy (#222).
 #
 # Cases 2 and 3 run on a throwaway repository holding only flake.nix,
-# flake.lock and .gitignore, so the path copies they make are a few KB. Its
+# flake.lock, go.mod (the flake reads the Go version from it) and
+# .gitignore, so the path copies they make are a few KB. Its
 # locked inputs are the ones already in the store for the dev shell, so no
 # network is needed and nothing is built.
 set -euo pipefail
@@ -93,9 +97,9 @@ fi
 # agents check out issues) with both caches planted in it.
 origin="$work/origin"
 mkdir -p "$origin"
-cp "$repo_root/flake.nix" "$repo_root/flake.lock" "$repo_root/.gitignore" "$origin/"
+cp "$repo_root/flake.nix" "$repo_root/flake.lock" "$repo_root/go.mod" "$repo_root/.gitignore" "$origin/"
 quiet git -C "$origin" -c init.defaultBranch=master init
-quiet git -C "$origin" add flake.nix flake.lock .gitignore
+quiet git -C "$origin" add flake.nix flake.lock go.mod .gitignore
 quiet git -C "$origin" -c user.name=test -c user.email=test@example.com commit -m base
 worktree="$work/worktree"
 quiet git -C "$origin" worktree add --detach "$worktree"
@@ -137,7 +141,7 @@ expect_refused() {
 }
 expect_refused "nix develop path:" nix develop "path:$worktree" -c true
 # shellcheck disable=SC2016 # Nix expression, not shell
-expect_refused "builtins.getFlake (toString ./.)" nix eval --impure --raw --expr \
+expect_refused "builtins.getFlake (toString ./.) dev shell" nix eval --impure --raw --expr \
 	'(builtins.getFlake (toString ./.)).devShells.${builtins.currentSystem}.default.drvPath'
 
 if [[ $failures -ne 0 ]]; then

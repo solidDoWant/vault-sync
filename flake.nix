@@ -18,9 +18,14 @@
         # `path:`) the whole directory is copied, including the gitignored
         # plugin/node_modules and plugin/.wdio-obsidian-cache (over 1 GB),
         # once per evaluation of a changed tree (#158). That copy cannot be
-        # prevented from in here, so path-flake evaluation fails instead of
-        # silently repeating it. Git sources carry rev (clean) or dirtyRev
-        # (dirty); path sources carry neither.
+        # prevented from in here, so evaluating the dev shell or the packages
+        # from a path flake fails instead of silently repeating it. Git
+        # sources carry rev (clean) or dirtyRev (dirty); path sources carry
+        # neither. Only outputs can be guarded: Nix attaches `inputs` and
+        # `outPath` itself, so for example
+        # `(builtins.getFlake (toString ./.)).inputs.nixpkgs.rev` still
+        # evaluates, after making the copy (#222). Documentation (README.md,
+        # CLAUDE.md) is the only mitigation for that.
         requireGitSource = value:
           if self ? rev || self ? dirtyRev then
             value
@@ -40,18 +45,31 @@
         # (same version and hash as nixpkgs master) until nixpkgs catches up;
         # once the pinned Go is at least that version it is used as is and
         # this override can be deleted.
-        minimumGoVersion = "1.26.9";
+        #
+        # The minimum is the `toolchain` directive of go.mod, the one place it
+        # is set (#171); setup-go in CI reads the same line. Raising it there
+        # without a nixpkgs Go or a patched Go below that is at least as new
+        # makes every evaluation of the flake fail with a message saying so.
+        goModToolchain = builtins.match ".*\ntoolchain go([0-9.]+)\n.*" (builtins.readFile ./go.mod);
+        minimumGoVersion =
+          if goModToolchain == null then
+            throw "vault-sync: go.mod has no `toolchain goX.Y.Z` line; flake.nix reads the minimum Go version from it"
+          else
+            builtins.head goModToolchain;
+        patchedGoVersion = "1.26.9";
         go =
           if pkgs.lib.versionAtLeast pkgs.go.version minimumGoVersion then
             pkgs.go
-          else
+          else if pkgs.lib.versionAtLeast patchedGoVersion minimumGoVersion then
             pkgs.go.overrideAttrs (finalAttrs: _: {
-              version = minimumGoVersion;
+              version = patchedGoVersion;
               src = pkgs.fetchurl {
                 url = "https://go.dev/dl/go${finalAttrs.version}.src.tar.gz";
                 hash = "sha256-lzXX3Ntls10/pXfwQGRzfAO4nPGitx5uaf4vPG+f1Mo=";
               };
-            });
+            })
+          else
+            throw "vault-sync: go.mod requires toolchain go${minimumGoVersion}, but nixpkgs has Go ${pkgs.go.version} and flake.nix patches in ${patchedGoVersion}; update patchedGoVersion and its source hash in flake.nix (or nixpkgs).";
 
         # Shared libraries of the Obsidian (Electron) build and chromedriver
         # that the plugin e2e suite downloads (make test-e2e). They are

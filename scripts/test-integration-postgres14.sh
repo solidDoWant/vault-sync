@@ -22,9 +22,19 @@ fi
 export VAULT_SYNC_TEST_POSTGRES_VERSION=14
 
 # One stack, two go test runs: -run applies to every listed package, so the
-# upgrade test is selected in a run of its own.
+# upgrade test is selected in a run of its own. A -run pattern that matches
+# nothing passes with "no tests to run", so the run fails unless the upgrade
+# test itself passed: renaming, moving or re-tagging it cannot silently drop
+# the PostgreSQL 14 upgrade check.
 exec ./scripts/with-test-stack.sh bash -c '
 	set -euo pipefail
 	go test -race -count=1 -tags integration ./internal/store/
-	go test -race -count=1 -tags integration -run "^TestRollingUpgrade$" ./cmd/vault-sync-server/
+	test=TestRollingUpgrade
+	log="$(mktemp)"
+	trap "rm -f \"\$log\"" EXIT
+	go test -race -count=1 -tags integration -v -run "^${test}\$" ./cmd/vault-sync-server/ | tee "$log"
+	if ! grep -q "^--- PASS: ${test} " "$log"; then
+		echo "test-integration-postgres14: ${test} did not run in ./cmd/vault-sync-server/ (renamed, moved or behind another build tag?); update this script" >&2
+		exit 1
+	fi
 '
