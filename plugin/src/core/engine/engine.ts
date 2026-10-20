@@ -739,6 +739,23 @@ export class SyncEngine {
         return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
       }
     }
+    if (inspection.kind === "clean" && !remote.deleted) {
+      // No file at the path, but the journal has it as another live
+      // document's: one whose own remote move the merge path holds, after
+      // the user deleted its file, say. Written here, the journal would hold
+      // two documents at one path: the other's merge would take this file
+      // as its local version, and this document's next move would find its
+      // file another's for good (#379). The merge path lets the other
+      // document's merge go first. One the platform cannot hold is handled
+      // as its kept file is (releaseKeptFile, #391). One whose revision waits
+      // for a reason no pull or push retries gives the path up there too
+      // (resolveFirst, releaseIdleClaim), so this revision is written.
+      const holder = await this.documentAt(remote.path);
+      if (holder !== undefined && holder.documentId !== remote.documentId && (await this.journal.getDeferred(holder.documentId))?.reason !== "unmaterializable") {
+        const path = inspection.source ?? remote.path;
+        return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+      }
+    }
     if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
       // The file at the document's synced path holds its synced content, but
       // a local rename of another document put it there after this one moved
@@ -1004,7 +1021,7 @@ export class SyncEngine {
     if (this.resolving.has(documentId)) return false;
     const deferred = await this.journal.getDeferred(documentId);
     if (deferred?.reason === "unmaterializable") return this.releaseKeptFile(documentId);
-    if (deferred?.reason !== "local-changes") return false;
+    if (deferred?.reason !== "local-changes") return this.releaseIdleClaim(documentId);
     const state = await this.journal.getDocument(documentId);
     return (await this.handToMerge(deferred.revision, state, await this.localFile(state, deferred.revision))) === "merged";
   }
@@ -1031,6 +1048,55 @@ export class SyncEngine {
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
     if (pending.some((operation) => operation.deleted || this.fileKey(operation.path) !== key)) return false;
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
+    await this.journal.putDocument({ ...state, deleted: true });
+    return true;
+  }
+
+  /**
+   * Gives up the claim on its synced path of a document whose file is not
+   * there any more and whose remote revision waits for a reason no pull or
+   * push retries (`out-of-scope`, `too-large`, `invalid-path`), once the
+   * server puts another document at that path (#379 review): kept, the claim
+   * would hold the other document off for good. A document with an operation
+   * pending or a merge result recorded keeps its claim: those are retried.
+   *
+   * If a local rename not yet pushed moved the document's file (the rename
+   * waits with the document, SPEC.md §8), the document follows its file, as
+   * on-device identity follows the filesystem (#52): its journal state moves
+   * to the rename's new path and the rename is dropped, so the path it left
+   * is free and no record of the rename points there once the other document
+   * is written. Its revision, still deferred for its own reason, then applies
+   * to the file where it is. If the file is not there, the new path is out of
+   * scope or another live document holds it, the document gives its claim up
+   * instead, as when the user deleted its file: like releaseKeptFile, the
+   * state is recorded `deleted`, so the revision applies as a new document's
+   * would once its own retry rules let it (never taking the other document's
+   * file as its local version), and a file at the new path is pushed as a new
+   * document. Returns whether the claim was given up.
+   */
+  private async releaseIdleClaim(documentId: string): Promise<boolean> {
+    const deferred = await this.journal.getDeferred(documentId);
+    if (deferred === undefined || deferred.merging !== undefined || (deferred.reason !== "out-of-scope" && deferred.reason !== "too-large" && deferred.reason !== "invalid-path")) return false;
+    const state = await this.journal.getDocument(documentId);
+    if (state === undefined || state.deleted || (await this.vault.stat(state.path)) !== null) return false;
+    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return false;
+    const key = this.fileKey(state.path);
+    let follow: string | undefined;
+    for (const renames of [this.changes.renames, this.roundRenames]) {
+      for (const [to, from] of [...renames]) {
+        if (this.fileKey(from) !== key) continue;
+        renames.delete(to);
+        follow ??= to;
+      }
+    }
+    if (follow !== undefined && this.inScope(follow) && (await this.vault.stat(follow)) !== null) {
+      const holder = await this.documentAt(follow);
+      if (holder === undefined || holder.documentId === documentId) {
+        await this.journal.putDocument({ ...state, path: follow });
+        return true;
+      }
+    }
+    if (follow !== undefined) this.changes.paths.add(follow);
     await this.journal.putDocument({ ...state, deleted: true });
     return true;
   }
