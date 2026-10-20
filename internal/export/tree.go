@@ -88,7 +88,11 @@ func (tree *vaultTree) remove(path string) error {
 // prune removes the directories on path that are empty, deepest first, so a
 // refused document leaves no directory without a document in it. Only
 // directories the tree created or checked are considered, and removing one
-// never removes anything in it: the first that is not empty stops pruning.
+// never removes anything in it: rmdir refuses a directory that is not empty.
+// That, not the early return below, is what keeps documents safe. The first
+// directory that is not empty stops pruning only as an optimisation: every
+// ancestor of a non-empty directory is non-empty too, so going on would only
+// see rmdir fail on each of them.
 func (tree *vaultTree) prune(path string) error {
 	segments := strings.Split(path, "/")
 	for index := len(segments) - 1; index > 0; index-- {

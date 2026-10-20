@@ -136,7 +136,7 @@ This requires that:
 - `DIR`, if it exists and is not empty, holds a previous export (its `.vault-sync-export` marker). The export refuses to replace any other directory, so a mistyped `-out` cannot destroy unrelated data;
 - the volume has room for two full exports while a run is in progress.
 
-A lock file (`.<name>.lock` in the parent) makes a second concurrent run against the same `DIR` fail at once. A run removes staging directories left by interrupted runs before it starts: only entries named exactly `.<name>.staging-` followed by digits, so the lock file and staging directories of an export to a sibling directory (for example `-out /backup/out.staging-1`) are left alone.
+A lock file (`.<name>.lock` in the parent) makes a second concurrent run against the same `DIR` fail at once. If `.<name>.lock` is a symbolic link, the run fails rather than follow it; remove the link. A run removes staging directories left by interrupted runs before it starts: only entries named exactly `.<name>.staging-` followed by digits, so the lock file and staging directories of an export to a sibling directory (for example `-out /backup/out.staging-1`) are left alone. This holds for any `<name>`, including one that contains `*`.
 
 Archival tooling should read `DIR` while no export runs, or tolerate the tree being swapped between two reads.
 
@@ -182,6 +182,8 @@ On completion, or on any failure after the flags are parsed, the export writes o
 | `document_errors` | Documents whose content is missing or corrupt. At most 100 are listed, under their vault, with a reason. All of them are counted, and all of them are in the manifests. |
 | `unplaced` | Documents written to an unplaced tree because their path cannot be placed in the vault's tree. They are exported, so they do not make the run `partial`, but a vault that has any is worth a look. |
 | `vault_details` | Per vault: `id`, `name`, `encryption`, the `head_seq` exported, `files`, `bytes`, `unplaced`, `skipped` if not exported, and listed `document_errors`. On a `failed` run it covers only the vaults reached. |
+
+When the run does not fail, its last log line (`"msg": "export finished"`) repeats the summary's `status`, `vaults`, `files`, `bytes`, `unplaced` and `document_errors` counts, for operators who alert on logs.
 
 The exit status is `0` only for `ok`. It is `1` for `partial` or `failed`, and `2` for invalid flags. Alert on a non-zero exit (for example a failed Kubernetes Job), and use the summary to tell a `partial` export (in place, with gaps) from a `failed` one (not in place). The job has no metrics endpoint.
 
