@@ -36,14 +36,23 @@ type ListChangesRequest struct {
 	PageSize uint32 `protobuf:"varint,3,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// Anchor of the revision at since_seq, as the client received it
 	// (Revision.anchor), or empty for no check. With an anchor, the server
-	// first checks that the vault still holds that revision at since_seq; if
-	// not, its history no longer contains the client's cursor (it was restored
-	// from a backup, or retention purged the revision) and the response only
-	// sets diverged (SPEC.md §6.1, §8). Either empty or exactly 16 bytes, and
-	// empty when since_seq is zero.
-	SinceAnchor   []byte `protobuf:"bytes,4,opt,name=since_anchor,json=sinceAnchor,proto3" json:"since_anchor,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// first checks that the vault still holds that revision at since_seq, or
+	// a purge marker of it if retention purged it (SPEC.md §11); if not, its
+	// history no longer contains the client's cursor (it was restored from a
+	// backup) and the response only sets diverged (SPEC.md §6.1, §8). Either
+	// empty or exactly 16 bytes, and empty when since_seq is zero.
+	SinceAnchor []byte `protobuf:"bytes,4,opt,name=since_anchor,json=sinceAnchor,proto3" json:"since_anchor,omitempty"`
+	// Seq of the client's own latest acknowledged commit above since_seq,
+	// which the cursor does not cover yet (SPEC.md §6.1), or zero for none.
+	// Given together with own_commit_anchor, and then above since_seq.
+	OwnCommitSeq uint64 `protobuf:"varint,5,opt,name=own_commit_seq,json=ownCommitSeq,proto3" json:"own_commit_seq,omitempty"`
+	// Anchor of the revision at own_commit_seq (Revision.anchor), checked like
+	// since_anchor in the same snapshot: unless the vault holds that revision
+	// or its purge marker, the response only sets diverged. Either empty or
+	// exactly 16 bytes; empty if and only if own_commit_seq is zero.
+	OwnCommitAnchor []byte `protobuf:"bytes,6,opt,name=own_commit_anchor,json=ownCommitAnchor,proto3" json:"own_commit_anchor,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ListChangesRequest) Reset() {
@@ -104,6 +113,20 @@ func (x *ListChangesRequest) GetSinceAnchor() []byte {
 	return nil
 }
 
+func (x *ListChangesRequest) GetOwnCommitSeq() uint64 {
+	if x != nil {
+		return x.OwnCommitSeq
+	}
+	return 0
+}
+
+func (x *ListChangesRequest) GetOwnCommitAnchor() []byte {
+	if x != nil {
+		return x.OwnCommitAnchor
+	}
+	return nil
+}
+
 // ListChangesResponse is one page of revisions.
 type ListChangesResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -113,10 +136,12 @@ type ListChangesResponse struct {
 	HasMore bool `protobuf:"varint,2,opt,name=has_more,json=hasMore,proto3" json:"has_more,omitempty"`
 	// The vault's head_seq when the page was read.
 	HeadSeq uint64 `protobuf:"varint,3,opt,name=head_seq,json=headSeq,proto3" json:"head_seq,omitempty"`
-	// Whether since_anchor was given and the vault holds no revision at
-	// since_seq with that anchor. The page is then empty and has_more false;
-	// the client resyncs from seq zero (SPEC.md §8). Never set without
-	// since_anchor.
+	// Whether since_anchor or own_commit_anchor was given and the vault holds
+	// neither a revision nor a purge marker with that anchor at its seq: the
+	// database was restored to before it. The page is then empty and has_more
+	// false; the client resyncs from seq zero (SPEC.md §8). Never set without
+	// an anchor. A server from before purge markers also sets it when
+	// retention purged the revision.
 	Diverged      bool `protobuf:"varint,4,opt,name=diverged,proto3" json:"diverged,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -611,12 +636,14 @@ var File_vaultsync_v1_sync_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_sync_proto_rawDesc = "" +
 	"\n" +
-	"\x17vaultsync/v1/sync.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"\x8c\x01\n" +
+	"\x17vaultsync/v1/sync.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"\xde\x01\n" +
 	"\x12ListChangesRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1b\n" +
 	"\tsince_seq\x18\x02 \x01(\x04R\bsinceSeq\x12\x1b\n" +
 	"\tpage_size\x18\x03 \x01(\rR\bpageSize\x12!\n" +
-	"\fsince_anchor\x18\x04 \x01(\fR\vsinceAnchor\"\x9d\x01\n" +
+	"\fsince_anchor\x18\x04 \x01(\fR\vsinceAnchor\x12$\n" +
+	"\x0eown_commit_seq\x18\x05 \x01(\x04R\fownCommitSeq\x12*\n" +
+	"\x11own_commit_anchor\x18\x06 \x01(\fR\x0fownCommitAnchor\"\x9d\x01\n" +
 	"\x13ListChangesResponse\x124\n" +
 	"\trevisions\x18\x01 \x03(\v2\x16.vaultsync.v1.RevisionR\trevisions\x12\x19\n" +
 	"\bhas_more\x18\x02 \x01(\bR\ahasMore\x12\x19\n" +

@@ -32,16 +32,16 @@ export class InMemoryJournal implements Journal {
 
   getDocument(documentId: string): Promise<DocumentState | undefined> {
     const state = this.documents.get(documentId);
-    return Promise.resolve(state === undefined ? undefined : { ...state });
+    return Promise.resolve(state === undefined ? undefined : copyDocument(state));
   }
 
   findDocumentByPath(path: string): Promise<DocumentState | undefined> {
     const found = this.sortedDocuments().find((state) => state.path === path && !state.deleted);
-    return Promise.resolve(found === undefined ? undefined : { ...found });
+    return Promise.resolve(found === undefined ? undefined : copyDocument(found));
   }
 
   listDocuments(): Promise<DocumentState[]> {
-    return Promise.resolve(this.sortedDocuments().map((state) => ({ ...state })));
+    return Promise.resolve(this.sortedDocuments().map(copyDocument));
   }
 
   /** The documents in id order (UTF-16 code units), IndexedDB's key order. */
@@ -50,7 +50,7 @@ export class InMemoryJournal implements Journal {
   }
 
   putDocument(state: DocumentState): Promise<void> {
-    this.documents.set(state.documentId, { ...state });
+    this.documents.set(state.documentId, copyDocument(state));
     return Promise.resolve();
   }
 
@@ -105,4 +105,9 @@ function copyDeferred(deferred: DeferredRevision): DeferredRevision {
   if (deferred.merging !== undefined) copy.merging = { ...deferred.merging };
   if (deferred.unmaterializable !== undefined) copy.unmaterializable = deferred.unmaterializable;
   return copy;
+}
+
+/** A copy of `state` that shares no array with it, as IndexedDB's structured clone. */
+function copyDocument(state: DocumentState): DocumentState {
+  return state.anchor === undefined ? { ...state } : { ...state, anchor: state.anchor.slice() };
 }

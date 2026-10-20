@@ -130,14 +130,14 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 		return nil, invalidArgument("since_seq must be at most %d", int64(math.MaxInt64))
 	}
 
-	anchor, err := cursorAnchor(since, request.Msg.GetSinceAnchor())
+	anchors, err := changesAnchors(request.Msg)
 	if err != nil {
 		return nil, err
 	}
 
 	limit := pageSize(request.Msg.GetPageSize(), DefaultChangesPageSize, service.maxChangesPageSize())
 
-	changes, err := vault.ListChanges(ctx, int64(since), anchor, limit)
+	changes, err := vault.ListChanges(ctx, int64(since), anchors, limit)
 	if err != nil {
 		return nil, service.internal(ctx, "cannot list changes", err)
 	}
@@ -145,20 +145,42 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 	return connect.NewResponse(changesPage(request.Header(), service.Limits.MaxResponseBytes, changes)), nil
 }
 
-// cursorAnchor parses a ListChanges since_anchor: empty (no check) or the
-// 16 bytes of a Revision.anchor, and only with a nonzero since_seq, since
-// seq zero is no revision.
-func cursorAnchor(since uint64, anchor []byte) (uuid.NullUUID, error) {
-	switch {
+// changesAnchors parses the anchors a ListChanges request asks the server
+// to check (SPEC.md §6.1): since_anchor, empty (no check) or the 16 bytes of
+// a Revision.anchor, and only with a nonzero since_seq, since seq zero is no
+// revision; and own_commit_anchor, likewise, with own_commit_seq, which is
+// above since_seq and given if and only if the anchor is. since_seq is at
+// most MaxInt64.
+func changesAnchors(request *vaultsyncv1.ListChangesRequest) ([]store.SeqAnchor, error) {
+	since := request.GetSinceSeq()
+
+	var anchors []store.SeqAnchor
+
+	switch anchor := request.GetSinceAnchor(); {
 	case len(anchor) == 0:
-		return uuid.NullUUID{}, nil
 	case len(anchor) != len(uuid.UUID{}):
-		return uuid.NullUUID{}, invalidArgument("since_anchor must be empty or %d bytes", len(uuid.UUID{}))
+		return nil, invalidArgument("since_anchor must be empty or %d bytes", len(uuid.UUID{}))
 	case since == 0:
-		return uuid.NullUUID{}, invalidArgument("since_anchor must be empty when since_seq is 0")
+		return nil, invalidArgument("since_anchor must be empty when since_seq is 0")
+	default:
+		anchors = append(anchors, store.SeqAnchor{Seq: int64(since), Anchor: uuid.UUID(anchor)})
 	}
 
-	return uuid.NullUUID{UUID: uuid.UUID(anchor), Valid: true}, nil
+	switch seq, anchor := request.GetOwnCommitSeq(), request.GetOwnCommitAnchor(); {
+	case seq == 0 && len(anchor) == 0:
+	case len(anchor) != len(uuid.UUID{}):
+		return nil, invalidArgument("own_commit_anchor must be %d bytes with own_commit_seq", len(uuid.UUID{}))
+	case seq == 0:
+		return nil, invalidArgument("own_commit_anchor must be empty when own_commit_seq is 0")
+	case seq <= since:
+		return nil, invalidArgument("own_commit_seq must be above since_seq")
+	case seq > math.MaxInt64:
+		return nil, invalidArgument("own_commit_seq must be at most %d", int64(math.MaxInt64))
+	default:
+		anchors = append(anchors, store.SeqAnchor{Seq: int64(seq), Anchor: uuid.UUID(anchor)})
+	}
+
+	return anchors, nil
 }
 
 // changesPage builds the ListChanges response for changes, for a request

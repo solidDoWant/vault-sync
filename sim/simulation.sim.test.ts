@@ -18,6 +18,7 @@ import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
+import { restoreWindow } from "./restore-scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -500,7 +501,8 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
 
     expect(result.violations, trace).toEqual([]);
     expect(result.purged, trace).toHaveLength(2);
-    expect(result.resynced, trace).toBe(true);
+    // The purge marker of the cursor's revision matches its anchor: no resync (#488).
+    expect(result.resynced, trace).toBe(false);
     const expected = new Map([["notes/kept.md", "two\n"]]);
     expect(result.live, trace).toEqual(["notes/kept.md"]);
     expect(result.vaults[0], trace).toEqual(expected);
@@ -1391,4 +1393,24 @@ describe.runIf(suites.has("determinism"))("determinism", () => {
     // The schedule exercised faults, so the comparison covers them.
     expect(first.trace.some((line) => line.includes("lost"))).toBe(true);
   });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted restore-and-purge scenarios (#488, #494)", () => {
+  const keepsTheEdit = async (shape: Parameters<typeof restoreWindow>[1]) => {
+    const result = await restoreWindow(environment, shape);
+    const trace = tail(result.trace, 200);
+
+    expect([...result.device.values()].join(""), trace).toContain("acknowledged edit");
+    expect([...result.server.values()].join(""), trace).toContain("acknowledged edit");
+  };
+
+  // The restored server's purge markers name the revisions it purged, not
+  // the device's, and the device sends the anchor of its own commit above
+  // its cursor: each restore is reported as divergence (#488, #494).
+  it.each(["untouched-after-restore", "deleted-after-restore", "own-commit-above-cursor"] as const)(
+    "keeps a device's acknowledged edit the restored server lost, and pushes it again (%s)",
+    async (shape) => {
+      await keepsTheEdit(shape);
+    },
+  );
 });

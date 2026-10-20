@@ -26,6 +26,12 @@ export interface InMemoryServerOptions {
   maxUploads?: number;
   /** How long a session must be idle before a BeginBlob at the limit reclaims it (VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE). */
   uploadReclaimIdleMs?: number;
+  /**
+   * Whether a purge keeps a purge marker that the anchor checks accept
+   * (SPEC.md §11); false acts as a server from before them, which reports a
+   * purged cursor revision as divergence. True by default.
+   */
+  purgeMarkers?: boolean;
 }
 
 export interface CommitInput {
@@ -77,6 +83,9 @@ export class InMemoryServer {
   /** Called after every handled call; throw from it to lose the response. */
   responseInterceptor: ResponseInterceptor | undefined;
   private revisions: Revision[] = [];
+  /** Purge markers: the anchor of each purged revision, by seq (SPEC.md §11). */
+  private purged = new Map<bigint, string>();
+  private readonly purgeMarkers: boolean;
   private readonly blobs = new Map<string, Uint8Array>();
   private readonly uploads = new Map<string, Upload>();
   private headSeq = 0n;
@@ -100,17 +109,25 @@ export class InMemoryServer {
     this.maxChunkBytes = options.maxChunkBytes ?? 1 << 20;
     this.maxUploads = options.maxUploads ?? Infinity;
     this.uploadReclaimIdleMs = options.uploadReclaimIdleMs ?? 10 * 60_000;
+    this.purgeMarkers = options.purgeMarkers ?? true;
     this.transport = createRouterTransport(({ service }) => {
       service(SyncService, {
         listChanges: (request) => {
           this.intercept("ListChanges", request);
           this.checkVault(request.vaultId);
           const limit = Math.min(request.pageSize === 0 ? 500 : request.pageSize, this.maxPageSize);
+          const anchors: [bigint, Uint8Array][] = [];
           if (request.sinceAnchor.length > 0) {
             if (request.sinceAnchor.length !== 16 || request.sinceSeq === 0n) throw new ConnectError("since_anchor is malformed", Code.InvalidArgument);
-            const atCursor = this.revisions.find((revision) => revision.seq === request.sinceSeq);
-            if (atCursor === undefined || bytesToHex(atCursor.anchor) !== bytesToHex(request.sinceAnchor)) return { revisions: [], hasMore: false, headSeq: this.headSeq, diverged: true };
+            anchors.push([request.sinceSeq, request.sinceAnchor]);
           }
+          if (request.ownCommitSeq !== 0n || request.ownCommitAnchor.length > 0) {
+            if (request.ownCommitAnchor.length !== 16 || request.ownCommitSeq <= request.sinceSeq || request.ownCommitSeq > 2n ** 63n - 1n) {
+              throw new ConnectError("own_commit_seq or own_commit_anchor is malformed", Code.InvalidArgument);
+            }
+            anchors.push([request.ownCommitSeq, request.ownCommitAnchor]);
+          }
+          if (anchors.some(([seq, anchor]) => !this.holds(seq, anchor))) return { revisions: [], hasMore: false, headSeq: this.headSeq, diverged: true };
           const after = this.revisions.filter((revision) => revision.seq > request.sinceSeq);
           return { revisions: after.slice(0, limit), hasMore: after.length > limit, headSeq: this.headSeq };
         },
@@ -252,8 +269,9 @@ export class InMemoryServer {
   /**
    * Purges a revision as the retention job does (SPEC.md §11): its child is
    * re-parented onto its parent, and the revision is gone from the change
-   * feed, GetRevision and history. Its blob stays until collectBlob. A
-   * document's head is never purged.
+   * feed, GetRevision and history, leaving a purge marker of its seq and
+   * anchor (unless `purgeMarkers` is off). Its blob stays until collectBlob.
+   * A document's head is never purged.
    */
   purge(revisionId: string): void {
     const revision = this.revisions.find((candidate) => candidate.id === revisionId);
@@ -261,6 +279,14 @@ export class InMemoryServer {
     if (this.head(revision.documentId)?.id === revisionId) throw new Error(`revision ${revisionId} is its document's head`);
     for (const child of this.revisions) if (child.documentId === revision.documentId && child.parentRevId === revisionId) child.parentRevId = revision.parentRevId;
     this.revisions = this.revisions.filter((candidate) => candidate !== revision);
+    if (this.purgeMarkers) this.purged.set(revision.seq, bytesToHex(revision.anchor));
+  }
+
+  /** Whether the server holds the revision at `seq` with `anchor`, or its purge marker (SPEC.md §6.1). */
+  private holds(seq: bigint, anchor: Uint8Array): boolean {
+    const hex = bytesToHex(anchor);
+    const revision = this.revisions.find((candidate) => candidate.seq === seq);
+    return (revision !== undefined && bytesToHex(revision.anchor) === hex) || this.purged.get(seq) === hex;
   }
 
   /** Garbage-collects a blob that no revision references any more (SPEC.md §11). */
@@ -293,6 +319,7 @@ export class InMemoryServer {
   /** Forgets every revision after `seq`, as a database restore from a backup would. */
   restoreTo(seq: bigint): void {
     this.revisions = this.revisions.filter((revision) => revision.seq <= seq);
+    for (const purged of this.purged.keys()) if (purged > seq) this.purged.delete(purged);
     this.headSeq = seq;
   }
 

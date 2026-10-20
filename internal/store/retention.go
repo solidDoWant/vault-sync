@@ -175,7 +175,9 @@ func (store *Store) CompleteRetentionScan(ctx context.Context, policy RetentionP
 // parent first (issue #58), so parent_rev_id always names a revision that
 // exists: the nearest retained ancestor, or none if every older revision is
 // gone. Every blob a purged revision referenced is marked released, which
-// starts its garbage-collection grace period (CollectBlob).
+// starts its garbage-collection grace period (CollectBlob). Each purged
+// revision's seq and anchor are kept as a purge marker, in the same
+// transaction, for the anchor checks of ListChanges.
 //
 // The document row is locked with SKIP LOCKED: if a commit to the document,
 // or another server process's purge of it, holds the lock, PurgeRevisions
@@ -269,8 +271,8 @@ func (vault *VaultStore) purgeRevisions(ctx context.Context, documentID uuid.UUI
 	return purged, done, nil
 }
 
-// purgeRevision re-parents revision id's children onto its parent and
-// deletes it, returning its content reference.
+// purgeRevision re-parents revision id's children onto its parent, deletes
+// it and records its purge marker, returning its content reference.
 func (vault *VaultStore) purgeRevision(ctx context.Context, tx pgx.Tx, documentID, id uuid.UUID) ([]byte, error) {
 	// The parent is read in the statement, not from the listing: an
 	// earlier purge in this transaction may have re-parented this revision.
@@ -284,7 +286,17 @@ func (vault *VaultStore) purgeRevision(ctx context.Context, tx pgx.Tx, documentI
 
 	var content []byte
 
-	err = tx.QueryRow(ctx, `DELETE FROM revisions WHERE vault_id = $1 AND document_id = $2 AND id = $3 RETURNING content_ref`,
+	// The purge marker keeps the revision's seq and anchor, so a client's
+	// cursor anchor at it still matches (ListChanges): a purge is never
+	// taken for a restore (SPEC.md §6.1, §11).
+	err = tx.QueryRow(ctx, `
+		WITH purged AS (
+			DELETE FROM revisions WHERE vault_id = $1 AND document_id = $2 AND id = $3
+			RETURNING vault_id, seq, anchor, content_ref
+		), marked AS (
+			INSERT INTO purged_revisions (vault_id, seq, anchor) SELECT vault_id, seq, anchor FROM purged
+		)
+		SELECT content_ref FROM purged`,
 		vault.vaultID, documentID, id).Scan(&content)
 	if err != nil {
 		return nil, fmt.Errorf("delete revision: %w", err)
