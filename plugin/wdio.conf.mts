@@ -28,6 +28,17 @@ const emulateMobile = process.env.VAULT_SYNC_E2E_MOBILE === "1";
 // fails.
 const logDir = process.env.VAULT_SYNC_E2E_LOG_DIR;
 
+declare global {
+  namespace WebdriverIO {
+    // chromedriver flags WebdriverIO passes through (as `--verbose` and
+    // `--enable-chrome-logs`) but does not type.
+    interface ChromedriverOptions {
+      verbose?: boolean;
+      enableChromeLogs?: boolean;
+    }
+  }
+}
+
 // The test-only harness plugin (test/e2e/harness) is bundled here, so the
 // suite always runs the harness that matches the checked-out sources.
 const harnessDir = path.join(root, "test", "e2e", "harness");
