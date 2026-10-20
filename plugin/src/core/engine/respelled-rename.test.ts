@@ -57,8 +57,8 @@ describe.each(["posix", "macos", "windows"] as const)("a rename of a note's file
     await h.engine.pull();
     await h.vault.rename("Foo.md", "foo.md");
     h.restart();
-    await h.engine.push();
-
+    // No push follows before the later renames: a scan alone would commit the
+    // vault's spelling (#481), and the journal would no longer differ.
     await h.vault.rename("b.md", "c.md");
     await h.vault.rename("foo.md", "b.md");
     await h.engine.push();
