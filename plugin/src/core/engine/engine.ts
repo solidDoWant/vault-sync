@@ -906,7 +906,8 @@ export class SyncEngine {
     }
     if (!remote.deleted) {
       // Another document the journal has at the path, whose own merge is
-      // pending (the server has already moved it away), goes first.
+      // pending (the server has already moved it away), goes first. One the
+      // platform cannot hold gives up its kept file (#379).
       const holder = await this.documentAt(remote.path);
       if (holder !== undefined && holder.documentId !== remote.documentId && (await this.resolveFirst(holder.documentId)) && found.path === remote.path) {
         found = { path: found.path, content: await this.readOrNull(found.path) };
@@ -981,9 +982,29 @@ export class SyncEngine {
   private async resolveFirst(documentId: string): Promise<boolean> {
     if (this.resolving.has(documentId)) return false;
     const deferred = await this.journal.getDeferred(documentId);
+    if (deferred?.reason === "unmaterializable") return this.releaseKeptFile(documentId);
     if (deferred?.reason !== "local-changes") return false;
     const state = await this.journal.getDocument(documentId);
     return (await this.handToMerge(deferred.revision, state, await this.localFile(state, deferred.revision))) === "merged";
+  }
+
+  /**
+   * Gives up an unmaterializable document's claim on the file with local
+   * changes it kept at its old path, once the server puts another document
+   * there (#379): the file is then no document's, so the merge path keeps it
+   * as a `concurrent-create` conflict copy, which the next push sends as a
+   * new document, and the other document takes the path. Kept, the file
+   * would hold the other document off for good. The claim is recorded as
+   * releaseFile records it (the state `deleted`), so the document
+   * materializes as a new one would. A document with an operation still
+   * pending keeps its file. Returns whether the claim was given up.
+   */
+  private async releaseKeptFile(documentId: string): Promise<boolean> {
+    const state = await this.journal.getDocument(documentId);
+    if (state === undefined || state.deleted) return false;
+    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return false;
+    await this.journal.putDocument({ ...state, deleted: true });
+    return true;
   }
 
   /**
