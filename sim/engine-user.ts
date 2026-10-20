@@ -12,7 +12,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import type { Journal } from "../plugin/src/core/journal/journal";
 import { isVaultError, type VaultAdapter } from "../plugin/src/core/vault/adapter";
 import { pathPool } from "./client";
-import type { UserLedger } from "./invariants";
+import { copiedFrom, pathMatcher, type UserLedger } from "./invariants";
 import type { Random } from "./random";
 import type { EngineOperation } from "./schedule";
 
@@ -107,7 +107,32 @@ export class EngineUser {
     if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
     for (const document of documents) this.options.ledger.deletedDocuments.add(document);
     this.options.ledger.deleted(path);
+    // Deleted, the moved file is followed no further: a file created there later is another one.
+    this.movedDocuments.delete(path);
     return `${this.options.name} user deletes ${path}`;
+  }
+
+  /**
+   * Runs `rename`, the engine's own move of the file at `from` to `to`. A
+   * move to the engine's conflict copy of `from` (a path a remote document
+   * takes, SPEC.md §6.3) keeps the user's file: the copy is followed like a
+   * rename of the user's, with the documents the engine could take the file
+   * for before the move, so the user's delete of the copy is the user's
+   * delete of them (#509).
+   */
+  async engineRenamed(from: string, to: string, rename: () => Promise<void>): Promise<void> {
+    const key = pathMatcher(this.options.ledger.platform);
+    if (!copiedFrom(to, this.options.name).some((original) => key(original) === key(from))) {
+      await rename();
+      return;
+    }
+    const documents = await this.documentsAt(from);
+    await rename();
+    this.movedDocuments.set(to, documents);
+    // The file the user's renames brought to `from` is no longer there: what the engine writes there next is another document's.
+    this.renamedFrom.delete(from);
+    this.movedDocuments.delete(from);
+    this.options.ledger.movedByEngine(from, to);
   }
 
   /**
@@ -115,7 +140,8 @@ export class EngineUser {
    * journal synced there and any with a pending operation there. A rename the
    * engine has not recorded yet leaves the document under its old path, so
    * every document the user's earlier renames moved to `path` counts too:
-   * the check must not blame the engine for the user's own delete.
+   * the check must not blame the engine for the user's own delete. So do
+   * those of a file the engine moved to its conflict copy at `path` (#509).
    */
   private async documentsAt(path: string): Promise<Set<string>> {
     const documents = new Set<string>();
@@ -124,9 +150,13 @@ export class EngineUser {
       const synced = await this.options.journal.findDocumentByPath(candidate);
       if (synced !== undefined) documents.add(synced.documentId);
       for (const operation of pending) if (operation.path === candidate) documents.add(operation.documentId);
+      for (const document of this.movedDocuments.get(candidate) ?? []) documents.add(document);
     }
     return documents;
   }
+
+  /** For each conflict copy the engine moved a file to, the documents the engine could take that file for (engineRenamed). */
+  private readonly movedDocuments = new Map<string, Set<string>>();
 
   /** For each path, every path the user renamed a file from to reach it. */
   private readonly renamedFrom = new Map<string, Set<string>>();
