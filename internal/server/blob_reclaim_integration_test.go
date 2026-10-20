@@ -212,3 +212,38 @@ func TestBlobUploadReclaimConcurrent(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, reclaimLimits.MaxUploadsPerVault, active)
 }
+
+// A BeginBlob at the limit reclaims only its own vault's idle sessions: an
+// idle session of another vault is neither finished nor counted.
+func TestBlobUploadReclaimStaysInItsVault(t *testing.T) {
+	fixture := newBlobFixture(t, reclaimLimits)
+	token := fixture.token(t, "alice")
+	full := fixture.createVault(t, token, "Full").GetId()
+	other := fixture.createVault(t, token, "Other").GetId()
+	idle := reclaimLimits.UploadReclaimIdle
+
+	// The other vault holds an idle session; the full vault is at its limit
+	// with nothing idle.
+	otherContent := append([]byte("idle elsewhere"), randomBytes(t, blobstore.MinChunkBytes)...)
+	_, err := fixture.begin(t, token, other, blobIDOf(otherContent), len(otherContent))
+	require.NoError(t, err)
+	_, err = fixture.put(t, token, other, blobIDOf(otherContent), 0, otherContent[:blobstore.MinChunkBytes])
+	require.NoError(t, err)
+
+	idleSession := fixture.idleFor(t, other, blobIDOf(otherContent), idle+time.Hour)
+
+	fixture.fillUploads(t, token, full, reclaimLimits.MaxUploadsPerVault)
+
+	fresh := []byte("a later upload")
+	_, err = fixture.begin(t, token, full, blobIDOf(fresh), len(fresh))
+	requireCode(t, connect.CodeResourceExhausted, err)
+
+	var state string
+
+	err = fixture.pool.QueryRow(t.Context(), `SELECT state FROM blob_uploads WHERE id = $1`, idleSession).Scan(&state)
+	require.NoError(t, err)
+	assert.Equal(t, "uploading", state)
+
+	_, err = fixture.put(t, token, other, blobIDOf(otherContent), blobstore.MinChunkBytes, otherContent[blobstore.MinChunkBytes:])
+	require.NoError(t, err, "the other vault's idle session still accepts its next chunk")
+}

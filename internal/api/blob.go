@@ -118,6 +118,27 @@ func (service BlobService) chunkLimit(header http.Header) int64 {
 	return max(min(limit, budget/4*3), 1)
 }
 
+// rangeLimit returns the largest range a DownloadBlob response may carry in
+// the request's codec: chunkLimit, and in binary protobuf no more than fits
+// the send limit once gzip has framed it. The send limit applies to the
+// compressed response, and deflate makes incompressible (for example E2EE)
+// content slightly larger: a few bytes per block, under a thousandth of the
+// message, which the binary chunk's reserve alone does not cover at large
+// limits. Half the reserve stays for the other fields (under 200 bytes) and
+// the gzip header and trailer, so at the default and smallest limits a
+// binary range is still MaxChunkBytes. JSON chunks already leave room for
+// gzip framing (see chunkLimit).
+func (service BlobService) rangeLimit(header http.Header) int64 {
+	limit := service.chunkLimit(header)
+
+	messageBytes := service.Limits.MaxMessageBytes
+	if messageBytes <= 0 || isJSONContentType(header.Get("Content-Type")) {
+		return limit
+	}
+
+	return max(min(limit, messageBytes-messageBytes/1000-ChunkReserveBytes/2), 1)
+}
+
 func maxChunkSize(limit int64) uint32 {
 	return uint32(min(limit, int64(^uint32(0))))
 }
@@ -282,13 +303,14 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 			fmt.Errorf("only %d of %d bytes were received", upload.ReceivedSize, upload.Size))
 	}
 
-	// ActiveBlobUpload recorded activity, and composing records activity
-	// again after every part, so no server process's cleanup routine reaps
-	// the session, or aborts its multipart upload, while it is composed,
-	// however long that takes.
-	sources, err := service.sources(ctx, vault, upload)
-	if err != nil {
-		return nil, service.internal(ctx, "cannot commit blob", err)
+	// Compositions are shared fairly between users (the owner). Every
+	// production path is authenticated, so a commit without a user is a
+	// wiring bug, not a caller to put in a shared bucket.
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
+		service.Logger.ErrorContext(ctx, "blob commit reached without an authenticated user")
+
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
 	}
 
 	encryption, err := vault.Encryption(ctx)
@@ -320,20 +342,28 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return nil, service.internal(ctx, "cannot commit blob", err)
 	}
 
-	// Compositions are shared fairly between users (the owner); a caller
-	// without a user (only in tests) shares one owner with all others.
-	var owner string
-	if user, ok := auth.UserFromContext(ctx); ok {
-		owner = user.ID.String()
+	// ActiveBlobUpload recorded activity, and composing records activity
+	// while it waits for a compose slot and again after every part, so no
+	// server process's cleanup routine reaps the session, or aborts its
+	// multipart upload, while it is composed, however long that takes. The
+	// staged chunks are listed only once the commit holds its slots, so a
+	// waiting commit holds no list of them.
+	var chunks int
+
+	sources := func(ctx context.Context) ([]blobstore.Part, error) {
+		parts, err := service.sources(ctx, vault, upload)
+		chunks = len(parts)
+
+		return parts, err
 	}
 
-	err = service.Objects.Compose(ctx, owner, key, sources, upload.Size, verify, progress)
+	err = service.Objects.Compose(ctx, user.ID.String(), key, sources, upload.Size, verify, progress)
 	if errors.Is(err, blobstore.ErrHashMismatch) {
 		if err := vault.FinishBlobUpload(ctx, upload.ID); err != nil {
 			return nil, service.internal(ctx, "cannot discard blob upload", err)
 		}
 
-		service.removeUpload(ctx, vault, upload.ID, len(sources))
+		service.removeUpload(ctx, vault, upload.ID, chunks)
 
 		return nil, connect.NewError(connect.CodeInvalidArgument,
 			errors.New("the uploaded content does not match blob_id; the upload was discarded"))
@@ -369,7 +399,7 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return nil, service.internal(ctx, "cannot complete blob", err)
 	}
 
-	service.removeUpload(ctx, vault, upload.ID, len(sources))
+	service.removeUpload(ctx, vault, upload.ID, chunks)
 
 	return connect.NewResponse(&vaultsyncv1.CommitBlobResponse{Size: uint64(upload.Size)}), nil
 }
@@ -460,7 +490,7 @@ func (service BlobService) DownloadBlob(ctx context.Context, request *connect.Re
 	// The response is bounded by the server, in the request's codec,
 	// whatever the client asks for; a client continues from the end of a
 	// short range.
-	maxLength := service.chunkLimit(request.Header())
+	maxLength := service.rangeLimit(request.Header())
 
 	length := int64(request.Msg.GetLength())
 	if length == 0 || length > maxLength {
