@@ -297,6 +297,19 @@ describe("vault selection", () => {
 });
 
 describe("SyncController", () => {
+  it("gives its sessions the platform's path rules (#418)", async () => {
+    const server = fakeServer();
+    server.sync.commit({ documentId: "ok", path: "ok.md", content: "fine\n" });
+    server.sync.commit({ documentId: "reserved", path: "CON.md", content: "a reserved name\n" });
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), { pathRules: { platform: "windows" } });
+
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    expect(await f.vault.list()).toEqual(["ok.md"]);
+    expect((await f.controller.session?.unmaterializable())?.map(({ path, reason }) => ({ path, reason }))).toEqual([{ path: "CON.md", reason: "reserved-name" }]);
+  });
+
   it("syncs the connected vault as this install's device once signed in", async () => {
     const server = fakeServer();
     const f = fixture(server, connected({ ...settings }, server.sync.vaultId));

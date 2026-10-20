@@ -162,12 +162,12 @@ func TestCompleteRetentionScanNeverMovesBack(t *testing.T) {
 	later := time.Date(2026, 10, 20, 12, 0, 0, 0, time.UTC)
 	earlier := later.Add(-time.Minute)
 
-	require.NoError(t, fixture.store.CompleteRetentionScan(t.Context(), policy, later))
-	require.NoError(t, fixture.store.CompleteRetentionScan(t.Context(), policy, earlier))
+	require.NoError(t, fixture.store.CompleteRetentionScan(t.Context(), policy, store.RetentionScan{Started: later}))
+	require.NoError(t, fixture.store.CompleteRetentionScan(t.Context(), policy, store.RetentionScan{Started: earlier}))
 	assert.True(t, later.Equal(fixture.scannedThrough(t)), "an earlier scan does not move the record back")
 
 	changed := store.RetentionPolicy{KeepAll: policy.KeepAll + time.Hour, KeepDaily: policy.KeepDaily}
-	require.NoError(t, fixture.store.CompleteRetentionScan(t.Context(), changed, earlier))
+	require.NoError(t, fixture.store.CompleteRetentionScan(t.Context(), changed, store.RetentionScan{Started: earlier}))
 	assert.True(t, earlier.Equal(fixture.scannedThrough(t)), "a different policy replaces the record")
 }
 
