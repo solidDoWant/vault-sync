@@ -25,3 +25,14 @@ func SetStagingSuffixForTest(t *testing.T, suffix func() uint32) {
 
 	t.Cleanup(func() { stagingSuffix = previous })
 }
+
+// SetEffectiveUIDForTest replaces the effective uid the lock file's owner is
+// checked against, until the test ends.
+func SetEffectiveUIDForTest(t *testing.T, uid func() int) {
+	t.Helper()
+
+	previous := effectiveUID
+	effectiveUID = uid
+
+	t.Cleanup(func() { effectiveUID = previous })
+}

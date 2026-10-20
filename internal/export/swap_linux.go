@@ -49,6 +49,10 @@ func lock(path string) (*os.File, error) {
 	return file, nil
 }
 
+// effectiveUID returns the uid the lock file must be owned by: the running
+// user's; a variable so tests can check the owner without root.
+var effectiveUID = os.Geteuid
+
 // checkLockFile refuses an opened lock file that is not a regular file with
 // exactly one link, owned by the running user.
 func checkLockFile(file *os.File, path string) error {
@@ -57,13 +61,15 @@ func checkLockFile(file *os.File, path string) error {
 		return fmt.Errorf("inspect lock file %s: %w", path, err)
 	}
 
+	uid := effectiveUID()
+
 	switch {
 	case stat.Mode&unix.S_IFMT != unix.S_IFREG:
 		return fmt.Errorf("lock file %s is not a regular file; remove it", path)
 	case stat.Nlink != 1:
 		return fmt.Errorf("lock file %s has %d hard links; remove it", path, stat.Nlink)
-	case stat.Uid != uint32(os.Geteuid()):
-		return fmt.Errorf("lock file %s is owned by uid %d, not by the user running the export (uid %d); remove it", path, stat.Uid, os.Geteuid())
+	case stat.Uid != uint32(uid):
+		return fmt.Errorf("lock file %s is owned by uid %d, not by the user running the export (uid %d); remove it", path, stat.Uid, uid)
 	}
 
 	return nil
