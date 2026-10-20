@@ -45,6 +45,7 @@ describe("mergeCanvas", () => {
     { name: "a node removed locally and changed remotely", local: canvas([node("b")], []), remote: canvas([node("a", "remote"), node("b")], [edge("e1", "a", "b")]) },
     { name: "one id added with different content on both sides", local: canvas([node("a"), node("b"), node("n", "local")], [edge("e1", "a", "b")]), remote: canvas([node("a"), node("b"), node("n", "remote")], [edge("e1", "a", "b")]) },
     { name: "a local edge to a node removed remotely", local: canvas([node("a"), node("b")], [edge("e1", "a", "b"), edge("e2", "b", "a")]), remote: canvas([node("a")], []) },
+    { name: "a local edge to a node removed remotely, at its target", local: canvas([node("a"), node("b")], [edge("e1", "a", "b"), edge("e2", "a", "b")]), remote: canvas([node("a")], []) },
     { name: "a top-level field changed differently on both sides", local: canvas([node("a"), node("b")], [edge("e1", "a", "b")], { meta: 1 }), remote: canvas([node("a"), node("b")], [edge("e1", "a", "b")], { meta: 2 }) },
     { name: "a local side that is not JSON", local: "{ nodes: [", remote: base },
     { name: "a remote side whose nodes are not a list", local: base, remote: JSON.stringify({ nodes: {} }) },
@@ -56,6 +57,65 @@ describe("mergeCanvas", () => {
       expect(mergeCanvas(base, local, remote)).toBeNull();
     });
   }
+
+  // JSON.parse keeps a "__proto__" key as an own property; assigning it to a
+  // plain object would set the prototype instead, and the field would vanish.
+  const withProto = (nodes: object[], proto: string) => `{"nodes":${JSON.stringify(nodes)},"edges":[],"__proto__":${proto}}`;
+  const protoOf = (text: string | null) => {
+    expect(text).not.toBeNull();
+    const value = JSON.parse(text ?? "null") as object;
+    return Object.hasOwn(value, "__proto__") ? (value as { ["__proto__"]: unknown })["__proto__"] : "absent";
+  };
+
+  it("keeps a top-level __proto__ field both sides have", () => {
+    const merged = mergeCanvas(withProto([node("a")], `{"x":1}`), withProto([node("a"), node("local")], `{"x":1}`), withProto([node("a"), node("remote")], `{"x":1}`));
+    expect(protoOf(merged)).toEqual({ x: 1 });
+    expect((parsed(merged) as { nodes: unknown }).nodes).toEqual([node("a"), node("local"), node("remote")]);
+  });
+
+  it("keeps a top-level __proto__ field only the remote side added", () => {
+    expect(protoOf(mergeCanvas(canvas([node("a")]), canvas([node("a"), node("local")]), withProto([node("a")], `{"x":1}`)))).toEqual({ x: 1 });
+  });
+
+  it("keeps a top-level __proto__ field only the local side changed", () => {
+    expect(protoOf(mergeCanvas(withProto([node("a")], `{"x":1}`), withProto([node("a")], `{"x":2}`), withProto([node("a"), node("remote")], `{"x":1}`)))).toEqual({ x: 2 });
+  });
+
+  it("removes a top-level __proto__ field the remote side removed", () => {
+    expect(protoOf(mergeCanvas(withProto([node("a")], `{"x":1}`), withProto([node("a"), node("local")], `{"x":1}`), canvas([node("a")])))).toBe("absent");
+  });
+
+  it("refuses a __proto__ field changed differently on both sides", () => {
+    expect(mergeCanvas(withProto([node("a")], `{"x":1}`), withProto([node("a")], `{"x":2}`), withProto([node("a")], `{"x":3}`))).toBeNull();
+  });
+
+  it("keeps numbers that read back as written", () => {
+    const remote = `{"nodes":[{"id":"a","x":9007199254740991,"y":-12.5,"width":0.1}],"edges":[]}`;
+    expect(parsed(mergeCanvas(canvas([]), canvas([]), remote))).toEqual({ nodes: [{ id: "a", x: 9007199254740991, y: -12.5, width: 0.1 }], edges: [] });
+  });
+
+  // JSON.parse keeps only the last of duplicate keys and rounds numbers it
+  // cannot hold, so merging such a side would rewrite it silently.
+  const unfaithful: { name: string; text: string }[] = [
+    { name: "a duplicate top-level key", text: `{"nodes":[],"edges":[],"meta":1,"meta":2}` },
+    { name: "a duplicate key inside a node", text: `{"nodes":[{"id":"a","text":"one","text":"two"}],"edges":[]}` },
+    { name: "a duplicate key spelled with an escape", text: `{"nodes":[{"id":"a","text":"one","\\u0074ext":"two"}],"edges":[]}` },
+    { name: "an integer beyond 2^53", text: `{"nodes":[{"id":"a","x":9007199254740993}],"edges":[]}` },
+    { name: "a number written in a form JSON.stringify does not keep", text: `{"nodes":[{"id":"a","x":1.0}],"edges":[]}` },
+  ];
+  for (const { name, text } of unfaithful) {
+    it(`refuses a local side with ${name}`, () => {
+      expect(mergeCanvas(canvas([]), text, canvas([node("remote")]))).toBeNull();
+    });
+    it(`refuses a remote side with ${name}`, () => {
+      expect(mergeCanvas(canvas([]), canvas([node("local")]), text)).toBeNull();
+    });
+  }
+
+  it("keeps a key that is the same string as a value elsewhere, equal keys in different objects, and strings that look like JSON", () => {
+    const remote = `{"nodes":[{"id":"text","text":"id"},{"id":"b","text":"a \\"text\\": {\\"id\\": 1.0}, \\\\"}],"edges":[]}`;
+    expect(parsed(mergeCanvas(canvas([]), canvas([]), remote))).toEqual(JSON.parse(remote));
+  });
 
   it("merges into an empty canvas file", () => {
     expect(parsed(mergeCanvas("", canvas([node("local")]), canvas([node("remote")])))).toEqual({ nodes: [node("local"), node("remote")], edges: [] });

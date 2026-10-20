@@ -162,7 +162,7 @@ describe("Remote writes to a canvas open in its view", function () {
     const base = canvas("base node");
     await openCanvas("Busy board.canvas", base);
     const remote = canvas("base node", "remote node");
-    const result = await callHarness("addCanvasNodeThenWriteRemote", "Busy board.canvas", "unsaved node", remote);
+    const result = await callHarness("addCanvasNodeThenWriteRemote", "Busy board.canvas", "unsaved node", remote, { awaitReload: true });
 
     expect(result.outcome).toBe("ok");
     // The node was unsaved when the remote change arrived.
@@ -172,11 +172,10 @@ describe("Remote writes to a canvas open in its view", function () {
       expect(result.disk).toContain(text);
       expect(result.view).toContain(text);
     }
-    // Obsidian's reload after the write keeps both.
-    await browser.pause(500);
-    const view = await callHarness("canvasViewData", "Busy board.canvas");
-    expect(view).toContain("unsaved node");
-    expect(view).toContain("remote node");
+    // Obsidian's reload after the write (waited for) keeps both.
+    expect(result.reloads).toBeGreaterThan(0);
+    expect(result.viewAfterReload).toContain("unsaved node");
+    expect(result.viewAfterReload).toContain("remote node");
   });
 
   it("are refused while the canvas has unsaved changes the new content cannot be merged with, which are saved instead", async function () {
