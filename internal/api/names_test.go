@@ -37,10 +37,12 @@ func (recorder *recordingStore) RegisterDevice(_ context.Context, userID uuid.UU
 	return store.Device{ID: uuid.New(), UserID: userID, Name: name, PublicKey: publicKey}, nil
 }
 
-// TestDisplayNamesRejectControlCharactersAndInvalidUTF8 calls the handlers
+// TestDisplayNamesRejectInvisibleCharactersAndInvalidUTF8 calls the handlers
 // directly: the generated protobuf client refuses to marshal invalid UTF-8,
-// so this is the only way to hand the handlers such a name.
-func TestDisplayNamesRejectControlCharactersAndInvalidUTF8(t *testing.T) {
+// so this is the only way to hand the handlers such a name. Format
+// characters (bidi controls, zero-width characters) would let a name reorder
+// or hide parts of the label other members see (#548).
+func TestDisplayNamesRejectInvisibleCharactersAndInvalidUTF8(t *testing.T) {
 	ctx := auth.WithUser(t.Context(), auth.User{ID: uuid.New(), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "alice"}})
 
 	rpcs := map[string]func(*recordingStore, string) error{
@@ -73,6 +75,12 @@ func TestDisplayNamesRejectControlCharactersAndInvalidUTF8(t *testing.T) {
 		{name: "C1 next line", value: "Notes\u0085", wantCode: connect.CodeInvalidArgument},
 		{name: "invalid UTF-8", value: "Notes\xff", wantCode: connect.CodeInvalidArgument},
 		{name: "truncated UTF-8", value: "Note\xc3", wantCode: connect.CodeInvalidArgument},
+		{name: "quotes", value: "Fred’s “work” \"laptop\""},
+		{name: "right-to-left override", value: "Notes\u202eecived siht", wantCode: connect.CodeInvalidArgument},
+		{name: "first isolate", value: "\u2066Notes", wantCode: connect.CodeInvalidArgument},
+		{name: "last isolate", value: "Notes\u2069", wantCode: connect.CodeInvalidArgument},
+		{name: "zero-width space", value: "No\u200btes", wantCode: connect.CodeInvalidArgument},
+		{name: "line separator", value: "No\u2028tes", wantCode: connect.CodeInvalidArgument},
 	}
 
 	for rpc, call := range rpcs {

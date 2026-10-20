@@ -24,8 +24,10 @@ const (
 // RegisterDeviceRequest describes the device to register.
 type RegisterDeviceRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Human-readable device name. Must be non-empty; the server bounds its
-	// length.
+	// Human-readable device name. Must be non-blank, at most 256 bytes, and
+	// free of control characters (Unicode category Cc), format characters (Cf,
+	// such as bidi controls and zero-width characters) and line or paragraph
+	// separators (Zl, Zp).
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// The device's X25519 public key (SPEC.md §5): exactly 32 bytes, or empty
 	// for a device registered without one.
