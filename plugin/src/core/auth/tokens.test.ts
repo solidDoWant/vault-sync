@@ -242,6 +242,42 @@ describe("TokenManager", () => {
     await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
   });
 
+  it("removes the previous session's refresh token from disk when storing a sign-in on a signed-in manager fails, so a restart is signed out too", async () => {
+    // What is on disk: a failed write leaves it as it was.
+    const disk: { token: string | undefined } = { token: undefined };
+    const { manager, idp, stored } = setup({
+      manager: {
+        persist: (token) => {
+          if (token !== undefined) return Promise.reject(new Error("disk full"));
+          disk.token = token;
+          return Promise.resolve();
+        },
+      },
+    });
+    disk.token = stored;
+    await manager.accessToken();
+
+    const issued = idp.issue();
+    await expect(manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 })).rejects.toThrow(/disk full/);
+
+    expect(manager.state).toBe("signed-out");
+    expect(disk.token).toBeUndefined();
+    const restarted = new TokenManager({ ...(disk.token === undefined ? {} : { refreshToken: disk.token }), refresh: () => Promise.reject(new Error("unused")), persist: () => Promise.resolve() });
+    expect(restarted.state).toBe(manager.state);
+  });
+
+  it("still rejects with the sign-in's own error when removing the previous refresh token after it fails too", async () => {
+    const { manager, idp, states } = setup({
+      manager: { persist: (token) => Promise.reject(new Error(token === undefined ? "removal failed" : "disk full")) },
+    });
+    await manager.accessToken();
+
+    const issued = idp.issue();
+    await expect(manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 })).rejects.toThrow(/disk full/);
+    expect(manager.state).toBe("signed-out");
+    expect(states).toEqual(["signed-out"]);
+  });
+
   it("refuses a sign-in that issued no refresh token", async () => {
     const { manager, persisted } = setup({ signedIn: false });
 
@@ -303,10 +339,27 @@ describe("TokenManager", () => {
   });
 
   it("never stores the rotated refresh token of a refresh that a sign-out overtook", async () => {
+    const { manager, idp, persisted, stored } = setup({ rotate: true });
+    idp.holdRefreshes();
+
+    const pending = manager.accessToken();
+    await settle();
+    expect(idp.refreshes).toBe(1);
+    await manager.signOut();
+    idp.release();
+
+    await expect(pending).rejects.toBeInstanceOf(SignInRequiredError);
+    // The provider did rotate: the stored token is spent, a new one was issued.
+    expect(idp.isValidRefreshToken(stored ?? "")).toBe(false);
+    expect(persisted).toEqual([undefined]);
+    expect(manager.state).toBe("signed-out");
+    await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
+  });
+
+  it("fails a sign-in that a sign-out overtook while its refresh token was being stored, and the sign-out's removal is the last write", async () => {
     const writes: (string | undefined)[] = [];
     let releaseFirst: (() => void) | undefined;
     const { manager, idp } = setup({
-      rotate: true,
       manager: {
         persist: (token) => {
           writes.push(token);
@@ -316,8 +369,7 @@ describe("TokenManager", () => {
       },
     });
     // A sign-in whose write is held. It already forgot the previous session's
-    // refresh token, so a call meanwhile does not refresh with it, and no
-    // rotated token of the old session can be queued behind the write.
+    // refresh token, so a call meanwhile does not refresh with it.
     const issued = idp.issue();
     const signedIn = manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 });
     const pending = expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);

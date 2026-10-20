@@ -8,15 +8,19 @@ import { configure, dialog, isDialogOpen, issuerPost, signInResult, startSignIn 
 // Signing in with the OAuth device flow inside real Obsidian (SPEC.md §9.1),
 // against the harness-started server and the driver's fake OIDC issuer:
 // the dialog shows the verification URL and user code, "the user" approves
-// the code at the issuer, and the plugin stores the refresh token in its
-// plugin data. Access tokens are kept in memory only, so every check after a
-// plugin reload goes through the refresh grant.
+// the code at the issuer, and the plugin stores the refresh token, with the
+// identity provider that issued it, in its plugin data. Access tokens are
+// kept in memory only, so every check after a plugin reload goes through the
+// refresh grant.
 
 /** The outcome of ListVaults through the plugin's authenticated client. */
 type CallResult = { ok: true; vaults: number } | { ok: false; code: number | null; message: string };
 
 /** Connect's code for UNAUTHENTICATED. */
 const unauthenticated = 16;
+
+/** The identity provider the server advertises (the plugin's settings name none), stored with the refresh token at sign-in. */
+const issuer = () => ({ issuer: e2eEnvironment.issuerUrl, clientId: e2eEnvironment.clientId });
 
 /** Dismisses the sign-in dialog with Escape, as a user cancelling the sign-in does. */
 function closeDialog() {
@@ -29,7 +33,12 @@ function pluginStatus() {
     if (plugin === undefined) throw new Error("vault-sync is not loaded");
     const path = `${plugin.manifest.dir ?? ""}/data.json`;
     const stored = (await app.vault.adapter.exists(path)) ? (JSON.parse(await app.vault.adapter.read(path)) as Record<string, unknown>) : {};
-    return { authState: plugin.authState, storedRefreshToken: typeof stored.refreshToken === "string" && stored.refreshToken !== "" };
+    // Only whether a refresh token is stored: the token itself never leaves the plugin.
+    return {
+      authState: plugin.authState,
+      storedRefreshToken: typeof stored.refreshToken === "string" && stored.refreshToken !== "",
+      storedIdentityProvider: stored.identityProvider ?? null,
+    };
   }, pluginId);
 }
 
@@ -57,7 +66,7 @@ describe("signing in with the device flow", function () {
   });
 
   it("starts signed out, and the server refuses the plugin's calls", async function () {
-    expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false });
+    expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false, storedIdentityProvider: null });
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
   });
 
@@ -70,7 +79,7 @@ describe("signing in with the device flow", function () {
     expect(shown?.href).toBe(`${e2eEnvironment.issuerUrl}/device?user_code=${shown?.userCode ?? ""}`);
     // Still polling: nothing is stored before the user approves.
     expect(await signInResult()).toBeNull();
-    expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false });
+    expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false, storedIdentityProvider: null });
 
     // The user enters the code at the identity provider.
     expect(await issuerPost("/device/approve", { user_code: shown?.userCode ?? "" })).toBe(204);
@@ -79,14 +88,14 @@ describe("signing in with the device flow", function () {
     expect(await signInResult()).toBe(true);
     // The dialog closes (on mobile after a closing animation, so wait for it).
     await browser.waitUntil(async () => !(await isDialogOpen()), { timeoutMsg: "the sign-in dialog stayed open" });
-    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true });
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
   });
 
   it("stays signed in across a plugin reload, refreshing the access token with the stored refresh token", async function () {
     expect(await reloadPlugin(pluginId)).toBe(true);
 
-    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true });
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
   });
 
@@ -96,7 +105,7 @@ describe("signing in with the device flow", function () {
     expect(await reloadPlugin(pluginId)).toBe(true);
 
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
-    expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false });
+    expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false, storedIdentityProvider: null });
 
     // Cancelling a sign-in leaves the device needing one.
     await startSignIn();
@@ -104,7 +113,7 @@ describe("signing in with the device flow", function () {
     await closeDialog();
     await browser.waitUntil(async () => (await signInResult()) !== null, { timeoutMsg: "the cancelled sign-in never finished" });
     expect(await signInResult()).toBe(false);
-    expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false });
+    expect(await pluginStatus()).toEqual({ authState: "sign-in-required", storedRefreshToken: false, storedIdentityProvider: null });
 
     await startSignIn();
     await browser.waitUntil(async () => (await dialog()) !== null, { timeoutMsg: "the sign-in dialog never showed a user code" });
@@ -112,7 +121,7 @@ describe("signing in with the device flow", function () {
     await browser.waitUntil(async () => (await signInResult()) !== null, { timeoutMsg: "the sign-in never finished" });
 
     expect(await signInResult()).toBe(true);
-    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true });
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
   });
 
@@ -125,7 +134,7 @@ describe("signing in with the device flow", function () {
 
     expect(await signInResult()).toBe(false);
     expect(await isDialogOpen()).toBe(false);
-    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true });
+    expect(await pluginStatus()).toEqual({ authState: "signed-in", storedRefreshToken: true, storedIdentityProvider: issuer() });
     expect(await listVaults()).toEqual({ ok: true, vaults: 0 });
   });
 
@@ -135,7 +144,7 @@ describe("signing in with the device flow", function () {
       await plugin?.signOut();
     }, pluginId);
 
-    expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false });
+    expect(await pluginStatus()).toEqual({ authState: "signed-out", storedRefreshToken: false, storedIdentityProvider: null });
     expect(await listVaults()).toMatchObject({ ok: false, code: unauthenticated });
   });
 });
