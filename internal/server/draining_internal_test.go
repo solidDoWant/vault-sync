@@ -99,6 +99,7 @@ func TestResponsesWrittenBeforeDrainingKeepTheirConnection(t *testing.T) {
 
 	response, err := server.Client().Do(request)
 	require.NoError(t, err)
+
 	_ = response.Body.Close()
 
 	assert.False(t, response.Close)

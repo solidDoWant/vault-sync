@@ -91,4 +91,3 @@ func TestStoreRequestsUseHTTP1EvenWhenTheStoreOffersHTTP2(t *testing.T) {
 	assert.Nil(t, other.Load(), "a request used another protocol than HTTP/1")
 	assert.Positive(t, protocols.Load())
 }
-

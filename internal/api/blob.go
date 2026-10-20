@@ -118,6 +118,27 @@ func (service BlobService) chunkLimit(header http.Header) int64 {
 	return max(min(limit, budget/4*3), 1)
 }
 
+// rangeLimit returns the largest range a DownloadBlob response may carry in
+// the request's codec: chunkLimit, and in binary protobuf no more than fits
+// the send limit once gzip has framed it. The send limit applies to the
+// compressed response, and deflate makes incompressible (for example E2EE)
+// content slightly larger: a few bytes per block, under a thousandth of the
+// message, which the binary chunk's reserve alone does not cover at large
+// limits. Half the reserve stays for the other fields (under 200 bytes) and
+// the gzip header and trailer, so at the default and smallest limits a
+// binary range is still MaxChunkBytes. JSON chunks already leave room for
+// gzip framing (see chunkLimit).
+func (service BlobService) rangeLimit(header http.Header) int64 {
+	limit := service.chunkLimit(header)
+
+	messageBytes := service.Limits.MaxMessageBytes
+	if messageBytes <= 0 || isJSONContentType(header.Get("Content-Type")) {
+		return limit
+	}
+
+	return max(min(limit, messageBytes-messageBytes/1000-ChunkReserveBytes/2), 1)
+}
+
 func maxChunkSize(limit int64) uint32 {
 	return uint32(min(limit, int64(^uint32(0))))
 }
@@ -469,7 +490,7 @@ func (service BlobService) DownloadBlob(ctx context.Context, request *connect.Re
 	// The response is bounded by the server, in the request's codec,
 	// whatever the client asks for; a client continues from the end of a
 	// short range.
-	maxLength := service.chunkLimit(request.Header())
+	maxLength := service.rangeLimit(request.Header())
 
 	length := int64(request.Msg.GetLength())
 	if length == 0 || length > maxLength {
