@@ -93,6 +93,38 @@ describe.each(["posix", "macos", "windows"] as const)("a create refused because 
   });
 });
 
+describe.each(["macos", "windows"] as const)("a create refused because another document holds its folder, interrupted while moving to its conflict copy, then another document's file pulled to another spelling of its path and moved away again (%s)", (platform) => {
+  it.each(crashPoints)("converges with the note live once, after a crash after durable change %i", async (crashAfter) => {
+    const server = new InMemoryServer();
+    const other = harness({ merge: "default", server, idPrefix: "o", deviceName: "other", pathRules: { platform } });
+    const points = new CrashPoints();
+    const device = crashingDevice(server, points, platform, "h", "dev0");
+    await other.vault.write("NOTES/d.md", bytes("other\n"));
+    await other.engine.push();
+    await device.vault.write("notes", bytes("mine\n"));
+    await device.engine.pull();
+    await pushAndCrash(device, points, crashAfter);
+    // The other document's file takes the path here, under another spelling,
+    // so the moved file is not at it; then it moves away on the server, which
+    // this device learns only after it looked at the interrupted move.
+    await other.vault.rename("NOTES/d.md", "NOTES");
+    await other.engine.push();
+    await device.engine.pull();
+    await other.vault.rename("NOTES", "A.md");
+    await other.engine.push();
+
+    const summaries = await pushUntilQuiet(device);
+
+    expect(summaries.at(-1)).toEqual(quiet);
+    expect(await device.journal.listPending()).toEqual([]);
+    const live = server.liveFiles();
+    expect(live.get("A.md")).toBe("other\n");
+    expect([...live.values()].filter((content) => content === "mine\n")).toHaveLength(1);
+    expect(await files(device.vault)).toEqual(live);
+    expect(device.acknowledged.filter((revision) => revision.deleted)).toEqual([]);
+  });
+});
+
 describe("a create refused for a case-only collision, interrupted while moving to its conflict copy, whose copy the user then deletes or moves", () => {
   /** Under POSIX rules: the other device committed NOTES first, this one created notes. */
   async function refusedCreate() {
