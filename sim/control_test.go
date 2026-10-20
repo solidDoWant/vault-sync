@@ -70,6 +70,7 @@ func (control *control) handler() http.Handler {
 	mux.HandleFunc("POST /prune-markers", control.pruneMarkers)
 	mux.HandleFunc("POST /snapshot", control.snapshot)
 	mux.HandleFunc("POST /restore", control.restore)
+	mux.HandleFunc("POST /age-uploads", control.ageUploads)
 
 	return http.MaxBytesHandler(mux, maxControlBody)
 }
