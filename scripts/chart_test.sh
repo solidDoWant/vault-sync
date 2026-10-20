@@ -192,9 +192,43 @@ for pod in server export_pod; do
 		"(${!pod} | .securityContext.runAsNonRoot) == true and (${!pod} | .containers[0].securityContext | .runAsNonRoot == true and .readOnlyRootFilesystem == true and .allowPrivilegeEscalation == false and .capabilities.drop == [\"ALL\"])"
 	check "$pod has CPU and memory requests and limits" \
 		"(${!pod} | .containers[0].resources | (.requests.cpu != null) and (.requests.memory != null) and (.limits.cpu != null) and (.limits.memory != null))"
+	check "$pod does not mount a service account token" \
+		"(${!pod} | .automountServiceAccountToken) == false"
+	check "$pod uses the RuntimeDefault seccomp profile" \
+		"(${!pod} | .securityContext.seccompProfile.type) == \"RuntimeDefault\" and (${!pod} | .containers[0].securityContext.seccompProfile.type) == \"RuntimeDefault\""
 done
-check "termination grace covers the default shutdown delay and drain timeout (5s + 30s)" \
-	"($server | .terminationGracePeriodSeconds) >= 45"
+check "termination grace covers the default shutdown delay and drain timeout (5s + 30s) with a margin" \
+	"($server | .terminationGracePeriodSeconds) == 45"
+check "the server spreads its replicas across nodes" \
+	"($server | .topologySpreadConstraints) == [{\"maxSkew\": 1, \"topologyKey\": \"kubernetes.io/hostname\", \"whenUnsatisfiable\": \"ScheduleAnyway\", \"labelSelector\": ($server | .topologySpreadConstraints[0].labelSelector)}] and ($server | .topologySpreadConstraints[0].labelSelector.matchLabels[\"app.kubernetes.io/controller\"]) == \"main\""
+check "the probes keep their periods and failure thresholds" \
+	"($server | .containers[0] | [.startupProbe, .livenessProbe, .readinessProbe] | map({periodSeconds, failureThreshold})) == [{\"periodSeconds\": 5, \"failureThreshold\": 120}, {\"periodSeconds\": 10, \"failureThreshold\": 3}, {\"periodSeconds\": 2, \"failureThreshold\": 2}]"
+check "an export run is bounded by a deadline (6 hours by default)" \
+	"($cronjob | .spec.jobTemplate.spec.activeDeadlineSeconds) == 21600 and ($cronjob | .spec.concurrencyPolicy) == \"Forbid\""
+render --set config.export.activeDeadlineSeconds=600
+check "the export deadline is configurable" "($cronjob | .spec.jobTemplate.spec.activeDeadlineSeconds) == 600"
+rejects "rejects an export deadline of 0" "config.export.activeDeadlineSeconds" --set config.export.activeDeadlineSeconds=0
+rejects "rejects an empty export deadline" "config.export.activeDeadlineSeconds" --set config.export.activeDeadlineSeconds=
+
+# The grace period follows the shutdown settings: 1m + 1m30.5s = 150.5s,
+# rounded up to 151, plus the 10 second margin.
+render --set config.server.shutdownDelay=1m --set config.server.shutdownTimeout=1m30.5s
+check "termination grace follows a raised shutdown delay and drain timeout" \
+	"($server | .terminationGracePeriodSeconds) == 161"
+render --set config.server.shutdownDelay=0s --set config.server.shutdownTimeout=1s
+check "termination grace stays at least 45 seconds" "($server | .terminationGracePeriodSeconds) == 45"
+# An explicit grace period must exceed delay + timeout (5s + 1m = 65s).
+rejects "rejects a grace period equal to the shutdown delay plus the drain timeout" "terminationGracePeriodSeconds (65) must be larger" \
+	--set config.server.shutdownTimeout=1m --set resources.controllers.main.pod.terminationGracePeriodSeconds=65
+if render --set config.server.shutdownTimeout=1m --set resources.controllers.main.pod.terminationGracePeriodSeconds=66; then
+	check "accepts an explicit grace period one second above the shutdown delay plus the drain timeout" \
+		"($server | .terminationGracePeriodSeconds) == 66"
+else
+	fail "accepts an explicit grace period one second above the shutdown delay plus the drain timeout: $(cat "$work/err")"
+fi
+rejects "rejects a shutdown delay that is not a Go duration" "config.server.shutdownDelay must be a Go duration" \
+	--set config.server.shutdownDelay=soon
+render
 
 render --set resources.controllers.main.replicas=3
 check "replicas are configurable" "($deployment | .spec.replicas) == 3 and ([\$docs[] | select(.kind == \"PodDisruptionBudget\")] | length) == 1"

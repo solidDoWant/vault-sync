@@ -10,8 +10,10 @@
 #     creates the release with the three assets; a pre-release version is
 #     marked as one;
 #   - invalid versions, missing or empty assets, a manifest whose version
-#     differs, a dirty tree, an existing tag and a failing `gh auth status`
-#     are refused before anything is tagged or published.
+#     differs (by check-assets and publish), a dirty tree, a HEAD that is
+#     not origin/master (an unpushed commit, or an origin that moved on), an
+#     existing tag and a failing `gh auth status` are refused before
+#     anything is tagged or published.
 set -euo pipefail
 
 # Same isolation from the developer's git setup as buf-breaking_test.sh.
@@ -183,6 +185,28 @@ expect_refused "refuses a manifest.json whose version differs" "has version '1.2
 new_case dirty
 echo change >>file
 expect_refused "refuses a real release from a dirty tree" "uncommitted changes" preflight 1.2.3 true
+
+new_case unpushed
+echo change >>file
+git commit -q -am unpushed
+expect_refused "refuses a real release of a commit that is not on origin/master" "is not origin/master" preflight 1.2.3 true
+
+new_case behind
+git clone -q "$work/behind/origin.git" "$work/behind/other"
+git -C "$work/behind/other" commit -q --allow-empty -m newer
+git -C "$work/behind/other" push -q origin master
+expect_refused "refuses a real release from a checkout behind origin/master" "is not origin/master" preflight 1.2.3 true
+
+new_case check-assets
+if "$release" check-assets 1.2.3 true "$assets" >"$work/out" 2>&1 && [[ -z "$(git tag)" ]] && ! grep -q '^release' "$GH_LOG"; then
+	pass "check-assets accepts valid assets without tagging or publishing"
+else
+	fail "check-assets accepts valid assets without tagging or publishing: $(cat "$work/out")"
+fi
+rm "$assets/main.js"
+expect_refused "check-assets refuses a missing asset" "main.js" check-assets 1.2.3 true "$assets"
+new_case check-assets-manifest
+expect_refused "check-assets refuses a manifest.json whose version differs" "has version '1.2.3', not '1.2.4'" check-assets 1.2.4 true "$assets"
 
 new_case local-tag
 git tag 1.2.3

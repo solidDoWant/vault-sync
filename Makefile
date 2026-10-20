@@ -37,13 +37,14 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + nightly-simulation report test + release script tests + agent wait-ci script test.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + nightly-simulation report test + release script tests + agent wait-ci script test + native versitygw pin check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
 	./scripts/sim-nightly-report_test.sh
 	./scripts/release_test.sh
 	./scripts/agents/wait-ci_test.sh
+	./scripts/with-native-s3.sh --check-pin
 
 .PHONY: test-integration
 test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integration tests against PostgreSQL + S3 (docker compose; skipped without Docker), incl. the plugin protocol client vs the real server.
@@ -154,19 +155,28 @@ plugin-release-assets: plugin-build ## Collect the plugin release assets (main.j
 
 # Dry run by default: the image and chart are built (not pushed) and the tag,
 # tag push and GitHub release are printed. PUSH_ALL=true releases for real.
-# The preflight (version, gh auth, and for a real release a clean tree and a
-# new tag) runs before anything is built or pushed.
+# The preflight (version, gh auth, and for a real release a clean tree, HEAD
+# equal to origin/master and a new tag) runs before anything is built, and
+# the plugin assets are built and checked before the image and chart are
+# pushed, so the pushes are the last steps before tagging.
 .PHONY: release
 release: ## Release VERSION: build and (PUSH_ALL=true) push the image and chart, tag VERSION and create a GitHub release with the plugin's main.js, manifest.json and styles.css for BRAT. Dry run unless PUSH_ALL=true. Requires gh.
 	./scripts/release.sh preflight "$(VERSION)" "$(PUSH_ALL)"
-	$(MAKE) build-images helm plugin-release-assets VERSION="$(VERSION)" PUSH_ALL="$(PUSH_ALL)"
+	$(MAKE) plugin-release-assets VERSION="$(VERSION)"
+	./scripts/release.sh check-assets "$(VERSION)" "$(PUSH_ALL)" "$(RELEASE_ASSET_DIR)"
+	$(MAKE) build-images helm VERSION="$(VERSION)" PUSH_ALL="$(PUSH_ALL)"
 	./scripts/release.sh publish "$(VERSION)" "$(PUSH_ALL)" "$(RELEASE_ASSET_DIR)"
 
 ##@ Dependencies
+
+.PHONY: update-vendor-hash
+update-vendor-hash: ## Refresh vendorHash in nix/server.nix after go.mod or go.sum changed (needs nix and network).
+	./scripts/update-vendor-hash.sh
 
 .PHONY: update-dependencies
 update-dependencies: ## Update Nix flake inputs, Go modules, and plugin npm packages.
 	nix flake update
 	go get -u ./...
 	go mod tidy
+	./scripts/update-vendor-hash.sh
 	cd $(PLUGIN_DIR) && npx --yes npm-check-updates -u --peer && npm install
