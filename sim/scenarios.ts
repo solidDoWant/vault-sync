@@ -2907,14 +2907,16 @@ export async function interruptedConflictMove(
  * push is committing the first (POSIX) engine renames the note to
  * `plan?.md`, which Windows cannot hold: the second engine parks the note
  * (unmaterializable, SPEC.md §8) with its edit pending at `plan.md`. With
- * `deleted-file` its user then deletes `plan.md`. The first engine creates
- * another note at `plan.md`, and later renames the parked note to
+ * `deleted-file` its user then deletes `plan.md`; with `renamed-file` the
+ * user renames it to `notes.md`, and once the second engine has synced the
+ * other note below, its app is killed and restarted (#459). The first engine
+ * creates another note at `plan.md`, and later renames the parked note to
  * `draft.md`. The other note must stay live at `plan.md` under its own id,
  * the renamed note must come back at `draft.md` under its id, and with
  * `kept-file` the edit must be live as a conflict copy (SPEC.md §2
  * principle 1); nothing may stay pending or deferred.
  */
-export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "kept-file" | "deleted-file"): Promise<RenameOntoLocalFolderResult> {
+export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "kept-file" | "deleted-file" | "renamed-file"): Promise<RenameOntoLocalFolderResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "windows"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -2956,10 +2958,12 @@ export async function parkedEditAtReusedPath(endpoints: SimEndpoints, variant: "
   await push(first);
   await run.drain(second.index);
   if (variant === "deleted-file") log(await second.remove("plan.md"));
+  if (variant === "renamed-file") log(await second.move("plan.md", "notes.md"));
 
   log(await first.edit("plan.md", encoder.encode(textLines("another note"))));
   await push(first);
   await sync(second);
+  if (variant === "renamed-file") log(second.crash());
 
   log(await first.move("plan?.md", "draft.md"));
   await push(first);

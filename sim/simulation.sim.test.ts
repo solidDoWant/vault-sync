@@ -1286,6 +1286,34 @@ describe.runIf(suites.has("scenarios"))("scripted crash in a pull that brings a 
   });
 });
 
+describe.runIf(suites.has("scenarios"))("scripted parked note's file renamed, then a restart, against another note at its old path (#459)", () => {
+  it("keeps the other note at plan.md, the renamed file as a new note, and brings the parked note back at draft.md", async () => {
+    const result = await parkedEditAtReusedPath(environment, "renamed-file");
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}\ntombstoned: ${JSON.stringify(result.tombstoned)}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("plan.md");
+    expect(note, trace).toBeDefined();
+    expect(result.documents.get("draft.md"), trace).toBe(note);
+    // Before #459 the parked note took the other note's file for its own after the restart, and the server tombstoned the other note.
+    expect(result.documents.get("plan.md"), trace).toBeDefined();
+    expect(result.documents.get("plan.md"), trace).not.toBe(note);
+    expect(result.documents.get("notes.md"), trace).toBeDefined();
+    expect(result.documents.get("notes.md"), trace).not.toBe(note);
+    expect(result.documents.get("notes.md"), trace).not.toBe(result.documents.get("plan.md"));
+    const expected = new Map([
+      ["draft.md", "one\ntwo\n"],
+      ["notes.md", "one\ntwo (edited)\n"],
+      ["plan.md", "another note\n"],
+    ]);
+    expect(result.documents.size, trace).toBe(expected.size);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
 describe.runIf(suites.has("determinism"))("determinism", () => {
   const seed = environment.seeds[0] ?? 1;
   const steps = Math.min(environment.steps, 150);
