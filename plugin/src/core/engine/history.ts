@@ -5,6 +5,8 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
 import type { DocumentKindName, RemoteRevision } from "../journal/journal";
+import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
+import { pathProblem } from "../vaultpath/vaultpath";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { downloadContent, RemoteContentError, toIncoming, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
@@ -23,6 +25,8 @@ export interface HistoryEntry {
   size: bigint;
   /** The device that committed the revision. */
   deviceId: string;
+  /** That device's registered name, if the server named it. */
+  deviceName: string | undefined;
   /** Whether that is this device. */
   thisDevice: boolean;
   /** When the server accepted the revision; undefined if the server did not say. */
@@ -43,7 +47,9 @@ export type RestoreFailure =
   /** Another live document holds the path the document would come back at (a deleted document's path was reused). */
   | "path-taken"
   /** Retention purged the revision and its content is gone from the server, and no preview of it was at hand. */
-  | "unavailable";
+  | "unavailable"
+  /** The other path chosen for the restore is one the server would refuse, this device cannot hold, or this vault does not sync now. */
+  | "invalid-path";
 
 /** A restore that cannot be done; nothing was committed. */
 export class RestoreError extends Error {
@@ -65,15 +71,16 @@ const maxRestoreAttempts = 5;
 export async function documentHistory(api: PullApi, vaultId: string, deviceId: string, documentId: string, pageToken = "", pageSize = 0): Promise<HistoryPage> {
   const response = await api.sync.getDocumentHistory({ vaultId, documentId, pageToken, pageSize });
   if (response.document === undefined) throw new RemoteContentError(`GetDocumentHistory for ${documentId} returned no document`);
+  const names = new Map(response.deviceNames.map((device) => [device.deviceId, device.name]));
   return {
     documentId: response.document.id,
     headRevisionId: response.document.headRevId,
-    entries: response.revisions.map((revision) => historyEntry(revision, deviceId)),
+    entries: response.revisions.map((revision) => historyEntry(revision, deviceId, names.get(revision.deviceId))),
     nextPageToken: response.nextPageToken,
   };
 }
 
-function historyEntry(revision: Revision, deviceId: string): HistoryEntry {
+function historyEntry(revision: Revision, deviceId: string, deviceName: string | undefined): HistoryEntry {
   const { remote } = toIncoming(revision);
   return {
     revisionId: remote.revisionId,
@@ -85,6 +92,7 @@ function historyEntry(revision: Revision, deviceId: string): HistoryEntry {
     contentHash: remote.contentHash,
     size: remote.size,
     deviceId: revision.deviceId,
+    deviceName,
     thisDevice: revision.deviceId !== "" && revision.deviceId === deviceId,
     createdAt: revision.createTime === undefined ? undefined : timestampDate(revision.createTime),
   };
@@ -103,9 +111,11 @@ export function readRevision(api: PullApi, vaultId: string, entry: HistoryEntry)
  * longer a complete blob (garbage collection after a purge) uploads it again,
  * from `content` (a preview the caller holds) if it matches, or else from a
  * download; if neither has it, RestoreError `unavailable`. A path another
- * live document holds is RestoreError `path-taken`.
+ * live document holds is RestoreError `path-taken`. With `path` it commits
+ * there instead (#420): how a deleted document whose path another document
+ * took comes back; check it with restorePathProblem first.
  */
-export async function commitRestore(api: PullApi, vaultId: string, deviceId: string, entry: HistoryEntry, revisionId: string, content?: Uint8Array): Promise<RemoteRevision> {
+export async function commitRestore(api: PullApi, vaultId: string, deviceId: string, entry: HistoryEntry, revisionId: string, content?: Uint8Array, path?: string): Promise<RemoteRevision> {
   let head = await currentHead(api, vaultId, entry.documentId);
   let held = content !== undefined && BigInt(content.length) === entry.size && sha256Hex(content) === entry.contentHash ? content : undefined;
   for (let attempt = 1; ; attempt++) {
@@ -117,7 +127,7 @@ export async function commitRestore(api: PullApi, vaultId: string, deviceId: str
         baseRevId: head.id,
         kind: head.kind,
         contentRef: { blobId: hexToBytes(entry.contentHash), size: entry.size },
-        path: head.path,
+        path: path === undefined ? head.path : new TextEncoder().encode(path),
         deleted: false,
         deviceId,
       });
@@ -125,21 +135,34 @@ export async function commitRestore(api: PullApi, vaultId: string, deviceId: str
       if (revision?.id !== revisionId || revision.documentId !== entry.documentId) throw new RemoteContentError(`CommitRevision for ${revisionId} returned another revision`);
       return toIncoming(revision).remote;
     } catch (error) {
-      const path = new TextDecoder().decode(head.path);
-      if (errorCode(error) === Code.AlreadyExists) throw new RestoreError("path-taken", path, `another file is at ${path} now; move it away and restore again`);
+      const target = path ?? new TextDecoder().decode(head.path);
+      if (errorCode(error) === Code.AlreadyExists) throw new RestoreError("path-taken", target, `another file is at ${target} now; move it away or restore at another path`);
       if (attempt >= maxRestoreAttempts) throw error;
       if (headMoved(error)) {
         head = await currentHead(api, vaultId, entry.documentId);
       } else if (blobMissing(error)) {
         held ??= await downloadOrNull(api, vaultId, entry);
         const bytes = held;
-        if (bytes === undefined) throw new RestoreError("unavailable", path, "this version is no longer stored on the server");
+        if (bytes === undefined) throw new RestoreError("unavailable", target, "this version is no longer stored on the server");
         await uploadContent(api, vaultId, entry.contentHash, entry.size, () => Promise.resolve(bytes));
       } else if (!transient(error)) {
         throw error;
       }
     }
   }
+}
+
+/**
+ * Why a document cannot be restored at `path`, another path than its own
+ * (#420): a path the server refuses for a new document (SPEC.md §6.2), one
+ * this platform cannot hold (`rules`, §8), or one outside what this vault
+ * syncs now (`inScope`), where the restored file would not show up. A
+ * RestoreError `invalid-path`, or undefined if the path will do.
+ */
+export function restorePathProblem(path: string, rules: PathRules, inScope: (path: string) => boolean): RestoreError | undefined {
+  const problem = pathProblem(path) ?? unmaterializableReason(path, rules) ?? (inScope(path) ? undefined : "not synced");
+  if (problem === undefined) return undefined;
+  return new RestoreError("invalid-path", path, `${path === "" ? "an empty path" : path} cannot be used (${problem}); choose another path`);
 }
 
 /** The document's head revision. */

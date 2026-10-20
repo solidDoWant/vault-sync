@@ -79,8 +79,8 @@ export interface VaultHistory {
   documentAt(path: string): Promise<string | undefined>;
   history(documentId: string, pageToken?: string): Promise<HistoryPage>;
   readRevision(entry: HistoryEntry): Promise<Uint8Array>;
-  /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one. */
-  restore(entry: HistoryEntry, content?: Uint8Array): Promise<RemoteRevision>;
+  /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one; `path` restores it there instead of at its own path (#420). */
+  restore(entry: HistoryEntry, content?: Uint8Array, path?: string): Promise<RemoteRevision>;
   /**
    * The deleted documents the user can restore here (SyncEngine.deletedDocuments),
    * without those at a path this vault does not sync now: a config file
@@ -188,9 +188,9 @@ export class SyncSession {
       },
       history: (documentId, pageToken) => engine.history(documentId, pageToken),
       readRevision: (entry) => engine.readRevision(entry),
-      restore: async (entry, content) => {
+      restore: async (entry, content, path) => {
         try {
-          return await engine.restore(entry, content);
+          return await engine.restore(entry, content, path);
         } finally {
           void this.report();
         }

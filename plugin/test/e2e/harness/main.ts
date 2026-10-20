@@ -763,6 +763,7 @@ export default class VaultSyncE2EHarness extends Plugin {
       contentHash: sha256Hex(encoder.encode(text)),
       size: BigInt(encoder.encode(text).length),
       deviceId: "",
+      deviceName: undefined,
       thisDevice: true,
       createdAt: new Date(Date.UTC(2026, 0, 2, 3, Number(seq))),
     });
