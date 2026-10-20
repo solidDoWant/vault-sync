@@ -46,7 +46,9 @@ export CLAUDE_ENV_FILE="$ENV_FILE"
 
 # Between cycles nothing else is running, so disk cleanup cannot break an
 # in-flight build:
-#   - the Go build cache grows ~1 GB/h under many worktrees; clear it past 15 GB
+#   - the Go build cache grows ~1 GB/h under many worktrees; clear it past 40 GB
+#     (Go also trims entries unused for 5 days; a full clear costs a slow
+#     rebuild in every worktree, so keep it rare — /workspace has ~80 GB free)
 #   - each `nix develop` leaves a /tmp/nix-shell.* directory behind
 #   - killed test runs leave their docker compose stack (vault-sync-test-PID) up
 cleanup_between_cycles() {
@@ -54,7 +56,7 @@ cleanup_between_cycles() {
   gocache="$(bash -c "source '$ENV_FILE' >/dev/null 2>&1; go env GOCACHE" 2>/dev/null)"
   if [ -n "$gocache" ] && [ -d "$gocache" ]; then
     size_kb=$(du -sk "$gocache" 2>/dev/null | cut -f1)
-    if [ "${size_kb:-0}" -gt $((15 * 1024 * 1024)) ]; then
+    if [ "${size_kb:-0}" -gt $((40 * 1024 * 1024)) ]; then
       bash -c "source '$ENV_FILE' >/dev/null 2>&1; go clean -cache"
       echo "$(date -Is) cleanup: cleared Go build cache (${size_kb} KiB)" >>"$LOG_DIR/cycles.log"
     fi

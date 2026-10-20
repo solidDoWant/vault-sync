@@ -11,6 +11,10 @@
  * sides cannot be merged without one overwriting the other: a node, edge or
  * field changed differently on both sides, one side changing what the other
  * removed, an edge left without its node, or anything that is not a canvas.
+ * Also null when `local` or `remote` holds JSON that parsing would rewrite (a
+ * duplicate key, a number that does not read back as written, such as an
+ * integer beyond 2^53): merging it would change content neither side changed.
+ * A top-level `__proto__` field is a field like any other.
  *
  * The local order is kept; nodes and edges only the remote side added follow,
  * in its order.
@@ -18,7 +22,9 @@
 export function mergeCanvas(base: string, local: string, remote: string): string | null {
   const [baseCanvas, localCanvas, remoteCanvas] = [parseCanvas(base), parseCanvas(local), parseCanvas(remote)];
   if (baseCanvas === undefined || localCanvas === undefined || remoteCanvas === undefined) return null;
-  const merged: Record<string, unknown> = {};
+  if (!readsBackAsWritten(local) || !readsBackAsWritten(remote)) return null;
+  // Null-prototype objects: assigning "__proto__" to a plain one would set its prototype, not a field.
+  const merged = Object.create(null) as Canvas;
   const keys = new Set([...Object.keys(localCanvas), ...Object.keys(remoteCanvas), ...Object.keys(baseCanvas)]);
   for (const key of keys) {
     if (key === "nodes" || key === "edges") {
@@ -27,12 +33,12 @@ export function mergeCanvas(base: string, local: string, remote: string): string
       merged[key] = items;
       continue;
     }
-    const value = mergeValue(baseCanvas[key], localCanvas[key], remoteCanvas[key]);
+    const value = mergeValue(field(baseCanvas, key), field(localCanvas, key), field(remoteCanvas, key));
     if (value === conflict) return null;
     if (value !== undefined) merged[key] = value;
   }
   // Keep the canvas's own key order (nodes, then edges) where it has one.
-  const ordered: Record<string, unknown> = {};
+  const ordered = Object.create(null) as Canvas;
   for (const key of ["nodes", "edges"]) ordered[key] = merged[key];
   for (const [key, value] of Object.entries(merged)) ordered[key] ??= value;
   const nodeIds = new Set((ordered.nodes as CanvasItem[]).map((node) => node.id));
@@ -72,6 +78,61 @@ function parseCanvas(text: string): Canvas | undefined {
     }
   }
   return canvas;
+}
+
+/** `canvas`'s own field `key` (undefined: absent), never one it inherits. */
+function field(canvas: Canvas, key: string): unknown {
+  return Object.hasOwn(canvas, key) ? canvas[key] : undefined;
+}
+
+const numberToken = /-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/y;
+
+/**
+ * Whether JSON.parse reads `text` (JSON it has parsed) without rewriting it:
+ * no object has a key twice (JSON.parse keeps the last), and every number
+ * serializes back as written (JSON.parse rounds an integer beyond 2^53, and
+ * JSON.stringify writes 1.0 as 1).
+ */
+function readsBackAsWritten(text: string): boolean {
+  // One entry per open object (its keys so far) or array (null).
+  const open: (Set<string> | null)[] = [];
+  let atKey = false;
+  let index = 0;
+  while (index < text.length) {
+    const char = text.charAt(index);
+    if (char === '"') {
+      let end = index + 1;
+      while (text.charAt(end) !== '"') end += text.charAt(end) === "\\" ? 2 : 1;
+      const keys = open.at(-1);
+      if (atKey && keys instanceof Set) {
+        const key = JSON.parse(text.slice(index, end + 1)) as string;
+        if (keys.has(key)) return false;
+        keys.add(key);
+        atKey = false;
+      }
+      index = end + 1;
+      continue;
+    }
+    if (char === "-" || (char >= "0" && char <= "9")) {
+      numberToken.lastIndex = index;
+      const [token = ""] = numberToken.exec(text) ?? [];
+      if (String(Number(token)) !== token) return false;
+      index += token.length;
+      continue;
+    }
+    if (char === "{") {
+      open.push(new Set());
+      atKey = true;
+    } else if (char === "[") {
+      open.push(null);
+    } else if (char === "}" || char === "]") {
+      open.pop();
+    } else if (char === ",") {
+      atKey = open.at(-1) instanceof Set;
+    }
+    index++;
+  }
+  return true;
 }
 
 function itemsOf(canvas: Canvas, key: string): CanvasItem[] {

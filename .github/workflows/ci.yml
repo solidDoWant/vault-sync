@@ -9,8 +9,11 @@ permissions:
   contents: read
   pull-requests: read # dorny/paths-filter lists PR files via the API
 
+# PRs: one run per branch, a new push cancels the old run. master: one group
+# per commit, so back-to-back merges never cancel each other's queued jobs
+# (a single shared group keeps only one pending run and cancels the rest).
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -24,6 +27,8 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       chart: ${{ steps.filter.outputs.chart }}
+      # Windows/macOS e2e on PRs only when plugin-side files change; always on master.
+      desktop: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop == 'true' }}
     steps:
       - uses: actions/checkout@v5
       - id: filter
@@ -42,6 +47,8 @@ jobs:
               - '!.github/renovate/**'
             chart:
               - 'docs/{configuration,deployment}.md'
+            desktop:
+              - '{plugin/**,.github/**,nix/**,flake.*}'
 
   # The test tiers run as parallel jobs (they used to be sequential steps of
   # one ~9 minute job). Everything runs inside the flake's dev shell so CI
@@ -141,7 +148,7 @@ jobs:
         run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
 
   # The plugin e2e suite in a pinned real Obsidian (docs/testing/e2e.md):
-  # desktop on Linux, Windows and macOS, plus Obsidian's emulated mobile mode
+  # desktop on Linux, Windows (plugin changes and master) and macOS (ditto), plus Obsidian's emulated mobile mode
   # once on Linux.
   plugin-e2e:
     name: plugin-e2e (${{ matrix.name }})
@@ -151,12 +158,10 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      # Server-only PRs run the Linux legs only: OS-specific behavior lives in
+      # the plugin, and the Windows/macOS runners dominate the queue.
       matrix:
-        include:
-          - { name: ubuntu-latest, os: ubuntu-latest, mobile: "0" }
-          - { name: windows-latest, os: windows-latest, mobile: "0" }
-          - { name: macos-latest, os: macos-latest, mobile: "0" }
-          - { name: emulated-mobile, os: ubuntu-latest, mobile: "1" }
+        include: ${{ fromJSON(needs.changes.outputs.desktop == 'true' && '[{"name":"ubuntu-latest","os":"ubuntu-latest","mobile":"0"},{"name":"windows-latest","os":"windows-latest","mobile":"0"},{"name":"macos-latest","os":"macos-latest","mobile":"0"},{"name":"emulated-mobile","os":"ubuntu-latest","mobile":"1"}]' || '[{"name":"ubuntu-latest","os":"ubuntu-latest","mobile":"0"},{"name":"emulated-mobile","os":"ubuntu-latest","mobile":"1"}]') }}
     env:
       VAULT_SYNC_E2E_MOBILE: ${{ matrix.mobile }}
     defaults:
