@@ -18,6 +18,7 @@ import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
+import { restoreWindow } from "./restore-scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -1369,5 +1370,25 @@ describe.runIf(suites.has("determinism"))("determinism", () => {
     expect(second.trace).toEqual(first.trace);
     // The schedule exercised faults, so the comparison covers them.
     expect(first.trace.some((line) => line.includes("lost"))).toBe(true);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted restore-and-purge scenarios (#488, #494)", () => {
+  const keepsTheEdit = async (shape: Parameters<typeof restoreWindow>[1]) => {
+    const result = await restoreWindow(environment, shape);
+    const trace = tail(result.trace, 200);
+
+    expect([...result.device.values()].join(""), trace).toContain("acknowledged edit");
+    expect([...result.server.values()].join(""), trace).toContain("acknowledged edit");
+  };
+
+  it("keeps a device's acknowledged edit the restored server lost, and pushes it again (untouched-after-restore)", async () => {
+    await keepsTheEdit("untouched-after-restore");
+  });
+
+  // Still lost: no information the client has tells these from a purge or
+  // from no change at all. Fixing them needs the server's help (#488, #494).
+  it.fails.each(["deleted-after-restore", "own-commit-above-cursor"] as const)("still loses a device's acknowledged edit the restored server lost (%s)", async (shape) => {
+    await keepsTheEdit(shape);
   });
 });

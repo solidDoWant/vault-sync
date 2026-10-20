@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { files, harness, text, type Harness } from "./testing";
+import { files, harness, moveHeadBeforeCommit, text, type Harness } from "./testing";
 
 // Retention purged the revision at this device's cursor, so the server
 // reports `diverged` and the engine resyncs (SPEC.md §6.1, §11), though the
@@ -118,5 +118,85 @@ describe("SyncEngine resync after a server restore, whose deletes are merged (SP
 
     // x's synced seq 3 holds k's revision now: the server lost x2.
     expect(text(await h.vault.read("x.md"))).toBe("x2");
+  });
+
+  // A restore below the cursor whose server commits past it again, and whose
+  // new revision at the cursor's seq retention purges, looks like a purge at
+  // the cursor (#488, #494). The journal's documents tell the two apart.
+
+  it("keeps and pushes again this device's own commit above the restored server's head", async () => {
+    const h = harness({ merge: "default" });
+    h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+    h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+    h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 3
+    await h.engine.pull();
+    await h.vault.write("x.md", new TextEncoder().encode("mine"));
+    // Another device commits three revisions first: this device's commit takes seq 7, its cursor stays at 3 (#261).
+    moveHeadBeforeCommit(h, () => {
+      for (const content of ["o1", "o2", "o3"]) h.server.commit({ documentId: "o", path: "o.md", content });
+    });
+    expect((await h.engine.push()).committed).toBe(1);
+    expect(await h.journal.getCursor()).toBe(3n);
+    h.server.restoreTo(2n);
+    h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 3, another anchor
+    h.server.commit({ documentId: "x", path: "x.md", deleted: true }); // 4
+    h.server.commit({ documentId: "c", path: "c.md", content: "c2" }); // 5
+    h.server.purge("c@3");
+
+    expect(await h.engine.pull()).toMatchObject({ resynced: true });
+
+    expect(text(await h.vault.read("x.md"))).toBe("mine");
+    await h.engine.push();
+    expect(h.server.liveFiles().get("x.md")).toBe("mine");
+  });
+
+  it("keeps and pushes again a note's revision the server lost when the restored server never changed the note", async () => {
+    const h = harness({ merge: "default" });
+    h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+    h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+    h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+    h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 4
+    await h.engine.pull();
+    h.server.restoreTo(2n);
+    h.server.commit({ documentId: "o", path: "o.md", content: "o1" }); // 3, x2's seq
+    h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 4, the cursor's seq
+    h.server.commit({ documentId: "o", path: "o.md", content: "o2" }); // 5
+    h.server.commit({ documentId: "c", path: "c.md", content: "c2" }); // 6
+    h.server.purge("o@3");
+    h.server.purge("c@4");
+
+    expect(await h.engine.pull()).toMatchObject({ resynced: true });
+
+    // x's head x1 (seq 2) lies below its synced seq 3, which no purge does:
+    // x2 is merged, kept as a copy beside the server's x1.
+    expect([...(await files(h.vault)).values()]).toContain("x2");
+    await h.engine.push();
+    expect([...h.server.liveFiles().values()]).toContain("x2");
+  });
+
+  it("keeps a note another device deleted on the restored server when another note shows the restore", async () => {
+    const h = harness({ merge: "default" });
+    h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+    h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+    h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+    h.server.commit({ documentId: "w", path: "w.md", content: "w1" }); // 4
+    h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 5
+    await h.engine.pull();
+    h.server.restoreTo(2n);
+    h.server.commit({ documentId: "o", path: "o.md", content: "o1" }); // 3, x2's seq
+    h.server.commit({ documentId: "o", path: "o.md", content: "o2" }); // 4, w1's seq
+    h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 5, the cursor's seq
+    h.server.commit({ documentId: "x", path: "x.md", deleted: true }); // 6
+    h.server.commit({ documentId: "c", path: "c.md", content: "c2" }); // 7
+    h.server.purge("o@3");
+    h.server.purge("c@5");
+
+    expect(await h.engine.pull()).toMatchObject({ resynced: true });
+
+    // x alone looks purged, but w's seq 4 holds another revision: a restore.
+    expect(text(await h.vault.read("x.md"))).toBe("x2");
+    expect(text(await h.vault.read("w.md"))).toBe("w1");
+    await h.engine.push();
+    expect(h.server.liveFiles().get("x.md")).toBe("x2");
   });
 });

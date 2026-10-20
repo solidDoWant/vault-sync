@@ -1811,13 +1811,36 @@ export class SyncEngine {
     // skips is one retention purged. With the cursor's own seq skipped, the
     // divergence is a purge of the cursor's revision, not a restore below it
     // (§6.1). A document whose synced revision the feed still holds at its
-    // seq, or whose seq it skips too, was then lost by no restore: the
+    // seq, or whose seq it skips with its head above it, was then lost by no restore: the
     // server's head descends from it, and is applied as an ordinary pull
     // would apply it (merged only if the user changed the document). Merged
     // regardless, a remote delete would keep the unchanged file and the next
     // push would bring the note back (#480).
-    const purgedCursor = cursor > 0n && cursor <= seq && !feed.has(cursor);
-    const lostNothing = (state: DocumentState) => purgedCursor && state.seq > 0n && state.seq <= seq && (feed.get(state.seq) ?? state.revisionId) === state.revisionId;
+    //
+    // A restore below the cursor whose server then committed past it again,
+    // and whose revision at the cursor's seq retention then purged, looks the
+    // same at the cursor (#488). Only a purge is consistent with every
+    // document the journal holds: its synced revision is still at its seq,
+    // or the seq was purged and the document's head lies above it (a purged
+    // revision was superseded). A document that is not (its seq above the
+    // feed, holding another revision, or its head at or below it) proves a
+    // restore, and every document is then merged.
+    const purgeOnly = (state: DocumentState) => {
+      const atSeq = feed.get(state.seq);
+      if (atSeq !== undefined) return atSeq === state.revisionId;
+      const head = heads.get(state.documentId);
+      return head !== undefined && head.remote.seq > state.seq;
+    };
+    let purgedCursor = cursor > 0n && cursor <= seq && !feed.has(cursor);
+    if (purgedCursor) {
+      for (const state of await this.journal.listDocuments()) {
+        if (state.seq > 0n && !purgeOnly(state)) {
+          purgedCursor = false;
+          break;
+        }
+      }
+    }
+    const lostNothing = (state: DocumentState) => purgedCursor && state.seq > 0n;
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
