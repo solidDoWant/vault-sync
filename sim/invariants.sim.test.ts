@@ -218,6 +218,47 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(await posix.list()).toEqual(["plan?.md"]);
   });
 
+  // #452: the kept edited file used to hold off for good another note the
+  // server put under a folder of its name, deferred path-conflict.
+  it("frees a Windows engine's kept edited file's name for a note another device creates under a folder of that name, keeping the edit as a conflict copy", async () => {
+    const run = await SimRun.start(environment, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+    const [posix, windows] = run.observers;
+    if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
+    const drain = async () => {
+      await settle();
+      await run.drain();
+    };
+    run.context.log(await posix.edit("notes", encoder.encode("one\n")));
+    run.context.log(posix.startPush());
+    await drain();
+    run.context.log(windows.startPull());
+    await drain();
+    run.context.log(await windows.edit("notes", encoder.encode("one\nedited on windows\n")));
+    run.context.log(await posix.move("notes", "plan?.md"));
+    run.context.log(posix.startPush());
+    await drain();
+    run.context.log(windows.startPull());
+    await drain();
+    run.context.log(await posix.edit("NOTES/d.md", encoder.encode("another note\n")));
+    run.context.log(posix.startPush());
+    await drain();
+    run.context.log(windows.startPull());
+    await drain();
+    run.context.log(windows.startPush());
+    await drain();
+    const result = await run.finish();
+
+    expect(result.violations, tail(result.trace)).toEqual([]);
+    const listed = await windows.list();
+    expect(listed).toContain("NOTES/d.md");
+    const copies = listed.filter((path) => path.startsWith("notes (conflict "));
+    expect(copies, listed.join(", ")).toHaveLength(1);
+    expect(new TextDecoder().decode(await windows.read(copies[0] ?? ""))).toBe("one\nedited on windows\n");
+    expect(listed).toHaveLength(2);
+    expect(await windows.unmaterializable()).toEqual(new Map([["plan?.md", "forbidden-character"]]));
+    expect(await posix.list()).toEqual([...listed, "plan?.md"].sort());
+  });
+
   it("passes the mutation tests' scenario without a mutation", async () => {
     const result = await twoEngines(environment, () => Promise.resolve("no mutation"));
     expect(result.violations, tail(result.trace)).toEqual([]);
