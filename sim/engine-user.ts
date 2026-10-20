@@ -106,7 +106,7 @@ export class EngineUser {
     await this.options.vault.delete(path);
     if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
     for (const document of documents) this.options.ledger.deletedDocuments.add(document);
-    this.options.ledger.deleted(path);
+    this.options.ledger.deleted(path, this.options.serverSeq());
     // Deleted, the moved file is followed no further: a file created there later is another one.
     this.movedDocuments.delete(path);
     return `${this.options.name} user deletes ${path}`;

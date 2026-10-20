@@ -17,9 +17,12 @@
 //   rename the app was killed before it recorded is pushed as a delete plus a
 //   create, so the tombstone of a document whose file the user renamed away
 //   is excused when the engine crashed after the rename, before the
-//   tombstone, and then committed the renamed file, as the user left it,
-//   where the user put it, as another document: a new one, or one whose file
-//   the user deleted there (#254) (#280).
+//   tombstone, and then committed the renamed file, with a content it held,
+//   where the user put it, as another document: a new one, one whose file
+//   the user deleted there (#254) (#280), or one whose file an earlier rename
+//   lost to the crash moved away from there (#531). It is excused too when
+//   the user deleted the renamed file after the tombstone, before the engine
+//   committed the file (#531).
 // - `resurrected-delete`: every live revision that follows a tombstone of
 //   the same document was committed by a scripted client or by an engine
 //   whose user wrote or renamed a file at one of that document's paths and
@@ -80,6 +83,8 @@ export interface UserRename {
   hashes: Set<string>;
   /** Where the file is now (path key), or undefined once the user deleted it. */
   current: string | undefined;
+  /** The server's head seq when the user deleted the file, if they did. */
+  deletedAt: bigint | undefined;
 }
 
 /** The app was killed: the server's head seq then, and how many renames the user had made by then. */
@@ -124,7 +129,16 @@ export class UserLedger {
       rename.paths.add(key);
       rename.hashes.add(hash);
     }
-    this.renames.push({ documents, paths: new Set([key]), hashes: new Set([hash]), current: key });
+    this.renames.push({ documents, paths: new Set([key]), hashes: new Set([hash]), current: key, deletedAt: undefined });
+  }
+
+  /**
+   * The engine wrote `hash` to `path`: a renamed file there now holds it, as
+   * when the running engine merges a remote edit of the renamed document into
+   * it before a crash loses the rename (#531).
+   */
+  writtenByEngine(path: string, hash: string): void {
+    for (const rename of this.at(path)) rename.hashes.add(hash);
   }
 
   /**
@@ -140,9 +154,12 @@ export class UserLedger {
     }
   }
 
-  /** The user deleted the file at `path`. */
-  deleted(path: string): void {
-    for (const rename of this.at(path)) rename.current = undefined;
+  /** The user deleted the file at `path`, when the server's head seq was `serverSeq`. */
+  deleted(path: string, serverSeq: bigint): void {
+    for (const rename of this.at(path)) {
+      rename.current = undefined;
+      rename.deletedAt = serverSeq;
+    }
   }
 
   /** The renames whose file is at `path` now. */
@@ -263,33 +280,44 @@ export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevic
 /**
  * Whether `tombstone` is the delete half of a rename the engine lost to a
  * crash (#167 item 2): its user renamed the document's file away, the app was
- * killed after that and before the tombstone was committed, and after the
- * crash the engine committed the renamed file (a content it held, at a path
- * the user's renames gave it) as another document: a new one (its first
- * revision), or one whose file the user deleted, which the engine took the
- * file for at that path (#254). The user sees the same file at the same path;
- * only the document id changed. Nothing else is excused: not a rename the
- * running engine lost, not a delete without that create.
+ * killed after that and before the tombstone was committed, and either the
+ * user deleted the renamed file (renamed again or not) after the tombstone,
+ * so no create is owed (#531), or after the crash the engine committed the renamed file (a
+ * content it held, at a path the user's renames gave it) as another
+ * document. That document is a new one (its first revision); or one whose
+ * file the user deleted, which the engine took the file for at that path
+ * (#254); or one whose file an earlier rename, lost to the same crash, moved
+ * away from that path, which the engine took the file for the same way
+ * (#531). The user sees the same file at the same path; only the document id
+ * changed. Nothing else is excused: not a rename the running engine lost,
+ * not a delete without that create or the user's delete.
  */
 function renameLostToCrash(tombstone: FeedRevision, engine: EngineDeletes, feed: readonly FeedRevision[], firstSeq: ReadonlyMap<string, bigint>): boolean {
   const key = pathMatcher(engine.platform);
   return engine.renames.some((rename, index) => {
     if (!rename.documents.has(tombstone.documentId)) return false;
-    return engine.crashes.some(
-      (crash) =>
-        crash.renames > index &&
-        crash.serverSeq < tombstone.seq &&
-        feed.some(
-          (create) =>
-            create.deviceId === engine.deviceId &&
-            !create.deleted &&
-            create.documentId !== tombstone.documentId &&
-            rename.hashes.has(create.contentHash) &&
-            [create.path, ...copiedFrom(create.path, engine.name)].some((path) => rename.paths.has(key(path))) &&
-            create.seq > crash.serverSeq &&
-            (firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId)),
-        ),
-    );
+    return engine.crashes.some((crash) => {
+      if (crash.renames <= index || crash.serverSeq >= tombstone.seq) return false;
+      // Deleted after the tombstone was committed, when the engine no longer knew the document for the file (before, the user's delete records it).
+      if (rename.deletedAt !== undefined && rename.deletedAt >= tombstone.seq) return true;
+      // An earlier rename of the document's file that the engine had not committed by the crash: lost to it too.
+      const movedAwayByLostRename = (document: string) =>
+        engine.renames.slice(0, index).some(
+          (earlier) =>
+            earlier.documents.has(document) &&
+            !feed.some((revision) => revision.documentId === document && revision.deviceId === engine.deviceId && revision.seq <= crash.serverSeq && earlier.paths.has(key(revision.path))),
+        );
+      return feed.some(
+        (create) =>
+          create.deviceId === engine.deviceId &&
+          !create.deleted &&
+          create.documentId !== tombstone.documentId &&
+          rename.hashes.has(create.contentHash) &&
+          [create.path, ...copiedFrom(create.path, engine.name)].some((path) => rename.paths.has(key(path))) &&
+          create.seq > crash.serverSeq &&
+          (firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId) || movedAwayByLostRename(create.documentId)),
+      );
+    });
   });
 }
 
