@@ -1,0 +1,223 @@
+{
+  "name": "seed-1-case-rename",
+  "seed": 1,
+  "clients": 3,
+  "engines": 2,
+  "commitRetryBackoff": 30,
+  "violations": [
+    {
+      "invariant": "engine-convergence",
+      "detail": "e3 is missing notes/c.md"
+    },
+    {
+      "invariant": "engine-convergence",
+      "detail": "e3 holds Notes/C.md, which is not a live document"
+    },
+    {
+      "invariant": "engine-deferred",
+      "detail": "e3 deferred c2.r2 (local-changes) without local changes"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 3166101453
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 275038047
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 2735149772
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "delete",
+      "arg": 1626033649
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 3813368434
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "pull",
+      "arg": 111054976
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "partition",
+      "client": 0,
+      "steps": 3
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 2648616178
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 719564263
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 314820301
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 368127892
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "create",
+      "arg": 2963352591
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 2302499719
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 2859612816
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "crash",
+      "client": 2
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 4081070403
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 2225533663
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 1838103064
+    },
+    {
+      "kind": "reorder",
+      "pick": 3273956893
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "delete",
+      "arg": 6882113
+    }
+  ]
+}
