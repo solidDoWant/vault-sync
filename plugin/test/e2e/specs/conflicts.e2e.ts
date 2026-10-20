@@ -115,6 +115,13 @@ describe("vault-sync conflict view", function () {
         delete vault.e2eGetFileByPath;
       });
     }
+    // The redraw ran while the copy seemed gone, so it showed no conflict; the copy is back now.
+    await browser.executeObsidian(async ({ app }) => {
+      const view = app.workspace.getLeavesOfType("vault-sync-conflicts")[0]?.view as unknown as { refresh(): Promise<void> } | undefined;
+      if (view === undefined) throw new Error("the conflict view is not open");
+      await view.refresh();
+    });
+    await browser.waitUntil(async () => (await texts(".vault-sync-compare")).length > 0, { timeoutMsg: "the conflict is not listed again" });
   });
 
   it("opens both versions side by side with one click", async function () {
