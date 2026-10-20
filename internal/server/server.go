@@ -563,18 +563,65 @@ func (srv *Server) Serve(ctx context.Context, apiListener, metricsListener net.L
 	return errors.Join(serveErr, shutdownErr)
 }
 
-// closeConnectionsWhileDraining has every response sent once shutdown has
-// started close its connection after it is written, so the client's next
-// request opens a connection a load balancer routes to another instance.
-// A successful WebSocket upgrade replaces the header with its own.
+// closeConnectionsWhileDraining has every response whose header is written
+// once shutdown has started close its connection after it is written, so
+// the client's next request opens a connection a load balancer routes to
+// another instance. The decision is made when the header is written, not
+// when the request starts, so a request already in flight when shutdown
+// starts closes its connection too. A successful WebSocket upgrade (101)
+// keeps its own header; a refused one closes its connection.
 func (srv *Server) closeConnectionsWhileDraining(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if srv.draining.Load() {
+		next.ServeHTTP(&drainingWriter{ResponseWriter: writer, draining: &srv.draining}, request)
+	})
+}
+
+// drainingWriter adds Connection: close to a response whose header is
+// written while draining is set.
+type drainingWriter struct {
+	http.ResponseWriter
+
+	draining    *atomic.Bool
+	wroteHeader bool
+}
+
+func (writer *drainingWriter) WriteHeader(status int) {
+	if !writer.wroteHeader && status >= http.StatusOK {
+		writer.wroteHeader = true
+
+		if writer.draining.Load() {
 			writer.Header().Set("Connection", "close")
 		}
+	}
 
-		next.ServeHTTP(writer, request)
-	})
+	writer.ResponseWriter.WriteHeader(status)
+}
+
+func (writer *drainingWriter) Write(data []byte) (int, error) {
+	if !writer.wroteHeader {
+		writer.WriteHeader(http.StatusOK)
+	}
+
+	return writer.ResponseWriter.Write(data)
+}
+
+// Flush writes the header first, as the wrapped writer's Flush would.
+func (writer *drainingWriter) Flush() {
+	if !writer.wroteHeader {
+		writer.WriteHeader(http.StatusOK)
+	}
+
+	_ = http.NewResponseController(writer.ResponseWriter).Flush()
+}
+
+// Hijack hands over the connection (a WebSocket upgrade), header untouched.
+func (writer *drainingWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	return http.NewResponseController(writer.ResponseWriter).Hijack()
+}
+
+// Unwrap lets http.ResponseController reach the wrapped writer.
+func (writer *drainingWriter) Unwrap() http.ResponseWriter {
+	return writer.ResponseWriter
 }
 
 // registerDrainers has apiServer's Shutdown run every Drainer, bounded by
