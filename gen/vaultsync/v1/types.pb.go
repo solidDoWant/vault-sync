@@ -529,7 +529,8 @@ type Revision struct {
 	// bytes). Unlike id, which the committing client chooses, it cannot be
 	// reproduced by a server restored from a backup that commits again: a
 	// client sends the anchor of the revision at its cursor as
-	// ListChangesRequest.since_anchor to detect such a restore (SPEC.md §6.1).
+	// ListChangesRequest.since_anchor, and that of its own latest commit above
+	// the cursor as own_commit_anchor, to detect such a restore (SPEC.md §6.1).
 	Anchor        []byte `protobuf:"bytes,13,opt,name=anchor,proto3" json:"anchor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
