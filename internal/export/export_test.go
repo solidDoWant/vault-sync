@@ -1131,6 +1131,34 @@ func TestExportLeavesNoEmptyDirectoryForARefusedDocument(t *testing.T) {
 			want: map[string]string{"f": "a file"},
 		},
 		{
+			// Issue #430 item 1: the folder made for the refused document
+			// must not push the next one out of the tree.
+			name: "a file named like the folder of a refused name over 255 bytes",
+			documents: []document{
+				{path: "x/" + strings.Repeat("y", 300), content: "too long"},
+				{path: "x", content: "x file"},
+			},
+			want: map[string]string{"x": "x file", "unplaced/too long": "too long"},
+		},
+		{
+			name: "a file named like the folder of a document with missing content",
+			documents: []document{
+				{path: "x/gone.md", content: "gone", missing: true},
+				{path: "x", content: "x file"},
+			},
+			want: map[string]string{"x": "x file"},
+		},
+		{
+			// Issue #430 item 2.
+			name: "every unplaced document has missing content",
+			documents: []document{
+				{path: "f", content: "a file"},
+				{path: "f/gone.md", content: "gone", missing: true},
+				{path: strings.Repeat("y", 300), content: "gone too", missing: true},
+			},
+			want: map[string]string{"f": "a file"},
+		},
+		{
 			name: "an unplaced document after a removed unplaced folder",
 			documents: []document{
 				{path: "f", content: "a file"},

@@ -22,8 +22,10 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -208,9 +210,9 @@ func (run *run) run(ctx context.Context) error {
 		return err
 	}
 
-	staging, err := os.MkdirTemp(parent, stagingPrefix)
+	staging, err := mkdirStaging(parent, stagingPrefix)
 	if err != nil {
-		return fmt.Errorf("create staging directory: %w", err)
+		return err
 	}
 
 	swapped := false
@@ -271,8 +273,35 @@ func (run *run) run(ctx context.Context) error {
 	return nil
 }
 
+// maxStagingAttempts bounds the names mkdirStaging tries.
+const maxStagingAttempts = 100
+
+// mkdirStaging creates a new directory in parent named prefix followed by a
+// random decimal number, the only names removeStale removes. It does not use
+// os.MkdirTemp, whose pattern puts the number in place of the last "*" of
+// prefix: for an output name containing "*", removeStale would never
+// recognize the directory a killed run left behind.
+func mkdirStaging(parent, prefix string) (string, error) {
+	for range maxStagingAttempts {
+		staging := filepath.Join(parent, prefix+strconv.FormatUint(uint64(rand.Uint32()), 10))
+
+		err := os.Mkdir(staging, dirMode)
+		if errors.Is(err, fs.ErrExist) {
+			continue
+		}
+
+		if err != nil {
+			return "", fmt.Errorf("create staging directory: %w", err)
+		}
+
+		return staging, nil
+	}
+
+	return "", errors.New("create staging directory: too many name collisions")
+}
+
 // removeStale removes staging directories left by interrupted runs: the
-// entries named prefix followed by the decimal number os.MkdirTemp appends.
+// entries named prefix followed by the decimal number mkdirStaging appends.
 // Anything else sharing the prefix, such as the lock file or staging
 // directories of an export to a sibling named like "<base>.staging-foo", is
 // left alone.

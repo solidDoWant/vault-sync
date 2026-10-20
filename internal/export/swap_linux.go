@@ -15,9 +15,15 @@ var errLocked = errors.New("another export to this directory is running")
 
 // lock takes an exclusive, non-blocking lock on the file at path, creating
 // it if needed. The lock is held until the returned file is closed (or the
-// process exits).
+// process exits). A symbolic link at path is refused, never followed, so a
+// link planted beside the output cannot make the export create or lock a
+// file elsewhere.
 func lock(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE, 0o600)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|unix.O_NOFOLLOW, 0o600)
+	if errors.Is(err, unix.ELOOP) {
+		return nil, fmt.Errorf("open lock file: %s is a symbolic link; remove it", path)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
