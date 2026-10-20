@@ -21,6 +21,32 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 // (app.emulateMobile on the desktop app; not a real Android device).
 const emulateMobile = process.env.VAULT_SYNC_E2E_MOBILE === "1";
 
+// VAULT_SYNC_E2E_LOG_DIR keeps a run's diagnostics in that directory: each
+// worker's WebdriverIO log and a verbose chromedriver log that includes
+// Obsidian's (Electron's) own stderr, so a lost renderer or a crashed
+// Obsidian can be told apart afterwards (#457). CI uploads it when the job
+// fails.
+const logDir = process.env.VAULT_SYNC_E2E_LOG_DIR;
+
+// Windows: render in software inside Obsidian's main process. On a loaded
+// Windows runner (no GPU) Electron's separate GPU process kept dying until
+// Chromium gave up and ended Obsidian with "GPU process isn't usable.
+// Goodbye." (chromedriver: "Unable to receive message from renderer"), which
+// failed whichever spec was running (#457). The specs check no pixels, so
+// software rendering loses no coverage.
+const gpuArgs = process.platform === "win32" ? ["--disable-gpu", "--in-process-gpu"] : [];
+
+declare global {
+  namespace WebdriverIO {
+    // chromedriver flags WebdriverIO passes through (as `--verbose` and
+    // `--enable-chrome-logs`) but does not type.
+    interface ChromedriverOptions {
+      verbose?: boolean;
+      enableChromeLogs?: boolean;
+    }
+  }
+}
+
 // The test-only harness plugin (test/e2e/harness) is bundled here, so the
 // suite always runs the harness that matches the checked-out sources.
 const harnessDir = path.join(root, "test", "e2e", "harness");
@@ -55,7 +81,11 @@ export const config: WebdriverIO.Config = {
         vault: "./test/e2e/vaults/primary",
         emulateMobile,
       },
-      ...(emulateMobile ? { "goog:chromeOptions": { mobileEmulation: { deviceMetrics: { width: 390, height: 844 } } } } : {}),
+      ...(logDir === undefined ? {} : { "wdio:chromedriverOptions": { verbose: true, enableChromeLogs: true } }),
+      "goog:chromeOptions": {
+        args: gpuArgs,
+        ...(emulateMobile ? { mobileEmulation: { deviceMetrics: { width: 390, height: 844 } } } : {}),
+      },
     },
   ],
   services: ["obsidian"],
@@ -69,6 +99,7 @@ export const config: WebdriverIO.Config = {
   specFileRetries: 0,
   bail: 0,
   logLevel: "warn",
+  ...(logDir === undefined ? {} : { outputDir: logDir }),
   waitforTimeout: 30_000,
   connectionRetryTimeout: 120_000,
   connectionRetryCount: 1,
