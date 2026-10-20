@@ -103,7 +103,7 @@ export class EngineObserver {
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
-    this.engineVault = new MutableVault(this.vault);
+    this.engineVault = new MutableVault(this.vault, (from, to, rename) => this.user.engineRenamed(from, to, rename));
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
@@ -515,9 +515,20 @@ class HaltingJournal extends InMemoryJournal {
   }
 }
 
-/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops. */
+/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops, and whose renames the user's ledger follows (#509). */
 class MutableVault extends InterleavingVault {
   private readonly keep = new Set<string>();
+
+  constructor(
+    inner: VaultAdapter,
+    private readonly renamed: (from: string, to: string, rename: () => Promise<void>) => Promise<void>,
+  ) {
+    super(inner);
+  }
+
+  override rename(from: string, to: string): Promise<void> {
+    return this.renamed(from, to, () => super.rename(from, to));
+  }
 
   keepOnNextDelete(path: string): void {
     this.keep.add(path);
