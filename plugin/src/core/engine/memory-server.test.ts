@@ -135,3 +135,29 @@ describe("InMemoryServer's path text rule (SPEC.md §6.2, #148)", () => {
     expect(await commit(new InMemoryServer(), "x", "x1", "", "\u{1d160}".repeat(682) + "a".repeat(8))).toBe("ok");
   });
 });
+
+describe("InMemoryServer's upload session limit (SPEC.md §6.2, #370)", () => {
+  async function begin(server: InMemoryServer, content: string): Promise<string> {
+    const api = createProtocolClient({ transport: server.transport });
+    const bytes = encoder.encode(content);
+    try {
+      await api.blobs.beginBlob({ vaultId: server.vaultId, blobId: hexToBytes(sha256Hex(bytes)), size: BigInt(bytes.length) });
+      return "ok";
+    } catch (error) {
+      return error instanceof ConnectError ? Code[error.code] : String(error);
+    }
+  }
+
+  it("refuses a new session at the limit while no session has been idle past the reclaim threshold, and reclaims one that has", async () => {
+    let clock = 0;
+    const server = new InMemoryServer({ maxUploads: 2, uploadReclaimIdleMs: 600_000, now: () => new Date(clock) });
+    expect(await begin(server, "one")).toBe("ok");
+    expect(await begin(server, "two")).toBe("ok");
+    clock += 600_000;
+    expect(await begin(server, "three")).toBe("ResourceExhausted");
+    expect(server.openUploads()).toBe(2);
+    clock += 1;
+    expect(await begin(server, "three")).toBe("ok");
+    expect(server.openUploads()).toBe(1);
+  });
+});

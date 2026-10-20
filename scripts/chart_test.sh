@@ -261,7 +261,7 @@ render --set config.logLevel=debug --set config.s3.region=r --set config.s3.forc
 	--set config.oidc.clientId=c --set config.server.maxRequestBytes=1 --set config.server.writeTimeout=1s \
 	--set config.server.maxConcurrentRpcsPerUser=1 --set config.server.shutdownDelay=1s --set config.server.shutdownTimeout=1s \
 	--set config.server.blob.maxChunkBytes=1 --set config.server.blob.maxSizeBytes=1 --set config.server.blob.maxUploadsPerVault=1 \
-	--set config.server.blob.uploadTtl=1h --set config.server.blob.gcGrace=1h --set config.server.retention.keepAll=1h \
+	--set config.server.blob.uploadTtl=1h --set config.server.blob.uploadReclaimIdle=10m --set config.server.blob.gcGrace=1h --set config.server.retention.keepAll=1h \
 	--set config.server.retention.keepDaily=1h --set config.server.realtime.maxConnections=1 \
 	--set config.server.realtime.maxConnectionsPerUser=1 --set config.server.realtime.maxSubscriptions=1
 documented_vars="$(grep -oE '^\| `VAULT_SYNC_[A-Z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ')"

@@ -66,7 +66,7 @@ func (fixture *cleanupFixture) startUpload(t *testing.T, name string, chunks int
 
 	sum := sha256.Sum256([]byte(name))
 
-	start, err := fixture.vault.BeginBlobUpload(t.Context(), sum[:], int64(10*chunks+10), 100)
+	start, err := fixture.vault.BeginBlobUpload(t.Context(), sum[:], int64(10*chunks+10), 100, 0)
 	require.NoError(t, err)
 
 	upload := start.Upload
@@ -173,7 +173,7 @@ func TestCleanerRemovesAbandonedUploads(t *testing.T) {
 
 	// The blob can be uploaded again afterwards.
 	sum := sha256.Sum256([]byte("abandoned"))
-	start, err := fixture.vault.BeginBlobUpload(t.Context(), sum[:], 40, 100)
+	start, err := fixture.vault.BeginBlobUpload(t.Context(), sum[:], 40, 100, 0)
 	require.NoError(t, err)
 	assert.NotEqual(t, abandoned, start.Upload.ID)
 	assert.Zero(t, start.Upload.ReceivedSize)

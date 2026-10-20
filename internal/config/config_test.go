@@ -66,6 +66,7 @@ func TestLoadDefaults(t *testing.T) {
 			MaxSizeBytes:       1 << 30,
 			MaxUploadsPerVault: 32,
 			UploadTTL:          24 * time.Hour,
+			UploadReclaimIdle:  10 * time.Minute,
 		},
 		Realtime:  config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128},
 		Retention: config.RetentionConfig{KeepAll: 90 * 24 * time.Hour, KeepDaily: 365 * 24 * time.Hour, BlobGrace: 24 * time.Hour},
@@ -230,18 +231,19 @@ func TestLoadBlobSettings(t *testing.T) {
 				config.BlobMaxSizeBytesEnv:       "104857600",
 				config.BlobMaxUploadsPerVaultEnv: "8",
 				config.BlobUploadTTLEnv:          "6h",
+				config.BlobUploadReclaimIdleEnv:  "30m",
 			},
-			want: config.BlobConfig{MaxChunkBytes: 512 << 10, MaxSizeBytes: 100 << 20, MaxUploadsPerVault: 8, UploadTTL: 6 * time.Hour},
+			want: config.BlobConfig{MaxChunkBytes: 512 << 10, MaxSizeBytes: 100 << 20, MaxUploadsPerVault: 8, UploadTTL: 6 * time.Hour, UploadReclaimIdle: 30 * time.Minute},
 		},
 		{
 			name: "the largest chunk that fits the default request limit",
 			env:  map[string]string{config.BlobMaxChunkBytesEnv: "1047552"},
-			want: config.BlobConfig{MaxChunkBytes: 1<<20 - config.ChunkRequestOverheadBytes, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour},
+			want: config.BlobConfig{MaxChunkBytes: 1<<20 - config.ChunkRequestOverheadBytes, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour, UploadReclaimIdle: 10 * time.Minute},
 		},
 		{
 			name: "larger chunks with a larger request limit",
 			env:  map[string]string{config.BlobMaxChunkBytesEnv: "2097152", config.MaxRequestBytesEnv: "3145728"},
-			want: config.BlobConfig{MaxChunkBytes: 2 << 20, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour},
+			want: config.BlobConfig{MaxChunkBytes: 2 << 20, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour, UploadReclaimIdle: 10 * time.Minute},
 		},
 		{
 			name:         "chunk plus framing above the default request limit",
@@ -282,6 +284,36 @@ func TestLoadBlobSettings(t *testing.T) {
 			name:         "TTL too short",
 			env:          map[string]string{config.BlobUploadTTLEnv: "1m"},
 			wantProblems: []string{config.BlobUploadTTLEnv},
+		},
+		{
+			name: "reclaim idle at its minimum",
+			env:  map[string]string{config.BlobUploadReclaimIdleEnv: "10m"},
+			want: config.BlobConfig{MaxChunkBytes: 768 << 10, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: 24 * time.Hour, UploadReclaimIdle: 10 * time.Minute},
+		},
+		{
+			name:         "reclaim idle just below its minimum",
+			env:          map[string]string{config.BlobUploadReclaimIdleEnv: "9m59.999999999s"},
+			wantProblems: []string{config.BlobUploadReclaimIdleEnv},
+		},
+		{
+			name: "reclaim idle equal to the TTL",
+			env:  map[string]string{config.BlobUploadReclaimIdleEnv: "1h", config.BlobUploadTTLEnv: "1h"},
+			want: config.BlobConfig{MaxChunkBytes: 768 << 10, MaxSizeBytes: 1 << 30, MaxUploadsPerVault: 32, UploadTTL: time.Hour, UploadReclaimIdle: time.Hour},
+		},
+		{
+			name:         "reclaim idle just above the TTL",
+			env:          map[string]string{config.BlobUploadReclaimIdleEnv: "1h0m0.000000001s", config.BlobUploadTTLEnv: "1h"},
+			wantProblems: []string{config.BlobUploadReclaimIdleEnv, config.BlobUploadTTLEnv},
+		},
+		{
+			name:         "reclaim idle above a TTL at its minimum",
+			env:          map[string]string{config.BlobUploadTTLEnv: "10m", config.BlobUploadReclaimIdleEnv: "11m"},
+			wantProblems: []string{config.BlobUploadReclaimIdleEnv},
+		},
+		{
+			name:         "reclaim idle not a duration",
+			env:          map[string]string{config.BlobUploadReclaimIdleEnv: "ten minutes"},
+			wantProblems: []string{config.BlobUploadReclaimIdleEnv},
 		},
 		{
 			name:         "TTL not a duration",
