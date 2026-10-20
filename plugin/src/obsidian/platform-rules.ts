@@ -44,3 +44,18 @@ export function isUnmaterializableOsError(error: unknown): boolean {
   if (typeof message !== "string") return false;
   return /\b(ENAMETOOLONG|EINVAL|EILSEQ)\b|file name too long|name too long|invalid argument|illegal byte sequence/i.test(message);
 }
+
+/**
+ * Whether `error` is the OS saying a file or folder does not exist (ENOENT).
+ * Windows also says it for a name it refuses: Node (libuv) maps
+ * ERROR_INVALID_NAME, which Windows gives for a name over 255 characters or
+ * with a forbidden character, to ENOENT. So the vault adapter takes ENOENT
+ * from a create or rename as a refused name when everything it does depend
+ * on (the parent folder, a rename's source) exists.
+ */
+export function isNotFoundOsError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (code === "ENOENT") return true;
+  return typeof message === "string" && /\bENOENT\b|no such file or directory/i.test(message);
+}

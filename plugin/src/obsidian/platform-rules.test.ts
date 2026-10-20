@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isUnmaterializableOsError, pathRulesFor } from "./platform-rules";
+import { isNotFoundOsError, isUnmaterializableOsError, pathRulesFor } from "./platform-rules";
 
 const desktop = { isWin: false, isMacOS: false, isIosApp: false, isAndroidApp: false };
 
@@ -34,6 +34,25 @@ describe("isUnmaterializableOsError", () => {
   for (const { name, error, expected } of cases) {
     it(`${expected ? "recognizes" : "does not take"} ${name}`, () => {
       expect(isUnmaterializableOsError(error)).toBe(expected);
+    });
+  }
+});
+
+describe("isNotFoundOsError", () => {
+  const cases: { name: string; error: unknown; expected: boolean }[] = [
+    { name: "Node's ENOENT (Windows refusing a name, or a missing folder)", error: Object.assign(new Error("ENOENT: no such file or directory, open 'C:\\v\\nnn.md'"), { code: "ENOENT" }), expected: true },
+    { name: "an error with only the code", error: Object.assign(new Error("open failed"), { code: "ENOENT" }), expected: true },
+    { name: "a Capacitor message naming the code", error: new Error("open failed: ENOENT (No such file or directory)"), expected: true },
+    { name: "a message without a code", error: new Error("No such file or directory"), expected: true },
+    { name: "a name too long", error: Object.assign(new Error("ENAMETOOLONG: name too long"), { code: "ENAMETOOLONG" }), expected: false },
+    { name: "a permission error", error: Object.assign(new Error("EACCES: permission denied"), { code: "EACCES" }), expected: false },
+    { name: "a file that already exists", error: new Error("File already exists."), expected: false },
+    { name: "a string", error: "ENOENT", expected: false },
+    { name: "null", error: null, expected: false },
+  ];
+  for (const { name, error, expected } of cases) {
+    it(`${expected ? "recognizes" : "does not take"} ${name}`, () => {
+      expect(isNotFoundOsError(error)).toBe(expected);
     });
   }
 });

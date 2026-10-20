@@ -4,7 +4,7 @@ import { sha256Hex } from "../core/hash";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
 import { mergeUnsaved } from "../core/merge/text-merge";
 import { mergeCanvas } from "./canvas-merge";
-import { isUnmaterializableOsError } from "./platform-rules";
+import { isNotFoundOsError, isUnmaterializableOsError } from "./platform-rules";
 import { UnsavedEditsError } from "./unsaved-edits";
 
 export { UnsavedEditsError } from "./unsaved-edits";
@@ -50,7 +50,9 @@ export const syncEditOrigin = "vault-sync";
  *   overwrite()).
  * - An OS error saying the platform cannot hold a name (too long, an invalid
  *   character the path rules did not catch) rejects a create or rename with
- *   "unmaterializable", so the engine tracks the document.
+ *   "unmaterializable", so the engine tracks the document. On Windows that
+ *   error is ENOENT, taken as a refused name when the parent folder (and a
+ *   rename's source) exists.
  * - Write and delete preconditions (the engine's expected content hash) are
  *   checked inside the same Vault.process call that writes, wherever the new
  *   content is text and the file's is too. On desktop, Vault.process runs in
@@ -101,7 +103,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       if (expectedHash === null && this.vault.getFileByPath(path) !== null) throw new VaultError("changed", path);
       // E.g. a file differing only in letter case on a case-insensitive disk.
       if (await this.vault.adapter.exists(path)) throw new VaultError("path-conflict", path);
-      throw unmaterializableOr(error, path);
+      throw await this.unmaterializableOr(error, path, path);
     }
   }
 
@@ -118,7 +120,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       await this.vault.rename(file, to);
     } catch (error) {
       if (!caseOnly && (await this.vault.adapter.exists(to))) throw new VaultError("already-exists", to);
-      throw unmaterializableOr(error, to);
+      throw await this.unmaterializableOr(error, to, to, from);
     }
   }
 
@@ -325,9 +327,26 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       try {
         await this.vault.createFolder(folder);
       } catch (error) {
-        throw unmaterializableOr(error, path);
+        throw await this.unmaterializableOr(error, path, folder);
       }
     }
+  }
+
+  /**
+   * VaultError "unmaterializable" (naming `path`) for an OS error saying the
+   * platform cannot hold `created`, a name the path rules missed, so the
+   * engine tracks the document instead of failing the pull; any other error
+   * as it is. ENOENT counts when `created`'s parent folder and `source` (a
+   * rename's) exist: Windows reports a name it refuses as ENOENT (see
+   * isNotFoundOsError).
+   */
+  private async unmaterializableOr(error: unknown, path: string, created: string, source?: string): Promise<unknown> {
+    if (isUnmaterializableOsError(error)) return new VaultError("unmaterializable", path);
+    if (!isNotFoundOsError(error)) return error;
+    const parent = created.includes("/") ? created.slice(0, created.lastIndexOf("/")) : "";
+    if (parent !== "" && !(await this.vault.adapter.exists(parent))) return error;
+    if (source !== undefined && !(await this.vault.adapter.exists(source))) return error;
+    return new VaultError("unmaterializable", path);
   }
 
   private fileAt(path: string): TFile | null {
@@ -340,15 +359,6 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     if (file === null) throw new VaultError("not-found", path);
     return file;
   }
-}
-
-/**
- * VaultError "unmaterializable" for an OS error saying the platform cannot
- * hold `path` (a name the path rules missed), so the engine tracks the
- * document instead of failing the pull; any other error as it is.
- */
-function unmaterializableOr(error: unknown, path: string): unknown {
-  return isUnmaterializableOsError(error) ? new VaultError("unmaterializable", path) : error;
 }
 
 /** Whether `path` is a non-hidden path that Obsidian stores under exactly this name. */

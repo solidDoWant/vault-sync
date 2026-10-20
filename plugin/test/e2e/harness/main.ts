@@ -642,6 +642,16 @@ export default class VaultSyncE2EHarness extends Plugin {
     }
   }
 
+  /** Renames `from` to `to` through the Obsidian adapter: "ok" or the error it rejected with (platform.e2e.ts). */
+  async renameThroughAdapter(from: string, to: string): Promise<string> {
+    try {
+      await new ObsidianVaultAdapter(this.app).rename(from, to);
+      return "ok";
+    } catch (error) {
+      return describeError(error);
+    }
+  }
+
   /** The vault folder's absolute path (desktop's file system adapter), or null. */
   vaultBasePath(): string | null {
     const { adapter } = this.app.vault;
