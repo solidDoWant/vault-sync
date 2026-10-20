@@ -266,6 +266,45 @@ describe("TokenManager", () => {
     expect(restarted.state).toBe(manager.state);
   });
 
+  it("does not report a failed sign-in until the previous session's refresh token is removed from disk", async () => {
+    // What is on disk: a failed write leaves it as it was; the removal lands when it is released.
+    const disk: { token: string | undefined } = { token: undefined };
+    let releaseRemoval: (() => void) | undefined;
+    const { manager, idp, stored } = setup({
+      manager: {
+        persist: (token) => {
+          if (token !== undefined) return Promise.reject(new Error("disk full"));
+          return new Promise<void>((resolve) => {
+            releaseRemoval = () => {
+              disk.token = token;
+              resolve();
+            };
+          });
+        },
+      },
+    });
+    disk.token = stored;
+    await manager.accessToken();
+
+    const issued = idp.issue();
+    let settled = false;
+    const signingIn = manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 });
+    signingIn.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await settle();
+
+    // The removal is held: the sign-in has not settled and the old refresh token is still on disk.
+    expect(releaseRemoval).toBeDefined();
+    expect(settled).toBe(false);
+    expect(disk.token).toBe(stored);
+
+    releaseRemoval?.();
+    await expect(signingIn).rejects.toThrow(/disk full/);
+    expect(disk.token).toBeUndefined();
+  });
+
   it("still rejects with the sign-in's own error when removing the previous refresh token after it fails too", async () => {
     const { manager, idp, states } = setup({
       manager: { persist: (token) => Promise.reject(new Error(token === undefined ? "removal failed" : "disk full")) },
