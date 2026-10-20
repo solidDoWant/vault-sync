@@ -6,13 +6,17 @@
 # Usage:
 #   scripts/release.sh preflight VERSION PUSH_ALL
 #       Checks VERSION and gh authentication; for a real release also that
-#       the working tree is clean and the tag does not exist yet. Runs before
-#       anything is built or pushed.
-#   scripts/release.sh publish VERSION PUSH_ALL ASSET_DIR
+#       the working tree is clean, that HEAD is the published master
+#       (origin/master, fetched first) and that the tag does not exist yet.
+#       Runs before anything is built or pushed.
+#   scripts/release.sh check-assets VERSION PUSH_ALL ASSET_DIR
 #       Checks the plugin release assets in ASSET_DIR (main.js,
-#       manifest.json whose version is VERSION, styles.css), then tags HEAD
-#       as VERSION, pushes the tag and creates the GitHub release with the
-#       assets attached.
+#       manifest.json whose version is VERSION, styles.css). `make release`
+#       runs it before the image and chart are pushed, so a broken asset
+#       stops the release before anything is published.
+#   scripts/release.sh publish VERSION PUSH_ALL ASSET_DIR
+#       Checks the assets again, then tags HEAD as VERSION, pushes the tag
+#       and creates the GitHub release with the assets attached.
 #
 # The tag is VERSION exactly, without a "v": Obsidian and BRAT require the
 # release tag, the release name and the version in the released
@@ -20,7 +24,7 @@
 set -euo pipefail
 
 usage() {
-	echo "usage: release.sh preflight VERSION PUSH_ALL | publish VERSION PUSH_ALL ASSET_DIR" >&2
+	echo "usage: release.sh preflight VERSION PUSH_ALL | check-assets VERSION PUSH_ALL ASSET_DIR | publish VERSION PUSH_ALL ASSET_DIR" >&2
 	exit 2
 }
 
@@ -54,6 +58,22 @@ if ! [[ $version =~ $semver ]]; then
 	die "VERSION must be a semantic version such as 1.2.3 or 1.2.3-beta.1 (no leading v, no build metadata), got '$version'"
 fi
 
+# check_assets ASSET_DIR: refuses missing or empty assets and a manifest
+# whose version is not VERSION; sets the array assets.
+check_assets() {
+	local asset_dir="$1" asset manifest_version
+	[[ -n $asset_dir ]] || usage
+	assets=()
+	for asset in main.js manifest.json styles.css; do
+		[[ -s "$asset_dir/$asset" ]] || die "release asset $asset_dir/$asset is missing or empty"
+		assets+=("$asset_dir/$asset")
+	done
+	manifest_version="$(jq -r .version "$asset_dir/manifest.json")"
+	if [[ $manifest_version != "$version" ]]; then
+		die "$asset_dir/manifest.json has version '$manifest_version', not '$version' (Obsidian and BRAT require them to match)"
+	fi
+}
+
 case "$step" in
 preflight)
 	# Unprefixed, so an unauthenticated gh stops the release before any
@@ -66,6 +86,13 @@ preflight)
 	if [[ -n "$(git status --porcelain)" ]]; then
 		die "the working tree has uncommitted changes; release from a clean checkout"
 	fi
+	# Only reviewed, published code is released: the tag goes on HEAD.
+	git fetch --quiet origin master
+	head="$(git rev-parse HEAD)"
+	published="$(git rev-parse FETCH_HEAD)"
+	if [[ $head != "$published" ]]; then
+		die "HEAD ($head) is not origin/master ($published); release from an up-to-date checkout of the published master"
+	fi
 	if git rev-parse -q --verify "refs/tags/$version" >/dev/null; then
 		die "tag $version already exists locally"
 	fi
@@ -73,18 +100,11 @@ preflight)
 		die "tag $version already exists on origin"
 	fi
 	;;
+check-assets)
+	check_assets "${4:-}"
+	;;
 publish)
-	asset_dir="${4:-}"
-	[[ -n $asset_dir ]] || usage
-	assets=()
-	for asset in main.js manifest.json styles.css; do
-		[[ -s "$asset_dir/$asset" ]] || die "release asset $asset_dir/$asset is missing or empty"
-		assets+=("$asset_dir/$asset")
-	done
-	manifest_version="$(jq -r .version "$asset_dir/manifest.json")"
-	if [[ $manifest_version != "$version" ]]; then
-		die "$asset_dir/manifest.json has version '$manifest_version', not '$version' (Obsidian and BRAT require them to match)"
-	fi
+	check_assets "${4:-}"
 
 	# A pre-release is never marked "latest", so BRAT users who don't track
 	# pre-releases (and anything else that follows the latest release) keep

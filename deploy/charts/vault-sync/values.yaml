@@ -111,9 +111,11 @@ config:
     writeTimeout: ""
     # VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER.
     maxConcurrentRpcsPerUser: ""
-    # VAULT_SYNC_SHUTDOWN_DELAY and VAULT_SYNC_SHUTDOWN_TIMEOUT. Their sum
-    # plus a margin must stay below the pod's terminationGracePeriodSeconds
-    # (45 by default, see resources below).
+    # VAULT_SYNC_SHUTDOWN_DELAY and VAULT_SYNC_SHUTDOWN_TIMEOUT. The chart
+    # sets the pod's terminationGracePeriodSeconds to their sum (5s + 30s
+    # when unset) plus 10 seconds, and at least 45, and refuses to render if
+    # an explicit resources.controllers.main.pod.terminationGracePeriodSeconds
+    # is not larger than their sum.
     shutdownDelay: ""
     shutdownTimeout: ""
     blob:
@@ -160,6 +162,10 @@ config:
     # zone for it (the cluster's default otherwise).
     schedule: "0 3 * * *"
     timeZone: ""
+    # activeDeadlineSeconds bounds one export run (6 hours by default):
+    # runs never overlap (concurrencyPolicy Forbid), so a hung export, for
+    # example on a stalled NFS volume, would otherwise block every later run.
+    activeDeadlineSeconds: 21600
     output:
       # persistence is the volume the export writes to (required while the
       # export is enabled), as a bjw-s persistence item, for example
@@ -213,12 +219,13 @@ config:
 #     maxUnavailable 0 and maxSurge 1, a PodDisruptionBudget with
 #     maxUnavailable 1 while replicas > 1, spread across nodes, startup and
 #     liveness probes on /healthz and a readiness probe on /readyz (metrics
-#     port), terminationGracePeriodSeconds 45, non-root (65532) with a
+#     port), terminationGracePeriodSeconds derived from
+#     config.server.shutdownDelay and shutdownTimeout (45 by default), non-root (65532) with a
 #     read-only root filesystem and no capabilities, and requests/limits of
 #     100m/1 CPU and 128Mi/512Mi memory.
 #   - controllers.export: the export CronJob (when config.export.enabled),
 #     with the same security context, concurrencyPolicy Forbid, backoffLimit
-#     2 and requests/limits of 100m/1 CPU and 128Mi/1Gi memory.
+#     2, config.export.activeDeadlineSeconds and requests/limits of 100m/1 CPU and 128Mi/1Gi memory.
 #   - service.main (port 8080, "http": point your ingress here) and
 #     service.metrics (port 9090; never expose it).
 #   - serviceMonitor.main (when config.server.metrics.serviceMonitor.enabled).
