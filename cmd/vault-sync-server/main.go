@@ -4,6 +4,9 @@
 //
 // `vault-sync-server export -out DIR` instead writes a plaintext copy of
 // every vault to DIR and exits (docs/export.md, SPEC.md §4).
+//
+// `vault-sync-server retention set|unset|list` manages per-vault retention
+// overrides and exits (docs/configuration.md, SPEC.md §11).
 package main
 
 import (
@@ -13,6 +16,7 @@ import (
 	"syscall"
 
 	"github.com/solidDoWant/vault-sync/internal/export"
+	"github.com/solidDoWant/vault-sync/internal/retentioncmd"
 	"github.com/solidDoWant/vault-sync/internal/server"
 )
 
@@ -20,9 +24,12 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, os.Interrupt)
 
 	var code int
-	if len(os.Args) > 1 && os.Args[1] == "export" {
+	switch {
+	case len(os.Args) > 1 && os.Args[1] == "export":
 		code = export.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
-	} else {
+	case len(os.Args) > 1 && os.Args[1] == "retention":
+		code = retentioncmd.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
+	default:
 		code = server.Main(ctx, os.Args[1:], os.LookupEnv, os.Stdout, os.Stderr)
 	}
 

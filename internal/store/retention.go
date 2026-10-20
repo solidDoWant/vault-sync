@@ -46,20 +46,31 @@ type BlobRef struct {
 // The head is the newest revision of its document, so it is always the
 // newest of its bucket; callers exclude it explicitly as well. The caller
 // supplies the WHERE condition on r (scope) and the parameters $1 ($keepAll,
-// in microseconds) and $2 ($keepDaily); scope's parameters start at $3.
+// in microseconds) and $2 ($keepDaily) of the deployment-wide policy;
+// scope's parameters start at $3.
+//
+// A vault with a row in vault_retention (SetVaultRetention) follows that
+// policy instead. Every revision of a document belongs to one vault, so each
+// window partition has one policy. The first age condition, the shortest
+// KeepAll in force, is the same for every row, so the created_at index still
+// bounds the scan.
 const purgeableRevisions = `
 	SELECT ranked.id, ranked.document_id, ranked.vault_id, ranked.seq FROM (
 		SELECT r.id, r.document_id, r.vault_id, r.seq,
 			row_number() OVER (
 				PARTITION BY r.document_id,
-					r.created_at >= now() - $2 * interval '1 microsecond',
-					CASE WHEN r.created_at >= now() - $2 * interval '1 microsecond'
+					r.created_at >= now() - policy.keep_daily * interval '1 microsecond',
+					CASE WHEN r.created_at >= now() - policy.keep_daily * interval '1 microsecond'
 						THEN date_trunc('day', r.created_at, 'UTC')
 						ELSE date_trunc('week', r.created_at, 'UTC')
 					END
 				ORDER BY r.seq DESC) AS rank
 		FROM revisions r
-		WHERE r.created_at < now() - $1 * interval '1 microsecond' AND %s
+		LEFT JOIN vault_retention vault_override ON vault_override.vault_id = r.vault_id
+		CROSS JOIN LATERAL (SELECT coalesce(vault_override.keep_all, $1) AS keep_all,
+			coalesce(vault_override.keep_daily, $2) AS keep_daily) AS policy
+		WHERE r.created_at < now() - least($1, (SELECT min(keep_all) FROM vault_retention)) * interval '1 microsecond'
+			AND r.created_at < now() - policy.keep_all * interval '1 microsecond' AND %s
 	) AS ranked
 	JOIN documents d ON d.vault_id = ranked.vault_id AND d.id = ranked.document_id
 	WHERE ranked.rank > 1 AND ranked.id <> d.head_rev_id`
@@ -69,19 +80,31 @@ type RetentionScan struct {
 	// Documents have revisions the policy purges.
 	Documents []DocumentRef
 	// Started is the database time the scan started. Once every candidate
-	// of a scan that found fewer than its limit is purged fully, pass it to
-	// CompleteRetentionScan.
+	// of a scan that found fewer than its limit is purged fully, pass the
+	// scan to CompleteRetentionScan.
 	Started time.Time
+	// Overrides identifies the per-vault overrides in force when the scan
+	// started (a digest; opaque).
+	Overrides string
 }
+
+// overridesDigest identifies the set of per-vault retention overrides. It
+// never equals the empty string, retention_scans.overrides' default.
+const overridesDigest = `md5(coalesce(string_agg(
+	vault_id::text || ':' || keep_all::text || ':' || keep_daily::text, ',' ORDER BY vault_id), ''))`
 
 // RetentionCandidates returns up to limit documents, across all vaults, that
 // have revisions policy purges.
 //
-// After a complete scan under the same policy (CompleteRetentionScan), only
-// documents with revisions that crossed policy.KeepAll or policy.KeepDaily
-// since that scan started are considered: a revision only becomes
-// purgeable when it, or a newer revision of its bucket, crosses one of
-// these ages. Otherwise every document is.
+// Vaults with an override (SetVaultRetention) follow it instead of policy.
+//
+// After a complete scan under the same policy and the same overrides
+// (CompleteRetentionScan), only documents with revisions that crossed
+// KeepAll or KeepDaily (of their vault's policy) since that scan started
+// are considered: a revision only becomes purgeable when it, or a newer
+// revision of its bucket, crosses one of these ages. Otherwise every
+// document is: a changed override makes revisions purgeable that crossed
+// no age.
 //
 // Like ReapableBlobUploads, it is not scoped to a vault: it serves the
 // background retention job, never a request, and only names documents; the
@@ -91,14 +114,21 @@ func (store *Store) RetentionCandidates(ctx context.Context, policy RetentionPol
 
 	// One transaction, so the scan's start is the now() its query uses.
 	err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
-		if err := tx.QueryRow(ctx, `SELECT now()`).Scan(&scan.Started); err != nil {
-			return fmt.Errorf("read database time: %w", err)
+		// The overrides are read before the candidates, in an earlier
+		// snapshot: if an override changes in between, the scan is
+		// recorded under the older overrides, and the next scan, seeing
+		// different ones, considers every document.
+		err := tx.QueryRow(ctx, `SELECT now(), `+overridesDigest+` FROM vault_retention`).Scan(&scan.Started, &scan.Overrides)
+		if err != nil {
+			return fmt.Errorf("read database time and retention overrides: %w", err)
 		}
 
 		// $4 is the end of the last complete scan under this policy, if
-		// any. Ages are relative to now(), so a revision crossed keep_all
+		// keep_all. Ages are relative to now(), so a revision crossed keep_all
 		// since then if its created_at is in [$4 - keep_all, now() -
-		// keep_all), and likewise for keep_daily.
+		// keep_all), and likewise for keep_daily. The deployment-wide ages
+		// are checked for every vault, which only adds candidates, and each
+		// override's ages for its own vault.
 		scope := `($4::timestamptz IS NULL OR r.document_id IN (
 			SELECT crossed.document_id FROM revisions crossed
 			WHERE crossed.created_at >= $4::timestamptz - $1 * interval '1 microsecond'
@@ -106,12 +136,23 @@ func (store *Store) RetentionCandidates(ctx context.Context, policy RetentionPol
 			UNION
 			SELECT crossed.document_id FROM revisions crossed
 			WHERE crossed.created_at >= $4::timestamptz - $2 * interval '1 microsecond'
-				AND crossed.created_at < now() - $2 * interval '1 microsecond'))`
+				AND crossed.created_at < now() - $2 * interval '1 microsecond'
+			UNION
+			SELECT crossed.document_id FROM vault_retention vault_override
+			JOIN revisions crossed ON crossed.vault_id = vault_override.vault_id
+			WHERE crossed.created_at >= $4::timestamptz - vault_override.keep_all * interval '1 microsecond'
+				AND crossed.created_at < now() - vault_override.keep_all * interval '1 microsecond'
+			UNION
+			SELECT crossed.document_id FROM vault_retention vault_override
+			JOIN revisions crossed ON crossed.vault_id = vault_override.vault_id
+			WHERE crossed.created_at >= $4::timestamptz - vault_override.keep_daily * interval '1 microsecond'
+				AND crossed.created_at < now() - vault_override.keep_daily * interval '1 microsecond'))`
 
 		var scanned *time.Time
 
-		err := tx.QueryRow(ctx, `SELECT scanned_through FROM retention_scans WHERE keep_all = $1 AND keep_daily = $2`,
-			policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds()).Scan(&scanned)
+		err = tx.QueryRow(ctx, `
+			SELECT scanned_through FROM retention_scans WHERE keep_all = $1 AND keep_daily = $2 AND overrides = $3`,
+			policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds(), scan.Overrides).Scan(&scanned)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("read retention scan: %w", err)
 		}
@@ -144,21 +185,24 @@ func (store *Store) RetentionCandidates(ctx context.Context, policy RetentionPol
 	return scan, nil
 }
 
-// CompleteRetentionScan records that every revision policy purged as of
-// started (a RetentionScan's Started) is purged, so later scans under the
-// same policy are incremental. Recording an earlier start than one already
-// recorded under the same policy changes nothing, so concurrent server
+// CompleteRetentionScan records that every revision that policy, and the
+// overrides in force when scan started, purged as of scan's start is
+// purged, so later scans under the same policy and overrides are
+// incremental. Recording an earlier start than one already recorded under
+// the same policy and overrides changes nothing, so concurrent server
 // processes may each record their own scans; recording under a different
-// policy replaces the record.
-func (store *Store) CompleteRetentionScan(ctx context.Context, policy RetentionPolicy, started time.Time) error {
+// policy or different overrides replaces the record.
+func (store *Store) CompleteRetentionScan(ctx context.Context, policy RetentionPolicy, scan RetentionScan) error {
 	_, err := store.pool.Exec(ctx, `
-		INSERT INTO retention_scans (keep_all, keep_daily, scanned_through) VALUES ($1, $2, $3)
+		INSERT INTO retention_scans (keep_all, keep_daily, overrides, scanned_through) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (id) DO UPDATE SET keep_all = EXCLUDED.keep_all, keep_daily = EXCLUDED.keep_daily,
+			overrides = EXCLUDED.overrides,
 			scanned_through = CASE
 				WHEN retention_scans.keep_all = EXCLUDED.keep_all AND retention_scans.keep_daily = EXCLUDED.keep_daily
+					AND retention_scans.overrides = EXCLUDED.overrides
 				THEN greatest(retention_scans.scanned_through, EXCLUDED.scanned_through)
 				ELSE EXCLUDED.scanned_through
-			END`, policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds(), started)
+			END`, policy.KeepAll.Microseconds(), policy.KeepDaily.Microseconds(), scan.Overrides, scan.Started)
 	if err != nil {
 		return fmt.Errorf("record retention scan: %w", err)
 	}
