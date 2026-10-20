@@ -12,6 +12,7 @@ import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, e
 import { localRenameOverRemoteRenameIntoRespelledFolder } from "./scenarios";
 import { renameOntoDeletedNotePath } from "./scenarios";
 import { bothRenameOntoVacatedPath } from "./scenarios";
+import { renameOntoRemoteCreate } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
@@ -874,6 +875,27 @@ describe.runIf(suites.has("scenarios"))("scripted renames of one note onto a vac
       expect(contents, trace).toContain("x\nlocal\n");
       expect(contents, trace).toContain("x\nremote\n");
       expect(contents, trace).toContain("c\nremote\n");
+    }
+    expect(result.vaults[1], trace).toEqual(result.vaults[0]);
+    expect(result.documents.size, trace).toBe(result.vaults[0]?.size);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted unpushed rename onto a remote create's path (#479)", () => {
+  it.each(["posix", "macos", "windows"] as const)("never tombstones the other device's note (%s)", async (platform) => {
+    const result = await renameOntoRemoteCreate(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const renamed = result.before.get("b.md");
+    expect(renamed, trace).toBeDefined();
+    // Only the note the other device deleted is tombstoned.
+    expect(result.tombstoned, trace).toEqual([renamed]);
+    expect(result.documents.get("x.md"), trace).toBeDefined();
+    for (const vault of result.vaults) {
+      expect(vault.get("x.md"), trace).toBe("theirs\n");
+      expect([...vault.values()], trace).toContain("b\nmine\n");
     }
     expect(result.vaults[1], trace).toEqual(result.vaults[0]);
     expect(result.documents.size, trace).toBe(result.vaults[0]?.size);
