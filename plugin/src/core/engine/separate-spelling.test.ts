@@ -134,6 +134,66 @@ describe.each(separateFiles)("a new file $other next to the synced note $note on
     expect(await files(h.vault)).toEqual(h.server.liveFiles());
   });
 
+  it("keeps the note's id for its rename after a failed push and a rename of the new file away", async () => {
+    const h = exactVault(platform);
+    h.server.commit({ documentId: "note", path: note, content: "x\n" });
+    await h.engine.pull();
+    await h.vault.write(note, bytes("edited\n"));
+    await h.vault.write(other, bytes("new\n"));
+    await h.engine.settled();
+    // The push fails, leaving the note's edit pending at its spelling.
+    h.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new Error("offline");
+    };
+    await expect(h.engine.push()).rejects.toThrow();
+    await h.engine.settled();
+    expect((await h.journal.listPending()).map((operation) => operation.path)).toContain(note);
+    await h.vault.rename(other, "moved.md");
+    await h.vault.rename(note, "renamed.md");
+    await h.engine.settled();
+    h.server.interceptor = undefined;
+
+    await pushRounds(h);
+
+    expect(h.server.liveDocuments().get("renamed.md")).toBe("note");
+    expect(h.server.liveFiles()).toEqual(
+      new Map([
+        ["renamed.md", "edited\n"],
+        ["moved.md", "new\n"],
+      ]),
+    );
+    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+  });
+
+  it("keeps the note's id for its rename after a failed push of the new file and its rename away", async () => {
+    const h = exactVault(platform);
+    h.server.commit({ documentId: "note", path: note, content: "x\n" });
+    await h.engine.pull();
+    await h.vault.write(other, bytes("new\n"));
+    await h.engine.settled();
+    // The push fails, leaving the new file's create pending at its spelling.
+    h.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new Error("offline");
+    };
+    await expect(h.engine.push()).rejects.toThrow();
+    await h.engine.settled();
+    h.server.interceptor = undefined;
+    await h.vault.rename(other, "moved.md");
+    await h.vault.rename(note, "renamed.md");
+    await h.engine.settled();
+
+    await pushRounds(h);
+
+    expect(h.server.liveDocuments().get("renamed.md")).toBe("note");
+    expect(h.server.liveFiles()).toEqual(
+      new Map([
+        ["renamed.md", "x\n"],
+        ["moved.md", "new\n"],
+      ]),
+    );
+    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+  });
+
   it("pushes an edit of the note while the other file stands next to it", async () => {
     const h = exactVault(platform);
     h.server.commit({ documentId: "note", path: note, content: "x\n" });

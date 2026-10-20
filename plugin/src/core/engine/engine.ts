@@ -1184,6 +1184,15 @@ export class SyncEngine {
   }
 
   /**
+   * Whether `a` and `b` name one file on the device, decided from the two
+   * spellings alone: one path key, and a name the filesystem folds into one
+   * (decision #52, #399). For vault events, which never read the listing.
+   */
+  private sameFile(a: string, b: string): boolean {
+    return this.fileKey(a) === this.fileKey(b) && sameFilesystemName(a, b, this.pathRules.platform);
+  }
+
+  /**
    * Whether the vault holds `a` and `b`, two spellings with one path key, as
    * two files: it lists both. Path keys fold `ß`/`SS`, and NFC/NFD on
    * Windows, which the filesystem does not (decision #52).
@@ -2406,10 +2415,9 @@ export class SyncEngine {
    */
   private async ownFileAt(path: string): Promise<boolean> {
     try {
-      const key = this.fileKey(path);
       // A local rename took that file away already: this one came after it.
-      if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return false;
-      if ((await this.journal.listPending()).some((operation) => !operation.deleted && this.fileKey(operation.path) === key)) return true;
+      if (this.localRenames().some(([, from]) => this.sameFile(from, path))) return false;
+      if ((await this.journal.listPending()).some((operation) => !operation.deleted && this.sameFile(operation.path, path))) return true;
       const state = await this.documentAt(path, true);
       return state !== undefined && !(await this.movedAway(state));
     } catch {
