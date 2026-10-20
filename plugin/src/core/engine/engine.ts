@@ -1076,20 +1076,33 @@ export class SyncEngine {
    * so it meets the document's next revision as any local delete does. The
    * state is recorded `deleted`, as releaseFile records a release, so the
    * document materializes as a new one would and never takes the other
-   * document's file for its own. A document with an operation pending at
-   * another path, or a local rename from the path not yet pushed, keeps its
-   * claim: the rename moved its file, which is its own where the rename put
-   * it, and released, the rename would be taken for the other document's.
+   * document's file for its own.
+   *
+   * A local move of the file away from the path (a pending operation at
+   * another path, or a local rename not yet pushed) releases the moved file
+   * with the path, as releaseKeptFile releases a file left there (#459).
+   * Kept for the move, the claim would leave the journal with both
+   * documents live at the path, so the other document's own changes there
+   * would be held behind the parked one, and an unpushed rename is held in
+   * memory only: a restart would forget it and let the stale edit take the
+   * other document's file. The move is dropped, never to be taken for the
+   * other document's, and the file it moved is pushed as a new document.
    */
   private async releaseParkedPath(documentId: string): Promise<void> {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return;
     const key = this.fileKey(state.path);
-    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
-    if (pending.some((operation) => this.fileKey(operation.path) !== key)) return;
-    if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return;
-    for (const operation of pending) if (!operation.deleted) await this.journal.removePending(operation.revisionId);
+    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId && !operation.deleted);
+    for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
+    for (const operation of pending) if (this.fileKey(operation.path) !== key) this.changes.paths.add(operation.path);
+    for (const renames of [this.changes.renames, this.roundRenames]) {
+      for (const [to, from] of [...renames]) {
+        if (this.fileKey(from) !== key) continue;
+        renames.delete(to);
+        this.changes.paths.add(to);
+      }
+    }
   }
 
   /**
@@ -1776,7 +1789,10 @@ export class SyncEngine {
    */
   private async resync(summary: PullSummary): Promise<void> {
     summary.resynced = true;
+    const cursor = summary.cursor;
     const heads = new Map<string, IncomingRevision>();
+    /** The revision id at each seq the feed holds. */
+    const feed = new Map<bigint, string>();
     let seq = 0n;
     let anchor: Uint8Array | undefined;
     for (;;) {
@@ -1784,12 +1800,24 @@ export class SyncEngine {
       for (const revision of response.revisions) {
         if (revision.seq <= seq) throw new RemoteContentError(`change feed went from seq ${String(seq)} back to ${String(revision.seq)}`);
         heads.set(revision.documentId, toIncoming(revision));
+        feed.set(revision.seq, revision.id);
         seq = revision.seq;
         anchor = cursorAnchor(revision);
       }
       if (!response.hasMore) break;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
     }
+    // Seqs are gapless but for purged revisions (§11), so a seq the feed
+    // skips is one retention purged. With the cursor's own seq skipped, the
+    // divergence is a purge of the cursor's revision, not a restore below it
+    // (§6.1). A document whose synced revision the feed still holds at its
+    // seq, or whose seq it skips too, was then lost by no restore: the
+    // server's head descends from it, and is applied as an ordinary pull
+    // would apply it (merged only if the user changed the document). Merged
+    // regardless, a remote delete would keep the unchanged file and the next
+    // push would bring the note back (#480).
+    const purgedCursor = cursor > 0n && cursor <= seq && !feed.has(cursor);
+    const lostNothing = (state: DocumentState) => purgedCursor && state.seq > 0n && state.seq <= seq && (feed.get(state.seq) ?? state.revisionId) === state.revisionId;
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
@@ -1803,6 +1831,8 @@ export class SyncEngine {
         this.count(summary, await this.defer(remote, "out-of-scope"));
       } else if (this.overCap(remote)) {
         this.count(summary, await this.defer(remote, "too-large"));
+      } else if (lostNothing(state)) {
+        this.count(summary, await this.applyRevision(incoming));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
