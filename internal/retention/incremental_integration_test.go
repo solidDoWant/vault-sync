@@ -225,3 +225,108 @@ func TestRetentionRunsAreCounted(t *testing.T) {
 		"vault_sync_retention_run_failures_total":    1,
 	}, counters())
 }
+
+// scans counts the recorded complete retention scans.
+func (fixture *fixture) scans(t *testing.T) int {
+	t.Helper()
+
+	var count int
+	require.NoError(t, fixture.pool.QueryRow(t.Context(), `SELECT count(*) FROM retention_scans`).Scan(&count))
+
+	return count
+}
+
+// A document the run could purge only in part (more purgeable revisions
+// than RevisionsPerDocument) leaves the scan incomplete: the next run
+// considers it again and purges the rest.
+func TestAPartlyPurgedDocumentLeavesTheScanIncomplete(t *testing.T) {
+	fixture := newFixture(t)
+
+	// Three revisions on one UTC day past KeepAll, then a head: the two
+	// older ones are purgeable.
+	content := fixture.blob(t, "a.md")
+	first := fixture.revision(t, nil, "a.md", content, len("a.md"), oldDay+` + interval '1 hour'`)
+	second := fixture.revision(t, &first, "a.md", content, len("a.md"), oldDay+` + interval '2 hours'`)
+	third := fixture.revision(t, &second, "a.md", content, len("a.md"), oldDay+` + interval '3 hours'`)
+	fixture.revision(t, &third, "a.md", content, len("a.md"), `now()`)
+
+	job := fixture.job()
+	job.RevisionsPerDocument = 1
+
+	result, err := job.RunOnce(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, retention.Result{RevisionsPurged: 1}, result)
+	assert.Zero(t, fixture.scans(t), "a scan that left a document partly purged is not recorded")
+
+	result, err = job.RunOnce(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, retention.Result{RevisionsPurged: 1}, result, "the next run purges the rest")
+
+	// That purge reached the limit too, so only a run finding nothing left
+	// knows the document is done.
+	result, err = job.RunOnce(t.Context())
+	require.NoError(t, err)
+	assert.Equal(t, retention.Result{}, result)
+	assert.Equal(t, 1, fixture.scans(t), "the document is done: the scan is complete")
+}
+
+// A document the run skipped because a commit (or another server process)
+// held its lock is purged again, waiting for the lock, before the scan
+// counts as complete.
+func TestALockedDocumentIsPurgedBeforeTheScanIsRecorded(t *testing.T) {
+	fixture := newFixture(t)
+
+	content := fixture.blob(t, "a.md")
+	older := fixture.revision(t, nil, "a.md", content, len("a.md"), oldDay+` + interval '1 hour'`)
+	newer := fixture.revision(t, &older, "a.md", content, len("a.md"), oldDay+` + interval '2 hours'`)
+	fixture.revision(t, &newer, "a.md", content, len("a.md"), `now()`)
+
+	holder, err := fixture.pool.Begin(t.Context())
+	require.NoError(t, err)
+
+	defer func() { _ = holder.Rollback(context.WithoutCancel(t.Context())) }()
+
+	var holderPID int32
+	require.NoError(t, holder.QueryRow(t.Context(), `SELECT pg_backend_pid()`).Scan(&holderPID))
+
+	_, err = holder.Exec(t.Context(), `SELECT 1 FROM documents WHERE id = $1 FOR NO KEY UPDATE`, older.DocumentID)
+	require.NoError(t, err)
+
+	type outcome struct {
+		result retention.Result
+		err    error
+	}
+
+	finished := make(chan outcome, 1)
+
+	go func() {
+		result, err := fixture.job().RunOnce(t.Context())
+		finished <- outcome{result, err}
+	}()
+
+	// Wait until the run waits for the lock this test holds; a run that
+	// finishes first did not wait for it.
+	for waiting := false; !waiting; {
+		select {
+		case run := <-finished:
+			require.Failf(t, "the run finished without waiting for the locked document",
+				"result %+v, error %v", run.result, run.err)
+		case <-t.Context().Done():
+			require.FailNow(t, "the test ended before the run waited for the lock")
+		default:
+		}
+
+		require.NoError(t, fixture.pool.QueryRow(t.Context(),
+			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1::int = ANY (pg_blocking_pids(pid)))`,
+			holderPID).Scan(&waiting))
+	}
+
+	assert.Zero(t, fixture.scans(t), "not recorded while the document is locked")
+
+	require.NoError(t, holder.Commit(t.Context()))
+
+	run := <-finished
+	require.NoError(t, run.err)
+	assert.Equal(t, retention.Result{RevisionsPurged: 1}, run.result, "the locked document is purged once released")
+	assert.Equal(t, 1, fixture.scans(t), "the scan is complete")
+}
