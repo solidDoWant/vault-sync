@@ -31,7 +31,7 @@ import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } f
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
-import type { ConflictRecord } from "../plugin/src/core/journal/journal";
+import type { ConflictRecord, PendingOperation } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
@@ -74,7 +74,7 @@ export class EngineObserver {
   private readonly config: InMemoryVault;
   /** What the engine syncs: the vault, or after setConfigSync the vault plus the config folder. */
   private synced: VaultAdapter;
-  private readonly journal = new InMemoryJournal();
+  private readonly journal = new HaltingJournal();
   private engine: SyncEngine;
   private busy = false;
   private readonly localChanges: VaultEvent[] = [];
@@ -356,6 +356,15 @@ export class EngineObserver {
     return `${this.name} starts push`;
   }
 
+  /**
+   * Kills the app at the next pending operation the journal records that
+   * `matches`: just `before` the write or just `after` it. The engine's work
+   * stops there (reported as interrupted); crash() then restarts it.
+   */
+  haltOnPending(when: "before" | "after", matches: (operation: PendingOperation) => boolean): void {
+    this.journal.halt = { when, matches };
+  }
+
   /** The app is killed: the engine and its in-flight calls are gone; the vault and journal remain. */
   crash(): string {
     this.context.network.crash(this.index);
@@ -467,6 +476,24 @@ export class EngineObserver {
   }
 }
 
+/** Thrown where haltOnPending kills the app. */
+class AppKilled extends Error {
+  override readonly name = "AppKilled";
+}
+
+/** The device's journal: an InMemoryJournal that can kill the app at one chosen addPending (haltOnPending). */
+class HaltingJournal extends InMemoryJournal {
+  halt: { when: "before" | "after"; matches: (operation: PendingOperation) => boolean } | undefined;
+
+  override async addPending(operation: PendingOperation): Promise<void> {
+    const halt = this.halt?.matches(operation) === true ? this.halt : undefined;
+    if (halt !== undefined) this.halt = undefined;
+    if (halt?.when === "before") throw new AppKilled(`app killed before recording ${operation.path}`);
+    await super.addPending(operation);
+    if (halt?.when === "after") throw new AppKilled(`app killed after recording ${operation.path}`);
+  }
+}
+
 /** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops. */
 class MutableVault extends InterleavingVault {
   private readonly keep = new Set<string>();
@@ -508,9 +535,10 @@ export async function serverHeads(api: ProtocolClient, vaultId: string): Promise
  * engine backs off, #146), or a wait for that backoff cut short by a crash.
  */
 function interrupted(error: unknown): boolean {
-  return error instanceof EngineDisposedError || errorCode(error) === Code.Unavailable || errorCode(error) === Code.ResourceExhausted;
+  return error instanceof EngineDisposedError || error instanceof AppKilled || errorCode(error) === Code.Unavailable || errorCode(error) === Code.ResourceExhausted;
 }
 
 function interruption(error: unknown): string {
+  if (error instanceof AppKilled) return error.message;
   return error instanceof EngineDisposedError ? "engine disposed" : Code[errorCode(error)];
 }

@@ -10,6 +10,7 @@ import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
 import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
+import { interruptedConflictMove } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -1119,6 +1120,32 @@ describe.runIf(suites.has("scenarios"))("scripted remote rename onto a file name
     expect(result.tombstoned, trace).toEqual([]);
     expect(result.conflicts.map(({ reason, path, copyPath: copy }) => [reason, path, copy]), trace).toEqual([["overlapping-edits", "NOTES", copyPath]]);
     // Nothing stays deferred or pending: the user's engine's last push had nothing left to do.
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted crash while a refused create moves to its conflict copy (#371, #372)", () => {
+  const cases = [
+    ...(["posix", "macos", "windows"] as const).map((platform) => [platform, "after", "holder-leaves"] as const),
+    ["posix", "before", "holder-leaves"],
+    ["posix", "before", "delete-copy"],
+    ["posix", "before", "move-copy"],
+    ["windows", "after", "delete-copy"],
+  ] as const;
+  it.each(cases)("converges with nothing pending under %s rules, killed %s recording the copy, when %s", async (platform, when, then) => {
+    const result = await interruptedConflictMove(environment, platform, when, then);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    expect(result.copy, trace).toMatch(/^notes \(conflict .*\)$/);
+    // The other device's note, and the user's note once (none if the user deleted it), where it ended up.
+    const others = [...result.documents.keys()].filter((path) => path !== (then === "holder-leaves" ? "A.md" : "NOTES/d.md"));
+    expect(result.documents.size, trace).toBe(others.length + 1);
+    if (then === "delete-copy") expect(others, trace).toEqual([]);
+    else expect(others, trace).toEqual([then === "move-copy" ? "kept.md" : expect.stringMatching(/^notes( \(conflict .*\))?$/)]);
+    for (const path of others) expect(result.vaults[1]?.get(path), trace).toBe("mine\n");
+    expect(result.vaults[0], trace).toEqual(result.vaults[1]);
+    // Nothing stays pending: the second engine's last push had nothing left to do.
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
