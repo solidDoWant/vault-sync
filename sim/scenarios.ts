@@ -3332,8 +3332,14 @@ export interface PurgedCursorResult extends RunResult {
  * and retention prunes them (#514) before the second engine pulls: its
  * anchor check finds neither the revision nor a marker, so it resyncs and
  * merges every note it holds, keeping every file.
+ *
+ * With `localEdit`, the second engine's user edits the later note before
+ * that pull, an edit not yet pushed (#519): it must survive (principle 1).
  */
-export async function purgedCursor(endpoints: SimEndpoints, options: { pruneMarkers?: boolean } = {}): Promise<PurgedCursorResult> {
+export async function purgedCursor(
+  endpoints: SimEndpoints,
+  options: { pruneMarkers?: boolean; localEdit?: boolean } = {},
+): Promise<PurgedCursorResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -3366,6 +3372,7 @@ export async function purgedCursor(endpoints: SimEndpoints, options: { pruneMark
   if (revisions.length !== 4) throw new Error(`expected four revisions, got ${String(revisions.length)}`);
   const purged = (await run.purge(revisions.map((revision) => revision.id))).map((id) => run.context.ids.label(id));
   const prunedMarkers = options.pruneMarkers === true ? await run.pruneMarkers() : 0;
+  if (options.localEdit === true) log(await second.edit("notes/kept.md", encoder.encode(textLines("one", "edited offline"))));
 
   second.lastPull = undefined;
   await pull(second);

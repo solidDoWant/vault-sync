@@ -472,3 +472,47 @@ func TestRetentionJobsOnEveryInstanceActAsOne(t *testing.T) {
 
 	assert.Zero(t, fixture.pendingDeletions(t))
 }
+
+// Principle 4 (SPEC.md §11): one run prunes at most MarkersPerRun purge
+// markers, however many are past the horizon and however the batches
+// divide the bound, so a backlog is worked off over several runs.
+func TestRunPrunesAtMostMarkersPerRun(t *testing.T) {
+	const batch, perRun = 2, 3
+
+	tests := []struct {
+		name   string
+		old    int
+		pruned int
+	}{
+		{name: "fewer old markers than the bound", old: perRun - 1, pruned: perRun - 1},
+		{name: "exactly the bound", old: perRun, pruned: perRun},
+		{name: "one over the bound", old: perRun + 1, pruned: perRun},
+		{name: "a backlog", old: 10, pruned: perRun},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFixture(t)
+
+			// The old markers, and one young marker that is never pruned.
+			_, err := fixture.pool.Exec(t.Context(), `
+				INSERT INTO purged_revisions (vault_id, seq, anchor, purged_at)
+				SELECT $1, seq, gen_random_uuid(),
+					CASE WHEN seq <= $2 THEN now() - interval '400 days' ELSE now() END
+				FROM generate_series(1, $2::bigint + 1) AS seq`, fixture.vault.VaultID(), test.old)
+			require.NoError(t, err)
+
+			job := fixture.job()
+			job.MarkersPerBatch, job.MarkersPerRun = batch, perRun
+
+			result, err := job.RunOnce(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, retention.Result{MarkersPruned: test.pruned}, result)
+			assert.Equal(t, test.old+1-test.pruned, fixture.markerCount(t), "the markers past the bound wait for the next run")
+
+			result, err = job.RunOnce(t.Context())
+			require.NoError(t, err)
+			assert.Equal(t, retention.Result{MarkersPruned: min(test.old-test.pruned, perRun)}, result, "the next run goes on")
+		})
+	}
+}
