@@ -139,7 +139,7 @@ func (cluster *deployment) start(t *testing.T, name, binary string, extra ...str
 		attempt.process.Start(t)
 		server = attempt
 
-		return testinfra.ServerProcess{Exited: attempt.process.Exited(), Err: attempt.process.Err, Output: attempt.logs.String}
+		return testinfra.ServerProcess{Exited: attempt.process.Exited(), Err: attempt.process.Err, Output: attempt.logs.String, PID: attempt.process.PID()}
 	})
 
 	return server

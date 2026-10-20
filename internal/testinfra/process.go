@@ -131,6 +131,11 @@ func (process *Child) Start(t testing.TB) {
 	})
 }
 
+// PID returns the child's process id. It is valid only after Start.
+func (process *Child) PID() int {
+	return process.Command.Process.Pid
+}
+
 // Exited is closed once the child has exited and its output is collected.
 func (process *Child) Exited() <-chan struct{} {
 	return process.exited

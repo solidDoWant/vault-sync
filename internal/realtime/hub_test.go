@@ -834,6 +834,64 @@ func TestDeliveryChecksMembershipInOneQueryPerBatchOfUsers(t *testing.T) {
 	}
 }
 
+func TestDeliveryNotifiesMembersAndEndsRemovedMembersSubscriptionsInEveryBatch(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		batch   int
+		queries int
+	}{
+		// All four users in one batch: members and removed members mixed.
+		{name: "mixed in one batch", batch: 4, queries: 1},
+		// Two users per batch: a batch mixes them, or the removed members
+		// fill the later batch.
+		{name: "two per batch", batch: 2, queries: 2},
+		// One user per batch: at least one removed member and one member
+		// are checked in a later batch than the first.
+		{name: "one per batch", batch: 1, queries: 4},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			restore := realtime.SetMembershipBatch(test.batch)
+			t.Cleanup(restore)
+
+			fixture := newFixture(t, fixtureOptions{})
+			vaultID := fixture.store.createVault("alice")
+
+			subscribe := func(subject string) *client {
+				fixture.store.setMember(vaultID, subject, store.RoleEditor)
+				conn := fixture.connect(t, subject)
+				conn.subscribe(1, vaultID)
+
+				return conn
+			}
+
+			// alice owns the vault.
+			members := []*client{fixture.connect(t, "alice"), subscribe("bob")}
+			members[0].subscribe(1, vaultID)
+
+			removed := []*client{subscribe("carol"), subscribe("dave")}
+
+			fixture.store.setMember(vaultID, "carol", "")
+			fixture.store.setMember(vaultID, "dave", "")
+
+			before := fixture.store.queries()
+			seq := fixture.store.commit(t, vaultID)
+
+			for _, member := range members {
+				member.expectVaultChanged(vaultID, seq)
+			}
+
+			for _, conn := range removed {
+				frame := conn.read()
+				require.NotNil(t, frame.GetError(), "expected an error frame, got %v", frame)
+				assert.Equal(t, vaultsyncv1.ErrorCode_ERROR_CODE_NOT_FOUND, frame.GetError().GetCode())
+				assert.Equal(t, vaultID.String(), frame.GetError().GetVaultId())
+			}
+
+			assert.Equal(t, test.queries, fixture.store.queries()-before)
+		})
+	}
+}
+
 func TestDisconnectReleasesTheConnectionsSubscriptions(t *testing.T) {
 	fixture := newFixture(t, fixtureOptions{})
 	vaultID := fixture.store.createVault("alice")
