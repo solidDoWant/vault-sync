@@ -1,4 +1,4 @@
-import { FileView, MarkdownView, normalizePath, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
+import { FileSystemAdapter, FileView, MarkdownView, normalizePath, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
 import { hexToBytes } from "@noble/hashes/utils.js";
 
@@ -127,6 +127,29 @@ async function emptyVault(app: App): Promise<void> {
  * stringified function cannot carry, such as the VaultAdapter conformance
  * suite. Never shipped.
  */
+/** A plugin's text view, registered under a core viewer's type by writeRemoteUnderPluginImageView. */
+class PluginTextView extends TextFileView {
+  getViewType(): string {
+    return "image";
+  }
+
+  override getDisplayText(): string {
+    return "Plugin text view";
+  }
+
+  getViewData(): string {
+    return this.data;
+  }
+
+  setViewData(data: string): void {
+    this.data = data;
+  }
+
+  clear(): void {
+    this.data = "";
+  }
+}
+
 export default class VaultSyncE2EHarness extends Plugin {
   /** The adapter the conformance spec runs inside Obsidian, over the emptied open vault. */
   readonly adapterUnderTest: VaultAdapterFactory = async () => {
@@ -460,6 +483,76 @@ export default class VaultSyncE2EHarness extends Plugin {
     return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file) };
   }
 
+  /**
+   * In the canvas showing `path` (nothing unsaved): writes `remote` through
+   * the Obsidian adapter, adds a text node reading `nodeText` right after the
+   * write resolves (before Obsidian's reload on the modify event has read the
+   * disk), then waits until that reload has finished (#418, item 3). The
+   * reload is TextFileView.loadFileInternal, internal to Obsidian 1.14.4.
+   */
+  async writeRemoteThenAddCanvasNode(path: string, remote: string, nodeText: string): Promise<ViewWriteResult & { reloads: number }> {
+    const file = this.app.vault.getFileByPath(path);
+    if (file === null) throw new Error(`no file ${path}`);
+    const view = this.canvasView(path);
+    const diskBefore = await this.app.vault.read(file);
+    const internal = view as unknown as { loadFileInternal: (this: unknown, file: TFile, clear: boolean) => Promise<void>; canvas: { createTextNode(options: object): unknown } };
+    const reloads: Promise<void>[] = [];
+    const original = internal.loadFileInternal;
+    internal.loadFileInternal = function (this: unknown, ...args: [TFile, boolean]) {
+      const reload = original.apply(this, args);
+      reloads.push(reload);
+      return reload;
+    };
+    let outcome = "ok";
+    try {
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+      internal.canvas.createTextNode({ pos: { x: 0, y: 400 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
+      // The modify event's reload: started once the write has landed.
+      for (let attempt = 0; reloads.length === 0 && attempt < 200; attempt++) await new Promise((resolve) => window.setTimeout(resolve, 25));
+      await Promise.all(reloads);
+    } catch (error) {
+      outcome = describeError(error);
+    } finally {
+      internal.loadFileInternal = original;
+    }
+    return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file), reloads: reloads.length };
+  }
+
+  /**
+   * Replaces Obsidian's `image` view with a plugin's text view under the
+   * same type (as a plugin may, after unregistering the core one), opens
+   * `path` in it, gives the view `unsaved` as data it has not saved, and
+   * writes `remote` through the Obsidian adapter (#418, item 4). The core
+   * view is restored afterwards.
+   */
+  async writeRemoteUnderPluginImageView(path: string, unsaved: string, remote: string): Promise<ViewWriteResult & { viewType: string }> {
+    const registry = (this.app as unknown as { viewRegistry: { viewByType: Record<string, unknown>; unregisterView(type: string): void; registerView(type: string, creator: unknown): void } }).viewRegistry;
+    const core = registry.viewByType.image;
+    registry.unregisterView("image");
+    registry.registerView("image", (leaf: ConstructorParameters<typeof PluginTextView>[0]) => new PluginTextView(leaf));
+    const leaf = this.app.workspace.getLeaf(true);
+    try {
+      const file = this.app.vault.getFileByPath(path);
+      if (file === null) throw new Error(`no file ${path}`);
+      await leaf.openFile(file, { active: true });
+      const { view } = leaf;
+      if (!(view instanceof PluginTextView)) throw new Error(`${path} did not open in the plugin's view`);
+      const diskBefore = await this.app.vault.read(file);
+      view.data = unsaved;
+      let outcome = "ok";
+      try {
+        await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote));
+      } catch (error) {
+        outcome = describeError(error);
+      }
+      return { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file), viewType: view.getViewType() };
+    } finally {
+      leaf.detach();
+      registry.unregisterView("image");
+      registry.registerView("image", core);
+    }
+  }
+
   /** The canvas showing `path`, as the view serializes it. */
   canvasViewData(path: string): string {
     return this.canvasView(path).getViewData();
@@ -530,6 +623,39 @@ export default class VaultSyncE2EHarness extends Plugin {
     const plugin = this.vaultSync();
     if (settings === null) delete plugin.data.configSync;
     else plugin.data.configSync = settings;
+  }
+
+  /** The documents the session startSession started tracks as unmaterializable, with their reasons, sorted by path. */
+  async sessionUnmaterializable(): Promise<{ path: string; reason: string }[]> {
+    const session = (this.vaultSync() as unknown as { session: SyncSession | undefined }).session;
+    if (session === undefined) throw new Error("startSession() first");
+    return (await session.unmaterializable()).map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));
+  }
+
+  /** Writes `content` at `path` through the Obsidian adapter, with no precondition: "ok" or the error it rejected with (platform.e2e.ts). */
+  async writeThroughAdapter(path: string, content: string): Promise<string> {
+    try {
+      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(content));
+      return "ok";
+    } catch (error) {
+      return describeError(error);
+    }
+  }
+
+  /** Renames `from` to `to` through the Obsidian adapter: "ok" or the error it rejected with (platform.e2e.ts). */
+  async renameThroughAdapter(from: string, to: string): Promise<string> {
+    try {
+      await new ObsidianVaultAdapter(this.app).rename(from, to);
+      return "ok";
+    } catch (error) {
+      return describeError(error);
+    }
+  }
+
+  /** The vault folder's absolute path (desktop's file system adapter), or null. */
+  vaultBasePath(): string | null {
+    const { adapter } = this.app.vault;
+    return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
   }
 
   /** Pulls and pushes now in the session startSession started; resolves with what the push committed. */

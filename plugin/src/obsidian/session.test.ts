@@ -863,6 +863,23 @@ describe("SyncSession", () => {
       expect(await vault.list()).toEqual(["ok.md"]);
     });
 
+    it("tracks names Android's shared storage refuses as unmaterializable (#418)", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "ok", path: "CON.md", content: "fine on Android\n" });
+      server.commit({ documentId: "colon", path: "ab:c.md", content: "a colon\n" });
+      server.commit({ documentId: "quote", path: 'say "hi"/note.md', content: "a quote\n" });
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal(), options: { pathRules: { platform: "posix", sharedStorage: true } } });
+      await running.start();
+
+      const listed = (await running.unmaterializable()).map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));
+      expect(listed).toEqual([
+        { path: "ab:c.md", reason: "forbidden-character" },
+        { path: 'say "hi"/note.md', reason: "forbidden-character" },
+      ]);
+      expect(await vault.list()).toEqual(["CON.md"]);
+    });
+
     it("lists documents larger than its download cap with their remote path and size, until stopped (#316)", async () => {
       const server = new InMemoryServer();
       server.commit({ documentId: "ok", path: "ok.md", content: "fine\n" });

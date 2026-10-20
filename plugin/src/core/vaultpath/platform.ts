@@ -5,7 +5,8 @@
  * writing it, and never renames it on the server.
  *
  * - `posix` (Linux, Android): names of at most 255 UTF-8 bytes, absolute
- *   paths below PATH_MAX (4096 bytes), no NUL.
+ *   paths below PATH_MAX (4096 bytes), no NUL. On Android, with
+ *   `sharedStorage`, no `"*:<>?\|` either.
  * - `macos` (macOS, iOS): names of at most 255 UTF-8 bytes, absolute paths
  *   below PATH_MAX (1024 bytes), no NUL. The filesystem is case- and
  *   normalization-insensitive.
@@ -20,6 +21,12 @@ export type PathPlatform = "posix" | "windows" | "macos";
 
 export interface PathRules {
   platform: PathPlatform;
+  /**
+   * Android's shared storage (`/storage/emulated`, where Obsidian keeps a
+   * vault): on top of the `posix` rules, its FUSE layer refuses names with
+   * any of `"*:<>?\|`. The platform stays `posix` for everything else.
+   */
+  sharedStorage?: boolean;
   /**
    * The vault folder's absolute path, if known, so the length limits count
    * it (with the separator before the vault-relative path). Without it only
@@ -80,7 +87,12 @@ const maxPathLength: Record<PathPlatform, number> = { posix: 4095, macos: 1023, 
 // Windows would take as a separator (a different file than the one named).
 // eslint-disable-next-line no-control-regex
 const windowsForbidden = /[\u0000-\u001f<>:"|?*\\]/;
-const windowsReserved = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9¹²³])$/i;
+// The characters Android's shared storage refuses in a name, and NUL.
+// eslint-disable-next-line no-control-regex
+const sharedStorageForbidden = /[\u0000"*:<>?\\|]/;
+// eslint-disable-next-line no-control-regex
+const posixForbidden = /\u0000/;
+const windowsReserved =/^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9¹²³])$/i;
 
 /**
  * Why `path` (vault-relative, "/"-separated) cannot be created on the
@@ -89,9 +101,8 @@ const windowsReserved = /^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9¹²³]
 export function unmaterializableReason(path: string, rules: PathRules): UnmaterializableReason | undefined {
   const windows = rules.platform === "windows";
   const segments = path.split("/");
-  for (const segment of segments) {
-    if (windows ? windowsForbidden.test(segment) : segment.includes("\u0000")) return "forbidden-character";
-  }
+  const forbidden = windows ? windowsForbidden : rules.sharedStorage === true ? sharedStorageForbidden : posixForbidden;
+  if (segments.some((segment) => forbidden.test(segment))) return "forbidden-character";
   if (windows) {
     for (const segment of segments) {
       // NUL.txt and NUL .txt are NUL too: Windows ignores what follows the first dot, and trailing spaces before it.

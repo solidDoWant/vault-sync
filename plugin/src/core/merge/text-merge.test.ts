@@ -1,6 +1,52 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { applyChanges, mergeText, mergeUnsaved } from "./text-merge";
+
+describe("diff memory", () => {
+  /** Runs `run`, counting the bytes of every Int32Array it allocates (the diff's only large allocations). */
+  function int32BytesAllocated(run: () => void): number {
+    const original = globalThis.Int32Array;
+    let bytes = 0;
+    class Counting extends original {
+      constructor(length: number) {
+        super(length);
+        bytes += this.byteLength;
+      }
+    }
+    vi.stubGlobal("Int32Array", Counting);
+    try {
+      run();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+    return bytes;
+  }
+
+  const numbered = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => `${prefix} ${String(index)}`);
+
+  it("stays well below 128 MB for two texts at the maximum edit distance", () => {
+    // 2000 lines replaced by 2000 others: exactly 4000 differences, the most
+    // the diff still searches a minimal edit script for.
+    const base = lines(...numbered(2000, "base"));
+    const remote = lines(...numbered(2000, "remote"));
+    let merged: string | undefined;
+    const bytes = int32BytesAllocated(() => {
+      merged = mergeUnsaved(base, base, remote)?.merged;
+    });
+    expect(merged).toBe(remote);
+    expect(bytes).toBeGreaterThan(0);
+    expect(bytes).toBeLessThan(40 * 1024 * 1024);
+  });
+
+  it("finds a minimal edit script at exactly the maximum edit distance, and one change past it", () => {
+    // A line kept in the middle splits the remote change in two at 4000
+    // differences; at 4001 the whole differing middle is one change.
+    const base = lines(...numbered(1000, "a"), "same", ...numbered(1000, "b"));
+    expect(mergeUnsaved(base, base, lines(...numbered(1000, "x"), "same", ...numbered(1000, "y")))?.changes).toHaveLength(2);
+    const longer = lines(...numbered(1000, "a"), "same", ...numbered(1001, "b"));
+    expect(mergeUnsaved(longer, longer, lines(...numbered(1000, "x"), "same", ...numbered(1000, "y")))?.changes).toHaveLength(1);
+  });
+});
 
 const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
 
