@@ -41,6 +41,23 @@ export function conflictFolderPath(folder: string, rest: string, device: string,
   return conflictName(folder, device, date, attempt, false, `/${rest}`, rules);
 }
 
+/**
+ * The end of a file or folder name that conflictCopyPath or conflictFolderPath
+ * produced: ` (conflict <device> <date>[ <counter>])`, then the extension, if
+ * any. The device label holds no parenthesis or separator (deviceLabel).
+ */
+const conflictSuffix = / \(conflict [^()/\\]+ \d{4}-\d{2}-\d{2} \d{6}(?: \d+)?\)(?:\.[^/]*)?$/u;
+
+/**
+ * Whether `path` is a conflict copy's or lies in a folder renamed as a
+ * conflict copy: one of its segments has the name conflictCopyPath or
+ * conflictFolderPath gives. Config sync keeps such copies on the device
+ * (SPEC.md §8).
+ */
+export function isConflictCopyPath(path: string): boolean {
+  return path.split("/").some((segment) => conflictSuffix.test(segment));
+}
+
 function conflictName(path: string, device: string, date: Date, attempt: number, splitExtension: boolean, tail: string, rules: PathRules | undefined): string | null {
   const separator = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
   const folder = path.slice(0, separator + 1);
