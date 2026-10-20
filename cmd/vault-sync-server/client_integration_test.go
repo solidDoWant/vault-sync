@@ -58,7 +58,7 @@ func TestPluginProtocolClient(t *testing.T) {
 	// Starts a new process, with new addresses, if another process took
 	// one of the ports first.
 	apiAddress := testinfra.StartServer(t, "server", 30*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
-		logs := &testinfra.SyncBuffer{}
+		logs := &bytes.Buffer{}
 
 		server := testinfra.NewChild(t, binary)
 		server.Command.Env = []string{
@@ -81,7 +81,7 @@ func TestPluginProtocolClient(t *testing.T) {
 
 		server.Start(t)
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String}
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String, PID: server.PID()}
 	}).API
 
 	report := filepath.Join(t.TempDir(), "report.json")

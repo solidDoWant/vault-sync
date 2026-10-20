@@ -4,6 +4,7 @@ package main_test
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
 	"net"
@@ -56,7 +57,7 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 	// Starts a new process, with new addresses, if another process took
 	// one of the ports first.
 	started := testinfra.StartServer(t, "server", 30*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
-		logs := &testinfra.SyncBuffer{}
+		logs := &bytes.Buffer{}
 
 		server = testinfra.NewChild(t, binary)
 		server.Command.Env = []string{
@@ -83,7 +84,7 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 
 		server.Start(t)
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String}
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String, PID: server.PID()}
 	})
 	apiAddress, metricsAddress := started.API, started.Metrics
 

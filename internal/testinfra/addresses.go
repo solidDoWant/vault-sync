@@ -1,7 +1,6 @@
 package testinfra
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -133,42 +132,22 @@ type ServerProcess struct {
 	// Err returns the error from waiting for the process. It is called only
 	// after Exited is closed.
 	Err func() error
-	// Output returns the process's combined output so far. It is called
-	// while the process runs, so it must be safe for concurrent use with the
-	// process writing it (see SyncBuffer).
+	// Output returns the process's combined output. It is called only after
+	// Exited is closed.
 	Output func() string
-}
-
-// SyncBuffer collects a child's output; it may be read while the child
-// writes it.
-type SyncBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (buffer *SyncBuffer) Write(data []byte) (int, error) {
-	buffer.mu.Lock()
-	defer buffer.mu.Unlock()
-
-	return buffer.buffer.Write(data)
-}
-
-// String returns everything written so far.
-func (buffer *SyncBuffer) String() string {
-	buffer.mu.Lock()
-	defer buffer.mu.Unlock()
-
-	return buffer.buffer.String()
+	// PID is the process id (Child.PID). StartServer uses it to tell the
+	// server's own /readyz from another process's on the same port; zero
+	// skips that check.
+	PID int
 }
 
 // StartServer starts a server and waits until its /readyz succeeds. start
 // must configure the server with the addresses it is given, start it, and
 // return it; StartServer then waits up to readyTimeout for it to become
-// ready. The server counts as ready only once its own output shows that it
-// listens on the metrics address it was given (the server's "server
-// started" log line) and it is still running: until it has bound that
-// port, a 200 from /readyz may come from another process's server, which
-// took the port after FreeAddresses probed it. When the server exits during startup because one of its ports is
+// ready. On Linux, a /readyz answer counts only once the process with the
+// returned PID listens on the metrics address itself: until it has bound
+// that port, the answer may come from another process's server, which took
+// the port after FreeAddresses probed it. When the server exits during startup because one of its ports is
 // already in use (another process on the machine took it after
 // FreeAddresses probed it), StartServer starts a new server with new
 // addresses, up to a fixed number of attempts. Any other exit during startup
@@ -182,6 +161,7 @@ func StartServer(t testing.TB, name string, readyTimeout time.Duration, start fu
 		ports:    processPorts,
 		attempts: maxServerStartAttempts,
 		ready:    metricsReady,
+		owns:     listensOn,
 		poll:     readinessPollInterval,
 	}
 
@@ -196,7 +176,9 @@ type serverStarter struct {
 	ports    *portAllocator
 	attempts int
 	ready    func(ctx context.Context, metricsAddress string) bool
-	poll     time.Duration
+	// owns reports whether the process with pid listens on address.
+	owns func(pid int, address string) bool
+	poll time.Duration
 }
 
 // errAddressInUse marks a server that exited because a port was taken.
@@ -248,19 +230,12 @@ func (starter serverStarter) awaitReady(ctx context.Context, name string, readyT
 		default:
 		}
 
-		// Once this process has bound the metrics port, no other process
-		// can serve on it while this one runs, so the probe reaches this
-		// server. Before then, the probe may reach another process's
-		// server on that port, while this one is about to fail to bind it.
-		if listening(process.Output(), addresses.Metrics) && starter.ready(ctx, addresses.Metrics) {
-			select {
-			case <-process.Exited:
-				// It exited after it listened: reported as a startup
-				// exit on the next iteration.
-				continue
-			default:
-				return nil
-			}
+		// A server that listens on the metrics port is the only one that
+		// can answer on it while it runs. Until it does, the answer may
+		// come from another process's server on that port, while this one
+		// is about to fail to bind it, so it does not count.
+		if (process.PID == 0 || starter.owns(process.PID, addresses.Metrics)) && starter.ready(ctx, addresses.Metrics) {
+			return nil
 		}
 
 		select {
@@ -272,21 +247,6 @@ func (starter serverStarter) awaitReady(ctx context.Context, name string, readyT
 		case <-ticker.C:
 		}
 	}
-}
-
-// listening reports whether output contains the server's "server started"
-// log line for metricsAddress, which the server writes once it listens on
-// its API and metrics addresses.
-func listening(output, metricsAddress string) bool {
-	metrics := `"metrics_address":"` + metricsAddress + `"`
-
-	for line := range strings.Lines(output) {
-		if strings.Contains(line, `"msg":"server started"`) && strings.Contains(line, metrics) {
-			return true
-		}
-	}
-
-	return false
 }
 
 // addressInUse reports whether output shows a failure to bind an address
