@@ -252,6 +252,53 @@ describe("config folder sync (SPEC.md §8)", () => {
       );
       expect(serverConfig(server)).toEqual([".obsidian/hotkeys.json"]);
     });
+    it("keeps a conflict copy of a snippet or a plugin's data on the device that made it, never syncing it (#365)", async () => {
+      const server = new InMemoryServer();
+      const a = device(server, everything, "a");
+      const b = device(server, everything, "b");
+      await a.config.write("plugins/dataview/data.json", bytes("a's data"));
+      await b.config.write("plugins/dataview/data.json", bytes("b's data"));
+      await a.config.write("snippets/wide.css", bytes(".a{}"));
+      await b.config.write("snippets/wide.css", bytes(".b{}"));
+      await a.engine.push();
+
+      await b.engine.push();
+      await b.engine.push();
+      await a.engine.pull();
+
+      expect(serverConfig(server)).toEqual([".obsidian/plugins/dataview/data.json", ".obsidian/snippets/wide.css"]);
+      expect(await files(b.config)).toEqual(
+        new Map([
+          [copyOf("plugins/dataview/data", ".json", "b"), "b's data"],
+          ["plugins/dataview/data.json", "a's data"],
+          [copyOf("snippets/wide", ".css", "b"), ".b{}"],
+          ["snippets/wide.css", ".a{}"],
+        ]),
+      );
+      expect(await files(a.config)).toEqual(
+        new Map([
+          ["plugins/dataview/data.json", "a's data"],
+          ["snippets/wide.css", ".a{}"],
+        ]),
+      );
+      // Each is in b's conflict log.
+      expect((await b.journal.listConflicts()).map((record) => record.copyPath).sort()).toEqual([`.obsidian/${copyOf("plugins/dataview/data", ".json", "b")}`, `.obsidian/${copyOf("snippets/wide", ".css", "b")}`]);
+    });
+
+    it("neither applies nor deletes a config conflict copy an older build already synced (#365)", async () => {
+      const server = new InMemoryServer();
+      const copy = `.obsidian/${copyOf("snippets/wide", ".css", "old")}`;
+      server.commit({ documentId: "snippet", path: ".obsidian/snippets/wide.css", content: ".a{}" });
+      server.commit({ documentId: "copy", path: copy, content: ".old{}" });
+      const a = device(server, everything, "a");
+
+      const summary = await a.engine.pull();
+      await a.engine.push();
+
+      expect(await files(a.config)).toEqual(new Map([["snippets/wide.css", ".a{}"]]));
+      expect(summary).toMatchObject({ applied: 1, deferred: 1 });
+      expect(server.liveFiles().get(copy)).toBeDefined();
+    });
   });
 
   describe("turning config sync off, or a category", () => {

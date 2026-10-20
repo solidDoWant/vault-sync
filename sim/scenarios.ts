@@ -1057,6 +1057,51 @@ export async function configFolderSync(endpoints: SimEndpoints): Promise<ConfigS
   return { ...result, liveAfterPush, configWhileOff, configAfterOn, commitsWhileOff, liveAtEnd: await liveFiles(run) };
 }
 
+export interface ConfigConflictCopyResult extends RunResult {
+  /** The server's live paths at the end. */
+  live: string[];
+  /** Each engine's config folder at the end. */
+  configs: string[][];
+}
+
+/**
+ * Config conflict copies stay on the device (#365, SPEC.md §8). Both engines
+ * sync their config folders with every category and write the same snippet
+ * and plugin data file. The first pushes; the second's push keeps its own
+ * versions as conflict copies inside snippets/ and plugins/dataview/, which
+ * are synced folders. The copies are never committed, so the first engine
+ * never receives them.
+ */
+export async function configConflictCopies(endpoints: SimEndpoints): Promise<ConfigConflictCopyResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+
+  for (const engine of [first, second]) log(await engine.setConfigSync({ enabled: true, categories: allConfigCategories }));
+  for (const [engine, name] of [[first, "first"], [second, "second"]] as const) {
+    log(await engine.editConfig("snippets/wide.css", encoder.encode(`.${name} {}\n`)));
+    log(await engine.editConfig("plugins/dataview/data.json", encoder.encode(`{"by":"${name}"}`)));
+  }
+  log(first.startPush());
+  await drain(first.index);
+  log(second.startPush());
+  await drain(second.index);
+  log(second.startPush());
+  await drain(second.index);
+  log(first.startPull());
+  await drain(first.index);
+
+  const result = await run.finish();
+  return { ...result, live: await liveFiles(run), configs: [await first.configFiles(), await second.configFiles()] };
+}
+
 export interface PurgedMergeBaseResult extends RunResult {
   /** Each engine's vault after the run: path to content. */
   vaults: Map<string, string>[];
