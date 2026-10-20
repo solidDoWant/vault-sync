@@ -2478,3 +2478,62 @@ export async function localRenameIntoRemoteRenamesFolder(endpoints: SimEndpoints
   const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
 }
+
+/**
+ * A remote rename of a note onto a file named like the note's local folder
+ * by path key, while the user edited the note (#359). Both engines sync the
+ * note `Notes/C.md`. The second engine's user edits it; the first engine
+ * renames it to `NOTES`, edits it and pushes. There is no local rename, so
+ * the remote rename wins and the two edits conflict. Path keys ignore case
+ * on every platform, so every name in `Notes/` is under the file `NOTES` the
+ * merge result goes to: the local edit's copy must go under a conflict-named
+ * folder (`Notes (conflict …)/C.md`, SPEC.md §7). The engines must converge
+ * with both versions live, no duplicate copies and nothing deferred (SPEC.md
+ * §2 principle 1). Both engines follow `platform`'s rules.
+ */
+export async function remoteRenameOntoFolderName(endpoints: SimEndpoints, platform: "posix" | "macos" | "windows"): Promise<RenameOntoLocalFolderResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: [platform, platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("Notes/C.md", encoder.encode("base\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.edit("Notes/C.md", encoder.encode("mine\n")));
+  log(await first.move("Notes/C.md", "NOTES"));
+  log(await first.edit("NOTES", encoder.encode("theirs\n")));
+  await push(first);
+  await pull(second);
+  await push(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = (await Promise.all([first, second].map((engine) => engine.conflicts())))
+    .flat()
+    .map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts, pushes };
+}
