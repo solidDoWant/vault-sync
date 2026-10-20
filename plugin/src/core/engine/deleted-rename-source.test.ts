@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { files, syncedOnBoth, twoDevices } from "./testing";
@@ -50,6 +51,59 @@ describe.each(["posix", "macos", "windows"] as const)("an unpushed rename of a n
     expect(server.liveDocuments().get(created)).toBe(theirs);
     expect(server.liveFiles().get(created)).toBe("theirs\n");
     expect(server.liveFiles().get("x.md")).toBe(mine);
+    expect(server.liveDocuments().get("x.md")).not.toBe(theirs);
+    expect(await files(a.vault)).toEqual(server.liveFiles());
+    expect(await files(b.vault)).toEqual(server.liveFiles());
+    expect(await a.journal.listDeferred()).toEqual([]);
+    expect(await b.journal.listDeferred()).toEqual([]);
+    expect(await a.engine.push()).toEqual(quiet);
+    expect(await b.engine.push()).toEqual(quiet);
+  });
+});
+
+// The same, when the user edited the note before renaming it and the edit's
+// push was lost on the way to the server: the edit is still pending when
+// the pull applies the delete, so the delete is merged with it rather than
+// applied over a clean file. The rename must be dropped there too.
+describe.each(["posix", "macos", "windows"] as const)("an unpushed rename of a pending edit of a note another device deletes on %s (#486)", (platform) => {
+  it("never renames a new note brought to the old path by a rename", async () => {
+    const devices = twoDevices({ pathRules: { platform } });
+    const { a, b, server } = devices;
+    await syncedOnBoth(devices, "b.md", "b\n");
+
+    await a.vault.write("b.md", bytes("b\nmine\n"));
+    await a.engine.settled();
+    server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("lost", Code.Unavailable);
+    };
+    await a.engine.push().catch(() => undefined);
+    server.interceptor = undefined;
+    expect(server.liveFiles().get("b.md")).toBe("b\n");
+
+    await a.vault.rename("b.md", "x.md");
+    await a.engine.settled();
+    await b.vault.delete("b.md");
+    await b.engine.push();
+    await a.engine.pull();
+
+    await b.vault.write("c.md", bytes("theirs\n"));
+    await b.engine.push();
+    await b.vault.rename("c.md", "b.md");
+    await b.engine.push();
+    const theirs = server.liveDocuments().get("b.md");
+    expect(theirs).toBeDefined();
+    await a.engine.pull();
+
+    for (let round = 0; round < 4; round++) {
+      await a.engine.push();
+      await b.engine.push();
+      await a.engine.pull();
+      await b.engine.pull();
+    }
+
+    expect(server.liveDocuments().get("b.md")).toBe(theirs);
+    expect(server.liveFiles().get("b.md")).toBe("theirs\n");
+    expect(server.liveFiles().get("x.md")).toBe("b\nmine\n");
     expect(server.liveDocuments().get("x.md")).not.toBe(theirs);
     expect(await files(a.vault)).toEqual(server.liveFiles());
     expect(await files(b.vault)).toEqual(server.liveFiles());
