@@ -686,12 +686,18 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         expect(await reported(h)).toEqual([]);
       });
 
-      it("lets a parked document follow its file a local rename moved, the other document untouched", async () => {
+      // #459: the parked document kept its claim on plan.md for a local
+      // rename not yet pushed, held in memory only, so the journal had it and
+      // the other document both live at plan.md. After a restart its stale
+      // edit took the other document's file, and the server tombstoned it.
+      it.each([false, true])("keeps the file a local rename moved as a new document, the other document untouched (restart: %s)", async (restart) => {
         const h = await parkedWithPendingEdit();
         await h.vault.rename("plan.md", "notes.md");
 
         await h.engine.pull();
         await h.engine.push();
+        await h.engine.settled();
+        if (restart) h.restart();
         await h.engine.pull();
         await h.engine.push();
         h.server.commit({ documentId: "doc", path: "draft.md" });
@@ -700,23 +706,35 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         await h.engine.pull();
         await h.engine.push();
 
-        // The local rename wins over the remote one, with the edit: the other document keeps its path and id.
+        // The moved file is released with the path, as a kept file is (#391): the edit is live as a new document.
         expect(await files(h.vault)).toEqual(
           new Map([
+            ["draft.md", "one\ntwo\n"],
             ["notes.md", "one\ntwo (edited)\n"],
             ["plan.md", "another note\n"],
           ]),
         );
-        expect(h.server.liveDocuments()).toEqual(
+        const live = h.server.liveDocuments();
+        expect(live.get("draft.md")).toBe("doc");
+        expect(live.get("plan.md")).toBe("other");
+        expect(live.get("notes.md")).not.toBeUndefined();
+        expect(live.get("notes.md")).not.toBe("doc");
+        expect(h.server.liveFiles()).toEqual(
           new Map([
-            ["notes.md", "doc"],
-            ["plan.md", "other"],
+            ["draft.md", "one\ntwo\n"],
+            ["notes.md", "one\ntwo (edited)\n"],
+            ["plan.md", "another note\n"],
           ]),
         );
-        expect(h.server.liveFiles().get("notes.md")).toBe("one\ntwo (edited)\n");
-        expect(h.server.liveFiles().get("plan.md")).toBe("another note\n");
         expect(await h.journal.listPending()).toEqual([]);
         expect(await h.journal.listDeferred()).toEqual([]);
+        expect(await reported(h)).toEqual([]);
+
+        // The other document's file is its own: an edit of it is pushed under its id.
+        await h.vault.write("plan.md", bytes("another note (edited)\n"));
+        await h.engine.push();
+        expect(h.server.liveFiles().get("plan.md")).toBe("another note (edited)\n");
+        expect(h.server.liveDocuments().get("plan.md")).toBe("other");
       });
 
       it("brings the parked document back at its legal name with its pending delete, the other document untouched", async () => {
@@ -818,6 +836,106 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         // At least: the dropped operation, the release record, and the conflict copy's write.
         expect(crashed).toBeGreaterThanOrEqual(3);
         expect(released).toBeGreaterThanOrEqual(1);
+      });
+
+      // #398, #459: the release of a parked document whose file the user
+      // deleted, or moved away by a rename not yet pushed, interrupted at
+      // every durable change of the pull and push that run it.
+      it.each(["deleted", "renamed"] as const)("converges with the other document untouched when the release of a %s file is interrupted at any durable change", async (variant) => {
+        let crashed = 0;
+        for (let crashAfter = 1; ; crashAfter++) {
+          const label = `crash after durable change ${String(crashAfter)}`;
+          const points = new CrashPoints();
+          const h = await parkedWithPendingEdit(harness({ merge: "default", pathRules: windows, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) }));
+          if (variant === "deleted") await h.vault.delete("plan.md");
+          else await h.vault.rename("plan.md", "notes.md");
+          points.count = 0;
+          points.crashAfter = crashAfter;
+          const outcome = await h.engine
+            .pull()
+            .then(() => h.engine.push())
+            .then(
+              () => "finished",
+              (error: unknown) => {
+                if (!(error instanceof Crash)) throw error;
+                return "crashed";
+              },
+            );
+          if (outcome === "finished") break;
+          crashed++;
+          points.crashAfter = 0;
+          await h.engine.settled();
+          h.restart();
+
+          for (let round = 0; round < 2; round++) {
+            await h.engine.pull();
+            await h.engine.push();
+          }
+          h.server.commit({ documentId: "doc", path: "draft.md" });
+          for (let round = 0; round < 2; round++) {
+            await h.engine.pull();
+            await h.engine.push();
+          }
+
+          const expected = new Map([
+            ["draft.md", "one\ntwo\n"],
+            ["plan.md", "another note\n"],
+          ]);
+          if (variant === "renamed") expected.set("notes.md", "one\ntwo (edited)\n");
+          expect(await files(h.vault), label).toEqual(expected);
+          expect(h.server.liveFiles(), label).toEqual(expected);
+          expect(h.server.liveDocuments().get("plan.md"), label).toBe("other");
+          expect(h.server.liveDocuments().get("draft.md"), label).toBe("doc");
+          expect(await h.journal.listPending(), label).toEqual([]);
+          expect(await h.journal.listDeferred(), label).toEqual([]);
+        }
+        // At least: the dropped edit, the release record, the other document's write and its journal record.
+        expect(crashed).toBeGreaterThanOrEqual(4);
+      });
+
+      // A rename pending to a path the platform cannot hold (the vault folder
+      // moved deeper, say) parks the document with its operation at another
+      // path. Kept for it, the claim left both documents live at plan.md in
+      // the journal, and the other document's edit there was never pushed.
+      it("releases a parked document's pending rename as a new document, and pushes the other document's edits at the path", async () => {
+        const pathRules = { platform: "windows", root: `C:\\${"r".repeat(150)}` } as const;
+        const h = harness({ merge: "default", pathRules, vault: new InMemoryVault({ pathRules: windows }) });
+        const long = `${"n".repeat(120)}.md`;
+        h.server.commit({ documentId: "doc", path: "plan.md", content: "one\n" });
+        await h.engine.pull();
+        await h.vault.rename("plan.md", long);
+        // Another device edits it just before this device's commit reaches the server.
+        let edited = false;
+        h.server.interceptor = (method) => {
+          if (method !== "CommitRevision" || edited) return;
+          edited = true;
+          h.server.commit({ documentId: "doc", path: "plan.md", content: "one\ntwo\n" });
+        };
+        await h.engine.push();
+        h.server.interceptor = undefined;
+        expect(await h.journal.listPending()).toEqual([expect.objectContaining({ documentId: "doc", path: long })]);
+        expect((await h.journal.listDeferred()).map(({ reason }) => reason)).toEqual(["unmaterializable"]);
+
+        h.server.commit({ documentId: "doc", path: "x.md" });
+        h.server.commit({ documentId: "other", path: "plan.md", content: "another note\n" });
+        for (let round = 0; round < 2; round++) {
+          await h.engine.pull();
+          await h.engine.push();
+        }
+        await h.vault.write("plan.md", bytes("another note (edited)\n"));
+        await h.engine.push();
+        await h.engine.pull();
+
+        const expected = new Map([
+          [long, "one\n"],
+          ["plan.md", "another note (edited)\n"],
+          ["x.md", "one\ntwo\n"],
+        ]);
+        expect(await files(h.vault)).toEqual(expected);
+        expect(h.server.liveFiles()).toEqual(expected);
+        expect(h.server.liveDocuments().get("plan.md")).toBe("other");
+        expect(h.server.liveDocuments().get("x.md")).toBe("doc");
+        expect(await h.journal.listPending()).toEqual([]);
       });
     });
   });
