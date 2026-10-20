@@ -136,6 +136,8 @@ config:
       keepAll: ""
       # VAULT_SYNC_RETENTION_KEEP_DAILY.
       keepDaily: ""
+      # VAULT_SYNC_RETENTION_PURGE_MARKER_HORIZON.
+      purgeMarkerHorizon: ""
     realtime:
       # VAULT_SYNC_REALTIME_MAX_CONNECTIONS.
       maxConnections: ""

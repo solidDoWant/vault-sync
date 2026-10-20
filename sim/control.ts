@@ -64,6 +64,16 @@ export class Control {
     return purged ?? [];
   }
 
+  /**
+   * Ages the vault's purge markers past the server's marker horizon and
+   * prunes them with the server's own retention code, as if that long had
+   * passed since the purges (SPEC.md §11). Returns how many it pruned.
+   */
+  async pruneMarkers(vaultId: string): Promise<number> {
+    const { pruned } = await this.post<{ pruned: number }>("/prune-markers", { vaultId });
+    return pruned;
+  }
+
   /** Backs up the vault's change history in the database, for restore; returns the vault's head_seq then. */
   async snapshot(vaultId: string): Promise<bigint> {
     const { headSeq } = await this.post<{ headSeq: number }>("/snapshot", { vaultId });

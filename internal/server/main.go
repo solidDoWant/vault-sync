@@ -177,7 +177,9 @@ func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, re
 		Policy:  store.RetentionPolicy{KeepAll: cfg.Retention.KeepAll, KeepDaily: cfg.Retention.KeepDaily},
 		Grace:   cfg.Retention.BlobGrace,
 		Metrics: retained,
-		Logger:  logger,
+
+		MarkerHorizon: cfg.Retention.PurgeMarkerHorizon,
+		Logger:        logger,
 	}
 	go job.Run(ctx, retention.DefaultInterval)
 

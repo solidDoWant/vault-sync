@@ -144,3 +144,31 @@ func ageAndPurge(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, revis
 
 	return purged, nil
 }
+
+// ageAndPruneMarkers makes vaultID's purge markers look older than the
+// default marker horizon and prunes them with the server's own code, until
+// none of them is left. Other vaults' markers are not aged, so concurrent
+// runs keep theirs.
+func ageAndPruneMarkers(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID) (int, error) {
+	_, err := db.Exec(ctx, `UPDATE purged_revisions SET purged_at = now() - $2 * interval '1 microsecond' - interval '1 day' WHERE vault_id = $1`,
+		vaultID, retention.DefaultMarkerHorizon.Microseconds())
+	if err != nil {
+		return 0, fmt.Errorf("age purge markers: %w", err)
+	}
+
+	queries := store.New(db)
+	total := 0
+
+	for {
+		pruned, err := queries.PruneMarkers(ctx, retention.DefaultMarkerHorizon, retention.DefaultMarkersPerBatch)
+		if err != nil {
+			return total, err
+		}
+
+		total += pruned
+
+		if pruned < retention.DefaultMarkersPerBatch {
+			return total, nil
+		}
+	}
+}
