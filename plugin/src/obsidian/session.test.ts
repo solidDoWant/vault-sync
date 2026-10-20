@@ -325,6 +325,75 @@ describe("SyncSession", () => {
       await running.stop();
     });
 
+    it("counts an edit made while a push runs as pending when the next push cannot reach the server (#527)", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const statuses: SessionStatus[] = [];
+      const journal = new InMemoryJournal();
+      // Resolves once the session has seen the next local change.
+      let seen: (() => void) | undefined;
+      const nextLocalChange = () =>
+        new Promise<void>((resolve) => {
+          seen = resolve;
+        });
+      // While typing, the user saves b.md again during every commit of the push,
+      // so the push always ends with an edit it has not committed.
+      let typing = false;
+      let edits = 0;
+      const transport: Transport = {
+        unary: async (...args) => {
+          if (typing && args[0].name === "CommitRevision") {
+            const classified = nextLocalChange();
+            await vault.write("b.md", bytes(`edit ${String(++edits)}`));
+            await classified;
+          }
+          return server.transport.unary(...args);
+        },
+        stream: (...args) => server.transport.stream(...args),
+      };
+      const running = session({
+        server,
+        vault,
+        journal,
+        transport,
+        statuses,
+        options: {
+          onLocalChange: () => {
+            seen?.();
+          },
+        },
+      });
+      await running.start();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+
+      await vault.write("a.md", bytes("pushed"));
+      typing = true;
+      expect(await running.syncNow()).toBeDefined();
+      typing = false;
+      expect(server.liveFiles().get("a.md")).toBe("pushed");
+      const latest = `edit ${String(edits)}`;
+      expect(await files(vault)).toEqual(new Map([["a.md", "pushed"], ["b.md", latest]]));
+      expect(server.liveFiles().get("b.md")).not.toBe(latest);
+
+      server.interceptor = () => {
+        throw new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable);
+      };
+      await running.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline", pending: 1 });
+      });
+
+      server.interceptor = undefined;
+      await running.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+      expect(server.liveFiles().get("b.md")).toBe(latest);
+      await running.stop();
+    });
+
     it("pushes an edit made while the server was unreachable from the next session when the app was closed before it synced", async () => {
       const server = new InMemoryServer();
       server.commit({ documentId: "a", path: "a.md", content: "synced" });
