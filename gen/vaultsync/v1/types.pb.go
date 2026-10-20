@@ -524,7 +524,13 @@ type Revision struct {
 	// User that committed this revision.
 	UserId string `protobuf:"bytes,11,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	// When the server accepted this revision.
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,12,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// Random value the server assigned when it stored this revision (16
+	// bytes). Unlike id, which the committing client chooses, it cannot be
+	// reproduced by a server restored from a backup that commits again: a
+	// client sends the anchor of the revision at its cursor as
+	// ListChangesRequest.since_anchor to detect such a restore (SPEC.md §6.1).
+	Anchor        []byte `protobuf:"bytes,13,opt,name=anchor,proto3" json:"anchor,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -643,6 +649,13 @@ func (x *Revision) GetCreateTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *Revision) GetAnchor() []byte {
+	if x != nil {
+		return x.Anchor
+	}
+	return nil
+}
+
 var File_vaultsync_v1_types_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_types_proto_rawDesc = "" +
@@ -672,7 +685,7 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bvault_id\x18\x02 \x01(\tR\avaultId\x12.\n" +
 	"\x04kind\x18\x03 \x01(\x0e2\x1a.vaultsync.v1.DocumentKindR\x04kind\x12\x1e\n" +
-	"\vhead_rev_id\x18\x04 \x01(\tR\theadRevId\"\x98\x03\n" +
+	"\vhead_rev_id\x18\x04 \x01(\tR\theadRevId\"\xb0\x03\n" +
 	"\bRevision\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vdocument_id\x18\x02 \x01(\tR\n" +
@@ -689,7 +702,8 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	" \x01(\tR\bdeviceId\x12\x17\n" +
 	"\auser_id\x18\v \x01(\tR\x06userId\x12;\n" +
 	"\vcreate_time\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"createTime*t\n" +
+	"createTime\x12\x16\n" +
+	"\x06anchor\x18\r \x01(\fR\x06anchor*t\n" +
 	"\fDocumentKind\x12\x1d\n" +
 	"\x19DOCUMENT_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12DOCUMENT_KIND_BLOB\x10\x01\x12\x16\n" +

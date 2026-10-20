@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/sync.proto.
  */
 export const file_vaultsync_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIkwKEkxpc3RDaGFuZ2VzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglzaW5jZV9zZXEYAiABKAQSEQoJcGFnZV9zaXplGAMgASgNImQKE0xpc3RDaGFuZ2VzUmVzcG9uc2USKQoJcmV2aXNpb25zGAEgAygLMhYudmF1bHRzeW5jLnYxLlJldmlzaW9uEhAKCGhhc19tb3JlGAIgASgIEhAKCGhlYWRfc2VxGAMgASgEIjsKEkdldFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtyZXZpc2lvbl9pZBgCIAEoCSI/ChNHZXRSZXZpc2lvblJlc3BvbnNlEigKCHJldmlzaW9uGAEgASgLMhYudmF1bHRzeW5jLnYxLlJldmlzaW9uIoUCChVDb21taXRSZXZpc2lvblJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEwoLZG9jdW1lbnRfaWQYAiABKAkSEwoLcmV2aXNpb25faWQYAyABKAkSEwoLYmFzZV9yZXZfaWQYBCABKAkSKAoEa2luZBgFIAEoDjIaLnZhdWx0c3luYy52MS5Eb2N1bWVudEtpbmQSLQoLY29udGVudF9yZWYYBiABKAsyGC52YXVsdHN5bmMudjEuQ29udGVudFJlZhIMCgRwYXRoGAcgASgMEhAKCHBhdGhfa2V5GAggASgMEg8KB2RlbGV0ZWQYCSABKAgSEQoJZGV2aWNlX2lkGAogASgJIkIKFkNvbW1pdFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24iaQoZR2V0RG9jdW1lbnRIaXN0b3J5UmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRIRCglwYWdlX3NpemUYAyABKA0SEgoKcGFnZV90b2tlbhgEIAEoCSKKAQoaR2V0RG9jdW1lbnRIaXN0b3J5UmVzcG9uc2USKAoIZG9jdW1lbnQYASABKAsyFi52YXVsdHN5bmMudjEuRG9jdW1lbnQSKQoJcmV2aXNpb25zGAIgAygLMhYudmF1bHRzeW5jLnYxLlJldmlzaW9uEhcKD25leHRfcGFnZV90b2tlbhgDIAEoCTKDAwoLU3luY1NlcnZpY2USVAoLTGlzdENoYW5nZXMSIC52YXVsdHN5bmMudjEuTGlzdENoYW5nZXNSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVzcG9uc2UiABJUCgtHZXRSZXZpc2lvbhIgLnZhdWx0c3luYy52MS5HZXRSZXZpc2lvblJlcXVlc3QaIS52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXNwb25zZSIAEl0KDkNvbW1pdFJldmlzaW9uEiMudmF1bHRzeW5jLnYxLkNvbW1pdFJldmlzaW9uUmVxdWVzdBokLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlc3BvbnNlIgASaQoSR2V0RG9jdW1lbnRIaXN0b3J5EicudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlcXVlc3QaKC52YXVsdHN5bmMudjEuR2V0RG9jdW1lbnRIaXN0b3J5UmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_vaultsync_v1_types]);
+  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxImIKEkxpc3RDaGFuZ2VzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIRCglzaW5jZV9zZXEYAiABKAQSEQoJcGFnZV9zaXplGAMgASgNEhQKDHNpbmNlX2FuY2hvchgEIAEoDCJ2ChNMaXN0Q2hhbmdlc1Jlc3BvbnNlEikKCXJldmlzaW9ucxgBIAMoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbhIQCghoYXNfbW9yZRgCIAEoCBIQCghoZWFkX3NlcRgDIAEoBBIQCghkaXZlcmdlZBgEIAEoCCI7ChJHZXRSZXZpc2lvblJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEwoLcmV2aXNpb25faWQYAiABKAkiPwoTR2V0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiKFAgoVQ29tbWl0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhMKC3JldmlzaW9uX2lkGAMgASgJEhMKC2Jhc2VfcmV2X2lkGAQgASgJEigKBGtpbmQYBSABKA4yGi52YXVsdHN5bmMudjEuRG9jdW1lbnRLaW5kEi0KC2NvbnRlbnRfcmVmGAYgASgLMhgudmF1bHRzeW5jLnYxLkNvbnRlbnRSZWYSDAoEcGF0aBgHIAEoDBIQCghwYXRoX2tleRgIIAEoDBIPCgdkZWxldGVkGAkgASgIEhEKCWRldmljZV9pZBgKIAEoCSJCChZDb21taXRSZXZpc2lvblJlc3BvbnNlEigKCHJldmlzaW9uGAEgASgLMhYudmF1bHRzeW5jLnYxLlJldmlzaW9uImkKGUdldERvY3VtZW50SGlzdG9yeVJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEwoLZG9jdW1lbnRfaWQYAiABKAkSEQoJcGFnZV9zaXplGAMgASgNEhIKCnBhZ2VfdG9rZW4YBCABKAkiigEKGkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlEigKCGRvY3VtZW50GAEgASgLMhYudmF1bHRzeW5jLnYxLkRvY3VtZW50EikKCXJldmlzaW9ucxgCIAMoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbhIXCg9uZXh0X3BhZ2VfdG9rZW4YAyABKAkygwMKC1N5bmNTZXJ2aWNlElQKC0xpc3RDaGFuZ2VzEiAudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1Jlc3BvbnNlIgASVAoLR2V0UmV2aXNpb24SIC52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVzcG9uc2UiABJdCg5Db21taXRSZXZpc2lvbhIjLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlcXVlc3QaJC52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXNwb25zZSIAEmkKEkdldERvY3VtZW50SGlzdG9yeRInLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
 
 /**
  * ListChangesRequest asks for revisions after a vault-wide cursor.
@@ -44,6 +44,19 @@ export type ListChangesRequest = Message<"vaultsync.v1.ListChangesRequest"> & {
    * @generated from field: uint32 page_size = 3;
    */
   pageSize: number;
+
+  /**
+   * Anchor of the revision at since_seq, as the client received it
+   * (Revision.anchor), or empty for no check. With an anchor, the server
+   * first checks that the vault still holds that revision at since_seq; if
+   * not, its history no longer contains the client's cursor (it was restored
+   * from a backup, or retention purged the revision) and the response only
+   * sets diverged (SPEC.md §6.1, §8). Either empty or exactly 16 bytes, and
+   * empty when since_seq is zero.
+   *
+   * @generated from field: bytes since_anchor = 4;
+   */
+  sinceAnchor: Uint8Array;
 };
 
 /**
@@ -79,6 +92,16 @@ export type ListChangesResponse = Message<"vaultsync.v1.ListChangesResponse"> & 
    * @generated from field: uint64 head_seq = 3;
    */
   headSeq: bigint;
+
+  /**
+   * Whether since_anchor was given and the vault holds no revision at
+   * since_seq with that anchor. The page is then empty and has_more false;
+   * the client resyncs from seq zero (SPEC.md §8). Never set without
+   * since_anchor.
+   *
+   * @generated from field: bool diverged = 4;
+   */
+  diverged: boolean;
 };
 
 /**
@@ -348,13 +371,14 @@ export const SyncService: GenService<{
   /**
    * ListChanges returns revisions with seq > since_seq in ascending seq order
    * (SPEC.md §6.1). Clients page by passing the seq of the last revision
-   * received as the next since_seq until has_more is false.
+   * received as the next since_seq until has_more is false, with that
+   * revision's anchor as since_anchor.
    *
    * Revisions purged by retention (SPEC.md §11) are skipped, so seq values may
    * have gaps; a document's head revision is never purged.
    *
    * Errors: NOT_FOUND if the vault does not exist or the caller is not a
-   * member.
+   * member. INVALID_ARGUMENT if since_anchor is malformed.
    *
    * @generated from rpc vaultsync.v1.SyncService.ListChanges
    */

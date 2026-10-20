@@ -214,6 +214,24 @@ export class SimRun {
     return purged;
   }
 
+  /** Backs up the run's vault in the database (Control.snapshot). */
+  async snapshot(): Promise<bigint> {
+    const headSeq = await this.control.snapshot(this.context.vaultId);
+    this.context.log(`database snapshot at seq ${String(headSeq)}`);
+    return headSeq;
+  }
+
+  /**
+   * Restores the snapshot (Control.restore). The invariants of finish()
+   * assume the server keeps every acknowledged write, so a run that
+   * restores checks its own outcome instead.
+   */
+  async restore(): Promise<bigint> {
+    const headSeq = await this.control.restore(this.context.vaultId);
+    this.context.log(`database restored to seq ${String(headSeq)}`);
+    return headSeq;
+  }
+
   /**
    * Ends the run: lifts every fault, lets in-flight work finish, has every
    * client pull, and checks the invariants against the server's database.
@@ -409,7 +427,7 @@ function describeOutcome(ids: Ids, method: string, outcome: Outcome): string {
     case "PutBlobChunk":
       return `ok received=${String(message.receivedSize)}`;
     case "ListChanges":
-      return `ok ${String(Array.isArray(message.revisions) ? message.revisions.length : "?")} revisions head=${String(message.headSeq)}${message.hasMore === true ? " more" : ""}`;
+      return `ok ${String(Array.isArray(message.revisions) ? message.revisions.length : "?")} revisions head=${String(message.headSeq)}${message.hasMore === true ? " more" : ""}${message.diverged === true ? " diverged" : ""}`;
     default:
       return "ok";
   }

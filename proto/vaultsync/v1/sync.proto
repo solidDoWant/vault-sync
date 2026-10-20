@@ -14,13 +14,14 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 service SyncService {
   // ListChanges returns revisions with seq > since_seq in ascending seq order
   // (SPEC.md §6.1). Clients page by passing the seq of the last revision
-  // received as the next since_seq until has_more is false.
+  // received as the next since_seq until has_more is false, with that
+  // revision's anchor as since_anchor.
   //
   // Revisions purged by retention (SPEC.md §11) are skipped, so seq values may
   // have gaps; a document's head revision is never purged.
   //
   // Errors: NOT_FOUND if the vault does not exist or the caller is not a
-  // member.
+  // member. INVALID_ARGUMENT if since_anchor is malformed.
   rpc ListChanges(ListChangesRequest) returns (ListChangesResponse) {}
 
   // GetRevision fetches a single revision, including its content reference.
@@ -84,6 +85,14 @@ message ListChangesRequest {
   // has_more set, to keep the response within its size limit, but always at
   // least one if any exist.
   uint32 page_size = 3;
+  // Anchor of the revision at since_seq, as the client received it
+  // (Revision.anchor), or empty for no check. With an anchor, the server
+  // first checks that the vault still holds that revision at since_seq; if
+  // not, its history no longer contains the client's cursor (it was restored
+  // from a backup, or retention purged the revision) and the response only
+  // sets diverged (SPEC.md §6.1, §8). Either empty or exactly 16 bytes, and
+  // empty when since_seq is zero.
+  bytes since_anchor = 4;
 }
 
 // ListChangesResponse is one page of revisions.
@@ -94,6 +103,11 @@ message ListChangesResponse {
   bool has_more = 2;
   // The vault's head_seq when the page was read.
   uint64 head_seq = 3;
+  // Whether since_anchor was given and the vault holds no revision at
+  // since_seq with that anchor. The page is then empty and has_more false;
+  // the client resyncs from seq zero (SPEC.md §8). Never set without
+  // since_anchor.
+  bool diverged = 4;
 }
 
 // GetRevisionRequest identifies a revision.

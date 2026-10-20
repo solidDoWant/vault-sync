@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -412,6 +412,22 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
     expect(result.conflicts[1], trace).toEqual([{ reason: "base-purged", path: "notes/plan.md", copyPath: copy }]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted server restore scenarios (#155)", () => {
+  it("resyncs a device whose cursor the restored server passed again, and keeps every post-restore note and every local one", async () => {
+    const result = await restoredServer(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.resynced, trace).toBe(true);
+    expect(result.serverFiles, trace).toEqual(["notes/after-1.md", "notes/after-2.md", "notes/after-3.md", "notes/kept.md"]);
+    // Every post-restore revision reached the device.
+    for (const index of [1, 2, 3]) expect(result.vault.get(`notes/after-${String(index)}.md`), trace).toBe(`written after the restore ${String(index)}\n`);
+    // Nothing the device held was overwritten or deleted: the note the
+    // server lost, and the edit of the restored note, stay.
+    expect(result.vault.get("notes/lost.md"), trace).toBe("only before the restore\n");
+    expect([...result.vault.values()].join(""), trace).toContain("edited before the restore");
   });
 });
 

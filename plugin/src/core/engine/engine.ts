@@ -607,11 +607,14 @@ export class SyncEngine {
 
   private async pullOnce(): Promise<PullSummary> {
     const summary: PullSummary = { cursor: await this.journal.getCursor(), applied: 0, deferred: 0, merged: 0, resynced: false };
+    let anchor = summary.cursor > 0n ? await this.journal.getCursorAnchor() : undefined;
     for (;;) {
-      const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: summary.cursor, pageSize: this.pageSize });
-      if (response.headSeq < summary.cursor) {
+      const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: summary.cursor, sinceAnchor: anchor ?? new Uint8Array(), pageSize: this.pageSize });
+      if (response.diverged || response.headSeq < summary.cursor) {
         // The server lost history this device already applied (e.g. a
-        // database restore). That is divergence, not "nothing new".
+        // database restore): it no longer holds the revision this device
+        // applied at the cursor (its anchor differs, SPEC.md §6.1), or its
+        // head fell below the cursor. That is divergence, not "nothing new".
         await this.resync(summary);
         return summary;
       }
@@ -620,7 +623,8 @@ export class SyncEngine {
           throw new RemoteContentError(`change feed went from seq ${String(summary.cursor)} back to ${String(revision.seq)}`);
         }
         this.count(summary, await this.applyRevision(toIncoming(revision)));
-        await this.journal.setCursor(revision.seq);
+        anchor = cursorAnchor(revision);
+        await this.journal.setCursor(revision.seq, anchor);
         summary.cursor = revision.seq;
       }
       if (!response.hasMore) return summary;
@@ -1482,12 +1486,14 @@ export class SyncEngine {
     summary.resynced = true;
     const heads = new Map<string, IncomingRevision>();
     let seq = 0n;
+    let anchor: Uint8Array | undefined;
     for (;;) {
       const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: seq, pageSize: this.pageSize });
       for (const revision of response.revisions) {
         if (revision.seq <= seq) throw new RemoteContentError(`change feed went from seq ${String(seq)} back to ${String(revision.seq)}`);
         heads.set(revision.documentId, toIncoming(revision));
         seq = revision.seq;
+        anchor = cursorAnchor(revision);
       }
       if (!response.hasMore) break;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
@@ -1516,7 +1522,7 @@ export class SyncEngine {
     for (const state of await this.journal.listDocuments()) {
       if (!heads.has(state.documentId) && state.seq !== 0n) await this.journal.putDocument({ ...state, seq: 0n });
     }
-    await this.journal.resetCursor(seq);
+    await this.journal.resetCursor(seq, anchor);
     summary.cursor = seq;
   }
 
@@ -1950,7 +1956,7 @@ export class SyncEngine {
    */
   private async advancePastOwnCommit(revision: Revision): Promise<void> {
     if ((await this.journal.getCursor()) !== revision.seq - 1n) return;
-    await this.journal.setCursor(revision.seq);
+    await this.journal.setCursor(revision.seq, cursorAnchor(revision));
   }
 
   /**
@@ -2327,6 +2333,18 @@ export class SyncEngine {
       throw error;
     }
   }
+}
+
+/** Length of a Revision.anchor (SPEC.md §6.1). */
+const anchorBytes = 16;
+
+/**
+ * The anchor to store with a cursor at `revision`, or undefined if it has
+ * none the server would accept back (a server from before #155 sends none):
+ * the next pull then runs without the check, as before.
+ */
+function cursorAnchor(revision: Revision): Uint8Array | undefined {
+  return revision.anchor.length === anchorBytes ? revision.anchor : undefined;
 }
 
 function syncedState(remote: RemoteRevision): DocumentState {
