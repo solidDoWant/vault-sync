@@ -457,6 +457,9 @@ function describeRequest(ids: Ids, method: string, input: unknown): string {
       return `PutBlobChunk(${hex(fields.blobId)} @${String(fields.offset)})`;
     case "ListChanges":
       return `ListChanges(since=${String(fields.sinceSeq)})`;
+    case "DownloadBlob":
+      // A look-up before an upload asks for 1 byte at the blob's end; a download asks for length 0 (the server's maximum).
+      return `DownloadBlob(${hex(fields.blobId)} @${String(fields.offset)} length=${String(fields.length)})`;
     default:
       return method;
   }
