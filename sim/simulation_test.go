@@ -114,7 +114,7 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 	// Starts a new process, with new addresses, if another process took
 	// one of the ports first.
 	apiAddress := testinfra.StartServer(t, "server", 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
-		logs := &bytes.Buffer{}
+		logs := &testinfra.SyncBuffer{}
 		server := testinfra.NewChild(t, binary)
 		server.Command.Env = []string{
 			config.DatabaseURLEnv + "=" + database.DSN,

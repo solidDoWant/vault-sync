@@ -3,7 +3,6 @@
 package main_test
 
 import (
-	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -101,7 +100,7 @@ func TestPluginE2E(t *testing.T) {
 	// Starts a new process, with new addresses, if another process took
 	// one of the ports first.
 	apiAddress := testinfra.StartServer(t, "server", 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
-		logs := &bytes.Buffer{}
+		logs := &testinfra.SyncBuffer{}
 		server := testinfra.NewChild(t, binary)
 		// The OS environment (Windows needs SYSTEMROOT and friends) without
 		// any VAULT_SYNC_* settings of the caller, then the test's own.

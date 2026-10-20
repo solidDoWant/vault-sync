@@ -3,6 +3,7 @@ package testinfra
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/netip"
 	"testing"
@@ -169,36 +170,63 @@ type fakeServers struct {
 	outcomes []serverOutcome
 	attempts []ServerAddresses
 	readyOn  string
+	// foreign makes every /readyz probe succeed, as another process's
+	// server on the probed port would answer it.
+	foreign bool
 }
 
 type serverOutcome struct {
-	// exitOutput, if set, makes the server exit at once with this output.
+	// exitOutput, if set, makes the server exit with this output: at once,
+	// or, with exitLater, only once its output has been read twice (still
+	// starting at first, then failing to bind).
 	exitOutput string
-	ready      bool
+	exitLater  bool
+	// output is what the server writes at once.
+	output string
+	// ready makes the server listen and log that it does.
+	ready bool
 }
 
 func (servers *fakeServers) start(addresses ServerAddresses) ServerProcess {
 	outcome := servers.outcomes[len(servers.attempts)]
 	servers.attempts = append(servers.attempts, addresses)
 
+	output := &SyncBuffer{}
 	exited := make(chan struct{})
-	if outcome.exitOutput != "" {
+	reads := 0
+
+	_, _ = output.Write([]byte(outcome.output))
+
+	if outcome.exitOutput != "" && !outcome.exitLater {
+		_, _ = output.Write([]byte(outcome.exitOutput + "\n"))
+
 		close(exited)
 	}
 
 	if outcome.ready {
 		servers.readyOn = addresses.Metrics
+		_, _ = fmt.Fprintf(output, `{"level":"INFO","msg":"server started","api_address":%q,"metrics_address":%q}`+"\n",
+			addresses.API, addresses.Metrics)
 	}
 
 	return ServerProcess{
 		Exited: exited,
 		Err:    func() error { return errors.New("exit status 1") },
-		Output: func() string { return outcome.exitOutput },
+		Output: func() string {
+			reads++
+			if outcome.exitLater && reads == 2 {
+				_, _ = output.Write([]byte(outcome.exitOutput + "\n"))
+
+				close(exited)
+			}
+
+			return output.String()
+		},
 	}
 }
 
 func (servers *fakeServers) ready(_ context.Context, metricsAddress string) bool {
-	return servers.readyOn != "" && metricsAddress == servers.readyOn
+	return servers.foreign || (servers.readyOn != "" && metricsAddress == servers.readyOn)
 }
 
 const (
@@ -235,6 +263,52 @@ func TestServerStarterRetriesWhenAPortIsTaken(t *testing.T) {
 
 			used[address] = struct{}{}
 		}
+	}
+}
+
+func TestServerStarterIgnoresAnotherProcesssServerOnItsPort(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		outcomes []serverOutcome
+	}{
+		{
+			// The server is still starting (connecting to PostgreSQL,
+			// migrating) when /readyz on its port already answers 200,
+			// and then fails to bind that port.
+			name:     "fails to bind after the probe",
+			outcomes: []serverOutcome{{exitOutput: linuxAddressInUse, exitLater: true}, {ready: true}},
+		},
+		{
+			// A "server started" line for other addresses does not
+			// prove that this server holds the probed port.
+			name: "logged listening on other addresses",
+			outcomes: []serverOutcome{
+				{
+					output:     `{"level":"INFO","msg":"server started","api_address":"127.0.0.1:1","metrics_address":"127.0.0.1:2"}` + "\n",
+					exitOutput: linuxAddressInUse,
+					exitLater:  true,
+				},
+				{ready: true},
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			servers := &fakeServers{foreign: true, outcomes: test.outcomes}
+
+			starter := serverStarter{ports: newPortAllocator(listenLoopback), attempts: 3, ready: servers.ready, poll: time.Millisecond}
+
+			addresses, err := starter.start(t.Context(), "server", time.Minute, servers.start)
+			require.NoError(t, err)
+
+			require.Len(t, servers.attempts, 2, "the attempt that could not bind is retried")
+			assert.Equal(t, servers.attempts[1], addresses, "returns the addresses of the server that listens on them")
+		})
 	}
 }
 

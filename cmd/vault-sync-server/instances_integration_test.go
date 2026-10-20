@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"sync"
 	"testing"
 	"time"
 
@@ -55,26 +54,6 @@ func (cluster *deployment) token(t *testing.T, subject string) string {
 	return authtest.Sign(t, cluster.key, cluster.issuer.Claims(subject, time.Now()))
 }
 
-// syncBuffer collects a child's output; it may be read while the child runs.
-type syncBuffer struct {
-	mu     sync.Mutex
-	buffer bytes.Buffer
-}
-
-func (buffer *syncBuffer) Write(data []byte) (int, error) {
-	buffer.mu.Lock()
-	defer buffer.mu.Unlock()
-
-	return buffer.buffer.Write(data)
-}
-
-func (buffer *syncBuffer) String() string {
-	buffer.mu.Lock()
-	defer buffer.mu.Unlock()
-
-	return buffer.buffer.String()
-}
-
 // instance is one running server process.
 type instance struct {
 	name    string
@@ -86,7 +65,7 @@ type instance struct {
 	applicationName string
 	apiURL          string
 	metricsAddress  string
-	logs            *syncBuffer
+	logs            *testinfra.SyncBuffer
 }
 
 // start runs binary as a new instance of the deployment, with extra
@@ -108,7 +87,7 @@ func (cluster *deployment) start(t *testing.T, name, binary string, extra ...str
 			applicationName: applicationName,
 			apiURL:          "http://" + addresses.API,
 			metricsAddress:  addresses.Metrics,
-			logs:            &syncBuffer{},
+			logs:            &testinfra.SyncBuffer{},
 		}
 
 		attempt.process.Command.Env = append([]string{
