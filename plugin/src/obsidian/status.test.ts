@@ -1,7 +1,9 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
-import { IdentityProviderError } from "../core/auth/oidc";
+import { discoverOidc, IdentityProviderError, refreshAccessToken, type HttpClient, type OidcEndpoints } from "../core/auth/oidc";
+import { createProtocolClient } from "../core/protocol/client";
+import { InMemoryServer } from "../core/engine/memory-server";
 import { isOffline, statusDescription, statusIcon, statusText, type SyncState } from "./status";
 
 describe("statusText", () => {
@@ -51,9 +53,65 @@ describe("isOffline", () => {
   it("counts an unreachable server or identity provider as offline, and nothing else", () => {
     expect(isOffline(new ConnectError("down", Code.Unavailable))).toBe(true);
     expect(isOffline(new ConnectError("slow", Code.DeadlineExceeded))).toBe(true);
-    expect(isOffline(new IdentityProviderError("unreachable"))).toBe(true);
+    expect(isOffline(new IdentityProviderError("unreachable", { unreachable: true }))).toBe(true);
     expect(isOffline(new ConnectError("no", Code.PermissionDenied))).toBe(false);
     expect(isOffline(new Error("other"))).toBe(false);
+  });
+
+  describe("for the identity provider's errors (#413)", () => {
+    const endpoints: OidcEndpoints = {
+      issuer: "https://idp.example",
+      deviceAuthorizationEndpoint: "https://idp.example/device",
+      tokenEndpoint: "https://idp.example/token",
+    };
+    const answering =
+      (status: number, text: string): HttpClient =>
+      () =>
+        Promise.resolve({ status, text });
+    const unreachable: HttpClient = () => Promise.reject(new Error("net::ERR_NAME_NOT_RESOLVED"));
+
+    /** The error a token refresh over `http` rejects with, alone and as a server call's error (createProtocolClient). */
+    async function refreshErrors(http: HttpClient): Promise<unknown[]> {
+      const refused = await refreshAccessToken(http, endpoints, "client", "refresh-token").then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      if (!(refused instanceof IdentityProviderError)) throw new Error(`expected an IdentityProviderError, got ${String(refused)}`);
+      const server = new InMemoryServer();
+      const client = createProtocolClient({ transport: server.transport, auth: { accessToken: () => Promise.reject(refused), invalidate: () => undefined } });
+      const call = await client.vaults.listVaults({}).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      return [refused, call];
+    }
+
+    it.each([
+      { name: "a malformed response", http: answering(200, "<html>not json</html>") },
+      { name: "a response that is not an object", http: answering(200, "[]") },
+      { name: "a response missing its access token", http: answering(200, JSON.stringify({ token_type: "Bearer" })) },
+      { name: "a 4xx without an OAuth error", http: answering(400, JSON.stringify({})) },
+    ])("is an error, not offline, for $name", async ({ http }) => {
+      for (const error of await refreshErrors(http)) expect(isOffline(error)).toBe(false);
+    });
+
+    it.each([
+      { name: "an unreachable provider", http: unreachable },
+      { name: "a 500", http: answering(500, "") },
+      { name: "a 503 with an HTML page", http: answering(503, "<html>maintenance</html>") },
+    ])("is offline for $name", async ({ http }) => {
+      for (const error of await refreshErrors(http)) expect(isOffline(error)).toBe(true);
+    });
+
+    it("is offline when discovery gets a 5xx, and an error when it gets a 404", async () => {
+      const failing = (status: number) =>
+        discoverOidc(answering(status, ""), "https://idp.example").then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+      expect(isOffline(await failing(502))).toBe(true);
+      expect(isOffline(await failing(404))).toBe(false);
+    });
   });
 });
 

@@ -656,6 +656,108 @@ describe("SyncSession", () => {
       expect(await started).toBeUndefined();
       expect(calls).toEqual([]);
     });
+
+    describe("by onunload, which does not wait for the stop (#413)", () => {
+      /** `target` with the first call of `method` (for `path`, if given) held until release(). */
+      function holding<T extends object>(target: T, method: string, path?: string) {
+        const state: { held: boolean; release: () => void } = { held: false, release: () => undefined };
+        const proxy = new Proxy(target, {
+          get: (object, property, receiver) => {
+            const value: unknown = Reflect.get(object, property, receiver);
+            if (typeof value !== "function" || property === "watch") return value;
+            return async (...args: unknown[]) => {
+              if (property === method && (path === undefined || args[0] === path) && !state.held) {
+                state.held = true;
+                await new Promise<void>((resolve) => (state.release = resolve));
+              }
+              return (value as (...values: unknown[]) => unknown).apply(object, args);
+            };
+          },
+        });
+        return { proxy, state };
+      }
+
+      it("ends like an interrupted step when a vault write lands after the next session started, never undoing a newer remote edit", async () => {
+        const server = new InMemoryServer();
+        server.commit({ documentId: "a", path: "a.md", content: "first" });
+        server.commit({ documentId: "b", path: "b.md", content: "second" });
+        const vault = new InMemoryVault();
+        const journal = new InMemoryJournal();
+        const unloading = holding(vault, "write", "a.md");
+        const unloaded = session({ server, vault: unloading.proxy, journal });
+        void unloaded.start();
+        await vi.waitFor(() => {
+          expect(unloading.state.held).toBe(true);
+        });
+
+        // onunload: the stop is not awaited, and the next load starts over the same vault and journal.
+        const stopping = unloaded.stop();
+        const next = session({ server, vault, journal });
+        await next.start();
+        expect(await files(vault)).toEqual(server.liveFiles());
+        server.commit({ documentId: "a", path: "a.md", content: "edited on another device" });
+        await next.syncNow();
+        expect(await files(vault)).toEqual(server.liveFiles());
+
+        // The old session's write finally lands.
+        unloading.state.release();
+        await stopping;
+        await next.syncNow();
+
+        expect(server.liveFiles()).toEqual(
+          new Map([
+            ["a.md", "edited on another device"],
+            ["b.md", "second"],
+          ]),
+        );
+        expect(await files(vault)).toEqual(server.liveFiles());
+        expect(await journal.listPending()).toEqual([]);
+        // The three remote revisions, and no commit of the old content over the newer one.
+        expect(server.revisionCount).toBe(3);
+        expect(await journal.getCursor()).toBe(3n);
+      });
+
+      it("ends like an interrupted step when a journal transaction lands after the next session started", async () => {
+        const server = new InMemoryServer();
+        server.commit({ documentId: "a", path: "a.md", content: "first" });
+        server.commit({ documentId: "b", path: "b.md", content: "second" });
+        const vault = new InMemoryVault();
+        await vault.write("local.md", bytes("typed before the reload"));
+        const journal = new InMemoryJournal();
+        // The step between applying a.md's disk change and recording it.
+        const unloading = holding(journal, "putDocument");
+        const unloaded = session({ server, vault, journal: unloading.proxy });
+        void unloaded.start();
+        await vi.waitFor(() => {
+          expect(unloading.state.held).toBe(true);
+        });
+
+        // The next session runs its startup sync before the old transaction
+        // lands: a stricter order than IndexedDB's, which finishes a running
+        // transaction before a later one on the same stores starts.
+        const stopping = unloaded.stop();
+        const next = session({ server, vault, journal });
+        await next.start();
+        unloading.state.release();
+        await stopping;
+        await next.syncNow();
+
+        expect(server.liveFiles()).toEqual(
+          new Map([
+            ["a.md", "first"],
+            ["b.md", "second"],
+            ["local.md", "typed before the reload"],
+          ]),
+        );
+        expect(await files(vault)).toEqual(server.liveFiles());
+        expect(await journal.listPending()).toEqual([]);
+        // The two remote revisions and local.md's one: nothing committed twice or for nothing.
+        expect(server.revisionCount).toBe(3);
+        expect(await journal.getCursor()).toBe(3n);
+        // Nothing left to do: another sync commits nothing.
+        expect(await next.syncNow()).toMatchObject({ committed: 0, pending: 0 });
+      });
+    });
   });
 
   describe("status", () => {

@@ -20,6 +20,9 @@ export const requestUrlHttpClient: HttpClient = async (request) => {
   return { status: response.status, text: response.text };
 };
 
+/** The Fetch standard's null body statuses: a Response with one of them must have no body (#413). */
+const nullBodyStatuses = new Set([101, 103, 204, 205, 304]);
+
 /**
  * A fetch for the ConnectRPC transport (createHttpTransport's `fetch`) on
  * requestUrl. Unary calls only need a whole request and a whole response,
@@ -53,7 +56,10 @@ export const requestUrlFetch: typeof globalThis.fetch = async (input, init) => {
     throw new ConnectError(`network error: ${error instanceof Error ? error.message : String(error)}`, Code.Unavailable, undefined, undefined, error);
   });
   const response = await (signal === undefined ? sent : untilAborted(sent, signal));
-  return new Response(response.status === 204 ? null : response.arrayBuffer, { status: response.status, headers: response.headers });
+  // A Response can only carry a final status (200 to 599); a proxy's
+  // informational one is no answer to the call.
+  if (response.status < 200 || response.status > 599) throw new ConnectError(`the server answered HTTP ${String(response.status)}`, Code.Unknown);
+  return new Response(nullBodyStatuses.has(response.status) ? null : response.arrayBuffer, { status: response.status, headers: response.headers });
 };
 
 /** Settles like `promise`, or rejects with `signal`'s reason as soon as it aborts, whichever comes first. */

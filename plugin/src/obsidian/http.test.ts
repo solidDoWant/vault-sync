@@ -50,6 +50,27 @@ describe("requestUrlFetch", () => {
     expect(await result.text()).toBe("payload");
   });
 
+  it.each([204, 205, 304])("returns a response with a null body for HTTP %i, even when a proxy sent one (#413)", async (status) => {
+    const response = requestUrlFetch("https://sync.example/rpc", { method: "POST", body: "x" });
+    await settle();
+
+    answer(pending[0], status, "a body a proxy should not have sent");
+
+    const result = await response;
+    expect(result.status).toBe(status);
+    expect(result.body).toBeNull();
+    expect(result.headers.get("content-type")).toBe("application/proto");
+  });
+
+  it.each([101, 103])("rejects an informational HTTP %i, which no Response can carry, with a Connect error (#413)", async (status) => {
+    const response = requestUrlFetch("https://sync.example/rpc", { method: "POST", body: "x" });
+    await settle();
+
+    answer(pending[0], status, "");
+
+    await expect(response).rejects.toMatchObject({ code: Code.Unknown });
+  });
+
   it("frees the caller as soon as the call is aborted, without waiting for the response", async () => {
     const controller = new AbortController();
     const response = requestUrlFetch("https://sync.example/rpc", { method: "POST", body: "x", signal: controller.signal });

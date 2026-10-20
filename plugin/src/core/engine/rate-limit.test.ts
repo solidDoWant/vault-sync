@@ -194,3 +194,40 @@ describe("SyncEngine backoff after RESOURCE_EXHAUSTED", () => {
     expect(timers.pending.size).toBe(0);
   });
 });
+
+describe("SyncEngine backoff edges (#413)", () => {
+  it("does not start an automatic push when its delay is over while a pull is queued", async () => {
+    const pushed: PushSummary[] = [];
+    const { h, timers, calls, refuse } = setup({ pushDebounceMs: 3_600_000, onPushComplete: (summary) => pushed.push(summary) });
+    refuse.push("ListChanges");
+    await expect(h.engine.pull()).rejects.toMatchObject({ code: Code.ResourceExhausted });
+    const queued = h.engine.pull();
+    await flush();
+    calls.length = 0;
+
+    timers.fire();
+    await queued;
+    await flush();
+    await h.engine.settled();
+
+    // Only the queued pull called the server: no push of the engine's own on top.
+    expect(calls).toEqual(["ListChanges"]);
+    expect(pushed).toEqual([]);
+    h.engine.dispose();
+  });
+
+  it("leaves no timer behind when a call is refused after the engine was disposed", async () => {
+    const { h, timers } = setup();
+    h.server.interceptor = (method) => {
+      if (method !== "ListChanges") return;
+      h.engine.dispose();
+      throw tooBusy();
+    };
+
+    await expect(h.engine.pull()).rejects.toMatchObject({ code: Code.ResourceExhausted });
+    await h.engine.settled();
+
+    expect(timers.delays).toEqual([]);
+    expect(timers.pending.size).toBe(0);
+  });
+});

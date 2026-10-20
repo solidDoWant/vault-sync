@@ -146,6 +146,7 @@ export function withAuthentication(transport: Transport, auth: Authenticator): T
 function tokenError(error: unknown): ConnectError {
   if (error instanceof ConnectError) return error;
   if (error instanceof SignInRequiredError) return new ConnectError(error.message, Code.Unauthenticated, undefined, undefined, error);
-  if (error instanceof IdentityProviderError) return new ConnectError(error.message, Code.Unavailable, undefined, undefined, error);
+  // Only an unreachable or failing provider is UNAVAILABLE (offline); an invalid answer is an error (#413).
+  if (error instanceof IdentityProviderError) return new ConnectError(error.message, error.unreachable ? Code.Unavailable : Code.Unknown, undefined, undefined, error);
   return ConnectError.from(error, Code.Unknown);
 }
