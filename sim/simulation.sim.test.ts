@@ -182,7 +182,7 @@ describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
 
     // Includes the network's check that the engine sent nothing while it backed off.
     expect(result.violations, trace).toEqual([]);
-    expect(result.refused, trace).toEqual(["CommitRevision", "ListChanges", "BeginBlob", "CommitRevision", "ListChanges"]);
+    expect(result.refused, trace).toEqual(["CommitRevision", "ListChanges", "DownloadBlob", "CommitRevision", "ListChanges"]);
     // Half of a ceiling that doubles from 1 s with each consecutive refusal, plus a random part of the other half; a push that succeeded starts it over.
     const bounds = [
       [500, 1000],

@@ -301,9 +301,18 @@ export async function enginesEditConcurrently(endpoints: SimEndpoints): Promise<
     await run.step({ kind: "deliver-request", client: second.index });
     await run.step({ kind: "drop-response", pick: 0 });
   };
-  /** Crashes the second engine once its merge is on disk, before it uploads the result. */
+  /**
+   * Crashes the second engine once its merge is on disk, before it uploads the result: at the
+   * upload's first call, the look-up of whether the server holds the blob (a 1-byte DownloadBlob
+   * at the blob's end; a download asks for length 0). The conflict copy's content is the second
+   * engine's own edit, which its refused push already uploaded, so no BeginBlob follows (#439).
+   */
   const crashBeforeUpload = async () => {
-    await deliverUntil(second.index, "BeginBlob");
+    for (let delivery = 0; !/^DownloadBlob\(\S+ @\d+ length=1\)$/.test(run.context.network.pendingDescription(second.index) ?? ""); delivery++) {
+      if (delivery > 400) throw new Error(`e${String(second.index)} never looked its upload up`);
+      await run.step({ kind: "deliver-request", client: second.index });
+      await run.step({ kind: "deliver-response", client: second.index });
+    }
     log(second.crash());
     log(second.startPush());
   };
@@ -1646,8 +1655,9 @@ export interface ThrottledEngineResult extends RunResult {
 /**
  * The engine under the server's per-user limit on concurrent requests (#146,
  * SPEC.md §12). The limit refuses the engine's calls with RESOURCE_EXHAUSTED
- * four times in a row (a CommitRevision, a ListChanges, a BeginBlob and the
- * CommitRevision again), each time in the engine's next push; the user's
+ * four times in a row (a CommitRevision, a ListChanges, the upload's look-up
+ * of its blob (a DownloadBlob) and the CommitRevision again), each time in
+ * the engine's next push; the user's
  * edit then lands. A later edit's first push is refused once more. The
  * network checks that the engine sends nothing while backing off; the result
  * shows each delay, and that the edit was committed once, with the revision
@@ -1685,8 +1695,10 @@ export async function engineBacksOffWhenThrottled(endpoints: SimEndpoints): Prom
   // Each next push starts at once, as the plugin's timer or the user's next edit may start one; the engine waits.
   log(observer.startPush());
   await refuse("ListChanges");
+  // The first push uploaded the blob before its commit was refused, so this push's upload is only
+  // its look-up of the blob, a DownloadBlob: the limit refuses that (#439).
   log(observer.startPush());
-  await refuse("BeginBlob");
+  await refuse("DownloadBlob");
   log(observer.startPush());
   await refuse("CommitRevision");
   log(observer.startPush());

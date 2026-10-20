@@ -20,7 +20,9 @@ export type UploadResult = "complete" | "missing";
  * bytes the server already holds, in chunks of at most the server's
  * max_chunk_size, then CommitBlob. An already-complete blob short-circuits,
  * and an interrupted upload resumes where the server's session stands, so no
- * chunk the server stored is sent again. The content is read and checked
+ * chunk the server stored is sent again. The blob is first looked up, with a
+ * zero-length DownloadBlob, so a blob the server already holds is `complete`
+ * without reading the local file. Otherwise the content is read and checked
  * against `contentHash` before BeginBlob, so content that changed or
  * disappeared since the operation was recorded never opens an upload session
  * (#370): the blob is then only looked up, with a zero-length DownloadBlob,
@@ -40,6 +42,9 @@ export async function uploadContent(
   readContent: () => Promise<Uint8Array | null>,
 ): Promise<UploadResult> {
   const blobId = hexToBytes(contentHash);
+  // A blob the server already holds (after a commit retry, or uploaded by
+  // another device) needs no read of the local file (#386).
+  if (await isComplete(api, vaultId, blobId, size)) return "complete";
   const content = await readContent();
   if (content === null || BigInt(content.length) !== size || sha256Hex(content) !== contentHash) return (await isComplete(api, vaultId, blobId, size)) ? "complete" : "missing";
   for (let attempt = 1; ; attempt++) {
