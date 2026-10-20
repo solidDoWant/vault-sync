@@ -21,12 +21,13 @@ export type UploadResult = "complete" | "missing";
  * max_chunk_size, then CommitBlob. An already-complete blob short-circuits,
  * and an interrupted upload resumes where the server's session stands, so no
  * chunk the server stored is sent again. The blob is first looked up, with a
- * zero-length DownloadBlob, so a blob the server already holds is `complete`
- * without reading the local file. Otherwise the content is read and checked
- * against `contentHash` before BeginBlob, so content that changed or
- * disappeared since the operation was recorded never opens an upload session
- * (#370): the blob is then only looked up, with a zero-length DownloadBlob,
- * and is `complete` if the server already holds it, `missing` otherwise.
+ * DownloadBlob of 1 byte at the blob's end (which returns only its size), so
+ * a blob the server already holds is `complete` without reading the local
+ * file. Otherwise the content is read and checked against `contentHash`
+ * before BeginBlob, so content that changed or disappeared since the
+ * operation was recorded never opens an upload session (#370): the blob is
+ * then only looked up the same way, and is `complete` if the server already
+ * holds it, `missing` otherwise.
  *
  * A FAILED_PRECONDITION or NOT_FOUND from PutBlobChunk or CommitBlob means
  * another uploader of the same blob advanced, finished or lost the shared
@@ -75,7 +76,7 @@ export async function uploadContent(
 /** Whether the server holds the blob complete, looked up without opening an upload session or reading its content. */
 async function isComplete(api: PullApi, vaultId: string, blobId: Uint8Array, size: bigint): Promise<boolean> {
   try {
-    // A range starting at the blob's end returns no bytes, only its size.
+    // 1 byte asked for at the blob's end: the range is empty, so the reply carries no bytes, only the size.
     const response = await api.blobs.downloadBlob({ vaultId, blobId, offset: size, length: 1 });
     if (response.size !== size) throw new RemoteContentError(`blob has size ${String(response.size)}, expected ${String(size)}`);
     return true;
