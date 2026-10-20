@@ -12,7 +12,7 @@ import (
 )
 
 // ErrDeviceLimit is returned when a user already has the maximum number of
-// devices.
+// devices that have not been removed.
 var ErrDeviceLimit = errors.New("device limit reached")
 
 // ErrUserNotFound is returned when an operation names a user that does not
@@ -80,11 +80,19 @@ type Device struct {
 	// PublicKey is the X25519 public key, or nil.
 	PublicKey []byte
 	CreatedAt time.Time
+	// LastSeen is when the device last committed a revision, to within
+	// deviceLastSeenGranularity, or nil if it never has.
+	LastSeen *time.Time
 }
+
+// deviceLastSeenGranularity is how stale devices.last_seen may get before a
+// commit refreshes it, so that a burst of commits rewrites the row once.
+const deviceLastSeenGranularity = "1 minute"
 
 // RegisterDevice registers a device for userID. publicKey is nil or a 32
 // byte X25519 public key. It returns ErrDeviceLimit when the user already
-// has limit devices, and ErrUserNotFound when the user does not exist.
+// has limit devices that have not been removed, and ErrUserNotFound when the
+// user does not exist.
 func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name string, publicKey []byte, limit int) (Device, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -118,7 +126,7 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 		}
 
 		var count int
-		if err := tx.QueryRow(ctx, `SELECT count(*) FROM devices WHERE user_id = $1`, userID).Scan(&count); err != nil {
+		if err := tx.QueryRow(ctx, `SELECT count(*) FROM devices WHERE user_id = $1 AND removed_at IS NULL`, userID).Scan(&count); err != nil {
 			return fmt.Errorf("count devices: %w", err)
 		}
 
@@ -142,11 +150,13 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 	return device, nil
 }
 
-// ListDevices returns userID's devices, oldest first.
+// ListDevices returns userID's devices that have not been removed, oldest
+// first. There are at most as many as the device limit RegisterDevice
+// enforces.
 func (store *Store) ListDevices(ctx context.Context, userID uuid.UUID) ([]Device, error) {
 	rows, err := store.pool.Query(ctx, `
-		SELECT id, user_id, name, public_key, created_at FROM devices
-		WHERE user_id = $1 ORDER BY created_at, id`, userID)
+		SELECT id, user_id, name, public_key, created_at, last_seen FROM devices
+		WHERE user_id = $1 AND removed_at IS NULL ORDER BY created_at, id`, userID)
 	if err != nil {
 		return nil, fmt.Errorf("list devices: %w", err)
 	}
@@ -154,7 +164,7 @@ func (store *Store) ListDevices(ctx context.Context, userID uuid.UUID) ([]Device
 	devices, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Device, error) {
 		var device Device
 
-		err := row.Scan(&device.ID, &device.UserID, &device.Name, &device.PublicKey, &device.CreatedAt)
+		err := row.Scan(&device.ID, &device.UserID, &device.Name, &device.PublicKey, &device.CreatedAt, &device.LastSeen)
 
 		return device, err
 	})
@@ -163,4 +173,29 @@ func (store *Store) ListDevices(ctx context.Context, userID uuid.UUID) ([]Device
 	}
 
 	return devices, nil
+}
+
+// RemoveDevice marks userID's device deviceID removed. The row is kept, since
+// its revisions reference it. A removed device no longer counts toward the
+// device limit, is not listed, and can no longer commit. It returns
+// ErrDeviceNotFound when userID has no such device that is not removed yet,
+// including when the device belongs to another user.
+//
+// The update waits for the row lock every commit by the device holds until
+// it ends (CommitRevision), so once RemoveDevice returns, no commit by the
+// device is in flight and every later one, through any server process, sees
+// the removal.
+func (store *Store) RemoveDevice(ctx context.Context, userID, deviceID uuid.UUID) error {
+	tag, err := store.pool.Exec(ctx, `
+		UPDATE devices SET removed_at = now()
+		WHERE id = $1 AND user_id = $2 AND removed_at IS NULL`, deviceID, userID)
+	if err != nil {
+		return fmt.Errorf("remove device: %w", err)
+	}
+
+	if tag.RowsAffected() == 0 {
+		return ErrDeviceNotFound
+	}
+
+	return nil
 }

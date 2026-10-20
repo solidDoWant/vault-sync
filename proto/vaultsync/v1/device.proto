@@ -14,7 +14,31 @@ service DeviceService {
   // Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
   // a control character (such as U+0000), or a public key
   // that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+  //
+  // The limit counts the caller's devices that have not been removed
+  // (RemoveDevice), so removing a device frees a place for a new one.
   rpc RegisterDevice(RegisterDeviceRequest) returns (RegisterDeviceResponse) {}
+
+  // ListDevices returns the caller's devices that have not been removed,
+  // oldest first. It returns no other user's devices and nothing secret
+  // (no public key). The list is not paginated: it is bounded by the
+  // server's device limit.
+  rpc ListDevices(ListDevicesRequest) returns (ListDevicesResponse) {}
+
+  // RemoveDevice removes one of the caller's devices. A removed device no
+  // longer counts toward the device limit and can no longer commit
+  // (CommitRevision returns NOT_FOUND for it, as for an unknown device);
+  // the revisions it committed keep their history and attribution, and its
+  // name is still shown with them (GetDocumentHistoryResponse.device_names). The
+  // removal takes effect on every server replica once the call returns: a
+  // commit from the device that is in flight finishes first, and no later
+  // commit is accepted. Removal cannot be undone; the installation
+  // registers again to sync.
+  //
+  // Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+  // UUID; NOT_FOUND when the caller has no such device, including a device
+  // of another user and one that is already removed.
+  rpc RemoveDevice(RemoveDeviceRequest) returns (RemoveDeviceResponse) {}
 }
 
 // RegisterDeviceRequest describes the device to register.
@@ -34,3 +58,22 @@ message RegisterDeviceResponse {
   // The new device.
   Device device = 1;
 }
+
+// ListDevicesRequest lists the caller's devices. It has no fields.
+message ListDevicesRequest {}
+
+// ListDevicesResponse holds the caller's devices that have not been removed.
+message ListDevicesResponse {
+  // The caller's devices, oldest first.
+  repeated Device devices = 1;
+}
+
+// RemoveDeviceRequest names the device to remove.
+message RemoveDeviceRequest {
+  // Id of one of the caller's devices (Device.id), a canonical lowercase
+  // UUID.
+  string device_id = 1;
+}
+
+// RemoveDeviceResponse confirms the removal. It has no fields.
+message RemoveDeviceResponse {}

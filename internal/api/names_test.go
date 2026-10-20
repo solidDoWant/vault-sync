@@ -37,6 +37,16 @@ func (recorder *recordingStore) RegisterDevice(_ context.Context, userID uuid.UU
 	return store.Device{ID: uuid.New(), UserID: userID, Name: name, PublicKey: publicKey}, nil
 }
 
+func (recorder *recordingStore) ListDevices(context.Context, uuid.UUID) ([]store.Device, error) {
+	return nil, nil
+}
+
+func (recorder *recordingStore) RemoveDevice(context.Context, uuid.UUID, uuid.UUID) error {
+	recorder.writes++
+
+	return nil
+}
+
 // TestDisplayNamesRejectInvisibleCharactersAndInvalidUTF8 calls the handlers
 // directly: the generated protobuf client refuses to marshal invalid UTF-8,
 // so this is the only way to hand the handlers such a name. Format

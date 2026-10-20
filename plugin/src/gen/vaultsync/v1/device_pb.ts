@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/device.proto.
  */
 export const file_vaultsync_v1_device: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiOQoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDCI+ChZSZWdpc3RlckRldmljZVJlc3BvbnNlEiQKBmRldmljZRgBIAEoCzIULnZhdWx0c3luYy52MS5EZXZpY2UybgoNRGV2aWNlU2VydmljZRJdCg5SZWdpc3RlckRldmljZRIjLnZhdWx0c3luYy52MS5SZWdpc3RlckRldmljZVJlcXVlc3QaJC52YXVsdHN5bmMudjEuUmVnaXN0ZXJEZXZpY2VSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiOQoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDCI+ChZSZWdpc3RlckRldmljZVJlc3BvbnNlEiQKBmRldmljZRgBIAEoCzIULnZhdWx0c3luYy52MS5EZXZpY2UiFAoSTGlzdERldmljZXNSZXF1ZXN0IjwKE0xpc3REZXZpY2VzUmVzcG9uc2USJQoHZGV2aWNlcxgBIAMoCzIULnZhdWx0c3luYy52MS5EZXZpY2UiKAoTUmVtb3ZlRGV2aWNlUmVxdWVzdBIRCglkZXZpY2VfaWQYASABKAkiFgoUUmVtb3ZlRGV2aWNlUmVzcG9uc2UynQIKDURldmljZVNlcnZpY2USXQoOUmVnaXN0ZXJEZXZpY2USIy52YXVsdHN5bmMudjEuUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0GiQudmF1bHRzeW5jLnYxLlJlZ2lzdGVyRGV2aWNlUmVzcG9uc2UiABJUCgtMaXN0RGV2aWNlcxIgLnZhdWx0c3luYy52MS5MaXN0RGV2aWNlc1JlcXVlc3QaIS52YXVsdHN5bmMudjEuTGlzdERldmljZXNSZXNwb25zZSIAElcKDFJlbW92ZURldmljZRIhLnZhdWx0c3luYy52MS5SZW1vdmVEZXZpY2VSZXF1ZXN0GiIudmF1bHRzeW5jLnYxLlJlbW92ZURldmljZVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
 
 /**
  * RegisterDeviceRequest describes the device to register.
@@ -68,6 +68,79 @@ export const RegisterDeviceResponseSchema: GenMessage<RegisterDeviceResponse> = 
   messageDesc(file_vaultsync_v1_device, 1);
 
 /**
+ * ListDevicesRequest lists the caller's devices. It has no fields.
+ *
+ * @generated from message vaultsync.v1.ListDevicesRequest
+ */
+export type ListDevicesRequest = Message<"vaultsync.v1.ListDevicesRequest"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.ListDevicesRequest.
+ * Use `create(ListDevicesRequestSchema)` to create a new message.
+ */
+export const ListDevicesRequestSchema: GenMessage<ListDevicesRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_device, 2);
+
+/**
+ * ListDevicesResponse holds the caller's devices that have not been removed.
+ *
+ * @generated from message vaultsync.v1.ListDevicesResponse
+ */
+export type ListDevicesResponse = Message<"vaultsync.v1.ListDevicesResponse"> & {
+  /**
+   * The caller's devices, oldest first.
+   *
+   * @generated from field: repeated vaultsync.v1.Device devices = 1;
+   */
+  devices: Device[];
+};
+
+/**
+ * Describes the message vaultsync.v1.ListDevicesResponse.
+ * Use `create(ListDevicesResponseSchema)` to create a new message.
+ */
+export const ListDevicesResponseSchema: GenMessage<ListDevicesResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_device, 3);
+
+/**
+ * RemoveDeviceRequest names the device to remove.
+ *
+ * @generated from message vaultsync.v1.RemoveDeviceRequest
+ */
+export type RemoveDeviceRequest = Message<"vaultsync.v1.RemoveDeviceRequest"> & {
+  /**
+   * Id of one of the caller's devices (Device.id), a canonical lowercase
+   * UUID.
+   *
+   * @generated from field: string device_id = 1;
+   */
+  deviceId: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.RemoveDeviceRequest.
+ * Use `create(RemoveDeviceRequestSchema)` to create a new message.
+ */
+export const RemoveDeviceRequestSchema: GenMessage<RemoveDeviceRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_device, 4);
+
+/**
+ * RemoveDeviceResponse confirms the removal. It has no fields.
+ *
+ * @generated from message vaultsync.v1.RemoveDeviceResponse
+ */
+export type RemoveDeviceResponse = Message<"vaultsync.v1.RemoveDeviceResponse"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.RemoveDeviceResponse.
+ * Use `create(RemoveDeviceResponseSchema)` to create a new message.
+ */
+export const RemoveDeviceResponseSchema: GenMessage<RemoveDeviceResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_device, 5);
+
+/**
  * DeviceService manages the calling user's devices (plugin installations).
  *
  * @generated from service vaultsync.v1.DeviceService
@@ -81,12 +154,50 @@ export const DeviceService: GenService<{
    * a control character (such as U+0000), or a public key
    * that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
    *
+   * The limit counts the caller's devices that have not been removed
+   * (RemoveDevice), so removing a device frees a place for a new one.
+   *
    * @generated from rpc vaultsync.v1.DeviceService.RegisterDevice
    */
   registerDevice: {
     methodKind: "unary";
     input: typeof RegisterDeviceRequestSchema;
     output: typeof RegisterDeviceResponseSchema;
+  },
+  /**
+   * ListDevices returns the caller's devices that have not been removed,
+   * oldest first. It returns no other user's devices and nothing secret
+   * (no public key). The list is not paginated: it is bounded by the
+   * server's device limit.
+   *
+   * @generated from rpc vaultsync.v1.DeviceService.ListDevices
+   */
+  listDevices: {
+    methodKind: "unary";
+    input: typeof ListDevicesRequestSchema;
+    output: typeof ListDevicesResponseSchema;
+  },
+  /**
+   * RemoveDevice removes one of the caller's devices. A removed device no
+   * longer counts toward the device limit and can no longer commit
+   * (CommitRevision returns NOT_FOUND for it, as for an unknown device);
+   * the revisions it committed keep their history and attribution, and its
+   * name is still shown with them (GetDocumentHistoryResponse.device_names). The
+   * removal takes effect on every server replica once the call returns: a
+   * commit from the device that is in flight finishes first, and no later
+   * commit is accepted. Removal cannot be undone; the installation
+   * registers again to sync.
+   *
+   * Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+   * UUID; NOT_FOUND when the caller has no such device, including a device
+   * of another user and one that is already removed.
+   *
+   * @generated from rpc vaultsync.v1.DeviceService.RemoveDevice
+   */
+  removeDevice: {
+    methodKind: "unary";
+    input: typeof RemoveDeviceRequestSchema;
+    output: typeof RemoveDeviceResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_device, 0);
