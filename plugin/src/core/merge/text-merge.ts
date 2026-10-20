@@ -232,7 +232,15 @@ function diffLines(before: readonly string[], after: readonly string[]): Hunk[] 
 
 type Step = "equal" | "delete" | "insert";
 
-/** A shortest edit script from `left` to `right`, or null if it needs more than maxEditDistance steps. */
+/**
+ * A shortest edit script from `left` to `right`, or null if it needs more
+ * than maxEditDistance steps.
+ *
+ * Backtracking needs, for each distance d, the frontier as it was before
+ * step d. Step d only reads the d diagonals -(d-1), -(d-3), ..., d-1 of it,
+ * so only those are kept: about 2 * D^2 bytes for D differences (32 MB at
+ * maxEditDistance), not a whole frontier per distance (128 MB).
+ */
 function editScript(left: readonly string[], right: readonly string[]): Step[] | null {
   const n = left.length;
   const m = right.length;
@@ -241,7 +249,9 @@ function editScript(left: readonly string[], right: readonly string[]): Step[] |
   const frontier = new Int32Array(2 * max + 3);
   const trace: Int32Array[] = [];
   for (let distance = 0; distance <= max; distance++) {
-    trace.push(frontier.slice());
+    const live = new Int32Array(distance);
+    for (let index = 0; index < distance; index++) live[index] = at(frontier, offset - (distance - 1) + 2 * index);
+    trace.push(live);
     for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
       const down = diagonal === -distance || (diagonal !== distance && at(frontier, offset + diagonal - 1) < at(frontier, offset + diagonal + 1));
       let x = down ? at(frontier, offset + diagonal + 1) : at(frontier, offset + diagonal - 1) + 1;
@@ -251,23 +261,28 @@ function editScript(left: readonly string[], right: readonly string[]): Step[] |
         y++;
       }
       frontier[offset + diagonal] = x;
-      if (x >= n && y >= m) return backtrack(trace, offset, n, m);
+      if (x >= n && y >= m) return backtrack(trace, n, m);
     }
   }
   return null;
 }
 
-function backtrack(trace: readonly Int32Array[], offset: number, n: number, m: number): Step[] {
+/** The furthest x on `diagonal` before step `distance`, from that step's kept diagonals. */
+function liveAt(live: Int32Array, distance: number, diagonal: number): number {
+  return at(live, (diagonal + distance - 1) / 2);
+}
+
+function backtrack(trace: readonly Int32Array[], n: number, m: number): Step[] {
   const steps: Step[] = [];
   let x = n;
   let y = m;
   for (let distance = trace.length - 1; distance > 0; distance--) {
-    const frontier = trace[distance];
-    if (frontier === undefined) break;
+    const live = trace[distance];
+    if (live === undefined) break;
     const diagonal = x - y;
-    const down = diagonal === -distance || (diagonal !== distance && at(frontier, offset + diagonal - 1) < at(frontier, offset + diagonal + 1));
+    const down = diagonal === -distance || (diagonal !== distance && liveAt(live, distance, diagonal - 1) < liveAt(live, distance, diagonal + 1));
     const previousDiagonal = down ? diagonal + 1 : diagonal - 1;
-    const previousX = at(frontier, offset + previousDiagonal);
+    const previousX = liveAt(live, distance, previousDiagonal);
     const previousY = previousX - previousDiagonal;
     while (x > previousX && y > previousY) {
       steps.push("equal");

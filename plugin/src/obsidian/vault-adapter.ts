@@ -3,6 +3,8 @@ import { EditableFileView, MarkdownView, normalizePath, TextFileView, TFile, TFo
 import { sha256Hex } from "../core/hash";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
 import { mergeUnsaved } from "../core/merge/text-merge";
+import { mergeCanvas } from "./canvas-merge";
+import { isNotFoundOsError, isUnmaterializableOsError } from "./platform-rules";
 import { UnsavedEditsError } from "./unsaved-edits";
 
 export { UnsavedEditsError } from "./unsaved-edits";
@@ -11,8 +13,18 @@ export { UnsavedEditsError } from "./unsaved-edits";
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 const encoder = new TextEncoder();
 
-/** Obsidian's views that only display a file and hold no unsaved state of their own. */
+/** The types of Obsidian's views that only display a file and hold no unsaved state of their own. */
 const readOnlyViewTypes = new Set(["image", "audio", "video", "pdf"]);
+
+/**
+ * Whether `view` is one of Obsidian's read-only viewers. The type alone does
+ * not say so: a plugin may register its own view under one of these types
+ * (#418), and a text view, whatever its type, holds data it may not have
+ * saved.
+ */
+function isReadOnlyViewer(view: EditableFileView): boolean {
+  return readOnlyViewTypes.has(view.getViewType()) && !(view instanceof TextFileView);
+}
 
 /** Editor transactions the adapter makes carry this origin. */
 export const syncEditOrigin = "vault-sync";
@@ -32,9 +44,15 @@ export const syncEditOrigin = "vault-sync";
  *   revisions of their own.
  * - A write to a file open in a Markdown editor goes through Vault.process
  *   and an editor transaction, so the cursor, selection and unsaved
- *   keystrokes survive a non-overlapping remote change. A write to a file
- *   with unsaved state in any other view (e.g. a canvas) is refused after
- *   saving that view (see overwrite()).
+ *   keystrokes survive a non-overlapping remote change. So do a canvas's
+ *   unsaved changes, merged node by node. A write to a file with unsaved
+ *   state in any other view is refused after saving that view (see
+ *   overwrite()).
+ * - An OS error saying the platform cannot hold a name (too long, an invalid
+ *   character the path rules did not catch) rejects a create or rename with
+ *   "unmaterializable", so the engine tracks the document. On Windows that
+ *   error is ENOENT, taken as a refused name when the parent folder (and a
+ *   rename's source) exists.
  * - Write and delete preconditions (the engine's expected content hash) are
  *   checked inside the same Vault.process call that writes, wherever the new
  *   content is text and the file's is too. On desktop, Vault.process runs in
@@ -85,7 +103,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       if (expectedHash === null && this.vault.getFileByPath(path) !== null) throw new VaultError("changed", path);
       // E.g. a file differing only in letter case on a case-insensitive disk.
       if (await this.vault.adapter.exists(path)) throw new VaultError("path-conflict", path);
-      throw error;
+      throw await this.unmaterializableOr(error, path, path);
     }
   }
 
@@ -102,7 +120,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       await this.vault.rename(file, to);
     } catch (error) {
       if (!caseOnly && (await this.vault.adapter.exists(to))) throw new VaultError("already-exists", to);
-      throw error;
+      throw await this.unmaterializableOr(error, to, to, from);
     }
   }
 
@@ -170,9 +188,13 @@ export class ObsidianVaultAdapter implements VaultAdapter {
    * - Open in any other non-Markdown view (canvas, Bases, a plugin's view):
    *   Obsidian replaces such a view's state with the disk's on a change, so
    *   the write goes ahead only if every such view is a text file view whose
-   *   data equals the disk (nothing unsaved), checked inside Vault.process.
-   *   Otherwise the views are saved and the write rejects with
-   *   UnsavedEditsError: the next pull finds the saved state as a local change.
+   *   data equals the disk (nothing unsaved), or one canvas view has unsaved
+   *   changes that merge with the new content node by node (mergeCanvas),
+   *   checked inside Vault.process. The views are given the written content
+   *   there, as saved, so Obsidian's reload after the write cannot replace an
+   *   edit made right after it. Otherwise the views are saved and the write
+   *   rejects with UnsavedEditsError: the next pull finds the saved state as
+   *   a local change.
    * - Open in a Markdown editor (UTF-8 content): a three-way merge inside
    *   Vault.process. The disk text is the base (the engine has checked it is
    *   the synced base), the editor buffer is the base plus any unsaved
@@ -190,7 +212,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
    */
   private async overwrite(file: TFile, data: Uint8Array, expectedHash: string | undefined): Promise<void> {
     const views = this.openViews(file);
-    const others = views.filter((view) => !(view instanceof MarkdownView) && !readOnlyViewTypes.has(view.getViewType()));
+    const others = views.filter((view) => !(view instanceof MarkdownView) && !isReadOnlyViewer(view));
     if (others.length > 0) {
       await this.overwriteUnderOtherViews(file, data, others, expectedHash);
       return;
@@ -263,9 +285,19 @@ export class ObsidianVaultAdapter implements VaultAdapter {
           outcome.changed = true;
           return disk;
         }
-        if (!textViews.every((view) => view.getViewData() === disk)) return disk;
+        const unsaved = textViews.filter((view) => view.getViewData() !== disk);
+        // A canvas's unsaved changes are merged with the new content node by
+        // node; any other view's, or a second view's, refuse the write.
+        const [only] = unsaved;
+        const content = only === undefined ? text : unsaved.length === 1 && only.getViewType() === "canvas" ? mergeCanvas(disk, only.getViewData(), text) : null;
+        if (content === null) return disk;
+        // The views show the new content now, inside the file's queue, and
+        // take it as saved: Obsidian's reload on the modify event that
+        // follows then finds nothing new, instead of replacing an edit made
+        // in between with the disk's (TextFileView.onModify in 1.14.4).
+        for (const view of textViews) showSaved(view, content);
         outcome.written = true;
-        return text;
+        return content;
       });
     }
     if (outcome.written) return;
@@ -291,8 +323,30 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       const folder = segments.slice(0, index).join("/");
       const existing = this.vault.getAbstractFileByPath(folder);
       if (existing instanceof TFile) throw new VaultError("path-conflict", path);
-      if (existing === null) await this.vault.createFolder(folder);
+      if (existing !== null) continue;
+      try {
+        await this.vault.createFolder(folder);
+      } catch (error) {
+        throw await this.unmaterializableOr(error, path, folder);
+      }
     }
+  }
+
+  /**
+   * VaultError "unmaterializable" (naming `path`) for an OS error saying the
+   * platform cannot hold `created`, a name the path rules missed, so the
+   * engine tracks the document instead of failing the pull; any other error
+   * as it is. ENOENT counts when `created`'s parent folder and `source` (a
+   * rename's) exist: Windows reports a name it refuses as ENOENT (see
+   * isNotFoundOsError).
+   */
+  private async unmaterializableOr(error: unknown, path: string, created: string, source?: string): Promise<unknown> {
+    if (isUnmaterializableOsError(error)) return new VaultError("unmaterializable", path);
+    if (!isNotFoundOsError(error)) return error;
+    const parent = created.includes("/") ? created.slice(0, created.lastIndexOf("/")) : "";
+    if (parent !== "" && !(await this.vault.adapter.exists(parent))) return error;
+    if (source !== undefined && !(await this.vault.adapter.exists(source))) return error;
+    return new VaultError("unmaterializable", path);
   }
 
   private fileAt(path: string): TFile | null {
@@ -326,6 +380,19 @@ function holds(disk: string, expectedHash: string | undefined): boolean {
 /** Whether a view's data shows `disk`; a Markdown editor's buffer may have dropped the "\r" of CRLF line endings. */
 function sameText(viewData: string, disk: string): boolean {
   return viewData === disk || viewData === disk.replaceAll("\r\n", "\n");
+}
+
+/**
+ * Shows `content` in a text view as its saved state: its data and, where
+ * Obsidian keeps it (the undocumented `lastSavedData` of TextFileView in
+ * 1.14.4), what it last saved or loaded, which TextFileView.onModify compares
+ * the disk against before it reloads.
+ */
+function showSaved(view: TextFileView, content: string): void {
+  if (view.getViewData() !== content) view.setViewData(content, false);
+  view.data = content;
+  const internal = view as unknown as { lastSavedData?: unknown };
+  if ("lastSavedData" in internal) internal.lastSavedData = content;
 }
 
 function decodeText(data: Uint8Array): string | undefined {
