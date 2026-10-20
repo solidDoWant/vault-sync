@@ -256,7 +256,7 @@ func TestReuploadedBlobKeepsItsObject(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, collected)
 
-	start, err := fixture.vault.BeginBlobUpload(t.Context(), blobID, int64(len("content")), 10)
+	start, err := fixture.vault.BeginBlobUpload(t.Context(), blobID, int64(len("content")), 10, 0)
 	require.NoError(t, err)
 	require.False(t, start.Complete, "the blob is gone, so it is uploaded again")
 

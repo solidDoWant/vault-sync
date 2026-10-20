@@ -52,6 +52,7 @@ const (
 	BlobMaxSizeBytesEnv       = "VAULT_SYNC_BLOB_MAX_SIZE_BYTES"
 	BlobMaxUploadsPerVaultEnv = "VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT"
 	BlobUploadTTLEnv          = "VAULT_SYNC_BLOB_UPLOAD_TTL"
+	BlobUploadReclaimIdleEnv  = "VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE"
 
 	RealtimeMaxConnectionsEnv        = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS"
 	RealtimeMaxConnectionsPerUserEnv = "VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER"
@@ -112,6 +113,9 @@ const (
 	DefaultBlobMaxSizeBytes       = 1 << 30
 	DefaultBlobMaxUploadsPerVault = 32
 	DefaultBlobUploadTTL          = 24 * time.Hour
+	// DefaultBlobUploadReclaimIdle: an upload in progress records activity
+	// on every chunk, so a session idle this long has been abandoned.
+	DefaultBlobUploadReclaimIdle = 10 * time.Minute
 
 	// ChunkRequestOverheadBytes is reserved in every request body for the
 	// fields of a PutBlobChunkRequest besides its data (binary protobuf: a
@@ -122,6 +126,10 @@ const (
 
 	MaxBlobMaxUploadsPerVault = 10000
 	MinBlobUploadTTL          = 10 * time.Minute
+	// MinBlobUploadReclaimIdle is the upload TTL's minimum, for the same
+	// reason: a request that read its session (recording activity) must
+	// finish writing its staged objects before the session can be given up.
+	MinBlobUploadReclaimIdle = MinBlobUploadTTL
 )
 
 // BlobConfig bounds blob uploads (SPEC.md §6.2).
@@ -136,6 +144,10 @@ type BlobConfig struct {
 	// UploadTTL is how long an upload session may be idle before it is
 	// removed.
 	UploadTTL time.Duration
+	// UploadReclaimIdle is how long an upload session must be idle before
+	// a new upload in a vault at MaxUploadsPerVault reclaims it. At most
+	// UploadTTL.
+	UploadReclaimIdle time.Duration
 }
 
 // Defaults and bounds.
@@ -278,6 +290,7 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 			MaxSizeBytes:       DefaultBlobMaxSizeBytes,
 			MaxUploadsPerVault: DefaultBlobMaxUploadsPerVault,
 			UploadTTL:          DefaultBlobUploadTTL,
+			UploadReclaimIdle:  DefaultBlobUploadReclaimIdle,
 		},
 		Realtime: RealtimeConfig{
 			MaxConnections:        realtime.DefaultMaxConnections,
@@ -568,6 +581,25 @@ func loadBlobs(get func(string) string, cfg *Config) []error {
 		default:
 			cfg.Blobs.UploadTTL = value
 		}
+	}
+
+	if raw := get(BlobUploadReclaimIdleEnv); raw != "" {
+		value, err := time.ParseDuration(raw)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not a duration (for example 10m)", BlobUploadReclaimIdleEnv, raw))
+		case value < MinBlobUploadReclaimIdle:
+			problems = append(problems, fmt.Errorf("%s: must be at least %s, got %s", BlobUploadReclaimIdleEnv, MinBlobUploadReclaimIdle, raw))
+		default:
+			cfg.Blobs.UploadReclaimIdle = value
+		}
+	}
+
+	// Beyond the TTL the cleanup routine has already removed the session.
+	if cfg.Blobs.UploadReclaimIdle > cfg.Blobs.UploadTTL {
+		problems = append(problems, fmt.Errorf("%s (%s) must not exceed %s (%s)",
+			BlobUploadReclaimIdleEnv, cfg.Blobs.UploadReclaimIdle, BlobUploadTTLEnv, cfg.Blobs.UploadTTL))
 	}
 
 	// Every chunk upload must fit the request body limit (which matches the

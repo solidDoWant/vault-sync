@@ -20,8 +20,12 @@ export interface InMemoryServerOptions {
   maxChunkBytes?: number;
   /** Largest GetDocumentHistory page the server returns, whatever the client asks for. */
   maxHistoryPageSize?: number;
-  /** The server clock: every revision's create_time. Defaults to the system clock. */
+  /** The server clock: every revision's create_time, and upload session activity. Defaults to the system clock. */
   now?: () => Date;
+  /** Upload sessions that may be in progress at once (VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT); unlimited by default. */
+  maxUploads?: number;
+  /** How long a session must be idle before a BeginBlob at the limit reclaims it (VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE). */
+  uploadReclaimIdleMs?: number;
 }
 
 export interface CommitInput {
@@ -45,6 +49,8 @@ interface Upload {
   size: number;
   chunks: Uint8Array[];
   received: number;
+  /** Server clock reading of the session's last activity, in milliseconds. */
+  activeAt: number;
 }
 
 const encoder = new TextEncoder();
@@ -80,6 +86,8 @@ export class InMemoryServer {
   private readonly maxDownloadBytes: number;
   readonly maxChunkBytes: number;
   private readonly maxHistoryPageSize: number;
+  private readonly maxUploads: number;
+  private readonly uploadReclaimIdleMs: number;
   /** The server clock, read for every revision's create_time; replace it to move time on. */
   now: () => Date;
 
@@ -90,6 +98,8 @@ export class InMemoryServer {
     this.maxPageSize = options.maxPageSize ?? 1000;
     this.maxDownloadBytes = options.maxDownloadBytes ?? 1 << 20;
     this.maxChunkBytes = options.maxChunkBytes ?? 1 << 20;
+    this.maxUploads = options.maxUploads ?? Infinity;
+    this.uploadReclaimIdleMs = options.uploadReclaimIdleMs ?? 10 * 60_000;
     this.transport = createRouterTransport(({ service }) => {
       service(SyncService, {
         listChanges: (request) => {
@@ -146,9 +156,14 @@ export class InMemoryServer {
           const size = Number(request.size);
           let upload = this.uploads.get(id);
           if (upload === undefined) {
-            upload = { size, chunks: [], received: 0 };
+            // At the limit, sessions idle for longer than the reclaim
+            // threshold are given up first (SPEC.md §6.2).
+            if (this.uploads.size >= this.maxUploads) this.reclaimIdleUploads();
+            if (this.uploads.size >= this.maxUploads) throw new ConnectError(`at most ${String(this.maxUploads)} uploads may be in progress in a vault; retry later`, Code.ResourceExhausted);
+            upload = { size, chunks: [], received: 0, activeAt: 0 };
             this.uploads.set(id, upload);
           }
+          this.touch(upload);
           if (upload.size !== size) throw new ConnectError("size differs from the upload in progress", Code.InvalidArgument);
           return this.respond("BeginBlob", request, { complete: false, receivedSize: BigInt(upload.received), maxChunkSize });
         },
@@ -157,6 +172,7 @@ export class InMemoryServer {
           this.checkVault(request.vaultId);
           const upload = this.uploads.get(bytesToHex(request.blobId));
           if (upload === undefined) throw new ConnectError("no upload in progress", Code.FailedPrecondition);
+          this.touch(upload);
           if (request.data.length === 0 || request.data.length > this.maxChunkBytes) throw new ConnectError("chunk size out of bounds", Code.InvalidArgument);
           if (request.offset !== BigInt(upload.received)) throw new ConnectError("offset is not the received size", Code.FailedPrecondition);
           if (upload.received + request.data.length > upload.size) throw new ConnectError("chunk extends past the size", Code.InvalidArgument);
@@ -317,6 +333,32 @@ export class InMemoryServer {
       files.set(new TextDecoder().decode(revision.path), new TextDecoder().decode(blob));
     }
     return files;
+  }
+
+  /** Records activity on an upload session; the clock is read only when sessions are limited, so tests on a ticking clock are unaffected. */
+  private touch(upload: Upload): void {
+    if (this.maxUploads !== Infinity) upload.activeAt = this.now().getTime();
+  }
+
+  /** Upload sessions in progress. */
+  openUploads(): number {
+    return this.uploads.size;
+  }
+
+  /**
+   * Gives up every upload session idle for longer than the reclaim
+   * threshold, as a BeginBlob does when the vault is at its session limit,
+   * and returns how many it gave up.
+   */
+  reclaimIdleUploads(): number {
+    const now = this.now().getTime();
+    let reclaimed = 0;
+    for (const [id, upload] of this.uploads) {
+      if (now - upload.activeAt <= this.uploadReclaimIdleMs) continue;
+      this.uploads.delete(id);
+      reclaimed++;
+    }
+    return reclaimed;
   }
 
   /** Whether a blob is complete. */

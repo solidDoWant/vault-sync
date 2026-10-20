@@ -141,12 +141,24 @@ describe("SyncEngine pull onto the new path of a renamed pending create (#286)",
 });
 
 /** Has the user write `content` to `path` as soon as the next upload of a blob of `size` bytes begins: after the push read the file to pick its operation, before it sends the bytes. */
+/**
+ * Edits `path` to `content` once the operation for its `size`-byte content is
+ * pending and the engine reads the file to upload that content: the edit
+ * lands before the upload reads it, so the operation's content is gone.
+ */
 function editDuringUpload(h: Harness, size: number, path: string, content: string): void {
   let done = false;
-  h.server.interceptor = (method, request) => {
-    if (done || method !== "BeginBlob" || (request as { size: bigint }).size !== BigInt(size)) return;
-    done = true;
-    void h.vault.write(path, bytes(content));
+  h.server.interceptor = undefined;
+  const read = h.vault.read.bind(h.vault);
+  h.vault.read = async (target) => {
+    if (!done && target === path) {
+      const pending = await h.journal.listPending();
+      if (pending.some((operation) => operation.path === path && operation.size === BigInt(size))) {
+        done = true;
+        await h.vault.write(path, bytes(content));
+      }
+    }
+    return read(target);
   };
 }
 

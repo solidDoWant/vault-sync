@@ -223,6 +223,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.blob.maxSizeBytes` | `VAULT_SYNC_BLOB_MAX_SIZE_BYTES` |
 | `config.server.blob.maxUploadsPerVault` | `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT` |
 | `config.server.blob.uploadTtl` | `VAULT_SYNC_BLOB_UPLOAD_TTL` |
+| `config.server.blob.uploadReclaimIdle` | `VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE` |
 | `config.server.blob.gcGrace` | `VAULT_SYNC_BLOB_GC_GRACE` |
 | `config.server.retention.keepAll` | `VAULT_SYNC_RETENTION_KEEP_ALL` |
 | `config.server.retention.keepDaily` | `VAULT_SYNC_RETENTION_KEEP_DAILY` |

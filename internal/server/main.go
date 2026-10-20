@@ -184,6 +184,7 @@ func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, lo
 			MaxChunkBytes:      cfg.Blobs.MaxChunkBytes,
 			MaxBlobBytes:       cfg.Blobs.MaxSizeBytes,
 			MaxUploadsPerVault: cfg.Blobs.MaxUploadsPerVault,
+			UploadReclaimIdle:  cfg.Blobs.UploadReclaimIdle,
 		},
 		Logger: logger,
 	}, nil

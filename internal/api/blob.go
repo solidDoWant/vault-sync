@@ -48,6 +48,10 @@ type BlobLimits struct {
 	MaxBlobBytes int64
 	// MaxUploadsPerVault bounds the active upload sessions in one vault.
 	MaxUploadsPerVault int
+	// UploadReclaimIdle is how long a session must be idle before a
+	// BeginBlob in a vault at MaxUploadsPerVault reclaims it; zero never
+	// reclaims.
+	UploadReclaimIdle time.Duration
 }
 
 // BlobService implements vaultsync.v1.BlobService (SPEC.md §6.2). Every
@@ -134,7 +138,7 @@ func (service BlobService) BeginBlob(ctx context.Context, request *connect.Reque
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("size must be at most %d bytes", service.Limits.MaxBlobBytes))
 	}
 
-	start, err := vault.BeginBlobUpload(ctx, blobID, int64(size), service.Limits.MaxUploadsPerVault)
+	start, err := vault.BeginBlobUpload(ctx, blobID, int64(size), service.Limits.MaxUploadsPerVault, service.Limits.UploadReclaimIdle)
 	if errors.Is(err, store.ErrBlobUploadLimit) {
 		return nil, connect.NewError(connect.CodeResourceExhausted,
 			fmt.Errorf("at most %d uploads may be in progress in a vault; retry later", service.Limits.MaxUploadsPerVault))
