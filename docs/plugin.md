@@ -11,7 +11,7 @@ Open **Settings → Vault Sync**.
 | Server URL | The vault-sync server's base URL, for example `https://sync.example.com`. |
 | OIDC issuer URL | Optional. Leave it empty: the plugin uses the issuer the server advertises (its `VAULT_SYNC_OIDC_ISSUER_URL`). Enter it only for a server too old to advertise one, character for character (including any trailing slash), for example `https://auth.example.com/application/o/vault-sync/` for Authentik. An issuer that differs from the one the server advertises is refused, because the server accepts no other issuer's tokens. |
 | OIDC client ID | Optional. Leave it empty to sign in as the client the server advertises (its `VAULT_SYNC_OIDC_CLIENT_ID`, by default its audience). Enter a client ID to sign in as another public client instead (see below). The access tokens it receives must carry the server's `VAULT_SYNC_OIDC_AUDIENCE`. |
-| Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
+| Device name | How this device is named when it registers with the server, and in the names of conflict copies it makes. In a copy's name, characters that some platform does not allow in file names, and `(` and `)`, become `-`, the name is cut to 40 characters, and a name with nothing left becomes `device`. Empty uses the platform's name (`Windows`, `Mac`, `Linux`, `Android`, `iOS`). The server keeps the name the device first registered with. |
 | Remote vault | Shown while signed in: the server vault this vault syncs with, or controls to connect to one of your vaults or create a new one (see [Connecting a vault](#connecting-a-vault)). |
 | Sync the config folder | Off by default. Syncs the selected parts of this vault's config folder on this device (see [Config folder sync](#config-folder-sync)). Turning it on is a security risk: plugins and settings synced from other devices, plugin code included, run on this device. |
 
@@ -83,6 +83,7 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 
 | Status | Meaning |
 |---|---|
+| `starting` | Sync is starting: the plugin registers this device with the server and opens its sync journal. |
 | `idle` | The last sync succeeded. |
 | `syncing` | A pull or push is running. |
 | `offline` | The server or the identity provider could not be reached. Local changes are kept, and the next sync pushes them. |
@@ -91,11 +92,13 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
 
-After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts conflict copies that still exist. A conflict counts as resolved once you delete or rename its copy. The [conflict view](#conflicts) lists them.
+After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts the conflicts not yet resolved: conflict copies that still exist, and conflicts logged without a copy (when no conflict-copy name fits, see below) whose other device's version still waits. A conflict counts as resolved once you delete or rename its copy, or, for one without a copy, once the other device's version no longer waits. The [conflict view](#conflicts) lists them.
 
 ### Conflicts
 
 When this device and another one changed the same note on the same lines, edited the same attachment, or created a file at the same path, vault-sync keeps both versions and never writes conflict markers into a note. The other device's version stays at the path, and this device's version is kept next to it as a conflict copy, `<name> (conflict <device> <date>).<ext>`. The copy is an ordinary file and syncs to your other devices.
+
+Only `.md`, `.txt`, `.css` and `.js` files are merged line by line, so edits on different lines of such a file on two devices combine without a conflict. Every other file (attachments, `.json`, `.csv`, `.canvas` and any other text file) is handled as a whole: concurrent edits of it always make a conflict copy, even on different lines (SPEC.md §7).
 
 Run **Vault Sync: Show conflicts** to open the conflict view in the right sidebar. It lists each unresolved conflict, newest first, with:
 
@@ -154,7 +157,7 @@ The research found that scrolling, resizing or moving the window, the quick swit
 Obsidian reads its config files when it starts and keeps its own copy in memory. When sync changes a config file, vault-sync shows a notice asking you to reload Obsidian. Run **Reload app without saving** from the command palette. vault-sync never reloads Obsidian by itself. Until you reload, Obsidian keeps using the old settings and may write them back when you change a setting, which would undo the synced change.
 
 - vault-sync learns about changes in the config folder from Obsidian's raw file events. The desktop app reports them (the e2e suite checks this, on desktop and in emulated mobile mode), and a change is then pushed like a note edit, 2 seconds after Obsidian writes it. Whether the Android app reports them has not been checked on a device yet. Where they are not reported, the change is pushed the next time sync starts (Obsidian starting, the plugin enabled, a sign-in, a change to these settings), because every start compares the whole folder with the journal.
-- If two devices change the same config file, the usual merge rules apply (SPEC.md §7). CSS and JavaScript files merge line by line. JSON settings files are blobs: the other device's version stays in place, and this device's version is kept next to it as a conflict copy, for example `.obsidian/hotkeys (conflict Laptop 2026-10-18 101500).json`. Such copies stay on the device and do not sync. Obsidian does not show files in the config folder, so delete the copy with your file manager once you have looked at it. Until then it counts as a conflict in the status.
+- If two devices change the same config file, the usual merge rules apply (SPEC.md §7). CSS and JavaScript files merge line by line. JSON settings files are blobs: the other device's version stays in place, and this device's version is kept next to it as a conflict copy, for example `.obsidian/hotkeys (conflict Laptop 2026-10-18 101500).json`. Such copies stay on the device and do not sync, wherever they are, including inside synced folders such as `snippets/` or `plugins/<id>/`: a copy like `.obsidian/plugins/dataview/data (conflict Laptop 2026-10-18 101500).json` never reaches another device. Obsidian does not show files in the config folder, so delete the copy with your file manager once you have looked at it. Until then it counts as a conflict in the status.
 - The first time you turn it on, in a vault whose config files another device has already synced, this device's own differing versions of those files become conflict copies in the same way, and the synced versions apply.
 - Turning the toggle or a category off stops syncing those files on this device. Nothing is deleted, here or on the server, and other devices keep them. Changes that arrive meanwhile are applied once you turn it on again.
 

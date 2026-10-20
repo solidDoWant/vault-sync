@@ -160,7 +160,7 @@ On `SIGTERM` or `SIGINT` it shuts down in this order:
 3. The API stops accepting connections, and in-flight requests get up to `VAULT_SYNC_SHUTDOWN_TIMEOUT` to finish. Open realtime WebSockets are closed at this step with close code 1001 ("going away"), so clients reconnect elsewhere and re-subscribe.
 4. The process exits with status 0 after a clean drain, or status 1 if the timeout forced connections closed.
 
-Background jobs (the blob upload cleanup) stop at the signal. Work they leave half-done is finished by the next run on any replica.
+Background jobs (the blob upload cleanup and the hourly retention job) stop at the signal. Work they leave half-done is finished by the next run on any replica.
 
 PostgreSQL connections are checked before every use. A connection the database dropped while it sat idle (a restart, a CloudNativePG switchover) is replaced without the request noticing. A request whose query was already running when its connection broke fails, and the client retries it. Failing over the database itself is the operator's concern.
 

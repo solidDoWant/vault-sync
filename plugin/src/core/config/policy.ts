@@ -1,3 +1,4 @@
+import { isConflictCopyPath } from "../merge/conflict-name";
 import { pathKey } from "../pathkey/pathkey";
 
 // Which files of Obsidian's config folder sync (SPEC.md §8, #28). Paths here
@@ -85,8 +86,14 @@ function comparable(path: string): string {
     .join("/");
 }
 
-/** The category that covers `relative` (a path inside the config folder), if any. */
+/**
+ * The category that covers `relative` (a path inside the config folder), if
+ * any. None covers a conflict copy, at any depth, nor anything in a folder
+ * renamed as one: the copy of a config file stays on the device that made it
+ * (SPEC.md §8, #365).
+ */
 export function configCategoriesOf(relative: string): ConfigCategory[] {
+  if (isConflictCopyPath(relative)) return [];
   const segments = relative.split("/");
   const [first] = segments;
   if (segments.length === 1) {
