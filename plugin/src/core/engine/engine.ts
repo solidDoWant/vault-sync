@@ -1267,9 +1267,13 @@ export class SyncEngine {
     if (outcome.content !== null && !isVaultRelativePath(outcome.path)) throw new Error(`the merge hook returned a path that is not vault-relative: ${outcome.path}`);
     const current = await this.readOrNull(local.path);
     if (!sameContent(current, local.content)) return false;
-    // Another document's file is not this merge's to replace.
+    // Another document's file is not this merge's to replace, unless a
+    // local rename brought this document's own file there after that
+    // document moved away or the user deleted its file (#451): the local
+    // rename wins (SPEC.md §7), and the journal keeps this document at the
+    // remote path, so it never holds two documents at one path.
     const holder = await this.documentAt(local.path);
-    if (holder !== undefined && holder.documentId !== remote.documentId) return false;
+    if (holder !== undefined && holder.documentId !== remote.documentId && !(await this.renamedOntoVacated(state, remote, local.path, holder))) return false;
     const copyPaths: string[] = [];
     // A result path that is the document's own file under another spelling
     // (a remote case-only rename on a case-insensitive platform) is no file
@@ -1376,6 +1380,19 @@ export class SyncEngine {
     // A merge made by a pull is pushed like a local edit.
     this.schedulePush();
     return true;
+  }
+
+  /**
+   * Whether `path`, which the journal has as `holder`'s, holds the merged
+   * document's own file because a local rename of it followed there
+   * (followRename) after `holder` moved away or its file was deleted, and
+   * the remote revision does not put the document there.
+   */
+  private async renamedOntoVacated(state: DocumentState | undefined, remote: RemoteRevision, path: string, holder: DocumentState): Promise<boolean> {
+    if (state === undefined || state.deleted) return false;
+    const key = this.fileKey(path);
+    if (this.fileKey(state.path) === key || this.fileKey(remote.path) === key) return false;
+    return this.movedAway(holder);
   }
 
   /**
