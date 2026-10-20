@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
 import { configPathSynced, configReloadMessage, defaultConfigSyncSettings, neverSynced, type ConfigCategory, type ConfigSyncSettings } from "./policy";
 
 const none: Record<ConfigCategory, boolean> = { themes: false, snippets: false, hotkeys: false, pluginList: false, plugins: false };
@@ -82,6 +83,34 @@ describe("config sync policy", () => {
     expect(configPathSynced("plugins/VAULT-SYNC-BETA/main.js", options)).toBe(false);
     expect(configPathSynced("plugins/vault-sync-beta2/main.js", options)).toBe(true);
     expect(configPathSynced("plugins/vault-sync/data.json", options)).toBe(false);
+  });
+
+  it("never syncs a conflict copy of a config file, at any depth, under any category (#365)", () => {
+    const date = new Date(Date.UTC(2026, 9, 18, 4, 5, 6));
+    const copies = [
+      "hotkeys (conflict b 2026-10-18 040506).json",
+      "snippets/wide (conflict b 2026-10-18 040506).css",
+      "snippets/wide (conflict My Laptop 2026-10-18 040506 2).css",
+      "themes/Minimal/theme (conflict b 2026-10-18 040506).css",
+      "plugins/dataview/data (conflict b 2026-10-18 040506).json",
+      "plugins/dataview/lib/nested (conflict b 2026-10-18 040506).js",
+      "plugins/dataview/README (conflict b 2026-10-18 040506)",
+      "plugins/dataview (conflict b 2026-10-18 040506)/data.json",
+      "themes/Minimal (conflict b 2026-10-18 040506)/theme.css",
+      // As the engine names them: a device name with characters a file name cannot hold, a counter, a folder renamed as a copy.
+      conflictCopyPath("snippets/wide.css", "Phone: \"main\" (old)", date, 3) ?? "",
+      conflictCopyPath("plugins/dataview/data.json", "", date) ?? "",
+      conflictFolderPath("plugins/dataview", "data.json", "b", date, 2) ?? "",
+      conflictCopyPath(`snippets/${"x".repeat(300)}.css`, "b", date) ?? "",
+    ];
+    for (const path of copies) {
+      expect(path, "a name the namer produced").not.toBe("");
+      expect(neverSynced(path), path).toBe(false);
+      expect(configPathSynced(path, { settings: settings(true, all) }), path).toBe(false);
+    }
+    // Names only like a conflict copy's still sync.
+    const lookalikes = ["snippets/wide (conflict).css", "snippets/wide (conflict b).css", "snippets/conflict b 2026-10-18 040506.css", "snippets/wide (conflict b 2026-10-18 0405).css", "plugins/dataview/data (conflict b 2026-10-18 040506) old.json"];
+    for (const path of lookalikes) expect(configPathSynced(path, { settings: settings(true, all) }), path).toBe(true);
   });
 
   it("tells the user to reload after a plugin list change, and says nothing for files no category covers", () => {

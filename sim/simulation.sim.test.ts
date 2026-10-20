@@ -9,6 +9,7 @@ import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
 import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName } from "./scenarios";
+import { configConflictCopies } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
@@ -431,6 +432,17 @@ describe.runIf(suites.has("scenarios"))("config folder sync (#28)", () => {
     expect(result.commitsWhileOff, trace).toBe(0);
     expect(result.liveAtEnd, trace).toEqual(synced);
     expect(result.configAfterOn, trace).toEqual(["community-plugins.json", "hotkeys.json", "plugins/dataview/main.js", "snippets/wide.css"]);
+  });
+
+  it("keeps a conflict copy of a config file inside a synced folder on the device that made it (#365)", async () => {
+    const result = await configConflictCopies(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const synced = ["plugins/dataview/data.json", "snippets/wide.css"];
+    expect(result.live, trace).toEqual(synced.map((path) => `.obsidian/${path}`));
+    expect(result.configs[0], trace).toEqual(synced);
+    expect(result.configs[1], trace).toEqual(["plugins/dataview/data (conflict e1 2026-01-02 030405).json", "plugins/dataview/data.json", "snippets/wide (conflict e1 2026-01-02 030405).css", "snippets/wide.css"]);
   });
 });
 
