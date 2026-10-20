@@ -301,3 +301,62 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(phantom?.detail).toContain("at notes/b.md");
   });
 });
+
+/**
+ * A rename chain lost to a crash (#531, seed 100117): two POSIX engines sync
+ * `notes/a.md` and `notes/b.md`. The second engine's user renames
+ * `notes/a.md` to `notes/c.md`, then `notes/b.md` onto the vacated
+ * `notes/a.md`, and the app is killed before the engine records either
+ * rename. `mutate` gets the run after the crash; then the second engine
+ * pushes and the first pulls. The restarted engine's full scan takes the
+ * file at `notes/a.md` for an edit of the note that was there, deletes the
+ * other note and creates `notes/c.md`: only document ids change.
+ */
+async function renameChainLostToCrash(endpoints: SimEndpoints, mutate: (run: SimRun) => Promise<string>): Promise<{ result: RunResult; run: SimRun }> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const drain = async () => {
+    await settle();
+    await run.drain();
+  };
+  run.context.log(await first.edit("notes/a.md", encoder.encode("a\n")));
+  run.context.log(await first.edit("notes/b.md", encoder.encode("b\n")));
+  run.context.log(first.startPush());
+  await drain();
+  run.context.log(second.startPull());
+  await drain();
+  run.context.log(await second.move("notes/a.md", "notes/c.md"));
+  run.context.log(await second.move("notes/b.md", "notes/a.md"));
+  run.context.log(second.crash());
+  run.context.log(await mutate(run));
+  run.context.log(second.startPush());
+  await drain();
+  run.context.log(first.startPull());
+  await drain();
+  return { result: await run.finish(), run };
+}
+
+describe.runIf(suites.has("scenarios"))("rename chains lost to a crash (#531)", () => {
+  it("excuses the delete a rename chain lost to a crash becomes: every file is where the user put it", async () => {
+    const { result, run } = await renameChainLostToCrash(environment, nothing);
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    for (const engine of run.observers) {
+      expect(await engine.list(), trace).toEqual(["notes/a.md", "notes/c.md"]);
+      expect(new TextDecoder().decode(await engine.read("notes/a.md")), trace).toBe("b\n");
+      expect(new TextDecoder().decode(await engine.read("notes/c.md")), trace).toBe("a\n");
+    }
+  });
+
+  it("still catches an engine that drops a file after a rename chain lost to a crash (phantom-delete)", async () => {
+    // The file the second rename moved, which the engine would have kept as the first note's edit, disappears without a delete.
+    const { result } = await renameChainLostToCrash(environment, async (run) => run.observers[1]?.deleteBehindUser("notes/a.md") ?? "");
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toEqual(["phantom-delete"]);
+    expect(
+      result.violations.map((violation) => violation.detail),
+      trace,
+    ).toEqual([expect.stringMatching(/^e1 deleted .* at notes\/b\.md .* although its user never deleted it$/)]);
+  });
+});

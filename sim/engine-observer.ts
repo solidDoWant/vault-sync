@@ -34,7 +34,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import type { ConflictRecord, PendingOperation } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
-import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
+import type { DeletePrecondition, VaultAdapter, VaultEvent, WritePrecondition } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
@@ -103,7 +103,13 @@ export class EngineObserver {
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
-    this.engineVault = new MutableVault(this.vault, (from, to, rename) => this.user.engineRenamed(from, to, rename));
+    this.engineVault = new MutableVault(
+      this.vault,
+      (from, to, rename) => this.user.engineRenamed(from, to, rename),
+      (path, hash) => {
+        this.ledger.writtenByEngine(path, hash);
+      },
+    );
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
@@ -515,19 +521,25 @@ class HaltingJournal extends InMemoryJournal {
   }
 }
 
-/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops, and whose renames the user's ledger follows (#509). */
+/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops, and whose renames (#509) and writes (#531) the user's ledger follows. */
 class MutableVault extends InterleavingVault {
   private readonly keep = new Set<string>();
 
   constructor(
     inner: VaultAdapter,
     private readonly renamed: (from: string, to: string, rename: () => Promise<void>) => Promise<void>,
+    private readonly written: (path: string, hash: string) => void,
   ) {
     super(inner);
   }
 
   override rename(from: string, to: string): Promise<void> {
     return this.renamed(from, to, () => super.rename(from, to));
+  }
+
+  override async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    await super.write(path, data, precondition);
+    this.written(path, sha256Hex(data));
   }
 
   keepOnNextDelete(path: string): void {
