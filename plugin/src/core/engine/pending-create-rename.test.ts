@@ -140,7 +140,6 @@ describe("SyncEngine pull onto the new path of a renamed pending create (#286)",
   }
 });
 
-/** Has the user write `content` to `path` as soon as the next upload of a blob of `size` bytes begins: after the push read the file to pick its operation, before it sends the bytes. */
 /**
  * Edits `path` to `content` once the operation for its `size`-byte content is
  * pending and the engine reads the file to upload that content: the edit
