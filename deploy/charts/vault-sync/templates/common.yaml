@@ -43,6 +43,28 @@
   {{- end -}}
 {{- end -}}
 
+{{- define "vault-sync.durationSeconds" -}}
+  {{- /* Parses a Go duration string (for example "5s", "1m30s", "1.5h",
+     "0") and returns its length in seconds, as a float in a string. Fails
+     the render, naming .path, on anything the server would not parse. */ -}}
+  {{- $value := .value | toString | trim -}}
+  {{- $unitPattern := "([0-9]*[.]?[0-9]+)(ns|us|µs|μs|ms|s|m|h)" -}}
+  {{- if eq $value "0" -}}
+    {{- "0" -}}
+  {{- else if not (regexMatch (printf "^(%s)+$" $unitPattern) $value) -}}
+    {{- fail (printf "%s must be a Go duration such as 30s or 1m30s, got %q" .path $value) -}}
+  {{- else -}}
+    {{- $units := dict "ns" 0.000000001 "us" 0.000001 "µs" 0.000001 "μs" 0.000001 "ms" 0.001 "s" 1.0 "m" 60.0 "h" 3600.0 -}}
+    {{- $total := 0.0 -}}
+    {{- range $part := regexFindAll $unitPattern $value -1 -}}
+      {{- $number := regexReplaceAll (printf "^%s$" $unitPattern) $part "${1}" -}}
+      {{- $unit := regexReplaceAll (printf "^%s$" $unitPattern) $part "${2}" -}}
+      {{- $total = addf $total (mulf (float64 $number) (index $units $unit)) -}}
+    {{- end -}}
+    {{- $total | toString -}}
+  {{- end -}}
+{{- end -}}
+
 {{- $databaseURL := include "vault-sync.secretKeyRef" (dict "path" "config.database.url" "ref" $config.database.url) | fromYaml -}}
 {{- if not $databaseURL -}}
   {{- fail "config.database.url is required: set config.database.url.value or config.database.url.secretKeyRef" -}}
@@ -71,7 +93,27 @@
   {{- end -}}
 {{- end -}}
 
+{{/* Termination grace period: the shutdown delay plus the drain timeout
+   (the server's defaults, 5s and 30s, when unset) plus a margin of 10
+   seconds, and at least 45. An explicit
+   resources.controllers.main.pod.terminationGracePeriodSeconds must exceed
+   the delay plus the timeout, or the kubelet would kill pods mid-drain. */}}
+{{- $shutdownDelay := include "vault-sync.durationSeconds" (dict "path" "config.server.shutdownDelay" "value" (ternary "5s" (toString $config.server.shutdownDelay) (eq (toString ($config.server.shutdownDelay | default "")) ""))) | float64 -}}
+{{- $shutdownTimeout := include "vault-sync.durationSeconds" (dict "path" "config.server.shutdownTimeout" "value" (ternary "30s" (toString $config.server.shutdownTimeout) (eq (toString ($config.server.shutdownTimeout | default "")) ""))) | float64 -}}
+{{- $shutdownSeconds := addf $shutdownDelay $shutdownTimeout | ceil | int -}}
+{{- $terminationGracePeriod := max 45 (add $shutdownSeconds 10) | int -}}
+{{- $userGracePeriod := dig "controllers" "main" "pod" "terminationGracePeriodSeconds" nil (.Values.resources | default dict) -}}
+{{- if not (kindIs "invalid" $userGracePeriod) -}}
+  {{- if le (int $userGracePeriod) $shutdownSeconds -}}
+    {{- fail (printf "resources.controllers.main.pod.terminationGracePeriodSeconds (%v) must be larger than config.server.shutdownDelay plus config.server.shutdownTimeout (%d seconds), or pods are killed mid-drain; unset it to have the chart derive it (%d)" $userGracePeriod $shutdownSeconds $terminationGracePeriod) -}}
+  {{- end -}}
+{{- end -}}
+
 {{- if $exportEnabled -}}
+  {{- $deadline := $config.export.activeDeadlineSeconds -}}
+  {{- if or (kindIs "invalid" $deadline) (not (regexMatch "^[1-9][0-9]*$" (toString $deadline))) -}}
+    {{- fail "config.export.activeDeadlineSeconds must be a positive number of seconds (a hung export otherwise blocks every later run)" -}}
+  {{- end -}}
   {{- if not $config.export.schedule -}}
     {{- fail "config.export.schedule is required while config.export.enabled is true" -}}
   {{- end -}}
@@ -282,7 +324,7 @@
   "strategy" "RollingUpdate"
   "rollingUpdate" (dict "maxUnavailable" 0 "maxSurge" 1)
   "pod" (dict
-    "terminationGracePeriodSeconds" 45
+    "terminationGracePeriodSeconds" $terminationGracePeriod
     "securityContext" $podSecurityContext
     "topologySpreadConstraints" (list (dict
       "maxSkew" 1
@@ -331,6 +373,7 @@
     "schedule" $config.export.schedule
     "concurrencyPolicy" "Forbid"
     "backoffLimit" 2
+    "activeDeadlineSeconds" (int64 $config.export.activeDeadlineSeconds)
     "successfulJobsHistory" 3
     "failedJobsHistory" 3
   -}}

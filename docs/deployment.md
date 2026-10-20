@@ -106,7 +106,7 @@ The rest of the ingress:
 
 ## The export job
 
-The CronJob runs `vault-sync-server export -out /export/<directory>` on `config.export.schedule` (a cron expression, daily at 03:00 by default; `config.export.timeZone` sets an IANA time zone, otherwise the cluster's default applies). It writes every plaintext vault as a browsable tree with a manifest, replacing the previous export atomically ([export.md](export.md) describes the layout and how to verify it). Runs never overlap (`concurrencyPolicy: Forbid`), a failed run is retried twice, and the job exits non-zero when anything failed or was missing, so alert on failed Jobs.
+The CronJob runs `vault-sync-server export -out /export/<directory>` on `config.export.schedule` (a cron expression, daily at 03:00 by default; `config.export.timeZone` sets an IANA time zone, otherwise the cluster's default applies). It writes every plaintext vault as a browsable tree with a manifest, replacing the previous export atomically ([export.md](export.md) describes the layout and how to verify it). Runs never overlap (`concurrencyPolicy: Forbid`), each run is stopped after `config.export.activeDeadlineSeconds` (6 hours by default, so a hung run, for example on a stalled NFS volume, cannot block every later one), a failed run is retried twice, and the job exits non-zero when anything failed or was missing, so alert on failed Jobs.
 
 - **Output volume.** `config.export.output.persistence` is the volume it writes to, as a bjw-s persistence item, for example `{type: persistentVolumeClaim, existingClaim: vault-sync-export}` or an `nfs` volume shared with your tape tooling. It is required while `config.export.enabled` is true and mounted at `/export` in the export job only. `config.export.output.directory` is the directory inside it (`vaults` by default); the export also keeps a lock file and a staging directory next to it, so the volume's top level must be writable. Files are created `0640` and directories `0750`, owned by user and group `65532` (the pod's `fsGroup`), so give your tape tooling that group.
 - **Own credentials.** By default the export uses the server's database and S3 settings. Give it a read-only database role (`SELECT` on `vaults`, `documents`, `revisions` and `blobs`) with `config.export.database.url` (`value` or `secretKeyRef`) and `config.export.database.tls.clientCertificate.secretName` (`config.export.database.tls.clientCertificate.certKey` and `config.export.database.tls.clientCertificate.keyKey` name the keys), and read-only S3 credentials as above. Empty fields fall back to the server's; the CA certificates are shared. Its sessions are read-only in any case.
@@ -218,7 +218,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.writeTimeout` | `VAULT_SYNC_WRITE_TIMEOUT` |
 | `config.server.maxConcurrentRpcsPerUser` | `VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER` |
 | `config.server.shutdownDelay` | `VAULT_SYNC_SHUTDOWN_DELAY` |
-| `config.server.shutdownTimeout` | `VAULT_SYNC_SHUTDOWN_TIMEOUT` (the delay plus the timeout plus a margin must stay below `terminationGracePeriodSeconds`, 45 by default) |
+| `config.server.shutdownTimeout` | `VAULT_SYNC_SHUTDOWN_TIMEOUT` (the chart sets `terminationGracePeriodSeconds` to the delay plus the timeout plus 10 seconds, at least 45) |
 | `config.server.blob.maxChunkBytes` | `VAULT_SYNC_BLOB_MAX_CHUNK_BYTES` |
 | `config.server.blob.maxSizeBytes` | `VAULT_SYNC_BLOB_MAX_SIZE_BYTES` |
 | `config.server.blob.maxUploadsPerVault` | `VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT` |
@@ -244,6 +244,7 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.export.enabled` | `true` | Render the export CronJob. |
 | `config.export.schedule` | `0 3 * * *` | Cron schedule. |
 | `config.export.timeZone` | empty | IANA time zone of the schedule. |
+| `config.export.activeDeadlineSeconds` | `21600` | Upper bound, in seconds, on one export run (the Job's `activeDeadlineSeconds`); must be positive. |
 | `config.export.output.persistence` | `{}` | The output volume, as a bjw-s persistence item (`type`, `existingClaim`, `server`/`path` for `nfs`, ...). Required while the export is enabled. Mounted at `/export` in the export job only. |
 | `config.export.output.directory` | `vaults` | Directory inside the volume, a single name; the job runs `export -out /export/<directory>`. |
 | `config.export.database.url.value` | empty | The export's own `VAULT_SYNC_DATABASE_URL`; empty uses the server's. Exclusive with `config.export.database.url.secretKeyRef`. |
@@ -263,7 +264,7 @@ Under `resources`, the chart computes these bjw-s entries; your values are merge
 
 | Entry | What the chart sets |
 |---|---|
-| `resources.controllers.main` | The server Deployment: `replicas: 2`, `RollingUpdate` with `maxUnavailable: 0` and `maxSurge: 1`, a PodDisruptionBudget with `maxUnavailable: 1` while replicas are more than 1, a topology spread over `kubernetes.io/hostname`, `terminationGracePeriodSeconds: 45`, a startup probe (`/healthz`, up to 10 minutes, so long migrations are not killed), a liveness probe (`/healthz`) and a readiness probe (`/readyz`, every 2 s) on the metrics port, and requests/limits of 100m/1 CPU and 128Mi/512Mi memory. |
+| `resources.controllers.main` | The server Deployment: `replicas: 2`, `RollingUpdate` with `maxUnavailable: 0` and `maxSurge: 1`, a PodDisruptionBudget with `maxUnavailable: 1` while replicas are more than 1, a topology spread over `kubernetes.io/hostname`, `terminationGracePeriodSeconds` of `config.server.shutdownDelay` plus `config.server.shutdownTimeout` plus 10 seconds (at least 45; 45 with the defaults), `automountServiceAccountToken: false`, a startup probe (`/healthz`, up to 10 minutes, so long migrations are not killed), a liveness probe (`/healthz`) and a readiness probe (`/readyz`, every 2 s) on the metrics port, and requests/limits of 100m/1 CPU and 128Mi/512Mi memory. |
 | `resources.controllers.export` | The export CronJob: `concurrencyPolicy: Forbid`, `backoffLimit: 2`, 3 successful and 3 failed Jobs kept, and requests/limits of 100m/1 CPU and 128Mi/1Gi memory. |
 | both controllers | Container `main`, image `ghcr.io/soliddowant/vault-sync` at the chart's `appVersion`, user and group `65532` (`runAsNonRoot`, `fsGroup` 65532), a read-only root filesystem, no privilege escalation, all capabilities dropped and the `RuntimeDefault` seccomp profile. |
 | `resources.service.main`, `resources.service.metrics` | ClusterIP Services on ports 8080 (`http`) and 9090 (`metrics`). |
@@ -274,7 +275,7 @@ For example `resources.controllers.main.replicas: 3`, `resources.controllers.mai
 
 ## High availability
 
-The defaults follow the recommended settings in [configuration.md](configuration.md#high-availability-deployment): at least two replicas spread across nodes, a PodDisruptionBudget, readiness on `/readyz` with a short period, liveness on `/healthz`, a grace period above `VAULT_SYNC_SHUTDOWN_DELAY` plus `VAULT_SYNC_SHUTDOWN_TIMEOUT`, and rolling updates that start a new pod before stopping an old one. If you raise the shutdown delay or timeout, raise `resources.controllers.main.pod.terminationGracePeriodSeconds` with them. Scale with `resources.controllers.main.replicas`; nothing else changes.
+The defaults follow the recommended settings in [configuration.md](configuration.md#high-availability-deployment): at least two replicas spread across nodes, a PodDisruptionBudget, readiness on `/readyz` with a short period, liveness on `/healthz`, a grace period above `VAULT_SYNC_SHUTDOWN_DELAY` plus `VAULT_SYNC_SHUTDOWN_TIMEOUT`, and rolling updates that start a new pod before stopping an old one. The grace period follows `config.server.shutdownDelay` and `config.server.shutdownTimeout`; if you set `resources.controllers.main.pod.terminationGracePeriodSeconds` yourself, the chart refuses to render unless it is larger than the delay plus the timeout. Scale with `resources.controllers.main.replicas`; nothing else changes.
 
 ## Releasing
 
@@ -285,12 +286,14 @@ nix develop -c make release VERSION=1.2.3                # dry run: builds every
 nix develop -c make release VERSION=1.2.3 PUSH_ALL=true  # releases
 ```
 
-`make release` checks the version and `gh auth status` first (and, for a real release, that the tree is clean and the tag is new), then runs:
+`make release` checks the version and `gh auth status` first (and, for a real release, that the tree is clean, that `HEAD` is the published `master` (`origin/master`, fetched first) and that the tag is new), then runs:
 
-1. `make build-images`: builds the image with Nix, runs `govulncheck -mode=binary` on its binary (a known vulnerability fails the build), loads it into Docker and tags it `ghcr.io/soliddowant/vault-sync:<VERSION>`; with `PUSH_ALL=true` pushes it, and also tags and pushes `:latest` unless the version is a pre-release.
-2. `make helm`: packages the chart as version `<VERSION>` into `bin/helm/`; with `PUSH_ALL=true` pushes it to `oci://ghcr.io/soliddowant/charts`.
-3. `make plugin-release-assets`: builds the plugin and collects `main.js`, `manifest.json` (its `version` set to `<VERSION>`) and `styles.css` in `bin/release/`.
+1. `make plugin-release-assets`: builds the plugin and collects `main.js`, `manifest.json` (its `version` set to `<VERSION>`) and `styles.css` in `bin/release/`, and checks them, so a broken asset stops the release before anything is pushed.
+2. `make build-images`: builds the image with Nix, runs `govulncheck -mode=binary` on its binary (a known vulnerability fails the build), loads it into Docker and tags it `ghcr.io/soliddowant/vault-sync:<VERSION>`; with `PUSH_ALL=true` pushes it, and also tags and pushes `:latest` unless the version is a pre-release.
+3. `make helm`: packages the chart as version `<VERSION>` into `bin/helm/`; with `PUSH_ALL=true` pushes it to `oci://ghcr.io/soliddowant/charts`.
 4. Tags `HEAD` as `<VERSION>`, pushes the tag and creates the GitHub release `<VERSION>` with generated notes and the three plugin files attached (a version with `-` is marked as a pre-release and never as the latest release). In a dry run these commands are only printed.
+
+The image and chart are pushed before the tag. If tagging, the tag push or `gh release create` fails after that, the registry holds `<VERSION>` with no matching release: fix the cause and finish by hand from the same checkout with the commands of step 4 (`git tag -a <VERSION> -m "Release <VERSION>"`, `git push origin refs/tags/<VERSION>`, `gh release create <VERSION> --verify-tag --title <VERSION> --generate-notes bin/release/main.js bin/release/manifest.json bin/release/styles.css`, adding `--prerelease --latest=false` for a pre-release), skipping any that already succeeded. Rerunning `make release` instead stops at the preflight once the tag exists, and otherwise builds and pushes the image and chart again.
 
 The tag has no `v` because Obsidian and BRAT require the release tag, the release name and the released `manifest.json` version to be the same string. The plugin is installed from these releases with [BRAT](https://github.com/TfTHacker/obsidian42-brat): add the beta plugin `solidDoWant/vault-sync`, and BRAT downloads the three files from the latest release.
 
@@ -298,4 +301,4 @@ The tag has no `v` because Obsidian and BRAT require the release tag, the releas
 
 Pushing needs credentials for `ghcr.io` in the Docker daemon (`docker login ghcr.io`) and for Helm (`helm registry login ghcr.io`).
 
-**The Go vendor hash.** `nix/server.nix` pins a hash of the Go module dependencies. After a change to `go.mod` or `go.sum`, `make build-images` fails with a hash mismatch until `vendorHash` is updated to the hash Nix reports.
+**The Go vendor hash.** `nix/server.nix` pins a hash of the Go module dependencies. After a change to `go.mod` or `go.sum`, `make build-images` fails with a hash mismatch until `vendorHash` is updated. Run `make update-vendor-hash` (needs network access): it builds the vendored modules with a placeholder hash, writes the hash Nix reports into `nix/server.nix` and checks that the modules build with it; commit the change with the `go.mod`/`go.sum` change. `make update-dependencies` runs it too.

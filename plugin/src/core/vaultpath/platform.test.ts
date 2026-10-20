@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { unmaterializableReason, type PathPlatform, type UnmaterializableReason } from "./platform";
+import { sameFilesystemName, unmaterializableReason, type PathPlatform, type UnmaterializableReason } from "./platform";
 
 const repeat = (text: string, count: number) => text.repeat(count);
 
@@ -105,4 +105,34 @@ describe("unmaterializableReason", () => {
       expect(unmaterializableReason(`${relative}c`, { platform: "posix", root })).toBe("path-too-long");
     });
   });
+});
+
+describe("sameFilesystemName", () => {
+  const nfc = "Café.md";
+  const nfd = "Café.md";
+  // Whether each platform's filesystem takes the two spellings for one file.
+  const cases: { name: string; a: string; b: string; expected: Record<PathPlatform, boolean> }[] = [
+    { name: "one spelling", a: "notes/Foo.md", b: "notes/Foo.md", expected: { posix: true, macos: true, windows: true } },
+    { name: "spellings differing only by ASCII case", a: "notes/Foo.md", b: "NOTES/foo.MD", expected: { posix: false, macos: true, windows: true } },
+    { name: "spellings differing only by non-ASCII case", a: "Été.md", b: "éTÉ.md", expected: { posix: false, macos: true, windows: true } },
+    { name: "Greek final and medial sigma", a: "ΟΔΟΣ.md", b: "οδοσ.md", expected: { posix: false, macos: true, windows: true } },
+    { name: "NFC and NFD spellings", a: nfc, b: nfd, expected: { posix: false, macos: true, windows: false } },
+    { name: "NFC and NFD spellings in another case", a: nfc, b: "CAFÉ.MD", expected: { posix: false, macos: true, windows: false } },
+    { name: "ß and SS", a: "Straße.md", b: "STRASSE.md", expected: { posix: false, macos: false, windows: false } },
+    { name: "ß and ss", a: "Straße.md", b: "strasse.md", expected: { posix: false, macos: false, windows: false } },
+    // NTFS's upcase table maps k to K, never to the Kelvin sign; on macOS the sign's canonical decomposition is K.
+    { name: "the Kelvin sign and k", a: "K.md", b: "k.md", expected: { posix: false, macos: true, windows: false } },
+    { name: "different names", a: "Foo.md", b: "Bar.md", expected: { posix: false, macos: false, windows: false } },
+  ];
+
+  for (const platform of ["posix", "macos", "windows"] as const) {
+    describe(`on ${platform}`, () => {
+      for (const { name, a, b, expected } of cases) {
+        it(`${expected[platform] ? "takes" : "does not take"} ${name} for one file`, () => {
+          expect(sameFilesystemName(a, b, platform)).toBe(expected[platform]);
+          expect(sameFilesystemName(b, a, platform)).toBe(expected[platform]);
+        });
+      }
+    });
+  }
 });

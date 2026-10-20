@@ -17,6 +17,11 @@ type Expectation = { type: "write"; hash: string } | { type: "delete" } | { type
  * at that path: their events were lost (or folded into this one). A lost event
  * therefore leaves its expectation only until the engine's next change at the
  * path is seen, not forever, where it could swallow a later user change.
+ *
+ * Paths match exactly, never by path key. The engine registers the spelling
+ * the vault holds the file under (it can differ from the document's path on
+ * a case-insensitive platform, #380), so two files whose spellings merely
+ * share a path key stay two files here, as on the device.
  */
 export class EchoSuppressor {
   private readonly expected = new Map<string, Expectation[]>();
