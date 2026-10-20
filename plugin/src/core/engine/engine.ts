@@ -907,7 +907,7 @@ export class SyncEngine {
     if (!remote.deleted) {
       // Another document the journal has at the path, whose own merge is
       // pending (the server has already moved it away), goes first. One the
-      // platform cannot hold gives up its kept file (#379).
+      // platform cannot hold gives up its kept file (#390).
       const holder = await this.documentAt(remote.path);
       if (holder !== undefined && holder.documentId !== remote.documentId && (await this.resolveFirst(holder.documentId)) && found.path === remote.path) {
         found = { path: found.path, content: await this.readOrNull(found.path) };
@@ -991,18 +991,25 @@ export class SyncEngine {
   /**
    * Gives up an unmaterializable document's claim on the file with local
    * changes it kept at its old path, once the server puts another document
-   * there (#379): the file is then no document's, so the merge path keeps it
+   * there (#390): the file is then no document's, so the merge path keeps it
    * as a `concurrent-create` conflict copy, which the next push sends as a
    * new document, and the other document takes the path. Kept, the file
-   * would hold the other document off for good. The claim is recorded as
-   * releaseFile records it (the state `deleted`), so the document
-   * materializes as a new one would. A document with an operation still
-   * pending keeps its file. Returns whether the claim was given up.
+   * would hold the other document off for good. An edit of the document
+   * still pending at that path is dropped first (#391): its content is the
+   * file's, which the copy keeps. The claim is then recorded as releaseFile
+   * records it (the state `deleted`), so the document materializes as a new
+   * one would. Interrupted before the copy is written, the file is untracked
+   * at the path, and the push's refused create keeps it as a copy (#267). A
+   * document with another operation pending (a delete, or one at another
+   * path) keeps its file. Returns whether the claim was given up.
    */
   private async releaseKeptFile(documentId: string): Promise<boolean> {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return false;
-    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return false;
+    const key = this.fileKey(state.path);
+    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
+    if (pending.some((operation) => operation.deleted || this.fileKey(operation.path) !== key)) return false;
+    for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
     return true;
   }
