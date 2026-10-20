@@ -81,7 +81,7 @@ func TestPluginProtocolClient(t *testing.T) {
 
 		server.Start(t)
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String}
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String, PID: server.PID()}
 	}).API
 
 	report := filepath.Join(t.TempDir(), "report.json")

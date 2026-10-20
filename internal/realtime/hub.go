@@ -135,7 +135,9 @@ type Store interface {
 	// VaultMembers returns which of userIDs are members of vaultID (none
 	// when the vault does not exist), in one query.
 	VaultMembers(ctx context.Context, vaultID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error)
-	// MemberHeadSeq is VaultRole that also returns the vault's head_seq.
+	// MemberHeadSeq returns userID's role in vaultID and the vault's
+	// head_seq, in one query. It returns store.ErrVaultNotFound both when
+	// the vault does not exist and when the user is not a member.
 	MemberHeadSeq(ctx context.Context, vaultID, userID uuid.UUID) (store.Role, int64, error)
 	// HeadSeqs returns the head_seq of each existing vault in vaultIDs.
 	HeadSeqs(ctx context.Context, vaultIDs []uuid.UUID) (map[uuid.UUID]int64, error)

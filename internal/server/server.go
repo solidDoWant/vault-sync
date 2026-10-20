@@ -611,11 +611,18 @@ func (writer *drainingWriter) Write(data []byte) (int, error) {
 
 // Flush writes the header first, as the wrapped writer's Flush would.
 func (writer *drainingWriter) Flush() {
+	_ = writer.FlushError()
+}
+
+// FlushError is Flush returning the wrapped writer's error, so
+// http.ResponseController.Flush reports a write error (a client gone)
+// instead of hiding it until the next Write.
+func (writer *drainingWriter) FlushError() error {
 	if !writer.wroteHeader {
 		writer.WriteHeader(http.StatusOK)
 	}
 
-	_ = http.NewResponseController(writer.ResponseWriter).Flush()
+	return http.NewResponseController(writer.ResponseWriter).Flush()
 }
 
 // Hijack hands over the connection (a WebSocket upgrade), header untouched.

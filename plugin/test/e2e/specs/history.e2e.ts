@@ -2,6 +2,7 @@ import { browser, expect } from "@wdio/globals";
 
 import type VaultSyncPlugin from "../../../src/main";
 import { pluginId } from "../environment";
+import { callHarness } from "../obsidian";
 import { configure, signInAs } from "../signin";
 
 // History browsing and restore (#26, SPEC.md §11) in a real Obsidian against
@@ -161,4 +162,36 @@ describe("history and restore", function () {
     expect(await remoteRevisions(note)).toBe(5);
     await closeHistory();
   });
+  describe("for a member who may not restore (#527)", function () {
+    /** Opens the harness's two-version history as `role`, previews the older version and returns what the preview offers once the role check settled. */
+    async function previewOlderAs(role: "viewer" | "editor" | "unknown") {
+      await callHarness("openHistoryAs", role);
+      await browser.waitUntil(async () => (await historyRows()).length === 2, { timeoutMsg: "the history view never listed two revisions" });
+      await clickRow(1);
+      await browser.waitUntil(async () => (await previewText()) === "the older version\n", { timeoutMsg: "the preview never showed the older version" });
+      // The role check settles into either the restore button or the viewer's note.
+      await browser.waitUntil(async () => browser.executeObsidian(() => document.querySelector(".vault-sync-history-viewer") !== null || [...document.querySelectorAll(".vault-sync-history button")].some((button) => button.textContent === "Restore this version")), {
+        timeoutMsg: "the preview offered neither a restore nor the viewer's note",
+      });
+      const offered = await browser.executeObsidian(() => ({
+        restore: [...document.querySelectorAll(".vault-sync-history button")].some((button) => button.textContent === "Restore this version"),
+        viewerNote: document.querySelector(".vault-sync-history-viewer")?.textContent ?? null,
+      }));
+      await closeHistory();
+      return offered;
+    }
+
+    it("hides Restore this version from a viewer and says why", async function () {
+      expect(await previewOlderAs("viewer")).toEqual({ restore: false, viewerNote: "You can view this vault but not change it, so you cannot restore versions." });
+    });
+
+    it("offers Restore this version to an editor", async function () {
+      expect(await previewOlderAs("editor")).toEqual({ restore: true, viewerNote: null });
+    });
+
+    it("offers Restore this version when the role cannot be read, leaving the decision to the server", async function () {
+      expect(await previewOlderAs("unknown")).toEqual({ restore: true, viewerNote: null });
+    });
+  });
+
 });
