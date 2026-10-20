@@ -1358,7 +1358,9 @@ export class SyncEngine {
    * A conflict-copy path for `path` that no file, folder, document, pending
    * operation or logged conflict uses yet, or null if no name fits the path
    * limits. With `folder` (one of `path`'s folders), that folder is what gets
-   * the conflict name, and the path keeps its place inside it.
+   * the conflict name, and the path keeps its place inside it. Without it, so
+   * does the outermost of `path`'s folders that a file takes by path key,
+   * since no name inside that folder is free (#359).
    *
    * Paths are compared by path key (SPEC.md §5), as the server compares them,
    * whatever the local platform: a name free only in a case-sensitive vault
@@ -1387,14 +1389,22 @@ export class SyncEngine {
     // them: a file there by path key (a new file NOTES, next to a result in
     // notes/ under POSIX rules) cannot keep a copy out of them (#352).
     const resultFolders = new Set(merged === undefined || merged.result === null ? [] : ancestors(pathKey(merged.result)));
+    const blocks = (ancestor: string) => files.has(ancestor) && !resultFolders.has(ancestor);
+    // A file named like one of the path's own folders leaves no free name in
+    // that folder (every name there is under the file by path key), so that
+    // folder gets the conflict name, as for a refused create: the merge of a
+    // remote rename of Notes/C.md to NOTES keeps the local edit at
+    // `Notes (conflict …)/C.md` (#359). The outermost such folder, so the
+    // copy is under none of them.
+    const named = folder ?? ancestors(path).find((ancestor) => blocks(pathKey(ancestor)));
     for (let attempt = 1; attempt <= maxConflictNameAttempts; attempt++) {
       const candidate =
-        folder === undefined
+        named === undefined
           ? conflictCopyPath(path, this.deviceName, date, attempt, this.pathRules)
-          : conflictFolderPath(folder, path.slice(folder.length + 1), this.deviceName, date, attempt, this.pathRules);
+          : conflictFolderPath(named, path.slice(named.length + 1), this.deviceName, date, attempt, this.pathRules);
       if (candidate === null) return null;
       const candidateKey = pathKey(candidate);
-      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some((ancestor) => files.has(ancestor) && !resultFolders.has(ancestor))) continue;
+      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some(blocks)) continue;
       // A file outside the sync scope is not listed, but it is there.
       if (!this.inScope(candidate) && (await this.vault.stat(candidate)) !== null) continue;
       return candidate;
