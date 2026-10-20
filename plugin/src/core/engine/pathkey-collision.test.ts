@@ -867,4 +867,39 @@ describe("SyncEngine collisions by path key", () => {
       });
     }
   });
+
+  describe("given a merge that keeps a local rename into a folder named like the remote revision's path by path key (#344)", () => {
+    // Simulation retention seed 5 of #229 (macOS engine), with overlapping
+    // edits for its purged merge base: the user renamed a.md to Notes/C.md
+    // and edited it, while another device renamed it to NOTES and edited it.
+    // The local rename wins, so the result goes to Notes/C.md, and the
+    // remote revision held for the merge at NOTES, a file named like the
+    // result's folder by path key, never leaves Notes/ without a free
+    // conflict-copy name. Fixed by #352's change.
+    for (const platform of ["posix", "macos", "windows"] as const) {
+      it(`keeps the local version as a conflict copy next to the renamed document (${platform})`, async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "N", path: "a.md", content: "base\n" });
+        await h.engine.pull();
+        await h.vault.rename("a.md", "Notes/C.md");
+        await h.vault.write("Notes/C.md", bytes("mine\n"));
+        h.server.commit({ documentId: "N", path: "NOTES", content: "theirs\n" });
+
+        await h.engine.pull();
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.liveFiles()).toEqual(
+          new Map([
+            ["Notes/C.md", "theirs\n"],
+            [`Notes/${copyOf("C", ".md")}`, "mine\n"],
+          ]),
+        );
+        expect(h.server.liveDocuments().get("Notes/C.md")).toBe("N");
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+    }
+  });
 });
