@@ -77,6 +77,20 @@ type Config struct {
 	IdleTimeout time.Duration
 }
 
+// idleTimeout returns IdleTimeout, or DefaultIdleTimeout if it is unset.
+func (cfg Config) idleTimeout() time.Duration {
+	if cfg.IdleTimeout <= 0 {
+		return DefaultIdleTimeout
+	}
+
+	return cfg.IdleTimeout
+}
+
+// deleteAttemptBudget is how many idle timeouts one Delete may take in all:
+// the SDK's three attempts, each failing after an idle timeout at worst,
+// plus their backoff.
+const deleteAttemptBudget = 4
+
 // Validate checks cfg without contacting the store. Its errors name settings
 // by their Config field, never by value for secrets.
 func (cfg Config) Validate() error {
@@ -187,10 +201,7 @@ func newClient(cfg Config, optFns ...func(*s3.Options)) *s3.Client {
 		region = DefaultRegion
 	}
 
-	idleTimeout := cfg.IdleTimeout
-	if idleTimeout <= 0 {
-		idleTimeout = DefaultIdleTimeout
-	}
+	idleTimeout := cfg.idleTimeout()
 
 	httpClient := awshttp.NewBuildableClient().WithTransportOptions(func(transport *http.Transport) {
 		boundIdleConnections(transport, idleTimeout)

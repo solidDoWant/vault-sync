@@ -212,12 +212,18 @@ describe("SyncEngine restore (SPEC.md §11)", () => {
     const oldest = entryAt(await allEntries(h, documentId), 1);
     // The first commit races a collection of the blob, which then completes again.
     let refused = false;
+    let probed = false;
     const methods: string[] = [];
-    h.server.interceptor = (method) => {
+    h.server.interceptor = (method, request) => {
       methods.push(method);
       if (method === "CommitRevision" && !refused) {
         refused = true;
         throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+      }
+      // The upload's look-up of the blob (a range at its end) still finds it collected.
+      if (refused && !probed && method === "DownloadBlob" && (request as { offset: bigint }).offset === oldest.size) {
+        probed = true;
+        throw new ConnectError("blob not found", Code.NotFound);
       }
     };
 

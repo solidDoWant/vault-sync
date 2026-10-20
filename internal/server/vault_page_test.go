@@ -6,12 +6,14 @@ import (
 	"testing"
 
 	"connectrpc.com/connect"
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
 // vaultPageCodecs are the ways a client may encode ListVaults. Without
@@ -170,6 +172,44 @@ func TestVaultPagesOfMixedSizesStayInOrder(t *testing.T) {
 			got, lengths := full.pageVaults(t, options, ^uint32(0))
 			assert.Equal(t, full.ids, got)
 			assert.Greater(t, len(lengths), 1, "pages %v", lengths)
+		})
+	}
+}
+
+// Issue #200: at the default send limit, one page holds MaxVaultPageSize
+// vaults with MaxVaultNameBytes names, in binary and JSON, compressed or
+// not, so a member of that many shared vaults lists them in one request.
+func TestAFullPageOfTheLargestVaultsFitsTheDefaultSendLimit(t *testing.T) {
+	vaults := newMemoryVaults()
+	fixture := newVaultFixtureWithLimit(t, newMemoryStore(), vaults, reachableDatabase{}, 1<<20)
+	full := &fullVaultsFixture{fixture: fixture, token: fixture.token(t, "alice")}
+	random := rand.New(rand.NewChaCha8([32]byte{100})) //nolint:gosec // Test data, not secrets.
+
+	largestName := func() string {
+		name := make([]byte, api.MaxVaultNameBytes)
+		for position := range name {
+			name[position] = byte('a' + random.IntN(26))
+		}
+
+		return string(name)
+	}
+
+	owned := fixture.createVault(t, full.token, largestName())
+	aliceID := ownerOf(t, vaults, owned.GetId())
+	full.ids = append(full.ids, owned.GetId())
+
+	for range api.MaxVaultPageSize - 1 {
+		other, err := vaults.CreateVault(t.Context(), uuid.New(), store.NewVault{Name: largestName(), Encryption: store.EncryptionNone}, 1)
+		require.NoError(t, err)
+		vaults.addMember(other.ID, aliceID, store.RoleViewer)
+		full.ids = append(full.ids, other.ID.String())
+	}
+
+	for name, options := range vaultPageCodecs {
+		t.Run(name, func(t *testing.T) {
+			got, lengths := full.pageVaults(t, options, api.MaxVaultPageSize)
+			assert.ElementsMatch(t, full.ids, got)
+			assert.Equal(t, []int{api.MaxVaultPageSize}, lengths)
 		})
 	}
 }

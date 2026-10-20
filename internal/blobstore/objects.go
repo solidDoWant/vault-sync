@@ -67,6 +67,8 @@ type Objects struct {
 	client  *s3.Client
 	bucket  string
 	compose chan struct{}
+	// deleteTimeout bounds one Delete, retries included.
+	deleteTimeout time.Duration
 
 	// mu guards owners and claimed.
 	mu sync.Mutex
@@ -102,6 +104,7 @@ func newObjects(cfg Config, optFns ...func(*s3.Options)) (*Objects, error) {
 	return &Objects{
 		client: newClient(cfg, optFns...), bucket: cfg.Bucket, compose: make(chan struct{}, composeSlots),
 		owners: map[string]*ownerSlots{}, claimed: map[string]chan struct{}{},
+		deleteTimeout: deleteAttemptBudget * cfg.idleTimeout(),
 	}, nil
 }
 
@@ -163,7 +166,15 @@ func (objects *Objects) Put(ctx context.Context, key string, data []byte) error 
 }
 
 // Delete removes key. Removing a missing key succeeds.
+//
+// The whole call, retries included, is bounded by deleteTimeout: the idle
+// timeout alone does not bound a store that keeps sending a byte now and
+// then, and the retention job deletes an object while it holds a lock that
+// a re-upload of the same blob waits for (SPEC.md §11).
 func (objects *Objects) Delete(ctx context.Context, key string) error {
+	ctx, cancel := context.WithTimeout(ctx, objects.deleteTimeout)
+	defer cancel()
+
 	_, err := objects.client.DeleteObject(ctx, &s3.DeleteObjectInput{Bucket: aws.String(objects.bucket), Key: aws.String(key)})
 	if err != nil && !isNotFound(err, "NoSuchKey") {
 		return fmt.Errorf("delete object: %w", err)
@@ -240,20 +251,108 @@ type Sources func(ctx context.Context) ([]Part, error)
 // fails, key is not written. A nil verify accepts any content; a nil
 // progress is not called.
 //
-// Compositions share the replica's composeSlots slots, and those of one
-// owner (the user it is done for) hold at most composeSlotsPerOwner of them
-// at once: a further composition of that owner waits, holding no slot, so
-// one user cannot keep another's compositions waiting.
+// Compose is Reserve followed by the reservation's Compose: compositions
+// share the replica's composeSlots slots, those of one owner (the user it is
+// done for) hold at most composeSlotsPerOwner of them at once, and one
+// composition of key runs at a time on this replica.
 func (objects *Objects) Compose(ctx context.Context, owner, key string, sources Sources, size int64, verify func(sum []byte) error, progress Progress) error {
+	reservation, err := objects.Reserve(ctx, owner, key, progress)
+	if err != nil {
+		return err
+	}
+
+	defer reservation.Release()
+
+	return reservation.Compose(ctx, sources, size, verify, progress)
+}
+
+// Reservation is a commit's hold on one of its owner's compose slots and on
+// the claim of its key, taken by Reserve. Release gives both back.
+type Reservation struct {
+	objects *Objects
+	owner   string
+	slots   *ownerSlots
+	key     string
+
+	ownerSlot bool
+	claim     func()
+	once      sync.Once
+}
+
+// Reserve waits for one of owner's compose slots and then claims key for one
+// commit on this replica, reporting progress while it waits: a commit queued
+// behind others is still in progress. The owner's slot comes first, so a
+// commit waiting for its own owner's queue holds no claim that another
+// owner's commit of key could be kept waiting behind: a claim is only ever
+// held by a commit that already holds its owner's slot. Every slot and
+// claim taken is given back on any way out, a panic included, unless the
+// reservation is returned. A nil progress is not called.
+func (objects *Objects) Reserve(ctx context.Context, owner, key string, progress Progress) (*Reservation, error) {
+	if progress == nil {
+		progress = noProgress
+	}
+
+	reservation := &Reservation{objects: objects, owner: owner, slots: objects.joinOwner(owner), key: key}
+
+	acquired := false
+
+	defer func() {
+		if !acquired {
+			reservation.Release()
+		}
+	}()
+
+	ticker := time.NewTicker(ProgressInterval)
+	defer ticker.Stop()
+
+	if err := objects.awaitSlot(ctx, reservation.slots.slots, ticker, progress); err != nil {
+		return nil, err
+	}
+
+	reservation.ownerSlot = true
+
+	claim, err := objects.claim(ctx, key, ticker, progress)
+	if err != nil {
+		return nil, err
+	}
+
+	reservation.claim = claim
+	acquired = true
+
+	return reservation, nil
+}
+
+// Release gives the reservation's owner slot and claim back. It may be
+// called more than once.
+func (reservation *Reservation) Release() {
+	reservation.once.Do(func() {
+		if reservation.claim != nil {
+			reservation.claim()
+		}
+
+		if reservation.ownerSlot {
+			<-reservation.slots.slots
+		}
+
+		reservation.objects.leaveOwner(reservation.owner, reservation.slots)
+	})
+}
+
+// Compose composes the reserved key as Objects.Compose does, once it holds
+// one of the replica's compose slots. Sources is called only then, so a
+// composition waiting for a slot holds no list of parts.
+func (reservation *Reservation) Compose(ctx context.Context, sources Sources, size int64, verify func(sum []byte) error, progress Progress) error {
+	objects := reservation.objects
+
 	if size > MaxBlobBytes {
 		return fmt.Errorf("blob of %d bytes exceeds the composable maximum of %d", size, int64(MaxBlobBytes))
 	}
 
 	if progress == nil {
-		progress = func(context.Context) error { return nil }
+		progress = noProgress
 	}
 
-	release, err := objects.acquireComposeSlot(ctx, owner, progress)
+	release, err := objects.acquireReplicaSlot(ctx, progress)
 	if err != nil {
 		return err
 	}
@@ -268,16 +367,27 @@ func (objects *Objects) Compose(ctx context.Context, owner, key string, sources 
 	reader := &sourceReader{ctx: ctx, objects: objects, sources: parts, hash: sha256.New()}
 
 	if size <= PartSize {
-		return objects.composeSingle(ctx, key, reader, size, verify, progress)
+		return objects.composeSingle(ctx, reservation.key, reader, size, verify, progress)
 	}
 
-	return objects.composeMultipart(ctx, key, reader, size, verify, progress)
+	return objects.composeMultipart(ctx, reservation.key, reader, size, verify, progress)
 }
+
+// noProgress is the Progress of callers that pass none.
+func noProgress(context.Context) error { return nil }
 
 // ClaimCompose claims key for one commit on this replica, until release is
 // called. While key is claimed already, it waits, holding no compose slot,
 // until that claim is released or ctx ends.
 func (objects *Objects) ClaimCompose(ctx context.Context, key string) (release func(), err error) {
+	ticker := time.NewTicker(ProgressInterval)
+	defer ticker.Stop()
+
+	return objects.claim(ctx, key, ticker, noProgress)
+}
+
+// claim is ClaimCompose, reporting progress at every tick while it waits.
+func (objects *Objects) claim(ctx context.Context, key string, ticker *time.Ticker, progress Progress) (release func(), err error) {
 	for {
 		objects.mu.Lock()
 
@@ -302,22 +412,29 @@ func (objects *Objects) ClaimCompose(ctx context.Context, key string) (release f
 
 		objects.mu.Unlock()
 
-		if err := objects.awaitClaim(ctx, held); err != nil {
+		if err := objects.awaitClaim(ctx, held, ticker, progress); err != nil {
 			return nil, err
 		}
 	}
 }
 
-// awaitClaim waits until held, a claim's channel, is closed.
-func (objects *Objects) awaitClaim(ctx context.Context, held chan struct{}) error {
+// awaitClaim waits until held, a claim's channel, is closed, reporting
+// progress at every tick while it waits.
+func (objects *Objects) awaitClaim(ctx context.Context, held chan struct{}, ticker *time.Ticker, progress Progress) error {
 	objects.claimWaiting.Add(1)
 	defer objects.claimWaiting.Add(-1)
 
-	select {
-	case <-held:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	for {
+		select {
+		case <-held:
+			return nil
+		case <-ticker.C:
+			if err := progress(ctx); err != nil {
+				return err
+			}
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 }
 
@@ -356,25 +473,17 @@ func (objects *Objects) leaveOwner(owner string, slots *ownerSlots) {
 	}
 }
 
-// acquireComposeSlot waits for one of owner's slots and then for one of the
-// replica's, reporting progress while it waits: a commit queued behind
-// others is still in progress. release gives both back. Every slot taken is
-// given back on any way out, a panic included, unless release is returned.
-func (objects *Objects) acquireComposeSlot(ctx context.Context, owner string, progress Progress) (func(), error) {
-	slots := objects.joinOwner(owner)
-
-	var ownerSlot, replicaSlot, acquired bool
+// acquireReplicaSlot waits for one of the replica's compose slots, reporting
+// progress while it waits, and reports progress once it has it. release
+// gives it back. The slot is given back on any way out, a panic included,
+// unless release is returned.
+func (objects *Objects) acquireReplicaSlot(ctx context.Context, progress Progress) (func(), error) {
+	var replicaSlot, acquired bool
 
 	release := func() {
 		if replicaSlot {
 			<-objects.compose
 		}
-
-		if ownerSlot {
-			<-slots.slots
-		}
-
-		objects.leaveOwner(owner, slots)
 	}
 
 	defer func() {
@@ -385,12 +494,6 @@ func (objects *Objects) acquireComposeSlot(ctx context.Context, owner string, pr
 
 	ticker := time.NewTicker(ProgressInterval)
 	defer ticker.Stop()
-
-	if err := objects.awaitSlot(ctx, slots.slots, ticker, progress); err != nil {
-		return nil, err
-	}
-
-	ownerSlot = true
 
 	if err := objects.awaitSlot(ctx, objects.compose, ticker, progress); err != nil {
 		return nil, err
