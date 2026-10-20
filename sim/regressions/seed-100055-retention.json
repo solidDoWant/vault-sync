@@ -1,0 +1,171 @@
+{
+  "name": "seed-100055-retention",
+  "seed": 100055,
+  "clients": 3,
+  "engines": 2,
+  "commitRetryBackoff": 30,
+  "violations": [
+    {
+      "invariant": "phantom-delete",
+      "detail": "e4 deleted c0.d2 at trailing. (seq 4, e4.x3) although its user never deleted it"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 2406229995
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 4085310481
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "push",
+      "arg": 764192623
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 2941857023
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "delete",
+      "arg": 1930644163
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 3997842013
+    },
+    {
+      "kind": "crash",
+      "client": 0
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 3067134912
+    },
+    {
+      "kind": "drop-request",
+      "pick": 4078026817
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 3517372159
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 2412597432
+    },
+    {
+      "kind": "crash",
+      "client": 1
+    }
+  ]
+}
