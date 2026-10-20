@@ -2167,8 +2167,10 @@ export interface RespelledRenameResult extends HeldPathResult {
  * than the note's synced path (#374). Both engines sync `Foo.md` (and, in the
  * `vacated-path` variant, `b.md`). The second engine follows Windows or macOS
  * rules; its user renames `Foo.md` to `foo.md` by case only, and the app is
- * killed before the engine records it, so the restarted engine's push keeps
- * the note at `Foo.md`. The user then renames `foo.md` to `b.md`, in the
+ * killed before the engine records it, so the restarted engine's journal
+ * still has the note at `Foo.md` (no push runs before the next rename: a
+ * push's scan alone would commit the vault's spelling, #481). The user then
+ * renames `foo.md` to `b.md`, in the
  * `vacated-path` variant after renaming the other note away from `b.md` to
  * `c.md`. Each rename must be committed as a rename of its note: no
  * tombstone, no new document, both vaults equal to the server, and the last
@@ -2200,12 +2202,67 @@ export async function respelledNoteRenamed(endpoints: SimEndpoints, platform: "w
 
   log(await second.move("Foo.md", "foo.md"));
   log(second.crash());
-  await push(second);
   if (variant === "vacated-path") log(await second.move("b.md", "c.md"));
   log(await second.move("foo.md", "b.md"));
   await push(second);
   await push(second);
   await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
+}
+
+/**
+ * A note whose file the case-insensitive vault holds under another spelling
+ * than its synced path, with no rename event to say so (#481, seed 100083 and
+ * retention seed 100056). Both engines sync `STRASSE.md` and `d.md`; the
+ * second follows Windows or macOS rules. In the `respelled` variant its user
+ * renames `STRASSE.md` to `straße.md` and edits it; in the `vacated-path`
+ * variant the user deletes `d.md`, moves the note there and saves a new file
+ * `straße.md`. The app is killed before the engine records any of it. The
+ * restarted engine's push must name each file as the vault does, so both
+ * vaults equal the server, with no tombstone of the note, and the last push
+ * commits nothing (SPEC.md §2 principle 1).
+ */
+export async function respelledFileAfterRestart(endpoints: SimEndpoints, platform: "windows" | "macos", variant: "respelled" | "vacated-path"): Promise<RespelledRenameResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const sync = async (engine: typeof first, start: () => string) => {
+    log(start());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("STRASSE.md", encoder.encode("x\n")));
+  log(await first.edit("d.md", encoder.encode("p\n")));
+  await sync(first, () => first.startPush());
+  await sync(second, () => second.startPull());
+  const before = await liveDocuments(run);
+
+  if (variant === "respelled") {
+    log(await second.move("STRASSE.md", "straße.md"));
+    log(await second.edit("straße.md", encoder.encode("x\nedited\n")));
+  } else {
+    log(await second.remove("d.md"));
+    log(await second.move("STRASSE.md", "d.md"));
+    log(await second.edit("straße.md", encoder.encode("new\n")));
+  }
+  log(second.crash());
+  await sync(second, () => second.startPush());
+  await sync(second, () => second.startPush());
+  await sync(first, () => first.startPull());
 
   const result = await run.finish();
   const vaults = await Promise.all(
