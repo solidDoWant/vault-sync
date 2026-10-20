@@ -122,9 +122,9 @@ export class LateEventsVault implements VaultAdapter {
 
 /**
  * A VaultAdapter that lands a change of the test's just before the engine's
- * next write or delete of a path reaches the vault: what Obsidian's autosave
- * does when it saves the user's typing after the engine checked the disk and
- * before it writes (#163). The change goes to `inner` directly, as the user's
+ * next write, delete or rename (from) of a path reaches the vault: what
+ * Obsidian's autosave does when it saves the user's typing after the engine
+ * checked the disk and before it writes (#163). The change goes to `inner` directly, as the user's
  * would, and is reported to the engine as a vault event.
  */
 export class InterleavingVault implements VaultAdapter {
@@ -132,7 +132,7 @@ export class InterleavingVault implements VaultAdapter {
 
   constructor(readonly inner: VaultAdapter) {}
 
-  /** Runs `change` once, right before the next write or delete of `path`. */
+  /** Runs `change` once, right before the next write, delete or rename from `path`. */
   beforeNextChange(path: string, change: () => Promise<void>): void {
     this.armed.set(path, change);
   }
@@ -158,8 +158,9 @@ export class InterleavingVault implements VaultAdapter {
     await this.interleave(path);
     await this.inner.write(path, data, precondition);
   }
-  rename(from: string, to: string): Promise<void> {
-    return this.inner.rename(from, to);
+  async rename(from: string, to: string): Promise<void> {
+    await this.interleave(from);
+    await this.inner.rename(from, to);
   }
   async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     await this.interleave(path);
