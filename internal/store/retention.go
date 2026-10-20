@@ -88,10 +88,12 @@ type RetentionScan struct {
 	Overrides string
 }
 
-// overridesDigest identifies the set of per-vault retention overrides. It
-// never equals the empty string, retention_scans.overrides' default.
-const overridesDigest = `md5(coalesce(string_agg(
-	vault_id::text || ':' || keep_all::text || ':' || keep_daily::text, ',' ORDER BY vault_id), ''))`
+// overridesDigest identifies the set of per-vault retention overrides (hex
+// SHA-256, which unlike md5() also works on PostgreSQL built against a
+// FIPS-mode OpenSSL). It never equals the empty string,
+// retention_scans.overrides' default.
+const overridesDigest = `encode(sha256(convert_to(coalesce(string_agg(
+	vault_id::text || ':' || keep_all::text || ':' || keep_daily::text, ',' ORDER BY vault_id), ''), 'UTF8')), 'hex')`
 
 // RetentionCandidates returns up to limit documents, across all vaults, that
 // have revisions policy purges.

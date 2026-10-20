@@ -421,3 +421,74 @@ func TestOverriddenAgesAreScannedIncrementally(t *testing.T) {
 
 	assert.Equal(t, 1, fixture.runJob(t), "the revision whose bucket partner crossed the override's KeepDaily is purged")
 }
+
+// weekVault creates a vault with two documents, each with two revisions on
+// different UTC days (Monday and Tuesday) of one ISO week and a head now:
+// "older.md" in the week of 500 days ago, between the deployment-wide
+// KeepDaily (365 days) and 730 days, and "newer.md" in the week of 250 days
+// ago, between 180 days and the deployment-wide KeepDaily. A vault whose
+// KeepDaily is past a pair keeps both (one per day); one whose KeepDaily is
+// not purges the Monday one (one per week).
+func (fixture *fixture) weekVault(t *testing.T, name string) uuid.UUID {
+	t.Helper()
+
+	vault, err := fixture.store.CreateVault(t.Context(), fixture.user, store.NewVault{Name: name, Encryption: store.EncryptionNone}, 10)
+	require.NoError(t, err)
+
+	for _, document := range []struct{ path, week string }{
+		{"older.md", `date_trunc('week', now() - interval '500 days', 'UTC')`},
+		{"newer.md", `date_trunc('week', now() - interval '250 days', 'UTC')`},
+	} {
+		fixture.document(t, vault.ID, document.path,
+			document.week+` + interval '1 hour'`, document.week+` + interval '1 day 1 hour'`, `now()`)
+	}
+
+	return vault.ID
+}
+
+// Issue #468 criterion 1: an override's KeepDaily, not the deployment-wide
+// one, decides which of a vault's revisions are thinned to one per UTC day
+// and which to one per ISO week.
+func TestRetentionOverrideKeepDailyDecidesDailyAndWeeklyThinning(t *testing.T) {
+	fixture := newFixture(t)
+
+	longer := fixture.weekVault(t, "keep-daily of two years")
+	shorter := fixture.weekVault(t, "keep-daily of 180 days")
+	deployed := fixture.weekVault(t, "deployment-wide")
+
+	fixture.mustRun(t, "set", "-vault", longer.String(), "-keep-all", "720h", "-keep-daily", "17520h")
+	fixture.mustRun(t, "set", "-vault", shorter.String(), "-keep-all", "720h", "-keep-daily", "4320h")
+
+	assert.Equal(t, 3, fixture.runJob(t))
+	assert.Equal(t, map[string]int{"older.md": 3, "newer.md": 3}, fixture.revisions(t, longer),
+		"730 days: both pairs are daily, one revision per day is kept")
+	assert.Equal(t, map[string]int{"older.md": 2, "newer.md": 2}, fixture.revisions(t, shorter),
+		"180 days: both pairs are weekly, one revision per week is kept")
+	assert.Equal(t, map[string]int{"older.md": 2, "newer.md": 3}, fixture.revisions(t, deployed),
+		"365 days: only the pair 500 days old is weekly")
+	assert.Equal(t, 0, fixture.runJob(t))
+}
+
+// Once a run under changed overrides completed, the next run is incremental
+// again: it does not consider a document whose revisions crossed no age
+// since that run started.
+func TestRunAfterAnOverrideChangeIsIncrementalAgain(t *testing.T) {
+	fixture := newFixture(t)
+
+	vault := fixture.vault(t, "overridden")
+	other := fixture.vault(t, "deployment-wide")
+
+	assert.Equal(t, 2, fixture.runJob(t), "a full scan under no override")
+
+	fixture.mustRun(t, "set", "-vault", vault.String(), "-keep-all", "720h", "-keep-daily", "8760h")
+
+	assert.Equal(t, 1, fixture.runJob(t), "a full scan under the changed overrides")
+
+	// A purgeable pair that crossed every age long before the last scan
+	// started, as if it had been missed: only a full scan finds it.
+	day := `date_trunc('day', now() - interval '100 days', 'UTC')`
+	fixture.document(t, other, "missed.md", day+` + interval '1 hour'`, day+` + interval '2 hours'`, `now()`)
+
+	assert.Equal(t, 0, fixture.runJob(t), "the run is incremental")
+	assert.Equal(t, 3, fixture.revisions(t, other)["missed.md"])
+}
