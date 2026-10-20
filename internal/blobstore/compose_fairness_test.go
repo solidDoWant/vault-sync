@@ -249,19 +249,65 @@ func TestComposeWaitingForItsOwnersSlotStopsWithItsContext(t *testing.T) {
 func TestClaimComposeAdmitsOneCommitPerKey(t *testing.T) {
 	objects := objectsAt(t, answeringEndpoint(t), time.Minute, 1)
 
-	release, ok := objects.ClaimCompose("vaults/x/blobs/a")
-	require.True(t, ok)
+	release, err := objects.ClaimCompose(t.Context(), "vaults/x/blobs/a")
+	require.NoError(t, err)
 
-	_, again := objects.ClaimCompose("vaults/x/blobs/a")
-	assert.False(t, again, "a second claim of a claimed key")
-
-	other, ok := objects.ClaimCompose("vaults/x/blobs/b")
-	require.True(t, ok, "another key")
-
+	// Another key is claimed at once.
+	other, err := objects.ClaimCompose(t.Context(), "vaults/x/blobs/b")
+	require.NoError(t, err)
 	other()
-	release()
 
-	release, ok = objects.ClaimCompose("vaults/x/blobs/a")
-	require.True(t, ok, "a released key")
+	// A second claim of the key waits until the first is released.
+	second := make(chan func(), 1)
+
+	go func() {
+		releaseSecond, err := objects.ClaimCompose(t.Context(), "vaults/x/blobs/a")
+		assert.NoError(t, err)
+
+		second <- releaseSecond
+	}()
+
+	deadline := time.Now().Add(hangGuard)
+	for blobstore.ClaimWaiting(objects) == 0 {
+		require.True(t, time.Now().Before(deadline), "the second claim never waited")
+		time.Sleep(time.Millisecond)
+	}
+
+	select {
+	case <-second:
+		t.Fatal("a second claim of a claimed key")
+	default:
+	}
+
 	release()
+	receive(t, second, "the second claim")()
+
+	// A waiting claim stops with its context.
+	release, err = objects.ClaimCompose(t.Context(), "vaults/x/blobs/a")
+	require.NoError(t, err)
+
+	defer release()
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	_, err = objects.ClaimCompose(ctx, "vaults/x/blobs/a")
+	require.ErrorIs(t, err, context.Canceled)
+	assert.Zero(t, blobstore.ClaimWaiting(objects))
+}
+
+// receive returns the next value of channel, failing the test if it hangs.
+func receive[T any](t *testing.T, channel <-chan T, what string) T {
+	t.Helper()
+
+	select {
+	case value := <-channel:
+		return value
+	case <-time.After(hangGuard):
+		t.Fatalf("hung waiting for %s", what)
+
+		var zero T
+
+		return zero
+	}
 }

@@ -73,10 +73,13 @@ type Objects struct {
 	// owners holds the owner slots of every owner with a composition in
 	// progress or waiting; an owner's entry goes with its last composition.
 	owners map[string]*ownerSlots
-	// claimed holds the keys claimed by ClaimCompose.
-	claimed map[string]struct{}
+	// claimed holds the keys claimed by ClaimCompose, each with a channel
+	// closed when its claim is released.
+	claimed map[string]chan struct{}
 	// waiting counts the compositions waiting for a slot.
 	waiting atomic.Int64
+	// claimWaiting counts the ClaimCompose calls waiting for a claim.
+	claimWaiting atomic.Int64
 
 	// afterPart, if set (by tests only), runs after each multipart part is
 	// uploaded and before progress is reported.
@@ -98,7 +101,7 @@ func newObjects(cfg Config, optFns ...func(*s3.Options)) (*Objects, error) {
 
 	return &Objects{
 		client: newClient(cfg, optFns...), bucket: cfg.Bucket, compose: make(chan struct{}, composeSlots),
-		owners: map[string]*ownerSlots{}, claimed: map[string]struct{}{},
+		owners: map[string]*ownerSlots{}, claimed: map[string]chan struct{}{},
 	}, nil
 }
 
@@ -262,27 +265,50 @@ func (objects *Objects) Compose(ctx context.Context, owner, key string, sources 
 }
 
 // ClaimCompose claims key for one commit on this replica, until release is
-// called. ok is false, and nothing is claimed, while key is claimed already.
-func (objects *Objects) ClaimCompose(key string) (release func(), ok bool) {
-	objects.mu.Lock()
-	defer objects.mu.Unlock()
+// called. While key is claimed already, it waits, holding no compose slot,
+// until that claim is released or ctx ends.
+func (objects *Objects) ClaimCompose(ctx context.Context, key string) (release func(), err error) {
+	for {
+		objects.mu.Lock()
 
-	if _, claimed := objects.claimed[key]; claimed {
-		return nil, false
+		held, claimed := objects.claimed[key]
+		if !claimed {
+			done := make(chan struct{})
+			objects.claimed[key] = done
+			objects.mu.Unlock()
+
+			var once sync.Once
+
+			return func() {
+				once.Do(func() {
+					objects.mu.Lock()
+					defer objects.mu.Unlock()
+
+					delete(objects.claimed, key)
+					close(done)
+				})
+			}, nil
+		}
+
+		objects.mu.Unlock()
+
+		if err := objects.awaitClaim(ctx, held); err != nil {
+			return nil, err
+		}
 	}
+}
 
-	objects.claimed[key] = struct{}{}
+// awaitClaim waits until held, a claim's channel, is closed.
+func (objects *Objects) awaitClaim(ctx context.Context, held chan struct{}) error {
+	objects.claimWaiting.Add(1)
+	defer objects.claimWaiting.Add(-1)
 
-	var once sync.Once
-
-	return func() {
-		once.Do(func() {
-			objects.mu.Lock()
-			defer objects.mu.Unlock()
-
-			delete(objects.claimed, key)
-		})
-	}, true
+	select {
+	case <-held:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // ownerSlots are the compose slots of one owner.

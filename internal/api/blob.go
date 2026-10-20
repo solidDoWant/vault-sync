@@ -252,16 +252,14 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 	}
 
 	// One commit of a blob at a time on this replica: a duplicate (a retry
-	// of a slow commit, or a client repeating it) would compose the blob
-	// again and hold a compose slot of its own. It is refused before it
-	// does anything; the client backs off and retries, by when the blob is
-	// complete (SPEC.md §6.2).
+	// of a slow commit, or another device committing the same content)
+	// waits for the commit in progress, holding no compose slot, and then
+	// finds the blob complete instead of composing it again (SPEC.md §6.2).
 	key := blobstore.BlobKey(vault.VaultID(), blobID)
 
-	release, ok := service.Objects.ClaimCompose(key)
-	if !ok {
-		return nil, connect.NewError(connect.CodeResourceExhausted,
-			errors.New("this blob is already being committed; try again later"))
+	release, err := service.Objects.ClaimCompose(ctx, key)
+	if err != nil {
+		return nil, err
 	}
 
 	defer release()

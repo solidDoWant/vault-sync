@@ -10,6 +10,16 @@ import (
 // ComposeSlots exposes composeSlots to tests.
 const ComposeSlots = composeSlots
 
+// ClaimWaiting returns how many ClaimCompose calls wait for a claim.
+func ClaimWaiting(objects *Objects) int {
+	return int(objects.claimWaiting.Load())
+}
+
+// ComposeSlotsHeld returns how many of the replica's compose slots are held.
+func ComposeSlotsHeld(objects *Objects) int {
+	return len(objects.compose)
+}
+
 // ComposeWaiting returns how many compositions wait for a compose slot.
 func ComposeWaiting(objects *Objects) int {
 	return int(objects.waiting.Load())

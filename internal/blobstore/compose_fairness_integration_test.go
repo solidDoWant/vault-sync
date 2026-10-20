@@ -8,10 +8,10 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -33,6 +33,8 @@ type fairnessFixture struct {
 	composing chan string
 	release   chan struct{}
 	once      sync.Once
+	// reads counts the staged objects of alice's vault read by compositions.
+	reads atomic.Int64
 }
 
 func newFairnessFixture(t *testing.T) (*fairnessFixture, *cleanupFixture) {
@@ -74,6 +76,8 @@ func (fixture *fairnessFixture) block(objects *blobstore.Objects) {
 			return
 		}
 
+		fixture.reads.Add(1)
+
 		// Report each composition once: its first staged object.
 		upload := key[:strings.LastIndex(key, "/")]
 
@@ -97,25 +101,10 @@ func as(ctx context.Context, userID uuid.UUID) context.Context {
 	return auth.WithUser(ctx, auth.User{ID: userID})
 }
 
-// receive returns the next value of channel, failing the test if it hangs.
-func receive[T any](t *testing.T, channel <-chan T, what string) T {
-	t.Helper()
-
-	select {
-	case value := <-channel:
-		return value
-	case <-time.After(hangGuard):
-		t.Fatalf("hung waiting for %s", what)
-
-		var zero T
-
-		return zero
-	}
-}
-
 // Regression for #369: duplicate CommitBlob calls of one upload session
-// compose the blob once and hold one compose slot, so another user's small
-// commit on the same replica goes ahead while the first is still composing.
+// compose the blob once and hold one compose slot between them, so another
+// user's small commit on the same replica goes ahead while the first is
+// still composing, and every duplicate returns the first one's result.
 func TestDuplicateCommitsOfOneSessionComposeOnce(t *testing.T) {
 	fixture, alice := newFairnessFixture(t)
 	service, objects := alice.instance(t)
@@ -141,13 +130,14 @@ func TestDuplicateCommitsOfOneSessionComposeOnce(t *testing.T) {
 
 	receive(t, fixture.composing, "the first commit to compose")
 
-	// Every duplicate is refused with a retryable error while the first
-	// composes.
-	for range blobstore.ComposeSlots - 1 {
-		err := receive(t, results, "a duplicate commit")
-		require.Error(t, err)
-		assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err), "%v", err)
+	// Every duplicate waits for the first commit, holding no compose slot.
+	deadline := time.Now().Add(hangGuard)
+	for blobstore.ClaimWaiting(objects) < blobstore.ComposeSlots-1 {
+		require.True(t, time.Now().Before(deadline), "the duplicate commits never waited for the first")
+		time.Sleep(time.Millisecond)
 	}
+
+	assert.Equal(t, 1, blobstore.ComposeSlotsHeld(objects), "compose slots held by commits of one session")
 
 	// Another user's commit is not kept waiting.
 	bobDone := make(chan error, 1)
@@ -156,15 +146,17 @@ func TestDuplicateCommitsOfOneSessionComposeOnce(t *testing.T) {
 
 	require.NoError(t, receive(t, bobDone, "bob's commit"))
 
+	// Once the first commit completes, every duplicate returns its result.
 	fixture.open()
 	group.Wait()
-	require.NoError(t, receive(t, results, "the first commit"))
+	close(results)
 
-	select {
-	case upload := <-fixture.composing:
-		t.Fatalf("the session was composed again: %s", upload)
-	default:
+	for err := range results {
+		require.NoError(t, err)
 	}
+
+	stagedObjects := (len(content) + commitTestChunkBytes - 1) / commitTestChunkBytes
+	assert.Equal(t, int64(stagedObjects), fixture.reads.Load(), "the session was composed exactly once")
 
 	// A retry finds the blob complete.
 	require.NoError(t, alice.commit(as(t.Context(), fixture.aliceID), service, blobID))
