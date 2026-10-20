@@ -261,6 +261,80 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         expect(await h.journal.listPending()).toEqual([]);
       });
     });
+
+    // #452: the kept edited file used to block for good another document the
+    // server puts at a path that is its folder, or under it (a file against
+    // a folder), deferred path-conflict with nothing left to retry it.
+    describe.each([
+      { name: "its folder", kept: "Notes/plan.md", other: "NOTES", copy: /^Notes \(conflict .*\)\/plan\.md$/ },
+      { name: "its folder under the same spelling", kept: "Notes/plan.md", other: "Notes", copy: /^Notes \(conflict .*\)\/plan\.md$/ },
+      { name: "a folder of its folder", kept: "a/Notes/plan.md", other: "A/NOTES", copy: /^a\/Notes \(conflict .*\)\/plan\.md$/ },
+      { name: "a path under it", kept: "notes", other: "NOTES/d.md", copy: /^notes \(conflict .*\)$/ },
+      { name: "a path deep under its folder", kept: "a/notes", other: "A/NOTES/sub/d.md", copy: /^a\/notes \(conflict .*\)$/ },
+    ])("when the server puts another document at $name", ({ kept, other, copy }) => {
+      async function occupied(restart = false) {
+        const h = windowsDevice();
+        h.server.commit({ documentId: "doc", path: kept, content: "one\ntwo\n" });
+        await h.engine.pull();
+        await h.vault.write(kept, bytes("one (edited)\ntwo\n"));
+        h.server.commit({ documentId: "doc", path: "CON.md" });
+        await h.engine.pull();
+        expect(await files(h.vault)).toEqual(new Map([[kept, "one (edited)\ntwo\n"]]));
+        h.server.commit({ documentId: "other", path: other, content: "another note\n" });
+        for (let round = 0; round < 2; round++) {
+          await h.engine.pull();
+          await h.engine.push();
+        }
+        if (restart) h.restart();
+        await h.engine.push();
+        await h.engine.pull();
+        return h;
+      }
+
+      it.each([false, true])("writes the other document and keeps the edit as a conflict copy the server gets (restart: %s)", async (restart) => {
+        const h = await occupied(restart);
+
+        const vault = await files(h.vault);
+        expect(vault.get(other)).toBe("another note\n");
+        const copies = [...vault].filter(([path]) => path !== other);
+        expect(copies).toEqual([[expect.stringMatching(copy), "one (edited)\ntwo\n"]]);
+        const live = h.server.liveFiles();
+        expect(live.get(other)).toBe("another note\n");
+        expect(live.get(copies[0]?.[0] ?? "")).toBe("one (edited)\ntwo\n");
+        expect(live.get("CON.md")).toBe("one\ntwo\n");
+        expect(live.size).toBe(3);
+      });
+
+      it("leaves no revision deferred but the unmaterializable one, which no longer claims a file", async () => {
+        const h = await occupied();
+
+        expect((await h.journal.listDeferred()).map(({ reason, revision }) => [reason, revision.documentId])).toEqual([["unmaterializable", "doc"]]);
+        expect(await reported(h)).toEqual([{ path: "CON.md", reason: "reserved-name", localPath: undefined }]);
+        expect(await h.journal.listPending()).toEqual([]);
+      });
+    });
+
+    it("keeps its edited file when another document the server puts next to it waits for a file of its own folder's name", async () => {
+      const h = windowsDevice();
+      h.server.commit({ documentId: "doc", path: "notes", content: "one\ntwo\n" });
+      await h.engine.pull();
+      await h.vault.write("notes", bytes("one (edited)\ntwo\n"));
+      h.server.commit({ documentId: "doc", path: "CON.md" });
+      await h.engine.pull();
+      // A new local file, not yet pushed, is in the way of the other document; the kept file is not.
+      await h.vault.write("notes 2", bytes("draft\n"));
+      h.server.commit({ documentId: "other", path: "NOTES 2/d.md", content: "another note\n" });
+
+      await h.engine.pull();
+      await h.engine.push();
+      await h.engine.pull();
+
+      const vault = await files(h.vault);
+      expect(vault.get("notes")).toBe("one (edited)\ntwo\n");
+      expect(vault.get("NOTES 2/d.md")).toBe("another note\n");
+      expect([...vault.keys()].filter((path) => path.startsWith("notes 2 (conflict "))).toHaveLength(1);
+      expect(await reported(h)).toEqual([{ path: "CON.md", reason: "reserved-name", localPath: "notes" }]);
+    });
   });
 
   // Once its file is removed, the parked document has nothing at its old

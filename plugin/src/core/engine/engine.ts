@@ -1093,6 +1093,31 @@ export class SyncEngine {
   }
 
   /**
+   * Gives up, as releaseKeptFile does, the claim of each unmaterializable
+   * document whose kept file is in the way of `path` as a file against a
+   * folder, by the platform's file key: `path` is one of the file's folders
+   * (`NOTES` for a kept `Notes/c.md`), or the file is one of `path`'s (a
+   * kept `notes` for `NOTES/d.md`). #390 covers the same path (#452). The vault
+   * refuses `path` while the file is there, and the document, parked, never
+   * moves it. Released, the file is an untracked one, which the next push
+   * sends as a create: the server refuses it for the deferred document's
+   * path, so it is kept as a conflict copy (the outermost folder in the way
+   * taking the conflict name, #359) and the deferred revision is written.
+   */
+  private async releaseKeptFilesAround(path: string, documentId: string): Promise<void> {
+    const key = this.fileKey(path);
+    const folders = new Set(ancestors(key));
+    for (const deferred of await this.journal.listDeferred()) {
+      if (deferred.reason !== "unmaterializable" || deferred.revision.documentId === documentId) continue;
+      const state = await this.journal.getDocument(deferred.revision.documentId);
+      if (state === undefined || state.deleted) continue;
+      const kept = this.fileKey(state.path);
+      if (!folders.has(kept) && !kept.startsWith(`${key}/`)) continue;
+      if (await this.releaseKeptFile(state.documentId)) this.changes.paths.add(state.path);
+    }
+  }
+
+  /**
    * Gives up the claim on its synced path of a document whose file is not
    * there any more and whose remote revision waits for a reason no pull or
    * push retries (`out-of-scope`, `too-large`, `invalid-path`), once the
@@ -2449,6 +2474,7 @@ export class SyncEngine {
     );
     for (const deferred of await this.journal.listDeferred()) {
       if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);
+      if (deferred.reason === "path-conflict" && !deferred.revision.deleted) await this.releaseKeptFilesAround(deferred.revision.path, deferred.revision.documentId);
     }
     if (deferrals.length === 0) return;
     const files = new Set(await this.vault.list());
