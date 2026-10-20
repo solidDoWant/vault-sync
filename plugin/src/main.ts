@@ -18,6 +18,7 @@ import { discoverIdentityProvider } from "./obsidian/discovery";
 import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
+import { pathRulesFor } from "./obsidian/platform-rules";
 import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
@@ -465,13 +466,8 @@ function localMaxDownloadBytes(): number {
   return Platform.isMobile ? 256 * 1024 * 1024 : 1024 * 1024 * 1024;
 }
 
-/**
- * The file-name rules of the device Obsidian runs on (SPEC.md §8), with the
- * vault folder's absolute path where Obsidian exposes it (desktop), so the
- * length limits count it. Android follows the POSIX rules.
- */
+/** The file-name rules of the device Obsidian runs on (pathRulesFor). */
 function localPathRules(app: App): PathRules {
-  const platform = Platform.isWin ? "windows" : Platform.isMacOS || Platform.isIosApp ? "macos" : "posix";
   const adapter = app.vault.adapter;
-  return adapter instanceof FileSystemAdapter ? { platform, root: adapter.getBasePath() } : { platform };
+  return pathRulesFor(Platform, adapter instanceof FileSystemAdapter ? adapter.getBasePath() : undefined);
 }

@@ -50,6 +50,25 @@ describe("unmaterializableReason", () => {
     }
   }
 
+  describe("Android shared storage", () => {
+    const android = { platform: "posix", sharedStorage: true } as const;
+    for (const character of ['"', "*", ":", "<", ">", "?", "\\", "|"]) {
+      it(`refuses ${JSON.stringify(character)} in a name or a folder, which plain posix accepts`, () => {
+        expect(unmaterializableReason(`a${character}b.md`, android)).toBe("forbidden-character");
+        expect(unmaterializableReason(`x${character}y/b.md`, android)).toBe("forbidden-character");
+        expect(unmaterializableReason(`a${character}b.md`, { platform: "posix" })).toBeUndefined();
+      });
+    }
+    it("accepts what Windows forbids beyond that set: reserved names, trailing dots and spaces, control characters", () => {
+      for (const path of ["CON.md", "trailing.", "trailing ", "a\u0001b.md", "a b. c.md"]) expect(unmaterializableReason(path, android)).toBeUndefined();
+    });
+    it("still refuses NUL and keeps the posix length limits", () => {
+      expect(unmaterializableReason("a\u0000b.md", android)).toBe("forbidden-character");
+      expect(unmaterializableReason(`notes/${repeat("a", 255)}`, android)).toBeUndefined();
+      expect(unmaterializableReason(`notes/${repeat("a", 256)}`, android)).toBe("name-too-long");
+    });
+  });
+
   describe("name length", () => {
     it("allows 255 UTF-8 bytes in a name on posix and macos, and refuses 256", () => {
       for (const platform of ["posix", "macos"] as const) {
