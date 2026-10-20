@@ -92,7 +92,7 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
 
-After the status, `N pending` counts local changes that the server has not acknowledged yet, and `N conflicts` counts the conflicts not yet resolved: conflict copies that still exist, and conflicts logged without a copy (when no conflict-copy name fits, see below) whose other device's version still waits. A conflict counts as resolved once you delete or rename its copy, or, for one without a copy, once the other device's version no longer waits. The [conflict view](#conflicts) lists them.
+After the status, `N pending` counts local changes that the server has not acknowledged yet (including edits made while the server is unreachable, before any push could record them; those are counted per file, from the moment Obsidian reports the change, until a push gets through), and `N conflicts` counts the conflicts not yet resolved: conflict copies that still exist, and conflicts logged without a copy (when no conflict-copy name fits, see below) whose other device's version still waits. A conflict counts as resolved once you delete or rename its copy, or, for one without a copy, once the other device's version no longer waits. The [conflict view](#conflicts) lists them.
 
 ### Conflicts
 
@@ -117,6 +117,18 @@ The view also lists **files this device cannot hold**: documents whose path on t
 It also lists **files too large for this device**: documents whose newest version on the server is larger than this device downloads, 1 GiB on desktop and 256 MiB on a phone or tablet (a download is held in memory whole, and mobile devices have far less of it). Each shows its path on the server and the version's size, and links to the earlier version if this device still has one. Nothing on this device is changed or removed, and the rest of the vault keeps syncing. A smaller version of the file (saved on another device) arrives here as usual and removes the entry. Until then, local changes to the earlier version are not synced.
 
 Finally, it lists **files that are not synced**: local files whose path the server does not accept. vault-sync checks every path against the server's rules before it sends anything, so such a file is never uploaded, and it stays on this device, untouched. A path is refused if it contains a control character (such as a line break or a tab, which Linux and Android allow in file names), if a folder or file name in it is made only of dots and spaces (such as `...`), if it is longer than 4096 bytes, or longer than 8192 bytes once its letters are normalized (a few characters, such as some musical symbols, grow when normalized), or, for a new file, if it contains a backslash (`\`) or starts with a character and a colon (`1:x.md`). Each entry shows the path, with any invisible character written as `\uXXXX` (a line break shows as `\u000A`), and why it is refused. The status shows `error` and names the file (or the first of several) with the reason. Rename or move the file to a valid path and it syncs like any other; delete it and the entry disappears too.
+
+The same section lists changes from other devices that cannot be written here because of their path. Each entry shows the path on the server and why. Nothing is lost: the change waits on this device and arrives once its path can be written, or is replaced by a later change of the same file. The reasons are:
+
+- the path is not a valid path for a file in a vault (it starts with a slash or a drive letter, a name in it is made only of dots, it contains a control character, or it is not valid text);
+- Obsidian would store the path under another name: Obsidian rewrites letters written in another Unicode form (an accent typed as a separate character, as some macOS tools write names) and non-breaking spaces, so the note would land at a different path. Rename it on another device;
+- a folder or file name in the path starts with a dot, which Obsidian hides and vault-sync does not sync as a note;
+- a file or folder on this device is in the way at that path; the change arrives once the path is free;
+- another device moved a note into a part of the config folder this device does not sync, while this device still has the note. The note stays where it is here, with any local edits, and the entry links to it; its changes are not synced while it is parked. Only a client other than vault-sync can make such a move.
+
+When a file is open in a view that cannot take an incoming change (a Markdown editor whose unsaved edits overlap it, a canvas or another plugin's view with unsaved changes, or a change whose content is not text), sync waits at that change: vault-sync saves the view and writes nothing. The section names the file as **Waiting for**, until the next sync gets past it. Saving or closing the file lets sync continue.
+
+A link in the view whose file no longer exists (removed since the view was drawn) shows a notice and redraws the view.
 
 ## Config folder sync
 
@@ -168,7 +180,8 @@ The server keeps every revision of every file until its retention policy thins o
 - **Vault Sync: Show file history** (for the open file), or **Show sync history** in a file's context menu, lists the file's revisions, newest first. Each line shows when the server received the revision, which device made it (`this device`, or another device by the start of its id; the server does not tell other devices' names), and what changed (edited, moved, deleted, restored). Older revisions load with **Load older versions**.
 - Choose a revision to preview it. Text is shown as it is (the start of a very long file only); other files by size.
 - **Restore this version** makes the chosen revision the file's current content again. Nothing is overwritten: the restore is a new revision on top of the current one, so the version it replaces stays in the history, and it reaches your other devices like any edit. Local edits not synced yet are pushed first, so they are in the history too. The file keeps its current name and folder.
-- **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was.
+- **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was. Config files are listed only while config sync and their category are on: restored with sync of them off, they would not show up on this device.
+- Members with the `viewer` role can browse history and preview versions but not restore them, so the modal offers no **Restore this version** button to them.
 
 A deleted file cannot be restored while another file has taken its path; move that file away first. History is only available while the vault syncs (signed in and connected).
 
