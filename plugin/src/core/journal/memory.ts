@@ -3,6 +3,7 @@ import type { ConflictRecord, DeferredRevision, DocumentState, Journal, PendingO
 /** A non-durable Journal for unit tests and the simulation harness. */
 export class InMemoryJournal implements Journal {
   private cursor = 0n;
+  private cursorAnchor: Uint8Array | undefined;
   private readonly documents = new Map<string, DocumentState>();
   private readonly pending = new Map<string, PendingOperation>();
   private readonly deferred = new Map<string, DeferredRevision>();
@@ -12,16 +13,20 @@ export class InMemoryJournal implements Journal {
     return Promise.resolve(this.cursor);
   }
 
-  setCursor(seq: bigint): Promise<void> {
+  getCursorAnchor(): Promise<Uint8Array | undefined> {
+    return Promise.resolve(this.cursorAnchor === undefined ? undefined : this.cursorAnchor.slice());
+  }
+
+  setCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
     if (seq < this.cursor) {
       return Promise.reject(new RangeError(`cursor cannot move backwards from ${String(this.cursor)} to ${String(seq)}`));
     }
-    this.cursor = seq;
-    return Promise.resolve();
+    return this.resetCursor(seq, anchor);
   }
 
-  resetCursor(seq: bigint): Promise<void> {
+  resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
     this.cursor = seq;
+    this.cursorAnchor = anchor === undefined ? undefined : anchor.slice();
     return Promise.resolve();
   }
 

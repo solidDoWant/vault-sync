@@ -27,7 +27,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
 import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
-import { EngineDisposedError, SyncEngine, type PushSummary } from "../plugin/src/core/engine/engine";
+import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } from "../plugin/src/core/engine/engine";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
@@ -85,6 +85,8 @@ export class EngineObserver {
   private readonly user: EngineUser;
   /** The last push that completed. */
   lastPush: PushSummary | undefined;
+  /** The last pull that completed. */
+  lastPull: PullSummary | undefined;
   /** The merge hook of the engine (and of the engines after a crash); the default is the engine's, threeWayMerge. */
   merge: MergeHook | undefined;
   /** The jitter of the engines' backoff, the same in every replay. */
@@ -144,7 +146,8 @@ export class EngineObserver {
       .pull()
       .then(
         (summary) => {
-          this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred`);
+          this.lastPull = summary;
+          this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred${summary.resynced ? ", resynced" : ""}`);
         },
         (error: unknown) => {
           if (interrupted(error)) {

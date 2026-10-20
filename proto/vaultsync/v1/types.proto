@@ -143,4 +143,10 @@ message Revision {
   string user_id = 11;
   // When the server accepted this revision.
   google.protobuf.Timestamp create_time = 12;
+  // Random value the server assigned when it stored this revision (16
+  // bytes). Unlike id, which the committing client chooses, it cannot be
+  // reproduced by a server restored from a backup that commits again: a
+  // client sends the anchor of the revision at its cursor as
+  // ListChangesRequest.since_anchor to detect such a restore (SPEC.md §6.1).
+  bytes anchor = 13;
 }

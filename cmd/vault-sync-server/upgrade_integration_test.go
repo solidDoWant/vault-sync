@@ -382,7 +382,7 @@ func (revisions *upgradeRevisions) commitDuringUpgrade(t *testing.T, previous, c
 	committed := revisions.commit(t, previous, request)
 
 	retried := revisions.client.mustCommit(t, current, request)
-	assert.Truef(t, proto.Equal(committed, retried), "a commit of the previous release retried on the current one returns it:\nwant %v\ngot  %v",
+	assert.Truef(t, proto.Equal(committed, withAnchorsOfBoth([]*vaultsyncv1.Revision{committed}, []*vaultsyncv1.Revision{retried})[0]), "a commit of the previous release retried on the current one returns it:\nwant %v\ngot  %v",
 		committed, retried)
 
 	revisions.requireListed(t, previous, current)
@@ -399,7 +399,7 @@ func (revisions *upgradeRevisions) commitAfterRestart(t *testing.T, restarted, c
 	committed := revisions.commit(t, restarted, request)
 
 	retried := revisions.client.mustCommit(t, current, request)
-	assert.Truef(t, proto.Equal(committed, retried), "a commit of the restarted release retried on the current one returns it:\nwant %v\ngot  %v",
+	assert.Truef(t, proto.Equal(committed, withAnchorsOfBoth([]*vaultsyncv1.Revision{committed}, []*vaultsyncv1.Revision{retried})[0]), "a commit of the restarted release retried on the current one returns it:\nwant %v\ngot  %v",
 		committed, retried)
 
 	revisions.commit(t, current, revisions.next(t, "edited on the current release after the restart"))
@@ -436,13 +436,46 @@ func (revisions *upgradeRevisions) requireListed(t *testing.T, servers ...*insta
 
 	for _, server := range servers {
 		changes, headSeq := revisions.client.changes(t, 0, server)
-		requireSameRevisions(t, revisions.committed, changes, "changes listed by %s", server.name)
+		requireSameRevisions(t, revisions.committed, withAnchorsOfBoth(revisions.committed, changes), "changes listed by %s", server.name)
 		requireGapless(t, changes, headSeq)
 
-		requireSameRevisions(t, history, revisions.client.history(t, history[0].GetDocumentId(), 0, server), "history from %s", server.name)
+		if !strings.HasPrefix(server.name, "previous") {
+			// Including revisions the previous release inserted, before
+			// and after this release's migration (#155).
+			for _, revision := range changes {
+				require.Len(t, revision.GetAnchor(), 16, "%s lists seq %d without an anchor", server.name, revision.GetSeq())
+			}
+		}
+
+		requireSameRevisions(t, history, withAnchorsOfBoth(history, revisions.client.history(t, history[0].GetDocumentId(), 0, server)), "history from %s", server.name)
 	}
 
 	changes, headSeq := revisions.client.changes(t, 1, servers...)
-	requireSameRevisions(t, revisions.committed, changes, "changes paged across releases")
+	requireSameRevisions(t, revisions.committed, withAnchorsOfBoth(revisions.committed, changes), "changes paged across releases")
 	requireGapless(t, changes, headSeq)
+}
+
+// withAnchorsOfBoth returns got with Revision.anchor (#155) copied from want
+// where exactly one of them lacks it: the previous release does not know the
+// field, so only one release's answer has it. Where both have an anchor,
+// got keeps its own, and requireSameRevisions compares them.
+func withAnchorsOfBoth(want, got []*vaultsyncv1.Revision) []*vaultsyncv1.Revision {
+	if len(want) != len(got) {
+		return got
+	}
+
+	adjusted := make([]*vaultsyncv1.Revision, len(got))
+
+	for index, revision := range got {
+		adjusted[index] = revision
+
+		wantAnchor := want[index].GetAnchor()
+		if (len(wantAnchor) == 0) != (len(revision.GetAnchor()) == 0) {
+			copied := proto.CloneOf(revision)
+			copied.Anchor = wantAnchor
+			adjusted[index] = copied
+		}
+	}
+
+	return adjusted
 }

@@ -442,18 +442,46 @@ type Changes struct {
 	HasMore bool
 	// HeadSeq is the vault's head_seq in the same snapshot.
 	HeadSeq int64
+	// Diverged reports that a cursor anchor was given and the vault holds no
+	// revision at the cursor with that anchor. Revisions is then empty and
+	// HasMore false.
+	Diverged bool
 }
 
 // ListChanges returns up to limit revisions with seq > since in ascending
 // seq order (SPEC.md §6.1), and the vault's head_seq, read from one
 // snapshot.
-func (vault *VaultStore) ListChanges(ctx context.Context, since int64, limit int) (Changes, error) {
+//
+// If anchor is valid, the client claims that the revision it applied at
+// seq since has that anchor. Unless the vault holds exactly that revision
+// at since, the vault's history no longer contains the client's cursor: a
+// database restore lost it (and new commits may have reused its seq), or
+// retention purged it. ListChanges then returns only Diverged and HeadSeq,
+// so the client resyncs (SPEC.md §8). A purge thus makes a false positive,
+// never a false negative: anchors are random, so no other revision matches.
+func (vault *VaultStore) ListChanges(ctx context.Context, since int64, anchor uuid.NullUUID, limit int) (Changes, error) {
 	var changes Changes
 
 	err := pgx.BeginTxFunc(ctx, vault.store.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		err := tx.QueryRow(ctx, `SELECT head_seq FROM vaults WHERE id = $1`, vault.vaultID).Scan(&changes.HeadSeq)
 		if err != nil {
 			return notFound(err, "look up head_seq")
+		}
+
+		if anchor.Valid {
+			var anchored bool
+
+			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM revisions WHERE vault_id = $1 AND seq = $2 AND anchor = $3)`,
+				vault.vaultID, since, anchor.UUID).Scan(&anchored)
+			if err != nil {
+				return fmt.Errorf("check cursor anchor: %w", err)
+			}
+
+			if !anchored {
+				changes.Diverged = true
+
+				return nil
+			}
 		}
 
 		// One extra row tells whether another page exists.

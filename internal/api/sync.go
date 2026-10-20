@@ -130,9 +130,14 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 		return nil, invalidArgument("since_seq must be at most %d", int64(math.MaxInt64))
 	}
 
+	anchor, err := cursorAnchor(since, request.Msg.GetSinceAnchor())
+	if err != nil {
+		return nil, err
+	}
+
 	limit := pageSize(request.Msg.GetPageSize(), DefaultChangesPageSize, service.maxChangesPageSize())
 
-	changes, err := vault.ListChanges(ctx, int64(since), limit)
+	changes, err := vault.ListChanges(ctx, int64(since), anchor, limit)
 	if err != nil {
 		return nil, service.internal(ctx, "cannot list changes", err)
 	}
@@ -140,12 +145,29 @@ func (service SyncService) ListChanges(ctx context.Context, request *connect.Req
 	return connect.NewResponse(changesPage(request.Header(), service.Limits.MaxResponseBytes, changes)), nil
 }
 
+// cursorAnchor parses a ListChanges since_anchor: empty (no check) or the
+// 16 bytes of a Revision.anchor, and only with a nonzero since_seq, since
+// seq zero is no revision.
+func cursorAnchor(since uint64, anchor []byte) (uuid.NullUUID, error) {
+	switch {
+	case len(anchor) == 0:
+		return uuid.NullUUID{}, nil
+	case len(anchor) != len(uuid.UUID{}):
+		return uuid.NullUUID{}, invalidArgument("since_anchor must be empty or %d bytes", len(uuid.UUID{}))
+	case since == 0:
+		return uuid.NullUUID{}, invalidArgument("since_anchor must be empty when since_seq is 0")
+	}
+
+	return uuid.NullUUID{UUID: uuid.UUID(anchor), Valid: true}, nil
+}
+
 // changesPage builds the ListChanges response for changes, for a request
 // with header and a response limit of limitBytes (zero: unbounded).
 func changesPage(header http.Header, limitBytes int, changes store.Changes) *vaultsyncv1.ListChangesResponse {
 	response := &vaultsyncv1.ListChangesResponse{
-		HasMore: changes.HasMore,
-		HeadSeq: uint64(max(changes.HeadSeq, 0)),
+		HasMore:  changes.HasMore,
+		HeadSeq:  uint64(max(changes.HeadSeq, 0)),
+		Diverged: changes.Diverged,
 	}
 
 	// The page also ends where its encoding would exceed the response
@@ -512,6 +534,7 @@ func revisionMessage(revision store.Revision) *vaultsyncv1.Revision {
 		DeviceId:   revision.DeviceID.String(),
 		UserId:     revision.UserID.String(),
 		CreateTime: timestamppb.New(revision.CreatedAt),
+		Anchor:     revision.Anchor[:],
 	}
 
 	if revision.ParentRevID.Valid {
