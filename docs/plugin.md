@@ -79,7 +79,7 @@ The realtime channel only makes changes arrive sooner; sync never depends on it 
 
 ### Status
 
-The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: Show sync status** (on mobile, where there is no status bar), for details. The settings show it too.
+The status bar (desktop) shows the sync status. Mobile has no status bar, so there a ribbon icon shows it instead: a check mark when idle, an upload cloud while local changes wait to be pushed, a warning triangle while conflicts are unresolved, and its own icon for syncing, offline, error, sign-in needed and no vault connected. Click the status bar or tap the icon, or run **Vault Sync: Show sync status**, for details. The settings show it too.
 
 | Status | Meaning |
 |---|---|
@@ -92,7 +92,7 @@ The status bar (desktop) shows the sync status. Click it, or run **Vault Sync: S
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |
 | `waiting for another window` | Another Obsidian window with this vault open runs an older Vault Sync and holds its sync journal. Close that window, or update Vault Sync there. |
 
-After the status, `N pending` counts local changes that the server has not acknowledged yet (including edits made while the server is unreachable, before any push could record them; those are counted per file, from the moment Obsidian reports the change, until a push gets through), and `N conflicts` counts the conflicts not yet resolved: conflict copies that still exist, and conflicts logged without a copy (when no conflict-copy name fits, see below) whose other device's version still waits. A conflict counts as resolved once you delete or rename its copy, or, for one without a copy, once the other device's version no longer waits. The [conflict view](#conflicts) lists them.
+After the status, `N pending` counts local changes that the server has not acknowledged yet (including edits made while the server is unreachable, before any push could record them; those are counted per file, from the moment Obsidian reports the change, until a push gets through), and `N conflicts` counts the conflicts not yet resolved: conflict copies that still exist, and conflicts logged without a copy (when no conflict-copy name fits, see below) whose document still waits to sync: the other device's version still waits, or, when another file took the path of a file you changed, your change is still pending. A conflict counts as resolved once you delete or rename its copy, or, for one without a copy, once its document no longer waits. The [conflict view](#conflicts) lists them.
 
 ### Conflicts
 
@@ -177,13 +177,13 @@ Obsidian reads its config files when it starts and keeps its own copy in memory.
 
 The server keeps every revision of every file until its retention policy thins old ones out (by default everything for 90 days, then one revision per day for a year, then one per week; see "Retention and history" in [configuration](configuration.md)). A file's current revision is never removed, and neither is the record that a file was deleted.
 
-- **Vault Sync: Show file history** (for the open file), or **Show sync history** in a file's context menu, lists the file's revisions, newest first. Each line shows when the server received the revision, which device made it (`this device`, or another device by the start of its id; the server does not tell other devices' names), and what changed (edited, moved, deleted, restored). Older revisions load with **Load older versions**.
+- **Vault Sync: Show file history** (for the open file), or **Show sync history** in a file's context menu, lists the file's revisions, newest first. Each line shows when the server received the revision, which device made it (`this device`, or another device by the name it was registered with, in quotes, or by the start of its id when the server does not name it), and what changed (edited, moved, deleted, restored). Every member of the vault sees the names of the devices that changed its files. Older revisions load with **Load older versions**.
 - Choose a revision to preview it. Text is shown as it is (the start of a very long file only); other files by size.
 - **Restore this version** makes the chosen revision the file's current content again. Nothing is overwritten: the restore is a new revision on top of the current one, so the version it replaces stays in the history, and it reaches your other devices like any edit. Local edits not synced yet are pushed first, so they are in the history too. The file keeps its current name and folder.
-- **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was. Config files are listed only while config sync and their category are on: restored with sync of them off, they would not show up on this device.
+- **Vault Sync: Browse deleted files** lists the deleted files this device knows of, most recently deleted first. Choose one to see its history: the newest entry is the delete, whose preview shows the file as it was when it was deleted. Restoring that entry, or any older one, brings the file back where it was, or, if another file has taken that path since, at a path you choose (see below). Config files are listed only while config sync and their category are on: restored with sync of them off, they would not show up on this device.
 - Members with the `viewer` role can browse history and preview versions but not restore them, so the modal offers no **Restore this version** button to them. If the plugin cannot read the role (the server is unreachable, say), it offers the button and the server decides.
 
-A deleted file cannot be restored while another file has taken its path; move that file away first. History is only available while the vault syncs (signed in and connected).
+If another file has taken a deleted file's path, the restore fails at first and the modal then offers **Restore at another path**, filled in with a free path next to the old one (`plan (restored).md`). Edit it if you like, and **Restore here** brings the file back there, with its history. The path must be one the server accepts for a new file, that this device can hold and that the vault syncs now (a config file path only while config sync and its category are on). Or move the other file away and restore again. History is only available while the vault syncs (signed in and connected).
 
 ## Identity provider setup (Authentik)
 

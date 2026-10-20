@@ -12,6 +12,7 @@ import (
 
 	"connectrpc.com/connect"
 	"github.com/google/uuid"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
@@ -276,15 +277,35 @@ func historyPage(header http.Header, limitBytes int, history store.History) *vau
 	budget := newPageBudget(header, limitBytes)
 	hasMore := history.HasMore
 
+	// Each device is named once, with the first revision of the page it
+	// committed, and charged to the budget with it.
+	named := make(map[uuid.UUID]bool)
+
 	for _, revision := range history.Revisions {
 		message := revisionMessage(revision)
-		if !budget.admit(message) {
+		entries := []proto.Message{message}
+
+		name, known := history.DeviceNames[revision.DeviceID]
+
+		var deviceName *vaultsyncv1.DeviceName
+		if known && !named[revision.DeviceID] {
+			deviceName = &vaultsyncv1.DeviceName{DeviceId: revision.DeviceID.String(), Name: name}
+			entries = append(entries, deviceName)
+		}
+
+		if !budget.admit(entries...) {
 			hasMore = true
 
 			break
 		}
 
 		response.Revisions = append(response.Revisions, message)
+
+		if deviceName != nil {
+			named[revision.DeviceID] = true
+
+			response.DeviceNames = append(response.DeviceNames, deviceName)
+		}
 	}
 
 	if hasMore && len(response.Revisions) > 0 {

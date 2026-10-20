@@ -83,6 +83,8 @@ export class InMemoryServer {
   /** Called after every handled call; throw from it to lose the response. */
   responseInterceptor: ResponseInterceptor | undefined;
   private revisions: Revision[] = [];
+  /** Registered device names, by device id: GetDocumentHistory names the devices of its revisions (SPEC.md §11). */
+  readonly deviceNames = new Map<string, string>();
   /** Purge markers: the anchor of each purged revision, by seq (SPEC.md §11). */
   private purged = new Map<bigint, string>();
   private readonly purgeMarkers: boolean;
@@ -155,10 +157,15 @@ export class InMemoryServer {
           const limit = Math.min(request.pageSize === 0 ? 100 : request.pageSize, this.maxHistoryPageSize);
           const page = older.slice(0, limit);
           const last = page.at(-1);
+          const devices = [...new Set(page.map((revision) => revision.deviceId))];
           return {
             document: { id: head.documentId, vaultId: this.vaultId, kind: head.kind, headRevId: head.id },
             revisions: page,
             nextPageToken: older.length > limit && last !== undefined ? String(last.seq) : "",
+            deviceNames: devices.flatMap((deviceId) => {
+              const name = this.deviceNames.get(deviceId);
+              return name === undefined ? [] : [{ deviceId, name }];
+            }),
           };
         },
       });
