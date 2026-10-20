@@ -33,9 +33,13 @@ export const initialStatus: SyncStatus = {
   pending: 0,
 };
 
-/** Whether `error` means the server or the identity provider could not be reached (no network, DNS, a proxy's 502/503/504, a timeout). */
+/**
+ * Whether `error` means the server or the identity provider could not be
+ * reached (no network, DNS, a proxy's 502/503/504, a timeout, the provider's
+ * 5xx). An identity provider's invalid answer is not offline but an error.
+ */
 export function isOffline(error: unknown): boolean {
-  if (error instanceof IdentityProviderError) return true;
+  if (error instanceof IdentityProviderError) return error.unreachable;
   return error instanceof ConnectError && (error.code === Code.Unavailable || error.code === Code.DeadlineExceeded);
 }
 

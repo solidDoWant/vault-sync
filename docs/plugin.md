@@ -74,7 +74,7 @@ Stopping sync (signing out, disabling the plugin, quitting) never loses a local 
 The realtime channel only makes changes arrive sooner; sync never depends on it (SPEC.md §6.4). Every time the plugin (re)subscribes, it pulls from where it left off, so a change made while it was disconnected is never missed.
 
 - It authenticates with the same access token as the API, sent as the `vaultsync.bearer.` WebSocket subprotocol, never in the URL, and never logged. When the token expires the server closes the connection; the plugin gets a fresh token from its stored sign-in, with no prompt, and reconnects.
-- When the connection drops or the server refuses it (the server restarting or draining, too many connections, the network going away), the plugin reconnects after a random delay that doubles with every consecutive failure, from about a second up to a minute. Meanwhile the 30-second sync keeps running.
+- When the connection drops or the server refuses it (the server restarting or draining, too many connections, the network going away), the plugin reconnects after a random delay that doubles with every consecutive failure, from about a second up to a minute. The delay starts over only once a connection has stayed up for 30 seconds. Meanwhile the 30-second sync keeps running.
 - The server must allow Obsidian's origins (`app://obsidian.md`, `capacitor://localhost`, `http://localhost`; the server allows them by default), and a reverse proxy in front of it must pass WebSocket upgrades on `/v1/realtime` ([configuration](configuration.md)). Without the channel, changes from other devices still arrive within 30 seconds.
 
 ### Status
@@ -86,7 +86,7 @@ The status bar (desktop) shows the sync status. Mobile has no status bar, so the
 | `starting` | Sync is starting: the plugin registers this device with the server and opens its sync journal. |
 | `idle` | The last sync succeeded. |
 | `syncing` | A pull or push is running. |
-| `offline` | The server or the identity provider could not be reached. Local changes are kept, and the next sync pushes them. |
+| `offline` | The server or the identity provider could not be reached, or the identity provider failed with a server error (HTTP 5xx). Local changes are kept, and the next sync pushes them. An identity provider that answers with something invalid (not JSON, a missing field) shows `error` instead, since that points at its configuration. |
 | `error` | The last sync failed for another reason, or some local files cannot be synced because the server does not accept their paths. The details say why and name the file; the [conflict view](#conflicts) lists every such file. |
 | `sign-in needed` | The session ended. Sign in again to resume. |
 | `signed out` / `no vault connected` | Sync is off until you sign in and connect a vault. |

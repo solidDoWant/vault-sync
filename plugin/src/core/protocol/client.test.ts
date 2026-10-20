@@ -205,10 +205,13 @@ describe("createProtocolClient with refreshable tokens", () => {
   it("fails without reaching the server when sign-in is required or the provider is down", async () => {
     const server = picky(new Set(["token-1"]));
     const signedOut = createProtocolClient({ transport: server.transport, auth: authenticator({ fail: new SignInRequiredError("not signed in") }).auth });
-    const providerDown = createProtocolClient({ transport: server.transport, auth: authenticator({ fail: new IdentityProviderError("unreachable") }).auth });
+    const providerDown = createProtocolClient({ transport: server.transport, auth: authenticator({ fail: new IdentityProviderError("unreachable", { unreachable: true }) }).auth });
+    const providerBroken = createProtocolClient({ transport: server.transport, auth: authenticator({ fail: new IdentityProviderError("the token response is not JSON") }).auth });
 
     await expect(signedOut.vaults.listVaults({})).rejects.toSatisfy((error) => ConnectError.from(error).code === Code.Unauthenticated);
     await expect(providerDown.vaults.listVaults({})).rejects.toSatisfy((error) => ConnectError.from(error).code === Code.Unavailable);
+    // An invalid answer is no outage (#413): not UNAVAILABLE, so it is not shown as offline.
+    await expect(providerBroken.vaults.listVaults({})).rejects.toSatisfy((error) => ConnectError.from(error).code === Code.Unknown);
     expect(server.received).toEqual([]);
   });
 });

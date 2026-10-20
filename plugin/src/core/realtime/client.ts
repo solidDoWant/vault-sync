@@ -55,6 +55,9 @@ export type RealtimeBackoff = Backoff;
 
 export const defaultRealtimeBackoff: Readonly<RealtimeBackoff> = { initialMs: 1000, maxMs: 60_000 };
 
+/** How long a subscription must stay up before its close starts the backoff over: 30 s. */
+export const defaultStableAfterMs = 30_000;
+
 export interface RealtimeClientOptions {
   vaultId: string;
   connect: RealtimeConnector;
@@ -77,6 +80,15 @@ export interface RealtimeClientOptions {
   /** Uniform in [0, 1); spreads reconnects out. */
   random?: () => number;
   backoff?: RealtimeBackoff;
+  /**
+   * How long, in milliseconds, a subscription must have stayed up for its
+   * close to start the backoff over. One that closes sooner (a server that
+   * subscribes and then drops the connection at once) counts as a failure,
+   * so the reconnect delay keeps growing. Defaults to defaultStableAfterMs.
+   */
+  stableAfterMs?: number;
+  /** The clock that measures how long a subscription stayed up, in milliseconds. Defaults to Date.now. */
+  now?: () => number;
   /** Diagnostics. Messages never contain the token. */
   log?: (message: string) => void;
 }
@@ -98,8 +110,8 @@ export function realtimeUrl(serverUrl: string): string {
  * `onChange` whenever the vault may have changed. Any close reconnects with
  * bounded, jittered backoff (a drain, a refused upgrade, a dropped network,
  * a rate limit); the fatal UNAUTHENTICATED frame first invalidates the token,
- * so the reconnect carries a fresh one. The backoff resets once a subscribe
- * succeeds.
+ * so the reconnect carries a fresh one. The backoff starts over once a
+ * subscription has stayed up for `stableAfterMs`.
  */
 export class RealtimeClient {
   private started = false;
@@ -108,6 +120,8 @@ export class RealtimeClient {
   /** Bumped by every connect and by stop, so a stale socket's events are ignored. */
   private generation = 0;
   private failures = 0;
+  /** When the current connection's subscribe succeeded (now()), if it did. */
+  private subscribedAt: number | undefined;
   private retry: unknown;
   private pulling = false;
   private again = false;
@@ -116,12 +130,16 @@ export class RealtimeClient {
   private readonly timers: RealtimeTimers;
   private readonly random: () => number;
   private readonly backoff: RealtimeBackoff;
+  private readonly stableAfterMs: number;
+  private readonly now: () => number;
   private readonly log: (message: string) => void;
 
   constructor(private readonly options: RealtimeClientOptions) {
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
     this.backoff = options.backoff ?? defaultRealtimeBackoff;
+    this.stableAfterMs = options.stableAfterMs ?? defaultStableAfterMs;
+    this.now = options.now ?? Date.now;
     this.log =
       options.log ??
       ((message) => {
@@ -199,7 +217,8 @@ export class RealtimeClient {
     switch (frame.frame.case) {
       case "subscribed":
         if (frame.frame.value.vaultId !== vaultId) return false;
-        this.failures = 0;
+        // The backoff starts over only if this subscription stays up (#413).
+        this.subscribedAt = this.now();
         // Notifications sent before the subscription are gone: pull from the
         // cursor if it is below the head the subscription started at.
         this.changed(frame.frame.value.headSeq);
@@ -228,6 +247,9 @@ export class RealtimeClient {
 
   private reconnectLater(reason: string): void {
     if (this.stopped) return;
+    const subscribedAt = this.subscribedAt;
+    this.subscribedAt = undefined;
+    if (subscribedAt !== undefined && this.now() - subscribedAt >= this.stableAfterMs) this.failures = 0;
     this.failures++;
     const delay = reconnectDelay(this.failures, this.backoff, this.random());
     this.log(`realtime connection ${reason}; reconnecting in ${String(Math.round(delay))} ms`);

@@ -309,10 +309,11 @@ describe("RealtimeClient", () => {
       expect(server.connections).toHaveLength(7);
     });
 
-    it("starts the backoff over once a subscribe succeeds", async () => {
+    it("starts the backoff over once a subscription has stayed up for stableAfterMs", async () => {
       const server = new InMemoryRealtimeServer();
       server.refuseWith = 503;
-      const { client, timers, pulls } = setup({ server, options: { random: () => 1 } });
+      let now = 0;
+      const { client, timers, pulls } = setup({ server, options: { random: () => 1, stableAfterMs: 30_000, now: () => now } });
       client.start();
       await flush();
       timers.fire();
@@ -323,9 +324,30 @@ describe("RealtimeClient", () => {
       timers.fire();
       await flush();
       expect(pulls()).toBe(1);
+      now += 30_000;
       server.closeAll(1001);
       await flush();
       expect(timers.delays).toEqual([1000, 2000, 1000]);
+    });
+
+    it("keeps growing the delay, up to the bound, when the server closes every connection right after subscribed (#413)", async () => {
+      const server = new InMemoryRealtimeServer();
+      let now = 0;
+      const { client, timers, pulls } = setup({ server, options: { random: () => 1, backoff: { initialMs: 1000, maxMs: 10_000 }, stableAfterMs: 30_000, now: () => now } });
+      client.start();
+      for (let connection = 0; connection < 7; connection++) {
+        await flush();
+        expect(server.open).toHaveLength(1);
+        // Up for just under the time that would start the backoff over.
+        now += 29_999;
+        server.closeAll(1001);
+        await flush();
+        timers.fire();
+      }
+      await flush();
+
+      expect(pulls()).toBe(8);
+      expect(timers.delays).toEqual([1000, 2000, 4000, 8000, 10_000, 10_000, 10_000]);
     });
 
     it("retries later when no access token can be had", async () => {

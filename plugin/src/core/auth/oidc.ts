@@ -77,9 +77,25 @@ export class SignInRequiredError extends Error {
   override readonly name = "SignInRequiredError";
 }
 
-/** The identity provider could not be reached or answered with something that is not a valid response. A later attempt may succeed. */
+/**
+ * The identity provider could not be reached or answered with something that
+ * is not a valid response. A later attempt may succeed.
+ */
 export class IdentityProviderError extends Error {
   override readonly name = "IdentityProviderError";
+  /**
+   * Whether the provider could not be reached or failed on its side (no
+   * network, DNS, a refused connection, an HTTP 5xx): the device is offline
+   * as far as the user can tell. False for an answer that is not a valid
+   * response (a malformed body, a missing field, an unexpected 4xx), which
+   * points at a misconfigured provider instead (#413).
+   */
+  readonly unreachable: boolean;
+
+  constructor(message: string, options: { unreachable?: boolean } = {}) {
+    super(message);
+    this.unreachable = options.unreachable ?? false;
+  }
 }
 
 /** The scopes requested at sign-in: `offline_access` asks for a refresh token. */
@@ -122,7 +138,7 @@ export async function discoverOidc(http: HttpClient, issuer: string): Promise<Oi
   requireSecureUrl(issuer, "The OIDC issuer");
   const url = `${issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
   const response = await send(http, { url, method: "GET", headers: { Accept: "application/json" } });
-  if (response.status !== 200) throw new IdentityProviderError(`OpenID discovery at ${url} failed with HTTP ${String(response.status)}`);
+  if (response.status !== 200) throw new IdentityProviderError(`OpenID discovery at ${url} failed with HTTP ${String(response.status)}`, { unreachable: response.status >= 500 });
   const document = parseObject(response.text, "the OpenID configuration");
   if (document.issuer !== issuer) throw new Error(`the OpenID configuration names issuer ${JSON.stringify(document.issuer)}, not ${JSON.stringify(issuer)}`);
   const deviceAuthorizationEndpoint = document.device_authorization_endpoint;
@@ -239,7 +255,7 @@ export async function refreshAccessToken(
 ): Promise<TokenSet> {
   const now = options.now ?? Date.now;
   const response = await postForm(http, endpoints.tokenEndpoint, { grant_type: "refresh_token", refresh_token: refreshToken, client_id: clientId });
-  if (response.status >= 500) throw new IdentityProviderError(`the token endpoint failed with HTTP ${String(response.status)}`);
+  if (response.status >= 500) throw new IdentityProviderError(`the token endpoint failed with HTTP ${String(response.status)}`, { unreachable: true });
   const body = parseObject(response.text, "the token response");
   if (response.status === 200) return tokenSet(body, now());
   const error = oauthError(response.status, body);
@@ -349,7 +365,9 @@ async function send(http: HttpClient, request: HttpRequest): Promise<HttpRespons
   try {
     response = await http(request);
   } catch (error) {
-    throw new IdentityProviderError(`could not reach the identity provider at ${new URL(request.url).origin}: ${error instanceof Error ? error.message : String(error)}`);
+    throw new IdentityProviderError(`could not reach the identity provider at ${new URL(request.url).origin}: ${error instanceof Error ? error.message : String(error)}`, {
+      unreachable: true,
+    });
   }
   if (utf8Length(response.text) > maxResponseBytes) throw new IdentityProviderError(`the identity provider's response is larger than ${String(maxResponseBytes)} bytes`);
   return response;
@@ -379,7 +397,9 @@ function requireString(body: Record<string, unknown>, field: string): string {
 }
 
 function oauthError(status: number, body: Record<string, unknown>): Error {
-  if (typeof body.error !== "string" || body.error === "") return new IdentityProviderError(`the identity provider answered HTTP ${String(status)} without an OAuth error`);
+  if (typeof body.error !== "string" || body.error === "") {
+    return new IdentityProviderError(`the identity provider answered HTTP ${String(status)} without an OAuth error`, { unreachable: status >= 500 });
+  }
   return new OAuthError(body.error, typeof body.error_description === "string" ? body.error_description : undefined);
 }
 
