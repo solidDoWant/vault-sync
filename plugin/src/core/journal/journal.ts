@@ -40,8 +40,14 @@ export interface Journal {
    * only document with that path is one: a deleted document keeps its last
    * path (SPEC.md §6.3), so a tombstone and a live document can share a path.
    * The comparison is exact; path keys are the engine's concern.
+   *
+   * The engine never leaves two live documents at one path, but the journal
+   * does not enforce it; should it happen, the one with the lowest
+   * `documentId` (in UTF-16 code unit order, IndexedDB's key order) is
+   * returned, so every implementation picks the same one.
    */
   findDocumentByPath(path: string): Promise<DocumentState | undefined>;
+  /** Every document's state, live and deleted, in `documentId` order (UTF-16 code units, as findDocumentByPath). */
   listDocuments(): Promise<DocumentState[]>;
   /** Inserts or replaces the state of `state.documentId`. */
   putDocument(state: DocumentState): Promise<void>;

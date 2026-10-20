@@ -343,6 +343,38 @@ export const vaultAdapterConformance: readonly ConformanceCase[] = [
     },
   },
   {
+    // Echo suppression (SPEC.md §8) matches the events at one path against
+    // the engine's changes there in order: a delete reported after the
+    // create that followed it would be taken for the user's.
+    name: "changes at one path are reported as events in the order they happened, a rename onto it too",
+    run: async (adapter, options) => {
+      await adapter.write("b.md", bytes("b"));
+      const recorder = new EventRecorder(adapter);
+      try {
+        await adapter.write("a.md", bytes("1"));
+        await adapter.delete("a.md");
+        await adapter.write("a.md", bytes("2"));
+        await adapter.delete("a.md");
+        await adapter.rename("b.md", "a.md");
+        await adapter.write("a.md", bytes("3"));
+        await recorder.expect(
+          [
+            { type: "create", path: "a.md" },
+            { type: "delete", path: "a.md" },
+            { type: "create", path: "a.md" },
+            { type: "delete", path: "a.md" },
+            { type: "rename", path: "a.md", oldPath: "b.md" },
+            { type: "modify", path: "a.md" },
+          ],
+          options,
+          "events",
+        );
+      } finally {
+        recorder.stop();
+      }
+    },
+  },
+  {
     // The sync engine sees a folder rename only through these events, and
     // syncs it as renames of its documents (SPEC.md §6.3).
     name: "a folder rename is reported as a rename of every file in it",

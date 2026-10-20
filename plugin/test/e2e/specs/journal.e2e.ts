@@ -26,6 +26,11 @@ describe("IndexedDB journal inside Obsidian", function () {
   // different keys in one IndexedDB origin are isolated is a unit test
   // (src/obsidian/journal.test.ts): reloadObsidian relaunches Obsidian with a
   // fresh browser profile, so two vaults never share an origin here.
+  // wdio-obsidian-service (3.3.0) gives every vault switch a new
+  // --user-data-dir and has no option to keep the old one, so the second
+  // vault's cursor of 0 below holds trivially, even with a shared journal
+  // key: it only shows the second vault starts from an empty journal. Make it
+  // a real isolation check if the service ever lets a profile be reused.
   it("keys each vault's journal by its own Obsidian vault id", async function () {
     const key = { serverUrl: "https://e2e.invalid", vaultId: "isolation" };
     const primary = await callHarness("localVaultId");

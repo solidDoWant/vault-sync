@@ -1,19 +1,15 @@
 import esbuild from "esbuild";
-import { builtinModules } from "node:module";
+
+import { releaseExternals } from "./scripts/externals.ts";
 
 const production = process.argv[2] === "production";
 
 const context = await esbuild.context({
   entryPoints: ["src/main.ts"],
   bundle: true,
-  // Provided by Obsidian at runtime; never bundled.
-  external: [
-    "obsidian",
-    "electron",
-    "@codemirror/*",
-    "@lezer/*",
-    ...builtinModules,
-  ],
+  // Provided by Obsidian at runtime; never bundled. test/mobile.test.ts
+  // checks that mobile provides them all.
+  external: [...releaseExternals],
   format: "cjs",
   target: "es2022",
   logLevel: "info",

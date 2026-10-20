@@ -133,6 +133,40 @@ export function serialized(task: () => Promise<void>): () => Promise<void> {
   };
 }
 
+/**
+ * Records a change of the device's refresh token in `data` and saves it.
+ * A token is kept with `identityProvider`, the provider that issued it (a
+ * rotated token, given none, keeps the stored one). Dropping the token (a
+ * sign-out, or `invalid_grant`) drops the provider too, so the next sign-in
+ * asks the server again. If storing a token fails to save, `data` is left
+ * as it was, so a failed sign-in leaves no provider (or token) behind;
+ * dropping one is never undone, so a later save still removes it.
+ */
+export async function persistRefreshToken(data: PluginData, refreshToken: string | undefined, identityProvider: IdentityProvider | undefined, save: () => Promise<void>): Promise<void> {
+  if (refreshToken === undefined) {
+    delete data.refreshToken;
+    delete data.identityProvider;
+    await save();
+    return;
+  }
+  const before = { refreshToken: data.refreshToken, identityProvider: data.identityProvider };
+  data.refreshToken = refreshToken;
+  if (identityProvider !== undefined) data.identityProvider = { ...identityProvider };
+  const stored = { refreshToken: data.refreshToken, identityProvider: data.identityProvider };
+  try {
+    await save();
+  } catch (error) {
+    // Rolled back only if no later change replaced these values meanwhile.
+    if (data.refreshToken === stored.refreshToken && data.identityProvider === stored.identityProvider) {
+      if (before.refreshToken === undefined) delete data.refreshToken;
+      else data.refreshToken = before.refreshToken;
+      if (before.identityProvider === undefined) delete data.identityProvider;
+      else data.identityProvider = before.identityProvider;
+    }
+    throw error;
+  }
+}
+
 /** The server URL with surrounding whitespace and trailing slashes removed, as the transport wants it. */
 export function serverBaseUrl(data: PluginData): string {
   return data.serverUrl.trim().replace(/\/+$/, "");

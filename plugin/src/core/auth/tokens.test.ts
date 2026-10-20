@@ -176,6 +176,72 @@ describe("TokenManager", () => {
     expect(idp.refreshes).toBe(1);
   });
 
+  it("never hands out the previous session's access token while a sign-in on a signed-in manager is being stored", async () => {
+    let releaseWrite: (() => void) | undefined;
+    const { manager, idp, time } = setup({
+      manager: {
+        persist: () => new Promise<void>((resolve) => (releaseWrite = resolve)),
+      },
+    });
+    const previous = await manager.accessToken();
+    expect(idp.refreshes).toBe(1);
+
+    const issued = idp.issue();
+    const signedIn = manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: time.now, expiresAt: time.now + 300_000 });
+    await settle();
+    expect(releaseWrite).toBeDefined();
+
+    // While the write is held, neither the cached token nor a refresh with the old refresh token is used.
+    await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
+    expect(idp.refreshes).toBe(1);
+
+    releaseWrite?.();
+    await signedIn;
+    expect(manager.state).toBe("signed-in");
+    const current = await manager.accessToken();
+    expect(current).toBe(issued.accessToken);
+    expect(current).not.toBe(previous);
+  });
+
+  it("never hands a refresh that a sign-in overtook the previous session's access token", async () => {
+    let releaseWrite: (() => void) | undefined;
+    const { manager, idp, time } = setup({
+      manager: {
+        persist: () => new Promise<void>((resolve) => (releaseWrite = resolve)),
+      },
+    });
+    await manager.accessToken();
+    // Within the refresh margin: the old token is still cached, but the next call refreshes.
+    time.now += 250_000;
+
+    idp.holdRefreshes();
+    const refreshing = manager.accessToken();
+    await settle();
+    const issued = idp.issue();
+    const signedIn = manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: time.now, expiresAt: time.now + 300_000 });
+    idp.release();
+
+    // The overtaken refresh settles while the sign-in's write is still held.
+    await expect(refreshing).rejects.toBeInstanceOf(SignInRequiredError);
+    releaseWrite?.();
+    await signedIn;
+    expect(await manager.accessToken()).toBe(issued.accessToken);
+  });
+
+  it("is signed out, not signed in with no tokens, when storing a sign-in on a signed-in manager fails", async () => {
+    const { manager, idp, states } = setup({
+      manager: { persist: () => Promise.reject(new Error("disk full")) },
+    });
+    await manager.accessToken();
+
+    const issued = idp.issue();
+    await expect(manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 })).rejects.toThrow(/disk full/);
+
+    expect(manager.state).toBe("signed-out");
+    expect(states).toEqual(["signed-out"]);
+    await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
+  });
+
   it("refuses a sign-in that issued no refresh token", async () => {
     const { manager, persisted } = setup({ signedIn: false });
 
@@ -249,18 +315,20 @@ describe("TokenManager", () => {
         },
       },
     });
-    // A sign-in whose write is held; a refresh that starts meanwhile has to queue its write behind it.
+    // A sign-in whose write is held. It already forgot the previous session's
+    // refresh token, so a call meanwhile does not refresh with it, and no
+    // rotated token of the old session can be queued behind the write.
     const issued = idp.issue();
     const signedIn = manager.signIn({ accessToken: issued.accessToken, refreshToken: issued.refreshToken, obtainedAt: 1_000_000_000 });
-    const pending = manager.accessToken();
+    const pending = expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
     await settle();
-    expect(idp.refreshes).toBe(1);
+    expect(idp.refreshes).toBe(0);
     const signedOut = manager.signOut();
     releaseFirst?.();
 
     await expect(signedIn).rejects.toThrow(/signed out/);
     await signedOut;
-    await expect(pending).rejects.toBeInstanceOf(SignInRequiredError);
+    await pending;
     expect(writes).toEqual([issued.refreshToken, undefined]);
     expect(manager.state).toBe("signed-out");
     await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);

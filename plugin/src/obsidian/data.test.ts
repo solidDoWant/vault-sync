@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { configSyncSettings, oidcConfig, parsePluginData, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
+import { configSyncSettings, oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type PluginData } from "./data";
 
 const complete: PluginData = { serverUrl: "https://sync.example", oidcIssuer: "https://auth.example/o/vs/", oidcClientId: "vault-sync", deviceName: "" };
 
@@ -77,6 +77,65 @@ describe("oidcConfig", () => {
 
   it("falls back to the settings, trimmed, for a sign-in from before the provider was stored", () => {
     expect(oidcConfig({ ...complete, oidcIssuer: " https://auth.example/o/vs/ ", oidcClientId: " vault-sync " })).toEqual({ issuer: "https://auth.example/o/vs/", clientId: "vault-sync" });
+  });
+});
+
+describe("persistRefreshToken", () => {
+  const provider = { issuer: "https://discovered.example/", clientId: "discovered" };
+  const signedIn = (): PluginData => ({ ...complete, refreshToken: "secret", identityProvider: { ...provider } });
+  /** A save that records what it was asked to write. */
+  function recordingSave(data: PluginData) {
+    const saved: PluginData[] = [];
+    return { saved, save: () => Promise.resolve(void saved.push(structuredClone(data))) };
+  }
+  const failingSave = () => Promise.reject(new Error("disk full"));
+
+  it("drops the identity provider with the refresh token (sign-out, invalid_grant), in memory and in what it saves", async () => {
+    const data = signedIn();
+    const { saved, save } = recordingSave(data);
+
+    await persistRefreshToken(data, undefined, undefined, save);
+
+    expect(data.refreshToken).toBeUndefined();
+    expect(data.identityProvider).toBeUndefined();
+    expect(saved).toEqual([complete]);
+  });
+
+  it("keeps the drop in memory when its save fails, so the next save removes both", async () => {
+    const data = signedIn();
+
+    await expect(persistRefreshToken(data, undefined, undefined, failingSave)).rejects.toThrow("disk full");
+
+    expect(data).toEqual(complete);
+  });
+
+  it("stores a sign-in's refresh token with the provider that issued it", async () => {
+    const data: PluginData = { ...complete };
+    const { saved, save } = recordingSave(data);
+
+    await persistRefreshToken(data, "secret", provider, save);
+
+    expect(data).toEqual(signedIn());
+    expect(saved).toEqual([signedIn()]);
+  });
+
+  it("keeps the stored provider for a rotated refresh token", async () => {
+    const data = signedIn();
+    const { saved, save } = recordingSave(data);
+
+    await persistRefreshToken(data, "rotated", undefined, save);
+
+    expect(data).toEqual({ ...signedIn(), refreshToken: "rotated" });
+    expect(saved).toEqual([{ ...signedIn(), refreshToken: "rotated" }]);
+  });
+
+  it("leaves no identity provider (nor refresh token) in memory when a sign-in's save fails", async () => {
+    const data: PluginData = { ...complete };
+
+    await expect(persistRefreshToken(data, "secret", provider, failingSave)).rejects.toThrow("disk full");
+
+    expect(data).toEqual(complete);
+    expect("identityProvider" in data).toBe(false);
   });
 });
 

@@ -244,6 +244,22 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     }),
   ),
   {
+    name: "lists documents in document id order, whatever order they were stored in",
+    run: async (journal, reopen) => {
+      for (const id of ["b", "c", "a", "B"]) await journal.putDocument(sampleDocument({ documentId: id, path: `${id}.md` }));
+      // UTF-16 code unit order: upper case before lower case.
+      const listed = (await (await reopen()).listDocuments()).map((state) => state.documentId);
+      assertEqual(listed, ["B", "a", "b", "c"], "listed documents, in order");
+    },
+  },
+  {
+    name: "finds the live document with the lowest document id when two live documents share a path",
+    run: async (journal, reopen) => {
+      for (const id of ["b", "a", "c"]) await journal.putDocument(sampleDocument({ documentId: id, path: "a.md", revisionId: `r-${id}` }));
+      assertEqual((await (await reopen()).findDocumentByPath("a.md"))?.documentId, "a", "document at a.md");
+    },
+  },
+  {
     name: "never returns a tombstone by path, even when it is the only document at the path",
     run: async (journal, reopen) => {
       await journal.putDocument(sampleDocument({ path: "a.md", deleted: true }));
