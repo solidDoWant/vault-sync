@@ -2175,8 +2175,17 @@ export class SyncEngine {
       }
       const content = await this.readOrNull(path);
       if (state !== undefined) {
-        if (content === null) removals.push(this.operation(state, state.path, null));
-        else if (sha256Hex(content) !== state.baseHash) edits.push(this.operation(state, path, content));
+        if (content === null) {
+          removals.push(this.operation(state, state.path, null));
+          continue;
+        }
+        // On a case-insensitive platform the vault may hold the file under
+        // another spelling with no rename event to say so (the user's rename
+        // was lost to a restart, or a new file took the path the note left):
+        // committed under the vault's spelling, the server names the note as
+        // the vault does, never keeping a spelling the vault does not hold (#481).
+        const spelling = await this.heldSpelling(path);
+        if (spelling !== path || sha256Hex(content) !== state.baseHash) edits.push(this.operation(state, spelling, content));
         continue;
       }
       if (content === null) continue;

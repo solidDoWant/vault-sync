@@ -1075,7 +1075,8 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
       it(`takes a document's file under another spelling for the document's own after a restart (${platform})`, async () => {
         // A file the vault already spells differently, e.g. after the user
         // renamed it while the app was closed: it is the document's file,
-        // never a new document.
+        // never a new document, and the push commits its spelling as the
+        // document's rename, so the server names it as the vault does (#481).
         const h = harness({ merge: "default", pathRules: { platform } });
         h.server.commit({ documentId: "doc", path: "notes.md", content: "text\n" });
         await h.engine.pull();
@@ -1087,8 +1088,9 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         h.restart();
         const summary = await h.engine.push();
 
-        expect(summary.committed).toBe(0);
-        expect(h.server.liveDocuments()).toEqual(new Map([["notes.md", "doc"]]));
+        expect(summary.committed).toBe(1);
+        expect(h.server.liveDocuments()).toEqual(new Map([["NOTES.md", "doc"]]));
+        expect(h.server.history("doc").map((revision) => revision.deleted)).not.toContain(true);
         expect(await files(h.vault)).toEqual(new Map([["NOTES.md", "text\n"]]));
       });
     }

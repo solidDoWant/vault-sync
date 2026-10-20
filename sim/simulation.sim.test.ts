@@ -8,7 +8,7 @@ import { describe, expect, it } from "vitest";
 import { Control } from "./control";
 import { simEnvironment } from "./environment";
 import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunResult } from "./runner";
-import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName, respelledNoteRenamed } from "./scenarios";
+import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName, respelledNoteRenamed, respelledFileAfterRestart } from "./scenarios";
 import { localRenameOverRemoteRenameIntoRespelledFolder } from "./scenarios";
 import { renameOntoDeletedNotePath } from "./scenarios";
 import { bothRenameOntoVacatedPath } from "./scenarios";
@@ -833,6 +833,27 @@ describe.runIf(suites.has("scenarios"))("scripted renames of a note respelled be
     const files = variant === "free-path" ? new Map([["b.md", "x\n"]]) : new Map([["b.md", "x\n"], ["c.md", "p\n"]]);
     for (const vault of result.vaults) expect(vault, trace).toEqual(files);
     expect(result.tombstoned, trace).toEqual([]);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted note respelled behind the engine's back before a restart (#481)", () => {
+  it.each([
+    ["macos", "respelled"],
+    ["windows", "respelled"],
+    ["macos", "vacated-path"],
+    ["windows", "vacated-path"],
+  ] as const)("names every file as the vault does, with no tombstone of the note (%s, %s)", async (platform, variant) => {
+    const result = await respelledFileAfterRestart(environment, platform, variant);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("STRASSE.md");
+    expect(note, trace).toBeDefined();
+    const files = variant === "respelled" ? new Map([["d.md", "p\n"], ["straße.md", "x\nedited\n"]]) : new Map([["d.md", "x\n"], ["straße.md", "new\n"]]);
+    for (const vault of result.vaults) expect(vault, trace).toEqual(files);
+    expect(new Set(result.documents.keys()), trace).toEqual(new Set(files.keys()));
+    expect(result.tombstoned, trace).not.toContain(note);
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
