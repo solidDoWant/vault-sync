@@ -4,6 +4,7 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import type { ConfigSyncSettings } from "../../../src/core/config/policy";
+import type { HistoryEntry } from "../../../src/core/engine/history";
 import { InMemoryServer } from "../../../src/core/engine/memory-server";
 import { sha256Hex } from "../../../src/core/hash";
 import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
@@ -15,8 +16,9 @@ import { isVaultRelativePath } from "../../../src/core/vaultpath/vaultpath";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
 import { configFolderHost, ObsidianConfigAdapter } from "../../../src/obsidian/config-adapter";
+import { HistoryModal } from "../../../src/obsidian/history-modal";
 import { journalDatabaseName, localVaultId, openVaultJournal, type JournalKey } from "../../../src/obsidian/journal";
-import type { SyncSession } from "../../../src/obsidian/session";
+import type { SyncSession, VaultHistory } from "../../../src/obsidian/session";
 import { ObsidianVaultAdapter } from "../../../src/obsidian/vault-adapter";
 
 /** What the e2e specs get back from a case run inside Obsidian. */
@@ -616,6 +618,42 @@ export default class VaultSyncE2EHarness extends Plugin {
       deviceId: this.otherDeviceId,
     });
     return String(response.revision?.seq ?? 0n);
+  }
+
+  /**
+   * Opens the history view of a note with two versions over a VaultHistory
+   * whose `canRestore` resolves `role` ("viewer": false, "editor": true) or
+   * rejects ("unknown"), as the role check may when ListVaults fails
+   * (history.e2e.ts, #527). Restoring is refused: the spec only looks.
+   */
+  openHistoryAs(role: "viewer" | "editor" | "unknown"): void {
+    const entry = (revisionId: string, seq: bigint, text: string): HistoryEntry => ({
+      revisionId,
+      documentId: "role-check",
+      seq,
+      path: "Role.md",
+      deleted: false,
+      kind: "text",
+      contentHash: sha256Hex(encoder.encode(text)),
+      size: BigInt(encoder.encode(text).length),
+      deviceId: "",
+      thisDevice: true,
+      createdAt: new Date(Date.UTC(2026, 0, 2, 3, Number(seq))),
+    });
+    const entries = [entry("role-2", 2n, "the newer version\n"), entry("role-1", 1n, "the older version\n")];
+    const contents = new Map([
+      ["role-2", "the newer version\n"],
+      ["role-1", "the older version\n"],
+    ]);
+    const history: VaultHistory = {
+      documentAt: () => Promise.resolve("role-check"),
+      history: (documentId) => Promise.resolve({ documentId, headRevisionId: "role-2", entries, nextPageToken: "" }),
+      readRevision: (revision) => Promise.resolve(encoder.encode(contents.get(revision.revisionId) ?? "")),
+      restore: () => Promise.reject(new Error("restoring is not part of this check")),
+      deletedDocuments: () => Promise.resolve([]),
+      canRestore: () => (role === "unknown" ? Promise.reject(new Error("ListVaults failed")) : Promise.resolve(role === "editor")),
+    };
+    new HistoryModal(this.app, history, "role-check", "Role.md").open();
   }
 
   private otherDeviceId: string | undefined;

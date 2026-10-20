@@ -43,8 +43,17 @@ export class HistoryModal extends Modal {
     this.moreEl = contentEl.createDiv();
     this.previewEl = contentEl.createDiv({ cls: "vault-sync-history-preview" });
     this.previewEl.createEl("p", { text: "Choose a version to preview it.", cls: "vault-sync-history-hint" });
-    this.canRestore = this.history.canRestore?.() ?? Promise.resolve(true);
+    this.canRestore = this.readCanRestore();
     void this.load(true);
+  }
+
+  /** VaultHistory.canRestore, true when it cannot tell (it rejects or throws): the server still decides (#527). */
+  private async readCanRestore(): Promise<boolean> {
+    try {
+      return (await this.history.canRestore?.()) ?? true;
+    } catch {
+      return true;
+    }
   }
 
   override onClose(): void {
