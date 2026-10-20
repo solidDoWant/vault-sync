@@ -3,21 +3,9 @@ import { EditableFileView, MarkdownView, normalizePath, TextFileView, TFile, TFo
 import { sha256Hex } from "../core/hash";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
 import { mergeUnsaved } from "../core/merge/text-merge";
+import { UnsavedEditsError } from "./unsaved-edits";
 
-/**
- * A remote write reached a file open in a view with unsaved state it could
- * not merge with: a Markdown editor whose unsaved edits overlap the remote
- * change, or another view (e.g. a canvas) with anything unsaved. The adapter
- * saved the view (so the state is on disk and the engine sees it as a local
- * change next time) and wrote nothing.
- */
-export class UnsavedEditsError extends Error {
-  override readonly name = "UnsavedEditsError";
-
-  constructor(readonly path: string) {
-    super(`${path} has unsaved edits that the incoming change cannot be merged with`);
-  }
-}
+export { UnsavedEditsError } from "./unsaved-edits";
 
 /** UTF-8 that keeps a byte order mark as U+FEFF, so text round-trips byte for byte. */
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });

@@ -1,3 +1,4 @@
+import type { DeferredDocumentReason } from "../core/engine/deferred";
 import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
@@ -88,4 +89,43 @@ export function rejectedReasonText(reason: RejectedReason, detail: string): stri
  */
 export function visiblePath(path: string): string {
   return path.replace(/\p{Cc}|[\ud800-\udfff]/gu, (character) => `\\u${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`);
+}
+
+/**
+ * Why the vault refused a remote revision's path (`path-conflict`), as far as
+ * the path tells: Obsidian would store it under another name (`normalize`,
+ * Obsidian's normalizePath, rewrites it: letters not in Unicode NFC form, a
+ * non-breaking space, doubled or edge slashes), a name in it is hidden (starts
+ * with a dot), or else something on this device is in the way.
+ */
+export type PathConflictCause = "renamed-by-obsidian" | "hidden" | "occupied";
+
+export function pathConflictCause(path: string, normalize: (path: string) => string): PathConflictCause {
+  if (normalize(path) !== path) return "renamed-by-obsidian";
+  if (path.split("/").some((segment) => segment.startsWith("."))) return "hidden";
+  return "occupied";
+}
+
+/** Why a remote revision waits for its path (#417), in the user's words; `cause` explains a `path-conflict`. */
+export function deferredReasonText(reason: DeferredDocumentReason, cause: PathConflictCause): string {
+  switch (reason) {
+    case "invalid-path":
+      return "Its path on the server is not a valid path for a file in a vault (it starts with a slash or a drive letter, has a name made only of dots, contains a control character, or is not valid text).";
+    case "out-of-scope":
+      return "Another device moved it to a path this device does not sync, such as one in the config folder. The version on this device stays where it is, and its changes are not synced.";
+    case "path-conflict":
+      switch (cause) {
+        case "renamed-by-obsidian":
+          return "Obsidian would store its path under another name: Obsidian rewrites letters written in another Unicode form (such as an accent typed as a separate character) and non-breaking spaces. Rename it on another device to bring it here.";
+        case "hidden":
+          return "A folder or file name in its path starts with a dot, which Obsidian hides and this vault does not sync.";
+        case "occupied":
+          return "A file or folder on this device is in the way at its path. It arrives once the path is free.";
+      }
+  }
+}
+
+/** Why a pull could not write a file open in a view (#417), in the user's words. */
+export function openViewText(path: string): string {
+  return `"${visiblePath(path)}" is open in a view that cannot take the incoming change: an editor whose unsaved edits overlap it, a canvas or another plugin's view with unsaved changes, or content that is not text. Sync waits at this change; save or close the file to let it continue.`;
 }

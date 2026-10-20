@@ -1,8 +1,9 @@
-import { ItemView, TFile, type WorkspaceLeaf } from "obsidian";
+import { ItemView, normalizePath, Notice, TFile, type WorkspaceLeaf } from "obsidian";
 
 import type { OpenConflict } from "../core/engine/conflicts";
+import type { DeferredDocument } from "../core/engine/deferred";
 import type { RejectedOperation, TooLargeDocument, UnmaterializableDocument } from "../core/engine/engine";
-import { conflictReasonText, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import { conflictReasonText, deferredReasonText, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
 import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
@@ -11,7 +12,14 @@ export const conflictViewType = "vault-sync-conflicts";
 export interface ConflictSource {
   /** Undefined while sync is not running. */
   problems():
-    | { conflicts(): Promise<OpenConflict[]>; unmaterializable(): Promise<UnmaterializableDocument[]>; tooLarge(): Promise<TooLargeDocument[]>; rejected(): Promise<RejectedOperation[]> }
+    | {
+        conflicts(): Promise<OpenConflict[]>;
+        unmaterializable(): Promise<UnmaterializableDocument[]>;
+        tooLarge(): Promise<TooLargeDocument[]>;
+        rejected(): Promise<RejectedOperation[]>;
+        deferred(): Promise<DeferredDocument[]>;
+        heldByOpenView(): string | undefined;
+      }
     | undefined;
 }
 
@@ -20,8 +28,9 @@ export interface ConflictSource {
  * log, each with a link to both versions and a button that opens them side
  * by side, the documents this device's platform cannot hold, each with its
  * server path and why, the documents too large to download on this device
- * (#316), and the local files the server refuses (#100), each
- * with its path and why. It reads the journal through the session and
+ * (#316), and the files that are not synced, each with its path and why:
+ * local files the server refuses (#100), remote revisions deferred for
+ * their path, and a pull an open view holds back (#417). It reads the journal through the session and
  * keeps no state of its own; deleting a conflict copy resolves its entry.
  */
 export class ConflictView extends ItemView {
@@ -72,10 +81,12 @@ export class ConflictView extends ItemView {
     let unmaterializable: UnmaterializableDocument[] = [];
     let tooLarge: TooLargeDocument[] = [];
     let rejected: RejectedOperation[] = [];
+    let deferred: DeferredDocument[] = [];
     let failure: string | undefined;
+    const heldByOpenView = problems?.heldByOpenView();
     if (problems !== undefined) {
       try {
-        [conflicts, unmaterializable, tooLarge, rejected] = await Promise.all([problems.conflicts(), problems.unmaterializable(), problems.tooLarge(), problems.rejected()]);
+        [conflicts, unmaterializable, tooLarge, rejected, deferred] = await Promise.all([problems.conflicts(), problems.unmaterializable(), problems.tooLarge(), problems.rejected(), problems.deferred()]);
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
@@ -117,14 +128,29 @@ export class ConflictView extends ItemView {
       }
     }
 
+    if (rejected.length > 0 || deferred.length > 0 || heldByOpenView !== undefined) root.createEl("h4", { text: "Files that are not synced" });
+    if (heldByOpenView !== undefined) {
+      const item = root.createDiv({ cls: "vault-sync-held" });
+      this.fileLine(item, "Waiting for", heldByOpenView, "vault-sync-held-path", visiblePath(heldByOpenView));
+      item.createDiv({ text: openViewText(heldByOpenView), cls: "vault-sync-held-reason" });
+    }
     if (rejected.length > 0) {
-      root.createEl("h4", { text: "Files that are not synced" });
       root.createEl("p", { text: "The server does not accept these files' paths, so they stay on this device only. Rename or move a file to a valid path to sync it." });
       const list = root.createEl("ul", { cls: "vault-sync-rejected" });
       for (const { operation, reason, error } of rejected) {
         const item = list.createEl("li", { cls: "vault-sync-rejected-file" });
         this.fileLine(item, operation.deleted ? "Deleted file" : "File", operation.path, "vault-sync-rejected-path", visiblePath(operation.path));
         item.createDiv({ text: rejectedReasonText(reason, errorMessage(error)), cls: "vault-sync-rejected-reason" });
+      }
+    }
+    if (deferred.length > 0) {
+      root.createEl("p", { text: "These documents changed on another device, but the change cannot be written here because of its path. Nothing is lost: they arrive once their path can be written here." });
+      const list = root.createEl("ul", { cls: "vault-sync-deferred" });
+      for (const document of deferred) {
+        const item = list.createEl("li", { cls: "vault-sync-deferred-document" });
+        item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-deferred-path" });
+        item.createDiv({ text: deferredReasonText(document.reason, pathConflictCause(document.path, normalizePath)), cls: "vault-sync-deferred-reason" });
+        if (document.localPath !== undefined) this.fileLine(item, "Version on this device", document.localPath, "vault-sync-deferred-local");
       }
     }
   }
@@ -171,7 +197,10 @@ export class ConflictView extends ItemView {
 
   private async openPath(path: string, newTab: boolean): Promise<void> {
     const file = this.app.vault.getFileByPath(path);
-    if (!(file instanceof TFile)) return;
+    if (!(file instanceof TFile)) {
+      this.gone(path);
+      return;
+    }
     await this.app.workspace.getLeaf(newTab ? "tab" : false).openFile(file);
   }
 
@@ -179,9 +208,18 @@ export class ConflictView extends ItemView {
   async compare(original: string, copy: string): Promise<void> {
     const left = this.app.vault.getFileByPath(original);
     const right = this.app.vault.getFileByPath(copy);
-    if (left === null || right === null) return;
+    if (left === null || right === null) {
+      this.gone(left === null ? original : copy);
+      return;
+    }
     const leaf = this.app.workspace.getLeaf("tab");
     await leaf.openFile(left);
     await this.app.workspace.createLeafBySplit(leaf, "vertical").openFile(right);
+  }
+
+  /** A link whose file was removed since the view was drawn (#417): says so, and draws the view again. */
+  private gone(path: string): void {
+    new Notice(`Vault Sync: ${visiblePath(path)} no longer exists.`);
+    void this.refresh();
   }
 }

@@ -3,7 +3,7 @@ import { Code, ConnectError, createClient, createRouterTransport } from "@connec
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeviceService } from "../gen/vaultsync/v1/device_pb";
-import { DeviceSchema, VaultEncryption, VaultSchema } from "../gen/vaultsync/v1/types_pb";
+import { DeviceSchema, VaultEncryption, VaultRole, VaultSchema } from "../gen/vaultsync/v1/types_pb";
 import { VaultService } from "../gen/vaultsync/v1/vault_pb";
 import type { AuthState } from "../core/auth/tokens";
 import { InMemoryServer } from "../core/engine/memory-server";
@@ -26,7 +26,7 @@ afterEach(() => {
 });
 
 /** The device and vault services, faked; sync and blobs from an in-memory server. */
-function fakeServer(options: { registerDevice?: (name: string) => string } = {}) {
+function fakeServer(options: { registerDevice?: (name: string) => string; role?: VaultRole; listVaults?: () => void } = {}) {
   const sync = new InMemoryServer();
   const registered: string[] = [];
   const vaults = [
@@ -34,6 +34,7 @@ function fakeServer(options: { registerDevice?: (name: string) => string } = {})
       id: sync.vaultId,
       name: "Notes",
       encryption: VaultEncryption.NONE,
+      role: options.role ?? VaultRole.OWNER,
     }),
     create(VaultSchema, {
       id: "vault-2",
@@ -57,6 +58,7 @@ function fakeServer(options: { registerDevice?: (name: string) => string } = {})
     service(VaultService, {
       // One vault per page, so paging is exercised.
       listVaults: (request) => {
+        options.listVaults?.();
         const index = request.pageToken === "" ? 0 : Number(request.pageToken);
         return {
           vaults: vaults.slice(index, index + 1),
@@ -476,6 +478,43 @@ describe("SyncController", () => {
     await f.controller.stop();
     await vi.waitFor(() => {
       expect(realtime.open).toEqual([]);
+    });
+  });
+
+  describe("history", () => {
+    it.each([
+      ["an owner", VaultRole.OWNER, true],
+      ["an editor", VaultRole.EDITOR, true],
+      ["a viewer", VaultRole.VIEWER, false],
+    ])("lets %s restore versions only if the server allows it (#417)", async (_name, role, allowed) => {
+      const server = fakeServer({ role });
+      const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+      await f.controller.update();
+      await statusBecomes(f.statuses, "idle");
+
+      const history = f.controller.history();
+      if (history?.canRestore === undefined) throw new Error("no history");
+      expect(await history.canRestore()).toBe(allowed);
+      await f.controller.stop();
+    });
+
+    it("leaves the decision to the server when the role cannot be read", async () => {
+      let failing = false;
+      const server = fakeServer({
+        role: VaultRole.VIEWER,
+        listVaults: () => {
+          if (failing) throw new ConnectError("unreachable", Code.Unavailable);
+        },
+      });
+      const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+      await f.controller.update();
+      await statusBecomes(f.statuses, "idle");
+      failing = true;
+
+      const history = f.controller.history();
+      if (history?.canRestore === undefined) throw new Error("no history");
+      expect(await history.canRestore()).toBe(true);
+      await f.controller.stop();
     });
   });
 });
