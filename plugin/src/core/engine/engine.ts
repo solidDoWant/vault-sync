@@ -9,7 +9,7 @@ import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
 import { pathKey } from "../pathkey/pathkey";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
-import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
+import { posixPathRules, sameFilesystemName, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
@@ -2327,17 +2327,20 @@ export class SyncEngine {
    * The path of the live document whose file the vault holds at `path` under
    * another spelling (a case-only rename lost to a restart, say), on a
    * case-insensitive platform; undefined if the spelling is the document's
-   * own, no document has the file, or the vault still holds a file at the
-   * document's own spelling.
+   * own, no document has the file, or the filesystem could hold both
+   * spellings as two files.
    */
   private async syncedSpelling(path: string): Promise<string | undefined> {
     if (this.pathRules.platform === "posix") return undefined;
     try {
       const state = await this.documentAt(path);
       if (state === undefined || state.path === path) return undefined;
-      // Path keys fold more than the filesystem may (NFC/NFD, ß and SS): while the
-      // vault still holds the document's own spelling, the file at `path` is another file.
-      return (await this.vault.list()).includes(state.path) ? undefined : state.path;
+      // Decided from the two spellings alone, never from what the vault holds
+      // now: events arrive late, so the vault may already show later actions.
+      // Path keys fold more than the filesystem (ß and SS; NFC/NFD on Windows):
+      // two such spellings can be two files, so the one at `path` is not the
+      // document's (decision #52).
+      return sameFilesystemName(state.path, path, this.pathRules.platform) ? state.path : undefined;
     } catch {
       // In doubt, the rename is recorded from the vault's spelling, as before.
       return undefined;
