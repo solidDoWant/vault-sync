@@ -1383,6 +1383,10 @@ export class SyncEngine {
     // A folder is any file's ancestor.
     const folders = new Set<string>();
     for (const file of files) for (const ancestor of ancestors(file)) folders.add(ancestor);
+    // The merge result's folders are folders whatever else is named like
+    // them: a file there by path key (a new file NOTES, next to a result in
+    // notes/ under POSIX rules) cannot keep a copy out of them (#352).
+    const resultFolders = new Set(merged === undefined || merged.result === null ? [] : ancestors(pathKey(merged.result)));
     for (let attempt = 1; attempt <= maxConflictNameAttempts; attempt++) {
       const candidate =
         folder === undefined
@@ -1390,7 +1394,7 @@ export class SyncEngine {
           : conflictFolderPath(folder, path.slice(folder.length + 1), this.deviceName, date, attempt, this.pathRules);
       if (candidate === null) return null;
       const candidateKey = pathKey(candidate);
-      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some((ancestor) => files.has(ancestor))) continue;
+      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || ancestors(candidateKey).some((ancestor) => files.has(ancestor) && !resultFolders.has(ancestor))) continue;
       // A file outside the sync scope is not listed, but it is there.
       if (!this.inScope(candidate) && (await this.vault.stat(candidate)) !== null) continue;
       return candidate;
