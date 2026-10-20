@@ -200,3 +200,61 @@ func TestConcurrentPruneMarkersActsAsOne(t *testing.T) {
 
 	assert.Equal(t, want, fixture.markerSeqs(t), "every young marker is kept")
 }
+
+// HA (SPEC.md §11, §12): pruning never waits on markers another
+// transaction holds locked, such as another replica's batch. It skips them
+// and fills its batch with the other old markers, and the skipped ones are
+// pruned once released. The pruning pool's lock_timeout turns a call that
+// waits into an error instead of a hang, so the test does not depend on how
+// fast the call returns.
+func TestPruneMarkersSkipsLockedMarkers(t *testing.T) {
+	fixture := newCommitFixture(t)
+
+	// Seqs 1 to 5 past the horizon, oldest first; 6 and 7 young.
+	_, err := fixture.pool.Exec(t.Context(), `
+		INSERT INTO purged_revisions (vault_id, seq, anchor, purged_at)
+		SELECT $1, seq, gen_random_uuid(),
+			CASE WHEN seq <= 5 THEN now() - interval '400 days' + seq * interval '1 minute' ELSE now() END
+		FROM generate_series(1, 7) AS seq`, fixture.vault.VaultID())
+	require.NoError(t, err)
+
+	config := fixture.pool.Config()
+	config.ConnConfig.RuntimeParams["lock_timeout"] = "5s"
+
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
+	require.NoError(t, err)
+	t.Cleanup(pool.Close)
+
+	queries := store.New(pool)
+
+	// Another transaction holds the two oldest markers.
+	holder, err := fixture.pool.Begin(t.Context())
+	require.NoError(t, err)
+
+	defer func() { _ = holder.Rollback(t.Context()) }()
+
+	var locked []int64
+
+	err = holder.QueryRow(t.Context(), `
+		SELECT array_agg(seq ORDER BY seq) FROM (
+			SELECT seq FROM purged_revisions WHERE vault_id = $1 AND seq IN (1, 2) FOR UPDATE
+		) AS held`, fixture.vault.VaultID()).Scan(&locked)
+	require.NoError(t, err)
+	require.Equal(t, []int64{1, 2}, locked)
+
+	pruned, err := queries.PruneMarkers(t.Context(), markerHorizon, 3)
+	require.NoError(t, err, "pruning never waits on a locked marker")
+	assert.Equal(t, 3, pruned, "the batch is filled with the old markers nobody holds")
+	assert.Equal(t, []int64{1, 2, 6, 7}, fixture.markerSeqs(t), "the locked and the young markers are kept")
+
+	pruned, err = queries.PruneMarkers(t.Context(), markerHorizon, 3)
+	require.NoError(t, err)
+	assert.Zero(t, pruned, "only locked markers are left past the horizon")
+
+	require.NoError(t, holder.Rollback(t.Context()))
+
+	pruned, err = queries.PruneMarkers(t.Context(), markerHorizon, 3)
+	require.NoError(t, err)
+	assert.Equal(t, 2, pruned, "released markers are pruned")
+	assert.Equal(t, []int64{6, 7}, fixture.markerSeqs(t))
+}

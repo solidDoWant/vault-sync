@@ -73,4 +73,35 @@ describe("SyncEngine, given a pull during a push that merges a remote revision o
     expect(first.pending).toBe(0);
     expect(second).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
   });
+
+  it("drops the local delete of a note another device edited meanwhile, keeps the edit, and then quiesces", async () => {
+    const h = harness({ merge: "default" });
+    h.server.commit({ documentId: "a", path: "a.md", content: "a\n" });
+    h.server.commit({ documentId: "b", path: "b.md", content: "b\n" });
+    await h.engine.pull();
+    await h.vault.delete("a.md");
+    await h.vault.delete("b.md");
+    await h.engine.settled();
+    // Whichever delete the push commits first is refused, and the pull then
+    // merges both remote edits onto newer bases: the other delete, detected
+    // against the old base, must be looked at again (#517).
+    moveHeadBeforeCommit(h, () => {
+      h.server.commit({ documentId: "a", path: "a.md", content: "a\ntheirs\n" });
+      h.server.commit({ documentId: "b", path: "b.md", content: "b\ntheirs\n" });
+    });
+
+    const first = await h.engine.push();
+    const second = await h.engine.push();
+
+    // The edits win over the deletes (SPEC.md §7).
+    expect(h.server.liveFiles()).toEqual(
+      new Map([
+        ["a.md", "a\ntheirs\n"],
+        ["b.md", "b\ntheirs\n"],
+      ]),
+    );
+    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    expect(first.pending).toBe(0);
+    expect(second).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
+  });
 });

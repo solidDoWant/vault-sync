@@ -300,4 +300,38 @@ describe("SyncEngine pull after a restore between the cursor and its own commit 
     expect(await files(h.vault)).toEqual(new Map([["o.md", "o1"], ["x.md", "theirs"]]));
     expect(await h.journal.listConflicts()).toEqual([]);
   });
+
+  it("checks its highest own commit above the cursor, and keeps and pushes again the edit a restore below it lost", async () => {
+    const h = harness({ merge: "default" });
+    h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 1
+    h.server.commit({ documentId: "y", path: "y.md", content: "y1" }); // 2
+    await h.engine.pull();
+    // Two own commits above the cursor: x at seq 4 and y at seq 5 (another
+    // device committed at 3 just before, so the cursor stays at 2).
+    await h.vault.write("x.md", new TextEncoder().encode("x mine"));
+    await h.vault.write("y.md", new TextEncoder().encode("y mine"));
+    moveHeadBeforeCommit(h, () => {
+      h.server.commit({ documentId: "o", path: "o.md", content: "o1" }); // 3
+    });
+    expect((await h.engine.push()).committed).toBe(2);
+    expect(await h.journal.getCursor()).toBe(2n);
+    expect(h.server.head("x")?.seq).toBe(4n);
+    expect(h.server.head("y")?.seq).toBe(5n);
+    // The server is restored to between them, and another device commits at
+    // seq 5 anew: the anchors of the cursor and of the lower own commit still
+    // match, only the higher own commit's shows the restore (SPEC.md §6.1).
+    h.server.restoreTo(4n);
+    h.server.commit({ documentId: "z", path: "z.md", content: "z1" }); // 5
+
+    expect(await h.engine.pull()).toMatchObject({ resynced: true });
+
+    // The merge base of y (the lost commit) is gone, so both versions are kept.
+    expect([...(await files(h.vault)).values()]).toContain("y mine");
+    await h.engine.push();
+    const server = h.server.liveFiles();
+    expect([...server.values()]).toContain("y mine");
+    expect(server.get("x.md")).toBe("x mine");
+    expect(server.get("z.md")).toBe("z1");
+    expect(await files(h.vault)).toEqual(server);
+  });
 });
