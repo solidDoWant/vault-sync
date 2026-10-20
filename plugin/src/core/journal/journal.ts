@@ -110,6 +110,14 @@ export interface DocumentState {
    * (SPEC.md §8), so `path` names no file of it any more.
    */
   deleted: boolean;
+  /**
+   * The anchor (`Revision.anchor`) of `revisionId`, recorded when this
+   * device's own commit of it was acknowledged: while `seq` lies above the
+   * cursor, a pull sends it for the server to check (SPEC.md §6.1).
+   * Absent for a revision this device pulled, or one from a server that
+   * sends no anchors.
+   */
+  anchor?: Uint8Array;
 }
 
 /** A local change not yet acknowledged by the server; mirrors CommitRevision (SPEC.md §6.2). */

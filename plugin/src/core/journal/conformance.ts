@@ -218,6 +218,21 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     },
   },
   {
+    name: "keeps a document state's anchor, not aliased to the caller's array, and none when it has none",
+    run: async (journal, reopen) => {
+      const anchor = new Uint8Array(16).fill(9);
+      await journal.putDocument(sampleDocument({ anchor }));
+      await journal.putDocument(sampleDocument({ documentId: "doc-2", path: "other.md" }));
+      anchor.fill(0);
+      const reopened = await reopen();
+      assertEqual((await reopened.getDocument("doc-1"))?.anchor, new Uint8Array(16).fill(9), "stored anchor");
+      assertEqual((await reopened.listDocuments()).map((state) => state.anchor), [new Uint8Array(16).fill(9), undefined], "listed anchors");
+      const read = await reopened.getDocument("doc-1");
+      read?.anchor?.fill(1);
+      assertEqual((await reopened.getDocument("doc-1"))?.anchor, new Uint8Array(16).fill(9), "anchor after the caller changed a read copy");
+    },
+  },
+  {
     name: "does not let callers mutate stored document state",
     run: async (journal) => {
       const state = sampleDocument();

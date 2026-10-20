@@ -501,7 +501,8 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
 
     expect(result.violations, trace).toEqual([]);
     expect(result.purged, trace).toHaveLength(2);
-    expect(result.resynced, trace).toBe(true);
+    // The purge marker of the cursor's revision matches its anchor: no resync (#488).
+    expect(result.resynced, trace).toBe(false);
     const expected = new Map([["notes/kept.md", "two\n"]]);
     expect(result.live, trace).toEqual(["notes/kept.md"]);
     expect(result.vaults[0], trace).toEqual(expected);
@@ -1382,13 +1383,13 @@ describe.runIf(suites.has("scenarios"))("scripted restore-and-purge scenarios (#
     expect([...result.server.values()].join(""), trace).toContain("acknowledged edit");
   };
 
-  it("keeps a device's acknowledged edit the restored server lost, and pushes it again (untouched-after-restore)", async () => {
-    await keepsTheEdit("untouched-after-restore");
-  });
-
-  // Still lost: no information the client has tells these from a purge or
-  // from no change at all. Fixing them needs the server's help (#488, #494).
-  it.fails.each(["deleted-after-restore", "own-commit-above-cursor"] as const)("still loses a device's acknowledged edit the restored server lost (%s)", async (shape) => {
-    await keepsTheEdit(shape);
-  });
+  // The restored server's purge markers name the revisions it purged, not
+  // the device's, and the device sends the anchor of its own commit above
+  // its cursor: each restore is reported as divergence (#488, #494).
+  it.each(["untouched-after-restore", "deleted-after-restore", "own-commit-above-cursor"] as const)(
+    "keeps a device's acknowledged edit the restored server lost, and pushes it again (%s)",
+    async (shape) => {
+      await keepsTheEdit(shape);
+    },
+  );
 });

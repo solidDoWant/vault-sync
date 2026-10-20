@@ -608,13 +608,26 @@ export class SyncEngine {
   private async pullOnce(): Promise<PullSummary> {
     const summary: PullSummary = { cursor: await this.journal.getCursor(), applied: 0, deferred: 0, merged: 0, resynced: false };
     let anchor = summary.cursor > 0n ? await this.journal.getCursorAnchor() : undefined;
+    const own = await this.ownCommitAbove(summary.cursor);
     for (;;) {
-      const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: summary.cursor, sinceAnchor: anchor ?? new Uint8Array(), pageSize: this.pageSize });
+      // This device's latest acknowledged commit above the cursor, which the
+      // cursor's anchor does not cover (SPEC.md §6.1, #494), until the pull
+      // passes it.
+      const ownCommit = own !== undefined && own.seq > summary.cursor ? own : undefined;
+      const response = await this.api.sync.listChanges({
+        vaultId: this.vaultId,
+        sinceSeq: summary.cursor,
+        sinceAnchor: anchor ?? new Uint8Array(),
+        ownCommitSeq: ownCommit?.seq ?? 0n,
+        ownCommitAnchor: ownCommit?.anchor ?? new Uint8Array(),
+        pageSize: this.pageSize,
+      });
       if (response.diverged || response.headSeq < summary.cursor) {
         // The server lost history this device already applied (e.g. a
         // database restore): it no longer holds the revision this device
-        // applied at the cursor (its anchor differs, SPEC.md §6.1), or its
-        // head fell below the cursor. That is divergence, not "nothing new".
+        // applied at the cursor or its own commit above it (their anchors
+        // differ, SPEC.md §6.1), or its head fell below the cursor. That is
+        // divergence, not "nothing new".
         await this.resync(summary);
         return summary;
       }
@@ -630,6 +643,21 @@ export class SyncEngine {
       if (!response.hasMore) return summary;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
     }
+  }
+
+  /**
+   * The seq and anchor of this device's latest acknowledged commit above
+   * `cursor`, if the journal has its anchor. Only a device's own commit is
+   * recorded above the cursor (a pull moves the cursor onto what it
+   * applies, and a resync renumbers below the cursor it sets).
+   */
+  private async ownCommitAbove(cursor: bigint): Promise<{ seq: bigint; anchor: Uint8Array } | undefined> {
+    let latest: { seq: bigint; anchor: Uint8Array } | undefined;
+    for (const state of await this.journal.listDocuments()) {
+      if (state.anchor === undefined || state.seq <= cursor || (latest !== undefined && state.seq <= latest.seq)) continue;
+      latest = { seq: state.seq, anchor: state.anchor };
+    }
+    return latest;
   }
 
   private count(summary: PullSummary, outcome: ApplyOutcome): void {
@@ -1786,13 +1814,17 @@ export class SyncEngine {
    * another revision to the merge path, since the server may have lost
    * acknowledged revisions that only this device still has. Only then is the
    * cursor reset to the server's head, so an interrupted resync runs again.
+   *
+   * A retention purge leaves a purge marker that the server's anchor checks
+   * accept (SPEC.md §6.1, §11), so divergence means a restore, and nothing
+   * known is applied over without a merge (#488). A server without purge
+   * markers also reports a purge as divergence; merging then keeps an
+   * unchanged note another device deleted (#480) rather than risk deleting
+   * content the server lost.
    */
   private async resync(summary: PullSummary): Promise<void> {
     summary.resynced = true;
-    const cursor = summary.cursor;
     const heads = new Map<string, IncomingRevision>();
-    /** The revision id at each seq the feed holds. */
-    const feed = new Map<bigint, string>();
     let seq = 0n;
     let anchor: Uint8Array | undefined;
     for (;;) {
@@ -1800,47 +1832,12 @@ export class SyncEngine {
       for (const revision of response.revisions) {
         if (revision.seq <= seq) throw new RemoteContentError(`change feed went from seq ${String(seq)} back to ${String(revision.seq)}`);
         heads.set(revision.documentId, toIncoming(revision));
-        feed.set(revision.seq, revision.id);
         seq = revision.seq;
         anchor = cursorAnchor(revision);
       }
       if (!response.hasMore) break;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
     }
-    // Seqs are gapless but for purged revisions (§11), so a seq the feed
-    // skips is one retention purged. With the cursor's own seq skipped, the
-    // divergence is a purge of the cursor's revision, not a restore below it
-    // (§6.1). A document whose synced revision the feed still holds at its
-    // seq, or whose seq it skips with its head above it, was then lost by no restore: the
-    // server's head descends from it, and is applied as an ordinary pull
-    // would apply it (merged only if the user changed the document). Merged
-    // regardless, a remote delete would keep the unchanged file and the next
-    // push would bring the note back (#480).
-    //
-    // A restore below the cursor whose server then committed past it again,
-    // and whose revision at the cursor's seq retention then purged, looks the
-    // same at the cursor (#488). Only a purge is consistent with every
-    // document the journal holds: its synced revision is still at its seq,
-    // or the seq was purged and the document's head lies above it (a purged
-    // revision was superseded). A document that is not (its seq above the
-    // feed, holding another revision, or its head at or below it) proves a
-    // restore, and every document is then merged.
-    const purgeOnly = (state: DocumentState) => {
-      const atSeq = feed.get(state.seq);
-      if (atSeq !== undefined) return atSeq === state.revisionId;
-      const head = heads.get(state.documentId);
-      return head !== undefined && head.remote.seq > state.seq;
-    };
-    let purgedCursor = cursor > 0n && cursor <= seq && !feed.has(cursor);
-    if (purgedCursor) {
-      for (const state of await this.journal.listDocuments()) {
-        if (state.seq > 0n && !purgeOnly(state)) {
-          purgedCursor = false;
-          break;
-        }
-      }
-    }
-    const lostNothing = (state: DocumentState) => purgedCursor && state.seq > 0n;
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
@@ -1854,8 +1851,6 @@ export class SyncEngine {
         this.count(summary, await this.defer(remote, "out-of-scope"));
       } else if (this.overCap(remote)) {
         this.count(summary, await this.defer(remote, "too-large"));
-      } else if (lostNothing(state)) {
-        this.count(summary, await this.applyRevision(incoming));
       } else {
         const local = await this.localFile(state, remote);
         this.count(summary, await this.handToMerge(remote, state, local));
@@ -2320,6 +2315,7 @@ export class SyncEngine {
       size: operation.size,
       kind: operation.kind,
       deleted: operation.deleted,
+      anchor: cursorAnchor(revision),
     });
     await this.journal.removePending(operation.revisionId);
     if (state !== undefined && !operation.deleted) this.carryDelete(operation.documentId, state.revisionId, revision.id);
