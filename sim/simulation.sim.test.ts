@@ -20,6 +20,7 @@ import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
 import { restoreWindow } from "./restore-scenarios";
+import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
 import { mergedDuringPush } from "./scenarios";
 import { StallError } from "./network";
 import { generateSchedule, type Step } from "./schedule";
@@ -1514,4 +1515,53 @@ describe.runIf(suites.has("scenarios"))("scripted restore-and-purge scenarios (#
       await keepsTheEdit(shape);
     },
   );
+});
+
+describe.runIf(suites.has("scenarios"))("scripted upload-session scenarios (#490)", () => {
+  it("backs the engine off when the server refuses its BeginBlob, PutBlobChunk and CommitBlob for new content, and loses no write", async () => {
+    const result = await uploadSessionCallsRefused(environment);
+    const trace = tail(result.trace, 160);
+
+    // Includes the network's check that the engine sent nothing while it backed off.
+    expect(result.violations, trace).toEqual([]);
+    expect(result.refused, trace).toEqual(["BeginBlob", "PutBlobChunk", "CommitBlob"]);
+    // Half of a ceiling that doubles from 1 s with each consecutive refusal, plus a random part of the other half.
+    const bounds = [
+      [500, 1000],
+      [1000, 2000],
+      [2000, 4000],
+    ];
+    expect(result.delays, trace).toHaveLength(bounds.length);
+    result.delays.forEach((delay, index) => {
+      expect(delay, `backoff ${String(index + 1)}\n${trace}`).toBeGreaterThanOrEqual(bounds[index]?.[0] ?? Infinity);
+      expect(delay, `backoff ${String(index + 1)}\n${trace}`).toBeLessThanOrEqual(bounds[index]?.[1] ?? -Infinity);
+    });
+    // The refused second chunk was sent again, and the upload resumed where the server's session stood: each chunk accepted once.
+    expect(result.chunks, trace).toEqual(["0", "65536", "131072"]);
+    // Nothing was committed before the blob was: one CommitRevision, acknowledged once.
+    expect(result.commits, trace).toBe(1);
+    expect(result.engineAcknowledged, trace).toEqual(["attachment.md"]);
+    expect(result.server.get("attachment.md") === result.written, trace).toBe(true);
+    expect(result.engine.get("attachment.md") === result.written, trace).toBe(true);
+  });
+
+  it("keeps every write when the vault is at its upload session limit, and reclaims idle sessions, the engine's own mid-upload included", async () => {
+    const result = await uploadLimitReached(environment);
+    const trace = tail(result.trace, 200);
+
+    // No lost write, convergence, no backoff violation (the engine waited after each RESOURCE_EXHAUSTED).
+    expect(result.violations, trace).toEqual([]);
+    // Two abandoned sessions aged, then the engine's own.
+    expect(result.aged, trace).toEqual([2, 1]);
+    // Refused at the limit twice; the aged sessions reclaimed; refused once more after its own session was reclaimed; then its upload got a session.
+    expect(result.begins, trace).toEqual(["ResourceExhausted", "ResourceExhausted", "ok", "ok", "ResourceExhausted", "ok"]);
+    // The chunk after the reclaim found no session.
+    expect(result.chunkOutcomes, trace).toContain("FailedPrecondition");
+    // The reclaimed session's chunks are gone: the upload started over from the first byte.
+    expect(result.chunksAfterReclaim, trace).toEqual(["0", "65536", "131072"]);
+    expect(result.delays.length, trace).toBeGreaterThanOrEqual(3);
+    expect(result.engineAcknowledged, trace).toEqual(["note.md", "large.md"]);
+    expect([...result.server.keys()].sort(), trace).toEqual(["first.md", "large.md", "note.md", "second.md"]);
+    for (const [path, content] of result.written) expect(result.server.get(path) === content, `${path}\n${trace}`).toBe(true);
+  });
 });

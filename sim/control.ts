@@ -74,6 +74,18 @@ export class Control {
     return pruned;
   }
 
+  /**
+   * Makes the vault's upload sessions in progress look idle for longer than
+   * the server's reclaim idle (VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE), as if
+   * their uploaders had gone silent that long, so that a BeginBlob in the
+   * vault at its session limit reclaims them (SPEC.md §6.2). Returns how
+   * many it aged.
+   */
+  async ageUploads(vaultId: string): Promise<number> {
+    const { aged } = await this.post<{ aged: number }>("/age-uploads", { vaultId });
+    return aged;
+  }
+
   /** Backs up the vault's change history in the database, for restore; returns the vault's head_seq then. */
   async snapshot(vaultId: string): Promise<bigint> {
     const { headSeq } = await this.post<{ headSeq: number }>("/snapshot", { vaultId });

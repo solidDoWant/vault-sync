@@ -35,14 +35,20 @@ import (
 // Environment variables through which the driver hands the server and the
 // control endpoint to plugin/vitest.sim.config.ts.
 const (
-	serverURLEnv  = "VAULT_SYNC_SIM_SERVER_URL"
-	controlURLEnv = "VAULT_SYNC_SIM_CONTROL_URL"
-	suitesEnv     = "VAULT_SYNC_SIM_SUITES"
-	shrinkRunsEnv = "SIM_SHRINK_RUNS"
+	serverURLEnv = "VAULT_SYNC_SIM_SERVER_URL"
+	// limitedServerURLEnv is the replica with a small upload session limit.
+	limitedServerURLEnv = "VAULT_SYNC_SIM_LIMITED_SERVER_URL"
+	controlURLEnv       = "VAULT_SYNC_SIM_CONTROL_URL"
+	suitesEnv           = "VAULT_SYNC_SIM_SUITES"
+	shrinkRunsEnv       = "SIM_SHRINK_RUNS"
 	// regressionDirEnv overrides where failing seeds are written and which
 	// regression cases are replayed (default: sim/regressions, so they can be
 	// committed). A relative value is relative to the repository root.
 	regressionDirEnv = "SIM_REGRESSION_DIR"
+
+	// limitedMaxUploadsPerVault is the limited replica's per-vault upload
+	// session limit; sim/scenarios.ts (uploadLimitReached) relies on it.
+	limitedMaxUploadsPerVault = 2
 
 	// brokenShrinkRuns bounds minimization in the broken-server check,
 	// which only needs to show that minimization works.
@@ -88,10 +94,13 @@ var refusedRetrySchedule = []string{
 
 // simulation is a running server plus control endpoint.
 type simulation struct {
-	serverURL     string
-	controlURL    string
-	control       *control
-	regressionDir string
+	serverURL string
+	// limitedServerURL is a second replica with a per-vault upload
+	// session limit of limitedMaxUploadsPerVault.
+	limitedServerURL string
+	controlURL       string
+	control          *control
+	regressionDir    string
 }
 
 // startSimulation builds the server with the given build tags and starts it
@@ -111,46 +120,58 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 	issuer := authtest.NewIssuer(t)
 	key := issuer.AddKey(t, jose.ES256)
 
-	// Starts a new process, with new addresses, if another process took
-	// one of the ports first.
-	apiAddress := testinfra.StartServer(t, "server", 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
-		logs := &bytes.Buffer{}
-		server := testinfra.NewChild(t, binary)
-		server.Command.Env = []string{
-			config.DatabaseURLEnv + "=" + database.DSN,
-			config.ListenAddressEnv + "=" + addresses.API,
-			config.MetricsListenAddressEnv + "=" + addresses.Metrics,
-			config.OIDCIssuerURLEnv + "=" + issuer.URL,
-			config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
-			config.S3EndpointEnv + "=" + bucket.Endpoint,
-			config.S3RegionEnv + "=" + bucket.Region,
-			config.S3BucketEnv + "=" + bucket.Bucket,
-			config.S3AccessKeyIDFileEnv + "=" + bucket.AccessKeyIDFile,
-			config.S3SecretAccessKeyFileEnv + "=" + bucket.SecretAccessKeyFile,
-			config.S3ForcePathStyleEnv + "=true",
-			// The smallest chunk size the server allows, so the occasional
-			// large content is uploaded in several chunks.
-			config.BlobMaxChunkBytesEnv + "=65536",
-			// Clients that crash or give up abandon upload sessions; a long
-			// run must not hit the per-vault session limit.
-			config.BlobMaxUploadsPerVaultEnv + "=10000",
-			config.LogLevelEnv + "=warn",
-			// Stop at once when the test ends (#96).
-			"VAULT_SYNC_SHUTDOWN_DELAY=0s",
-		}
-		server.Command.Stdout = logs
-		server.Command.Stderr = logs
+	start := func(name string, extraEnv ...string) string {
+		// Starts a new process, with new addresses, if another process took
+		// one of the ports first.
+		return testinfra.StartServer(t, name, 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
+			logs := &bytes.Buffer{}
+			server := testinfra.NewChild(t, binary)
 
-		t.Cleanup(func() {
-			if t.Failed() {
-				t.Logf("server logs:\n%s", logs.String())
-			}
-		})
+			server.Command.Env = append([]string{
+				config.DatabaseURLEnv + "=" + database.DSN,
+				config.ListenAddressEnv + "=" + addresses.API,
+				config.MetricsListenAddressEnv + "=" + addresses.Metrics,
+				config.OIDCIssuerURLEnv + "=" + issuer.URL,
+				config.OIDCAudienceEnv + "=" + authtest.DefaultAudience,
+				config.S3EndpointEnv + "=" + bucket.Endpoint,
+				config.S3RegionEnv + "=" + bucket.Region,
+				config.S3BucketEnv + "=" + bucket.Bucket,
+				config.S3AccessKeyIDFileEnv + "=" + bucket.AccessKeyIDFile,
+				config.S3SecretAccessKeyFileEnv + "=" + bucket.SecretAccessKeyFile,
+				config.S3ForcePathStyleEnv + "=true",
+				// The smallest chunk size the server allows, so the occasional
+				// large content is uploaded in several chunks.
+				config.BlobMaxChunkBytesEnv + "=65536",
+				config.LogLevelEnv + "=warn",
+				// Stop at once when the test ends (#96).
+				"VAULT_SYNC_SHUTDOWN_DELAY=0s",
+			}, extraEnv...)
+			server.Command.Stdout = logs
+			server.Command.Stderr = logs
 
-		server.Start(t)
+			t.Cleanup(func() {
+				if t.Failed() {
+					t.Logf("%s logs:\n%s", name, logs.String())
+				}
+			})
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
-	}).API
+			server.Start(t)
+
+			return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
+		}).API
+	}
+
+	// Clients that crash or give up abandon upload sessions; a long run
+	// must not hit the per-vault session limit.
+	apiAddress := start("server", config.BlobMaxUploadsPerVaultEnv+"="+strconv.Itoa(config.MaxBlobMaxUploadsPerVault))
+	// A second replica of the same server, on the same database and bucket
+	// (SPEC.md §3: replicas are stateless and coordinate through PostgreSQL
+	// only), with a small per-vault upload session limit, so that a scenario
+	// can fill it and have idle sessions reclaimed (#490). It is started
+	// after the first, which has migrated the database.
+	limitedAddress := start("limited server",
+		config.BlobMaxUploadsPerVaultEnv+"="+strconv.Itoa(limitedMaxUploadsPerVault),
+		config.BlobUploadReclaimIdleEnv+"="+config.DefaultBlobUploadReclaimIdle.String())
 
 	db, err := pgxpool.New(t.Context(), database.DSN)
 	require.NoError(t, err)
@@ -161,7 +182,13 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 	controlServer := httptest.NewServer(ctl.handler())
 	t.Cleanup(controlServer.Close)
 
-	return &simulation{serverURL: "http://" + apiAddress, controlURL: controlServer.URL, control: ctl, regressionDir: regressionDir}
+	return &simulation{
+		serverURL:        "http://" + apiAddress,
+		limitedServerURL: "http://" + limitedAddress,
+		controlURL:       controlServer.URL,
+		control:          ctl,
+		regressionDir:    regressionDir,
+	}
 }
 
 // requireBuildTags checks the binary was built with exactly the requested
@@ -220,6 +247,7 @@ func (simulation *simulation) runSuite(t *testing.T, stream bool, extraEnv []str
 
 	suite.Command.Env = append(append(os.Environ(),
 		serverURLEnv+"="+simulation.serverURL,
+		limitedServerURLEnv+"="+simulation.limitedServerURL,
 		controlURLEnv+"="+simulation.controlURL,
 		regressionDirEnv+"="+simulation.regressionDir,
 		"CI=1", // no watch mode, no interactive output
