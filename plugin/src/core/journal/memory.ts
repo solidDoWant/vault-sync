@@ -36,14 +36,17 @@ export class InMemoryJournal implements Journal {
   }
 
   findDocumentByPath(path: string): Promise<DocumentState | undefined> {
-    for (const state of this.documents.values()) {
-      if (state.path === path && !state.deleted) return Promise.resolve({ ...state });
-    }
-    return Promise.resolve(undefined);
+    const found = this.sortedDocuments().find((state) => state.path === path && !state.deleted);
+    return Promise.resolve(found === undefined ? undefined : { ...found });
   }
 
   listDocuments(): Promise<DocumentState[]> {
-    return Promise.resolve([...this.documents.values()].map((state) => ({ ...state })));
+    return Promise.resolve(this.sortedDocuments().map((state) => ({ ...state })));
+  }
+
+  /** The documents in id order (UTF-16 code units), IndexedDB's key order. */
+  private sortedDocuments(): DocumentState[] {
+    return [...this.documents.values()].sort((a, b) => (a.documentId < b.documentId ? -1 : a.documentId > b.documentId ? 1 : 0));
   }
 
   putDocument(state: DocumentState): Promise<void> {
