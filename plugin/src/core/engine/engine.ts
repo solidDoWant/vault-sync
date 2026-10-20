@@ -1050,17 +1050,25 @@ export class SyncEngine {
 
   /**
    * Gives up the claim on its synced path of a document whose file is not
-   * there any more (the user deleted it) and whose remote revision waits for
-   * a reason no pull or push retries (`out-of-scope`, `too-large`,
-   * `invalid-path`), once the server puts another document at that path
-   * (#379 review): kept, the claim would hold the other document off for
-   * good. Like releaseKeptFile, it records the state `deleted`, so the
-   * document's revision, still deferred for its own reason, applies as a new
-   * document's would once its own retry rules let it (never taking the other
-   * document's file as its local version). A document with an operation
-   * pending, a merge result recorded, or a local rename away from the path
-   * not yet pushed keeps its claim: those are retried. Returns whether the
-   * claim was given up.
+   * there any more and whose remote revision waits for a reason no pull or
+   * push retries (`out-of-scope`, `too-large`, `invalid-path`), once the
+   * server puts another document at that path (#379 review): kept, the claim
+   * would hold the other document off for good. A document with an operation
+   * pending or a merge result recorded keeps its claim: those are retried.
+   *
+   * If a local rename not yet pushed moved the document's file (the rename
+   * waits with the document, SPEC.md §8), the document follows its file, as
+   * on-device identity follows the filesystem (#52): its journal state moves
+   * to the rename's new path and the rename is dropped, so the path it left
+   * is free and no record of the rename points there once the other document
+   * is written. Its revision, still deferred for its own reason, then applies
+   * to the file where it is. If the file is not there, the new path is out of
+   * scope or another live document holds it, the document gives its claim up
+   * instead, as when the user deleted its file: like releaseKeptFile, the
+   * state is recorded `deleted`, so the revision applies as a new document's
+   * would once its own retry rules let it (never taking the other document's
+   * file as its local version), and a file at the new path is pushed as a new
+   * document. Returns whether the claim was given up.
    */
   private async releaseIdleClaim(documentId: string): Promise<boolean> {
     const deferred = await this.journal.getDeferred(documentId);
@@ -1068,7 +1076,23 @@ export class SyncEngine {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted || (await this.vault.stat(state.path)) !== null) return false;
     if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return false;
-    if (this.localRenames().some(([, from]) => this.fileKey(from) === this.fileKey(state.path))) return false;
+    const key = this.fileKey(state.path);
+    let follow: string | undefined;
+    for (const renames of [this.changes.renames, this.roundRenames]) {
+      for (const [to, from] of [...renames]) {
+        if (this.fileKey(from) !== key) continue;
+        renames.delete(to);
+        follow ??= to;
+      }
+    }
+    if (follow !== undefined && this.inScope(follow) && (await this.vault.stat(follow)) !== null) {
+      const holder = await this.documentAt(follow);
+      if (holder === undefined || holder.documentId === documentId) {
+        await this.journal.putDocument({ ...state, path: follow });
+        return true;
+      }
+    }
+    if (follow !== undefined) this.changes.paths.add(follow);
     await this.journal.putDocument({ ...state, deleted: true });
     return true;
   }
