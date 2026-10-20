@@ -17,15 +17,23 @@ var errLocked = errors.New("another export to this directory is running")
 // it if needed. The lock is held until the returned file is closed (or the
 // process exits). A symbolic link at path is refused, never followed, so a
 // link planted beside the output cannot make the export create or lock a
-// file elsewhere.
+// file elsewhere. So is anything but a regular file with one link owned by
+// the running user, such as a hard link to another file or a FIFO (opened
+// non-blocking, so it cannot stall the run).
 func lock(path string) (*os.File, error) {
-	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|unix.O_NOFOLLOW, 0o600)
+	file, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|unix.O_NOFOLLOW|unix.O_NONBLOCK, 0o600)
 	if errors.Is(err, unix.ELOOP) {
 		return nil, fmt.Errorf("open lock file: %s is a symbolic link; remove it", path)
 	}
 
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+
+	if err := checkLockFile(file, path); err != nil {
+		_ = file.Close()
+
+		return nil, err
 	}
 
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
@@ -39,6 +47,26 @@ func lock(path string) (*os.File, error) {
 	}
 
 	return file, nil
+}
+
+// checkLockFile refuses an opened lock file that is not a regular file with
+// exactly one link, owned by the running user.
+func checkLockFile(file *os.File, path string) error {
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(file.Fd()), &stat); err != nil {
+		return fmt.Errorf("inspect lock file %s: %w", path, err)
+	}
+
+	switch {
+	case stat.Mode&unix.S_IFMT != unix.S_IFREG:
+		return fmt.Errorf("lock file %s is not a regular file; remove it", path)
+	case stat.Nlink != 1:
+		return fmt.Errorf("lock file %s has %d hard links; remove it", path, stat.Nlink)
+	case stat.Uid != uint32(os.Geteuid()):
+		return fmt.Errorf("lock file %s is owned by uid %d, not by the user running the export (uid %d); remove it", path, stat.Uid, os.Geteuid())
+	}
+
+	return nil
 }
 
 // exchange atomically swaps the directories at a and b (renameat2 with
