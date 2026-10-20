@@ -11,6 +11,7 @@ import { runSeed, runSteps, seededCommitRetryBackoff, seededPlatforms, type RunR
 import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, enginesEditConcurrently, lostResponseAfterHeadMoved, remoteRenameOntoUnsyncedFile, saveBeforeEngineWrite, structuralOperations, unmaterializableOnWindows, freedPathReused, purgedMergeBase, purgedMergeBaseWhileOffline, newDocumentAtHeldPath, knownDocumentAtHeldPath, renameLostToCrash, backslashPathsRefused, changeAtBusyPathKept, drivePrefixPathsRefused, serverRefusedPathsSurfaced, normalizedTooLongPath, commitRetryAfterSchedule, stalledEngineReported, fileAtVacatedPath, type VacatedPathResult, scriptedChangesOfBinary, remoteRenameOntoSpellingOfUnpushedFile, caseOnlyRename, remoteRenameOntoLocalFolder, remoteEditOfVacatedPath, remoteRenameIntoDeletedNotesFolder, restoredServer, newFileAtRenamedAwayPath, localRenameIntoRemoteRenamesFolder, remoteRenameOntoFolderName, respelledNoteRenamed } from "./scenarios";
 import { localRenameOverRemoteRenameIntoRespelledFolder } from "./scenarios";
 import { renameOntoDeletedNotePath } from "./scenarios";
+import { bothRenameOntoVacatedPath } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { StallError } from "./network";
@@ -856,6 +857,24 @@ describe.runIf(suites.has("scenarios"))("scripted rename onto a just-deleted not
     expect(result.documents, trace).toEqual(new Map([["c.md", renamed]]));
     for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["c.md", "x\nremote\n"]]));
     expect(result.tombstoned, trace).toEqual([deleted]);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted renames of one note onto a vacated path on both devices (#462)", () => {
+  it.each(["posix", "macos", "windows"] as const)("keeps the local edit of the renamed note (%s)", async (platform) => {
+    const result = await bothRenameOntoVacatedPath(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    for (const vault of result.vaults) {
+      const contents = [...vault.values()];
+      expect(contents, trace).toContain("x\nlocal\n");
+      expect(contents, trace).toContain("x\nremote\n");
+      expect(contents, trace).toContain("c\nremote\n");
+    }
+    expect(result.vaults[1], trace).toEqual(result.vaults[0]);
+    expect(result.documents.size, trace).toBe(result.vaults[0]?.size);
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
