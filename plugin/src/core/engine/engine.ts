@@ -677,8 +677,13 @@ export class SyncEngine {
     }
     const deferred = await this.journal.getDeferred(remote.documentId);
     if (state?.revisionId === remote.revisionId) {
-      // Applied before an interruption that came before its deferral was removed.
-      if (deferred !== undefined && deferred.reason !== "local-changes" && deferred.revision.seq <= remote.seq) await this.journal.removeDeferred(remote.documentId);
+      // Applied before an interruption that came before its deferral was
+      // removed. A merge of this very revision interrupted after its rebase
+      // is finished too: its result is on disk as an ordinary local edit
+      // (applyMerge), and kept, the deferral would wait for good once another
+      // document takes the path (#453).
+      const finished = deferred?.reason === "local-changes" ? deferred.revision.revisionId === remote.revisionId : deferred !== undefined && deferred.revision.seq <= remote.seq;
+      if (finished) await this.journal.removeDeferred(remote.documentId);
       return "skipped";
     }
     if (this.outOfScope(remote, state)) {
