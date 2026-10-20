@@ -28,6 +28,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/realtime"
+	"github.com/solidDoWant/vault-sync/internal/retention"
 )
 
 // AllowedOrigins are the Obsidian app origins allowed to call the API from a
@@ -108,6 +109,9 @@ type Options struct {
 	// Realtime serves the realtime WebSocket at realtime.Path and is drained
 	// with the server. When nil, the realtime channel is not served.
 	Realtime *realtime.Hub
+	// Retention holds the retention job's metrics, served with the
+	// server's. When nil, they are not served.
+	Retention *retention.Metrics
 	// Logger receives server logs. Request bodies, tokens and vault paths
 	// are never logged.
 	Logger *slog.Logger
@@ -152,7 +156,7 @@ func New(options Options) *Server {
 
 	rpcMetrics := newRPCMetrics()
 	concurrency := newConcurrencyMetrics()
-	registry := newRegistry(serverCollectors(options.Realtime, rpcMetrics, concurrency))
+	registry := newRegistry(serverCollectors(options.Realtime, rpcMetrics, concurrency, options.Retention))
 
 	srv := &Server{options: options}
 	srv.api = newAPIHandler(options, rpcMetrics, newUserLimiter(options.MaxConcurrentRPCsPerUser, concurrency))

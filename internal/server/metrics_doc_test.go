@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/solidDoWant/vault-sync/internal/realtime"
+	"github.com/solidDoWant/vault-sync/internal/retention"
 )
 
 // This test lives in package server because the full set of registered
@@ -33,7 +34,7 @@ func registeredMetrics(t *testing.T) map[string]documentedMetric {
 	hub := realtime.NewHub(realtime.Options{})
 	registered := map[string]documentedMetric{}
 
-	for _, collector := range serverCollectors(hub, newRPCMetrics(), newConcurrencyMetrics()) {
+	for _, collector := range serverCollectors(hub, newRPCMetrics(), newConcurrencyMetrics(), retention.NewMetrics()) {
 		var kind string
 
 		// Gauge before Counter: a Gauge also satisfies the Counter interface.

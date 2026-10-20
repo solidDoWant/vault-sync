@@ -9,6 +9,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/collectors"
 
 	"github.com/solidDoWant/vault-sync/internal/realtime"
+	"github.com/solidDoWant/vault-sync/internal/retention"
 )
 
 // rpcMetrics records per-procedure request counts and latencies. Procedures
@@ -40,8 +41,12 @@ func (metrics *rpcMetrics) collectors() []prometheus.Collector {
 // serverCollectors returns every vault_sync_* collector the server
 // registers. Every such metric must be registered through this function:
 // the Metrics table in docs/configuration.md is checked against it.
-func serverCollectors(hub *realtime.Hub, rpc *rpcMetrics, concurrency *concurrencyMetrics) []prometheus.Collector {
+func serverCollectors(hub *realtime.Hub, rpc *rpcMetrics, concurrency *concurrencyMetrics, retained *retention.Metrics) []prometheus.Collector {
 	collected := append(rpc.collectors(), concurrency.collectors()...)
+	if retained != nil {
+		collected = append(collected, retained.Collectors()...)
+	}
+
 	if hub != nil {
 		collected = append(collected, hub.Collectors()...)
 	}

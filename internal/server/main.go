@@ -73,7 +73,9 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Logger:    logger,
 	})
 
-	blobs, err := startBlobs(ctx, cfg, queries, logger)
+	retained := retention.NewMetrics()
+
+	blobs, err := startBlobs(ctx, cfg, queries, retained, logger)
 	if err != nil {
 		logger.ErrorContext(ctx, "cannot use the S3 object store", "error", err)
 
@@ -126,6 +128,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Sync:                     &api.SyncService{Store: queries, Logger: logger},
 		Blobs:                    blobs,
 		Realtime:                 hub,
+		Retention:                retained,
 		Logger:                   logger,
 	})
 
@@ -144,7 +147,7 @@ const s3CheckTimeout = 30 * time.Second
 // startBlobs connects to the object store, checks that the bucket is
 // reachable and starts the upload cleanup routine and the retention job,
 // which stop with ctx. It returns nil when no object store is configured.
-func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, logger *slog.Logger) (*api.BlobService, error) {
+func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, retained *retention.Metrics, logger *slog.Logger) (*api.BlobService, error) {
 	if cfg.S3 == nil {
 		logger.WarnContext(ctx, "no S3 object store is configured (VAULT_SYNC_S3_*); blob uploads and downloads are disabled")
 
@@ -173,6 +176,7 @@ func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, lo
 		Objects: objects,
 		Policy:  store.RetentionPolicy{KeepAll: cfg.Retention.KeepAll, KeepDaily: cfg.Retention.KeepDaily},
 		Grace:   cfg.Retention.BlobGrace,
+		Metrics: retained,
 		Logger:  logger,
 	}
 	go job.Run(ctx, retention.DefaultInterval)
