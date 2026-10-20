@@ -28,6 +28,14 @@ const emulateMobile = process.env.VAULT_SYNC_E2E_MOBILE === "1";
 // fails.
 const logDir = process.env.VAULT_SYNC_E2E_LOG_DIR;
 
+// Windows: render in software inside Obsidian's main process. On a loaded
+// Windows runner (no GPU) Electron's separate GPU process kept dying until
+// Chromium gave up and ended Obsidian with "GPU process isn't usable.
+// Goodbye." (chromedriver: "Unable to receive message from renderer"), which
+// failed whichever spec was running (#457). The specs check no pixels, so
+// software rendering loses no coverage.
+const gpuArgs = process.platform === "win32" ? ["--disable-gpu", "--in-process-gpu"] : [];
+
 declare global {
   namespace WebdriverIO {
     // chromedriver flags WebdriverIO passes through (as `--verbose` and
@@ -74,7 +82,10 @@ export const config: WebdriverIO.Config = {
         emulateMobile,
       },
       ...(logDir === undefined ? {} : { "wdio:chromedriverOptions": { verbose: true, enableChromeLogs: true } }),
-      ...(emulateMobile ? { "goog:chromeOptions": { mobileEmulation: { deviceMetrics: { width: 390, height: 844 } } } } : {}),
+      "goog:chromeOptions": {
+        args: gpuArgs,
+        ...(emulateMobile ? { mobileEmulation: { deviceMetrics: { width: 390, height: 844 } } } : {}),
+      },
     },
   ],
   services: ["obsidian"],
