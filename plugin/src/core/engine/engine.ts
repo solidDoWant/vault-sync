@@ -806,8 +806,12 @@ export class SyncEngine {
     if (this.fileKey(basePath) === this.fileKey(target)) {
       if (targetHash === remote.contentHash) return { kind: "applied" };
       if (baseOnDisk) return { kind: "clean", source: basePath, sourceHash: baseHash };
-      // Edited, or deleted locally (content null): a local change either way.
-      return { kind: "dirty", path: target, content: targetContent };
+      // Edited, or deleted or moved away locally (content null): a local
+      // change either way. A file gone is looked for from the synced path,
+      // where a local rename took it from: a remote rename into a folder of
+      // another spelling (`NOTES/` for `notes/`) never hides the user's
+      // rename, which wins (SPEC.md §7, #375).
+      return { kind: "dirty", path: targetContent === null ? basePath : target, content: targetContent };
     }
     // A rename, possibly with an edit.
     if (baseContent === null) {
