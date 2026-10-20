@@ -214,6 +214,16 @@ func TestExportRefusesALockFileThatIsNotAPlainFileOfItsOwn(t *testing.T) {
 				require.NoError(t, os.Chown(lockPath, 65534, 65534))
 			},
 		},
+		{
+			// Runs without root: the lock file is the running user's own,
+			// but the export is made to see itself as another uid.
+			name: "a file owned by a uid other than the running user's",
+			plant: func(t *testing.T, lockPath, _ string) {
+				require.NoError(t, os.WriteFile(lockPath, nil, 0o600))
+
+				export.SetEffectiveUIDForTest(t, func() int { return os.Geteuid() + 1 })
+			},
+		},
 	}
 
 	for _, test := range tests {
