@@ -158,19 +158,61 @@ describe("Remote writes to a canvas open in its view", function () {
     );
   }
 
-  it("are refused while the canvas has unsaved changes, which are saved instead", async function () {
+  it("are merged with the canvas's unsaved changes, node by node (#418)", async function () {
     const base = canvas("base node");
     await openCanvas("Busy board.canvas", base);
     const remote = canvas("base node", "remote node");
     const result = await callHarness("addCanvasNodeThenWriteRemote", "Busy board.canvas", "unsaved node", remote);
 
-    expect(result.outcome).toBe("UnsavedEditsError: Busy board.canvas has unsaved edits that the incoming change cannot be merged with");
+    expect(result.outcome).toBe("ok");
     // The node was unsaved when the remote change arrived.
     expect(result.diskBefore).toBe(base);
-    // It survives in the view and is now on disk; the remote content was not written.
+    // Both nodes are on disk and in the view.
+    for (const text of ["base node", "unsaved node", "remote node"]) {
+      expect(result.disk).toContain(text);
+      expect(result.view).toContain(text);
+    }
+    // Obsidian's reload after the write keeps both.
+    await browser.pause(500);
+    const view = await callHarness("canvasViewData", "Busy board.canvas");
+    expect(view).toContain("unsaved node");
+    expect(view).toContain("remote node");
+  });
+
+  it("are refused while the canvas has unsaved changes the new content cannot be merged with, which are saved instead", async function () {
+    const base = canvas("base node");
+    await openCanvas("Clashing board.canvas", base);
+    // Not a canvas: nothing to merge node by node.
+    const remote = "remote text that is not a canvas";
+    const result = await callHarness("addCanvasNodeThenWriteRemote", "Clashing board.canvas", "unsaved node", remote);
+
+    expect(result.outcome).toBe("UnsavedEditsError: Clashing board.canvas has unsaved edits that the incoming change cannot be merged with");
+    expect(result.diskBefore).toBe(base);
+    // The node survives in the view and is now on disk; the remote content was not written.
     expect(result.view).toContain("unsaved node");
     expect(result.disk).toBe(result.view);
-    expect(result.disk).not.toContain("remote node");
+    expect(result.disk).not.toContain("remote text");
+  });
+
+  it("keep an edit made right after the write, which Obsidian's reload would replace (#418)", async function () {
+    await openCanvas("Quick board.canvas", canvas("base node"));
+    // Put the canvas's own serialization on disk, so the view has nothing unsaved.
+    await browser.executeObsidian(
+      async ({ app }, path, data) => {
+        const file = app.vault.getFileByPath(path);
+        if (file === null) throw new Error(`no file ${path}`);
+        await app.vault.modify(file, data);
+      },
+      "Quick board.canvas",
+      await callHarness("canvasViewData", "Quick board.canvas"),
+    );
+    const remote = canvas("base node", "remote node");
+    const result = await callHarness("writeRemoteThenAddCanvasNode", "Quick board.canvas", remote, "quick node");
+
+    expect(result.outcome).toBe("ok");
+    expect(result.reloads).toBeGreaterThan(0);
+    expect(result.view).toContain("remote node");
+    expect(result.view).toContain("quick node");
   });
 
   it("are refused once the canvas saved after the engine's check (#163)", async function () {
@@ -207,5 +249,19 @@ describe("Remote writes to a canvas open in its view", function () {
     expect(result.disk).toBe(remote);
     // The view picks up the new content from disk.
     await browser.waitUntil(async () => (await callHarness("canvasViewData", "Clean board.canvas")).includes("remote node"));
+  });
+});
+
+describe("Remote writes to a file open in a plugin's view under a viewer's type", function () {
+  it("are not taken for a read-only viewer: unsaved data is saved instead (#418)", async function () {
+    await browser.executeObsidian(async ({ app }) => {
+      await app.vault.create("Plugin image.png", "on disk");
+    });
+    const result = await callHarness("writeRemoteUnderPluginImageView", "Plugin image.png", "unsaved in the view", "remote content");
+
+    expect(result.viewType).toBe("image");
+    expect(result.outcome).toBe("UnsavedEditsError: Plugin image.png has unsaved edits that the incoming change cannot be merged with");
+    expect(result.diskBefore).toBe("on disk");
+    expect(result.disk).toBe("unsaved in the view");
   });
 });
