@@ -739,6 +739,21 @@ export class SyncEngine {
         return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
       }
     }
+    if (inspection.kind === "clean" && !remote.deleted) {
+      // No file at the path, but the journal has it as another live
+      // document's: one whose own remote move the merge path holds, after
+      // the user deleted its file, say. Written here, the journal would hold
+      // two documents at one path: the other's merge would take this file
+      // as its local version, and this document's next move would find its
+      // file another's for good (#379). The merge path lets the other
+      // document's merge go first. One the platform cannot hold is handled
+      // as its kept file is (releaseKeptFile, #391).
+      const holder = await this.documentAt(remote.path);
+      if (holder !== undefined && holder.documentId !== remote.documentId && (await this.journal.getDeferred(holder.documentId))?.reason !== "unmaterializable") {
+        const path = inspection.source ?? remote.path;
+        return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+      }
+    }
     if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
       // The file at the document's synced path holds its synced content, but
       // a local rename of another document put it there after this one moved
