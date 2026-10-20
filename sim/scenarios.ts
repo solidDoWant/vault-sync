@@ -2501,8 +2501,8 @@ export async function renameOntoRemoteCreate(endpoints: SimEndpoints, platform: 
  * recreates at its old path (#486). Both engines sync `b.md`. The second
  * engine's user renames it to `x.md` and edits it without pushing, while the
  * first (POSIX) engine deletes `b.md` and pushes; the second engine pulls
- * the delete. The first engine then creates a new note at `b.md` and
- * pushes, and the second engine pulls it before it pushes. The new note
+ * the delete. The first engine then creates a new note at `c.md`, renames
+ * it to `b.md` and pushes, and the second engine pulls it before it pushes. The new note
  * keeps its path, content and id (no push renames it to `x.md`), the user's
  * edit stays live, both vaults equal the server, and the last push commits
  * nothing (SPEC.md §2 principle 1).
@@ -2535,7 +2535,10 @@ export async function renameOfRecreatedNote(endpoints: SimEndpoints, platform: "
   log(await first.remove("b.md"));
   await push(first);
   await pull(second);
-  log(await first.edit("b.md", encoder.encode("theirs\n")));
+  // A new note brought to b.md by a rename, so it is never the deleted one resurrected.
+  log(await first.edit("c.md", encoder.encode("theirs\n")));
+  await push(first);
+  log(await first.move("c.md", "b.md"));
   await push(first);
   const recreated = (await liveDocuments(run)).get("b.md");
   await pull(second);
@@ -2555,7 +2558,7 @@ export async function renameOfRecreatedNote(endpoints: SimEndpoints, platform: "
 }
 
 export interface RecreatedNoteResult extends RespelledRenameResult {
-  /** The note the first engine created at `b.md` after deleting the synced one. */
+  /** The note the first engine brought to `b.md` after deleting the synced one. */
   recreated: string | undefined;
 }
 
