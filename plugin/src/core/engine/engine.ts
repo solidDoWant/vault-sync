@@ -831,8 +831,11 @@ export class SyncEngine {
       if (targetHash === remote.contentHash) return { kind: "applied" };
       return { kind: "dirty", path: target, content: targetContent };
     }
-    // The same file, also when only its spelling changes on a case-insensitive platform.
-    if (this.fileKey(basePath) === this.fileKey(target)) {
+    // The same file, also when only its spelling changes on a case-insensitive
+    // platform, but only if the vault holds the two spellings as one file:
+    // on NTFS or APFS `straße/` and `STRASSE/` are two folders, so that is a
+    // rename, and an edit at the synced path is the note's (#447).
+    if (await this.heldAsOne(basePath, target)) {
       if (targetHash === remote.contentHash) return { kind: "applied" };
       if (baseOnDisk) return { kind: "clean", source: basePath, sourceHash: baseHash };
       // Edited, or deleted or moved away locally (content null): a local
@@ -1241,6 +1244,22 @@ export class SyncEngine {
   }
 
   /**
+   * Whether `a` and `b` name one file the vault holds now: the same file by
+   * their spellings, or two spellings with one path key of which the vault
+   * lists one and finds a file at the other too (it folds them as path keys
+   * do). On NTFS or APFS the other spelling of `straße/b.md`, `STRASSE/b.md`,
+   * is another file or none (decision #52, #447). For the engine's own
+   * changes, which look at the vault as they act.
+   */
+  private async heldAsOne(a: string, b: string): Promise<boolean> {
+    if (this.fileKey(a) !== this.fileKey(b)) return false;
+    if (sameFilesystemName(a, b, this.pathRules.platform)) return true;
+    const listed = new Set(await this.vault.list());
+    if (listed.has(a) === listed.has(b)) return false;
+    return (await this.vault.stat(listed.has(a) ? b : a)) !== null;
+  }
+
+  /**
    * Moves the file a local move of `documentId` put at `path` on to a
    * conflict-copy path, as the document's own (SPEC.md §6.3): its pending
    * operations and unpushed rename follow it, so it is committed there under
@@ -1346,8 +1365,10 @@ export class SyncEngine {
     // A result path that is the document's own file under another spelling
     // (a remote case-only rename on a case-insensitive platform) is no file
     // in the way: the vault holds one file there, the document's, which the
-    // rename below respells (#343).
-    const respelled = outcome.content !== null && outcome.path !== local.path && this.fileKey(outcome.path) === this.fileKey(local.path);
+    // rename below respells (#343). Only if the vault holds the two as one:
+    // on NTFS or APFS a file at `STRASSE/b.md` is another one than
+    // `straße/b.md`, so it is in the way (#447).
+    const respelled = outcome.content !== null && outcome.path !== local.path && (await this.heldAsOne(outcome.path, local.path));
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).
