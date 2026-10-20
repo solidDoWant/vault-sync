@@ -22,6 +22,8 @@ export class HistoryModal extends Modal {
   private listEl!: HTMLElement;
   private moreEl!: HTMLElement;
   private previewEl!: HTMLElement;
+  /** Whether the user may restore here (VaultHistory.canRestore): a viewer may not (#417). */
+  private canRestore: Promise<boolean> = Promise.resolve(true);
 
   constructor(
     app: App,
@@ -41,6 +43,7 @@ export class HistoryModal extends Modal {
     this.moreEl = contentEl.createDiv();
     this.previewEl = contentEl.createDiv({ cls: "vault-sync-history-preview" });
     this.previewEl.createEl("p", { text: "Choose a version to preview it.", cls: "vault-sync-history-hint" });
+    this.canRestore = this.history.canRestore?.() ?? Promise.resolve(true);
     void this.load(true);
   }
 
@@ -114,6 +117,12 @@ export class HistoryModal extends Modal {
       previewEl.createEl("p", { text: `Binary content, ${sizeLabel(preview.size)}.`, cls: "vault-sync-history-hint" });
     }
     if (entry === this.entries[0] && !entry.deleted) return;
+    const allowed = await this.canRestore;
+    if (this.selected.entry !== entry) return;
+    if (!allowed) {
+      previewEl.createEl("p", { text: "You can view this vault but not change it, so you cannot restore versions.", cls: "vault-sync-history-viewer" });
+      return;
+    }
     new Setting(previewEl).addButton((button) =>
       button
         .setButtonText("Restore this version")

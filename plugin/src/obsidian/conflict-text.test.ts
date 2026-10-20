@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
-import { conflictReasonText, formatBytes, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import { conflictReasonText, deferredReasonText, formatBytes, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
 
 describe("conflict view wording", () => {
   it.each<[ConflictReason, RegExp]>([
@@ -62,5 +62,46 @@ describe("conflict view wording", () => {
     expect(visiblePath("notes/line\nbreak\u0001\u009f.md")).toBe("notes/line\\u000Abreak\\u0001\\u009F.md");
     expect(visiblePath("a\ud800b.md")).toBe("a\\uD800b.md");
     expect(visiblePath("zoë/日本/\u{1f600} \u{1d160}.md")).toBe("zoë/日本/\u{1f600} \u{1d160}.md");
+  });
+});
+
+/** Obsidian's normalizePath (1.14) as documented: slashes collapsed and trimmed, non-breaking spaces made plain, NFC. */
+const obsidianNormalize = (path: string) =>
+  path
+    .replace(/([\\/])+/g, "/")
+    .replace(/(^\/+|\/+$)/g, "")
+    .replace(/[\u00a0\u202f]/g, " ")
+    .normalize("NFC") || "/";
+
+describe("deferred remote revisions wording (#417)", () => {
+  it.each([
+    ["an accent typed as a separate character (NFD)", "cafe\u0301.md"],
+    ["a non-breaking space", "a\u00a0b.md"],
+    ["a narrow non-breaking space", "a\u202fb.md"],
+  ])("says Obsidian would store a path with %s under another name", (_name, path) => {
+    const cause = pathConflictCause(path, obsidianNormalize);
+    expect(cause).toBe("renamed-by-obsidian");
+    expect(deferredReasonText("path-conflict", cause)).toMatch(/Obsidian would store its path under another name/);
+  });
+
+  it("says a path with a hidden name is not synced", () => {
+    const cause = pathConflictCause("notes/.hidden/a.md", obsidianNormalize);
+    expect(cause).toBe("hidden");
+    expect(deferredReasonText("path-conflict", cause)).toMatch(/starts with a dot/);
+  });
+
+  it("says something is in the way of a path Obsidian keeps as it is", () => {
+    const cause = pathConflictCause("café/notes.md", obsidianNormalize);
+    expect(cause).toBe("occupied");
+    expect(deferredReasonText("path-conflict", cause)).toMatch(/in the way/);
+  });
+
+  it("explains an invalid path and a move out of scope", () => {
+    expect(deferredReasonText("invalid-path", "occupied")).toMatch(/not a valid path/);
+    expect(deferredReasonText("out-of-scope", "occupied")).toMatch(/does not sync/);
+  });
+
+  it("names the file an open view holds back, readably", () => {
+    expect(openViewText("a\u0007.canvas")).toMatch(/^"a\\u0007\.canvas" is open in a view/);
   });
 });

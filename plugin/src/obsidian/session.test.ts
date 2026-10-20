@@ -8,6 +8,7 @@ import { InMemoryJournal } from "../core/journal/memory";
 import { createProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
 import { SyncSession, type SessionStatus, type SyncSessionOptions } from "./session";
+import { UnsavedEditsError } from "./unsaved-edits";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 
@@ -237,6 +238,8 @@ describe("SyncSession", () => {
       await vi.waitFor(() => {
         expect(statuses.at(-1)).toMatchObject({ state: "offline" });
       });
+      // The push failed before it recorded the edit; it is pending all the same (#417).
+      expect(statuses.at(-1)).toMatchObject({ pending: 1 });
       expect(await files(vault)).toEqual(new Map([["a.md", "written offline"]]));
       expect(server.liveFiles()).toEqual(new Map());
 
@@ -249,6 +252,77 @@ describe("SyncSession", () => {
         expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
       });
       expect(await files(vault)).toEqual(new Map([["a.md", "written offline"]]));
+    });
+
+    it("counts every edit and create made while the server is unreachable as pending until the server acknowledges them (#417)", async () => {
+      vi.useFakeTimers();
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const statuses: SessionStatus[] = [];
+      const running = session({ server, vault, journal: new InMemoryJournal(), statuses, options: { pushDebounceMs: 1000, syncIntervalMs: 30_000 } });
+      await vault.write("synced.md", bytes("v1"));
+      await running.start();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+
+      server.interceptor = () => {
+        throw new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable);
+      };
+      await vault.write("synced.md", bytes("v2, edited offline"));
+      await vault.write("new.md", bytes("created offline"));
+      await vault.write("new.md", bytes("created offline, then edited"));
+      await vi.advanceTimersByTimeAsync(1000);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline" });
+      });
+      expect(statuses.at(-1)).toMatchObject({ pending: 2 });
+      // The timer's push fails too: still two.
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline", pending: 2 });
+      });
+
+      server.interceptor = undefined;
+      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+      expect(server.liveFiles()).toEqual(
+        new Map([
+          ["synced.md", "v2, edited offline"],
+          ["new.md", "created offline, then edited"],
+        ]),
+      );
+      await running.stop();
+    });
+
+    it("counts an edit once, before and after a failed push records it as a pending operation (#417)", async () => {
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const statuses: SessionStatus[] = [];
+      const journal = new InMemoryJournal();
+      const running = session({ server, vault, journal, statuses });
+      await running.start();
+      server.interceptor = () => {
+        throw new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable);
+      };
+      await vault.write("a.md", bytes("offline"));
+      expect(await journal.listPending()).toEqual([]);
+      await running.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline", pending: 1 });
+      });
+      // The pull gets through and the edit is recorded, but its commit fails: still one.
+      server.interceptor = (method) => {
+        if (method === "CommitRevision") throw new ConnectError("network error: net::ERR_INTERNET_DISCONNECTED", Code.Unavailable);
+      };
+      await running.syncNow();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline", pending: 1 });
+      });
+      expect((await journal.listPending()).map((operation) => operation.path)).toEqual(["a.md"]);
+      await running.stop();
     });
 
     it("pushes an edit made while the server was unreachable from the next session when the app was closed before it synced", async () => {
@@ -756,6 +830,57 @@ describe("SyncSession", () => {
       expect(await running.rejected()).toEqual([]);
     });
 
+    it("lists remote revisions deferred for their path with their remote path and reason, until stopped (#417)", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "ok", path: "ok.md", content: "fine\n" });
+      server.commit({ documentId: "invalid", path: "/etc/passwd", content: "outside the vault\n" });
+      server.commit({ documentId: "folder", path: "notes", content: "a file named like a folder\n" });
+      server.commit({ documentId: "inside", path: "notes/c.md", content: "in the way\n" });
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      expect(await running.deferred()).toEqual([]);
+      await running.start();
+
+      const listed = (await running.deferred()).map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));
+      expect(listed).toEqual([
+        { path: "/etc/passwd", reason: "invalid-path" },
+        { path: "notes/c.md", reason: "path-conflict" },
+      ]);
+
+      await running.stop();
+      expect(await running.deferred()).toEqual([]);
+    });
+
+    it("names the file whose open view refused a pull's write until a pull gets past it (#417)", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "a", path: "board.canvas", content: "{}" });
+      const inner = new InMemoryVault();
+      let viewOpen = false;
+      const vault = Object.assign(Object.create(inner) as InMemoryVault, {
+        write: (path: string, data: Uint8Array, precondition?: Parameters<InMemoryVault["write"]>[2]) =>
+          viewOpen && path === "board.canvas" ? Promise.reject(new UnsavedEditsError(path)) : inner.write(path, data, precondition),
+      });
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+      expect(running.heldByOpenView()).toBeUndefined();
+
+      viewOpen = true;
+      server.commit({ documentId: "a", path: "board.canvas", content: '{"nodes":[]}' });
+      await running.syncNow();
+      expect(running.heldByOpenView()).toBe("board.canvas");
+
+      viewOpen = false;
+      await running.syncNow();
+      expect(running.heldByOpenView()).toBeUndefined();
+      expect(await files(inner)).toEqual(new Map([["board.canvas", '{"nodes":[]}']]));
+
+      viewOpen = true;
+      server.commit({ documentId: "a", path: "board.canvas", content: '{"nodes":[1]}' });
+      await running.syncNow();
+      await running.stop();
+      expect(running.heldByOpenView()).toBeUndefined();
+    });
+
     it("lists nothing once stopped", async () => {
       const server = new InMemoryServer();
       server.commit({ documentId: "remote", path: "a.md", content: "remote version\n" });
@@ -783,6 +908,27 @@ describe("SyncSession", () => {
       expect(running.history()).toBeDefined();
       await running.stop();
       expect(running.history()).toBeUndefined();
+    });
+
+    it("does not offer deleted files at paths the vault does not sync now, such as config files while config sync is off (#417)", async () => {
+      const server = new InMemoryServer();
+      server.commit({ documentId: "note", path: "note.md", content: "a note\n" });
+      server.commit({ documentId: "snippet", path: ".obsidian/snippets/a.css", content: "body {}\n" });
+      let configSync = true;
+      const vault = Object.assign(Object.create(new InMemoryVault()) as InMemoryVault, { isSynced: (path: string) => configSync || !path.startsWith(".obsidian/") });
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+      server.commit({ documentId: "note", path: "note.md", deleted: true });
+      server.commit({ documentId: "snippet", path: ".obsidian/snippets/a.css", deleted: true });
+      await running.syncNow();
+      const history = running.history();
+      if (history === undefined) throw new Error("no history");
+      expect((await history.deletedDocuments()).map((state) => state.path).sort()).toEqual([".obsidian/snippets/a.css", "note.md"]);
+
+      configSync = false;
+
+      expect((await history.deletedDocuments()).map((state) => state.path)).toEqual(["note.md"]);
+      await running.stop();
     });
 
     it("finds a file's document, lists its history and restores a revision on disk", async () => {
