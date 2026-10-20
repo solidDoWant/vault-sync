@@ -365,6 +365,16 @@ export class EngineObserver {
     this.journal.halt = { when, matches };
   }
 
+  /**
+   * Kills the app just before the journal next removes a deferred revision:
+   * after a merge has rebased the document onto it, say (#453). crash() then
+   * restarts it. Returns a check of whether the kill happened.
+   */
+  haltOnDeferralRemoval(): () => boolean {
+    this.journal.haltOnDeferralRemoval = true;
+    return () => !this.journal.haltOnDeferralRemoval;
+  }
+
   /** The app is killed: the engine and its in-flight calls are gone; the vault and journal remain. */
   crash(): string {
     this.context.network.crash(this.index);
@@ -481,7 +491,7 @@ class AppKilled extends Error {
   override readonly name = "AppKilled";
 }
 
-/** The device's journal: an InMemoryJournal that can kill the app at one chosen addPending (haltOnPending). */
+/** The device's journal: an InMemoryJournal that can kill the app at one chosen addPending (haltOnPending), or at the next removal of a deferral (haltOnDeferralRemoval). */
 class HaltingJournal extends InMemoryJournal {
   halt: { when: "before" | "after"; matches: (operation: PendingOperation) => boolean } | undefined;
 
@@ -491,6 +501,17 @@ class HaltingJournal extends InMemoryJournal {
     if (halt?.when === "before") throw new AppKilled(`app killed before recording ${operation.path}`);
     await super.addPending(operation);
     if (halt?.when === "after") throw new AppKilled(`app killed after recording ${operation.path}`);
+  }
+
+  /** Set by haltOnDeferralRemoval; cleared when it kills the app. */
+  haltOnDeferralRemoval = false;
+
+  override async removeDeferred(documentId: string): Promise<void> {
+    if (this.haltOnDeferralRemoval && (await this.getDeferred(documentId)) !== undefined) {
+      this.haltOnDeferralRemoval = false;
+      throw new AppKilled("app killed before removing a deferred revision");
+    }
+    await super.removeDeferred(documentId);
   }
 }
 
