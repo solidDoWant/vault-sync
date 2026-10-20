@@ -2323,6 +2323,23 @@ export class SyncEngine {
     }
   }
 
+  /**
+   * The path of the live document whose file the vault holds at `path` under
+   * another spelling (a case-only rename lost to a restart, say), on a
+   * case-insensitive platform; undefined if the spelling is the document's
+   * own or no document has the file.
+   */
+  private async syncedSpelling(path: string): Promise<string | undefined> {
+    if (this.pathRules.platform === "posix") return undefined;
+    try {
+      const state = await this.documentAt(path);
+      return state === undefined || state.path === path ? undefined : state.path;
+    } catch {
+      // In doubt, the rename is recorded from the vault's spelling, as before.
+      return undefined;
+    }
+  }
+
   /** A delete of the document's file the user made before this device's own commit of it landed is still the user's, at the commit's revision. */
   private carryDelete(documentId: string, from: string, to: string): void {
     for (const deleted of [this.changes.deleted, this.roundDeleted]) {
@@ -2330,14 +2347,21 @@ export class SyncEngine {
     }
   }
 
-  private recordChange(event: VaultEvent, deleted?: DeletedFile, own = true): void {
+  /**
+   * Records a vault event for the next push. For a rename, `own` says whether
+   * the file was a document's own file where it was moved from, and `synced`
+   * is that document's path when the vault spelled it otherwise (a case-only
+   * rename lost to a restart, on a case-insensitive platform): the rename is
+   * that document's, from its path (#374).
+   */
+  private recordChange(event: VaultEvent, deleted?: DeletedFile, own = true, synced?: string): void {
     this.changes.paths.add(event.path);
     if (event.type === "rename") {
       this.changes.paths.add(event.oldPath);
       // a -> b -> c is one rename of the document synced at a, unless the file at b was deleted in between,
       // also while the running push round commits a -> b (until it lands, see commitOperation).
       const vacated = this.changes.vacated.has(event.oldPath);
-      const origin = vacated ? event.oldPath : (this.changes.renames.get(event.oldPath) ?? this.roundRenames.get(event.oldPath) ?? event.oldPath);
+      const origin = vacated ? event.oldPath : (this.changes.renames.get(event.oldPath) ?? this.roundRenames.get(event.oldPath) ?? synced ?? event.oldPath);
       if (!vacated) this.changes.renames.delete(event.oldPath);
       this.changes.vacated.delete(event.path);
       // A file that was no document's own file where it was moved from is a
@@ -2395,7 +2419,10 @@ export class SyncEngine {
       // In doubt, report the change: a duplicate report is harmless, a missed edit is not.
     }
     if (echo) return;
-    if (event.type === "rename") this.recordChange(event, undefined, await this.ownFileAt(event.oldPath));
+    if (event.type === "rename") {
+      const own = await this.ownFileAt(event.oldPath);
+      this.recordChange(event, undefined, own, own ? await this.syncedSpelling(event.oldPath) : undefined);
+    }
     else this.recordChange(event, event.type === "delete" ? await this.deletedFile(event.path) : undefined);
     try {
       this.onLocalChange(event);
