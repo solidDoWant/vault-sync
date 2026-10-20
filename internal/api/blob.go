@@ -272,18 +272,15 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return nil, err
 	}
 
-	// One commit of a blob at a time on this replica: a duplicate (a retry
-	// of a slow commit, or another device committing the same content)
-	// waits for the commit in progress, holding no compose slot, and then
-	// finds the blob complete instead of composing it again (SPEC.md §6.2).
-	key := blobstore.BlobKey(vault.VaultID(), blobID)
+	// Compositions are shared fairly between users (the owner). Every
+	// production path is authenticated, so a commit without a user is a
+	// wiring bug, not a caller to put in a shared bucket.
+	user, ok := auth.UserFromContext(ctx)
+	if !ok {
+		service.Logger.ErrorContext(ctx, "blob commit reached without an authenticated user")
 
-	release, err := service.Objects.ClaimCompose(ctx, key)
-	if err != nil {
-		return nil, err
+		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
 	}
-
-	defer release()
 
 	if response, err := service.alreadyComplete(ctx, vault, blobID); response != nil || err != nil {
 		return response, err
@@ -291,6 +288,11 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 
 	upload, err := vault.ActiveBlobUpload(ctx, blobID)
 	if errors.Is(err, store.ErrNotFound) {
+		// A concurrent commit may have completed the blob since.
+		if response, err := service.alreadyComplete(ctx, vault, blobID); response != nil || err != nil {
+			return response, err
+		}
+
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("no upload of this blob is in progress"))
 	}
 
@@ -303,14 +305,31 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 			fmt.Errorf("only %d of %d bytes were received", upload.ReceivedSize, upload.Size))
 	}
 
-	// Compositions are shared fairly between users (the owner). Every
-	// production path is authenticated, so a commit without a user is a
-	// wiring bug, not a caller to put in a shared bucket.
-	user, ok := auth.UserFromContext(ctx)
-	if !ok {
-		service.Logger.ErrorContext(ctx, "blob commit reached without an authenticated user")
+	progress := func(ctx context.Context) error { return vault.TouchBlobUpload(ctx, upload.ID) }
 
-		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
+	// One commit of a blob at a time on this replica: a duplicate (a retry
+	// of a slow commit, or another device committing the same content)
+	// waits for the commit in progress, holding no replica compose slot,
+	// and then finds the blob complete instead of composing it again
+	// (SPEC.md §6.2). The commit waits for its own user's compose slot
+	// before it claims the blob, so a commit queued behind its user's other
+	// compositions never keeps another user's commit of the same blob
+	// waiting behind that queue. Waiting records activity on the session.
+	key := blobstore.BlobKey(vault.VaultID(), blobID)
+
+	reservation, err := service.Objects.Reserve(ctx, user.ID.String(), key, progress)
+	if err != nil {
+		if ctx.Err() != nil {
+			return nil, err
+		}
+
+		return service.composeFailed(ctx, vault, blobID, upload.ID, err)
+	}
+
+	defer reservation.Release()
+
+	if response, err := service.alreadyComplete(ctx, vault, blobID); response != nil || err != nil {
+		return response, err
 	}
 
 	encryption, err := vault.Encryption(ctx)
@@ -332,8 +351,6 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 			return nil
 		}
 	}
-
-	progress := func(ctx context.Context) error { return vault.TouchBlobUpload(ctx, upload.ID) }
 
 	// The garbage collector may be deleting an earlier object of this blob
 	// (SPEC.md §11). Once that is done, a deletion that starts later sees
@@ -357,7 +374,7 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return parts, err
 	}
 
-	err = service.Objects.Compose(ctx, user.ID.String(), key, sources, upload.Size, verify, progress)
+	err = reservation.Compose(ctx, sources, upload.Size, verify, progress)
 	if errors.Is(err, blobstore.ErrHashMismatch) {
 		if err := vault.FinishBlobUpload(ctx, upload.ID); err != nil {
 			return nil, service.internal(ctx, "cannot discard blob upload", err)
@@ -370,29 +387,7 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 	}
 
 	if err != nil {
-		// A concurrent commit of the same upload may have completed the
-		// blob and removed the staged chunks this one was reading.
-		if response, completeErr := service.alreadyComplete(ctx, vault, blobID); response != nil {
-			return response, nil
-		} else if completeErr != nil {
-			return nil, completeErr
-		}
-
-		// Discarded or reaped meanwhile, which only happens to a session
-		// idle for longer than the upload TTL. Composing notices that when
-		// it reports progress, or earlier, by failing to read a staged
-		// chunk the cleanup routine deleted while a part was read. The
-		// cleanup routine of any server process claims a session in
-		// PostgreSQL before it deletes any of its staged objects, so the
-		// session is then no longer active. (Checking records activity on
-		// a session that is still active, which the client may retry.)
-		if errors.Is(err, store.ErrBlobUploadConflict) ||
-			errors.Is(vault.TouchBlobUpload(ctx, upload.ID), store.ErrBlobUploadConflict) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition,
-				errors.New("the upload is no longer in progress; call BeginBlob"))
-		}
-
-		return nil, service.internal(ctx, "cannot compose blob", err)
+		return service.composeFailed(ctx, vault, blobID, upload.ID, err)
 	}
 
 	if err := vault.CompleteBlobUpload(ctx, upload.ID, blobID, upload.Size); err != nil {
@@ -402,6 +397,34 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 	service.removeUpload(ctx, vault, upload.ID, chunks)
 
 	return connect.NewResponse(&vaultsyncv1.CommitBlobResponse{Size: uint64(upload.Size)}), nil
+}
+
+// composeFailed answers a commit of uploadID that failed with err while it
+// waited for or did its composition.
+func (service BlobService) composeFailed(ctx context.Context, vault *store.VaultStore, blobID []byte, uploadID uuid.UUID, err error) (*connect.Response[vaultsyncv1.CommitBlobResponse], error) {
+	// A concurrent commit of the same upload may have completed the blob
+	// and removed the staged chunks this one was reading.
+	if response, completeErr := service.alreadyComplete(ctx, vault, blobID); response != nil {
+		return response, nil
+	} else if completeErr != nil {
+		return nil, completeErr
+	}
+
+	// Discarded or reaped meanwhile, which only happens to a session idle
+	// for longer than the upload TTL. Composing notices that when it
+	// reports progress, or earlier, by failing to read a staged chunk the
+	// cleanup routine deleted while a part was read. The cleanup routine of
+	// any server process claims a session in PostgreSQL before it deletes
+	// any of its staged objects, so the session is then no longer active.
+	// (Checking records activity on a session that is still active, which
+	// the client may retry.)
+	if errors.Is(err, store.ErrBlobUploadConflict) ||
+		errors.Is(vault.TouchBlobUpload(ctx, uploadID), store.ErrBlobUploadConflict) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition,
+			errors.New("the upload is no longer in progress; call BeginBlob"))
+	}
+
+	return nil, service.internal(ctx, "cannot compose blob", err)
 }
 
 // alreadyComplete returns a CommitBlob response if blobID is complete.

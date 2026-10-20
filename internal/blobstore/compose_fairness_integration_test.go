@@ -130,9 +130,11 @@ func TestDuplicateCommitsOfOneSessionComposeOnce(t *testing.T) {
 
 	receive(t, fixture.composing, "the first commit to compose")
 
-	// Every duplicate waits for the first commit, holding no compose slot.
+	// Every duplicate waits for the first commit, holding no replica
+	// compose slot: for its claim, or (once the user's own compose slots
+	// are taken by the first two) for one of those.
 	deadline := time.Now().Add(hangGuard)
-	for blobstore.ClaimWaiting(objects) < blobstore.ComposeSlots-1 {
+	for blobstore.ClaimWaiting(objects)+blobstore.ComposeWaiting(objects) < blobstore.ComposeSlots-1 {
 		require.True(t, time.Now().Before(deadline), "the duplicate commits never waited for the first")
 		time.Sleep(time.Millisecond)
 	}

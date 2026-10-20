@@ -168,6 +168,11 @@ export class SimNetwork {
     return this.messages.find((message) => message.client === client && message.phase === "request")?.method;
   }
 
+  /** The trace description of the oldest request `client` has waiting, if any: what a scenario tells two calls of one method apart by. */
+  pendingDescription(client: number): string | undefined {
+    return this.messages.find((message) => message.client === client && message.phase === "request")?.description;
+  }
+
   /**
    * What is still in the network (of `client`, if given), for a liveness
    * report: each message and what holds it back, and each pending timer.
