@@ -747,13 +747,20 @@ export class SyncEngine {
       // as its local version, and this document's next move would find its
       // file another's for good (#379). The merge path lets the other
       // document's merge go first. One the platform cannot hold is handled
-      // as its kept file is (releaseKeptFile, #391). One whose revision waits
-      // for a reason no pull or push retries gives the path up there too
-      // (resolveFirst, releaseIdleClaim), so this revision is written.
+      // as its kept file is (releaseKeptFile, #391), here with no file to
+      // keep: its edit still pending at the path, after the user deleted the
+      // file, would otherwise count as a local move of it there, and its
+      // later merge would take this document's file for its own (#398). One
+      // whose revision waits for a reason no pull or push retries gives the
+      // path up there too (resolveFirst, releaseIdleClaim), so this revision
+      // is written.
       const holder = await this.documentAt(remote.path);
-      if (holder !== undefined && holder.documentId !== remote.documentId && (await this.journal.getDeferred(holder.documentId))?.reason !== "unmaterializable") {
-        const path = inspection.source ?? remote.path;
-        return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+      if (holder !== undefined && holder.documentId !== remote.documentId) {
+        if ((await this.journal.getDeferred(holder.documentId))?.reason === "unmaterializable") await this.releaseParkedPath(holder.documentId);
+        else {
+          const path = inspection.source ?? remote.path;
+          return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
+        }
       }
     }
     if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
@@ -1050,6 +1057,31 @@ export class SyncEngine {
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
     return true;
+  }
+
+  /**
+   * Gives up an unmaterializable document's claim on its old path once its
+   * file there is gone (the user deleted it while the document was parked)
+   * and the server puts another document there (#398). Its operations still
+   * pending at that path stop counting as a claim on it: an edit is dropped,
+   * as the user's delete superseded its content, and a delete stays pending,
+   * so it meets the document's next revision as any local delete does. The
+   * state is recorded `deleted`, as releaseFile records a release, so the
+   * document materializes as a new one would and never takes the other
+   * document's file for its own. A document with an operation pending at
+   * another path, or a local rename from the path not yet pushed, keeps its
+   * claim: the rename moved its file, which is its own where the rename put
+   * it, and released, the rename would be taken for the other document's.
+   */
+  private async releaseParkedPath(documentId: string): Promise<void> {
+    const state = await this.journal.getDocument(documentId);
+    if (state === undefined || state.deleted) return;
+    const key = this.fileKey(state.path);
+    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
+    if (pending.some((operation) => this.fileKey(operation.path) !== key)) return;
+    if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return;
+    for (const operation of pending) if (!operation.deleted) await this.journal.removePending(operation.revisionId);
+    await this.journal.putDocument({ ...state, deleted: true });
   }
 
   /**
