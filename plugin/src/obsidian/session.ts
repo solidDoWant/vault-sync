@@ -1,4 +1,5 @@
 import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
+import { deferredDocuments, type DeferredDocument } from "../core/engine/deferred";
 import { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type TooLargeDocument, type UnmaterializableDocument } from "../core/engine/engine";
 import type { HistoryEntry, HistoryPage } from "../core/engine/history";
 import type { MergeHook } from "../core/engine/merge";
@@ -9,6 +10,7 @@ import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { rejectedReasonText, visiblePath } from "./conflict-text";
 import { errorMessage, isOffline } from "./status";
+import { UnsavedEditsError } from "./unsaved-edits";
 
 // No Obsidian import: the plugin passes the Obsidian adapter and its
 // layout-ready signal, and the unit tests pass in-memory ones.
@@ -59,7 +61,12 @@ export interface SyncSessionOptions {
 
 export interface SessionStatus {
   state: "syncing" | "idle" | "offline" | "error";
-  /** Local changes waiting in the journal. */
+  /**
+   * Local changes the server has not acknowledged: the journal's pending
+   * operations, and the paths of local changes seen since the last push that
+   * succeeded which no pending operation covers yet (a push that failed
+   * before recording them, while the server was unreachable, say).
+   */
   pending: number;
   /** Unresolved conflicts (see SyncStatus.conflicts). */
   conflicts: number;
@@ -74,7 +81,19 @@ export interface VaultHistory {
   readRevision(entry: HistoryEntry): Promise<Uint8Array>;
   /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one. */
   restore(entry: HistoryEntry, content?: Uint8Array): Promise<RemoteRevision>;
+  /**
+   * The deleted documents the user can restore here (SyncEngine.deletedDocuments),
+   * without those at a path this vault does not sync now: a config file
+   * restored while config sync (or its category) is off would be deferred as
+   * `out-of-scope` and not show up (#417).
+   */
   deletedDocuments(): Promise<DocumentState[]>;
+  /**
+   * Whether the signed-in user may restore versions in this vault: false for
+   * a `viewer`, whom the server refuses. Resolves true when the role cannot
+   * be read (the server still decides). Absent: true.
+   */
+  canRestore?(): Promise<boolean>;
 }
 
 /** What a stopped session's engine gets for every vault, journal and server call it makes after the stop. */
@@ -111,6 +130,21 @@ export class SyncSession {
   private failure: unknown;
   /** The local operations the last push reported as refused for good (#100). */
   private refused: RejectedOperation[] = [];
+  /** The file whose open view refused the last pull's write (UnsavedEditsError), until a pull or push succeeds. */
+  private heldByView: string | undefined;
+  /**
+   * Vault events received so far. The session numbers them as they arrive
+   * (`received`, the latest number per path); the engine classifies them
+   * later, and a push classifies every event received before it was called
+   * before it looks for changes.
+   */
+  private events = 0;
+  private readonly received = new Map<string, number>();
+  private unwatch: (() => void) | undefined;
+  /** Local changes the engine reported since the last push that succeeded, by path, with the number of their latest event. */
+  private readonly unpushed = new Map<string, number>();
+  /** `events` when the engine's current pull or push was called, at the latest: a push that succeeds has seen every event numbered below it. */
+  private pushMark = 0;
   private counts = { pending: 0, conflicts: 0 };
   /** Bumped by every report, so only the latest one's counts are kept. */
   private reports = 0;
@@ -161,7 +195,10 @@ export class SyncSession {
           void this.report();
         }
       },
-      deletedDocuments: () => engine.deletedDocuments(),
+      deletedDocuments: async () => {
+        const { vault } = this.options;
+        return (await engine.deletedDocuments()).filter((state) => vault.isSynced?.(state.path) ?? true);
+      },
     };
   }
 
@@ -178,6 +215,7 @@ export class SyncSession {
     this.abort.abort(new SessionStoppedError());
     if (this.timer !== undefined) clearInterval(this.timer);
     this.realtime?.stop();
+    this.unwatch?.();
     this.engine?.dispose();
     this.stopping = (async () => {
       await this.starting;
@@ -195,6 +233,10 @@ export class SyncSession {
     await Promise.race([this.options.ready?.() ?? Promise.resolve(), stoppedFirst]);
     if (this.stopped) return undefined;
     const { options } = this;
+    // Numbered before the engine sees them (it subscribes below).
+    this.unwatch = options.vault.watch((event) => {
+      this.received.set(event.path, this.events++);
+    });
     const engine = new SyncEngine({
       vaultId: options.vaultId,
       deviceId: options.deviceId,
@@ -206,12 +248,16 @@ export class SyncSession {
       vault: this.gateLocal(options.vault, ["list", "read", "write", "rename", "delete", "stat"]),
       journal: this.gateLocal(options.journal),
       ...(options.merge === undefined ? {} : { merge: options.merge }),
-      ...(options.onLocalChange === undefined ? {} : { onLocalChange: options.onLocalChange }),
+      onLocalChange: (event) => {
+        this.localChange(event);
+        options.onLocalChange?.(event);
+      },
       pushDebounceMs: options.pushDebounceMs,
       ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
       ...(options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: options.maxDownloadBytes }),
       onBusyChange: (busy) => {
         this.busy = busy;
+        if (busy) this.pushMark = this.events;
         void this.report();
       },
       onPushComplete: (summary) => {
@@ -265,9 +311,24 @@ export class SyncSession {
     }
   }
 
+  /** Counts a local change as pending until a push called after its event arrived succeeds. */
+  private localChange(event: VaultEvent): void {
+    if (this.stopped) return;
+    this.unpushed.set(event.path, this.received.get(event.path) ?? this.events);
+    void this.report();
+  }
+
   private succeeded(result: PullSummary | PushSummary): void {
     if (this.stopped) return;
     this.failure = undefined;
+    this.heldByView = undefined;
+    if ("rejected" in result) {
+      // Recorded in the journal (or parked, or committed) by this push.
+      for (const [path, event] of this.unpushed) if (event < this.pushMark) this.unpushed.delete(path);
+      for (const [path, event] of this.received) if (event < this.pushMark) this.received.delete(path);
+    }
+    // The engine's next pull or push begins after this one ended.
+    this.pushMark = this.events;
     // A pull says nothing about refused operations; a push does, every time
     // (it looks at every pending operation), so a file the user renamed or
     // removed drops off the list with the next push.
@@ -278,6 +339,8 @@ export class SyncSession {
   private failed(error: unknown): void {
     if (this.stopped) return;
     this.failure = error;
+    if (error instanceof UnsavedEditsError) this.heldByView = error.path;
+    this.pushMark = this.events;
     void this.report();
   }
 
@@ -326,9 +389,11 @@ export class SyncSession {
     conflicts: number;
   }> {
     const { journal, vault } = this.options;
-    const pending = (await journal.listPending()).length;
+    const operations = await journal.listPending();
+    const covered = new Set(operations.map((operation) => operation.path));
+    const unrecorded = [...this.unpushed.keys()].filter((path) => !covered.has(path)).length;
     const conflicts = (await openConflicts(journal, vault)).length;
-    return { pending, conflicts };
+    return { pending: operations.length + unrecorded, conflicts };
   }
 
   /**
@@ -353,6 +418,26 @@ export class SyncSession {
     const engine = this.engine;
     if (engine === undefined || this.stopped) return [];
     return engine.tooLarge();
+  }
+
+  /**
+   * The remote revisions deferred for their path (an invalid path, a path the
+   * vault refuses, a move out of scope of a document with a file here; #417),
+   * for the conflict view. Empty before the session started and once it is
+   * stopped.
+   */
+  async deferred(): Promise<DeferredDocument[]> {
+    if (this.engine === undefined || this.stopped) return [];
+    return deferredDocuments(this.options.journal, this.options.vault);
+  }
+
+  /**
+   * The file whose open view refused the last pull's write (#417), so sync
+   * waits at that change until the view is saved or closed; undefined once a
+   * pull or push succeeds, and once the session is stopped.
+   */
+  heldByOpenView(): string | undefined {
+    return this.stopped ? undefined : this.heldByView;
   }
 
   /**

@@ -13,6 +13,9 @@ import { callHarness } from "../obsidian";
 /** A file name longer than the 255 bytes every platform allows (SPEC.md §8): the engine cannot write it here. */
 const overlongPath = `${"n".repeat(300)}.md`;
 
+/** A name with an accent typed as a separate character (NFD), which Obsidian's normalizePath would store in NFC (#417). */
+const decomposedPath = `Cafe${String.fromCodePoint(0x301)}.md`;
+
 /** The text of every element of the conflict view that `selector` matches, in document order. */
 function texts(selector: string) {
   return browser.executeObsidian((_, css) => [...document.querySelectorAll(`.vault-sync-conflict-view ${css}`)].map((element) => element.textContent), selector);
@@ -47,6 +50,7 @@ describe("vault-sync conflict view", function () {
     });
     await callHarness("commitRemote", "doc-clash", "Clash.md", "the other device's version\n");
     await callHarness("commitRemote", "doc-overlong", overlongPath, "a name this device cannot hold\n");
+    await callHarness("commitRemote", "doc-decomposed", decomposedPath, "a name Obsidian would store under another spelling\n");
     await callHarness("startSession");
     await browser.executeObsidian(async ({ app }, id) => {
       const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
@@ -77,6 +81,47 @@ describe("vault-sync conflict view", function () {
   it("lists the document this device cannot hold with its server path and why", async function () {
     expect(await texts(".vault-sync-unmaterializable-path")).toEqual([overlongPath]);
     expect((await texts(".vault-sync-unmaterializable-reason"))[0]).toMatch(/name in the path is too long/);
+  });
+
+  it("lists a remote document whose path Obsidian would store under another name, with why (#417)", async function () {
+    await browser.waitUntil(async () => (await texts(".vault-sync-deferred-path")).length > 0, { timeoutMsg: "the conflict view lists no deferred document" });
+    expect(await texts(".vault-sync-deferred-path")).toEqual([decomposedPath]);
+    expect((await texts(".vault-sync-deferred-reason"))[0]).toMatch(/Obsidian would store its path under another name/);
+  });
+
+  it("shows a notice and draws the view again when a link's file is gone (#417)", async function () {
+    // The copy disappears between the view's drawing and the click: Obsidian no longer finds it.
+    await browser.executeObsidian(({ app }, path) => {
+      const vault = app.vault as unknown as { getFileByPath(path: string): unknown; e2eGetFileByPath?: (path: string) => unknown };
+      vault.e2eGetFileByPath = vault.getFileByPath.bind(vault);
+      vault.getFileByPath = (candidate: string) => (candidate === path ? null : vault.e2eGetFileByPath?.(candidate));
+      const heading = document.querySelector<HTMLElement>(".vault-sync-conflict-view h4");
+      if (heading === null) throw new Error("the conflict view shows nothing");
+      heading.dataset.e2eDrawn = "before";
+    }, copy);
+    try {
+      await click(".vault-sync-conflict-copy");
+
+      await browser.waitUntil(async () => (await browser.executeObsidian(() => [...document.querySelectorAll(".notice")].map((notice) => notice.textContent).join("\n"))).includes("no longer exists"), {
+        timeoutMsg: "no notice said the file is gone",
+      });
+      await browser.waitUntil(async () => browser.executeObsidian(() => document.querySelector(".vault-sync-conflict-view [data-e2e-drawn]") === null && document.querySelector(".vault-sync-conflict-view h4") !== null), {
+        timeoutMsg: "the conflict view was not drawn again",
+      });
+    } finally {
+      await browser.executeObsidian(({ app }) => {
+        const vault = app.vault as unknown as { getFileByPath(path: string): unknown; e2eGetFileByPath?: (path: string) => unknown };
+        if (vault.e2eGetFileByPath !== undefined) vault.getFileByPath = vault.e2eGetFileByPath;
+        delete vault.e2eGetFileByPath;
+      });
+    }
+    // The redraw ran while the copy seemed gone, so it showed no conflict; the copy is back now.
+    await browser.executeObsidian(async ({ app }) => {
+      const view = app.workspace.getLeavesOfType("vault-sync-conflicts")[0]?.view as unknown as { refresh(): Promise<void> } | undefined;
+      if (view === undefined) throw new Error("the conflict view is not open");
+      await view.refresh();
+    });
+    await browser.waitUntil(async () => (await texts(".vault-sync-compare")).length > 0, { timeoutMsg: "the conflict is not listed again" });
   });
 
   it("opens both versions side by side with one click", async function () {

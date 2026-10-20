@@ -1,6 +1,6 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 
-import { VaultEncryption, type Vault } from "../gen/vaultsync/v1/types_pb";
+import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import { jwtSubject } from "../core/auth/oidc";
 import type { AuthState } from "../core/auth/tokens";
 import type { Journal } from "../core/journal/journal";
@@ -233,9 +233,28 @@ export class SyncController {
     await this.running?.session.syncNow();
   }
 
-  /** History browsing and restore, while a session runs. */
+  /**
+   * History browsing and restore, while a session runs. `canRestore` reads
+   * the signed-in user's role in the connected vault from ListVaults: a
+   * `viewer` cannot restore (the server refuses it), so the history modal
+   * offers no restore then (#417). When the role cannot be read it resolves
+   * true and the server decides.
+   */
   history(): VaultHistory | undefined {
-    return this.running?.session.history();
+    const history = this.running?.session.history();
+    const vault = connectedVault(this.options.data());
+    if (history === undefined || vault === undefined) return history;
+    return {
+      ...history,
+      canRestore: async () => {
+        try {
+          const member = (await listRemoteVaults(this.options.client())).find((candidate) => candidate.id === vault.id);
+          return member?.role !== VaultRole.VIEWER;
+        } catch {
+          return true;
+        }
+      },
+    };
   }
 
   private async apply(generation: number): Promise<void> {
