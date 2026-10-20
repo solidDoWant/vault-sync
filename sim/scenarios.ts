@@ -2496,6 +2496,72 @@ export async function renameOntoRemoteCreate(endpoints: SimEndpoints, platform: 
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
 }
 
+/**
+ * An unpushed local rename of a note another device deletes and then
+ * recreates at its old path (#486). Both engines sync `b.md`. The second
+ * engine's user renames it to `x.md` and edits it without pushing, while the
+ * first (POSIX) engine deletes `b.md` and pushes; the second engine pulls
+ * the delete. The first engine then creates a new note at `c.md`, renames
+ * it to `b.md` and pushes, and the second engine pulls it before it pushes. The new note
+ * keeps its path, content and id (no push renames it to `x.md`), the user's
+ * edit stays live, both vaults equal the server, and the last push commits
+ * nothing (SPEC.md §2 principle 1).
+ */
+export async function renameOfRecreatedNote(endpoints: SimEndpoints, platform: "posix" | "windows" | "macos"): Promise<RecreatedNoteResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", platform] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("b.md", encoder.encode("b\n")));
+  await push(first);
+  await pull(second);
+  const before = await liveDocuments(run);
+
+  log(await second.move("b.md", "x.md"));
+  log(await second.edit("x.md", encoder.encode("b\nmine\n")));
+  log(await first.remove("b.md"));
+  await push(first);
+  await pull(second);
+  // A new note brought to b.md by a rename, so it is never the deleted one resurrected.
+  log(await first.edit("c.md", encoder.encode("theirs\n")));
+  await push(first);
+  log(await first.move("c.md", "b.md"));
+  await push(first);
+  const recreated = (await liveDocuments(run)).get("b.md");
+  await pull(second);
+  for (let round = 0; round < 3; round++) await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const pushes = result.trace.filter((line) => line.includes(`${second.name} pushed: `));
+  return { ...result, vaults, before, recreated, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), pushes };
+}
+
+export interface RecreatedNoteResult extends RespelledRenameResult {
+  /** The note the first engine brought to `b.md` after deleting the synced one. */
+  recreated: string | undefined;
+}
+
 export interface RenameOntoLocalFolderResult extends KnownHeldPathResult {
   /** The case-insensitive engine's push summaries, in order. */
   pushes: string[];
