@@ -126,6 +126,7 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 		return testinfra.StartServer(t, name, 60*time.Second, func(addresses testinfra.ServerAddresses) testinfra.ServerProcess {
 			logs := &bytes.Buffer{}
 			server := testinfra.NewChild(t, binary)
+
 			server.Command.Env = append([]string{
 				config.DatabaseURLEnv + "=" + database.DSN,
 				config.ListenAddressEnv + "=" + addresses.API,
