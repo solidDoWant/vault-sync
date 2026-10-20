@@ -141,3 +141,35 @@ func TestVaultPagesAtTheDefaultSendLimitAreCountCapped(t *testing.T) {
 		}
 	}
 }
+
+// Issue #200: with vaults of mixed sizes, a page that cannot fit the next
+// vault ends there, even if a later, smaller one would fit: every vault
+// appears exactly once, in order.
+func TestVaultPagesOfMixedSizesStayInOrder(t *testing.T) {
+	fixture := newVaultFixtureWithLimit(t, newMemoryStore(), newMemoryVaults(), reachableDatabase{}, api.MinResponseLimitBytes)
+	full := &fullVaultsFixture{fixture: fixture, token: fixture.token(t, "alice")}
+	random := rand.New(rand.NewChaCha8([32]byte{200})) //nolint:gosec // Test data, not secrets.
+
+	// Long names, each followed by short ones that fit where it does not.
+	for index := range api.MaxOwnedVaultsPerUser {
+		length := 1
+		if index%2 == 0 {
+			length = api.MaxVaultNameBytes
+		}
+
+		name := make([]byte, length)
+		for position := range name {
+			name[position] = byte('a' + random.IntN(26))
+		}
+
+		full.ids = append(full.ids, fixture.createVault(t, full.token, string(name)).GetId())
+	}
+
+	for name, options := range vaultPageCodecs {
+		t.Run(name, func(t *testing.T) {
+			got, lengths := full.pageVaults(t, options, ^uint32(0))
+			assert.Equal(t, full.ids, got)
+			assert.Greater(t, len(lengths), 1, "pages %v", lengths)
+		})
+	}
+}

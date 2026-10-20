@@ -15,6 +15,11 @@ func ClaimWaiting(objects *Objects) int {
 	return int(objects.claimWaiting.Load())
 }
 
+// CleanerRunTimeout returns the bound on each run cleaner.Run starts.
+func CleanerRunTimeout(cleaner *Cleaner) time.Duration {
+	return cleaner.runTimeout()
+}
+
 // ComposeSlotsHeld returns how many of the replica's compose slots are held.
 func ComposeSlotsHeld(objects *Objects) int {
 	return len(objects.compose)

@@ -180,14 +180,20 @@ func startBlobs(ctx context.Context, cfg config.Config, queries *store.Store, lo
 	return &api.BlobService{
 		Store:   queries,
 		Objects: objects,
-		Limits: api.BlobLimits{
-			MaxChunkBytes:      cfg.Blobs.MaxChunkBytes,
-			MaxBlobBytes:       cfg.Blobs.MaxSizeBytes,
-			MaxUploadsPerVault: cfg.Blobs.MaxUploadsPerVault,
-			UploadReclaimIdle:  cfg.Blobs.UploadReclaimIdle,
-		},
-		Logger: logger,
+		Limits:  blobLimits(cfg.Blobs),
+		Logger:  logger,
 	}, nil
+}
+
+// blobLimits returns the blob service's limits for the configuration. The
+// server sets MaxMessageBytes itself.
+func blobLimits(blobs config.BlobConfig) api.BlobLimits {
+	return api.BlobLimits{
+		MaxChunkBytes:      blobs.MaxChunkBytes,
+		MaxBlobBytes:       blobs.MaxSizeBytes,
+		MaxUploadsPerVault: blobs.MaxUploadsPerVault,
+		UploadReclaimIdle:  blobs.UploadReclaimIdle,
+	}
 }
 
 // problemList flattens errors.Join trees into one message per problem.
