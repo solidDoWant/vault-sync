@@ -21,7 +21,8 @@ service SyncService {
   // have gaps; a document's head revision is never purged.
   //
   // Errors: NOT_FOUND if the vault does not exist or the caller is not a
-  // member. INVALID_ARGUMENT if since_anchor is malformed.
+  // member. INVALID_ARGUMENT if since_anchor, own_commit_seq or
+  // own_commit_anchor is malformed.
   rpc ListChanges(ListChangesRequest) returns (ListChangesResponse) {}
 
   // GetRevision fetches a single revision, including its content reference.
@@ -87,12 +88,21 @@ message ListChangesRequest {
   uint32 page_size = 3;
   // Anchor of the revision at since_seq, as the client received it
   // (Revision.anchor), or empty for no check. With an anchor, the server
-  // first checks that the vault still holds that revision at since_seq; if
-  // not, its history no longer contains the client's cursor (it was restored
-  // from a backup, or retention purged the revision) and the response only
-  // sets diverged (SPEC.md §6.1, §8). Either empty or exactly 16 bytes, and
-  // empty when since_seq is zero.
+  // first checks that the vault still holds that revision at since_seq, or
+  // a purge marker of it if retention purged it (SPEC.md §11); if not, its
+  // history no longer contains the client's cursor (it was restored from a
+  // backup) and the response only sets diverged (SPEC.md §6.1, §8). Either
+  // empty or exactly 16 bytes, and empty when since_seq is zero.
   bytes since_anchor = 4;
+  // Seq of the client's own latest acknowledged commit above since_seq,
+  // which the cursor does not cover yet (SPEC.md §6.1), or zero for none.
+  // Given together with own_commit_anchor, and then above since_seq.
+  uint64 own_commit_seq = 5;
+  // Anchor of the revision at own_commit_seq (Revision.anchor), checked like
+  // since_anchor in the same snapshot: unless the vault holds that revision
+  // or its purge marker, the response only sets diverged. Either empty or
+  // exactly 16 bytes; empty if and only if own_commit_seq is zero.
+  bytes own_commit_anchor = 6;
 }
 
 // ListChangesResponse is one page of revisions.
@@ -103,10 +113,12 @@ message ListChangesResponse {
   bool has_more = 2;
   // The vault's head_seq when the page was read.
   uint64 head_seq = 3;
-  // Whether since_anchor was given and the vault holds no revision at
-  // since_seq with that anchor. The page is then empty and has_more false;
-  // the client resyncs from seq zero (SPEC.md §8). Never set without
-  // since_anchor.
+  // Whether since_anchor or own_commit_anchor was given and the vault holds
+  // neither a revision nor a purge marker with that anchor at its seq: the
+  // database was restored to before it. The page is then empty and has_more
+  // false; the client resyncs from seq zero (SPEC.md §8). Never set without
+  // an anchor. A server from before purge markers also sets it when
+  // retention purged the revision.
   bool diverged = 4;
 }
 

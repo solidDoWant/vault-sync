@@ -442,24 +442,35 @@ type Changes struct {
 	HasMore bool
 	// HeadSeq is the vault's head_seq in the same snapshot.
 	HeadSeq int64
-	// Diverged reports that a cursor anchor was given and the vault holds no
-	// revision at the cursor with that anchor. Revisions is then empty and
-	// HasMore false.
+	// Diverged reports that an anchor was given that the vault holds
+	// neither as a revision nor as a purge marker at its seq. Revisions is
+	// then empty and HasMore false.
 	Diverged bool
+}
+
+// SeqAnchor names a revision a client applied or committed: its seq and its
+// anchor (SPEC.md §6.1).
+type SeqAnchor struct {
+	Seq    int64
+	Anchor uuid.UUID
 }
 
 // ListChanges returns up to limit revisions with seq > since in ascending
 // seq order (SPEC.md §6.1), and the vault's head_seq, read from one
 // snapshot.
 //
-// If anchor is valid, the client claims that the revision it applied at
-// seq since has that anchor. Unless the vault holds exactly that revision
-// at since, the vault's history no longer contains the client's cursor: a
-// database restore lost it (and new commits may have reused its seq), or
-// retention purged it. ListChanges then returns only Diverged and HeadSeq,
-// so the client resyncs (SPEC.md §8). A purge thus makes a false positive,
-// never a false negative: anchors are random, so no other revision matches.
-func (vault *VaultStore) ListChanges(ctx context.Context, since int64, anchor uuid.NullUUID, limit int) (Changes, error) {
+// Each of anchors is a revision the client claims the vault holds: the one
+// at its cursor (since), and the latest acknowledged commit of its own above
+// the cursor. The vault holds it if a revision at that seq has that anchor,
+// or retention purged it, leaving a purge marker with that seq and anchor
+// (SPEC.md §11). Unless the vault holds every one, its history no longer
+// contains them: a database restore lost them, and new commits may have
+// reused their seqs. ListChanges then returns only Diverged and HeadSeq, so
+// the client resyncs (SPEC.md §8). Anchors are random, so no other revision
+// matches, and a purge never makes a false positive. A revision purged
+// before purge markers existed (or by a server without them) has none, and
+// still does.
+func (vault *VaultStore) ListChanges(ctx context.Context, since int64, anchors []SeqAnchor, limit int) (Changes, error) {
 	var changes Changes
 
 	err := pgx.BeginTxFunc(ctx, vault.store.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -468,16 +479,18 @@ func (vault *VaultStore) ListChanges(ctx context.Context, since int64, anchor uu
 			return notFound(err, "look up head_seq")
 		}
 
-		if anchor.Valid {
-			var anchored bool
+		for _, anchor := range anchors {
+			var held bool
 
-			err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM revisions WHERE vault_id = $1 AND seq = $2 AND anchor = $3)`,
-				vault.vaultID, since, anchor.UUID).Scan(&anchored)
+			err = tx.QueryRow(ctx, `
+				SELECT EXISTS (SELECT 1 FROM revisions WHERE vault_id = $1 AND seq = $2 AND anchor = $3)
+					OR EXISTS (SELECT 1 FROM purged_revisions WHERE vault_id = $1 AND seq = $2 AND anchor = $3)`,
+				vault.vaultID, anchor.Seq, anchor.Anchor).Scan(&held)
 			if err != nil {
-				return fmt.Errorf("check cursor anchor: %w", err)
+				return fmt.Errorf("check anchor: %w", err)
 			}
 
-			if !anchored {
+			if !held {
 				changes.Diverged = true
 
 				return nil

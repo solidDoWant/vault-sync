@@ -19,11 +19,12 @@ import (
 type vaultSnapshot struct {
 	documents []byte
 	revisions []byte
+	purged    []byte
 	headSeq   int64
 }
 
-// takeSnapshot copies vaultID's documents and revisions rows, whole, as JSON,
-// in one snapshot.
+// takeSnapshot copies vaultID's documents, revisions and purge marker rows,
+// whole, as JSON, in one snapshot.
 func takeSnapshot(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID) (vaultSnapshot, error) {
 	var snapshot vaultSnapshot
 
@@ -32,8 +33,9 @@ func takeSnapshot(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID) (vau
 			SELECT
 				(SELECT coalesce(jsonb_agg(to_jsonb(d)), '[]') FROM documents d WHERE d.vault_id = $1),
 				(SELECT coalesce(jsonb_agg(to_jsonb(r)), '[]') FROM revisions r WHERE r.vault_id = $1),
+				(SELECT coalesce(jsonb_agg(to_jsonb(p)), '[]') FROM purged_revisions p WHERE p.vault_id = $1),
 				(SELECT head_seq FROM vaults WHERE id = $1)`, vaultID).
-			Scan(&snapshot.documents, &snapshot.revisions, &snapshot.headSeq)
+			Scan(&snapshot.documents, &snapshot.revisions, &snapshot.purged, &snapshot.headSeq)
 	})
 	if err != nil {
 		return vaultSnapshot{}, fmt.Errorf("snapshot vault: %w", err)
@@ -45,8 +47,9 @@ func takeSnapshot(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID) (vau
 // restoreSnapshot puts vaultID's change history back to snapshot, as a
 // restore of a PostgreSQL backup taken then would (SPEC.md §8, issue #155):
 // every document and revision committed since is gone, the rows that
-// existed are back exactly (revision anchors included), and head_seq is
-// back where it was, so the next commit reuses seqs clients have applied.
+// existed are back exactly (revision anchors and purge markers included),
+// and head_seq is back where it was, so the next commit reuses seqs clients
+// have applied.
 // Blobs stay: a restored database may reference blobs whose objects are
 // still in S3, and extra blob rows reference nothing.
 func restoreSnapshot(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, snapshot vaultSnapshot) error {
@@ -57,9 +60,11 @@ func restoreSnapshot(ctx context.Context, db *pgxpool.Pool, vaultID uuid.UUID, s
 			arguments []any
 		}{
 			{`DELETE FROM revisions WHERE vault_id = $1`, []any{vaultID}},
+			{`DELETE FROM purged_revisions WHERE vault_id = $1`, []any{vaultID}},
 			{`DELETE FROM documents WHERE vault_id = $1`, []any{vaultID}},
 			{`INSERT INTO documents SELECT * FROM jsonb_populate_recordset(NULL::documents, $1)`, []any{snapshot.documents}},
 			{`INSERT INTO revisions SELECT * FROM jsonb_populate_recordset(NULL::revisions, $1)`, []any{snapshot.revisions}},
+			{`INSERT INTO purged_revisions SELECT * FROM jsonb_populate_recordset(NULL::purged_revisions, $1)`, []any{snapshot.purged}},
 			{`UPDATE vaults SET head_seq = $2 WHERE id = $1`, []any{vaultID, snapshot.headSeq}},
 		}
 

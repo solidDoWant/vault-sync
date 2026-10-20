@@ -56,7 +56,8 @@ type SyncServiceClient interface {
 	// have gaps; a document's head revision is never purged.
 	//
 	// Errors: NOT_FOUND if the vault does not exist or the caller is not a
-	// member. INVALID_ARGUMENT if since_anchor is malformed.
+	// member. INVALID_ARGUMENT if since_anchor, own_commit_seq or
+	// own_commit_anchor is malformed.
 	ListChanges(context.Context, *connect.Request[v1.ListChangesRequest]) (*connect.Response[v1.ListChangesResponse], error)
 	// GetRevision fetches a single revision, including its content reference.
 	// Clients use it to fetch the base of a three-way merge (SPEC.md §8).
@@ -182,7 +183,8 @@ type SyncServiceHandler interface {
 	// have gaps; a document's head revision is never purged.
 	//
 	// Errors: NOT_FOUND if the vault does not exist or the caller is not a
-	// member. INVALID_ARGUMENT if since_anchor is malformed.
+	// member. INVALID_ARGUMENT if since_anchor, own_commit_seq or
+	// own_commit_anchor is malformed.
 	ListChanges(context.Context, *connect.Request[v1.ListChangesRequest]) (*connect.Response[v1.ListChangesResponse], error)
 	// GetRevision fetches a single revision, including its content reference.
 	// Clients use it to fetch the base of a three-way merge (SPEC.md §8).
