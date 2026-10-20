@@ -67,7 +67,9 @@ service SyncService {
   // (SPEC.md §11). The head is always retained, including a tombstone, so a
   // deleted document's history is never empty. Restoring a revision is a
   // new CommitRevision with the revision's content_ref (and deleted false),
-  // based on the current head.
+  // based on the current head. The response names the devices that
+  // committed the page's revisions; device names are visible to every member
+  // of the vault.
   //
   // Errors: NOT_FOUND if the vault or document does not exist, or the caller
   // is not a member.
@@ -202,4 +204,16 @@ message GetDocumentHistoryResponse {
   repeated Revision revisions = 2;
   // Token for the next (older) page. Empty when there are no more revisions.
   string next_page_token = 3;
+  // The name of each device that committed one of revisions, once per
+  // device, so a member sees which device made each revision (SPEC.md §11).
+  // Only devices with a revision on this page are named.
+  repeated DeviceName device_names = 4;
+}
+
+// DeviceName names a device that committed a revision in a vault.
+message DeviceName {
+  // Device id (UUIDv7), as in Revision.device_id.
+  string device_id = 1;
+  // The device's name, as registered (RegisterDeviceRequest.name).
+  string name = 2;
 }

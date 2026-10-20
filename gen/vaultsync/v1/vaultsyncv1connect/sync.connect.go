@@ -99,7 +99,9 @@ type SyncServiceClient interface {
 	// (SPEC.md §11). The head is always retained, including a tombstone, so a
 	// deleted document's history is never empty. Restoring a revision is a
 	// new CommitRevision with the revision's content_ref (and deleted false),
-	// based on the current head.
+	// based on the current head. The response names the devices that
+	// committed the page's revisions; device names are visible to every member
+	// of the vault.
 	//
 	// Errors: NOT_FOUND if the vault or document does not exist, or the caller
 	// is not a member.
@@ -226,7 +228,9 @@ type SyncServiceHandler interface {
 	// (SPEC.md §11). The head is always retained, including a tombstone, so a
 	// deleted document's history is never empty. Restoring a revision is a
 	// new CommitRevision with the revision's content_ref (and deleted false),
-	// based on the current head.
+	// based on the current head. The response names the devices that
+	// committed the page's revisions; device names are visible to every member
+	// of the vault.
 	//
 	// Errors: NOT_FOUND if the vault or document does not exist, or the caller
 	// is not a member.
