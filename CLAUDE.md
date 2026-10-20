@@ -79,6 +79,7 @@ The worktree-isolation guard rejects many compound shell commands, and failed to
 - **TypeScript:** vitest; `describe`/`it` named by behavior. No network in unit tests — use the in-memory transport and vault.
 - **Timing and concurrency.** Tests must not depend on wall-clock speed, per-response headers, or scheduling order; anything timing-sensitive must pass `-count=50 -race` locally. The VM and CI runners are shared and loaded.
 - **Sync bugs get a simulation regression.** Any bug in sync behavior is reproduced as a committed simulation seed or scripted scenario before it is fixed.
+- **Simulation checker exceptions are presumed engine bugs.** Never add or widen a checker exception (an "excuse") or relax a simulation invariant to make a seed pass unless the engine design (`docs/design/engine-path-ownership.md`; until it merges, issue #552) says the flagged outcome is correct — cite that rule in the PR. Otherwise fix the engine. Reviewers block exceptions without such a citation; the PM logs every accepted one on the decision log.
 
 ## Security Rules
 
