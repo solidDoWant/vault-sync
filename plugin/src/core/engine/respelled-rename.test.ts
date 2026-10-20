@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { InMemoryVault } from "../vault/memory";
 import { files, harness } from "./testing";
 
 // A note whose file the vault holds under another spelling than the
@@ -102,5 +103,31 @@ describe.each(["posix", "macos", "windows"] as const)("a rename of a note's file
     expect(h.server.history("X").map((revision) => revision.deleted)).not.toContain(true);
     expect(await files(h.vault)).toEqual(h.server.liveFiles());
     expect(await h.engine.push()).toEqual(quiet);
+  });
+});
+
+// Path keys fold NFC/NFD and full case folding (ß and SS), which NTFS and
+// macOS do not: two such spellings can be two real files. A new file under
+// one of them is never taken for the note at the other while the vault
+// still holds the note's own spelling.
+describe.each([
+  ["NFC and NFD", "Café.md", "Café.md"],
+  ["ß and SS", "Straße.md", "STRASSE.md"],
+] as const)("a new file whose spelling folds to a note's path by %s (#374)", (_name, synced, other) => {
+  it("is pushed as a new note when renamed and the note stays at its path", async () => {
+    const h = harness({ merge: "default", pathRules: { platform: "windows" }, vault: new InMemoryVault() });
+    h.server.commit({ documentId: "X", path: synced, content: "x\n" });
+    await h.engine.pull();
+
+    await h.vault.write(other, bytes("new\n"));
+    await h.vault.rename(other, "b.md");
+    for (let round = 0; round < 4; round++) await h.engine.push();
+
+    const live = h.server.liveDocuments();
+    expect(live.get(synced)).toBe("X");
+    expect(live.get("b.md")).toBeDefined();
+    expect(live.get("b.md")).not.toBe("X");
+    expect(h.server.history("X").map((revision) => revision.deleted)).not.toContain(true);
+    expect(await files(h.vault)).toEqual(h.server.liveFiles());
   });
 });

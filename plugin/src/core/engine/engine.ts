@@ -2327,13 +2327,17 @@ export class SyncEngine {
    * The path of the live document whose file the vault holds at `path` under
    * another spelling (a case-only rename lost to a restart, say), on a
    * case-insensitive platform; undefined if the spelling is the document's
-   * own or no document has the file.
+   * own, no document has the file, or the vault still holds a file at the
+   * document's own spelling.
    */
   private async syncedSpelling(path: string): Promise<string | undefined> {
     if (this.pathRules.platform === "posix") return undefined;
     try {
       const state = await this.documentAt(path);
-      return state === undefined || state.path === path ? undefined : state.path;
+      if (state === undefined || state.path === path) return undefined;
+      // Path keys fold more than the filesystem may (NFC/NFD, ß and SS): while the
+      // vault still holds the document's own spelling, the file at `path` is another file.
+      return (await this.vault.list()).includes(state.path) ? undefined : state.path;
     } catch {
       // In doubt, the rename is recorded from the vault's spelling, as before.
       return undefined;
