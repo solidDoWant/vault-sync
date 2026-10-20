@@ -1076,20 +1076,33 @@ export class SyncEngine {
    * so it meets the document's next revision as any local delete does. The
    * state is recorded `deleted`, as releaseFile records a release, so the
    * document materializes as a new one would and never takes the other
-   * document's file for its own. A document with an operation pending at
-   * another path, or a local rename from the path not yet pushed, keeps its
-   * claim: the rename moved its file, which is its own where the rename put
-   * it, and released, the rename would be taken for the other document's.
+   * document's file for its own.
+   *
+   * A local move of the file away from the path (a pending operation at
+   * another path, or a local rename not yet pushed) releases the moved file
+   * with the path, as releaseKeptFile releases a file left there (#459).
+   * Kept for the move, the claim would leave the journal with both
+   * documents live at the path, so the other document's own changes there
+   * would be held behind the parked one, and an unpushed rename is held in
+   * memory only: a restart would forget it and let the stale edit take the
+   * other document's file. The move is dropped, never to be taken for the
+   * other document's, and the file it moved is pushed as a new document.
    */
   private async releaseParkedPath(documentId: string): Promise<void> {
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || state.deleted) return;
     const key = this.fileKey(state.path);
-    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
-    if (pending.some((operation) => this.fileKey(operation.path) !== key)) return;
-    if (this.localRenames().some(([, from]) => this.fileKey(from) === key)) return;
-    for (const operation of pending) if (!operation.deleted) await this.journal.removePending(operation.revisionId);
+    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId && !operation.deleted);
+    for (const operation of pending) await this.journal.removePending(operation.revisionId);
     await this.journal.putDocument({ ...state, deleted: true });
+    for (const operation of pending) if (this.fileKey(operation.path) !== key) this.changes.paths.add(operation.path);
+    for (const renames of [this.changes.renames, this.roundRenames]) {
+      for (const [to, from] of [...renames]) {
+        if (this.fileKey(from) !== key) continue;
+        renames.delete(to);
+        this.changes.paths.add(to);
+      }
+    }
   }
 
   /**
@@ -1425,6 +1438,7 @@ export class SyncEngine {
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
           this.changes.paths.add(copyPath);
+          this.renameFollowsCopy(outcome.path, copyPath);
           // The copy now holds the file's content, so its unacknowledged
           // operations (a create not yet committed) are superseded. They go
           // before the file does, so none is ever left pointing at the merged
@@ -1444,6 +1458,9 @@ export class SyncEngine {
         const copyPath = await this.writeConflictCopy(remote, local.path, outcome.conflict, merged);
         if (copyPath === null) return false;
         copyPaths.push(copyPath);
+        // A local file at the remote path that is no document's own (this
+        // device has no live state for the merged document) moves to the copy.
+        if (state === undefined || state.deleted) this.renameFollowsCopy(local.path, copyPath);
       }
       if (outcome.content === null) {
         if (current !== null) {
@@ -1494,6 +1511,27 @@ export class SyncEngine {
     // A merge made by a pull is pushed like a local edit.
     this.schedulePush();
     return true;
+  }
+
+  /**
+   * Moves a local rename not yet pushed that brought a file to `path` on to
+   * `copyPath`, where a merge just kept that file as a conflict copy (#479).
+   * The file is no live document's: a local rename of a document deleted on
+   * the server, say, whose rename stays recorded. Left pointing at `path`,
+   * the record would take the merged document's file written there for the
+   * renamed one, so a later local rename of that file would be pushed as a
+   * delete of the merged document plus a create (SPEC.md §2 principle 1).
+   * Compared as the vault compares paths.
+   */
+  private renameFollowsCopy(path: string, copyPath: string): void {
+    const key = this.fileKey(path);
+    for (const renames of [this.changes.renames, this.roundRenames]) {
+      for (const [to, from] of [...renames]) {
+        if (this.fileKey(to) !== key) continue;
+        renames.delete(to);
+        this.changes.renames.set(copyPath, from);
+      }
+    }
   }
 
   /**

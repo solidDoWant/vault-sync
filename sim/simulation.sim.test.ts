@@ -12,6 +12,7 @@ import { configFolderSync, engineBacksOffWhenThrottled, enginePushUnderFaults, e
 import { localRenameOverRemoteRenameIntoRespelledFolder } from "./scenarios";
 import { renameOntoDeletedNotePath } from "./scenarios";
 import { bothRenameOntoVacatedPath } from "./scenarios";
+import { renameOntoRemoteCreate } from "./scenarios";
 import { configConflictCopies } from "./scenarios";
 import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
@@ -895,6 +896,27 @@ describe.runIf(suites.has("scenarios"))("scripted renames of one note onto a vac
   });
 });
 
+describe.runIf(suites.has("scenarios"))("scripted unpushed rename onto a remote create's path (#479)", () => {
+  it.each(["posix", "macos", "windows"] as const)("never tombstones the other device's note (%s)", async (platform) => {
+    const result = await renameOntoRemoteCreate(environment, platform);
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const renamed = result.before.get("b.md");
+    expect(renamed, trace).toBeDefined();
+    // Only the note the other device deleted is tombstoned.
+    expect(result.tombstoned, trace).toEqual([renamed]);
+    expect(result.documents.get("x.md"), trace).toBeDefined();
+    for (const vault of result.vaults) {
+      expect(vault.get("x.md"), trace).toBe("theirs\n");
+      expect([...vault.values()], trace).toContain("b\nmine\n");
+    }
+    expect(result.vaults[1], trace).toEqual(result.vaults[0]);
+    expect(result.documents.size, trace).toBe(result.vaults[0]?.size);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
+  });
+});
+
 describe.runIf(suites.has("scenarios"))("scripted busy-path scenario (#167)", () => {
   it("pushes a change made at a path a refused operation held once the operation commits, without a restart", async () => {
     const result = await changeAtBusyPathKept(environment);
@@ -1297,6 +1319,34 @@ describe.runIf(suites.has("scenarios"))("scripted crash in a pull that brings a 
     // The user's edit of the deleted note is kept, once.
     expect([...contents.values()].filter((content) => content === "w2\n"), trace).toHaveLength(1);
     expect(result.vaults[0], trace).toEqual(result.vaults[1]);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted parked note's file renamed, then a restart, against another note at its old path (#459)", () => {
+  it("keeps the other note at plan.md, the renamed file as a new note, and brings the parked note back at draft.md", async () => {
+    const result = await parkedEditAtReusedPath(environment, "renamed-file");
+    const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}\ntombstoned: ${JSON.stringify(result.tombstoned)}`;
+
+    expect(result.violations, trace).toEqual([]);
+    const note = result.before.get("plan.md");
+    expect(note, trace).toBeDefined();
+    expect(result.documents.get("draft.md"), trace).toBe(note);
+    // Before #459 the parked note took the other note's file for its own after the restart, and the server tombstoned the other note.
+    expect(result.documents.get("plan.md"), trace).toBeDefined();
+    expect(result.documents.get("plan.md"), trace).not.toBe(note);
+    expect(result.documents.get("notes.md"), trace).toBeDefined();
+    expect(result.documents.get("notes.md"), trace).not.toBe(note);
+    expect(result.documents.get("notes.md"), trace).not.toBe(result.documents.get("plan.md"));
+    const expected = new Map([
+      ["draft.md", "one\ntwo\n"],
+      ["notes.md", "one\ntwo (edited)\n"],
+      ["plan.md", "another note\n"],
+    ]);
+    expect(result.documents.size, trace).toBe(expected.size);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    expect(result.tombstoned, trace).toEqual([]);
+    expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });
 
