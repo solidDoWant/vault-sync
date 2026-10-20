@@ -149,7 +149,7 @@ func startSimulation(t *testing.T, regressionDir string, tags ...string) *simula
 
 		server.Start(t)
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String}
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
 	}).API
 
 	db, err := pgxpool.New(t.Context(), database.DSN)

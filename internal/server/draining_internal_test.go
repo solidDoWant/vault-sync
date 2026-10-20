@@ -1,10 +1,14 @@
 package server
 
 import (
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 
+	"github.com/coder/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -103,4 +107,60 @@ func TestResponsesWrittenBeforeDrainingKeepTheirConnection(t *testing.T) {
 	_ = response.Body.Close()
 
 	assert.False(t, response.Close)
+}
+
+// A WebSocket upgrade accepted while draining keeps its own Connection:
+// Upgrade header, so the handshake succeeds; only the realtime hub decides
+// when to close the connection (#443).
+func TestWebSocketUpgradeAcceptedWhileDrainingSucceeds(t *testing.T) {
+	srv := &Server{}
+	srv.draining.Store(true)
+
+	server := httptest.NewServer(srv.closeConnectionsWhileDraining(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		conn, err := websocket.Accept(writer, request, nil)
+		if !assert.NoError(t, err) {
+			return
+		}
+
+		_ = conn.Close(websocket.StatusNormalClosure, "")
+	})))
+	t.Cleanup(server.Close)
+
+	conn, response, err := websocket.Dial(t.Context(), server.URL, nil)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = conn.CloseNow() })
+
+	assert.Equal(t, http.StatusSwitchingProtocols, response.StatusCode)
+	assert.Equal(t, "Upgrade", response.Header.Get("Connection"))
+}
+
+// failingFlusher is a response writer whose flush fails, as one to a client
+// that has gone does.
+type failingFlusher struct {
+	http.ResponseWriter
+
+	err error
+}
+
+func (writer failingFlusher) FlushError() error { return writer.err }
+
+// http.ResponseController.Flush on the wrapper returns the wrapped writer's
+// flush error instead of hiding it (#443).
+func TestDrainingWriterReportsFlushErrors(t *testing.T) {
+	gone := errors.New("client gone")
+
+	for _, draining := range []bool{false, true} {
+		t.Run(fmt.Sprintf("draining=%t", draining), func(t *testing.T) {
+			recorder := httptest.NewRecorder()
+			flag := &atomic.Bool{}
+			flag.Store(draining)
+
+			writer := &drainingWriter{ResponseWriter: failingFlusher{ResponseWriter: recorder, err: gone}, draining: flag}
+
+			require.ErrorIs(t, http.NewResponseController(writer).Flush(), gone)
+			assert.Equal(t, http.StatusOK, recorder.Code, "the header is written first")
+			assert.Equal(t, draining, recorder.Header().Get("Connection") == "close")
+		})
+	}
 }

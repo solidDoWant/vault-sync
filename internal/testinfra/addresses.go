@@ -135,12 +135,19 @@ type ServerProcess struct {
 	// Output returns the process's combined output. It is called only after
 	// Exited is closed.
 	Output func() string
+	// PID is the process id (Child.PID). StartServer uses it to tell the
+	// server's own /readyz from another process's on the same port; zero
+	// skips that check.
+	PID int
 }
 
 // StartServer starts a server and waits until its /readyz succeeds. start
 // must configure the server with the addresses it is given, start it, and
 // return it; StartServer then waits up to readyTimeout for it to become
-// ready. When the server exits during startup because one of its ports is
+// ready. On Linux, a /readyz answer counts only once the process with the
+// returned PID listens on the metrics address itself: until it has bound
+// that port, the answer may come from another process's server, which took
+// the port after FreeAddresses probed it. When the server exits during startup because one of its ports is
 // already in use (another process on the machine took it after
 // FreeAddresses probed it), StartServer starts a new server with new
 // addresses, up to a fixed number of attempts. Any other exit during startup
@@ -154,6 +161,7 @@ func StartServer(t testing.TB, name string, readyTimeout time.Duration, start fu
 		ports:    processPorts,
 		attempts: maxServerStartAttempts,
 		ready:    metricsReady,
+		owns:     listensOn,
 		poll:     readinessPollInterval,
 	}
 
@@ -168,7 +176,9 @@ type serverStarter struct {
 	ports    *portAllocator
 	attempts int
 	ready    func(ctx context.Context, metricsAddress string) bool
-	poll     time.Duration
+	// owns reports whether the process with pid listens on address.
+	owns func(pid int, address string) bool
+	poll time.Duration
 }
 
 // errAddressInUse marks a server that exited because a port was taken.
@@ -220,7 +230,11 @@ func (starter serverStarter) awaitReady(ctx context.Context, name string, readyT
 		default:
 		}
 
-		if starter.ready(ctx, addresses.Metrics) {
+		// A server that listens on the metrics port is the only one that
+		// can answer on it while it runs. Until it does, the answer may
+		// come from another process's server on that port, while this one
+		// is about to fail to bind it, so it does not count.
+		if (process.PID == 0 || starter.owns(process.PID, addresses.Metrics)) && starter.ready(ctx, addresses.Metrics) {
 			return nil
 		}
 

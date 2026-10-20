@@ -84,7 +84,7 @@ func TestServerDrainsOnSIGTERM(t *testing.T) {
 
 		server.Start(t)
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String}
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Err, Output: logs.String, PID: server.PID()}
 	})
 	apiAddress, metricsAddress := started.API, started.Metrics
 

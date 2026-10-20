@@ -123,7 +123,7 @@ func TestPluginE2E(t *testing.T) {
 
 		server.Start(t)
 
-		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String}
+		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
 	}).API
 
 	suite := testinfra.NewChild(t, "node", wdio, "run", "wdio.conf.mts")
