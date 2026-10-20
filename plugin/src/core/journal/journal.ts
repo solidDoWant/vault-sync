@@ -13,14 +13,25 @@ import type { UnmaterializableCause } from "../vaultpath/platform";
 export interface Journal {
   /** Highest `seq` fully applied to disk; 0n before the first pull. */
   getCursor(): Promise<bigint>;
-  /** Advances the cursor. Rejects with RangeError if `seq` is lower than the current cursor. */
-  setCursor(seq: bigint): Promise<void>;
   /**
-   * Sets the cursor to `seq`, also backwards. Only for a resync after the
-   * server's history diverged from the cursor (its `head_seq` fell below it,
-   * e.g. after a database restore; SPEC.md §8).
+   * The anchor (`Revision.anchor`) of the revision at the cursor, stored with
+   * it; undefined if none was stored with the current cursor. Sent with the
+   * cursor so the server can tell whether its history still holds that
+   * revision (SPEC.md §6.1).
    */
-  resetCursor(seq: bigint): Promise<void>;
+  getCursorAnchor(): Promise<Uint8Array | undefined>;
+  /**
+   * Advances the cursor and stores `anchor` with it, atomically; without an
+   * anchor, none is stored. Rejects with RangeError if `seq` is lower than
+   * the current cursor.
+   */
+  setCursor(seq: bigint, anchor?: Uint8Array): Promise<void>;
+  /**
+   * Sets the cursor to `seq`, also backwards, with `anchor` as setCursor
+   * does. Only for a resync after the server's history diverged from the
+   * cursor (e.g. after a database restore; SPEC.md §8).
+   */
+  resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void>;
 
   getDocument(documentId: string): Promise<DocumentState | undefined>;
   /**

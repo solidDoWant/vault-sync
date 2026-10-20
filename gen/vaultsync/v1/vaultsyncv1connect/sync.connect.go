@@ -49,13 +49,14 @@ const (
 type SyncServiceClient interface {
 	// ListChanges returns revisions with seq > since_seq in ascending seq order
 	// (SPEC.md §6.1). Clients page by passing the seq of the last revision
-	// received as the next since_seq until has_more is false.
+	// received as the next since_seq until has_more is false, with that
+	// revision's anchor as since_anchor.
 	//
 	// Revisions purged by retention (SPEC.md §11) are skipped, so seq values may
 	// have gaps; a document's head revision is never purged.
 	//
 	// Errors: NOT_FOUND if the vault does not exist or the caller is not a
-	// member.
+	// member. INVALID_ARGUMENT if since_anchor is malformed.
 	ListChanges(context.Context, *connect.Request[v1.ListChangesRequest]) (*connect.Response[v1.ListChangesResponse], error)
 	// GetRevision fetches a single revision, including its content reference.
 	// Clients use it to fetch the base of a three-way merge (SPEC.md §8).
@@ -174,13 +175,14 @@ func (c *syncServiceClient) GetDocumentHistory(ctx context.Context, req *connect
 type SyncServiceHandler interface {
 	// ListChanges returns revisions with seq > since_seq in ascending seq order
 	// (SPEC.md §6.1). Clients page by passing the seq of the last revision
-	// received as the next since_seq until has_more is false.
+	// received as the next since_seq until has_more is false, with that
+	// revision's anchor as since_anchor.
 	//
 	// Revisions purged by retention (SPEC.md §11) are skipped, so seq values may
 	// have gaps; a document's head revision is never purged.
 	//
 	// Errors: NOT_FOUND if the vault does not exist or the caller is not a
-	// member.
+	// member. INVALID_ARGUMENT if since_anchor is malformed.
 	ListChanges(context.Context, *connect.Request[v1.ListChangesRequest]) (*connect.Response[v1.ListChangesResponse], error)
 	// GetRevision fetches a single revision, including its content reference.
 	// Clients use it to fetch the base of a three-way merge (SPEC.md §8).

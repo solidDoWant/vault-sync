@@ -244,8 +244,9 @@ describe("IndexedDbJournal", () => {
         private readonly points: CrashPoints,
       ) {}
       getCursor = () => this.inner.getCursor();
-      setCursor = (seq: bigint) => this.points.durable(() => this.inner.setCursor(seq));
-      resetCursor = (seq: bigint) => this.points.durable(() => this.inner.resetCursor(seq));
+      getCursorAnchor = () => this.inner.getCursorAnchor();
+      setCursor = (seq: bigint, anchor?: Uint8Array) => this.points.durable(() => this.inner.setCursor(seq, anchor));
+      resetCursor = (seq: bigint, anchor?: Uint8Array) => this.points.durable(() => this.inner.resetCursor(seq, anchor));
       getDocument = (documentId: string) => this.inner.getDocument(documentId);
       findDocumentByPath = (path: string) => this.inner.findDocumentByPath(path);
       listDocuments = () => this.inner.listDocuments();

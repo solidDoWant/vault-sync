@@ -108,7 +108,14 @@ export class IndexedDbJournal implements Journal {
     });
   }
 
-  setCursor(seq: bigint): Promise<void> {
+  getCursorAnchor(): Promise<Uint8Array | undefined> {
+    return this.transaction(["meta"], "readonly", (transaction) => {
+      const request = transaction.objectStore("meta").get(cursorAnchorKey);
+      return () => (request.result instanceof Uint8Array ? request.result : undefined);
+    });
+  }
+
+  setCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
     return this.transaction(["meta"], "readwrite", (transaction, abort) => {
       const store = transaction.objectStore("meta");
       const request = store.get(cursorKey);
@@ -118,15 +125,15 @@ export class IndexedDbJournal implements Journal {
           abort(new RangeError(`cursor cannot move backwards from ${String(cursor)} to ${String(seq)}`));
           return;
         }
-        store.put(seq, cursorKey);
+        putCursor(store, seq, anchor);
       };
       return () => undefined;
     });
   }
 
-  resetCursor(seq: bigint): Promise<void> {
+  resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
     return this.transaction(["meta"], "readwrite", (transaction) => {
-      transaction.objectStore("meta").put(seq, cursorKey);
+      putCursor(transaction.objectStore("meta"), seq, anchor);
       return () => undefined;
     });
   }
@@ -310,6 +317,15 @@ export interface JournalOpenOptions {
 type StoreName = "meta" | "documents" | "pending" | "deferred" | "conflicts";
 
 const cursorKey = "cursor";
+/** The anchor of the revision at the cursor; written in the same transaction as the cursor, and absent if it has none. */
+const cursorAnchorKey = "cursorAnchor";
+
+/** Stores the cursor and its anchor, in the caller's transaction, so they never disagree. */
+function putCursor(store: IDBObjectStore, seq: bigint, anchor: Uint8Array | undefined): void {
+  store.put(seq, cursorKey);
+  if (anchor === undefined) store.delete(cursorAnchorKey);
+  else store.put(anchor.slice(), cursorAnchorKey);
+}
 
 /**
  * The journal's schema history. Append a migration to change the schema;
@@ -321,7 +337,8 @@ export const journalMigrations: readonly JournalMigration[] = [
   // Version 1.
   (transaction) => {
     const db = transaction.db;
-    // The cursor, under `cursorKey`.
+    // The cursor, under `cursorKey`, and since #155 its anchor under
+    // `cursorAnchorKey` (absent in journals written before: no check).
     db.createObjectStore("meta");
     const documents = db.createObjectStore("documents", { keyPath: "documentId" });
     documents.createIndex("path", "path");
