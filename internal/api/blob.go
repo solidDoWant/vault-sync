@@ -14,6 +14,7 @@ import (
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
+	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/store"
@@ -250,6 +251,21 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return nil, err
 	}
 
+	// One commit of a blob at a time on this replica: a duplicate (a retry
+	// of a slow commit, or a client repeating it) would compose the blob
+	// again and hold a compose slot of its own. It is refused before it
+	// does anything; the client backs off and retries, by when the blob is
+	// complete (SPEC.md §6.2).
+	key := blobstore.BlobKey(vault.VaultID(), blobID)
+
+	release, ok := service.Objects.ClaimCompose(key)
+	if !ok {
+		return nil, connect.NewError(connect.CodeResourceExhausted,
+			errors.New("this blob is already being committed; try again later"))
+	}
+
+	defer release()
+
 	if response, err := service.alreadyComplete(ctx, vault, blobID); response != nil || err != nil {
 		return response, err
 	}
@@ -306,7 +322,14 @@ func (service BlobService) CommitBlob(ctx context.Context, request *connect.Requ
 		return nil, service.internal(ctx, "cannot commit blob", err)
 	}
 
-	err = service.Objects.Compose(ctx, blobstore.BlobKey(upload.VaultID, blobID), sources, upload.Size, verify, progress)
+	// Compositions are shared fairly between users (the owner); a caller
+	// without a user (only in tests) shares one owner with all others.
+	var owner string
+	if user, ok := auth.UserFromContext(ctx); ok {
+		owner = user.ID.String()
+	}
+
+	err = service.Objects.Compose(ctx, owner, key, sources, upload.Size, verify, progress)
 	if errors.Is(err, blobstore.ErrHashMismatch) {
 		if err := vault.FinishBlobUpload(ctx, upload.ID); err != nil {
 			return nil, service.internal(ctx, "cannot discard blob upload", err)

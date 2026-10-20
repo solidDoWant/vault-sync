@@ -10,6 +10,11 @@ import (
 // ComposeSlots exposes composeSlots to tests.
 const ComposeSlots = composeSlots
 
+// ComposeWaiting returns how many compositions wait for a compose slot.
+func ComposeWaiting(objects *Objects) int {
+	return int(objects.waiting.Load())
+}
+
 // NewWithAttempts is New with the SDK making at most attempts attempts per
 // call, so tests of failing calls need not wait for the retries' backoff.
 func NewWithAttempts(cfg Config, attempts int) (*Objects, error) {
