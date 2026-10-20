@@ -2,7 +2,7 @@ import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
 
 import { RestoreError, type HistoryEntry } from "../core/engine/history";
 import type { DocumentState } from "../core/journal/journal";
-import { entryLabel, previewOf, sizeLabel } from "./history-view";
+import { alternativePath, entryLabel, previewOf, sizeLabel } from "./history-view";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
 
@@ -145,9 +145,10 @@ export class HistoryModal extends Modal {
     );
   }
 
-  private async restore(entry: HistoryEntry, content: Uint8Array | undefined): Promise<void> {
+  /** Restores `entry`, at `path` if given; offers another path when its own is taken (#420). */
+  private async restore(entry: HistoryEntry, content: Uint8Array | undefined, path?: string): Promise<void> {
     try {
-      const restored = await this.history.restore(entry, content);
+      const restored = await this.history.restore(entry, content, path);
       new Notice(`Vault Sync: restored ${restored.path} to the version of ${entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt)}.`);
       this.selected = undefined;
       this.previewEl.empty();
@@ -155,7 +156,32 @@ export class HistoryModal extends Modal {
     } catch (error) {
       const message = error instanceof RestoreError ? error.message : errorMessage(error);
       new Notice(`Vault Sync: the version could not be restored: ${message}`);
+      const otherPath = error instanceof RestoreError && (error.reason === "path-taken" || (error.reason === "invalid-path" && path !== undefined));
+      if (otherPath && this.selected?.entry === entry) this.offerOtherPath(entry, content, error.path);
     }
+  }
+
+  /** A path field, filled with a free path beside `taken`, and a button that restores `entry` there. */
+  private offerOtherPath(entry: HistoryEntry, content: Uint8Array | undefined, taken: string): void {
+    this.previewEl.querySelector(".vault-sync-history-other-path")?.remove();
+    const container = this.previewEl.createDiv({ cls: "vault-sync-history-other-path" });
+    let target = alternativePath(taken, (path) => this.app.vault.getAbstractFileByPath(path) !== null);
+    new Setting(container)
+      .setName("Restore at another path")
+      .setDesc("Its own path is taken by another file. Restore it at this path instead.")
+      .addText((text) =>
+        text.setValue(target).onChange((value) => {
+          target = value.trim();
+        }),
+      )
+      .addButton((button) =>
+        button.setButtonText("Restore here").onClick(() => {
+          button.setDisabled(true);
+          void this.restore(entry, content, target).finally(() => {
+            button.setDisabled(false);
+          });
+        }),
+      );
   }
 }
 
