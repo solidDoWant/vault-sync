@@ -8,7 +8,7 @@ import type { ProtocolClient } from "../core/protocol/client";
 import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
-import { deviceNameOf } from "./device-name";
+import { DeviceNameError, deviceNameOf } from "./device-name";
 import type { JournalKey } from "./journal";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./session";
 import { errorMessage, isOffline, type SyncStatus } from "./status";
@@ -63,6 +63,7 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
     id = (await options.client.devices.registerDevice({ name })).device?.id;
   } catch (error) {
     if (isDeviceLimit(error)) throw new DeviceLimitError(errorMessage(error));
+    if (error instanceof ConnectError && error.code === Code.InvalidArgument) throw new DeviceNameError(error.rawMessage);
     throw error;
   }
   if (id === undefined || id === "") throw new Error("the server registered the device but returned no id");

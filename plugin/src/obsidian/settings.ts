@@ -5,6 +5,7 @@ import type { AuthState } from "../core/auth/tokens";
 import type { ConfigCategory, ConfigSyncSettings } from "../core/config/policy";
 import { connectProblem } from "./controller";
 import { configSyncSettings, type ConnectedVault, type PluginData } from "./data";
+import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
 /** What the settings tab needs from the plugin. */
@@ -145,7 +146,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     }
     new Setting(containerEl)
       .setName("Device name")
-      .setDesc("How this device is named on the server and in conflict copies. Empty uses the platform's name. The server keeps the name the device was first registered with.")
+      .setDesc("How this device is named on the server and in conflict copies. Empty uses the platform's name. Invisible characters are left out and the name is cut at 256 bytes. The server keeps the name the device was first registered with.")
       .addText((text) =>
         text.setValue(host.data.deviceName).onChange(async (value) => {
           host.data.deviceName = value;
@@ -212,7 +213,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (connected !== undefined) {
       new Setting(containerEl)
         .setName("Connected vault")
-        .setDesc(`This vault syncs with "${connected.name}".`)
+        .setDesc(`This vault syncs with ${quotedVaultLabel(connected)}.`)
         .addButton((button) =>
           button.setButtonText("Disconnect").onClick(async () => {
             await host.disconnectVault();
@@ -232,7 +233,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         let chosen = usable[0];
         existing.setDesc("Sync this vault with one of your vaults on the server.");
         existing.addDropdown((dropdown) => {
-          for (const vault of usable) dropdown.addOption(vault.id, vault.name);
+          for (const vault of usable) dropdown.addOption(vault.id, vaultLabel(vault));
           dropdown.onChange((id) => {
             chosen = usable.find((vault) => vault.id === id);
           });
@@ -274,7 +275,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private async connect(vault: Vault): Promise<void> {
     try {
       if ((await this.host.connectVault(vault)) === "needs-confirmation") {
-        new ConfirmConnectModal(this.app, vault.name, () => {
+        new ConfirmConnectModal(this.app, quotedVaultLabel(vault), () => {
           void this.host.connectVault(vault, true).catch((error: unknown) => new Notice(`Vault Sync: could not connect: ${errorMessage(error)}`));
         }).open();
       }
@@ -288,7 +289,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 class ConfirmConnectModal extends Modal {
   constructor(
     app: App,
-    private readonly vaultName: string,
+    /** The remote vault, as quotedVaultLabel shows it. */
+    private readonly vaultLabel: string,
     private readonly onConfirm: () => void,
   ) {
     super(app);
@@ -299,7 +301,7 @@ class ConfirmConnectModal extends Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("p", {
-      text: `Both this vault and "${this.vaultName}" on the server already have files. They will be combined: files only one side has are copied to the other, and nothing is deleted or overwritten. Where both have a file at the same path with different content, the server's version is kept at that path and this vault's version is kept next to it as a conflict copy.`,
+      text: `Both this vault and ${this.vaultLabel} on the server already have files. They will be combined: files only one side has are copied to the other, and nothing is deleted or overwritten. Where both have a file at the same path with different content, the server's version is kept at that path and this vault's version is kept next to it as a conflict copy.`,
       cls: "vault-sync-connect-warning",
     });
     new Setting(contentEl)

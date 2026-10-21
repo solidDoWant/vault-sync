@@ -2,6 +2,7 @@ import type { DeferredDocumentReason } from "../core/engine/deferred";
 import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
+import { visiblePath } from "./display-text";
 
 // The conflict view's wording (docs/plugin.md, "Conflicts"). No Obsidian
 // import, so it is unit-tested directly.
@@ -80,15 +81,6 @@ export function rejectedReasonText(reason: RejectedReason, detail: string): stri
     case "refused":
       return `The server refused it: ${detail}`;
   }
-}
-
-/**
- * `path` with every character that would not show (control characters, and
- * UTF-16 surrogates without their pair) written as `\uXXXX`, so the user can
- * see which name to fix.
- */
-export function visiblePath(path: string): string {
-  return path.replace(/\p{Cc}|[\ud800-\udfff]/gu, (character) => `\\u${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`);
 }
 
 /**

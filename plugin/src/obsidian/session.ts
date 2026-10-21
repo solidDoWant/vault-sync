@@ -8,7 +8,8 @@ import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/cli
 import type { DocumentState, Journal, RemoteRevision } from "../core/journal/journal";
 import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
-import { rejectedReasonText, visiblePath } from "./conflict-text";
+import { rejectedReasonText } from "./conflict-text";
+import { visiblePath } from "./display-text";
 import { errorMessage, isOffline } from "./status";
 import { UnsavedEditsError } from "./unsaved-edits";
 
