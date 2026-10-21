@@ -289,9 +289,10 @@ class SelectTest(unittest.TestCase):
         self.assertEqual([j.key for j in chosen], ["worker:1", "worker:2"])
         self.assertEqual(status["worker:3"], "new-work cap (3 slots)")
 
-    def test_fix_engine_titles_share_the_engine_lock(self):
+    def test_engine_bug_fixes_do_not_take_the_engine_lock(self):
+        # Only refactor steps serialize; bug fixes run alongside them and rebase.
         sn = snap([issue(1, "fix(engine): a", status="status:in-progress"), issue(2, "refactor(engine): R7")], [])
-        self.assertEqual(s.in_flight_locks(sn, {"running": {}}, CFG), {"engine.ts": "#1"})
+        self.assertEqual(s.in_flight_locks(sn, {"running": {}}, CFG), {})
 
     def test_claims_backoff_and_free_slots(self):
         sn = snap([issue(1), issue(2), issue(3), issue(4, status="status:in-review")], [pr(10, 4)])
