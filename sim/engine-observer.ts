@@ -214,7 +214,11 @@ export class EngineObserver {
       this.record(this.vault, event);
       this.inodeEvents.push({ ...event, step: context.stepNumber() });
     });
-    this.engineVault = new MutableVault(this.vault.handle("engine"), (from, to, rename) => this.user.engineRenamed(from, to, rename));
+    this.engineVault = new MutableVault(
+      this.vault.handle("engine"),
+      (from, to, rename) => this.user.engineRenamed(from, to, rename),
+      (path, write) => this.user.engineWrote(path, write),
+    );
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
     this.config.tapInodes((event) => {
       this.emitting = event.actor;
@@ -823,15 +827,20 @@ class HaltingJournal extends InMemoryJournal {
   }
 }
 
-/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops, and whose renames the user's ledger follows (#509). */
+/** The engine's view of the vault: an InterleavingVault whose deletes a mutation test can make no-ops, and whose renames (#509) and conflict-copy writes (#745) the user's ledger follows. */
 class MutableVault extends InterleavingVault {
   private readonly keep = new Set<string>();
 
   constructor(
     inner: VaultAdapter,
     private readonly renamed: (from: string, to: string, rename: () => Promise<void>) => Promise<void>,
+    private readonly wrote: (path: string, write: () => Promise<void>) => Promise<void>,
   ) {
     super(inner);
+  }
+
+  override write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    return this.wrote(path, () => super.write(path, data, precondition));
   }
 
   override rename(from: string, to: string): Promise<void> {
