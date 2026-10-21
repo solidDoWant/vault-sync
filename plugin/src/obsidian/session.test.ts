@@ -7,6 +7,7 @@ import type { Journal } from "../core/journal/journal";
 import { InMemoryJournal } from "../core/journal/memory";
 import { createProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
+import { entryLabel } from "./history-view";
 import { SyncSession, type SessionStatus, type SyncSessionOptions } from "./session";
 import { UnsavedEditsError } from "./unsaved-edits";
 
@@ -1141,6 +1142,30 @@ describe("SyncSession", () => {
 
       expect(await files(vault)).toEqual(new Map([["plan.md", "first"]]));
       expect(await history.documentAt("elsewhere.md")).toBeUndefined();
+      await running.stop();
+    });
+
+    it("shows another member's bidi and zero-width path characters visibly and restores at the path as it is (#555)", async () => {
+      const path = "notes/inv\u200boice\u202ett.exe.md";
+      const server = new InMemoryServer();
+      server.commit({ documentId: "remote", path, content: "first" });
+      server.commit({ documentId: "remote", path, content: "second" });
+      const vault = new InMemoryVault();
+      const running = session({ server, vault, journal: new InMemoryJournal() });
+      await running.start();
+      const history = running.history();
+      if (history === undefined) throw new Error("no history");
+      const documentId = await history.documentAt(path);
+      if (documentId === undefined) throw new Error("no document at the path");
+      const { entries } = await history.history(documentId);
+      const [, first] = entries;
+      if (first === undefined) throw new Error("no first revision");
+
+      expect(entryLabel(first, undefined, () => "then")).toContain(" · earliest kept version of notes/inv\\u200Boice\\u202Ett.exe.md (5 B)");
+      await history.restore(first);
+
+      expect(await files(vault)).toEqual(new Map([[path, "first"]]));
+      expect(server.liveFiles()).toEqual(new Map([[path, "first"]]));
       await running.stop();
     });
 

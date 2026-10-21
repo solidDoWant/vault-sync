@@ -13,6 +13,7 @@ import { createProtocolClient, type ProtocolClient } from "../core/protocol/clie
 import { InMemoryVault } from "../core/vault/memory";
 import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, SyncController, type ClosableJournal } from "./controller";
 import { parsePluginData, type PluginData } from "./data";
+import { DeviceNameError } from "./device-name";
 import { SyncSession, type SyncSessionOptions } from "./session";
 import type { SyncStatus } from "./status";
 
@@ -207,6 +208,37 @@ describe("ensureDevice", () => {
     expect(server.registered).toEqual([registered]);
   });
 
+  it.each([
+    ["registers a name of exactly 256 bytes as it is (#557)", "n".repeat(256), "n".repeat(256)],
+    ["cuts a name of 257 bytes to 256 (#557)", "n".repeat(257), "n".repeat(256)],
+    ["cuts a longer name before a character that would cross 256 bytes, never through it (#557)", `${"n".repeat(255)}é and more`, "n".repeat(255)],
+    ["cuts after a character that ends exactly at 256 bytes (#557)", `${"n".repeat(253)}日 and more`, `${"n".repeat(253)}日`],
+    ["never cuts through an emoji's surrogate pair (#557)", `${"n".repeat(253)}\u{1f600}`, "n".repeat(253)],
+  ])("%s", async (_, deviceName, registered) => {
+    const server = fakeServer();
+    const options = { data: { ...settings, deviceName }, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+
+    expect(await ensureDevice(options)).toBe("device-1");
+
+    expect(server.registered).toEqual([registered]);
+    expect(new TextEncoder().encode(server.registered[0]).length).toBeLessThanOrEqual(256);
+  });
+
+  it("names the Device name setting when the server refuses the name (#557)", async () => {
+    const server = fakeServer({
+      registerDevice: () => {
+        // A format character this device's Unicode tables do not know yet.
+        throw new ConnectError("name must be valid UTF-8 without control, format or line separator characters", Code.InvalidArgument);
+      },
+    });
+    const data = { ...settings, deviceName: "Phone\u0890" };
+    const failure = ensureDevice({ data, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" });
+
+    await expect(failure).rejects.toBeInstanceOf(DeviceNameError);
+    await expect(failure).rejects.toThrow(/refused this device's name \(name must be valid UTF-8 without control, format or line separator characters\)\. Change the Device name setting/);
+    expect(data.device).toBeUndefined();
+  });
+
   it("registers a device of its own for another account or server", async () => {
     const server = fakeServer();
     const data = { ...settings };
@@ -308,6 +340,35 @@ describe("SyncController", () => {
 
     expect(await f.vault.list()).toEqual(["ok.md"]);
     expect((await f.controller.session?.unmaterializable())?.map(({ path, reason }) => ({ path, reason }))).toEqual([{ path: "CON.md", reason: "reserved-name" }]);
+  });
+
+  it("names conflict copies after the Device name setting without its invisible characters (#557)", async () => {
+    const server = fakeServer();
+    server.sync.commit({ documentId: "remote", path: "a.md", content: "remote version\n" });
+    const f = fixture(server, connected({ ...settings, deviceName: "\u202eWork\u200b lap\u2066top\u2069\u200d" }, server.sync.vaultId));
+    await f.vault.write("a.md", bytes("local version\n"));
+
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    const copies = (await f.vault.list()).filter((path) => path !== "a.md");
+    expect(copies).toHaveLength(1);
+    expect(copies[0]).toMatch(/^a \(conflict Work laptop \d{4}-\d{2}-\d{2} \d{6}\)\.md$/u);
+    await f.controller.stop();
+  });
+
+  it("shows the server's refusal of the device name with the setting to change (#557)", async () => {
+    const server = fakeServer({
+      registerDevice: () => {
+        throw new ConnectError("name must be valid UTF-8 without control, format or line separator characters", Code.InvalidArgument);
+      },
+    });
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+
+    await f.controller.update();
+
+    expect(await statusBecomes(f.statuses, "error")).toMatchObject({ message: expect.stringMatching(/Change the Device name setting/) as unknown });
+    await f.controller.stop();
   });
 
   it("syncs the connected vault as this install's device once signed in", async () => {
