@@ -26,7 +26,10 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  ANDROID_IMAGE: "system-images;android-34;google_apis;x86_64"
+  # The AOSP image, without Google Play services: on google_apis, Play
+  # services updates itself a minute or two after boot, and Android kills
+  # Obsidian, which is bound to its font provider (#704).
+  ANDROID_IMAGE: "system-images;android-34;default;x86_64"
   # avdmanager on the runner writes to ~/.config/.android/avd, the emulator
   # looks in ~/.android/avd: point the emulator at avdmanager's.
   ANDROID_AVD_HOME: /home/runner/.config/.android/avd
@@ -34,18 +37,9 @@ env:
 
 jobs:
   android:
-    name: plugin-e2e (android-emulator, ${{ matrix.variant }})
+    name: plugin-e2e (android-emulator)
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # TEMPORARY (#704 diagnosis): the emulator segfaults once chromedriver
-    # attaches to Obsidian's WebView. Which graphics setting avoids it.
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: [novulkan, guest]
-    env:
-      ANDROID_IMAGE: system-images;android-34;default;x86_64
-      EMULATOR_GRAPHICS: ${{ matrix.variant == 'guest' && '-gpu guest' || '-gpu swiftshader_indirect -feature -Vulkan' }}
     defaults:
       run:
         shell: bash
@@ -76,10 +70,12 @@ jobs:
       - name: Boot the emulator
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
+          # Vulkan off: with it, the emulator's SwiftShader renderer
+          # segfaulted (in its JIT-compiled code) as soon as chromedriver
+          # attached to Obsidian's WebView, on the runners' AMD EPYC hosts.
           # The subshell records how the emulator ended, should it end.
-          sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
-          nohup bash -c 'ulimit -c unlimited; "$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
-            $EMULATOR_GRAPHICS -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
+          nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -feature -Vulkan -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
             > "$RUNNER_TEMP/emulator.log" 2>&1 &
           pid=$!
           for _ in $(seq 1 72); do
@@ -88,9 +84,6 @@ jobs:
               "$adb" shell settings put global window_animation_scale 0
               "$adb" shell settings put global transition_animation_scale 0
               "$adb" shell settings put global animator_duration_scale 0
-              "$adb" shell dumpsys package com.google.android.webview | grep -m1 versionName || true
-              "$adb" shell dumpsys package com.android.webview | grep -m1 versionName || true
-              "$adb" shell dumpsys webviewupdate | head -20 || true
               exit 0
             fi
             sleep 5
@@ -98,22 +91,6 @@ jobs:
           echo "::error::the emulator did not boot in 6 minutes"
           tail -100 "$RUNNER_TEMP/emulator.log"
           exit 1
-
-      # TEMPORARY (#704 diagnosis): Obsidian started with adb alone, without
-      # Appium, to tell whether rendering it ends the emulator.
-      - name: Start Obsidian without Appium
-        run: |
-          adb="$ANDROID_HOME/platform-tools/adb"
-          apk="$RUNNER_TEMP/obsidian.apk"
-          curl -fsSL --proto '=https' -o "$apk" https://github.com/obsidianmd/obsidian-releases/releases/download/v1.14.4/Obsidian-1.14.4.apk
-          echo "b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3  $apk" | sha256sum -c -
-          "$adb" install "$apk"
-          "$adb" shell am start -W -n md.obsidian/.MainActivity
-          sleep 120
-          "$adb" shell pidof md.obsidian
-          "$adb" exec-out screencap -p > "$RUNNER_TEMP/obsidian-start.png"
-          "$adb" shell am force-stop md.obsidian
-          "$adb" uninstall md.obsidian
 
       - uses: ./.github/actions/nix-dev-shell
 
@@ -143,19 +120,10 @@ jobs:
           # killed it (out of memory).
           { pgrep -a qemu || echo "no emulator process"; free -m; lscpu; sudo dmesg | tail -100; } > "$RUNNER_TEMP/e2e-logs/host.txt" 2>&1 || true
           cp -r /tmp/android-runner "$RUNNER_TEMP/e2e-logs/emulator-crash" || true
-          ls -la /tmp/core.* || true
-          for core in /tmp/core.*; do
-            [[ -e "$core" ]] || continue
-            command -v gdb > /dev/null || sudo apt-get install -y -qq gdb > /dev/null
-            exe=$(file "$core" | sed -n "s/.*execfn: '\([^']*\)'.*/\1/p")
-            sudo gdb -batch -ex 'thread apply all bt 20' "${exe:-$ANDROID_HOME/emulator/qemu/linux-x86_64/qemu-system-x86_64-headless}" "$core" > "$RUNNER_TEMP/e2e-logs/backtrace.txt" 2>&1 || true
-            grep -m1 -B2 -A25 'SIGSEGV\|received signal' "$RUNNER_TEMP/e2e-logs/backtrace.txt" || head -80 "$RUNNER_TEMP/e2e-logs/backtrace.txt"
-          done
-          cp "$RUNNER_TEMP/obsidian-start.png" "$RUNNER_TEMP/e2e-logs/" || true
 
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-e2e-logs-${{ matrix.variant }}
+          name: android-e2e-logs
           path: ${{ runner.temp }}/e2e-logs
           if-no-files-found: ignore
