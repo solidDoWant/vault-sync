@@ -4,6 +4,7 @@ package vaultsync.v1;
 
 import "google/protobuf/timestamp.proto";
 import "vaultsync/v1/types.proto";
+import "vaultsync/v1/vault_key.proto";
 
 option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
 
@@ -71,12 +72,27 @@ service MembershipService {
   // RemoveMember removes a member from the vault. The revisions they
   // committed keep their history.
   //
-  // Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID;
-  // NOT_FOUND when the user is not a member; FAILED_PRECONDITION when it
-  // would remove the vault's last owner.
+  // In an end-to-end encrypted vault the request must carry next_epoch, the
+  // epoch that replaces the current one, wrapped for every remaining member
+  // with a user key (VaultKeyService): the removal and the new epoch take
+  // effect together, as a compare-and-set on the current epoch, so no
+  // revision is accepted under an epoch the removed member holds. Without a
+  // valid next epoch nothing changes and the member stays. A plaintext
+  // vault takes no next_epoch.
+  //
+  // Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
+  // when next_epoch is missing in an E2EE vault, given in a plaintext vault
+  // or out of bounds, or when its slots are not exactly the new epoch's
+  // recipients (the removed member is not one); NOT_FOUND when the user is
+  // not a member; FAILED_PRECONDITION when it would remove the vault's last
+  // owner, or, with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
+  // when next_epoch.expected_epoch is not the vault's current epoch.
   rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse) {}
 
   // LeaveVault removes the caller from the vault. Any member may call it.
+  // In an end-to-end encrypted vault it marks a rotation pending, for an
+  // owner client to create the next epoch (VaultKeyService.RotateEpoch);
+  // until then revisions are still accepted under the current epoch.
   //
   // Errors: FAILED_PRECONDITION when the caller is the vault's last owner.
   rpc LeaveVault(LeaveVaultRequest) returns (LeaveVaultResponse) {}
@@ -106,6 +122,10 @@ message Member {
   VaultRole role = 3;
   // When the user became a member.
   google.protobuf.Timestamp join_time = 4;
+  // The member's X25519 user public key (32 bytes) for wrapping vault
+  // epoch keys to them, or empty when they have no user key
+  // (UserKeyService).
+  bytes public_key = 5;
 }
 
 // CreateInvitationRequest describes the invitation to create.
@@ -197,6 +217,12 @@ message RemoveMemberRequest {
   string vault_id = 1;
   // The member's user id (Member.user_id), a canonical lowercase UUID.
   string user_id = 2;
+  // The epoch that replaces the current one: required in an end-to-end
+  // encrypted vault, and must be unset in a plaintext vault. Its slots must
+  // wrap the new epoch key to every remaining member with a user key (plus
+  // at most one escrow slot in an escrow vault), and not to the removed
+  // member.
+  NextEpoch next_epoch = 3;
 }
 
 // RemoveMemberResponse confirms the removal. It has no fields.

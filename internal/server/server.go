@@ -106,6 +106,10 @@ type Options struct {
 	// UserKeys serves UserKeyService. When nil, UserKeyService is
 	// unimplemented. Its Logger defaults to Logger.
 	UserKeys *api.UserKeyService
+	// VaultKeys serves VaultKeyService. When nil, VaultKeyService is
+	// unimplemented. Its Logger defaults to Logger; its response limit is
+	// the send limit.
+	VaultKeys *api.VaultKeyService
 	// Sync serves SyncService. When nil, SyncService is unimplemented. Its
 	// Logger defaults to Logger.
 	Sync *api.SyncService
@@ -213,6 +217,13 @@ var VaultProcedures = map[string]authz.Access{
 	vaultsyncv1connect.MembershipServiceRemoveMemberProcedure:     authz.Manage,
 	// Any member may leave; the last owner cannot (SPEC.md §9.2).
 	vaultsyncv1connect.MembershipServiceLeaveVaultProcedure: authz.Read,
+	// Every member reads the epochs and their own key slots, which they
+	// need to read the vault; only owners wrap keys (SPEC.md §9.3).
+	vaultsyncv1connect.VaultKeyServiceListKeySlotsProcedure:     authz.Read,
+	vaultsyncv1connect.VaultKeyServiceListEpochsProcedure:       authz.Read,
+	vaultsyncv1connect.VaultKeyServiceListMissingSlotsProcedure: authz.Manage,
+	vaultsyncv1connect.VaultKeyServiceRotateEpochProcedure:      authz.Manage,
+	vaultsyncv1connect.VaultKeyServiceAddKeySlotsProcedure:      authz.Manage,
 }
 
 func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) http.Handler {
@@ -310,6 +321,22 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 		userKeys = service
 	}
 
+	var vaultKeys vaultsyncv1connect.VaultKeyServiceHandler = vaultsyncv1connect.UnimplementedVaultKeyServiceHandler{}
+
+	if options.VaultKeys != nil {
+		service := *options.VaultKeys
+		if service.Logger == nil {
+			service.Logger = options.Logger
+		}
+
+		// Pages of slots and epochs are cut to fit the send limit.
+		if service.Limits.MaxResponseBytes <= 0 || service.Limits.MaxResponseBytes > int(options.MaxRequestBytes) {
+			service.Limits.MaxResponseBytes = int(options.MaxRequestBytes)
+		}
+
+		vaultKeys = service
+	}
+
 	mux := http.NewServeMux()
 	serverInfo := api.ServerInfoService{OIDCIssuerURL: options.OIDCIssuerURL, OIDCClientID: options.OIDCClientID}
 
@@ -326,6 +353,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewMembershipServiceHandler(membership, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewUserKeyServiceHandler(userKeys, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewVaultKeyServiceHandler(vaultKeys, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(syncHandler, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(blobs, handlerOptions...))
 

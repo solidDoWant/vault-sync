@@ -299,6 +299,13 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.MembershipService/RemoveMember":     authz.Manage,
 	// Any member may leave a vault.
 	"/vaultsync.v1.MembershipService/LeaveVault": authz.Read,
+	// Every member, viewers included, reads the epochs and their own key
+	// slots; only owners wrap and grant keys (#694).
+	"/vaultsync.v1.VaultKeyService/ListKeySlots":     authz.Read,
+	"/vaultsync.v1.VaultKeyService/ListEpochs":       authz.Read,
+	"/vaultsync.v1.VaultKeyService/ListMissingSlots": authz.Manage,
+	"/vaultsync.v1.VaultKeyService/RotateEpoch":      authz.Manage,
+	"/vaultsync.v1.VaultKeyService/AddKeySlots":      authz.Manage,
 }
 
 // deniedByRole reports whether a member with role must get

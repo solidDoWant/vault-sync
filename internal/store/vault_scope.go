@@ -70,6 +70,9 @@ type Revision struct {
 	// Anchor is a random value PostgreSQL assigned when it stored the
 	// revision; a restored database never reproduces it (SPEC.md §6.1).
 	Anchor uuid.UUID
+	// Epoch is the vault key epoch the revision is encrypted under; 0 in
+	// plaintext vaults (SPEC.md §9.3).
+	Epoch int32
 }
 
 // Blob is a content-addressed blob's metadata.
@@ -108,7 +111,7 @@ func (vault *VaultStore) document(ctx context.Context, db querier, id uuid.UUID,
 // clause on r (revisions) that always includes r.vault_id.
 const selectRevisions = `
 	SELECT r.id, r.document_id, r.vault_id, r.seq, r.parent_rev_id, d.kind, r.content_ref, COALESCE(b.size, 0),
-		r.path, r.deleted, r.device_id, dev.user_id, r.created_at, r.anchor
+		r.path, r.deleted, r.device_id, dev.user_id, r.created_at, r.anchor, r.epoch
 	FROM revisions r
 	JOIN documents d ON d.vault_id = r.vault_id AND d.id = r.document_id
 	JOIN devices dev ON dev.id = r.device_id
@@ -119,7 +122,7 @@ func scanRevision(row pgx.Row) (Revision, error) {
 
 	err := row.Scan(&revision.ID, &revision.DocumentID, &revision.VaultID, &revision.Seq, &revision.ParentRevID,
 		&revision.Kind, &revision.ContentRef, &revision.ContentSize, &revision.Path, &revision.Deleted,
-		&revision.DeviceID, &revision.UserID, &revision.CreatedAt, &revision.Anchor)
+		&revision.DeviceID, &revision.UserID, &revision.CreatedAt, &revision.Anchor, &revision.Epoch)
 
 	return revision, err
 }

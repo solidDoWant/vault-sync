@@ -50,6 +50,9 @@ type Member struct {
 	DisplayName string
 	Role        Role
 	JoinedAt    time.Time
+	// PublicKey is the member's user public key (SPEC.md §9.3), or nil
+	// when they have none.
+	PublicKey []byte
 }
 
 // lockVault locks the vault row against every other membership change and
@@ -258,8 +261,9 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 // ListMembers returns the vault's members, oldest membership first.
 func (vault *VaultStore) ListMembers(ctx context.Context) ([]Member, error) {
 	rows, err := vault.store.pool.Query(ctx, `
-		SELECT m.user_id, u.display_name, m.role, m.created_at
+		SELECT m.user_id, u.display_name, m.role, m.created_at, k.public_key
 		FROM vault_members m JOIN users u ON u.id = m.user_id
+		LEFT JOIN user_keys k ON k.user_id = m.user_id
 		WHERE m.vault_id = $1
 		ORDER BY m.created_at, m.user_id`, vault.vaultID)
 	if err != nil {
@@ -269,7 +273,7 @@ func (vault *VaultStore) ListMembers(ctx context.Context) ([]Member, error) {
 	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Member, error) {
 		var member Member
 
-		err := row.Scan(&member.UserID, &member.DisplayName, &member.Role, &member.JoinedAt)
+		err := row.Scan(&member.UserID, &member.DisplayName, &member.Role, &member.JoinedAt, &member.PublicKey)
 
 		return member, err
 	})
@@ -339,13 +343,58 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 	return member, nil
 }
 
-// RemoveMember removes userID from the vault. It returns ErrMemberNotFound
-// when the user is not a member and ErrLastOwner when they are the vault's
-// last owner. The removal is announced on VaultChangedChannel at the vault's
-// current head_seq, so every replica re-checks the vault's realtime
-// subscribers at once and ends the removed member's subscriptions
-// (SPEC.md §6.4).
-func (vault *VaultStore) RemoveMember(ctx context.Context, userID uuid.UUID) error {
+// RemoveMember removes userID from the vault on behalf of removedBy (an
+// owner). In an E2EE vault, next is the epoch that replaces the current one,
+// wrapped for every remaining member with a user key: the removal and the
+// new epoch commit together (see RotateEpoch for its errors), so no revision
+// is accepted under an epoch the removed member holds once the removal is
+// visible. A plaintext vault takes no next epoch (ErrUnexpectedNextEpoch); an E2EE
+// vault requires one (ErrNextEpochRequired).
+//
+// It returns ErrMemberNotFound when the user is not a member and
+// ErrLastOwner when they are the vault's last owner. The removal is
+// announced on VaultChangedChannel at the vault's current head_seq, so every
+// replica re-checks the vault's realtime subscribers at once and ends the
+// removed member's subscriptions (SPEC.md §6.4).
+func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uuid.UUID, next *NextEpoch) error {
+	return vault.removeMember(ctx, userID, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
+		switch {
+		case state.Encryption != EncryptionE2EE && next != nil:
+			return ErrUnexpectedNextEpoch
+		case state.Encryption != EncryptionE2EE:
+			return nil
+		case next == nil:
+			return ErrNextEpochRequired
+		}
+
+		_, err := createEpoch(ctx, tx, vault.vaultID, state, removedBy, *next)
+
+		return err
+	})
+}
+
+// LeaveVault removes userID from the vault at their own request, like
+// RemoveMember. No owner client takes part, so in an E2EE vault it marks a
+// rotation pending instead of creating the next epoch: revisions are still
+// accepted under the current epoch until an owner rotates (SPEC.md §9.3).
+func (vault *VaultStore) LeaveVault(ctx context.Context, userID uuid.UUID) error {
+	return vault.removeMember(ctx, userID, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
+		if state.Encryption != EncryptionE2EE {
+			return nil
+		}
+
+		_, err := tx.Exec(ctx, `UPDATE vaults SET rotation_pending = true WHERE id = $1`, vault.vaultID)
+		if err != nil {
+			return fmt.Errorf("mark rotation pending: %w", err)
+		}
+
+		return nil
+	})
+}
+
+// removeMember removes userID and then runs rekey, in one transaction under
+// the vault row lock.
+func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, rekey func(context.Context, pgx.Tx, KeyState) error) error {
 	return pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
 		current, otherOwners, headSeq, err := lockMember(ctx, tx, vault.vaultID, userID)
 		if err != nil {
@@ -359,6 +408,16 @@ func (vault *VaultStore) RemoveMember(ctx context.Context, userID uuid.UUID) err
 		_, err = tx.Exec(ctx, `DELETE FROM vault_members WHERE vault_id = $1 AND user_id = $2`, vault.vaultID, userID)
 		if err != nil {
 			return fmt.Errorf("remove member: %w", err)
+		}
+
+		// The vault row is already locked; this reads its key state.
+		state, err := keyState(ctx, tx, vault.vaultID, "")
+		if err != nil {
+			return err
+		}
+
+		if err := rekey(ctx, tx, state); err != nil {
+			return err
 		}
 
 		return notifyVaultChanged(ctx, tx, VaultChange{VaultID: vault.vaultID, Seq: headSeq})

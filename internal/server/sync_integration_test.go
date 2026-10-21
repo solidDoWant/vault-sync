@@ -46,7 +46,9 @@ type syncFixture struct {
 	hubs []*realtime.Hub
 }
 
-func newSyncFixture(t *testing.T, limits api.SyncLimits) *syncFixture {
+// newSyncFixture starts two server replicas on one database; configure
+// adjusts each replica's SyncService.
+func newSyncFixture(t *testing.T, limits api.SyncLimits, configure ...func(*api.SyncService)) *syncFixture {
 	t.Helper()
 
 	pool := migratedPool(t)
@@ -96,6 +98,11 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits) *syncFixture {
 			<-hubDone
 		})
 
+		syncService := &api.SyncService{Store: queries, Limits: limits}
+		for _, adjust := range configure {
+			adjust(syncService)
+		}
+
 		syncFix.replicas = append(syncFix.replicas, startServer(t, server.Options{
 			MaxRequestBytes: config.DefaultMaxRequestBytes,
 			Database:        replicaPool,
@@ -105,7 +112,8 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits) *syncFixture {
 			Memberships:     queries,
 			Membership:      &api.MembershipService{Store: queries},
 			UserKeys:        &api.UserKeyService{Store: queries},
-			Sync:            &api.SyncService{Store: queries, Limits: limits},
+			VaultKeys:       &api.VaultKeyService{Keys: api.KeysOf(queries)},
+			Sync:            syncService,
 			Blobs:           &api.BlobService{Store: queries, Objects: objects, Limits: defaultBlobLimits},
 			Realtime:        hub,
 			Logger:          logger,

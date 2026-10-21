@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/sync.proto.
  */
 export const file_vaultsync_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIpUBChJMaXN0Q2hhbmdlc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJc2luY2Vfc2VxGAIgASgEEhEKCXBhZ2Vfc2l6ZRgDIAEoDRIUCgxzaW5jZV9hbmNob3IYBCABKAwSFgoOb3duX2NvbW1pdF9zZXEYBSABKAQSGQoRb3duX2NvbW1pdF9hbmNob3IYBiABKAwidgoTTGlzdENoYW5nZXNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SEAoIaGFzX21vcmUYAiABKAgSEAoIaGVhZF9zZXEYAyABKAQSEAoIZGl2ZXJnZWQYBCABKAgiOwoSR2V0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJIj8KE0dldFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24ihQIKFUNvbW1pdFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRITCgtyZXZpc2lvbl9pZBgDIAEoCRITCgtiYXNlX3Jldl9pZBgEIAEoCRIoCgRraW5kGAUgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmEgwKBHBhdGgYByABKAwSEAoIcGF0aF9rZXkYCCABKAwSDwoHZGVsZXRlZBgJIAEoCBIRCglkZXZpY2VfaWQYCiABKAkiQgoWQ29tbWl0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiJpChlHZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhEKCXBhZ2Vfc2l6ZRgDIAEoDRISCgpwYWdlX3Rva2VuGAQgASgJIroBChpHZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZRIoCghkb2N1bWVudBgBIAEoCzIWLnZhdWx0c3luYy52MS5Eb2N1bWVudBIpCglyZXZpc2lvbnMYAiADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAMgASgJEi4KDGRldmljZV9uYW1lcxgEIAMoCzIYLnZhdWx0c3luYy52MS5EZXZpY2VOYW1lIi0KCkRldmljZU5hbWUSEQoJZGV2aWNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkygwMKC1N5bmNTZXJ2aWNlElQKC0xpc3RDaGFuZ2VzEiAudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1Jlc3BvbnNlIgASVAoLR2V0UmV2aXNpb24SIC52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVzcG9uc2UiABJdCg5Db21taXRSZXZpc2lvbhIjLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlcXVlc3QaJC52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXNwb25zZSIAEmkKEkdldERvY3VtZW50SGlzdG9yeRInLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
+  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIpUBChJMaXN0Q2hhbmdlc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJc2luY2Vfc2VxGAIgASgEEhEKCXBhZ2Vfc2l6ZRgDIAEoDRIUCgxzaW5jZV9hbmNob3IYBCABKAwSFgoOb3duX2NvbW1pdF9zZXEYBSABKAQSGQoRb3duX2NvbW1pdF9hbmNob3IYBiABKAwidgoTTGlzdENoYW5nZXNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SEAoIaGFzX21vcmUYAiABKAgSEAoIaGVhZF9zZXEYAyABKAQSEAoIZGl2ZXJnZWQYBCABKAgiOwoSR2V0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJIj8KE0dldFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24ilAIKFUNvbW1pdFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRITCgtyZXZpc2lvbl9pZBgDIAEoCRITCgtiYXNlX3Jldl9pZBgEIAEoCRIoCgRraW5kGAUgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmEgwKBHBhdGgYByABKAwSEAoIcGF0aF9rZXkYCCABKAwSDwoHZGVsZXRlZBgJIAEoCBIRCglkZXZpY2VfaWQYCiABKAkSDQoFZXBvY2gYCyABKA0iQgoWQ29tbWl0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiJpChlHZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhEKCXBhZ2Vfc2l6ZRgDIAEoDRISCgpwYWdlX3Rva2VuGAQgASgJIroBChpHZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZRIoCghkb2N1bWVudBgBIAEoCzIWLnZhdWx0c3luYy52MS5Eb2N1bWVudBIpCglyZXZpc2lvbnMYAiADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAMgASgJEi4KDGRldmljZV9uYW1lcxgEIAMoCzIYLnZhdWx0c3luYy52MS5EZXZpY2VOYW1lIi0KCkRldmljZU5hbWUSEQoJZGV2aWNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkygwMKC1N5bmNTZXJ2aWNlElQKC0xpc3RDaGFuZ2VzEiAudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1Jlc3BvbnNlIgASVAoLR2V0UmV2aXNpb24SIC52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVzcG9uc2UiABJdCg5Db21taXRSZXZpc2lvbhIjLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlcXVlc3QaJC52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXNwb25zZSIAEmkKEkdldERvY3VtZW50SGlzdG9yeRInLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
 
 /**
  * ListChangesRequest asks for revisions after a vault-wide cursor.
@@ -268,6 +268,15 @@ export type CommitRevisionRequest = Message<"vaultsync.v1.CommitRevisionRequest"
    * @generated from field: string device_id = 10;
    */
   deviceId: string;
+
+  /**
+   * The vault key epoch the revision is encrypted under (SPEC.md §9.3):
+   * the vault's current epoch in an end-to-end encrypted vault, 0 in a
+   * plaintext vault.
+   *
+   * @generated from field: uint32 epoch = 11;
+   */
+  epoch: number;
 };
 
 /**
@@ -482,12 +491,17 @@ export const SyncService: GenService<{
    *   with its current head_rev_id, as a Document error detail. Also when
    *   base_rev_id is set but the document does not exist in the vault, when
    *   content_ref names a blob that is not complete in this vault, and for
-   *   end-to-end encrypted vaults until they are supported.
+   *   end-to-end encrypted vaults until they are supported. Also, with an
+   *   ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT, when epoch is
+   *   not the vault's current key epoch (a rotation replaced it: fetch the
+   *   new epoch, re-encrypt and retry). A rotation that is only pending
+   *   does not replace it.
    * - ALREADY_EXISTS: path_key collides with another live document in the
    *   vault, or the path names the folder of another live document's path,
    *   or lies under a folder another live document's path names as a file
    *   (SPEC.md §5, §6.3).
-   * - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
+   * - INVALID_ARGUMENT: malformed or out-of-bounds fields (including a
+   *   nonzero epoch in a plaintext vault, or epoch 0 in an E2EE vault), kind mismatch,
    *   content_ref.size differing from the stored blob's size, document_id or
    *   revision_id already in use outside this vault, or revision_id reused
    *   with different fields.
