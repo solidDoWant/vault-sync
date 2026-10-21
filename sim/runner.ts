@@ -11,7 +11,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
-import { ScriptedClient, type Acknowledgement, type RunContext, type Violation } from "./client";
+import { faithfulPathPool, pathPool, ScriptedClient, type Acknowledgement, type RunContext, type Violation } from "./client";
 import { Control } from "./control";
 import { EngineObserver, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
@@ -61,6 +61,15 @@ export interface RunOptions {
    * schedule carries its retention steps.
    */
   retention?: boolean;
+  /**
+   * The faithful filesystem (SIM_FAITHFUL_FS=1, refactor step R2 of
+   * docs/design/engine-path-ownership.md): the engines' vaults take two
+   * spellings for one file as the platform's filesystem does, not by the
+   * engine's file key, and the clients and users choose from
+   * faithfulPathPool. Off by default until step R7; it changes which paths a
+   * schedule's steps pick, so a run replays only with the same setting.
+   */
+  faithfulFilesystem?: boolean;
 }
 
 /**
@@ -155,6 +164,7 @@ export class SimRun {
       serverSeq: () => serverSeq,
       purgedSeqs: purges.seqs,
       purgedRevisions: purges.revisions,
+      pathPool: options.faithfulFilesystem === true ? faithfulPathPool : pathPool,
     };
     const clients: ScriptedClient[] = [];
     for (let index = 0; index < options.clients; index++) {
@@ -169,7 +179,7 @@ export class SimRun {
       const observerDevice = (await setup.devices.registerDevice({ name: `sim engine ${String(engine)}` })).device;
       if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
       const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
-      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform));
+      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform, options.faithfulFilesystem === true ? "faithful" : "folded"));
     }
     const simRun = new SimRun(context, clients, observers, control, setup, trace, purges);
     run.stepNumber = () => simRun.stepNumber;

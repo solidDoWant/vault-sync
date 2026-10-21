@@ -67,6 +67,8 @@ export interface RunContext {
   purgedSeqs: ReadonlySet<bigint>;
   /** The ids of the revisions retention purged during the run. */
   purgedRevisions: ReadonlySet<string>;
+  /** The paths the clients and the engines' users choose from: pathPool, or faithfulPathPool with the faithful filesystem. */
+  pathPool: readonly string[];
 }
 
 /**
@@ -76,6 +78,18 @@ export interface RunContext {
  * documents as unmaterializable until they are renamed away (SPEC.md §8).
  */
 export const pathPool = ["a.md", "A.md", "b.md", "notes/c.md", "Notes/C.md", "straße.md", "STRASSE.md", "d.md", "e.md", "notes/f.md", "NOTES", "CON.md", "ab:c.md", "trailing."] as const;
+
+/**
+ * pathPool plus the spellings where the server's path key and the device's
+ * filesystem disagree (docs/design/engine-path-ownership.md §3.1), for runs
+ * with the faithful filesystem (RunOptions.faithfulFilesystem): `Straße.md`
+ * (one key with `straße.md` and `STRASSE.md`, but under Windows and macOS
+ * rules one file with `straße.md` only), `Café.md` in NFC and in NFD (one key;
+ * one file under macOS rules, two under Windows rules), and `ı.md` and `I.md`
+ * (two keys, but one file under Windows and macOS rules). Appended, so the
+ * paths of pathPool keep their indices.
+ */
+export const faithfulPathPool: readonly string[] = [...pathPool, "Straße.md", "Café.md", "Café.md", "ı.md", "I.md"];
 
 /** Shared contents, so clients upload identical blobs (and share upload sessions). */
 const sharedContents = 6;
@@ -189,7 +203,7 @@ export class ScriptedClient {
     const content = this.content(random);
     if (!(await this.upload(content))) return;
     const documentId = this.context.ids.generate(`${this.name}.d`);
-    await this.commitWithRetries("create", { documentId, baseRevisionId: "", kind: DocumentKind.TEXT, path: random.pick(pathPool), deleted: false, content: contentRef(content) });
+    await this.commitWithRetries("create", { documentId, baseRevisionId: "", kind: DocumentKind.TEXT, path: random.pick(this.context.pathPool), deleted: false, content: contentRef(content) });
   }
 
   private async edit(random: Random): Promise<void> {
@@ -210,7 +224,7 @@ export class ScriptedClient {
   private async rename(random: Random): Promise<void> {
     const document = this.pickDocument(random, true);
     if (document === undefined) return this.context.log(`${this.name} rename: no known live document`);
-    const path = random.pick(pathPool);
+    const path = random.pick(this.context.pathPool);
     await this.commitWithRetries("rename", {
       documentId: document.id,
       baseRevisionId: document.head,

@@ -12,9 +12,15 @@
 // Each engine follows a platform's path rules (posix, windows or macos), with
 // an in-memory vault that refuses the names that platform cannot hold and,
 // for windows and macos, matches paths ignoring case and Unicode form
-// (SPEC.md §8). A live document may then be missing from its vault only if
-// the engine reports it as unmaterializable and the harness's own check
-// agrees that the platform cannot hold its path.
+// (SPEC.md §8): by default by the engine's file key, or, with the faithful
+// filesystem (SIM_FAITHFUL_FS=1), as NTFS and APFS match them
+// (docs/design/engine-path-ownership.md §3.1). A live document may then be
+// missing from its vault only if the engine reports it as unmaterializable
+// and the harness's own check agrees that the platform cannot hold its path.
+//
+// The user and the engine change the vault through their own handles, so the
+// harness's inode tap (§5.4) records who made each change; nothing checks
+// that record yet, and the engine never sees it.
 //
 // A scenario may turn on config folder sync (#28, SPEC.md §8): the engine then
 // syncs a ConfigSyncVault over the vault and a config folder of its own, and
@@ -35,7 +41,7 @@ import type { ConflictRecord, PendingOperation } from "../plugin/src/core/journa
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
-import { InMemoryVault } from "../plugin/src/core/vault/memory";
+import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
@@ -100,23 +106,40 @@ export class EngineObserver {
     private readonly context: RunContext,
     /** The platform whose path rules the engine and its vault follow. */
     readonly platform: PathPlatform = "posix",
+    /** Which spellings the vault takes for one file (InMemoryVaultOptions.filesystem). */
+    filesystem: "folded" | "faithful" = "folded",
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
-    this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform } });
-    this.engineVault = new MutableVault(this.vault, (from, to, rename) => this.user.engineRenamed(from, to, rename));
-    this.config = new InMemoryVault({ now: () => 0, pathRules: { platform } });
+    this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
+    this.vault.tapInodes((event) => this.inodeEvents.push({ ...event, step: context.stepNumber() }));
+    this.engineVault = new MutableVault(this.vault.handle("engine"), (from, to, rename) => this.user.engineRenamed(from, to, rename));
+    this.config = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
     this.ledger = new UserLedger(platform);
     this.user = new EngineUser({
       name: this.name,
-      vault: this.vault,
+      vault: this.vault.handle("user"),
       journal: this.journal,
       ledger: this.ledger,
       now: () => `step ${String(context.stepNumber())}`,
       touched: (path) => this.userEdited.add(path),
       serverSeq: () => context.serverSeq(),
+      pathPool: context.pathPool,
     });
+  }
+
+  /**
+   * Every change to the vault, with its harness inode, who made it (the
+   * user, or the engine through its own handle) and the step
+   * (docs/design/engine-path-ownership.md §5.4). The harness's record, which
+   * the engine never sees; it survives crashes, as the disk does.
+   */
+  readonly inodeEvents: (InodeEvent & { step: number })[] = [];
+
+  /** The harness inode of the file at `path` in the vault, or undefined. */
+  inodeOf(path: string): number | undefined {
+    return this.vault.inodeOf(path);
   }
 
   /** The user changes the vault (seeded with `arg`), or the engine starts a push; returns the trace entry. Never waits for the engine. */
@@ -238,14 +261,14 @@ export class EngineObserver {
    * write would. The user never sees it, so it replaces nothing in the ledger.
    */
   async overwriteBehindUser(path: string, content: Uint8Array): Promise<string> {
-    await this.vault.write(path, content);
+    await this.vault.handle("engine").write(path, content);
     await this.settled();
     return `${this.name} MUTATION: ${path} overwritten behind the user's back`;
   }
 
   /** Mutation for the harness's own tests: deletes `path` behind the user's back, as an engine that drops a file would. */
   async deleteBehindUser(path: string): Promise<string> {
-    await this.vault.delete(path);
+    await this.vault.handle("engine").delete(path);
     await this.settled();
     return `${this.name} MUTATION: ${path} deleted behind the user's back`;
   }
