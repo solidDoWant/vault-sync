@@ -4,8 +4,6 @@ package server_test
 
 import (
 	"bytes"
-	"crypto/hkdf"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"net/http"
@@ -424,9 +422,9 @@ func TestChangePassphraseWithAWrongAuthKeyCountsAgainstTheLimitAgainstPostgres(t
 }
 
 // Criterion 5: the database holds no key material unwrapped. The test
-// derives the wrapping as a device would: Argon2id of the passphrase, then
-// an auth_key from its output (labels as a stand-in for the derivation of
-// docs/design/crypto.md), and searches every row of every table.
+// wraps a real private key as a device would (internal/e2ee: Argon2id, then
+// wrap_key and auth_key by HKDF, docs/design/crypto.md) and searches every
+// row of every table for the secrets.
 func TestDatabaseHoldsNoUnwrappedKeyMaterialAgainstPostgres(t *testing.T) {
 	fixture := newSyncFixture(t, api.SyncLimits{})
 	token := fixture.token(t, "alice")
@@ -437,13 +435,20 @@ func TestDatabaseHoldsNoUnwrappedKeyMaterialAgainstPostgres(t *testing.T) {
 	const passphrase = "correct horse battery staple"
 
 	params := e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory, Iterations: e2ee.MinArgon2Iterations, Parallelism: 1}
-	wrapped, err := e2ee.WrapWithPassphraseParams(passphrase, params, privateKey, nil)
+	wrapped, authKey, err := e2ee.WrapWithPassphraseParams(passphrase, params, privateKey, nil)
 	require.NoError(t, err)
 
-	salt := wrapped[10 : 10+e2ee.SaltSize]
-	derived := argon2.IDKey([]byte(passphrase), salt, params.Iterations, params.Memory, params.Parallelism, 32)
-	authKey, err := hkdf.Key(sha256.New, derived, nil, "test auth_key", 32)
+	headerParams, salt, err := e2ee.ParsePassphraseHeader(wrapped)
 	require.NoError(t, err)
+	require.Equal(t, params, headerParams)
+
+	keys, err := e2ee.DerivePassphraseKeys(passphrase, params, salt)
+	require.NoError(t, err)
+	require.Equal(t, authKey, keys.AuthKey)
+
+	// The Argon2id output both keys are derived from (the passphrase is
+	// ASCII, so NFC leaves it unchanged).
+	derived := argon2.IDKey([]byte(passphrase), salt, params.Iterations, params.Memory, params.Parallelism, e2ee.KeySize)
 
 	material := userKeyMaterial{
 		publicKey: publicKey,
@@ -468,6 +473,7 @@ func TestDatabaseHoldsNoUnwrappedKeyMaterialAgainstPostgres(t *testing.T) {
 		"private key":     privateKey,
 		"passphrase":      []byte(passphrase),
 		"Argon2id output": derived,
+		"wrap_key":        keys.WrapKey,
 		"auth_key":        authKey,
 		"new auth_key":    next.authKey,
 	}
