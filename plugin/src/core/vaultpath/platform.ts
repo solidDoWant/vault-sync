@@ -49,22 +49,19 @@ export type UnmaterializableCause = UnmaterializableReason | "refused-by-vault";
 export const posixPathRules: PathRules = { platform: "posix" };
 
 /**
- * Whether the platform's filesystem takes `a` and `b` (vault-relative
- * paths) for one file: on `windows` when they differ only by case, as NTFS
- * compares names (each UTF-16 code unit by its simple upper-case mapping,
- * never `ß` to `SS`); on `macos` when they differ only by case or Unicode
- * normalization (NFC/NFD), as APFS and HFS+ do; on `posix` only when they
- * are equal. This is narrower than the path key (§5), which also folds
- * `ß`/`SS` and, on Windows, NFC/NFD: two spellings with one path key can be
- * two files on the device (decision #52).
+ * The name the platform's filesystem takes `path` (vault-relative) for, `F`
+ * in docs/design/engine-path-ownership.md §3.1: two spellings name one file
+ * exactly when their keys are equal. The path itself on `posix`; on
+ * `windows` each UTF-16 code unit by its simple upper-case mapping, as NTFS
+ * compares names (never `ß` to `SS`); on `macos` that after NFD, as APFS and
+ * HFS+ ignore case and Unicode normalization. It is not ordered with the
+ * path key (§5): it folds neither `ß`/`SS` nor, on Windows, NFC/NFD, so two
+ * spellings with one path key can be two files on the device (decision
+ * #52); and it takes `ı` for `I`, which the path key keeps apart. Compare
+ * paths through the engine's PathSpace, not with this directly.
  */
-export function sameFilesystemName(a: string, b: string, platform: PathPlatform): boolean {
-  if (a === b) return true;
-  if (platform === "posix") return false;
-  return filesystemFold(a, platform) === filesystemFold(b, platform);
-}
-
-function filesystemFold(path: string, platform: "windows" | "macos"): string {
+export function filesystemKey(path: string, platform: PathPlatform): string {
+  if (platform === "posix") return path;
   const decomposed = platform === "macos" ? path.normalize("NFD") : path;
   let folded = "";
   for (let index = 0; index < decomposed.length; index++) {

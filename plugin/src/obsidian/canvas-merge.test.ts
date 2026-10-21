@@ -100,6 +100,12 @@ describe("mergeCanvas", () => {
     { name: "a duplicate top-level key", text: `{"nodes":[],"edges":[],"meta":1,"meta":2}` },
     { name: "a duplicate key inside a node", text: `{"nodes":[{"id":"a","text":"one","text":"two"}],"edges":[]}` },
     { name: "a duplicate key spelled with an escape", text: `{"nodes":[{"id":"a","text":"one","\\u0074ext":"two"}],"edges":[]}` },
+    // The scanner must step over escapes inside strings (#559), or it loses
+    // track of which quotes open a string and misses the duplicate.
+    { name: "a duplicate key holding an escaped quote", text: `{"nodes":[],"edges":[],"a\\"b":1,"a\\"b":2}` },
+    { name: "a duplicate key ending in an escaped backslash", text: `{"nodes":[],"edges":[],"a\\\\":1,"a\\\\":2}` },
+    { name: "a duplicate key after a value holding an escaped quote", text: `{"nodes":[],"edges":[],"v":"\\"","k":1,"k":2,"w":"\\""}` },
+    { name: "a duplicate key after a value ending in an escaped backslash", text: `{"nodes":[],"edges":[],"v":"\\\\","k":1,"k":2}` },
     { name: "an integer beyond 2^53", text: `{"nodes":[{"id":"a","x":9007199254740993}],"edges":[]}` },
     { name: "a number written in a form JSON.stringify does not keep", text: `{"nodes":[{"id":"a","x":1.0}],"edges":[]}` },
   ];

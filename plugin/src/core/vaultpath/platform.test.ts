@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { sameFilesystemName, unmaterializableReason, type PathPlatform, type UnmaterializableReason } from "./platform";
+import { filesystemKey, unmaterializableReason, type PathPlatform, type UnmaterializableReason } from "./platform";
 
 const repeat = (text: string, count: number) => text.repeat(count);
 
@@ -126,7 +126,7 @@ describe("unmaterializableReason", () => {
   });
 });
 
-describe("sameFilesystemName", () => {
+describe("filesystemKey", () => {
   const nfc = "Café.md";
   const nfd = "Café.md";
   // Whether each platform's filesystem takes the two spellings for one file.
@@ -141,6 +141,8 @@ describe("sameFilesystemName", () => {
     { name: "ß and ss", a: "Straße.md", b: "strasse.md", expected: { posix: false, macos: false, windows: false } },
     // NTFS's upcase table maps k to K, never to the Kelvin sign; on macOS the sign's canonical decomposition is K.
     { name: "the Kelvin sign and k", a: "K.md", b: "k.md", expected: { posix: false, macos: true, windows: false } },
+    // The upper case of the dotless ı is I: NTFS and APFS take them for one name, which the path key does not (§6.4 item 4).
+    { name: "the dotless ı and I", a: "ı.md", b: "I.md", expected: { posix: false, macos: true, windows: true } },
     { name: "different names", a: "Foo.md", b: "Bar.md", expected: { posix: false, macos: false, windows: false } },
   ];
 
@@ -148,8 +150,7 @@ describe("sameFilesystemName", () => {
     describe(`on ${platform}`, () => {
       for (const { name, a, b, expected } of cases) {
         it(`${expected[platform] ? "takes" : "does not take"} ${name} for one file`, () => {
-          expect(sameFilesystemName(a, b, platform)).toBe(expected[platform]);
-          expect(sameFilesystemName(b, a, platform)).toBe(expected[platform]);
+          expect(filesystemKey(a, platform) === filesystemKey(b, platform)).toBe(expected[platform]);
         });
       }
     });

@@ -22,8 +22,16 @@ import { generateSchedule, type Step } from "./schedule";
 /** Where the server and the driver's control endpoint are. */
 export interface SimEndpoints {
   serverUrl: string;
+  /**
+   * Another replica of the same server (same database and bucket) whose
+   * per-vault upload session limit is limitedMaxUploadsPerVault (#490).
+   */
+  limitedServerUrl: string;
   controlUrl: string;
 }
+
+/** The limited replica's VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT (sim/simulation_test.go). */
+export const limitedMaxUploadsPerVault = 2;
 
 export interface RunOptions {
   /** Names the vault; also recorded with regression cases. */
@@ -252,6 +260,13 @@ export class SimRun {
     const pruned = await this.control.pruneMarkers(this.context.vaultId);
     this.context.log(`retention pruned ${String(pruned)} purge markers`);
     return pruned;
+  }
+
+  /** Ages the run's vault's upload sessions in progress past the reclaim idle (Control.ageUploads); returns how many. */
+  async ageUploads(): Promise<number> {
+    const aged = await this.control.ageUploads(this.context.vaultId);
+    this.context.log(`aged ${String(aged)} upload sessions past the reclaim idle`);
+    return aged;
   }
 
   /** Backs up the run's vault in the database (Control.snapshot). */
