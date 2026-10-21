@@ -33,7 +33,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1, 2, 3]
+        attempt: [1]
     defaults:
       run:
         shell: bash
@@ -75,14 +75,18 @@ jobs:
           adb="$ANDROID_HOME/platform-tools/adb"
           nohup "$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
             -gpu swiftshader_indirect -no-snapshot -memory 4096 -cores 2 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          pid=$!
+          "$ANDROID_HOME/cmdline-tools/latest/bin/avdmanager" list avd
           "$ANDROID_HOME/emulator/emulator" -accel-check || true
           booted=0
-          for _ in $(seq 1 240); do
+          for i in $(seq 1 72); do
+            if ! kill -0 "$pid" 2>/dev/null; then echo "::error::emulator exited"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
+            if (( i % 12 == 0 )); then echo "--- $((i*5))s"; tail -5 "$RUNNER_TEMP/emulator.log"; "$adb" devices; fi
             if [[ "$(timeout 10 "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; then booted=1; break; fi
             sleep 5
           done
           if (( ! booted )); then
-            echo "::error::emulator did not boot in 20 minutes"
+            echo "::error::emulator did not boot in 6 minutes"
             "$adb" devices -l || true
             tail -100 "$RUNNER_TEMP/emulator.log"
             exit 1
