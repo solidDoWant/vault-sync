@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import type { JournalChanges } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import { Crash, files, harness, moveHeadBeforeCommit } from "./testing";
 
@@ -11,7 +12,7 @@ import { Crash, files, harness, moveHeadBeforeCommit } from "./testing";
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value);
 
-/** A journal whose next cursor move fails while armed: the engine "dies" just before it. */
+/** Crashes the next write that moves the cursor: since R8 the commit step's one transaction (design §4.4 `commit`). */
 class CursorCrashJournal extends InMemoryJournal {
   armed = false;
   override setCursor(seq: bigint): Promise<void> {
@@ -20,6 +21,13 @@ class CursorCrashJournal extends InMemoryJournal {
       return Promise.reject(new Crash("crash before the cursor moved"));
     }
     return super.setCursor(seq);
+  }
+  override transact(changes: JournalChanges): Promise<void> {
+    if (this.armed && changes.cursor !== undefined) {
+      this.armed = false;
+      return Promise.reject(new Crash("crash before the cursor moved"));
+    }
+    return super.transact(changes);
   }
 }
 
@@ -100,7 +108,7 @@ describe("SyncEngine cursor after its own commits", () => {
     const h = harness({ journal });
     await h.engine.pull();
     await h.vault.write("mine.md", bytes("mine"));
-    // The commit is acknowledged and recorded; the cursor move is what fails.
+    // The commit is acknowledged; recording it, with the cursor move, is what fails.
     journal.armed = true;
     await expect(h.engine.push()).rejects.toBeInstanceOf(Crash);
     expect(h.server.currentHeadSeq).toBe(1n);
@@ -108,7 +116,8 @@ describe("SyncEngine cursor after its own commits", () => {
     const theirs = h.server.commit({ documentId: "theirs", path: "theirs.md", content: "after the crash" });
 
     h.restart();
-    expect(await h.engine.pullIfBehind(theirs.seq)).toMatchObject({ cursor: theirs.seq, applied: 1 });
+    // The pull finds the device's own commit in the feed and takes it as acknowledged, then applies theirs.
+    expect(await h.engine.pullIfBehind(theirs.seq)).toMatchObject({ cursor: theirs.seq, applied: 2 });
     expect(await files(h.vault)).toEqual(
       new Map([
         ["mine.md", "mine"],

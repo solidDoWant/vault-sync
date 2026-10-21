@@ -1,3 +1,4 @@
+import { sha256Hex } from "../hash";
 import { IDBDatabase as FakeIDBDatabase, IDBFactory as FakeIDBFactory } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
@@ -46,15 +47,19 @@ function overOlderSchema(journal: IndexedDbJournal): Journal {
   older.documentByFileKey = async (fileKey) => (await journal.listDocuments()).find((state) => state.binding?.fileKey === fileKey);
   older.documentsByFileKey = async (fileKey) => (await journal.listDocuments()).filter((state) => state.binding?.fileKey === fileKey);
   // Nor has it the intents store: an older engine recorded no intents.
+  // The engine run over it as an older engine records its intents nowhere.
   older.listIntents = () => Promise.resolve([]);
+  older.putIntent = () => Promise.resolve(0);
+  older.removeIntent = () => Promise.resolve();
+  older.transact = (changes) => journal.transact({ ...changes, removeIntents: [] });
   return older;
 }
 
 /**
  * Everything a journal holds, in comparable form. `conflicts: false` for a
  * v1 journal, which has no conflict log; `v2Fields: true` leaves out the
- * fields journal v3 added, to compare an upgraded journal with its v1 or v2
- * self.
+ * fields journal v3 added and the `merging` marker journal v6 moved to an
+ * intent, to compare an upgraded journal with its v1 or v2 self.
  */
 async function snapshot(journal: Journal, { conflicts = true, v2Fields = false } = {}) {
   const documents = (await journal.listDocuments()).sort((a, b) => a.documentId.localeCompare(b.documentId));
@@ -66,11 +71,13 @@ async function snapshot(journal: Journal, { conflicts = true, v2Fields = false }
     }
     for (const operation of pending) delete operation.sealed;
   }
+  const deferred = (await journal.listDeferred()).sort((a, b) => a.revision.documentId.localeCompare(b.revision.documentId));
+  for (const entry of deferred) delete (entry as { merging?: unknown }).merging;
   return describeValue({
     cursor: await journal.getCursor(),
     documents,
     pending,
-    deferred: (await journal.listDeferred()).sort((a, b) => a.revision.documentId.localeCompare(b.revision.documentId)),
+    deferred,
     ...(conflicts ? { conflicts: await journal.listConflicts() } : {}),
   });
 }
@@ -151,7 +158,8 @@ describe("IndexedDbJournal", () => {
           }
           case 5: {
             const deferred: DeferredRevision = sampleDeferred(rng.pick(documentIds), `r${String(index)}`, { reason: rng.pick(["local-changes", "invalid-path", "path-conflict"] as const) });
-            if (rng.int(2) === 0) deferred.merging = { path: rng.pick(paths), contentHash: rng.int(3) === 0 ? null : `h${String(index)}` };
+            // A v2 journal's merge-in-progress marker, which journal v6 makes an intent of.
+            if (rng.int(2) === 0) Object.assign(deferred, { merging: { path: rng.pick(paths), contentHash: rng.int(3) === 0 ? null : `h${String(index)}` } });
             result.push({ describe: `putDeferred(${deferred.revision.documentId})`, run: (journal) => journal.putDeferred(deferred) });
             break;
           }
@@ -560,7 +568,7 @@ describe("IndexedDbJournal", () => {
       const deferrals = [
         sampleDeferred("released", "r-released", { reason: "unmaterializable", unmaterializable: "reserved-name" }),
         sampleDeferred("tombstone", "r-tombstone", { reason: "path-conflict" }),
-        sampleDeferred("edited", "r-edited", { merging: { path: "edited.md", contentHash: "h-merged" } }),
+        Object.assign(sampleDeferred("edited", "r-edited"), { merging: { path: "edited.md", contentHash: "h-merged" } }),
       ];
       /** A Windows-like file key: case folded. */
       const fileKey = (path: string) => path.toUpperCase();
@@ -584,9 +592,11 @@ describe("IndexedDbJournal", () => {
         const upgraded = await IndexedDbJournal.open(factory, name, journalMigrations, { fileKey });
         expect(await snapshot(upgraded, { v2Fields: true })).toBe(before);
         expect(await upgraded.getCursorAnchor()).toEqual(new Uint8Array(16).fill(3));
-        // The merge-in-progress marker stays for the engine that still reads it; no intent is made of it yet.
-        expect((await upgraded.getDeferred("edited"))?.merging).toEqual({ path: "edited.md", contentHash: "h-merged" });
-        expect(await upgraded.listIntents()).toEqual([]);
+        // The merge-in-progress marker becomes a merge intent with no copy step (journal v6, design §6.2).
+        expect(await upgraded.getDeferred("edited")).not.toHaveProperty("merging");
+        const intents = await upgraded.listIntents();
+        expect(intents.map((intent) => [intent.kind, intent.documentId])).toEqual([["merge", "edited"]]);
+        expect(intents[0]?.steps).toMatchObject({ result: { path: "edited.md", hash: "h-merged" }, copies: [], legacy: true });
         upgraded.close();
       });
 
@@ -684,10 +694,13 @@ describe("IndexedDbJournal", () => {
         const v2 = await IndexedDbJournal.open(factory, name, v2Migrations);
         let crashAfterMerging = false;
         const crashing: Journal = Object.create(overOlderSchema(v2)) as Journal;
-        crashing.putDeferred = async (deferred) => {
-          await v2.putDeferred(deferred);
-          if (!crashAfterMerging || deferred.merging === undefined) return;
-          await vault.write(deferred.merging.path, encoder.encode(merged));
+        // What a v2 engine left: the merge's `merging` marker on its deferral
+        // (written where this engine records its merge intent), and the result on disk.
+        crashing.putIntent = async (intent) => {
+          if (!crashAfterMerging || intent.kind !== "merge") return 0;
+          const revision = (intent.steps as { revision: DeferredRevision["revision"] }).revision;
+          await v2.putDeferred(Object.assign({ revision, reason: "local-changes" as const }, { merging: { path: "c.md", contentHash: sha256Hex(encoder.encode(merged)) } }));
+          await vault.write("c.md", encoder.encode(merged));
           throw new Crash("crash after the merge result was written");
         };
         const first = engineOver(crashing, threeWayMerge);
@@ -710,7 +723,7 @@ describe("IndexedDbJournal", () => {
         crashAfterMerging = true;
         await expect(first.pull()).rejects.toThrow(Crash);
         first.dispose();
-        expect((await v2.getDeferred("c"))?.merging?.path).toBe("c.md");
+        expect(((await v2.getDeferred("c")) as { merging?: { path: string } } | undefined)?.merging?.path).toBe("c.md");
         expect(await v2.listPending()).toEqual([create]);
         expect(server.liveDocuments().has("b.md")).toBe(false);
         v2.close();

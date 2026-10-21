@@ -14,6 +14,11 @@ const cheap: Argon2Params = {
   parallelism: 1,
 };
 const passphrase = "correct horse battery staple";
+
+// Every test here derives Argon2id keys (a few hundred milliseconds each at
+// the cheapest bounds, several times that on a loaded machine), so they get a
+// timeout sized to that work instead of vitest's 5 s default.
+const ARGON2_TIMEOUT = { timeout: 60_000 };
 const tokenFor = (subject: string) => `e30.${btoa(JSON.stringify({ sub: subject, exp: 4_000_000_000 })).replace(/=+$/, "")}.sig`;
 
 /** A device: its own plugin data, as saved to data.json, talking to `server` as `subject`. */
@@ -51,7 +56,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("end-to-end encryption on a device", () => {
+describe("end-to-end encryption on a device", ARGON2_TIMEOUT, () => {
   it("caches the key pair only in the device's plugin data, for the signed-in account, and logs nothing of it", async () => {
     const lines = captureConsole();
     const server = new MemoryUserKeyServer();
@@ -157,7 +162,7 @@ describe("end-to-end encryption on a device", () => {
   });
 });
 
-describe("vault epoch keys on a device", () => {
+describe("vault epoch keys on a device", ARGON2_TIMEOUT, () => {
   const account = { serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice" };
   const vaultId = "0190a5b4-0000-7000-8000-000000000001";
   const key = (byte: number) => new Uint8Array(32).fill(byte);

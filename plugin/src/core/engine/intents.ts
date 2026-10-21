@@ -30,6 +30,10 @@ export interface IntentsHost {
   newId: () => string;
   /** A path a push should look at again. */
   markDirty: (path: string) => void;
+  /** Finishes or drops an open `apply` intent from the disk (engine.ts, recoverApply). */
+  recoverApply: (intent: Intent) => Promise<void>;
+  /** Finishes or drops an open `merge` intent from the disk and its recorded steps (engine.ts, recoverMerge). */
+  recoverMerge: (intent: Intent) => Promise<void>;
 }
 
 /**
@@ -42,6 +46,9 @@ export interface IntentsHost {
  * - `detach`: the document gives its file up (`absence = released`) and
  *   its outbox is dropped; the file at the new path is untracked, and the
  *   push commits it as a new document, so its bytes survive (principle 1).
+ *
+ * The `apply` and `merge` intents of a remote revision are the engine's
+ * (engine.ts): `recover` hands them back to it.
  *
  * Each is recorded before its rename and finished by one journal
  * transaction (Bindings.transact) that changes the binding, the outbox and
@@ -71,6 +78,8 @@ export class Intents {
    */
   async recover(): Promise<void> {
     for (const intent of await this.host.journal.listIntents()) {
+      if (intent.kind === "apply") await this.host.recoverApply(intent);
+      if (intent.kind === "merge") await this.host.recoverMerge(intent);
       if (intent.kind !== "displace" && intent.kind !== "detach") continue;
       const steps = intent.steps as unknown as MoveSteps;
       const atTo = await this.host.read(steps.to);

@@ -576,7 +576,46 @@ export const journalMigrations: readonly JournalMigration[] = [
       for (const state of releasedRows(states.result as DocumentState[], deferred.result as DeferredRevision[])) documents.put(state);
     };
   },
+  // Version 6: a deferral's `merging` marker becomes a `merge` intent
+  // (refactor step R8, design §6.2): one with no copy step and no bytes,
+  // which recovery finishes if the disk shows the recorded result and
+  // otherwise drops, so the merge runs again (mergingIntents).
+  (transaction) => {
+    const deferredStore = transaction.objectStore("deferred");
+    const intents = transaction.objectStore("intents");
+    const deferred = deferredStore.getAll();
+    deferred.onsuccess = () => {
+      const migrated = mergingIntents(deferred.result as LegacyDeferredRevision[]);
+      for (const entry of migrated.deferred) deferredStore.put(entry);
+      for (const intent of migrated.intents) intents.add(intent);
+    };
+  },
 ];
+
+/** A deferral as journals before v6 may hold it: with the `merging` marker of a merge being written. */
+type LegacyDeferredRevision = DeferredRevision & { merging?: { path: string; contentHash: string | null } };
+
+/**
+ * The `merge` intents of a journal's `merging` markers (design §6.2), and
+ * the deferrals that carried them, without the marker. The intent records
+ * the revision and the result's path and hash only: the merge's local file
+ * and copies were not recorded.
+ */
+export function mergingIntents(deferred: readonly LegacyDeferredRevision[]): { deferred: DeferredRevision[]; intents: NewIntent[] } {
+  const marked = deferred.filter((entry) => entry.merging !== undefined);
+  return {
+    deferred: marked.map((entry) => {
+      const copy = { ...entry };
+      delete copy.merging;
+      return copy;
+    }),
+    intents: marked.map((entry) => ({
+      kind: "merge",
+      documentId: entry.revision.documentId,
+      steps: { revision: entry.revision, local: { path: entry.merging?.path ?? "", hash: null }, result: { path: entry.merging?.path ?? "", hash: entry.merging?.contentHash ?? null }, respelled: false, adopts: false, copies: [], legacy: true },
+    })),
+  };
+}
 
 /**
  * The v3 fields of a v2 journal's records (design §6.2), from what the
