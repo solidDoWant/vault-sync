@@ -5,7 +5,6 @@ import type { Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 import { sha256Hex } from "../hash";
 import type { ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
-import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
@@ -14,6 +13,7 @@ import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
+import { PathClaims, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
@@ -235,18 +235,6 @@ const maxPushRounds = 4;
 const maxCommitAttempts = 3;
 /** Numbered conflict-copy names tried before giving up on finding a free one. */
 const maxConflictNameAttempts = 100;
-
-/**
- * A document a merge rebases onto its remote revision (applyMerge), as
- * freeConflictPath sees it: `file` is its own file that the merge moves away
- * from or deletes, if there is one, and `result` the path the merge result
- * goes to, or null for a delete.
- */
-interface MergedDocument {
-  documentId: string;
-  file: string | undefined;
-  result: string | null;
-}
 
 /**
  * The platform-independent sync engine (SPEC.md §4). It pulls the change feed
@@ -1383,7 +1371,7 @@ export class SyncEngine {
       }
     }
     if (copyPath === null) {
-      copyPath = await this.freeConflictPath(path);
+      copyPath = await this.freeCopyName(path);
       if (copyPath === null) return false;
       await this.journal.putConflict(this.conflictRecord(documentId, path, "path-taken", copyPath, hash, ""));
     }
@@ -1473,7 +1461,7 @@ export class SyncEngine {
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).
-    const merged: MergedDocument = {
+    const merged: Exempt = {
       documentId: remote.documentId,
       file: current !== null && (outcome.content === null || outcome.path !== local.path) ? local.path : undefined,
       result: outcome.content === null ? null : outcome.path,
@@ -1496,7 +1484,9 @@ export class SyncEngine {
         const owner = remaining === null ? undefined : await this.documentAt(outcome.path);
         if (owner !== undefined && owner.documentId !== remote.documentId) return false;
         if (remaining !== null && !sameContent(remaining, outcome.content)) {
-          if (await this.belongsToDocument(outcome.path)) return false;
+          // The file is a document's, the merged one's included: the journal
+          // has it there, or a local move put it there.
+          if (owner !== undefined || (await this.localMoveAt(outcome.path, "")) !== undefined) return false;
           const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining }, merged);
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
@@ -1654,26 +1644,15 @@ export class SyncEngine {
   }
 
   /**
-   * Whether the file at `path` is a document's: the journal has a document
-   * there, a pending operation of a document the journal knows put it there,
-   * or a local rename of a document not yet pushed did. Paths are compared as
-   * the vault compares them.
-   */
-  private async belongsToDocument(path: string): Promise<boolean> {
-    if ((await this.documentAt(path)) !== undefined) return true;
-    return (await this.localMoveAt(path, "")) !== undefined;
-  }
-
-  /**
    * Keeps the local version of a conflict as a copy next to `localPath`
    * (SPEC.md §7). The conflict is logged first, so a copy interrupted by a
    * crash is finished under the same name rather than written twice. Returns
    * the copy's path, or null if no name fits the path limits: the conflict is
    * then logged without a copy and nothing is written, so the local version
-   * stays where it is. `merged` is the document the merge rebases (see
-   * freeConflictPath).
+   * stays where it is. `merged` is the document the merge rebases
+   * (PathClaims.freeCopyName's `exempt`).
    */
-  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, merged?: MergedDocument): Promise<string | null> {
+  private async writeConflictCopy(remote: RemoteRevision, localPath: string, conflict: { reason: ConflictReason; content: Uint8Array }, merged?: Exempt): Promise<string | null> {
     const hash = sha256Hex(conflict.content);
     // A `path-taken` record names where the document's own file moved
     // (moveAside, moveToConflictPath), never a copy: reused, the copy would
@@ -1690,7 +1669,7 @@ export class SyncEngine {
       }
     }
     if (copyPath === null) {
-      copyPath = await this.freeConflictPath(localPath, undefined, merged);
+      copyPath = await this.freeCopyName(localPath, merged);
       const unresolved = copyPath === null && logged.some((record) => record.copyPath === null && record.remoteRevisionId === remote.revisionId);
       if (!unresolved) {
         await this.journal.putConflict(this.conflictRecord(remote.documentId, remote.path, conflict.reason, copyPath, hash, remote.revisionId));
@@ -1711,80 +1690,10 @@ export class SyncEngine {
     return { id: this.newId(), documentId, path, reason, copyPath, copyHash, remoteRevisionId, at: this.now().getTime() };
   }
 
-  /**
-   * A conflict-copy path for `path` that no file, folder, document, pending
-   * operation or logged conflict uses yet, or null if no name fits the path
-   * limits. With `folder` (one of `path`'s folders), that folder is what gets
-   * the conflict name, and the path keeps its place inside it. Without it, so
-   * does the outermost of `path`'s folders that a file takes by path key,
-   * since no name inside that folder is free (#359).
-   *
-   * Paths are compared by path key (SPEC.md §5), as the server compares them,
-   * whatever the local platform: a name free only in a case-sensitive vault
-   * would be refused again (#243). That also keeps a copy off a file of
-   * another spelling on a case-insensitive platform.
-   *
-   * `merged` is the document a merge rebases onto its remote revision: the
-   * server already has it where the remote revision puts it, so neither its
-   * own file that the merge moves away from or deletes nor its synced path,
-   * where the result does not go, takes a name. Counted, a file `NOTES` would
-   * leave no free name in `notes/` for the copy of a file in the way of the
-   * document's move to `notes/c.md`, and the move would wait forever (#319).
-   * So would its synced path `NOTES` once its file is gone, or once a local
-   * rename moved the file into `notes/` (#299).
-   */
-  private async freeConflictPath(path: string, folder?: string, merged?: MergedDocument): Promise<string | null> {
-    const date = this.now();
-    const taken = new Set<string>();
-    for (const operation of await this.journal.listPending()) taken.add(this.pathSpace.serverKey(operation.path));
-    for (const record of await this.journal.listConflicts()) if (record.copyPath !== null) taken.add(this.pathSpace.serverKey(record.copyPath));
-    const files = await this.knownFileKeys(merged);
-    // A folder is any file's ancestor.
-    const folders = new Set<string>();
-    for (const file of files) for (const ancestor of this.pathSpace.ancestors(file)) folders.add(ancestor);
-    // The merge result's folders are folders whatever else is named like
-    // them: a file there by path key (a new file NOTES, next to a result in
-    // notes/ under POSIX rules) cannot keep a copy out of them (#352).
-    const resultFolders = new Set(merged === undefined || merged.result === null ? [] : this.pathSpace.ancestors(this.pathSpace.serverKey(merged.result)));
-    const blocks = (ancestor: string) => files.has(ancestor) && !resultFolders.has(ancestor);
-    // A file named like one of the path's own folders leaves no free name in
-    // that folder (every name there is under the file by path key), so that
-    // folder gets the conflict name, as for a refused create: the merge of a
-    // remote rename of Notes/C.md to NOTES keeps the local edit at
-    // `Notes (conflict …)/C.md` (#359). The outermost such folder, so the
-    // copy is under none of them.
-    const named = folder ?? this.pathSpace.ancestors(path).find((ancestor) => blocks(this.pathSpace.serverKey(ancestor)));
-    for (let attempt = 1; attempt <= maxConflictNameAttempts; attempt++) {
-      const candidate =
-        named === undefined
-          ? conflictCopyPath(path, this.deviceName, date, attempt, this.pathRules)
-          : conflictFolderPath(named, path.slice(named.length + 1), this.deviceName, date, attempt, this.pathRules);
-      if (candidate === null) return null;
-      const candidateKey = this.pathSpace.serverKey(candidate);
-      if (taken.has(candidateKey) || files.has(candidateKey) || folders.has(candidateKey) || this.pathSpace.ancestors(candidateKey).some(blocks)) continue;
-      // A file outside the sync scope is not listed, but it is there.
-      if (!this.inScope(candidate) && (await this.vault.stat(candidate)) !== null) continue;
-      return candidate;
-    }
-    return null;
-  }
-
-  /**
-   * The path keys of every file this device knows of: the vault's files, the
-   * live documents the journal has, and the paths of remote revisions it
-   * holds deferred (documents the server has there, though this vault does
-   * not show them). Without `merged`'s file that its merge moves away, nor
-   * its synced path unless the merge result goes there.
-   */
-  private async knownFileKeys(merged?: MergedDocument): Promise<Set<string>> {
-    const keys = new Set((await this.vault.list()).filter((path) => path !== merged?.file).map((path) => this.pathSpace.serverKey(path)));
-    for (const state of await this.journal.listDocuments()) {
-      if (state.deleted) continue;
-      if (state.documentId === merged?.documentId && (merged.result === null || this.pathSpace.serverKey(state.path) !== this.pathSpace.serverKey(merged.result))) continue;
-      keys.add(this.pathSpace.serverKey(state.path));
-    }
-    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(this.pathSpace.serverKey(deferred.revision.path));
-    return keys;
+  /** The first free conflict-copy name for `path` (PathClaims.freeCopyName, PO-14). */
+  private async freeCopyName(path: string, exempt?: Exempt): Promise<string | null> {
+    const claims = await PathClaims.load(this.pathSpace, this.journal, this.vault);
+    return claims.freeCopyName(path, { deviceName: this.deviceName, date: this.now(), rules: this.pathRules, maxAttempts: maxConflictNameAttempts }, exempt);
   }
 
   /** Whether `remote` has content larger than the download cap. */
@@ -2469,7 +2378,15 @@ export class SyncEngine {
     if (parked.documents.has(operation.documentId) || parked.paths.has(operation.path)) return;
     const conflicts = await this.journal.listConflicts();
     const movedHere = (path: string) => conflicts.find((record) => record.reason === "path-taken" && record.documentId === operation.documentId && record.copyPath === path);
-    if (movedHere(operation.path) !== undefined && !(await this.takenByAnother(operation.path, operation.documentId))) {
+    // What the server refuses a path for (SPEC.md §5, §6.3): a document other
+    // than this one that this device knows of (a live one the journal has,
+    // or a deferred remote revision) holds it by path key, as a file or as a
+    // folder, or holds one of its folders as a file.
+    const takenByOther = async () =>
+      (await PathClaims.load(this.pathSpace, this.journal, this.vault))
+        .collisions(operation.path, "server")
+        .some((claim) => (claim.kind === "server-known" || claim.kind === "server-newer") && claim.documentId !== operation.documentId);
+    if (movedHere(operation.path) !== undefined && !(await takenByOther())) {
       // Already moved to a conflict-copy path, and refused there too, though
       // no document this device knows of (after the pull) holds that path:
       // the server keeps refusing something a new name does not fix. Moving
@@ -2513,8 +2430,8 @@ export class SyncEngine {
         seen.add(origin);
       }
       // Another document holding one of its folders as a file is in the way
-      // of the folder, so that is what moves.
-      const copyPath = await this.freeConflictPath(origin, await this.takenFolder(origin));
+      // of the folder, so that is what moves (freeCopyName's folder rule).
+      const copyPath = await this.freeCopyName(origin);
       if (copyPath === null) {
         if (logged.length === 0) await this.journal.putConflict(this.conflictRecord(operation.documentId, operation.path, "path-taken", null, operation.contentHash, ""));
         summary.rejected.push({ operation, reason: "path-taken", error });
@@ -2548,39 +2465,6 @@ export class SyncEngine {
     await this.retryRefusedPaths(true);
     await this.retryMerges();
     await this.commitOperation(replacement, summary);
-  }
-
-  /**
-   * Whether a document other than `documentId` that this device knows of (a
-   * live one the journal has, or a deferred remote revision) holds `path` by
-   * path key, as a file or as a folder, or holds one of its folders as a
-   * file: what the server refuses `path` for (SPEC.md §5, §6.3).
-   */
-  private async takenByAnother(path: string, documentId: string): Promise<boolean> {
-    const collides = (other: string) => this.pathSpace.collides(path, other, "server");
-    for (const state of await this.journal.listDocuments()) if (state.documentId !== documentId && !state.deleted && collides(state.path)) return true;
-    for (const { revision } of await this.journal.listDeferred()) if (revision.documentId !== documentId && !revision.deleted && collides(revision.path)) return true;
-    return false;
-  }
-
-  /**
-   * The folder of `path` that another live document's path takes, ignoring
-   * case and Unicode form (`notes` for a local `notes/c.md` when a remote
-   * document is the file `notes`): a document this device synced, or a remote
-   * revision it holds deferred, whatever the reason. A deferred revision is
-   * where the server has its document, so it is in the way just the same:
-   * one the vault refused, or a remote rename onto the folder's name whose
-   * merge waits on the folder this path keeps (#307). The same files
-   * freeConflictPath keeps a copy out of, so a folder copy name is found
-   * whenever a file copy name cannot be.
-   */
-  private async takenFolder(path: string): Promise<string | undefined> {
-    const folders = this.pathSpace.ancestors(path);
-    if (folders.length === 0) return undefined;
-    const keys = new Set<string>();
-    for (const state of await this.journal.listDocuments()) if (!state.deleted) keys.add(this.pathSpace.serverKey(state.path));
-    for (const deferred of await this.journal.listDeferred()) if (!deferred.revision.deleted) keys.add(this.pathSpace.serverKey(deferred.revision.path));
-    return folders.find((folder) => keys.has(this.pathSpace.serverKey(folder)));
   }
 
   /**
