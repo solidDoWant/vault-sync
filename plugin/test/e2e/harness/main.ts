@@ -195,6 +195,14 @@ interface PluginRegistry {
   plugins: { plugins: Record<string, unknown> };
 }
 
+/** What interceptRemoveDevice records and does to the next RemoveDevice call. */
+interface RemoveDeviceIntercept {
+  calls: { deviceId: string; forwarded: boolean }[];
+  next: "pass" | "fail" | "hold";
+  /** Ends the held call: fails it when given true, sends it otherwise. */
+  release: ((fail: boolean) => void) | undefined;
+}
+
 const encoder = new TextEncoder();
 
 /** Deletes everything in the vault that Obsidian indexes (hidden config stays). */
@@ -993,6 +1001,83 @@ export default class VaultSyncE2EHarness extends Plugin {
       canRestore: () => (role === "unknown" ? Promise.reject(new Error("ListVaults failed")) : Promise.resolve(role === "editor")),
     };
     new HistoryModal(this.app, history, "role-check", "Role.md").open();
+  }
+
+  /** Registers another device of the signed-in user on vault-sync's server (devices.e2e.ts) and resolves with its id. */
+  async registerAnotherDevice(name: string): Promise<string> {
+    const id = (await this.vaultSync().protocolClient().devices.registerDevice({ name })).device?.id;
+    if (id === undefined) throw new Error("the server registered no device");
+    return id;
+  }
+
+  /** The ids of the signed-in user's devices that the server lists (not removed). */
+  async serverDeviceIds(): Promise<string[]> {
+    return (await this.vaultSync().protocolClient().devices.listDevices({})).devices.map((device) => device.id);
+  }
+
+  /**
+   * Routes vault-sync's RemoveDevice calls through the harness from now on
+   * (devices.e2e.ts): each call is recorded (`removeDeviceCalls`), and the
+   * next one can be failed without reaching the server (`failNextRemoveDevice`)
+   * or held until `releaseRemoveDevice` (`holdNextRemoveDevice`). Every
+   * other RPC goes to the server unchanged.
+   */
+  interceptRemoveDevice(): void {
+    const plugin = this.vaultSync();
+    if (this.removeDeviceIntercept !== undefined) return;
+    const intercept: RemoveDeviceIntercept = { calls: [], next: "pass", release: undefined };
+    this.removeDeviceIntercept = intercept;
+    const original = plugin.protocolClient.bind(plugin);
+    plugin.protocolClient = () => {
+      const client = original();
+      const devices = client.devices;
+      return {
+        ...client,
+        devices: {
+          ...devices,
+          removeDevice: async (request, options) => {
+            const mode = intercept.next;
+            intercept.next = "pass";
+            const call = { deviceId: request.deviceId ?? "", forwarded: false };
+            intercept.calls.push(call);
+            if (mode === "fail" || (mode === "hold" && (await new Promise<boolean>((resolve) => (intercept.release = resolve))))) {
+              throw new Error("the e2e harness failed this RemoveDevice");
+            }
+            call.forwarded = true;
+            return devices.removeDevice(request, options);
+          },
+        },
+      };
+    };
+  }
+
+  failNextRemoveDevice(): void {
+    this.requireRemoveDeviceIntercept().next = "fail";
+  }
+
+  holdNextRemoveDevice(): void {
+    this.requireRemoveDeviceIntercept().next = "hold";
+  }
+
+  /** Lets the held RemoveDevice go to the server, or fails it without sending it (`fail`); false if none is held. */
+  releaseRemoveDevice(fail = false): boolean {
+    const intercept = this.requireRemoveDeviceIntercept();
+    const release = intercept.release;
+    intercept.release = undefined;
+    release?.(fail);
+    return release !== undefined;
+  }
+
+  /** Every RemoveDevice call since `interceptRemoveDevice`, and whether it was sent to the server. */
+  removeDeviceCalls(): { deviceId: string; forwarded: boolean }[] {
+    return this.requireRemoveDeviceIntercept().calls.map((call) => ({ ...call }));
+  }
+
+  private removeDeviceIntercept: RemoveDeviceIntercept | undefined;
+
+  private requireRemoveDeviceIntercept() {
+    if (this.removeDeviceIntercept === undefined) throw new Error("interceptRemoveDevice() first");
+    return this.removeDeviceIntercept;
   }
 
   private otherDeviceId: string | undefined;
