@@ -168,7 +168,7 @@ describe("ObsidianConfigAdapter", () => {
 
   it("syncs a custom config folder with devices that use the default one, under the same server paths", async () => {
     const server = new InMemoryServer();
-    const settings = { enabled: true, categories: { themes: true, snippets: true, hotkeys: true, pluginList: true, plugins: true } };
+    const settings = { enabled: true, categories: { themes: true, snippets: true, hotkeys: true, appSettings: true, pluginList: true, corePluginSettings: true, plugins: true } };
     const desktop = disk(".obsidian");
     const phone = disk(".obsidian-mobile");
     const device = (fake: FakeDisk, name: string) =>

@@ -457,13 +457,21 @@ describe.runIf(suites.has("scenarios"))("config folder sync (#28)", () => {
 
     // Convergence of everything each engine syncs; config files outside its scope are deferred, never written.
     expect(result.violations, trace).toEqual([]);
-    const synced = [".obsidian/community-plugins.json", ".obsidian/hotkeys.json", ".obsidian/plugins/dataview/main.js", ".obsidian/snippets/wide.css", "note.md"];
+    const synced = [
+      ".obsidian/app.json",
+      ".obsidian/community-plugins.json",
+      ".obsidian/daily-notes.json",
+      ".obsidian/hotkeys.json",
+      ".obsidian/plugins/dataview/main.js",
+      ".obsidian/snippets/wide.css",
+      "note.md",
+    ];
     expect(result.liveAfterPush, trace).toEqual(synced);
     expect(result.configWhileOff, trace).toEqual([]);
     // A layout change, then edits and a delete with config sync off: no commit, nothing deleted on the server.
     expect(result.commitsWhileOff, trace).toBe(0);
     expect(result.liveAtEnd, trace).toEqual(synced);
-    expect(result.configAfterOn, trace).toEqual(["community-plugins.json", "hotkeys.json", "plugins/dataview/main.js", "snippets/wide.css"]);
+    expect(result.configAfterOn, trace).toEqual(["app.json", "community-plugins.json", "daily-notes.json", "hotkeys.json", "plugins/dataview/main.js", "snippets/wide.css"]);
   });
 
   it("keeps a conflict copy of a config file inside a synced folder on the device that made it (#365)", async () => {

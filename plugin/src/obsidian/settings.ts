@@ -43,7 +43,17 @@ const configCategorySettings: { category: ConfigCategory; name: string; descript
   { category: "themes", name: "Themes", description: (dir) => `Installed themes (${dir}/themes) and the appearance settings, including the chosen theme and which snippets are on (${dir}/appearance.json).` },
   { category: "snippets", name: "CSS snippets", description: (dir) => `CSS snippets (${dir}/snippets) and the appearance settings (${dir}/appearance.json).` },
   { category: "hotkeys", name: "Hotkeys", description: (dir) => `Custom hotkeys (${dir}/hotkeys.json).` },
+  {
+    category: "appSettings",
+    name: "Main settings",
+    description: (dir) => `The Editor, Files and links and other settings of Obsidian itself (${dir}/app.json), and the property types (${dir}/types.json).`,
+  },
   { category: "pluginList", name: "Enabled plugin list", description: (dir) => `Which core and community plugins are on (${dir}/core-plugins.json, ${dir}/community-plugins.json).` },
+  {
+    category: "corePluginSettings",
+    name: "Core plugin settings",
+    description: (dir) => `The settings of Obsidian's core plugins, such as daily notes, templates and bookmarks (${dir}/daily-notes.json and so on). The graph view's and the workspaces' files never sync.`,
+  },
   {
     category: "plugins",
     name: "Plugin code and data",

@@ -42,8 +42,19 @@ describe("config sync settings", () => {
 
   it("keep what this device stored, turning a switch on only for true", () => {
     const stored = { configSync: { enabled: true, categories: { themes: false, snippets: true, hotkeys: "yes", pluginList: true, plugins: 1 } } };
-    expect(configSyncSettings(parsePluginData(stored))).toEqual({ enabled: true, categories: { themes: false, snippets: true, hotkeys: true, pluginList: true, plugins: false } });
+    expect(configSyncSettings(parsePluginData(stored))).toEqual({
+      enabled: true,
+      categories: { themes: false, snippets: true, hotkeys: true, appSettings: false, pluginList: true, corePluginSettings: false, plugins: false },
+    });
     expect(configSyncSettings(parsePluginData({ configSync: { enabled: "true" } })).enabled).toBe(false);
+  });
+
+  it("leave the main settings and core plugin settings off on a device that opted in before they existed (#256)", () => {
+    const stored = { configSync: { enabled: true, categories: { themes: true, snippets: true, hotkeys: true, pluginList: true, plugins: true } } };
+    const { categories } = configSyncSettings(parsePluginData(stored));
+    expect(categories.appSettings).toBe(false);
+    expect(categories.corePluginSettings).toBe(false);
+    expect(configSyncSettings(parsePluginData({ configSync: { enabled: true, categories: { appSettings: true, corePluginSettings: true } } })).categories).toMatchObject({ appSettings: true, corePluginSettings: true });
   });
 });
 
