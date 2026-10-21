@@ -2,7 +2,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { ConflictRecord, DeferredRevision, DocumentState } from "../journal/journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, JournalChanges } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import type { WritePrecondition } from "../vault/adapter";
 import { threeWayMerge, type MergeHook } from "./merge";
@@ -986,6 +986,14 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
             throw new Crash("before the rebase");
           }
           await super.putDocument(state);
+        }
+        // Bindings writes a document row in one transaction.
+        override async transact(changes: JournalChanges): Promise<void> {
+          if (changes.putDocuments?.some((state) => state.revisionId === this.crashBefore) === true) {
+            this.crashBefore = undefined;
+            throw new Crash("before the rebase");
+          }
+          await super.transact(changes);
         }
       }
       const journal = new CrashBeforeRebase();

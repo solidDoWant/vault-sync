@@ -1,7 +1,11 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { DocumentState } from "../journal/journal";
+import type { DocumentState, JournalChanges } from "../journal/journal";
+import { InMemoryJournal } from "../journal/memory";
+import { InMemoryVault } from "../vault/memory";
+import { Bindings } from "./bindings";
+import { PathSpace } from "./pathspace";
 import { Crash, CrashingJournal, CrashPoints, harness, type Harness } from "./testing";
 
 // Refactor step R4 (docs/design/engine-path-ownership.md §9.2): the engine
@@ -226,5 +230,259 @@ describe("CrashingJournal", () => {
     points.crashAfter = 3;
     await expect(journal.removeIntent(intent?.id ?? 0)).rejects.toBeInstanceOf(Crash);
     expect(await journal.listIntents()).toEqual([]);
+  });
+});
+
+// Review follow-ups of R4 (#611): each guards a rule that bindings decide
+// by once push derives from them (R5).
+describe("Bindings rules", () => {
+  const space = new PathSpace();
+
+  function base(documentId: string, path: string, content: string): DocumentState {
+    return { documentId, path, revisionId: `${documentId}1`, seq: 1n, baseHash: hash(content), size: BigInt(content.length), kind: "text", deleted: false };
+  }
+
+  function bound(state: DocumentState, spelling = state.path): DocumentState {
+    return { ...state, binding: { spelling, fileKey: space.filesystemKey(spelling), seen: state.baseHash }, absence: null };
+  }
+
+  async function bindings(journal: InMemoryJournal): Promise<Bindings> {
+    const vault = new InMemoryVault();
+    for (const state of await journal.listDocuments()) if (state.binding) await vault.write(state.binding.spelling, bytes("x"));
+    const owner = new Bindings(journal, vault, space);
+    await owner.idle();
+    return owner;
+  }
+
+  async function binding(journal: InMemoryJournal, documentId: string): Promise<Pick<DocumentState, "binding" | "absence">> {
+    const state = await journal.getDocument(documentId);
+    return { binding: state?.binding, absence: state?.absence };
+  }
+
+  it("never loses a user's rename to an engine write of the same row that read it before (serialization)", async () => {
+    // An engine write reads the row, then the journal stalls; the user's rename of the document's file arrives meanwhile.
+    class StallingJournal extends InMemoryJournal {
+      stall: Promise<void> | undefined;
+      entered: (() => void) | undefined;
+      override async getDocument(documentId: string): Promise<DocumentState | undefined> {
+        const state = await super.getDocument(documentId);
+        const stall = this.stall;
+        this.stall = undefined;
+        if (stall !== undefined) {
+          this.entered?.();
+          await stall;
+        }
+        return state;
+      }
+    }
+    const journal = new StallingJournal();
+    const a = base("A", "a.md", "a1");
+    await journal.putDocument(bound(a));
+    const owner = await bindings(journal);
+
+    let release: () => void = () => undefined;
+    journal.stall = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      journal.entered = resolve;
+    });
+    const write = owner.put({ ...a, revisionId: "A2", seq: 2n }, { kind: "kept" });
+    await entered;
+    const rename = owner.renamed("a.md", "b.md");
+    // Every microtask the rename could run without waiting for the write has run.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    release();
+    await Promise.all([write, rename]);
+
+    expect((await journal.getDocument("A"))?.revisionId).toBe("A2");
+    expect((await binding(journal, "A")).binding?.spelling).toBe("b.md");
+  });
+
+  it("unbinds the document bound to a file an engine write binds another document to (C1)", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(bound(base("Y", "y.md", "y1")));
+    const owner = await bindings(journal);
+
+    await owner.put(base("X", "y.md", "x1"), { kind: "applied" });
+
+    expect(await binding(journal, "X")).toEqual({ binding: { spelling: "y.md", fileKey: "y.md", seen: hash("x1") }, absence: null });
+    expect(await binding(journal, "Y")).toEqual({ binding: null, absence: "released" });
+    expect((await journal.documentByFileKey("y.md"))?.documentId).toBe("X");
+  });
+
+  it("unbinds a stale binding at a rename's target, whose file the rename could not have moved onto", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await journal.putDocument(bound(base("Z", "b.md", "z1")));
+    const owner = await bindings(journal);
+
+    await owner.renamed("a.md", "b.md");
+
+    expect((await binding(journal, "A")).binding?.spelling).toBe("b.md");
+    expect(await binding(journal, "Z")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("leaves a document whose file the user deleted unbound when its commit is acknowledged (E3, #254)", async () => {
+    const journal = new InMemoryJournal();
+    const a = base("A", "a.md", "a1");
+    await journal.putDocument(bound(a));
+    const owner = await bindings(journal);
+
+    await owner.deleted("a.md", "user");
+    await owner.put({ ...a, revisionId: "A2", seq: 2n, baseHash: hash("a2") }, { kind: "acknowledged", hash: hash("a2") });
+
+    expect(await binding(journal, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("writes every row of a transition in one journal transaction, one crash point (§4.3)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    await journal.putDocument(bound(base("Y", "y.md", "y1")));
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await journal.putDocument(bound(base("Z", "b.md", "z1")));
+    const owner = await bindings(journal);
+
+    points.count = 0;
+    await owner.put(base("X", "y.md", "x1"), { kind: "applied" });
+    expect(points.count).toBe(1);
+    await owner.renamed("a.md", "b.md");
+    expect(points.count).toBe(2);
+  });
+
+  it("fails every later transition once one failed to reach the journal, rather than deciding by a binding short of it", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    const journal = new FailingJournal();
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    const owner = await bindings(journal);
+
+    journal.fail = true;
+    await expect(owner.renamed("a.md", "b.md")).rejects.toThrow("journal write failed");
+    journal.fail = false;
+
+    await expect(owner.put(base("A", "a.md", "a1"), { kind: "kept" })).rejects.toThrow("journal write failed");
+    expect((await binding(journal, "A")).binding?.spelling).toBe("a.md");
+  });
+
+  // A v2 journal's migration may bind two documents to one file key (indexeddb.ts deriveV3Records).
+  async function duplicated(journal: InMemoryJournal): Promise<void> {
+    await journal.putDocument(bound(base("Y1", "y.md", "y1")));
+    await journal.putDocument(bound(base("Y2", "Y.md", "y2"), "y.md"));
+  }
+
+  const neither = { binding: null };
+
+  it("unbinds every document bound to the file an engine write binds another document to, not only the first found (C1)", async () => {
+    const journal = new InMemoryJournal();
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    await owner.put(base("X", "y.md", "x1"), { kind: "applied" });
+
+    expect(await binding(journal, "Y1")).toEqual({ ...neither, absence: "released" });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "released" });
+  });
+
+  it("unbinds every document bound at a rename's target, not only the first found", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    await owner.renamed("a.md", "y.md");
+
+    expect((await binding(journal, "A")).binding?.spelling).toBe("y.md");
+    expect(await binding(journal, "Y1")).toEqual({ ...neither, absence: "user-deleted" });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "user-deleted" });
+  });
+
+  it("unbinds every document bound to a deleted file in one journal transaction (E3, §4.3)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    points.count = 0;
+    await owner.deleted("y.md", "user");
+
+    expect(points.count).toBe(1);
+    expect(await binding(journal, "Y1")).toEqual({ ...neither, absence: "user-deleted" });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "user-deleted" });
+  });
+
+  it("writes every row the start-up scan changes in one journal transaction (E7, §4.3)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    // Both files were deleted while the app was closed; neither is in the vault.
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await journal.putDocument(bound(base("B", "b.md", "b1")));
+    points.count = 0;
+
+    await new Bindings(journal, new InMemoryVault(), space).idle();
+
+    expect(points.count).toBe(1);
+    expect(await binding(journal, "A")).toEqual({ ...neither, absence: "user-deleted" });
+    expect(await binding(journal, "B")).toEqual({ ...neither, absence: "user-deleted" });
+  });
+
+  it("settles after a user's rename whose transition failed, with no unhandled rejection, while a push still rejects", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    // The global type of Node's process, which the plugin's tsconfig leaves out.
+    const process = (globalThis as unknown as { process: { on(event: string, listener: (reason: unknown) => void): void; off(event: string, listener: (reason: unknown) => void): void } }).process;
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const journal = new FailingJournal();
+      const h = harness({ journal });
+      h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+      await h.engine.pull();
+
+      journal.fail = true;
+      await h.vault.rename("a.md", "b.md");
+      // The rename is reported even though its transition failed.
+      await vi.waitFor(() => {
+        expect(h.localChanges).toHaveLength(1);
+      });
+      // Unhandled rejections are reported once the microtask queue drains.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(unhandled).toEqual([]);
+      await expect(h.engine.settled()).resolves.toBeUndefined();
+      await expect(h.engine.push()).rejects.toThrow("journal write failed");
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
+  });
+
+  it("rejects a push after a user's rename whose transition failed, instead of pushing without it", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    const journal = new FailingJournal();
+    const h = harness({ journal });
+    h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+    await h.engine.pull();
+
+    journal.fail = true;
+    await h.vault.rename("a.md", "b.md");
+    await expect(h.engine.push()).rejects.toThrow("journal write failed");
+    expect(h.server.liveDocuments()).toEqual(new Map([["a.md", "A"]]));
   });
 });
