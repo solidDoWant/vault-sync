@@ -128,8 +128,10 @@ export class PathClaims {
    * pending delete holds no path.
    *
    * If a file, document or deferred revision is named like one of `path`'s
-   * folders, no name in that folder is free, so the outermost such folder
-   * gets the conflict name and the path keeps its place inside it (#359).
+   * folders by path key, or a listed file by the filesystem's equivalence
+   * (`ı` and a folder `I/` on NTFS or APFS), no name in that folder is free,
+   * so the outermost such folder gets the conflict name and the path keeps
+   * its place inside it (#359, #596).
    *
    * `exempt`'s claims take no name except where it goes: neither its file
    * that it moves away from or deletes (#319) nor its synced path, unless its
@@ -165,7 +167,9 @@ export class PathClaims {
     const result = exempt?.result ?? null;
     const byKey = holder(files, result === null ? [] : this.space.ancestors(serverKey(result)), (key) => this.space.ancestors(key));
     const byFile = holder(listed, result === null ? [] : this.space.ancestors(filesystemKey(result)), (key) => this.space.ancestors(key));
-    const named = this.space.ancestors(path).find((ancestor) => byKey.blocks(serverKey(ancestor)));
+    // The outermost folder a file holds under `K` or `F` (PO-14): a listed
+    // file the filesystem takes for the folder blocks every name in it too.
+    const named = this.space.ancestors(path).find((ancestor) => byKey.blocks(serverKey(ancestor)) || byFile.blocks(filesystemKey(ancestor)));
     for (let attempt = 1; attempt <= naming.maxAttempts; attempt++) {
       const candidate =
         named === undefined
