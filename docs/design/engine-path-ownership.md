@@ -389,6 +389,12 @@ The rest of the list moves to the step that deletes the v2 reader, as an append-
 
 The shadow check stays until R7, but it is no longer independent for moves: `followRename`, `movedAway` and `localMoveAt` now read local moves from bindings.
 
+**Amendment (R5b, #569): outbox derivation.** `engine/push-plan.ts` (`planPush`) derives the push's operations from (base, binding) and the untracked files, at most one per document, as §4.8's rows say. `held`, `restoreChanges`, the `contentMissing` carry and `detectChanges`' inference are gone. Three details:
+
+- **The dirty-path set stays in memory**, as §4.1 allows: it says which files to read, never which document a file is. A path leaves it only once a push round decided it and it has not changed since (a clock per path), so a failed round loses nothing and a path a busy document holds waits for every later push without scheduling one.
+- **A busy document's synced path waits with it.** A create at a path whose server claim belongs to a document with an outbox (a rename away still pending) would be refused (C3), so it waits for that outbox.
+- **The path merge starts in `engine/decide.ts`.** `movedBeforeDelete` is §4.7's "local rename against remote delete" rule, read from the binding alone; the rest of `decideRemote` lands with R7. A vault that folds names more than `F` (the folded `InMemoryVault`, X-18) keeps the bound spelling when the engine writes the bound file under another one (`Bindings.put`), as R5a's "an engine write keeps the file's spelling" says.
+
 ### 6.3 Protocol and server
 
 **No change is required.** Every rule above uses the existing `CommitRevision`/`ListChanges` semantics, error codes and anchors.
@@ -407,6 +413,8 @@ Optional changes, recommended for Phase 3 (decision 9):
 5. `DocumentState.deleted` no longer doubles as "released". `deletedDocuments()` (engine.ts:478) drops its `unmaterializable` filter.
 6. The merge hook no longer chooses the result path (decision 6).
 7. (R5a) A user's delete of a document's file lasts until something binds the document again, not until the end of the push round. So a file deleted while the app was closed (seen by the start-up scan) and a new file created at that path before the first push make a delete of the document and a new document, never an edit of the deleted one (E3, E5, E7).
+8. (R5b) A local rename not yet pushed wins over a remote delete committed first, as an edit does (PO-7, PO-9; decision #52 revised, reversing #513): the document comes back on its tombstone under its own id at the bound spelling, with any edit. Before, the renamed file was pushed as a new document and the original stayed tombstoned. An unpushed edit merged with a remote delete ends the same way: the merge result is bound on the tombstone and committed as the document's next revision, not as a new document.
+9. (R5b) The tombstone re-creation of decision #17 follows PO-13's guard exactly: a file that appears at the path of a document this device's user deleted (its own delete acknowledged, `absence = user-deleted`) is a new document, and only a tombstone pulled from another device, with no local delete since, is brought back. Before, any tombstone at the path was brought back. The re-created document is bound to the file in the same transaction as its outbox (§4.8 row "Tomb").
 
 Everything else stays as SPEC §6.3/§7/§8 specify. That includes edit-wins-over-delete, local-rename-wins, the tombstone re-creation of decision #17, conflict-copy naming and folder naming (#359), the refused-again stop rule, and the anchor protocol.
 

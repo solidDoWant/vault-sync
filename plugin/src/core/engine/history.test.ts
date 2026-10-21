@@ -560,8 +560,9 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
   it("does not list a deleted document that a local change not yet pushed brings back", async () => {
     const h = harness({ server: clockedServer().server });
     const documentId = await pushVersions(h, "plan.md", "the old plan\n");
-    await h.vault.delete("plan.md");
-    await h.engine.push();
+    // Another device deletes it: a file at its path brings it back (decision #17, PO-13).
+    h.server.commit({ documentId, path: "plan.md", deleted: true });
+    await h.engine.pull();
     expect((await h.engine.deletedDocuments()).map((document) => document.documentId)).toEqual([documentId]);
     // The file is written again, but the server is unreachable when the push commits it.
     await h.vault.write("plan.md", bytes("the plan, back again\n"));

@@ -86,6 +86,7 @@ export class Bindings {
     return this.serialize(async () => {
       const current = await this.journal.getDocument(state.documentId);
       const next = { ...state, ...this.bindingAfter(state, current, change) };
+      if (change.kind === "applied" || change.kind === "merged") next.binding = await this.keptName(current?.binding, next.binding);
       const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
       await this.journal.transact({ putDocuments: [...others, next] });
     });
@@ -103,6 +104,20 @@ export class Bindings {
       const row = this.createRow(operation);
       const others = await this.unbindOthers(operation.documentId, operation.path, "released");
       await this.journal.transact({ addPending: [operation], putDocuments: [...others, row] });
+    });
+  }
+
+  /**
+   * Records `operation`, the next revision of a tombstoned document that an
+   * untracked file at its path brings back (decision #17, PO-13; design
+   * §4.8), with the document bound to that file, in one transaction.
+   */
+  revived(operation: PendingOperation): Promise<void> {
+    return this.serialize(async () => {
+      const state = await this.journal.getDocument(operation.documentId);
+      if (state === undefined) throw new Error(`no document ${operation.documentId} to bring back`);
+      const others = await this.unbindOthers(operation.documentId, operation.path, "released");
+      await this.journal.transact({ addPending: [operation], putDocuments: [...others, { ...state, binding: this.bound(operation.path, operation.contentHash), absence: null }] });
     });
   }
 
@@ -142,7 +157,8 @@ export class Bindings {
     for (const state of await this.journal.listDocuments()) {
       const binding = state.binding;
       if (binding === undefined || binding === null) continue;
-      const from = hasBase(state) ? (state.deleted ? undefined : state.path) : creates.get(state.documentId);
+      // A document bound on a tombstone (a local change that won over a remote delete) holds its file as a move from the tombstone's path.
+      const from = hasBase(state) ? state.path : creates.get(state.documentId);
       if (from !== undefined && from !== binding.spelling) moves.push({ documentId: state.documentId, from, to: binding.spelling, created: !hasBase(state) });
     }
     return moves;
@@ -310,6 +326,21 @@ export class Bindings {
   private written(kept: Binding | null | undefined, path: string, seen: string): Binding {
     const binding = this.bound(path, seen);
     return kept !== undefined && kept !== null && kept.fileKey === binding.fileKey ? { ...binding, spelling: kept.spelling } : binding;
+  }
+
+  /**
+   * The binding of an engine write at `written`'s spelling into the file
+   * the document was bound to at another spelling that the vault takes for
+   * the same file: it lists the bound spelling, not the written one, and
+   * finds a file at the written one. The vault keeps the file's name, so
+   * the binding keeps its spelling (a vault that folds names more than the
+   * platform's file key does, design §3.1, X-18).
+   */
+  private async keptName(kept: Binding | null | undefined, written: Binding | null): Promise<Binding | null> {
+    if (written === null || kept === undefined || kept === null || kept.spelling === written.spelling) return written;
+    const listed = await this.vault.list();
+    if (!listed.includes(kept.spelling) || listed.includes(written.spelling) || (await this.vault.stat(written.spelling)) === null) return written;
+    return { ...kept, seen: written.seen };
   }
 
   private bound(spelling: string, seen: string): Binding {

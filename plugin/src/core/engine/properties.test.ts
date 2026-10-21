@@ -23,8 +23,14 @@
 import fc from "fast-check";
 import { describe, expect, inject, it } from "vitest";
 
+import { hexToBytes } from "@noble/hashes/utils.js";
+
+import { sha256Hex } from "../hash";
+import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
-import { PropertyWorld, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import { kindValue } from "./remote";
+import { PropertyWorld, testDeviceId, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import { uploadContent } from "./upload";
 
 declare module "vitest" {
   export interface ProvidedContext {
@@ -227,31 +233,13 @@ const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiesc
 
 describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
-  // Fails today (#545, flips in R5 #569): a note renamed or edited after a remote delete of it was committed comes back as a new document, not as the original.
-  it("P1: a document's committed content comes from its own file (known failure)", { timeout }, async () => {
-    await knownFailure(p1, {
-      example: scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-delete", document: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 1 }),
-      violation: /^step \d+: create of id-\d+ at "A\.md" \(seq \d+\) from inode 1, bound to id-\d+$/,
-    });
+  it("P1: a document's committed content comes from its own file", { timeout }, async () => {
+    await holds(p1);
   });
 
   // P2 provenance: INV-5 and INV-6 (PO-6/7) on inodes.
-  // Fails today (pinned since R5a #622, which fixed the crash-lost-rename class of #531 and #550 that was pinned before; the same counterexample fails on master, class to be triaged, possibly #545's): a conflict copy's document, deleted remotely, is committed live again on its tombstone without a user change.
-  it("P2: tombstones come from user deletes, resurrections from user changes (known failure)", { timeout }, async () => {
-    await knownFailure(p2, {
-      example: scripted(
-        "posix",
-        { type: "user-create", path: 0 },
-        { type: "user-create", path: 1 },
-        { type: "push" },
-        { type: "remote-delete", document: 0 },
-        { type: "user-edit", file: 3 },
-        { type: "remote-rename", document: 0, path: 0 },
-        { type: "remote-delete", document: 0 },
-        { type: "user-edit", file: 0 },
-      ),
-      violation: /^step \d+: live revision of id-\d+ at "a \(conflict laptop [0-9 -]+\)\.md" \(seq \d+\) on its tombstone without a user change since step \d+$/,
-    });
+  it("P2: tombstones come from user deletes, resurrections from user changes", { timeout }, async () => {
+    await holds(p2);
   });
 
   // P3 exclusivity: INV-1 and INV-2 after every command.
@@ -299,5 +287,84 @@ describe("engine properties (design §9.3)", () => {
       example: scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
       violation: /^deferred revisions left: r-2 \(path-conflict\)$/,
     });
+  });
+});
+
+/** Commits `content` live on `documentId`'s head as device A would, behind the engine's back: a resurrection the oracle must judge. */
+async function commitAsDevice(world: PropertyWorld, documentId: string, path: string, content: string): Promise<void> {
+  const api = createProtocolClient({ transport: world.server.transport });
+  const bytes = new TextEncoder().encode(content);
+  const hash = sha256Hex(bytes);
+  await uploadContent(api, world.server.vaultId, hash, BigInt(bytes.length), () => Promise.resolve(bytes));
+  await api.sync.commitRevision({
+    vaultId: world.server.vaultId,
+    documentId,
+    revisionId: `forged-${documentId}`,
+    baseRevId: world.server.head(documentId)?.id ?? "",
+    kind: kindValue("text"),
+    contentRef: { blobId: hexToBytes(hash), size: BigInt(bytes.length) },
+    path: new TextEncoder().encode(path),
+    deleted: false,
+    deviceId: testDeviceId,
+  });
+}
+
+// The P2 oracle credits a resurrection to an edit that wins over a delete
+// only for a user write into an inode bound to the document whose content no
+// server revision of the document carried (PO-7). These pin that it still
+// flags a resurrection without such a write.
+describe("P2 oracle (design §5.4)", () => {
+  it("flags a resurrection of synced content without a user change", async () => {
+    const world = new PropertyWorld("posix");
+    await world.apply({ type: "user-create", path: 0 });
+    await world.apply({ type: "push" });
+    const [[, documentId] = ["", ""]] = [...world.server.liveDocuments()];
+    await world.apply({ type: "remote-delete", document: 0 });
+    await commitAsDevice(world, documentId, "a.md", "user 1");
+    await world.apply({ type: "pull" });
+    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+  });
+
+  it("flags a resurrection carrying an unsynced write into another document's file", async () => {
+    const world = new PropertyWorld("posix");
+    await world.apply({ type: "user-create", path: 0 });
+    await world.apply({ type: "user-create", path: 2 });
+    await world.apply({ type: "push" });
+    const documentId = world.server.liveDocuments().get("a.md") ?? "";
+    // Step 4: the user's unsynced edit of b.md, whose inode is bound to the other document.
+    await world.apply({ type: "user-edit", file: 1 });
+    await world.apply({ type: "remote-edit", document: 0 });
+    await world.apply({ type: "remote-delete", document: 0 });
+    await commitAsDevice(world, documentId, "a.md", "user 4");
+    await world.apply({ type: "pull" });
+    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+  });
+
+  it("flags a resurrection carrying an untracked file's content from another path", async () => {
+    const world = new PropertyWorld("posix");
+    await world.apply({ type: "user-create", path: 0 });
+    await world.apply({ type: "push" });
+    const documentId = world.server.liveDocuments().get("a.md") ?? "";
+    await world.apply({ type: "remote-delete", document: 0 });
+    await world.apply({ type: "pull" });
+    // Step 5: an untracked file at b.md, not the tombstone's path.
+    await world.apply({ type: "user-create", path: 2 });
+    await commitAsDevice(world, documentId, "a.md", "user 5");
+    await world.apply({ type: "pull" });
+    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+  });
+
+  it("credits an unsynced write into the document's own file made before the other device's last live revision", async () => {
+    const world = new PropertyWorld("posix");
+    await world.apply({ type: "user-create", path: 0 });
+    await world.apply({ type: "push" });
+    const documentId = world.server.liveDocuments().get("a.md") ?? "";
+    // Step 3: the user's unsynced edit of a.md, the document's own file.
+    await world.apply({ type: "user-edit", file: 0 });
+    await world.apply({ type: "remote-rename", document: 0, path: 2 });
+    await world.apply({ type: "remote-delete", document: 0 });
+    await commitAsDevice(world, documentId, "a.md", "user 3");
+    await world.apply({ type: "pull" });
+    expect(violations(world, "P2")).toEqual([]);
   });
 });

@@ -607,6 +607,10 @@ export interface UserOperation {
   type: "create" | "edit" | "rename" | "delete";
   inode: number;
   step: number;
+  /** The inode's content after the operation (before it, for a delete). */
+  hash: string;
+  /** A rename's new path. */
+  path?: string;
 }
 
 /** The properties of §9.3 a violation counts against. */
@@ -936,7 +940,7 @@ export class PropertyWorld {
     this.origins.set(hash, { kind: "user", inode: file.inode, step: this.step });
     this.userWrites.add(hash);
     if (previous !== undefined) this.discarded.add(previous.hash);
-    this.userOperations.push({ type, inode: file.inode, step: this.step });
+    this.userOperations.push({ type, inode: file.inode, step: this.step, hash });
   }
 
   private async userRename(index: number, mode: RenameMode, target: number): Promise<void> {
@@ -968,7 +972,7 @@ export class PropertyWorld {
       throw error;
     }
     const file = this.inodes.renamed(from, to);
-    if (file !== undefined) this.userOperations.push({ type: "rename", inode: file.inode, step: this.step });
+    if (file !== undefined) this.userOperations.push({ type: "rename", inode: file.inode, step: this.step, hash: file.hash, path: to });
   }
 
   private async userDelete(index: number): Promise<void> {
@@ -984,7 +988,7 @@ export class PropertyWorld {
     if (file === undefined) return;
     this.userDeleted.add(file.inode);
     this.discarded.add(file.hash);
-    this.userOperations.push({ type: "delete", inode: file.inode, step: this.step });
+    this.userOperations.push({ type: "delete", inode: file.inode, step: this.step, hash: file.hash });
   }
 
   private engineChanged(change: EngineChange): void {
@@ -1116,8 +1120,32 @@ export class PropertyWorld {
       const since = lastLive?.step ?? -1;
       const inodes = new Set(this.inodes.all().flatMap((file) => (file.hash === revision.hash ? [file.inode] : [])));
       if (origin?.kind === "user") inodes.add(origin.inode);
-      const touched = this.userOperations.some((operation) => operation.type !== "delete" && operation.step > since && inodes.has(operation.inode));
-      if (!touched) this.violation("P2", `live revision of ${name} on its tombstone without a user change since step ${String(since)}`);
+
+      // Or a local change that wins over the delete (PO-7, §4.7), made
+      // before the last live revision of another device that did not have
+      // it: the user's write into an inode bound to the document whose
+      // content no server revision of the document carried, or the user's
+      // rename of such an inode to a path no server revision of the
+      // document had (the engine may have moved it on since, PO-4). A write into an untracked
+      // inode at the path the revision commits counts too: PO-13 adopts such
+      // a file at the tombstone's path (E5, INV-6). Inode-exact (§5.5 X-10).
+      const earlier = this.revisions.filter((candidate) => candidate.documentId === revision.documentId && candidate.seq < revision.seq);
+      const carried = new Set(earlier.map((candidate) => candidate.hash));
+      const named = new Set(earlier.map((candidate) => candidate.path));
+      const ownInode = (inode: number) => this.everBound.get(inode)?.has(revision.documentId) === true;
+      // The user created, edited or renamed the bytes since the document was
+      // last live: in the document's own file, or in the file at the path
+      // the revision commits (an untracked file it adopts, PO-13).
+      const touched = this.userOperations.some(
+        (operation) => operation.type !== "delete" && operation.step > since && inodes.has(operation.inode) && (ownInode(operation.inode) || this.inodes.at(revision.path)?.inode === operation.inode),
+      );
+      const unsynced = this.userOperations.some(
+        (operation) =>
+          inodes.has(operation.inode) &&
+          (((operation.type === "create" || operation.type === "edit") && operation.hash === revision.hash && !carried.has(operation.hash) && (ownInode(operation.inode) || (this.bound.get(operation.inode) === undefined && this.inodes.at(revision.path)?.inode === operation.inode))) ||
+            (operation.type === "rename" && operation.path !== undefined && !named.has(operation.path) && ownInode(operation.inode))),
+      );
+      if (!touched && !unsynced) this.violation("P2", `live revision of ${name} on its tombstone without a user change since step ${String(since)}`);
       if (holder?.hash === revision.hash) this.bind(holder.inode, revision.documentId);
       return;
     }
