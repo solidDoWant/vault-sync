@@ -69,3 +69,11 @@
 .vault-sync-history-error {
   color: var(--text-error);
 }
+
+.vault-sync-invite-code {
+  font-family: var(--font-monospace);
+  margin: var(--size-4-3) 0;
+  text-align: center;
+  user-select: all;
+  word-break: break-all;
+}
