@@ -334,7 +334,10 @@ func (vault *VaultStore) checkPathCurrent(ctx context.Context, tx pgx.Tx, isNew 
 }
 
 // Folder collision probes for a path key ($2) in a vault ($1), each
-// selecting the live documents it collides with (migration 0004).
+// selecting the live documents it collides with (migration 0004). The
+// indexes find candidates by digest; each probe then compares the
+// candidates' real path keys, so a digest collision can never refuse a
+// commit (#428). There are no more candidates than digest matches.
 const (
 	// folderIsLiveQuery: a live document's key is a folder of the key.
 	// One probe of documents_live_path_key_idx per folder of the key.
@@ -342,7 +345,8 @@ const (
 		SELECT 1 FROM documents
 		WHERE vault_id = $1 AND NOT deleted
 			AND documents_path_key_digest(path_key) = ANY (ARRAY(
-				SELECT documents_path_key_digest(folder) FROM unnest(documents_path_key_folders($2)) AS folder))`
+				SELECT documents_path_key_digest(folder) FROM unnest(documents_path_key_folders($2)) AS folder))
+			AND path_key = ANY (documents_path_key_folders($2))`
 	// isLiveFolderQuery: the key is a folder of a live document's key. One
 	// probe of the GIN index documents_live_folder_idx, whose digests
 	// already cover the vault id. The vault filter sits outside an
@@ -350,11 +354,11 @@ const (
 	// every live document of the vault through the vault_id btree.
 	isLiveFolderQuery = `
 		SELECT 1 FROM (
-			SELECT vault_id FROM documents
+			SELECT vault_id, path_key FROM documents
 			WHERE NOT deleted AND documents_folder_digests(vault_id, path_key) @> ARRAY[documents_folder_digest($1, $2)]
 			OFFSET 0
 		) AS candidates
-		WHERE vault_id = $1`
+		WHERE vault_id = $1 AND starts_with(path_key, $2 || '/')`
 )
 
 // checkPathFolders returns ErrPathFolderTaken if a live document's path_key

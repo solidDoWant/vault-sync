@@ -31,9 +31,13 @@ type RegisterDeviceRequest struct {
 	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
 	// The device's X25519 public key (SPEC.md §5): exactly 32 bytes, or empty
 	// for a device registered without one.
-	PublicKey     []byte `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	PublicKey []byte `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
+	// Client-chosen idempotency key: empty, or a canonical lowercase UUID the
+	// client stores before its first attempt and sends with every retry of
+	// the same registration. Empty registers a new device on every call.
+	RegistrationId string `protobuf:"bytes,3,opt,name=registration_id,json=registrationId,proto3" json:"registration_id,omitempty"`
+	unknownFields  protoimpl.UnknownFields
+	sizeCache      protoimpl.SizeCache
 }
 
 func (x *RegisterDeviceRequest) Reset() {
@@ -78,6 +82,13 @@ func (x *RegisterDeviceRequest) GetPublicKey() []byte {
 		return x.PublicKey
 	}
 	return nil
+}
+
+func (x *RegisterDeviceRequest) GetRegistrationId() string {
+	if x != nil {
+		return x.RegistrationId
+	}
+	return ""
 }
 
 // RegisterDeviceResponse returns the registered device.
@@ -297,11 +308,12 @@ var File_vaultsync_v1_device_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_device_proto_rawDesc = "" +
 	"\n" +
-	"\x19vaultsync/v1/device.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"J\n" +
+	"\x19vaultsync/v1/device.proto\x12\fvaultsync.v1\x1a\x18vaultsync/v1/types.proto\"s\n" +
 	"\x15RegisterDeviceRequest\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x02 \x01(\fR\tpublicKey\"F\n" +
+	"public_key\x18\x02 \x01(\fR\tpublicKey\x12'\n" +
+	"\x0fregistration_id\x18\x03 \x01(\tR\x0eregistrationId\"F\n" +
 	"\x16RegisterDeviceResponse\x12,\n" +
 	"\x06device\x18\x01 \x01(\v2\x14.vaultsync.v1.DeviceR\x06device\"\x14\n" +
 	"\x12ListDevicesRequest\"E\n" +

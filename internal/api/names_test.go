@@ -31,7 +31,7 @@ func (recorder *recordingStore) ListVaults(context.Context, uuid.UUID, uuid.UUID
 	return nil, nil
 }
 
-func (recorder *recordingStore) RegisterDevice(_ context.Context, userID uuid.UUID, name string, publicKey []byte, _ int) (store.Device, error) {
+func (recorder *recordingStore) RegisterDeviceOnce(_ context.Context, userID uuid.UUID, _ uuid.NullUUID, name string, publicKey []byte, _ int) (store.Device, error) {
 	recorder.writes++
 
 	return store.Device{ID: uuid.New(), UserID: userID, Name: name, PublicKey: publicKey}, nil
