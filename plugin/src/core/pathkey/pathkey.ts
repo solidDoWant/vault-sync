@@ -1,4 +1,5 @@
 import { CASE_FOLDING_DATA } from "./casefold-table";
+import { nfc, nfd } from "./normalize";
 
 let foldTable: Map<number, string> | undefined;
 
@@ -31,11 +32,12 @@ function fold(text: string): string {
  * folding, emitted in NFC. Separators, whitespace and dots are preserved.
  *
  * Must match internal/pathkey (Go) exactly; testdata/paths/vectors.json is the
- * shared conformance suite. The folding table is generated from the same
- * Unicode data as the Go table. Normalization uses the JavaScript engine's
- * String.prototype.normalize, which agrees with Go for every character
- * assigned in the engine's Unicode version.
+ * shared conformance suite. The folding and normalization tables are
+ * generated from the same pinned Unicode data (17.0.0) as the Go tables.
+ * Normalization deliberately does not use String.prototype.normalize: its
+ * tables depend on the Electron or WebView release, and a client with older
+ * tables would compute a different key for characters added since.
  */
 export function pathKey(path: string): string {
-  return fold(path.normalize("NFD")).normalize("NFC");
+  return nfc(fold(nfd(path)));
 }

@@ -6,13 +6,22 @@
  *
  * This notice covers the Unicode data vendored in, and derived by, vault-sync:
  *
- * - internal/pathkey/gen/CaseFolding-17.0.0.txt (Unicode Character Database
- *   17.0.0, unmodified)
+ * - internal/pathkey/gen/CaseFolding-17.0.0.txt,
+ *   internal/pathkey/gen/CompositionExclusions-17.0.0.txt (Unicode Character
+ *   Database 17.0.0, unmodified)
+ * - internal/pathkey/gen/UnicodeData-17.0.0.txt.gz and
+ *   testdata/paths/NormalizationTest-17.0.0.txt.gz (Unicode Character Database
+ *   17.0.0, unmodified apart from gzip compression)
  * - internal/pathkey/casefold_table.go and plugin/src/core/pathkey/casefold-table.ts
- *   (generated from CaseFolding-17.0.0.txt by internal/pathkey/gen; the
- *   TypeScript table is bundled into the Obsidian plugin)
+ *   (generated from CaseFolding-17.0.0.txt by internal/pathkey/gen), and
+ *   internal/pathkey/normalization_table.go and
+ *   plugin/src/core/pathkey/normalization-table.ts (generated from
+ *   UnicodeData-17.0.0.txt.gz and CompositionExclusions-17.0.0.txt by
+ *   internal/pathkey/gen); the TypeScript tables are bundled into the Obsidian
+ *   plugin
  *
- * Source: https://www.unicode.org/Public/17.0.0/ucd/CaseFolding.txt
+ * Source: https://www.unicode.org/Public/17.0.0/ucd/ (CaseFolding.txt,
+ * UnicodeData.txt, CompositionExclusions.txt, NormalizationTest.txt)
  * License: https://www.unicode.org/license.txt (reproduced below)
  *
  * --------------------------------------------------------------------------
