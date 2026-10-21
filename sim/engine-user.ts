@@ -143,13 +143,18 @@ export class EngineUser {
    * every document the user's earlier renames moved to `path` counts too:
    * the check must not blame the engine for the user's own delete. So do
    * those of a file the engine moved to its conflict copy at `path` (#509).
+   * So does the document whose binding names the file: a released row keeps
+   * its synced path, so the journal's document at `path` may be another one
+   * than the file's (#700, seed 100039).
    */
   private async documentsAt(path: string): Promise<Set<string>> {
     const documents = new Set<string>();
     const pending = await this.options.journal.listPending();
+    const states = await this.options.journal.listDocuments();
     for (const candidate of [path, ...(this.renamedFrom.get(path) ?? [])]) {
       const synced = await this.options.journal.findDocumentByPath(candidate);
       if (synced !== undefined) documents.add(synced.documentId);
+      for (const state of states) if (state.binding?.spelling === candidate) documents.add(state.documentId);
       for (const operation of pending) if (operation.path === candidate) documents.add(operation.documentId);
       for (const document of this.movedDocuments.get(candidate) ?? []) documents.add(document);
     }
