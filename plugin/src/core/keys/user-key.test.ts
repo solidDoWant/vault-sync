@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { createProtocolClient } from "../protocol/client";
@@ -97,10 +98,20 @@ describe("unlocking on another device", () => {
     const server = new MemoryUserKeyServer(() => now);
     await enableEncryption(device(server), passphrase, cheap);
 
-    for (let attempt = 1; attempt <= MAX_FAILED_ATTEMPTS; attempt++) {
-      await expect(unlockUserKey(device(server), "not the passphrase")).rejects.toBeInstanceOf(WrongPassphraseError);
+    // A wrong passphrase reaches the server only as a wrong auth_key, so all
+    // but the last attempt send one directly: each passphrase derivation is
+    // costly, and the test must not depend on how fast the runner is (#707).
+    const wrongAuthKey = new Uint8Array(32).fill(7);
+    for (let attempt = 1; attempt < MAX_FAILED_ATTEMPTS; attempt++) {
+      const failed = await device(server)
+        .unlockUserKey({ authKey: wrongAuthKey })
+        .catch((error: unknown) => error);
+      expect(failed).toBeInstanceOf(ConnectError);
+      expect((failed as ConnectError).code).toBe(Code.PermissionDenied);
       now += 1000;
     }
+    await expect(unlockUserKey(device(server), "not the passphrase")).rejects.toBeInstanceOf(WrongPassphraseError);
+    now += 1000;
     const refused = await unlockUserKey(device(server), passphrase).catch((error: unknown) => error);
 
     expect(refused).toBeInstanceOf(PassphraseAttemptsExhaustedError);
@@ -109,7 +120,7 @@ describe("unlocking on another device", () => {
 
     now = Date.parse("2026-10-21T12:00:00Z") + ATTEMPT_WINDOW_MS;
     await expect(unlockUserKey(device(server), passphrase)).resolves.toMatchObject({ publicKey: server.stored?.publicKey });
-  });
+  }, 30_000);
 
   it("reports that encryption is not enabled when the user has no key", async () => {
     const server = new MemoryUserKeyServer();
