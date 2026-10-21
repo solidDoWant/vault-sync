@@ -81,14 +81,19 @@ export class Bindings {
     await this.queue.catch(() => undefined);
   }
 
-  /** Writes `state` with the binding `change` gives it (see BindingChange). */
-  put(state: DocumentState, change: BindingChange): Promise<void> {
+  /**
+   * Writes `state` with the binding `change` gives it (see BindingChange),
+   * together with `alongside` in the same transaction: the final step
+   * of an `apply`, `merge` or `commit` (design §4.4), which also removes the
+   * outbox, the deferral or the intent and moves the cursor.
+   */
+  put(state: DocumentState, change: BindingChange, alongside: JournalChanges = {}): Promise<void> {
     return this.serialize(async () => {
       const current = await this.journal.getDocument(state.documentId);
       const next = { ...state, ...this.bindingAfter(state, current, change), ...priorAfter(state, current) };
       if (change.kind === "applied" || change.kind === "merged") next.binding = await this.keptName(current?.binding, next.binding);
       const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
-      await this.journal.transact({ putDocuments: [...others, next] });
+      await this.journal.transact({ ...alongside, putDocuments: [...(alongside.putDocuments ?? []), ...others, next] });
     });
   }
 

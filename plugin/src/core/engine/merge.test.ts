@@ -2,7 +2,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { ConflictRecord, DeferredRevision, DocumentState, JournalChanges, NewIntent } from "../journal/journal";
+import type { ConflictRecord, DocumentState, JournalChanges, NewIntent } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import type { WritePrecondition } from "../vault/adapter";
 import { threeWayMerge, type MergeHook } from "./merge";
@@ -938,12 +938,13 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
     it("does not take a file created at the merge's target before the document moved there for the document's local version", async () => {
       let crashed = false;
       class CrashAfterMergeRecord extends InMemoryJournal {
-        override async putDeferred(deferred: DeferredRevision): Promise<void> {
-          await super.putDeferred(deferred);
-          if (deferred.merging !== undefined && !crashed) {
+        override async putIntent(intent: NewIntent): Promise<number> {
+          const id = await super.putIntent(intent);
+          if (intent.kind === "merge" && !crashed) {
             crashed = true;
             throw new Crash("after the merge record");
           }
+          return id;
         }
       }
       const h = harness({ merge: "default", journal: new CrashAfterMergeRecord() });
