@@ -21,7 +21,7 @@ describe("checkLostWrites", () => {
 
   it("reports a write whose content survives nowhere, naming the engine, path and step", () => {
     const violations = checkLostWrites("e1", ledgerWith("aa", "bb"), new Set(["aa"]));
-    expect(violations).toEqual([{ invariant: "lost-write", detail: expect.stringContaining("e1's user wrote bb to bb.md at step 1") as unknown as string }]);
+    expect(violations).toEqual([{ invariant: "lost-write", detail: expect.stringContaining("e1's user wrote bb to bb.md at step 1") as unknown }]);
   });
 
   it("accepts a write the user replaced or deleted themselves", () => {
@@ -223,7 +223,9 @@ describe("checkPhantomDeletes", () => {
       expect(phantoms([revision({}), tombstone, at("b (conflict e1 2026-01-02 030405 2).md")], lostRename())).toEqual([]);
       expect(phantoms([revision({}), tombstone, at("B (conflict e1 2026-01-02 030405).md")], lostRename({ platform: "windows" }))).toEqual([]);
       // The outermost folder in the way takes the conflict name (#359).
-      const intoFolder = (ledger: UserLedger) => ledger.renamed("b.md", "notes/c.md", new Set(), "aa");
+      const intoFolder = (ledger: UserLedger) => {
+        ledger.renamed("b.md", "notes/c.md", new Set(), "aa");
+      };
       expect(phantoms([revision({}), tombstone, at("notes (conflict e1 2026-01-02 030405)/c.md")], lostRename({ then: intoFolder }))).toEqual([]);
       // Never another device's copy, a copy of another path, or a copy that is not one by its name.
       expect(phantoms([revision({}), tombstone, at("b (conflict e9 2026-01-02 030405).md")], lostRename())).toEqual(reported);

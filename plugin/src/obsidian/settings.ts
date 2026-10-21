@@ -8,6 +8,8 @@ import { configSyncSettings, type ConnectedVault, type PluginData } from "./data
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { membershipErrorMessage, parseInvitationDays, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
+import type { EncryptionState } from "./encryption";
+import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
 /** What the settings tab needs from the plugin. */
@@ -48,6 +50,12 @@ export interface SettingsHost extends Plugin {
   leaveVault(): Promise<void>;
   /** Redeems an invite code and resolves with the vault joined. */
   joinVault(code: string): Promise<Vault>;
+  /** Whether end-to-end encryption is enabled for the account, and unlocked on this device. */
+  encryptionState(): Promise<EncryptionState>;
+  /** Enables end-to-end encryption with a new key (or unlocks one another device just created); resolves whether this device created it. */
+  enableEncryption(passphrase: string): Promise<boolean>;
+  /** Unlocks the account's key on this device. */
+  unlockEncryption(passphrase: string): Promise<void>;
 }
 
 /** The config sync categories as the settings show them (docs/plugin.md). */
@@ -207,6 +215,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     if (host.authState === "signed-in") {
       this.renderVault(containerEl);
       if (host.connectedVault !== undefined) this.renderSharing(containerEl);
+      this.renderEncryption(containerEl);
       this.renderDevices(containerEl);
     }
 
@@ -279,6 +288,53 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     });
     this.shownDevices = { loads, removeButtons };
     loads.load();
+  }
+
+  /** End-to-end encryption for the account (docs/plugin.md): enable it here, or unlock it on this device. */
+  private renderEncryption(containerEl: HTMLElement): void {
+    const { host } = this;
+    new Setting(containerEl).setName("End-to-end encryption").setHeading();
+    const setting = new Setting(containerEl).setName("Encryption key").setDesc("Checking…");
+    const open = (mode: PassphraseMode) => {
+      new PassphraseModal(this.app, mode, async (passphrase) => {
+        if (mode === "unlock") {
+          await host.unlockEncryption(passphrase);
+          new Notice("Vault Sync: your encryption key is unlocked on this device.");
+        } else if (await host.enableEncryption(passphrase)) {
+          new Notice("Vault Sync: end-to-end encryption is enabled.");
+        } else {
+          new Notice("Vault Sync: encryption was already enabled on another device with this passphrase; its key is now unlocked on this device.");
+        }
+        if (setting.settingEl.isConnected) this.render();
+      }).open();
+    };
+    host.encryptionState().then(
+      (state) => {
+        if (state === "unlocked") {
+          setting.setDesc("Enabled for your account and unlocked on this device. The key is kept only in this device's Vault Sync data, which never syncs.");
+        } else if (state === "locked") {
+          setting.setDesc("Enabled for your account on another device. Unlock it on this device with your recovery passphrase.");
+          setting.addButton((button) =>
+            button
+              .setButtonText("Unlock")
+              .setCta()
+              .onClick(() => {
+                open("unlock");
+              }),
+          );
+        } else {
+          setting.setDesc("Not enabled. Enabling creates your encryption key on this device, protected by a recovery passphrase, for end-to-end encrypted vaults.");
+          setting.addButton((button) =>
+            button.setButtonText("Enable").onClick(() => {
+              open("enable");
+            }),
+          );
+        }
+      },
+      (error: unknown) => {
+        setting.setDesc(`Could not check encryption: ${errorMessage(error)}`);
+      },
+    );
   }
 
   /** Stops the device list on screen from loading and painting: the tab was hidden or is rendered again. */

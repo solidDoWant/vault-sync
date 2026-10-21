@@ -9,12 +9,14 @@ permissions:
   contents: read
   pull-requests: read # dorny/paths-filter lists PR files via the API
 
-# PRs: one run per branch, a new push cancels the old run. master: one group
-# per commit, so back-to-back merges never cancel each other's queued jobs
-# (a single shared group keeps only one pending run and cancels the rest).
+# One run per branch; a newer push cancels the older run. On master that
+# means only the latest commit is tested: it contains every earlier merge, and
+# PRs are already tested before auto-merge, so stacked master runs only used
+# up the account's concurrent-job limit (20 on GitHub Free). A cancelled
+# master run is expected, not a failure.
 concurrency:
-  group: ci-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Decides whether anything that can affect build or test results changed.

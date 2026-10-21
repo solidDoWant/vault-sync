@@ -39,6 +39,15 @@ describe("summarize", () => {
     expect(counter(line, "operations skipped (busy)")).toBe(1);
   });
 
+  it("counts every engine's notification-gated pull on a pull step, not the step (#661)", () => {
+    const line = summarize([
+      "12: c1 starts pull; e3 starts pull if behind seq 9; e4 starts pull if behind seq 9",
+      "20: c0 starts pull; e3 starts pull if behind seq 7; e4 starts pull if behind seq 7; e5 starts pull",
+      "21: c0 starts pull; e3 starts pull; e4 starts pull",
+    ]);
+    expect(counter(line, "notification-gated pulls")).toBe(4);
+  });
+
   it("reports zero for events the trace does not show", () => {
     const line = summarize([]);
     expect(counter(line, "engine resyncs")).toBe(0);

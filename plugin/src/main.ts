@@ -17,6 +17,7 @@ import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVau
 import { configSyncSettings, oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
+import { enableOnDevice, encryptionState, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
@@ -249,10 +250,18 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     }
   }
 
-  /** Stops sync and forgets the device's tokens. The connected vault and the device registration are kept for the next sign-in. */
+  /**
+   * Stops sync and forgets the device's tokens and its unlocked encryption
+   * key. The connected vault and the device registration are kept for the
+   * next sign-in.
+   */
   async signOut(): Promise<void> {
     await this.controller?.stop();
     await this.stopSync();
+    if (this.data.userKey !== undefined) {
+      delete this.data.userKey;
+      await this.saveSettings();
+    }
     await this.tokens?.signOut();
     await this.controller?.update();
     this.settingTab?.render();
@@ -302,6 +311,30 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   async registerAgain(): Promise<void> {
     await this.controller?.registerAgain();
     this.settingTab?.render();
+  }
+
+  /** Whether end-to-end encryption is enabled for the signed-in account, and unlocked on this device. */
+  encryptionState(): Promise<EncryptionState> {
+    return encryptionState(this.encryptionOptions());
+  }
+
+  /** Enables end-to-end encryption for the signed-in account (docs/plugin.md); resolves whether this device created the key. */
+  enableEncryption(passphrase: string): Promise<boolean> {
+    return enableOnDevice(this.encryptionOptions(), passphrase);
+  }
+
+  /** Unlocks the signed-in account's encryption key on this device. */
+  unlockEncryption(passphrase: string): Promise<void> {
+    return unlockOnDevice(this.encryptionOptions(), passphrase);
+  }
+
+  private encryptionOptions(): EncryptionOptions {
+    return {
+      data: this.data,
+      save: () => this.saveSettings(),
+      client: this.protocolClient().userKeys,
+      accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
+    };
   }
 
   /** The vaults the signed-in user may connect this vault to. */

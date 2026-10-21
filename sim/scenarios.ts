@@ -622,9 +622,10 @@ export async function structuralOperations(endpoints: SimEndpoints): Promise<Str
     log(first.startPull());
     await drain(first.index);
   };
-  const crashAfterRefusal = async () => {
+  const crashAfterRefusal = (): Promise<void> => {
     log(second.crash());
     log(second.startPush());
+    return Promise.resolve();
   };
   const loseMergedCommitResponse = async () => {
     await deliverUntil(second.index, "CommitRevision");

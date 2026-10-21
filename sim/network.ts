@@ -431,7 +431,9 @@ export class SimNetwork {
         send,
         settle: (outcome) => {
           if (outcome.ok) resolve(outcome.value as T);
-          else reject(outcome.error as Error);
+          // Relays the transport's rejection unchanged, whatever was thrown.
+          // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+          else reject(outcome.error);
         },
       });
     });
