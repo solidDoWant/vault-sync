@@ -162,7 +162,8 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
   // with the note, so the server never hears of it while the note waits, and
   // nothing retries the note's revision: the note follows its file to its new
   // path, so the new document is written at the path the file left, and the
-  // note's revision then applies to the file where it is (#379 review 2).
+  // note's revision then merges with the file where it is, the local rename
+  // winning (#379 review 2; R7b, PO-11).
   it("writes the new document at the path a local rename moved the out-of-scope note's file from, and keeps one note", async () => {
     let configSync = false;
     const h = harness({
@@ -188,13 +189,14 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
     expect((await h.journal.getDocument("A"))?.binding?.spelling).toBe("w.md");
     await expectOneDocumentPerPath(h);
 
-    // Config sync is turned on: A's move applies to its file at w.md.
+    // Config sync is turned on: A's revision merges with its file at w.md, and the local rename wins
+    // (SPEC.md §7; the note kept its file, PO-11, R7b).
     configSync = true;
     h.restart();
     expect(await sync(h)).toEqual([]);
-    expect(await files(h.vault)).toEqual(new Map([[".obsidian/y.md", "a\n"], ["x.md", "c\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([["w.md", "a\n"], ["x.md", "c\n"]]));
     // One document per note: the renamed file never became a new one.
-    expect(h.server.liveDocuments()).toEqual(new Map([[".obsidian/y.md", "A"], ["x.md", "C"]]));
+    expect(h.server.liveDocuments()).toEqual(new Map([["w.md", "A"], ["x.md", "C"]]));
     await expectConverged(h);
   });
 
@@ -218,11 +220,13 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
     expect((await h.journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.reason])).toEqual([["A", "out-of-scope"]]);
     await expectOneDocumentPerPath(h);
 
-    // Config sync is turned on: A comes back at its own path, and the moved file is a new document.
+    // Config sync is turned on: the moved file is still A's (PO-11, R7b), so A's local rename wins over its
+    // remote one, and the note is not duplicated.
     configSync = true;
     h.restart();
     expect(await sync(h)).toEqual([]);
-    expect(await files(h.vault)).toEqual(new Map([[".obsidian/w.md", "a\n"], [".obsidian/y.md", "a\n"], ["x.md", "c\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([[".obsidian/w.md", "a\n"], ["x.md", "c\n"]]));
+    expect(h.server.liveDocuments()).toEqual(new Map([[".obsidian/w.md", "A"], ["x.md", "C"]]));
     await expectConverged(h);
   });
 
@@ -251,11 +255,12 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
     expect(await sync(h)).toEqual([]);
     expect(h.server.liveFiles()).toEqual(new Map([["y.md", "a, and a lot more\n"], ["x.md", "c2\n"]]));
 
-    // Another device shortens A: it fits now, and applies to its file at w.md.
+    // Another device shortens A: it fits now, and merges with its file at w.md, where the local rename wins
+    // (SPEC.md §7; the note kept its file, PO-11, R7b).
     h.server.commit({ documentId: "A", path: "y.md", content: "a2\n" });
     expect(await sync(h)).toEqual([]);
-    expect(await files(h.vault)).toEqual(new Map([["x.md", "c2\n"], ["y.md", "a2\n"]]));
-    expect(h.server.liveDocuments()).toEqual(new Map([["x.md", "C"], ["y.md", "A"]]));
+    expect(await files(h.vault)).toEqual(new Map([["w.md", "a2\n"], ["x.md", "c2\n"]]));
+    expect(h.server.liveDocuments()).toEqual(new Map([["w.md", "A"], ["x.md", "C"]]));
     await expectConverged(h);
   });
 });
