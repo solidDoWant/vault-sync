@@ -367,6 +367,10 @@ export class ScriptedClient {
     if (revision.documentId !== fields.documentId || !parentMatches || revision.deleted !== fields.deleted) {
       this.violation("protocol", `acknowledged ${label} differs from the commit request`);
     }
+    // A document's kind never changes (SPEC.md §7): the server refuses a commit of another kind, never acknowledges it as one (#317).
+    if (revision.kind !== fields.kind) {
+      this.violation("protocol", `acknowledged ${label} has kind ${DocumentKind[revision.kind]}, but the commit request had ${DocumentKind[fields.kind]}`);
+    }
     this.context.acknowledged.push({
       client: this.index,
       revisionId: revision.id,

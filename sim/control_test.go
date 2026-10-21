@@ -36,9 +36,12 @@ type regressionCase struct {
 	CommitRetryBackoff *int `json:"commitRetryBackoff,omitempty"`
 	// FaithfulFilesystem is set when the run used the faithful filesystem
 	// (SIM_FAITHFUL_FS=1); the regressions suite replays the case with it.
-	FaithfulFilesystem bool            `json:"faithfulFilesystem,omitempty"`
-	Violations         []violation     `json:"violations"`
-	Steps              json.RawMessage `json:"steps"`
+	FaithfulFilesystem bool `json:"faithfulFilesystem,omitempty"`
+	// NotificationPulls is set when the run gated engine pulls on announced
+	// seqs (#277); absent in cases recorded before it, which pull plainly.
+	NotificationPulls bool            `json:"notificationPulls,omitempty"`
+	Violations        []violation     `json:"violations"`
+	Steps             json.RawMessage `json:"steps"`
 }
 
 var regressionName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,99}$`)

@@ -13,8 +13,8 @@ function throughDisk(regression: RegressionCase): RegressionCase {
   return JSON.parse(JSON.stringify(regression)) as RegressionCase;
 }
 
-function seededOptions(faithfulFilesystem: boolean): RunOptions {
-  return { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem };
+function seededOptions(faithfulFilesystem: boolean, notificationPulls = true): RunOptions {
+  return { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem, notificationPulls };
 }
 
 describe("regression cases", () => {
@@ -39,10 +39,24 @@ describe("regression cases", () => {
     expect(replayOptions(legacy).faithfulFilesystem).toBe(false);
   });
 
+  it("replay a case recorded without notification-gated pulls without them (#277)", () => {
+    const regression = throughDisk(recordedCase("seed-42", seededOptions(false, false), violations, steps));
+
+    expect(regression).not.toHaveProperty("notificationPulls");
+    expect(replayOptions(regression)).toEqual(seededOptions(false, false));
+  });
+
+  it("replay a case recorded with notification-gated pulls with them (#277)", () => {
+    const regression = throughDisk(recordedCase("seed-42", seededOptions(false), violations, steps));
+
+    expect(regression.notificationPulls).toBe(true);
+    expect(replayOptions(regression).notificationPulls).toBe(true);
+  });
+
   it("replay a case from before #22 and #110 with one engine and no commit retry backoff", () => {
     const legacy = throughDisk({ name: "seed-3", seed: 3, clients: 2, violations, steps });
 
-    expect(replayOptions(legacy)).toEqual({ seed: 3, clients: 2, engines: 1, platforms: seededPlatforms(3, 1), commitRetryBackoff: undefined, faithfulFilesystem: false });
+    expect(replayOptions(legacy)).toEqual({ seed: 3, clients: 2, engines: 1, platforms: seededPlatforms(3, 1), commitRetryBackoff: undefined, faithfulFilesystem: false, notificationPulls: false });
   });
 
   it("record the minimized steps and their violations", () => {

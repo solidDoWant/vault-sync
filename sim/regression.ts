@@ -22,6 +22,7 @@ export function recordedCase(name: string, options: RunOptions, violations: Viol
     engines: options.engines,
     commitRetryBackoff: options.commitRetryBackoff,
     ...(options.faithfulFilesystem === true ? { faithfulFilesystem: true } : {}),
+    ...(options.notificationPulls === true ? { notificationPulls: true } : {}),
     violations,
     steps,
   };
@@ -42,5 +43,6 @@ export function replayOptions(regression: RegressionCase): RunOptions {
     platforms: seededPlatforms(regression.seed, engines),
     commitRetryBackoff: regression.commitRetryBackoff,
     faithfulFilesystem: regression.faithfulFilesystem === true,
+    notificationPulls: regression.notificationPulls === true,
   };
 }
