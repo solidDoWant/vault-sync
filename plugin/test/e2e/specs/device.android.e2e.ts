@@ -114,10 +114,11 @@ async function foregroundObsidian() {
     timeout: 60_000,
     timeoutMsg: "Obsidian's WebView never came back",
   });
-  await browser.switchContext(webview);
   await browser.waitUntil(
     async () => {
       try {
+        // Again on every attempt: a WebView that is still starting may refuse the switch.
+        await browser.switchContext(webview);
         return await browser.execute(
           (id) => {
             const service = (window as unknown as { wdioObsidianService?: unknown }).wdioObsidianService;
