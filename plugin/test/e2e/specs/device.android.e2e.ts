@@ -78,8 +78,12 @@ function writeNote(path: string, text: string) {
   return browser.executeObsidian(
     async ({ app }, filePath, content) => {
       const file = app.vault.getFileByPath(filePath);
-      if (file === null) await app.vault.create(filePath, content);
-      else await app.vault.modify(file, content);
+      if (file === null) {
+        // Obsidian on Android creates no missing parent folder.
+        const folder = filePath.includes("/") ? filePath.slice(0, filePath.lastIndexOf("/")) : "";
+        if (folder !== "" && app.vault.getFolderByPath(folder) === null) await app.vault.createFolder(folder);
+        await app.vault.create(filePath, content);
+      } else await app.vault.modify(file, content);
     },
     path,
     text,
@@ -144,6 +148,17 @@ async function foregroundObsidian() {
   );
 }
 
+/**
+ * Turns "Don't keep activities" on or off. The setting alone takes effect
+ * only after a reboot: the call to IActivityManager.setAlwaysFinish
+ * (transaction 43 on Android 14, as Developer options makes it) applies it
+ * now.
+ */
+function dontKeepActivities(on: boolean) {
+  shell("settings", "put", "global", "always_finish_activities", on ? "1" : "0");
+  shell("service", "call", "activity", "43", "i32", on ? "1" : "0");
+}
+
 /** Sends Obsidian to the background with the home button. */
 function background() {
   shell("input", "keyevent", "KEYCODE_HOME");
@@ -160,7 +175,7 @@ describe("vault-sync on an Android device", function () {
 
   after(function () {
     // Leave the emulator as the next spec expects it.
-    shell("settings", "put", "global", "always_finish_activities", "0");
+    dontKeepActivities(false);
     shell("cmd", "connectivity", "airplane-mode", "disable");
     for (const [chain, ...rule] of natRules) {
       try {
@@ -232,7 +247,7 @@ describe("vault-sync on an Android device", function () {
   });
 
   it("keeps and pushes an edit when Android destroys the activity on the switch (\"Don't keep activities\", section 6)", async function () {
-    shell("settings", "put", "global", "always_finish_activities", "1");
+    dontKeepActivities(true);
     const note = "Destroyed activity.md";
     const text = "edited, then the activity was destroyed\n";
     await markWebView();
@@ -249,7 +264,7 @@ describe("vault-sync on an Android device", function () {
       timeoutMsg: "the edit never reached the server",
     });
     expect((await callHarness("vaultDigests"))[note]).toBe(sha256(text));
-    shell("settings", "put", "global", "always_finish_activities", "0");
+    dontKeepActivities(false);
   });
 
   it("reports offline while the network is cut and pushes the edits made meanwhile once it is back (sections 4 and 9)", async function () {
