@@ -32,17 +32,24 @@ interface Respelling {
    * pair (#396), which must keep converging too.
    */
   vault: "exact" | "folding";
+  /**
+   * The spelling the vault holds the note at afterwards, if not `to`: where
+   * the filesystem takes the two folder spellings for one, the folder keeps
+   * the spelling it has on disk, since the engine never respells a folder
+   * (INV-9, #737).
+   */
+  held?: string;
 }
 
 const respellings: Respelling[] = [
   { platform: "windows", from: "straße/b.md", to: "STRASSE/b.md", vault: "exact" },
   { platform: "windows", from: nfc("café/b.md"), to: nfd("café/b.md"), vault: "exact" },
-  { platform: "windows", from: "notes/b.md", to: "NOTES/b.md", vault: "folding" },
+  { platform: "windows", from: "notes/b.md", to: "NOTES/b.md", vault: "folding", held: "notes/b.md" },
   { platform: "windows", from: "straße/b.md", to: "STRASSE/b.md", vault: "folding" },
   { platform: "windows", from: nfc("café/b.md"), to: nfd("café/b.md"), vault: "folding" },
   { platform: "macos", from: "straße/b.md", to: "STRASSE/b.md", vault: "exact" },
-  { platform: "macos", from: nfc("café/b.md"), to: nfd("café/b.md"), vault: "folding" },
-  { platform: "macos", from: "notes/b.md", to: "NOTES/b.md", vault: "folding" },
+  { platform: "macos", from: nfc("café/b.md"), to: nfd("café/b.md"), vault: "folding", held: nfc("café/b.md") },
+  { platform: "macos", from: "notes/b.md", to: "NOTES/b.md", vault: "folding", held: "notes/b.md" },
   { platform: "macos", from: "straße/b.md", to: "STRASSE/b.md", vault: "folding" },
   { platform: "posix", from: "straße/b.md", to: "STRASSE/b.md", vault: "exact" },
   { platform: "posix", from: "notes/b.md", to: "NOTES/b.md", vault: "exact" },
@@ -61,6 +68,7 @@ async function pushRounds(h: Harness): Promise<void> {
 
 describe.each(respellings)("a remote rename of $from to $to on $platform, $vault vault (#447)", (respelling) => {
   const { from, to } = respelling;
+  const held = respelling.held ?? to;
 
   it("merges a local edit of the note into the renamed note and leaves no untracked copy", async () => {
     const h = deviceVault(respelling);
@@ -71,14 +79,14 @@ describe.each(respellings)("a remote rename of $from to $to on $platform, $vault
     h.server.commit({ documentId: "note", path: to, content: "a\nb\nc\nremote\n" });
 
     await h.engine.pull();
-    expect(await files(h.vault)).toEqual(new Map([[to, "local\na\nb\nc\nremote\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([[held, "local\na\nb\nc\nremote\n"]]));
     expect(await h.journal.listDeferred()).toEqual([]);
     await pushRounds(h);
 
     expect(h.server.liveDocuments()).toEqual(new Map([[to, "note"]]));
     expect(h.server.liveFiles()).toEqual(new Map([[to, "local\na\nb\nc\nremote\n"]]));
     expect(h.server.history("note").map((revision) => revision.deleted)).not.toContain(true);
-    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    expect(await files(h.vault)).toEqual(new Map([[held, "local\na\nb\nc\nremote\n"]]));
     expect(await h.journal.listPending()).toEqual([]);
     expect(await h.journal.listDeferred()).toEqual([]);
   });
@@ -94,7 +102,7 @@ describe.each(respellings)("a remote rename of $from to $to on $platform, $vault
 
     expect(h.server.liveDocuments()).toEqual(new Map([[to, "note"]]));
     expect(h.server.history("note")).toHaveLength(2);
-    expect(await files(h.vault)).toEqual(new Map([[to, "a\n"]]));
+    expect(await files(h.vault)).toEqual(new Map([[held, "a\n"]]));
     expect(await h.journal.listPending()).toEqual([]);
     expect(await h.journal.listDeferred()).toEqual([]);
   });

@@ -57,6 +57,19 @@ export class PathSpace {
     return a === b || this.filesystemKey(a) === this.filesystemKey(b);
   }
 
+  /**
+   * Whether `a` and `b` are spelled alike but for their folders, which `F`
+   * takes for one: the final segment is equal and the folders are one under
+   * `F`. A folder has one spelling on disk, so such paths are the same
+   * spelling of a file as far as the device can tell (INV-9, #737).
+   */
+  sameButFolderSpelling(a: string, b: string): boolean {
+    const slashA = a.lastIndexOf("/");
+    const slashB = b.lastIndexOf("/");
+    if (a.slice(slashA + 1) !== b.slice(slashB + 1)) return false;
+    return slashA < 0 ? slashB < 0 : slashB >= 0 && this.filesystemKey(a.slice(0, slashA)) === this.filesystemKey(b.slice(0, slashB));
+  }
+
   /** The folders `path` is in, outermost first: its proper "/"-separated prefixes. */
   ancestors(path: string): string[] {
     return ancestors(path);

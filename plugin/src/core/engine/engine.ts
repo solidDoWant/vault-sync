@@ -294,7 +294,7 @@ export class SyncEngine {
   private readonly pathSpace: PathSpace;
   /** Which local file is each document (design §4.1). The local moves and deletes the push and the merge path look at are read from it. */
   private readonly bindings: Bindings;
-  private readonly echoes = new EchoSuppressor();
+  private readonly echoes: EchoSuppressor;
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
   /** Documents being merged right now, so rule W's resolving a holder first (W(b)) never loops back to another. */
@@ -355,13 +355,14 @@ export class SyncEngine {
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.pathSpace = new PathSpace(this.pathRules);
+    this.echoes = new EchoSuppressor((path) => this.pathSpace.filesystemKey(path));
     this.bindings = new Bindings(this.journal, this.vault, this.pathSpace);
     this.intents = new Intents({
       journal: this.journal,
       bindings: this.bindings,
       space: this.pathSpace,
       read: (path) => this.readOrNull(path),
-      rename: async (from, to) => this.echoed(this.echoes.expectRename(await this.heldSpelling(from), to), () => this.vault.rename(from, to)),
+      rename: (from, to) => this.moveFile(from, to),
       newId: this.newId,
       markDirty: (path) => {
         this.markDirty(path);
@@ -1112,7 +1113,7 @@ export class SyncEngine {
       return;
     }
     if (source !== undefined && source !== remote.path) {
-      await this.echoed(this.echoes.expectRename(await this.heldSpelling(source), remote.path), () => this.renameFile(source, remote.path));
+      await this.renameFile(source, remote.path);
     }
     if (inspection.sourceHash === remote.contentHash) return;
     if (content === undefined) throw new Error(`content of ${remote.revisionId} was not downloaded`);
@@ -1133,7 +1134,7 @@ export class SyncEngine {
     if (this.pathRules.platform === "posix" || (await this.vault.stat(path)) === null) return;
     const held = await this.heldSpelling(path);
     if (held === path || (await this.journal.getDocument(documentId))?.binding?.spelling === held) return;
-    await this.echoed(this.echoes.expectRename(held, path), () => this.renameFile(held, path));
+    await this.renameFile(held, path);
   }
 
   /**
@@ -1446,7 +1447,7 @@ export class SyncEngine {
       if (!moved) {
         if (atLocal === null || sha256Hex(atLocal) !== local.hash) return false;
         if (there !== null && !steps.respelled) return false;
-        await this.echoed(this.echoes.expectRename(await this.heldSpelling(local.path), result.path), () => this.renameFile(local.path, result.path));
+        await this.renameFile(local.path, result.path);
         there = atLocal;
       }
     }
@@ -2243,9 +2244,24 @@ export class SyncEngine {
   }
 
   /** The engine moves a file: the document bound to it keeps it (E1, design §4.3). */
+  /** The engine moves a file, its echo expected (INV-10), and its binding follows (moveFile). */
   private async renameFile(from: string, to: string): Promise<void> {
-    await this.vault.rename(from, to);
+    await this.moveFile(from, to);
     await this.bindings.renamed(from, to);
+  }
+
+  /**
+   * The engine moves the file at `from` to `to`, with the echo expectation
+   * of the vault's rename event (INV-10). A move that would change only the
+   * spelling of a folder is no move: a folder has one spelling on disk, the
+   * engine never respells one (INV-9), and the vault would report no event
+   * to match the expectation, which would then wait to swallow a user's
+   * later rename of the file (#737).
+   */
+  private async moveFile(from: string, to: string): Promise<void> {
+    const held = await this.heldSpelling(from);
+    if (this.pathRules.platform !== "posix" && held !== to && this.pathSpace.sameButFolderSpelling(held, to)) return;
+    await this.echoed(this.echoes.expectRename(held, to), () => this.vault.rename(from, to));
   }
 
   /** The engine deletes a file: its document no longer has it, unless the write that follows binds it again. */

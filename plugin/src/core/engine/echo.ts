@@ -18,13 +18,19 @@ type Expectation = { type: "write"; hash: string } | { type: "delete" } | { type
  * therefore leaves its expectation only until the engine's next change at the
  * path is seen, not forever, where it could swallow a later user change.
  *
- * Paths match exactly, never by path key. The engine registers the spelling
- * the vault holds the file under (it can differ from the document's path on
- * a case-insensitive platform, #380), so two files whose spellings merely
- * share a path key stay two files here, as on the device.
+ * Paths match under the filesystem's name equivalence `F` (design §3.1,
+ * PO-10, INV-10), never by path key: the spellings `F` takes for one file
+ * are one file here, as on the device, so an engine write at `Notes/a.md`
+ * that the filesystem lands in its `notes/` folder is still the engine's
+ * (#737). Two files whose spellings merely share a path key (`Straße.md`,
+ * `STRASSE.md`) stay two files (#380).
  */
 export class EchoSuppressor {
+  /** Expectations by `F` of the path the event will name. */
   private readonly expected = new Map<string, Expectation[]>();
+
+  /** `filesystemKey` is `F`: identity on a case-sensitive platform. */
+  constructor(private readonly filesystemKey: (path: string) => string = (path) => path) {}
 
   /** Expects a create or modify event at `path` leaving content with `hash`. */
   expectWrite(path: string, hash: string): () => void {
@@ -36,7 +42,7 @@ export class EchoSuppressor {
   }
 
   expectRename(from: string, to: string): () => void {
-    return this.add(to, { type: "rename", from });
+    return this.add(to, { type: "rename", from: this.filesystemKey(from) });
   }
 
   /**
@@ -44,15 +50,16 @@ export class EchoSuppressor {
    * expectation. `hashAt` hashes the file currently at a path (null if absent).
    */
   async isEcho(event: VaultEvent, hashAt: (path: string) => Promise<string | null>): Promise<boolean> {
-    const list = this.expected.get(event.path);
+    const key = this.filesystemKey(event.path);
+    const list = this.expected.get(key);
     if (list === undefined) return false;
     switch (event.type) {
       case "delete":
-        return this.consume(event.path, list.find((entry) => entry.type === "delete"), true);
+        return this.consume(key, list.find((entry) => entry.type === "delete"), true);
       case "rename":
         return this.consume(
-          event.path,
-          list.find((entry) => entry.type === "rename" && entry.from === event.oldPath),
+          key,
+          list.find((entry) => entry.type === "rename" && entry.from === this.filesystemKey(event.oldPath)),
           true,
         );
       case "create":
@@ -62,30 +69,31 @@ export class EchoSuppressor {
         // Two engine writes to one path can both be on disk before the first
         // event is handled, so accept any content the engine wrote there.
         const hash = await hashAt(event.path);
-        this.consume(event.path, writes[0], true);
+        this.consume(key, writes[0], true);
         return writes.some((entry) => entry.hash === hash);
       }
     }
   }
 
   private add(path: string, expectation: Expectation): () => void {
-    const list = this.expected.get(path) ?? [];
+    const key = this.filesystemKey(path);
+    const list = this.expected.get(key) ?? [];
     list.push(expectation);
-    this.expected.set(path, list);
+    this.expected.set(key, list);
     return () => {
-      this.consume(path, expectation);
+      this.consume(key, expectation);
     };
   }
 
-  /** Removes `expectation`; for one an event matched (`expireEarlier`), also those registered before it at `path`. */
-  private consume(path: string, expectation: Expectation | undefined, expireEarlier = false): boolean {
+  /** Removes `expectation`; for one an event matched (`expireEarlier`), also those registered before it at `key`. */
+  private consume(key: string, expectation: Expectation | undefined, expireEarlier = false): boolean {
     if (expectation === undefined) return false;
-    const list = this.expected.get(path);
+    const list = this.expected.get(key);
     const index = list?.indexOf(expectation) ?? -1;
     if (list === undefined || index < 0) return false;
     if (expireEarlier) list.splice(0, index + 1);
     else list.splice(index, 1);
-    if (list.length === 0) this.expected.delete(path);
+    if (list.length === 0) this.expected.delete(key);
     return true;
   }
 }
