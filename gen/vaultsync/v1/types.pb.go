@@ -541,7 +541,10 @@ type Revision struct {
 	// client sends the anchor of the revision at its cursor as
 	// ListChangesRequest.since_anchor, and that of its own latest commit above
 	// the cursor as own_commit_anchor, to detect such a restore (SPEC.md §6.1).
-	Anchor        []byte `protobuf:"bytes,13,opt,name=anchor,proto3" json:"anchor,omitempty"`
+	Anchor []byte `protobuf:"bytes,13,opt,name=anchor,proto3" json:"anchor,omitempty"`
+	// The vault key epoch the revision is encrypted under (SPEC.md §9.3); 0
+	// in a plaintext vault.
+	Epoch         uint32 `protobuf:"varint,14,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -667,6 +670,13 @@ func (x *Revision) GetAnchor() []byte {
 	return nil
 }
 
+func (x *Revision) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
+}
+
 var File_vaultsync_v1_types_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_types_proto_rawDesc = "" +
@@ -697,7 +707,7 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x19\n" +
 	"\bvault_id\x18\x02 \x01(\tR\avaultId\x12.\n" +
 	"\x04kind\x18\x03 \x01(\x0e2\x1a.vaultsync.v1.DocumentKindR\x04kind\x12\x1e\n" +
-	"\vhead_rev_id\x18\x04 \x01(\tR\theadRevId\"\xb0\x03\n" +
+	"\vhead_rev_id\x18\x04 \x01(\tR\theadRevId\"\xc6\x03\n" +
 	"\bRevision\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
 	"\vdocument_id\x18\x02 \x01(\tR\n" +
@@ -715,7 +725,8 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	"\auser_id\x18\v \x01(\tR\x06userId\x12;\n" +
 	"\vcreate_time\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12\x16\n" +
-	"\x06anchor\x18\r \x01(\fR\x06anchor*t\n" +
+	"\x06anchor\x18\r \x01(\fR\x06anchor\x12\x14\n" +
+	"\x05epoch\x18\x0e \x01(\rR\x05epoch*t\n" +
 	"\fDocumentKind\x12\x1d\n" +
 	"\x19DOCUMENT_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12DOCUMENT_KIND_BLOB\x10\x01\x12\x16\n" +

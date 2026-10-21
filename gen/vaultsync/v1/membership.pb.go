@@ -114,7 +114,11 @@ type Member struct {
 	// The member's role.
 	Role VaultRole `protobuf:"varint,3,opt,name=role,proto3,enum=vaultsync.v1.VaultRole" json:"role,omitempty"`
 	// When the user became a member.
-	JoinTime      *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=join_time,json=joinTime,proto3" json:"join_time,omitempty"`
+	JoinTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=join_time,json=joinTime,proto3" json:"join_time,omitempty"`
+	// The member's X25519 user public key (32 bytes) for wrapping vault
+	// epoch keys to them, or empty when they have no user key
+	// (UserKeyService).
+	PublicKey     []byte `protobuf:"bytes,5,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -173,6 +177,13 @@ func (x *Member) GetRole() VaultRole {
 func (x *Member) GetJoinTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.JoinTime
+	}
+	return nil
+}
+
+func (x *Member) GetPublicKey() []byte {
+	if x != nil {
+		return x.PublicKey
 	}
 	return nil
 }
@@ -782,7 +793,13 @@ type RemoveMemberRequest struct {
 	// The vault. The caller must be an owner.
 	VaultId string `protobuf:"bytes,1,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
 	// The member's user id (Member.user_id), a canonical lowercase UUID.
-	UserId        string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	UserId string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// The epoch that replaces the current one: required in an end-to-end
+	// encrypted vault, and must be unset in a plaintext vault. Its slots must
+	// wrap the new epoch key to every remaining member with a user key (plus
+	// at most one escrow slot in an escrow vault), and not to the removed
+	// member.
+	NextEpoch     *NextEpoch `protobuf:"bytes,3,opt,name=next_epoch,json=nextEpoch,proto3" json:"next_epoch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -829,6 +846,13 @@ func (x *RemoveMemberRequest) GetUserId() string {
 		return x.UserId
 	}
 	return ""
+}
+
+func (x *RemoveMemberRequest) GetNextEpoch() *NextEpoch {
+	if x != nil {
+		return x.NextEpoch
+	}
+	return nil
 }
 
 // RemoveMemberResponse confirms the removal. It has no fields.
@@ -955,7 +979,7 @@ var File_vaultsync_v1_membership_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\n" +
-	"\x1dvaultsync/v1/membership.proto\x12\fvaultsync.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x18vaultsync/v1/types.proto\"\xeb\x01\n" +
+	"\x1dvaultsync/v1/membership.proto\x12\fvaultsync.v1\x1a\x1fgoogle/protobuf/timestamp.proto\x1a\x18vaultsync/v1/types.proto\x1a\x1cvaultsync/v1/vault_key.proto\"\xeb\x01\n" +
 	"\n" +
 	"Invitation\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12+\n" +
@@ -964,12 +988,14 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\vcreate_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12;\n" +
 	"\vexpire_time\x18\x05 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"expireTime\"\xaa\x01\n" +
+	"expireTime\"\xc9\x01\n" +
 	"\x06Member\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\tR\x06userId\x12!\n" +
 	"\fdisplay_name\x18\x02 \x01(\tR\vdisplayName\x12+\n" +
 	"\x04role\x18\x03 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x127\n" +
-	"\tjoin_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bjoinTime\"\x82\x01\n" +
+	"\tjoin_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\bjoinTime\x12\x1d\n" +
+	"\n" +
+	"public_key\x18\x05 \x01(\fR\tpublicKey\"\x82\x01\n" +
 	"\x17CreateInvitationRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12+\n" +
 	"\x04role\x18\x02 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x12\x1f\n" +
@@ -1001,10 +1027,12 @@ const file_vaultsync_v1_membership_proto_rawDesc = "" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12+\n" +
 	"\x04role\x18\x03 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\"H\n" +
 	"\x18UpdateMemberRoleResponse\x12,\n" +
-	"\x06member\x18\x01 \x01(\v2\x14.vaultsync.v1.MemberR\x06member\"I\n" +
+	"\x06member\x18\x01 \x01(\v2\x14.vaultsync.v1.MemberR\x06member\"\x81\x01\n" +
 	"\x13RemoveMemberRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x17\n" +
-	"\auser_id\x18\x02 \x01(\tR\x06userId\"\x16\n" +
+	"\auser_id\x18\x02 \x01(\tR\x06userId\x126\n" +
+	"\n" +
+	"next_epoch\x18\x03 \x01(\v2\x17.vaultsync.v1.NextEpochR\tnextEpoch\"\x16\n" +
 	"\x14RemoveMemberResponse\".\n" +
 	"\x11LeaveVaultRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\"\x14\n" +
@@ -1055,6 +1083,7 @@ var file_vaultsync_v1_membership_proto_goTypes = []any{
 	(VaultRole)(0),                   // 18: vaultsync.v1.VaultRole
 	(*timestamppb.Timestamp)(nil),    // 19: google.protobuf.Timestamp
 	(*Vault)(nil),                    // 20: vaultsync.v1.Vault
+	(*NextEpoch)(nil),                // 21: vaultsync.v1.NextEpoch
 }
 var file_vaultsync_v1_membership_proto_depIdxs = []int32{
 	18, // 0: vaultsync.v1.Invitation.role:type_name -> vaultsync.v1.VaultRole
@@ -1069,27 +1098,28 @@ var file_vaultsync_v1_membership_proto_depIdxs = []int32{
 	1,  // 9: vaultsync.v1.ListMembersResponse.members:type_name -> vaultsync.v1.Member
 	18, // 10: vaultsync.v1.UpdateMemberRoleRequest.role:type_name -> vaultsync.v1.VaultRole
 	1,  // 11: vaultsync.v1.UpdateMemberRoleResponse.member:type_name -> vaultsync.v1.Member
-	2,  // 12: vaultsync.v1.MembershipService.CreateInvitation:input_type -> vaultsync.v1.CreateInvitationRequest
-	4,  // 13: vaultsync.v1.MembershipService.ListInvitations:input_type -> vaultsync.v1.ListInvitationsRequest
-	6,  // 14: vaultsync.v1.MembershipService.RevokeInvitation:input_type -> vaultsync.v1.RevokeInvitationRequest
-	8,  // 15: vaultsync.v1.MembershipService.RedeemInvitation:input_type -> vaultsync.v1.RedeemInvitationRequest
-	10, // 16: vaultsync.v1.MembershipService.ListMembers:input_type -> vaultsync.v1.ListMembersRequest
-	12, // 17: vaultsync.v1.MembershipService.UpdateMemberRole:input_type -> vaultsync.v1.UpdateMemberRoleRequest
-	14, // 18: vaultsync.v1.MembershipService.RemoveMember:input_type -> vaultsync.v1.RemoveMemberRequest
-	16, // 19: vaultsync.v1.MembershipService.LeaveVault:input_type -> vaultsync.v1.LeaveVaultRequest
-	3,  // 20: vaultsync.v1.MembershipService.CreateInvitation:output_type -> vaultsync.v1.CreateInvitationResponse
-	5,  // 21: vaultsync.v1.MembershipService.ListInvitations:output_type -> vaultsync.v1.ListInvitationsResponse
-	7,  // 22: vaultsync.v1.MembershipService.RevokeInvitation:output_type -> vaultsync.v1.RevokeInvitationResponse
-	9,  // 23: vaultsync.v1.MembershipService.RedeemInvitation:output_type -> vaultsync.v1.RedeemInvitationResponse
-	11, // 24: vaultsync.v1.MembershipService.ListMembers:output_type -> vaultsync.v1.ListMembersResponse
-	13, // 25: vaultsync.v1.MembershipService.UpdateMemberRole:output_type -> vaultsync.v1.UpdateMemberRoleResponse
-	15, // 26: vaultsync.v1.MembershipService.RemoveMember:output_type -> vaultsync.v1.RemoveMemberResponse
-	17, // 27: vaultsync.v1.MembershipService.LeaveVault:output_type -> vaultsync.v1.LeaveVaultResponse
-	20, // [20:28] is the sub-list for method output_type
-	12, // [12:20] is the sub-list for method input_type
-	12, // [12:12] is the sub-list for extension type_name
-	12, // [12:12] is the sub-list for extension extendee
-	0,  // [0:12] is the sub-list for field type_name
+	21, // 12: vaultsync.v1.RemoveMemberRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
+	2,  // 13: vaultsync.v1.MembershipService.CreateInvitation:input_type -> vaultsync.v1.CreateInvitationRequest
+	4,  // 14: vaultsync.v1.MembershipService.ListInvitations:input_type -> vaultsync.v1.ListInvitationsRequest
+	6,  // 15: vaultsync.v1.MembershipService.RevokeInvitation:input_type -> vaultsync.v1.RevokeInvitationRequest
+	8,  // 16: vaultsync.v1.MembershipService.RedeemInvitation:input_type -> vaultsync.v1.RedeemInvitationRequest
+	10, // 17: vaultsync.v1.MembershipService.ListMembers:input_type -> vaultsync.v1.ListMembersRequest
+	12, // 18: vaultsync.v1.MembershipService.UpdateMemberRole:input_type -> vaultsync.v1.UpdateMemberRoleRequest
+	14, // 19: vaultsync.v1.MembershipService.RemoveMember:input_type -> vaultsync.v1.RemoveMemberRequest
+	16, // 20: vaultsync.v1.MembershipService.LeaveVault:input_type -> vaultsync.v1.LeaveVaultRequest
+	3,  // 21: vaultsync.v1.MembershipService.CreateInvitation:output_type -> vaultsync.v1.CreateInvitationResponse
+	5,  // 22: vaultsync.v1.MembershipService.ListInvitations:output_type -> vaultsync.v1.ListInvitationsResponse
+	7,  // 23: vaultsync.v1.MembershipService.RevokeInvitation:output_type -> vaultsync.v1.RevokeInvitationResponse
+	9,  // 24: vaultsync.v1.MembershipService.RedeemInvitation:output_type -> vaultsync.v1.RedeemInvitationResponse
+	11, // 25: vaultsync.v1.MembershipService.ListMembers:output_type -> vaultsync.v1.ListMembersResponse
+	13, // 26: vaultsync.v1.MembershipService.UpdateMemberRole:output_type -> vaultsync.v1.UpdateMemberRoleResponse
+	15, // 27: vaultsync.v1.MembershipService.RemoveMember:output_type -> vaultsync.v1.RemoveMemberResponse
+	17, // 28: vaultsync.v1.MembershipService.LeaveVault:output_type -> vaultsync.v1.LeaveVaultResponse
+	21, // [21:29] is the sub-list for method output_type
+	13, // [13:21] is the sub-list for method input_type
+	13, // [13:13] is the sub-list for extension type_name
+	13, // [13:13] is the sub-list for extension extendee
+	0,  // [0:13] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_membership_proto_init() }
@@ -1098,6 +1128,7 @@ func file_vaultsync_v1_membership_proto_init() {
 		return
 	}
 	file_vaultsync_v1_types_proto_init()
+	file_vaultsync_v1_vault_key_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

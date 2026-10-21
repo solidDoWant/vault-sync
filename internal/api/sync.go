@@ -67,6 +67,11 @@ type SyncService struct {
 	Limits SyncLimits
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
+	// AllowE2EE lets CommitRevision write to end-to-end encrypted vaults,
+	// under the vault's current key epoch, with the plaintext vaults' path
+	// rules. Test-only: until issue #39 defines E2EE paths and lifts the
+	// CreateVault guard (SPEC.md §9.3), no production server sets it.
+	AllowE2EE bool
 }
 
 var _ vaultsyncv1connect.SyncServiceHandler = SyncService{}
@@ -342,9 +347,22 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 	// End-to-end encrypted vaults cannot be created until key management
 	// exists (SPEC.md §9.3); their path keys are client-computed HMACs and
 	// their paths ciphertext, which this server does not accept yet.
-	if encryption != store.EncryptionNone {
+	if encryption != store.EncryptionNone && !service.AllowE2EE {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("end-to-end encrypted vaults are not supported yet"))
 	}
+
+	// The store checks the epoch against the vault's current one under the
+	// vault row lock; here only its form.
+	epoch := request.Msg.GetEpoch()
+
+	switch {
+	case encryption == store.EncryptionNone && epoch != 0:
+		return nil, invalidArgument("epoch must be 0 in a plaintext vault")
+	case encryption != store.EncryptionNone && (epoch == 0 || epoch > math.MaxInt32):
+		return nil, invalidArgument("epoch must be the vault's current key epoch (1 to %d)", math.MaxInt32)
+	}
+
+	revision.Epoch = int32(epoch) //nolint:gosec // checked against MaxInt32 above.
 
 	if len(request.Msg.GetPathKey()) != 0 {
 		return nil, invalidArgument("path_key must be empty for plaintext vaults; the server derives it from path")
@@ -386,6 +404,9 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 	case errors.Is(err, store.ErrPathFolderTaken):
 		return connect.NewError(connect.CodeAlreadyExists,
 			errors.New("a live document's path is a folder of this path, or this path is a folder of a live document's (ignoring case and Unicode normalization)"))
+	case errors.Is(err, store.ErrEpochNotCurrent):
+		return ReasonError(connect.CodeFailedPrecondition, vaultsyncv1.ErrorReason_ERROR_REASON_EPOCH_NOT_CURRENT,
+			errors.New("epoch is not the vault's current key epoch; list the vault's epochs, encrypt under the current one and retry"))
 	case errors.Is(err, store.ErrDeviceNotFound):
 		return ReasonError(connect.CodeNotFound, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND,
 			errors.New("device not found: it was removed or is not yours; register this installation again"))
@@ -579,6 +600,7 @@ func revisionMessage(revision store.Revision) *vaultsyncv1.Revision {
 		UserId:     revision.UserID.String(),
 		CreateTime: timestamppb.New(revision.CreatedAt),
 		Anchor:     revision.Anchor[:],
+		Epoch:      uint32(max(revision.Epoch, 0)),
 	}
 
 	if revision.ParentRevID.Valid {

@@ -8,13 +8,15 @@ import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { Vault, VaultRole } from "./types_pb";
 import { file_vaultsync_v1_types } from "./types_pb";
+import type { NextEpoch } from "./vault_key_pb";
+import { file_vaultsync_v1_vault_key } from "./vault_key_pb";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file vaultsync/v1/membership.proto.
  */
 export const file_vaultsync_v1_membership: GenFile = /*@__PURE__*/
-  fileDesc("Ch12YXVsdHN5bmMvdjEvbWVtYmVyc2hpcC5wcm90bxIMdmF1bHRzeW5jLnYxIroBCgpJbnZpdGF0aW9uEgoKAmlkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZXhwaXJlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIoUBCgZNZW1iZXISDwoHdXNlcl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLQoJam9pbl90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcCJnChdDcmVhdGVJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIlCgRyb2xlGAIgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZRITCgt0dGxfc2Vjb25kcxgDIAEoDSJWChhDcmVhdGVJbnZpdGF0aW9uUmVzcG9uc2USLAoKaW52aXRhdGlvbhgBIAEoCzIYLnZhdWx0c3luYy52MS5JbnZpdGF0aW9uEgwKBGNvZGUYAiABKAkiKgoWTGlzdEludml0YXRpb25zUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCSJIChdMaXN0SW52aXRhdGlvbnNSZXNwb25zZRItCgtpbnZpdGF0aW9ucxgBIAMoCzIYLnZhdWx0c3luYy52MS5JbnZpdGF0aW9uIkIKF1Jldm9rZUludml0YXRpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhUKDWludml0YXRpb25faWQYAiABKAkiGgoYUmV2b2tlSW52aXRhdGlvblJlc3BvbnNlIicKF1JlZGVlbUludml0YXRpb25SZXF1ZXN0EgwKBGNvZGUYASABKAkiPgoYUmVkZWVtSW52aXRhdGlvblJlc3BvbnNlEiIKBXZhdWx0GAEgASgLMhMudmF1bHRzeW5jLnYxLlZhdWx0IiYKEkxpc3RNZW1iZXJzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCSI8ChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC52YXVsdHN5bmMudjEuTWVtYmVyImMKF1VwZGF0ZU1lbWJlclJvbGVSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEg8KB3VzZXJfaWQYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUiQAoYVXBkYXRlTWVtYmVyUm9sZVJlc3BvbnNlEiQKBm1lbWJlchgBIAEoCzIULnZhdWx0c3luYy52MS5NZW1iZXIiOAoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJIhYKFFJlbW92ZU1lbWJlclJlc3BvbnNlIiUKEUxlYXZlVmF1bHRSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJIhQKEkxlYXZlVmF1bHRSZXNwb25zZTKLBgoRTWVtYmVyc2hpcFNlcnZpY2USYwoQQ3JlYXRlSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5DcmVhdGVJbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5DcmVhdGVJbnZpdGF0aW9uUmVzcG9uc2UiABJgCg9MaXN0SW52aXRhdGlvbnMSJC52YXVsdHN5bmMudjEuTGlzdEludml0YXRpb25zUmVxdWVzdBolLnZhdWx0c3luYy52MS5MaXN0SW52aXRhdGlvbnNSZXNwb25zZSIAEmMKEFJldm9rZUludml0YXRpb24SJS52YXVsdHN5bmMudjEuUmV2b2tlSW52aXRhdGlvblJlcXVlc3QaJi52YXVsdHN5bmMudjEuUmV2b2tlSW52aXRhdGlvblJlc3BvbnNlIgASYwoQUmVkZWVtSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5SZWRlZW1JbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZWRlZW1JbnZpdGF0aW9uUmVzcG9uc2UiABJUCgtMaXN0TWVtYmVycxIgLnZhdWx0c3luYy52MS5MaXN0TWVtYmVyc1JlcXVlc3QaIS52YXVsdHN5bmMudjEuTGlzdE1lbWJlcnNSZXNwb25zZSIAEmMKEFVwZGF0ZU1lbWJlclJvbGUSJS52YXVsdHN5bmMudjEuVXBkYXRlTWVtYmVyUm9sZVJlcXVlc3QaJi52YXVsdHN5bmMudjEuVXBkYXRlTWVtYmVyUm9sZVJlc3BvbnNlIgASVwoMUmVtb3ZlTWVtYmVyEiEudmF1bHRzeW5jLnYxLlJlbW92ZU1lbWJlclJlcXVlc3QaIi52YXVsdHN5bmMudjEuUmVtb3ZlTWVtYmVyUmVzcG9uc2UiABJRCgpMZWF2ZVZhdWx0Eh8udmF1bHRzeW5jLnYxLkxlYXZlVmF1bHRSZXF1ZXN0GiAudmF1bHRzeW5jLnYxLkxlYXZlVmF1bHRSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_google_protobuf_timestamp, file_vaultsync_v1_types]);
+  fileDesc("Ch12YXVsdHN5bmMvdjEvbWVtYmVyc2hpcC5wcm90bxIMdmF1bHRzeW5jLnYxIroBCgpJbnZpdGF0aW9uEgoKAmlkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZXhwaXJlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIpkBCgZNZW1iZXISDwoHdXNlcl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLQoJam9pbl90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpwdWJsaWNfa2V5GAUgASgMImcKF0NyZWF0ZUludml0YXRpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhMKC3R0bF9zZWNvbmRzGAMgASgNIlYKGENyZWF0ZUludml0YXRpb25SZXNwb25zZRIsCgppbnZpdGF0aW9uGAEgASgLMhgudmF1bHRzeW5jLnYxLkludml0YXRpb24SDAoEY29kZRgCIAEoCSIqChZMaXN0SW52aXRhdGlvbnNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJIkgKF0xpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlEi0KC2ludml0YXRpb25zGAEgAygLMhgudmF1bHRzeW5jLnYxLkludml0YXRpb24iQgoXUmV2b2tlSW52aXRhdGlvblJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSFQoNaW52aXRhdGlvbl9pZBgCIAEoCSIaChhSZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiJwoXUmVkZWVtSW52aXRhdGlvblJlcXVlc3QSDAoEY29kZRgBIAEoCSI+ChhSZWRlZW1JbnZpdGF0aW9uUmVzcG9uc2USIgoFdmF1bHQYASABKAsyEy52YXVsdHN5bmMudjEuVmF1bHQiJgoSTGlzdE1lbWJlcnNSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJIjwKE0xpc3RNZW1iZXJzUmVzcG9uc2USJQoHbWVtYmVycxgBIAMoCzIULnZhdWx0c3luYy52MS5NZW1iZXIiYwoXVXBkYXRlTWVtYmVyUm9sZVJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSDwoHdXNlcl9pZBgCIAEoCRIlCgRyb2xlGAMgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZSJAChhVcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2USJAoGbWVtYmVyGAEgASgLMhQudmF1bHRzeW5jLnYxLk1lbWJlciJlChNSZW1vdmVNZW1iZXJSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEg8KB3VzZXJfaWQYAiABKAkSKwoKbmV4dF9lcG9jaBgDIAEoCzIXLnZhdWx0c3luYy52MS5OZXh0RXBvY2giFgoUUmVtb3ZlTWVtYmVyUmVzcG9uc2UiJQoRTGVhdmVWYXVsdFJlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiFAoSTGVhdmVWYXVsdFJlc3BvbnNlMosGChFNZW1iZXJzaGlwU2VydmljZRJjChBDcmVhdGVJbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXNwb25zZSIAEmAKD0xpc3RJbnZpdGF0aW9ucxIkLnZhdWx0c3luYy52MS5MaXN0SW52aXRhdGlvbnNSZXF1ZXN0GiUudmF1bHRzeW5jLnYxLkxpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlIgASYwoQUmV2b2tlSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiABJjChBSZWRlZW1JbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXNwb25zZSIAElQKC0xpc3RNZW1iZXJzEiAudmF1bHRzeW5jLnYxLkxpc3RNZW1iZXJzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0TWVtYmVyc1Jlc3BvbnNlIgASYwoQVXBkYXRlTWVtYmVyUm9sZRIlLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBomLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2UiABJXCgxSZW1vdmVNZW1iZXISIS52YXVsdHN5bmMudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW1vdmVNZW1iZXJSZXNwb25zZSIAElEKCkxlYXZlVmF1bHQSHy52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlcXVlc3QaIC52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types, file_vaultsync_v1_vault_key]);
 
 /**
  * Invitation is a pending invitation to a vault. It never carries the code.
@@ -98,6 +100,15 @@ export type Member = Message<"vaultsync.v1.Member"> & {
    * @generated from field: google.protobuf.Timestamp join_time = 4;
    */
   joinTime?: Timestamp | undefined;
+
+  /**
+   * The member's X25519 user public key (32 bytes) for wrapping vault
+   * epoch keys to them, or empty when they have no user key
+   * (UserKeyService).
+   *
+   * @generated from field: bytes public_key = 5;
+   */
+  publicKey: Uint8Array;
 };
 
 /**
@@ -416,6 +427,17 @@ export type RemoveMemberRequest = Message<"vaultsync.v1.RemoveMemberRequest"> & 
    * @generated from field: string user_id = 2;
    */
   userId: string;
+
+  /**
+   * The epoch that replaces the current one: required in an end-to-end
+   * encrypted vault, and must be unset in a plaintext vault. Its slots must
+   * wrap the new epoch key to every remaining member with a user key (plus
+   * at most one escrow slot in an escrow vault), and not to the removed
+   * member.
+   *
+   * @generated from field: vaultsync.v1.NextEpoch next_epoch = 3;
+   */
+  nextEpoch?: NextEpoch | undefined;
 };
 
 /**
@@ -587,9 +609,21 @@ export const MembershipService: GenService<{
    * RemoveMember removes a member from the vault. The revisions they
    * committed keep their history.
    *
-   * Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID;
-   * NOT_FOUND when the user is not a member; FAILED_PRECONDITION when it
-   * would remove the vault's last owner.
+   * In an end-to-end encrypted vault the request must carry next_epoch, the
+   * epoch that replaces the current one, wrapped for every remaining member
+   * with a user key (VaultKeyService): the removal and the new epoch take
+   * effect together, as a compare-and-set on the current epoch, so no
+   * revision is accepted under an epoch the removed member holds. Without a
+   * valid next epoch nothing changes and the member stays. A plaintext
+   * vault takes no next_epoch.
+   *
+   * Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
+   * when next_epoch is missing in an E2EE vault, given in a plaintext vault
+   * or out of bounds, or when its slots are not exactly the new epoch's
+   * recipients (the removed member is not one); NOT_FOUND when the user is
+   * not a member; FAILED_PRECONDITION when it would remove the vault's last
+   * owner, or, with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
+   * when next_epoch.expected_epoch is not the vault's current epoch.
    *
    * @generated from rpc vaultsync.v1.MembershipService.RemoveMember
    */
@@ -600,6 +634,9 @@ export const MembershipService: GenService<{
   },
   /**
    * LeaveVault removes the caller from the vault. Any member may call it.
+   * In an end-to-end encrypted vault it marks a rotation pending, for an
+   * owner client to create the next epoch (VaultKeyService.RotateEpoch);
+   * until then revisions are still accepted under the current epoch.
    *
    * Errors: FAILED_PRECONDITION when the caller is the vault's last owner.
    *

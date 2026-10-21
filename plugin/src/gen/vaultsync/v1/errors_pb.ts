@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/errors.proto.
  */
 export const file_vaultsync_v1_errors: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKu8BCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAVCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKpMCCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAUSIgoeRVJST1JfUkVBU09OX0VQT0NIX05PVF9DVVJSRU5UEAZCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * ErrorDetail is attached to an error (as a Connect error detail) to give
@@ -103,6 +103,18 @@ export enum ErrorReason {
    * @generated from enum value: ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED = 5;
    */
   PASSPHRASE_ATTEMPTS_EXHAUSTED = 5,
+
+  /**
+   * FAILED_PRECONDITION from CommitRevision, RotateEpoch or RemoveMember:
+   * the key epoch the request names (CommitRevisionRequest.epoch,
+   * NextEpoch.expected_epoch) is not the vault's current epoch, because
+   * another rotation or removal created a newer one. The client fetches the
+   * vault's epochs (VaultKeyService.ListEpochs), adopts the current one and
+   * retries.
+   *
+   * @generated from enum value: ERROR_REASON_EPOCH_NOT_CURRENT = 6;
+   */
+  EPOCH_NOT_CURRENT = 6,
 }
 
 /**

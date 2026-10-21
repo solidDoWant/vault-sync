@@ -104,6 +104,7 @@ func memberMessage(member store.Member) *vaultsyncv1.Member {
 		DisplayName: member.DisplayName,
 		Role:        roleMessage(member.Role),
 		JoinTime:    timestamppb.New(member.JoinedAt),
+		PublicKey:   member.PublicKey,
 	}
 }
 
@@ -251,6 +252,10 @@ func (service MembershipService) memberChangeError(ctx context.Context, message 
 	case errors.Is(err, store.ErrLastOwner):
 		return connect.NewError(connect.CodeFailedPrecondition, store.ErrLastOwner)
 	default:
+		if mapped := KeyError(err); mapped != nil {
+			return mapped
+		}
+
 		return service.internal(ctx, message, err)
 	}
 }
@@ -280,8 +285,14 @@ func (service MembershipService) UpdateMemberRole(ctx context.Context, request *
 	return connect.NewResponse(&vaultsyncv1.UpdateMemberRoleResponse{Member: memberMessage(member)}), nil
 }
 
-// RemoveMember removes a member from the vault.
+// RemoveMember removes a member from the vault and, in an E2EE vault,
+// creates the next epoch with it.
 func (service MembershipService) RemoveMember(ctx context.Context, request *connect.Request[vaultsyncv1.RemoveMemberRequest]) (*connect.Response[vaultsyncv1.RemoveMemberResponse], error) {
+	owner, ok := auth.UserFromContext(ctx)
+	if !ok {
+		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrUnauthenticated)
+	}
+
 	vault, err := service.vault(ctx)
 	if err != nil {
 		return nil, err
@@ -292,7 +303,20 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("user_id: %w", err))
 	}
 
-	if err := vault.RemoveMember(ctx, userID); err != nil {
+	// Bounded before the database is touched; whether the vault needs one
+	// is the store's to decide, under the vault row lock.
+	var next *store.NextEpoch
+
+	if request.Msg.GetNextEpoch() != nil {
+		parsed, err := ParseNextEpoch(request.Msg.GetNextEpoch())
+		if err != nil {
+			return nil, err
+		}
+
+		next = &parsed
+	}
+
+	if err := vault.RemoveMember(ctx, owner.ID, userID, next); err != nil {
 		return nil, service.memberChangeError(ctx, "cannot remove member", err)
 	}
 
@@ -311,7 +335,7 @@ func (service MembershipService) LeaveVault(ctx context.Context, _ *connect.Requ
 		return nil, err
 	}
 
-	if err := vault.RemoveMember(ctx, user.ID); err != nil {
+	if err := vault.LeaveVault(ctx, user.ID); err != nil {
 		return nil, service.memberChangeError(ctx, "cannot leave vault", err)
 	}
 
