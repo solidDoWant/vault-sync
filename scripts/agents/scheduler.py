@@ -720,7 +720,8 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
             add(Job(key, sess["role"], 4, issue_sort(issue), f"continue ({why})",
                     "Continue where you stopped: your previous run " +
                     ("was interrupted (usage limit or crash)." if sess.get("interrupted")
-                     else "handed back as incomplete (time box)."),
+                     else "handed back as incomplete (time box).") +
+                    (f" Its trigger was: {sess['last_trigger']}" if sess.get("last_trigger") else ""),
                     issue, sess.get("pr"), tuple(x for x in (f"issue:{issue}" if issue else None,
                                                              f"pr:{sess['pr']}" if sess.get("pr") else None) if x)))
         elif state_ == "wait-pr" and handoff.get("pr") and handoff["pr"] not in snap.prs:
@@ -738,7 +739,8 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
         trigger = spec["brief"]
         if handoff.get("state") == "wait-pr":
             trigger = f"PR #{handoff['pr']}, which you were waiting on, is no longer open (merged or closed). Continue."
-        add(Job(f"special:{sid}", spec["role"], 4, (spec.get("priority", 0), sid), f"queued {spec['role']}",
+        # After continuations (whose first sort field is at most 2).
+        add(Job(f"special:{sid}", spec["role"], 4, (9, spec.get("priority", 0), 0, 0), f"queued {spec['role']}",
                 trigger, locks=role_locks(spec["role"], cfg), special_id=sid))
 
     # In-progress issues with no PR and no agent (tier 4) and ready issues (tier 5).
@@ -792,6 +794,7 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
 def in_flight_locks(snap: Snapshot, state: dict, cfg: dict) -> dict:
     """lock name -> holder description, from GitHub and running jobs."""
     held: dict = {}
+    running_keys = {run["key"] for run in state.get("running", {}).values()}
     pr_issues = set()
     for pr in snap.prs.values():
         pr_issues |= set(pr.closing)
@@ -800,7 +803,7 @@ def in_flight_locks(snap: Snapshot, state: dict, cfg: dict) -> dict:
         if not locks:
             continue
         busy = (issue.status in ("status:in-progress", "status:in-review") or issue.number in pr_issues
-                or f"worker:{issue.number}" in state.get("running", {}))
+                or f"worker:{issue.number}" in running_keys)
         if busy:
             for name in locks:
                 held.setdefault(name, f"#{issue.number}")
@@ -1179,16 +1182,23 @@ class Scheduler:
         now = now_utc()
         duration = int((now - parse_iso(run["started"])).total_seconds())
         sess = self.state["sessions"].setdefault(key, {})
+        # total_cost_usd is cumulative over a resumed session: this run's
+        # cost is the difference from what the session had cost before.
+        reported = info["cost_usd"]
+        prev = sess.get("session_cost_usd") or 0 if run.get("mode") == "resume" else 0
+        run_cost = round(max(0.0, reported - prev), 4) if reported is not None else None
+        if reported and info["assistant_turns"]:
+            sess["session_cost_usd"] = reported
         sess.update(role=run["role"], issue=run.get("issue"), pr=run.get("pr"), worktree=run.get("worktree"),
                     last_trigger=run.get("trigger"), updated=iso(now))
         if info["assistant_turns"]:
             sess["session_id"] = info["session_id"] or run.get("session_id")
             sess["context_tokens"] = info["context_tokens"]
         elif run.get("mode") == "fresh":
-            sess.pop("session_id", None)  # nothing to resume
-            sess.pop("context_tokens", None)
+            for k in ("session_id", "context_tokens", "session_cost_usd"):
+                sess.pop(k, None)  # nothing to resume
         sess["runs"] = sess.get("runs", 0) + 1
-        sess["cost_usd"] = round((sess.get("cost_usd") or 0) + (info["cost_usd"] or 0), 4)
+        sess["cost_usd"] = round((sess.get("cost_usd") or 0) + (run_cost or 0), 4)
         handoff = None
         if outcome == "ok":
             sess["last_report"] = (info["result"] or "")[-8000:]
@@ -1206,13 +1216,14 @@ class Scheduler:
                 self.state["limit_until"] = iso(until)
             self.event("limit", job=job_id, key=key, until=iso(until), message=(info.get("result") or "")[:200])
         elif outcome == "resume-missing":
-            sess.pop("session_id", None)
-            sess.pop("context_tokens", None)
+            for k in ("session_id", "context_tokens", "session_cost_usd"):
+                sess.pop(k, None)
         else:
             sess["interrupted"] = f"exit {rc}"
             self.record_failure(key, run, info, rc, stderr_text)
         self.event("exit", job=job_id, key=key, role=run["role"], issue=run.get("issue"), pr=run.get("pr"),
-                   mode=run.get("mode"), outcome=outcome, rc=rc, duration_s=duration, cost_usd=info["cost_usd"],
+                   mode=run.get("mode"), outcome=outcome, rc=rc, duration_s=duration, cost_usd=run_cost,
+                   session_cost_usd=reported,
                    context_tokens=info["context_tokens"], usage=info["usage"], turns=info["num_turns"],
                    handoff=handoff, session_id=sess.get("session_id"))
         if key == "planner":
@@ -1254,8 +1265,10 @@ class Scheduler:
     # Worktrees ---------------------------------------------------------
 
     def git(self, *args, cwd=None, check=True) -> subprocess.CompletedProcess:
-        return subprocess.run(["git", *args], cwd=cwd or self.repo, capture_output=True, text=True, check=check,
-                              timeout=300)
+        proc = subprocess.run(["git", *args], cwd=cwd or self.repo, capture_output=True, text=True, timeout=300)
+        if check and proc.returncode != 0:
+            raise RuntimeError(f"git {' '.join(args)}: rc={proc.returncode}: {proc.stderr.strip()[-500:]}")
+        return proc
 
     def branch_in_use(self, branch: str) -> str | None:
         out = self.git("worktree", "list", "--porcelain").stdout
@@ -1287,8 +1300,7 @@ class Scheduler:
         self.git("fetch", "-q", "origin")
         path.parent.mkdir(parents=True, exist_ok=True)
         if job.role == "issue-worker" and pr:
-            branch = pr.head_ref
-            self.git("fetch", "-q", "origin", f"{branch}:refs/remotes/origin/{branch}", check=False)
+            branch = pr.head_ref  # origin/<branch> is fresh from the fetch above
             other = self.branch_in_use(branch)
             if other:
                 self.git("worktree", "add", "--detach", str(path), f"origin/{branch}")

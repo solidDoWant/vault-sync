@@ -188,9 +188,13 @@ class PlanTest(unittest.TestCase):
     def test_special_jobs_and_release_lock(self):
         specials = {"hunt-1": {"role": "bug-hunter", "brief": "sync under faults", "priority": 0},
                     "rel": {"role": "release-manager", "brief": "release 0.2.0", "priority": 1}}
-        plan = plan_for(snap([issue(1)]), {"specials": specials})
-        self.assertEqual(keys(plan), ["special:hunt-1", "special:rel", "worker:1"])
-        self.assertEqual(plan.jobs[1].locks, ("release",))
+        sessions = {"worker:2": {"role": "issue-worker", "issue": 2, "handoff": {"state": "incomplete"},
+                                 "last_trigger": "Implement issue #2"}}
+        plan = plan_for(snap([issue(1), issue(2, status="status:in-progress")]),
+                        {"specials": specials, "sessions": sessions})
+        self.assertEqual(keys(plan), ["worker:2", "special:hunt-1", "special:rel", "worker:1"])
+        self.assertIn("Its trigger was: Implement issue #2", plan.jobs[0].trigger)
+        self.assertEqual(plan.jobs[2].locks, ("release",))
 
     def test_review_rounds_give_up_and_planner_override(self):
         reviews = [review("changes", c * 40) for c in "abc"]
@@ -349,9 +353,10 @@ FAKE_CLAUDE = textwrap.dedent("""\
               "result": "You've hit your session limit · resets 3am (UTC)", "total_cost_usd": 0})
         sys.exit(1)
     ctx = int(os.environ.get("FAKE_CLAUDE_CONTEXT", "1000"))
+    cost = 0.5 if "--resume" in args else 0.25  # cumulative over the session
     emit({"type": "assistant", "parent_tool_use_id": None,
           "message": {"usage": {"input_tokens": 10, "cache_read_input_tokens": ctx - 10, "output_tokens": 0}}})
-    emit({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": 0.25, "num_turns": 1,
+    emit({"type": "result", "subtype": "success", "is_error": False, "total_cost_usd": cost, "num_turns": 1,
           "result": os.environ.get("FAKE_CLAUDE_RESULT", "Did the thing.\\nHANDOFF: pr-ready"),
           "usage": {"input_tokens": 10}})
 """)
@@ -421,11 +426,9 @@ class SchedulerTest(unittest.TestCase):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
-        for run in self.sched.state["running"].values():
-            try:
-                os.killpg(run["pid"], 9)
-            except (OSError, TypeError):
-                pass
+        for proc in self.sched.procs.values():
+            proc.kill()
+            proc.wait()
         self.tmp.cleanup()
 
     def calls_made(self):
@@ -477,6 +480,9 @@ class SchedulerTest(unittest.TestCase):
         self.assertIn("requested changes", call["argv"][call["argv"].index("-p") + 1])
         self.assertEqual([e["event"] for e in map(json.loads, self.sched.event_log.read_text().splitlines())
                           if e["event"] in ("fresh", "resume")], ["fresh", "resume"])
+        # The fake reports a cumulative session cost like claude does.
+        self.assertEqual([e["cost_usd"] for e in self.events("exit")], [0.25, 0.25])
+        self.assertEqual(self.sched.state["sessions"]["worker:1"]["cost_usd"], 0.5)
 
     def test_large_context_starts_fresh_seeded_with_report(self):
         self.disable_planner()
