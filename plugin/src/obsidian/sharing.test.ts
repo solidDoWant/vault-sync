@@ -108,6 +108,7 @@ function fakeServer(caller = ownerId) {
         return {};
       },
       redeemInvitation: (request) => {
+        requests.push("RedeemInvitation");
         const index = invitations.findIndex((pending) => pending.code === request.code);
         if (index < 0) throw new ConnectError("invitation not found", Code.NotFound);
         if (members.has(caller)) throw new ConnectError("already a member of this vault", Code.AlreadyExists);
@@ -283,6 +284,14 @@ describe("joining with an invite code (#34)", () => {
       expect((error as Error).message).not.toContain(code);
     }
     expect(server.members.has("0190a8c0-0000-7000-8000-0000000000e5")).toBe(false);
+  });
+
+  it("refuses an empty code without asking the server", async () => {
+    const server = fakeServer(newcomer);
+
+    await expect(joinVault(server.client, " \n")).rejects.toBeInstanceOf(InviteCodeError);
+
+    expect(server.requests).toEqual([]);
   });
 
   it("tells an existing member to connect the vault from the list, and leaves the code usable", async () => {
