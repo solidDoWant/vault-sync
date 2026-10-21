@@ -100,6 +100,9 @@ type Options struct {
 	// Memberships resolves callers' vault roles for every procedure in
 	// VaultProcedures. When nil, every caller is treated as a non-member.
 	Memberships authz.MembershipStore
+	// Membership serves MembershipService. When nil, MembershipService is
+	// unimplemented. Its Logger defaults to Logger.
+	Membership *api.MembershipService
 	// Sync serves SyncService. When nil, SyncService is unimplemented. Its
 	// Logger defaults to Logger.
 	Sync *api.SyncService
@@ -184,20 +187,29 @@ var PublicProcedures = []string{
 }
 
 // VaultProcedures classifies every vault-scoped procedure (every procedure
-// whose request carries a vault_id) as a read or a write (SPEC.md §9.2). The
-// authorization interceptor resolves the caller's role in the vault before
-// the handler runs: non-members get NOT_FOUND and viewers calling a write get
-// PERMISSION_DENIED. A request carrying a vault_id for a procedure missing
+// whose request carries a vault_id) as a read, a write or a manage (owner
+// only) procedure (SPEC.md §9.2). The authorization interceptor resolves the
+// caller's role in the vault before the handler runs: non-members get
+// NOT_FOUND, viewers calling a write and non-owners calling a manage
+// procedure get PERMISSION_DENIED. A request carrying a vault_id for a procedure missing
 // here is rejected.
 var VaultProcedures = map[string]authz.Access{
-	vaultsyncv1connect.SyncServiceListChangesProcedure:        authz.Read,
-	vaultsyncv1connect.SyncServiceGetRevisionProcedure:        authz.Read,
-	vaultsyncv1connect.SyncServiceGetDocumentHistoryProcedure: authz.Read,
-	vaultsyncv1connect.SyncServiceCommitRevisionProcedure:     authz.Write,
-	vaultsyncv1connect.BlobServiceDownloadBlobProcedure:       authz.Read,
-	vaultsyncv1connect.BlobServiceBeginBlobProcedure:          authz.Write,
-	vaultsyncv1connect.BlobServicePutBlobChunkProcedure:       authz.Write,
-	vaultsyncv1connect.BlobServiceCommitBlobProcedure:         authz.Write,
+	vaultsyncv1connect.SyncServiceListChangesProcedure:            authz.Read,
+	vaultsyncv1connect.SyncServiceGetRevisionProcedure:            authz.Read,
+	vaultsyncv1connect.SyncServiceGetDocumentHistoryProcedure:     authz.Read,
+	vaultsyncv1connect.SyncServiceCommitRevisionProcedure:         authz.Write,
+	vaultsyncv1connect.BlobServiceDownloadBlobProcedure:           authz.Read,
+	vaultsyncv1connect.BlobServiceBeginBlobProcedure:              authz.Write,
+	vaultsyncv1connect.BlobServicePutBlobChunkProcedure:           authz.Write,
+	vaultsyncv1connect.BlobServiceCommitBlobProcedure:             authz.Write,
+	vaultsyncv1connect.MembershipServiceCreateInvitationProcedure: authz.Manage,
+	vaultsyncv1connect.MembershipServiceListInvitationsProcedure:  authz.Manage,
+	vaultsyncv1connect.MembershipServiceRevokeInvitationProcedure: authz.Manage,
+	vaultsyncv1connect.MembershipServiceListMembersProcedure:      authz.Manage,
+	vaultsyncv1connect.MembershipServiceUpdateMemberRoleProcedure: authz.Manage,
+	vaultsyncv1connect.MembershipServiceRemoveMemberProcedure:     authz.Manage,
+	// Any member may leave; the last owner cannot (SPEC.md §9.2).
+	vaultsyncv1connect.MembershipServiceLeaveVaultProcedure: authz.Read,
 }
 
 func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) http.Handler {
@@ -273,6 +285,17 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 		blobs = service
 	}
 
+	var membership vaultsyncv1connect.MembershipServiceHandler = vaultsyncv1connect.UnimplementedMembershipServiceHandler{}
+
+	if options.Membership != nil {
+		service := *options.Membership
+		if service.Logger == nil {
+			service.Logger = options.Logger
+		}
+
+		membership = service
+	}
+
 	mux := http.NewServeMux()
 	serverInfo := api.ServerInfoService{OIDCIssuerURL: options.OIDCIssuerURL, OIDCClientID: options.OIDCClientID}
 
@@ -287,6 +310,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 	mux.Handle(vaultsyncv1connect.NewServerInfoServiceHandler(serverInfo, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaults, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewMembershipServiceHandler(membership, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(syncHandler, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(blobs, handlerOptions...))
 

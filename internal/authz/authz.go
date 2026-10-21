@@ -5,7 +5,8 @@
 //   - a caller who is not a member, and a vault that does not exist, both get
 //     the same NOT_FOUND error through the same code path (one membership
 //     query), so existence is never revealed;
-//   - a viewer calling a write procedure gets PERMISSION_DENIED;
+//   - a viewer calling a write procedure, and an editor or viewer calling a
+//     manage procedure, get PERMISSION_DENIED;
 //   - a request whose message carries a vault_id but whose procedure is not
 //     classified as read or write is rejected, so a new vault-scoped
 //     procedure cannot run unauthorized.
@@ -37,6 +38,9 @@ const (
 	Read Access = iota + 1
 	// Write procedures are allowed for owners and editors.
 	Write
+	// Manage procedures (membership management) are allowed for owners
+	// only.
+	Manage
 )
 
 func (access Access) String() string {
@@ -45,6 +49,8 @@ func (access Access) String() string {
 		return "read"
 	case Write:
 		return "write"
+	case Manage:
+		return "manage"
 	default:
 		return fmt.Sprintf("Access(%d)", int(access))
 	}
@@ -135,7 +141,7 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 		return ctx, nil
 	}
 
-	if !carriesVault || (access != Read && access != Write) {
+	if !carriesVault || (access != Read && access != Write && access != Manage) {
 		interceptor.logger.ErrorContext(ctx, "invalid authorization classification", "procedure", procedure, "access", access.String())
 
 		return nil, connect.NewError(connect.CodeInternal, errors.New("cannot authorize request"))
@@ -163,7 +169,10 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 	}
 
 	switch {
-	case role == store.RoleOwner || role == store.RoleEditor:
+	case role == store.RoleOwner:
+	case (role == store.RoleEditor || role == store.RoleViewer) && access == Manage:
+		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only owners can manage this vault"))
+	case role == store.RoleEditor:
 	case role == store.RoleViewer && access == Read:
 	case role == store.RoleViewer:
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("viewers cannot write to this vault"))

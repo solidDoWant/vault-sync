@@ -1,0 +1,212 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+import "google/protobuf/timestamp.proto";
+import "vaultsync/v1/types.proto";
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// MembershipService manages who can access a vault (SPEC.md §9.2): owners
+// invite users, change roles and remove members; invited users redeem their
+// invitation; any member may leave.
+//
+// Every procedure that names a vault resolves the caller's role first. A
+// caller who is not a member, and a vault that does not exist, get the same
+// NOT_FOUND error. CreateInvitation, ListInvitations, RevokeInvitation,
+// ListMembers, UpdateMemberRole and RemoveMember are owner-only: editors and
+// viewers get PERMISSION_DENIED.
+//
+// A vault always has at least one owner: demoting or removing its last owner,
+// and the last owner leaving, fail with FAILED_PRECONDITION.
+//
+// Membership changes take effect on the caller's next request, on every
+// server replica, and end a removed member's open realtime subscriptions to
+// the vault (with a NOT_FOUND error frame).
+service MembershipService {
+  // CreateInvitation creates a single-use invitation to the vault and
+  // returns its code. The code is returned only here: the server stores only
+  // its hash. Anyone holding the code can redeem it until it expires, is
+  // revoked or is used.
+  //
+  // Errors: INVALID_ARGUMENT for an unspecified role or a ttl_seconds above
+  // the server maximum (30 days); RESOURCE_EXHAUSTED when the vault already
+  // has the maximum number of pending invitations (100).
+  rpc CreateInvitation(CreateInvitationRequest) returns (CreateInvitationResponse) {}
+
+  // ListInvitations lists the vault's pending invitations (not used, not
+  // revoked, not expired), oldest first. Codes are never returned. The list
+  // is bounded by the pending invitation limit.
+  rpc ListInvitations(ListInvitationsRequest) returns (ListInvitationsResponse) {}
+
+  // RevokeInvitation revokes a pending invitation; its code can no longer be
+  // redeemed.
+  //
+  // Errors: INVALID_ARGUMENT when invitation_id is not a canonical lowercase
+  // UUID; NOT_FOUND when the vault has no such pending invitation.
+  rpc RevokeInvitation(RevokeInvitationRequest) returns (RevokeInvitationResponse) {}
+
+  // RedeemInvitation makes the caller a member of the invitation's vault
+  // with the invitation's role, and uses the invitation up.
+  //
+  // Errors: NOT_FOUND, with the same message whatever the reason, for a code
+  // that is malformed, unknown, expired, revoked or already used, so a
+  // failed redemption reveals nothing about any vault; ALREADY_EXISTS when
+  // the caller is already a member of the vault (the invitation stays
+  // usable); RESOURCE_EXHAUSTED when the vault already has the maximum
+  // number of members (100).
+  rpc RedeemInvitation(RedeemInvitationRequest) returns (RedeemInvitationResponse) {}
+
+  // ListMembers lists the vault's members, oldest membership first. The list
+  // is bounded by the member limit.
+  rpc ListMembers(ListMembersRequest) returns (ListMembersResponse) {}
+
+  // UpdateMemberRole changes a member's role.
+  //
+  // Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID
+  // or the role is unspecified; NOT_FOUND when the user is not a member;
+  // FAILED_PRECONDITION when it would demote the vault's last owner.
+  rpc UpdateMemberRole(UpdateMemberRoleRequest) returns (UpdateMemberRoleResponse) {}
+
+  // RemoveMember removes a member from the vault. The revisions they
+  // committed keep their history.
+  //
+  // Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID;
+  // NOT_FOUND when the user is not a member; FAILED_PRECONDITION when it
+  // would remove the vault's last owner.
+  rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse) {}
+
+  // LeaveVault removes the caller from the vault. Any member may call it.
+  //
+  // Errors: FAILED_PRECONDITION when the caller is the vault's last owner.
+  rpc LeaveVault(LeaveVaultRequest) returns (LeaveVaultResponse) {}
+}
+
+// Invitation is a pending invitation to a vault. It never carries the code.
+message Invitation {
+  // Invitation id (UUIDv7).
+  string id = 1;
+  // The role the redeeming user receives.
+  VaultRole role = 2;
+  // User id of the owner who created the invitation.
+  string creator_user_id = 3;
+  // When the invitation was created.
+  google.protobuf.Timestamp create_time = 4;
+  // When the invitation expires; it cannot be redeemed from then on.
+  google.protobuf.Timestamp expire_time = 5;
+}
+
+// Member is one member of a vault.
+message Member {
+  // The member's user id (UUIDv7).
+  string user_id = 1;
+  // The member's display name. May be empty.
+  string display_name = 2;
+  // The member's role.
+  VaultRole role = 3;
+  // When the user became a member.
+  google.protobuf.Timestamp join_time = 4;
+}
+
+// CreateInvitationRequest describes the invitation to create.
+message CreateInvitationRequest {
+  // The vault to invite to. The caller must be an owner.
+  string vault_id = 1;
+  // The role the redeeming user receives. Must not be unspecified.
+  VaultRole role = 2;
+  // How long the invitation stays redeemable, in seconds. Zero selects the
+  // server default (7 days); the maximum is 30 days.
+  uint32 ttl_seconds = 3;
+}
+
+// CreateInvitationResponse returns the invitation and its code.
+message CreateInvitationResponse {
+  // The new invitation.
+  Invitation invitation = 1;
+  // The secret invite code to hand to the invited user. It is shown only
+  // once and cannot be retrieved later.
+  string code = 2;
+}
+
+// ListInvitationsRequest names the vault whose invitations to list.
+message ListInvitationsRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+}
+
+// ListInvitationsResponse holds the vault's pending invitations.
+message ListInvitationsResponse {
+  // Pending invitations, oldest first.
+  repeated Invitation invitations = 1;
+}
+
+// RevokeInvitationRequest names the invitation to revoke.
+message RevokeInvitationRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // Id of a pending invitation to the vault (Invitation.id).
+  string invitation_id = 2;
+}
+
+// RevokeInvitationResponse confirms the revocation. It has no fields.
+message RevokeInvitationResponse {}
+
+// RedeemInvitationRequest carries the invite code.
+message RedeemInvitationRequest {
+  // The code from CreateInvitationResponse.code.
+  string code = 1;
+}
+
+// RedeemInvitationResponse returns the vault the caller joined.
+message RedeemInvitationResponse {
+  // The vault, with the caller's new role.
+  Vault vault = 1;
+}
+
+// ListMembersRequest names the vault whose members to list.
+message ListMembersRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+}
+
+// ListMembersResponse holds the vault's members.
+message ListMembersResponse {
+  // Members, oldest membership first.
+  repeated Member members = 1;
+}
+
+// UpdateMemberRoleRequest names the member and their new role.
+message UpdateMemberRoleRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // The member's user id (Member.user_id), a canonical lowercase UUID.
+  string user_id = 2;
+  // The new role. Must not be unspecified.
+  VaultRole role = 3;
+}
+
+// UpdateMemberRoleResponse returns the updated member.
+message UpdateMemberRoleResponse {
+  // The member with their new role.
+  Member member = 1;
+}
+
+// RemoveMemberRequest names the member to remove.
+message RemoveMemberRequest {
+  // The vault. The caller must be an owner.
+  string vault_id = 1;
+  // The member's user id (Member.user_id), a canonical lowercase UUID.
+  string user_id = 2;
+}
+
+// RemoveMemberResponse confirms the removal. It has no fields.
+message RemoveMemberResponse {}
+
+// LeaveVaultRequest names the vault to leave.
+message LeaveVaultRequest {
+  // The vault. The caller must be a member.
+  string vault_id = 1;
+}
+
+// LeaveVaultResponse confirms the caller left. It has no fields.
+message LeaveVaultResponse {}
