@@ -37,10 +37,13 @@ export type UnmaterializableReason = "reserved-name" | "forbidden-character" | "
 
 /**
  * Why the engine tracks a document as unmaterializable: a reason the rules
- * found, or `refused-by-vault` when the rules allow the path but the vault
- * refused it anyway (VaultError "unmaterializable").
+ * found, `refused-by-vault` when the rules allow the path but the vault
+ * refused it anyway (VaultError "unmaterializable"), or `alias` when another
+ * live document's file holds the path's one filesystem name although the
+ * server keeps the two paths apart (`ı.md` and `I.md` on Windows; design
+ * docs/design/engine-path-ownership.md §4.5 step 3, decision #52).
  */
-export type UnmaterializableCause = UnmaterializableReason | "refused-by-vault";
+export type UnmaterializableCause = UnmaterializableReason | "refused-by-vault" | "alias";
 
 /** The rules of a platform where every path the server accepts can be created (up to the length limits). */
 export const posixPathRules: PathRules = { platform: "posix" };

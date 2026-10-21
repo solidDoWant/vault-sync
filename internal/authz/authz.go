@@ -173,7 +173,7 @@ func (interceptor *Interceptor) authorize(ctx context.Context, procedure string,
 	case (role == store.RoleEditor || role == store.RoleViewer) && access == Manage:
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("only owners can manage this vault"))
 	case role == store.RoleEditor:
-	case role == store.RoleViewer && access == Read:
+	case role == store.RoleViewer && (access == Read || (acceptViewerWrites && access == Write)):
 	case role == store.RoleViewer:
 		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("viewers cannot write to this vault"))
 	default:

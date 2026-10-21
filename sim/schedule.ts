@@ -51,7 +51,15 @@ export type Step =
    * retention (#229), so every other schedule, and every regression case
    * recorded before it, is unchanged.
    */
-  | { kind: "retention"; pick: number };
+  | { kind: "retention"; pick: number }
+  /**
+   * The vault's owner changes a member's role (#35): `pick` selects the
+   * member and the change (Members.change): demote to viewer, promote back
+   * to editor, remove, or invite again. Generated only for schedules with
+   * membership changes, so every other schedule, and every regression case
+   * recorded before it, is unchanged.
+   */
+  | { kind: "membership"; pick: number };
 
 export type StepKind = Step["kind"];
 
@@ -63,6 +71,8 @@ export interface ScheduleOptions {
   engines?: number;
   /** Whether the retention job runs between steps (#229); without it (the default) no retention step is generated. */
   retention?: boolean;
+  /** Whether the owner changes members' roles between steps (#35); without it (the default) no membership step is generated. */
+  membership?: boolean;
 }
 
 /** Relative frequency of each step kind in a generated schedule. */
@@ -87,6 +97,8 @@ export const stepWeights: Readonly<Record<StepKind, number>> = {
   // Never drawn: withRetention inserts retention steps into a schedule
   // (#229). With weight 0 it never changes another kind's draw.
   retention: 0,
+  // Never drawn either: withMembership inserts membership steps (#35).
+  membership: 0,
   // Last, and drawn only when the run has engines: with weight 0 every other
   // kind's draws, and so every engine-less schedule, are exactly as before #22.
   "engine-operation": 10,
@@ -126,7 +138,8 @@ export function generateSchedule(options: ScheduleOptions): Step[] {
   for (let index = 0; index < options.steps; index++) {
     steps.push(generateStep(random, weights, options.clients, engines));
   }
-  return options.retention === true ? withRetention(options.seed, steps) : steps;
+  const retained = options.retention === true ? withRetention(options.seed, steps) : steps;
+  return options.membership === true ? withMembership(options.seed, retained) : retained;
 }
 
 /** On average, a schedule with retention runs the retention job once in this many steps (#229). */
@@ -140,11 +153,27 @@ export const retentionInterval = 200;
  * fails because of what the purges did.
  */
 function withRetention(seed: number, steps: readonly Step[]): Step[] {
-  const random = Random.derive(seed, "retention");
+  return withInserted(Random.derive(seed, "retention"), retentionInterval, steps, (random) => ({ kind: "retention", pick: random.uint32() }));
+}
+
+/** On average, a schedule with membership changes changes a member's role once in this many steps (#35). */
+export const membershipInterval = 100;
+
+/**
+ * `steps` with the owner changing members' roles between them (#35), as
+ * withRetention inserts the retention job: after each step, with probability
+ * 1/membershipInterval, a `membership` step from the seed's own stream.
+ */
+function withMembership(seed: number, steps: readonly Step[]): Step[] {
+  return withInserted(Random.derive(seed, "membership"), membershipInterval, steps, (random) => ({ kind: "membership", pick: random.uint32() }));
+}
+
+/** `steps` with a step from `make` after each one with probability 1/interval, drawn from `random` alone. */
+function withInserted(random: Random, interval: number, steps: readonly Step[], make: (random: Random) => Step): Step[] {
   const result: Step[] = [];
   for (const step of steps) {
     result.push(step);
-    if (random.int(retentionInterval) === 0) result.push({ kind: "retention", pick: random.uint32() });
+    if (random.int(interval) === 0) result.push(make(random));
   }
   return result;
 }
@@ -161,6 +190,7 @@ function generateStep(random: Random, weights: Readonly<Record<StepKind, number>
     case "drop-request":
     case "drop-response":
     case "retention":
+    case "membership":
       return { kind, pick: random.uint32() };
     case "delay":
       return { kind, pick: random.uint32(), steps: 1 + random.int(maxFaultSteps) };

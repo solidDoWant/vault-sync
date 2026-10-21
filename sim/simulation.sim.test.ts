@@ -25,6 +25,8 @@ import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenario
 import { mergedDuringPush } from "./scenarios";
 import { stalledAtFinish } from "./scenarios";
 import { StallError } from "./network";
+import { allRefused, answers, membershipChanges } from "./member-scenarios";
+import { Code } from "@connectrpc/connect";
 import { recordedCase, replayRegression } from "./regression";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink, type ShrinkProgress } from "./shrink";
@@ -131,6 +133,84 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
   it("purged at least one revision", () => {
     expect(purged.length, `no seed's retention steps purged anything; run more steps (SIM_STEPS=${String(environment.steps)})`).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * Users of a members-suite run (#35): the owner and two members, as far as
+ * the run has scripted clients for them (client i belongs to user i % users).
+ */
+const memberUsers = Math.min(3, environment.clients);
+
+describe.runIf(suites.has("members"))("seeded schedules with several users and membership changes (#35)", () => {
+  // The same seeds, with the owner and members, each on their own scripted
+  // client, and the owner demoting, promoting, removing and inviting the
+  // members again between steps. Every invariant still holds, and every call
+  // of a member must be answered as its role at that moment allows.
+  const changes = { demoted: 0, promoted: 0, removed: 0, rejoined: 0 };
+
+  it.each(environment.seeds)("seed %i keeps every invariant while members' roles change", async (seed) => {
+    const engines = environment.engines === 0 ? undefined : environment.engines;
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, users: memberUsers, membership: true, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
+    const result = await runSeed(environment, { ...options, steps: environment.steps });
+    for (const kind of ["demoted", "promoted", "removed", "rejoined"] as const) changes[kind] += result.membershipChanges[kind];
+    const made = result.membershipChanges;
+    console.log(`seed ${String(seed)} with ${String(memberUsers)} users (${options.platforms.join(", ")} path rules): ${String(made.demoted)} demoted, ${String(made.promoted)} promoted, ${String(made.removed)} removed, ${String(made.rejoined)} rejoined, ${summarize(result.trace)}`);
+    if (result.violations.length === 0) return;
+
+    const invariants = new Set(result.violations.map((violation) => violation.invariant));
+    const stillFails = async (steps: Step[]) => (await runSteps(environment, options, steps)).violations.some((violation) => invariants.has(violation.invariant));
+    console.log(`seed ${String(seed)} with members failed; shrinking its ${String(result.steps.length)} steps in up to ${String(environment.shrinkRuns)} runs`);
+    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns, shrinkProgress(`seed ${String(seed)} with members`));
+    const replay = await runSteps(environment, options, minimized.items);
+    const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
+    const written = await new Control(environment.controlUrl).report(recordedCase(`seed-${String(seed)}-members${faithfulSuffix}`, options, final.violations, steps));
+
+    expect.fail(
+      [
+        `SIM FAILURE: seed ${String(seed)} with members violated invariants (${String(environment.steps)} steps, ${String(options.clients)} clients, ${String(memberUsers)} users):`,
+        describeViolations(result),
+        `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
+        describeViolations(final),
+        `Regression case written to ${written}.`,
+        `Replay with: VAULT_SYNC_SIM_SUITES=members make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}${environment.faithfulFilesystem ? " SIM_FAITHFUL_FS=1" : ""}`,
+        "Trace of the minimized schedule (last lines):",
+        tail(final.trace),
+      ].join("\n"),
+    );
+  });
+
+  it("demoted or removed a member", () => {
+    expect(changes.demoted + changes.removed, `no seed demoted or removed a member; run more steps (SIM_STEPS=${String(environment.steps)}) or clients (SIM_CLIENTS=${String(environment.clients)}; members need at least 2)`).toBeGreaterThan(0);
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted membership scenarios (#35)", () => {
+  it("refuses every write of a demoted or removed member and every read of a removed one, under faults, and keeps every earlier commit", async () => {
+    const result = await membershipChanges(environment);
+    const trace = tail(result.trace, 120);
+
+    expect(result.violations, trace).toEqual([]);
+    // The edit applied before the demotion stays, though its retry was refused.
+    expect(result.appliedKept, trace).toBe(true);
+    expect(answers(result.trace.filter((line) => line.includes(` ${result.appliedBeforeDemotion} base=`) && line.includes(" -> "))), trace).toEqual(["CommitRevision -> ok", "CommitRevision -> PermissionDenied"]);
+    // Every acknowledged commit of the member remains.
+    expect(result.memberAcknowledged.length, trace).toBeGreaterThanOrEqual(2);
+    expect(result.memberAcknowledgedKept, trace).toEqual(result.memberAcknowledged);
+    // A viewer reads, and every write it sends is refused.
+    const viewer = answers(result.refusedWhileViewer);
+    expect(viewer.filter((answer) => answer.startsWith("ListChanges")), trace).toContain("ListChanges -> ok");
+    const viewerWrites = viewer.filter((answer) => !answer.startsWith("ListChanges"));
+    expect(viewerWrites.map((answer) => answer.split(" ")[0]), trace).toEqual(expect.arrayContaining(["CommitRevision", "BeginBlob"]));
+    expect(allRefused(viewerWrites, Code.PermissionDenied), trace).toBe(true);
+    // A removed member's commit in flight at the removal, its pulls and its uploads are all refused.
+    const removed = answers(result.refusedWhileRemoved);
+    expect(removed.map((answer) => answer.split(" ")[0]), trace).toEqual(expect.arrayContaining(["CommitRevision", "ListChanges", "BeginBlob"]));
+    expect(allRefused(removed, Code.NotFound), trace).toBe(true);
+    // It received none of the changes made meanwhile, and all of them once let back in.
+    expect(result.createdWhileRemoved.length, trace).toBe(2);
+    expect(result.knownWhenLetBackIn, trace).toEqual([]);
+    expect(result.knownAtEnd, trace).toEqual(expect.arrayContaining(result.createdWhileRemoved));
   });
 });
 

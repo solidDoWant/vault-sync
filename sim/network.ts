@@ -47,8 +47,8 @@ export interface NetworkOptions {
    * waits before it can be delivered; 0 or unset delivers retries at once.
    */
   commitRetryBackoff?: number;
-  /** Sees every server reply as the server sends it, before any fault can lose it. */
-  observeOutcome?: (method: string, outcome: Outcome) => void;
+  /** Sees every server reply as the server sends it, before any fault can lose it, with the client whose request it answers. */
+  observeOutcome?: (method: string, outcome: Outcome, client: number) => void;
 }
 
 /** CommitRevision refusals that a retry of a revision the server already applied must never get (SPEC.md §6.2). */
@@ -470,7 +470,7 @@ export class SimNetwork {
       (error: unknown): Outcome => ({ ok: false, error }),
     );
     message.phase = "response";
-    this.options.observeOutcome?.(message.method, message.outcome);
+    this.options.observeOutcome?.(message.method, message.outcome, message.client);
     this.checkRetry(message, message.outcome);
     return `${this.label(message)} -> ${this.options.describeOutcome(message.method, message.outcome)}${marker}`;
   }

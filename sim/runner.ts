@@ -14,6 +14,7 @@ import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
 import { faithfulPathPool, pathPool, ScriptedClient, type Acknowledgement, type RunContext, type Violation } from "./client";
 import { Control } from "./control";
 import { EngineObserver, notificationSeq, serverHeads } from "./engine-observer";
+import { Members } from "./members";
 import { Ids } from "./ids";
 import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed, type FeedRevision } from "./invariants";
 import { settle, SimNetwork, StallError, type Outcome } from "./network";
@@ -79,6 +80,20 @@ export interface RunOptions {
    * plainly, so they replay unchanged.
    */
   notificationPulls?: boolean;
+  /**
+   * Users of the vault (#35); 1 by default. User 0 creates and owns the
+   * vault and every engine; every other user joins as an editor through an
+   * invitation, and scripted client i belongs to user i % users. Membership
+   * steps change the other users' roles (Members); with one user they do
+   * nothing.
+   */
+  users?: number;
+  /**
+   * Whether a seeded schedule changes members' roles between steps
+   * (ScheduleOptions.membership, #35). Only runSeed reads it: a recorded
+   * schedule carries its membership steps.
+   */
+  membership?: boolean;
 }
 
 /**
@@ -108,6 +123,8 @@ export interface RunResult {
   violations: Violation[];
   /** Labels of the revisions retention purged during the run. */
   purged: string[];
+  /** The role changes membership steps made (#35), by kind. */
+  membershipChanges: Members["changes"];
 }
 
 /** Bound on deliveries while draining, far above what any schedule needs. */
@@ -134,12 +151,18 @@ export class SimRun {
     private readonly purges: { seqs: Set<bigint>; revisions: Set<string> },
     /** RunOptions.notificationPulls. */
     private readonly notificationPulls: boolean,
+    /** The vault's users and their roles (RunOptions.users). */
+    readonly members: Members,
   ) {}
 
   /** Creates a vault for a new user and registers one device per client. */
   static async start(endpoints: SimEndpoints, options: RunOptions): Promise<SimRun> {
     const control = new Control(endpoints.controlUrl);
-    const token = await control.token();
+    const users = options.users ?? 1;
+    if (!Number.isInteger(users) || users < 1) throw new RangeError("users must be a positive integer");
+    const tokens: string[] = [];
+    for (let user = 0; user < users; user++) tokens.push(await control.token());
+    const [token = ""] = tokens;
     const http = createHttpTransport(endpoints.serverUrl);
     const setup = createProtocolClient({ transport: http, token: () => token });
     const vault = (await setup.vaults.createVault({ name: `sim seed ${String(options.seed)}`, encryption: VaultEncryption.NONE })).vault;
@@ -152,6 +175,7 @@ export class SimRun {
     const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
     const violations: Violation[] = [];
     const purges = { seqs: new Set<bigint>(), revisions: new Set<string>() };
+    const access: { members?: Members } = {};
     const network = new SimNetwork({
       describeRequest: (method, input) => describeRequest(ids, method, input),
       describeOutcome: (method, outcome) => describeOutcome(ids, method, outcome),
@@ -160,9 +184,14 @@ export class SimRun {
         violations.push({ invariant, detail });
         log(`VIOLATION ${invariant}: ${detail}`);
       },
-      observeOutcome: (method, outcome) => {
+      observeOutcome: (method, outcome, client) => {
         const seq = replySeq(method, outcome);
         if (seq !== undefined && seq > serverSeq) serverSeq = seq;
+        // Each call against the role its user had while the server ran it (#35).
+        for (const violation of access.members?.check(client, method, outcome) ?? []) {
+          violations.push(violation);
+          log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
+        }
       },
     });
     const context: RunContext = {
@@ -178,13 +207,18 @@ export class SimRun {
       purgedSeqs: purges.seqs,
       purgedRevisions: purges.revisions,
       pathPool: options.faithfulFilesystem === true ? faithfulPathPool : pathPool,
+      mayLoseAccess: (client) => access.members?.mayLoseAccess(client) === true,
     };
+    const members = await Members.join(http, vault.id, tokens, options.clients);
+    access.members = members;
     const clients: ScriptedClient[] = [];
     for (let index = 0; index < options.clients; index++) {
-      const device = (await setup.devices.registerDevice({ name: `sim client ${String(index)}` })).device;
+      const userToken = tokens[members.userOf(index)] ?? token;
+      const userSetup = createProtocolClient({ transport: http, token: () => userToken });
+      const device = (await userSetup.devices.registerDevice({ name: `sim client ${String(index)}` })).device;
       if (device === undefined) throw new Error("RegisterDevice returned no device");
       const transport: Transport = network.transport(index, http);
-      clients.push(new ScriptedClient(index, createProtocolClient({ transport, token: () => token }), device.id, context));
+      clients.push(new ScriptedClient(index, createProtocolClient({ transport, token: () => userToken }), device.id, context));
     }
     const observers: EngineObserver[] = [];
     for (let engine = 0; engine < (options.engines ?? 1); engine++) {
@@ -194,7 +228,7 @@ export class SimRun {
       const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
       observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform, options.faithfulFilesystem === true ? "faithful" : "folded"));
     }
-    const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true);
+    const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true, members);
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
   }
@@ -344,7 +378,8 @@ export class SimRun {
     }
     // After their last pull every scripted client must know every document's
     // current head: the feed skips purged revisions, never a head (§11).
-    const clientHeads = this.clients.map((client) => ({ client: client.index, heads: client.knownHeads() }));
+    // Except a removed member's: it can no longer pull (#35).
+    const clientHeads = this.clients.filter((client) => this.members.roleOf(client.index) !== "removed").map((client) => ({ client: client.index, heads: client.knownHeads() }));
     for (const violation of await this.checkUsers()) {
       this.context.violations.push(violation);
       this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
@@ -360,6 +395,7 @@ export class SimRun {
       acknowledged: this.context.acknowledged,
       violations: this.context.violations,
       purged: [...this.purged.keys()].map((id) => this.context.ids.label(id)),
+      membershipChanges: { ...this.members.changes },
     };
   }
 
@@ -477,6 +513,9 @@ export class SimRun {
         await this.purge(aged.map((revision) => revision.revisionId));
         return `retention aged the ${String(aged.length)} oldest of ${String(feed.length)} revisions`;
       }
+      case "membership":
+        // Fault-free, like the owner's own device making the change between two deliveries.
+        return this.members.change(step.pick);
       case "engine-operation": {
         const observer = this.observers[step.engine % this.observers.length];
         if (observer === undefined) return "engine-operation: no engine";
@@ -502,7 +541,7 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
 /** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
   // Without `engines` the engine has no user, as before #22.
-  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention });
+  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention, membership: options.membership });
   return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 

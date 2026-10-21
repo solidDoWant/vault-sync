@@ -43,6 +43,12 @@ export interface RegressionCase {
    * before #646.
    */
   retention?: boolean;
+  /**
+   * The vault's users (RunOptions.users, #35): the regressions suite
+   * replays the case with them. Absent in cases with one user, and in every
+   * case recorded before #35.
+   */
+  users?: number;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];
