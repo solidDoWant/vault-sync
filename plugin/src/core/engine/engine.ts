@@ -1969,10 +1969,9 @@ export class SyncEngine {
    * (SPEC.md §6.3): if the operation is still pending after the pull and the
    * merge path does not own it, the local document moves to
    * `<name> (conflict <device> <date>).<ext>` and is committed there, under
-   * its own document id. Logged in the conflict log before the file moves, so
-   * an interrupted move resumes under the same name; the replacement
-   * operation is added before the refused one is removed. If no name fits the
-   * path limits, nothing moves and the operation is reported as rejected.
+   * its own document id, by a `displace` intent (design §4.4, §4.5 W(a)),
+   * whose recovery finishes an interrupted move. If no name fits the path
+   * limits, nothing moves and the operation is reported as rejected.
    */
   private async moveToConflictPath(operation: PendingOperation, error: ConnectError, summary: PushSummary): Promise<void> {
     const pending = await this.journal.listPending();
