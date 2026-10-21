@@ -38,12 +38,15 @@ const v2Migrations = journalMigrations.slice(0, 2);
 /**
  * A journal opened at a schema without the file-key index (before v3), for
  * an engine of this version standing in for an older one: its bindings'
- * probe scans the documents instead, as that schema has nothing to probe.
+ * probe scans the documents instead, as that schema has nothing to probe,
+ * and it finds no open intents.
  */
 function overOlderSchema(journal: IndexedDbJournal): Journal {
   const older = Object.create(journal) as Journal;
   older.documentByFileKey = async (fileKey) => (await journal.listDocuments()).find((state) => state.binding?.fileKey === fileKey);
   older.documentsByFileKey = async (fileKey) => (await journal.listDocuments()).filter((state) => state.binding?.fileKey === fileKey);
+  // Nor has it the intents store: an older engine recorded no intents.
+  older.listIntents = () => Promise.resolve([]);
   return older;
 }
 
@@ -503,6 +506,37 @@ describe("IndexedDbJournal", () => {
       expect((await v4.documentByFileKey("NOW.MD"))?.documentId).toBe("stale");
       expect(await v4.documentByFileKey("before.md")).toBeUndefined();
       v4.close();
+    });
+
+    // Refactor step R7b: `deleted` no longer doubles as "released" (design
+    // §6.2 as amended), so v5 gives a released row its live base back.
+    it("ends deleted-as-released from v4 to v5, keeping every document", async () => {
+      const factory = new FakeIDBFactory();
+      const v4 = await IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 4));
+      const released = { ...sampleDocument({ documentId: "released", path: "con.md", deleted: true }), binding: null, absence: "released" as const };
+      // A tombstone, a live row unbound as released, a user's delete, and a released-looking row with no deferral: all left as they are.
+      const tombstone = { ...sampleDocument({ documentId: "tombstone", path: "gone.md", deleted: true }), binding: null, absence: "never" as const };
+      const unbound = { ...sampleDocument({ documentId: "unbound", path: "dup.md" }), binding: null, absence: "released" as const };
+      const userDeleted = { ...sampleDocument({ documentId: "user-deleted", path: "doomed.md", deleted: true }), binding: null, absence: "user-deleted" as const };
+      const undeferred = { ...sampleDocument({ documentId: "undeferred", path: "old.md", deleted: true }), binding: null, absence: "released" as const };
+      const create = { ...sampleDocument({ documentId: "create", path: "new.md", deleted: true, revisionId: "" }), binding: { spelling: "new.md", fileKey: "new.md", seen: "h" }, absence: null };
+      // The same journal as the v5 migration should leave it: the released row live, the rest unchanged.
+      const expected = new InMemoryJournal();
+      for (const journal of [v4, expected]) {
+        for (const state of [released, tombstone, unbound, userDeleted, undeferred, create]) await journal.putDocument(journal === expected && state === released ? { ...state, deleted: false } : state);
+        await journal.putDeferred({ ...sampleDeferred("released", "r-released"), reason: "unmaterializable", unmaterializable: "reserved-name" });
+        await journal.putDeferred(sampleDeferred("tombstone", "r-tombstone"));
+        await journal.putDeferred(sampleDeferred("user-deleted", "r-user"));
+        await journal.addPending(samplePending({ revisionId: "p-create", documentId: "create", baseRevisionId: "", path: "new.md" }));
+        await journal.setCursor(7n);
+      }
+      v4.close();
+
+      const v5 = await IndexedDbJournal.open(factory, name);
+      expect(await v5.getDocument("released")).toEqual({ ...released, deleted: false });
+      for (const state of [tombstone, unbound, userDeleted, undeferred, create]) expect(await v5.getDocument(state.documentId)).toEqual(state);
+      expect(await snapshot(v5)).toBe(await snapshot(expected));
+      v5.close();
     });
 
     describe("from v2 to v3 (path ownership)", () => {

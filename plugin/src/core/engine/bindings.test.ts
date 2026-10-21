@@ -772,3 +772,38 @@ describe("Bindings keep one document per file key over v2 duplicates (C1, #641)"
     );
   });
 });
+
+// Refactor step R7b (design §6.2 as amended): `deleted` no longer doubles as
+// "released". An in-memory journal has no schema migrations, so the start-up
+// scan gives a released row its live base back, as journal v5 does for
+// IndexedDB, and keeps every document.
+describe("the start-up scan of a journal written before R7b", () => {
+  it("keeps every document and gives a released row its live base back", async () => {
+    const journal = new InMemoryJournal();
+    const base = { seq: 1n, size: 2n, kind: "text" as const };
+    const released: DocumentState = { ...base, documentId: "released", path: "con.md", revisionId: "r-released", baseHash: hash("c1"), deleted: true, binding: null, absence: "released" };
+    const live: DocumentState = { ...base, documentId: "live", path: "a.md", revisionId: "r-live", baseHash: hash("a1"), deleted: false, binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null };
+    const tombstone: DocumentState = { ...base, documentId: "tombstone", path: "t.md", revisionId: "r-tombstone", baseHash: hash("t1"), deleted: true, binding: null, absence: "never" };
+    // Released-looking, but with no deferral: not a release, left as it is.
+    const undeferred: DocumentState = { ...base, documentId: "undeferred", path: "old.md", revisionId: "r-undeferred", baseHash: hash("o1"), deleted: true, binding: null, absence: "released" };
+    for (const state of [released, live, tombstone, undeferred]) await journal.putDocument(state);
+    await journal.putDeferred({
+      revision: { revisionId: "r-released-2", documentId: "released", seq: 2n, parentRevisionId: "r-released", kind: "text", path: "con.md", deleted: false, contentHash: hash("c2"), size: 2n },
+      reason: "unmaterializable",
+      unmaterializable: "reserved-name",
+    });
+    const vault = new InMemoryVault();
+    await vault.write("a.md", bytes("a1"));
+
+    const h = harness({ journal, vault, pathRules: { platform: "windows" } });
+    await h.engine.settled();
+
+    const documents = new Map((await journal.listDocuments()).map((state) => [state.documentId, state]));
+    expect([...documents.keys()].sort()).toEqual(["live", "released", "tombstone", "undeferred"]);
+    expect(documents.get("released")).toMatchObject({ deleted: false, binding: null, absence: "released", revisionId: "r-released" });
+    expect(documents.get("live")).toMatchObject({ deleted: false, revisionId: "r-live", binding: { spelling: "a.md" } });
+    expect(documents.get("tombstone")).toMatchObject({ deleted: true, revisionId: "r-tombstone" });
+    expect(documents.get("undeferred")).toMatchObject({ deleted: true, absence: "released" });
+    expect(await journal.getDeferred("released")).toBeDefined();
+  });
+});

@@ -1,4 +1,4 @@
-import type { Absence, Binding, ConflictRecord, DeferredRevision, DocumentState, Intent, Journal, JournalChanges, NewIntent, PendingOperation } from "./journal";
+import { releasedRows, type Absence, type Binding, type ConflictRecord, type DeferredRevision, type DocumentState, type Intent, type Journal, type JournalChanges, type NewIntent, type PendingOperation } from "./journal";
 
 /**
  * The durable Journal (SPEC.md §8), on IndexedDB: Obsidian desktop
@@ -562,6 +562,18 @@ export const journalMigrations: readonly JournalMigration[] = [
     operations.onsuccess = () => {
       const derived = deriveV3Records(states.result as DocumentState[], operations.result as PendingOperation[], deferred.result as DeferredRevision[], context.fileKey);
       for (const state of derived.documents) documents.put(state);
+    };
+  },
+  // Version 5: `deleted` no longer doubles as "released" (refactor step
+  // R7b, design §6.2 as amended). A released row (no binding, `absence`
+  // "released", a deferred revision) gets its base's own `deleted`, false;
+  // every other row is untouched (releasedRows).
+  (transaction) => {
+    const documents = transaction.objectStore("documents");
+    const states = documents.getAll();
+    const deferred = transaction.objectStore("deferred").getAll();
+    deferred.onsuccess = () => {
+      for (const state of releasedRows(states.result as DocumentState[], deferred.result as DeferredRevision[])) documents.put(state);
     };
   },
 ];

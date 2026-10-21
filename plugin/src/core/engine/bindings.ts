@@ -1,4 +1,4 @@
-import type { Absence, Binding, DocumentState, Journal, PendingOperation } from "../journal/journal";
+import { priorRevisionLimit, releasedRows, type Absence, type Binding, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
 import type { VaultAdapter } from "../vault/adapter";
 import type { PathSpace } from "./pathspace";
 
@@ -17,7 +17,8 @@ import type { PathSpace } from "./pathspace";
  *   delete leaves it none (`user-deleted`), and a document the journal did
  *   not have yet is bound to the file at the commit's path.
  * - `released`: the engine gave up the document's file (an unmaterializable
- *   or otherwise blocked path), so it has none (`released`).
+ *   or otherwise blocked path), so it has none (`released`). The base stays
+ *   as it is: `deleted` is the base's own flag (journal v5).
  * - `moved`: the engine moved the document's file to the state's path.
  * - `adopted`: the engine found the document's synced content back in the
  *   file at `path` after the user deleted the document's file, and takes
@@ -33,7 +34,7 @@ export type BindingChange =
   | { kind: "adopted"; path: string }
   | { kind: "kept" };
 
-type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "documentsByFileKey" | "transact">;
+type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "listDeferred" | "documentsByFileKey" | "transact">;
 type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
 
 /**
@@ -85,7 +86,7 @@ export class Bindings {
   put(state: DocumentState, change: BindingChange): Promise<void> {
     return this.serialize(async () => {
       const current = await this.journal.getDocument(state.documentId);
-      const next = { ...state, ...this.bindingAfter(state, current, change) };
+      const next = { ...state, ...this.bindingAfter(state, current, change), ...priorAfter(state, current) };
       if (change.kind === "applied" || change.kind === "merged") next.binding = await this.keptName(current?.binding, next.binding);
       const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
       await this.journal.transact({ putDocuments: [...others, next] });
@@ -104,6 +105,18 @@ export class Bindings {
       const row = this.createRow(operation);
       const others = await this.unbindOthers(operation.documentId, operation.path, "released");
       await this.journal.transact({ addPending: [operation], putDocuments: [...others, row] });
+    });
+  }
+
+  /**
+   * Applies the changes `build` returns, read and written in one turn of the
+   * queue: the final transaction of an intent (intents.ts), which changes a
+   * binding together with other rows.
+   */
+  transact(build: () => Promise<JournalChanges | undefined>): Promise<void> {
+    return this.serialize(async () => {
+      const changes = await build();
+      if (changes !== undefined) await this.journal.transact(changes);
     });
   }
 
@@ -230,7 +243,12 @@ export class Bindings {
    */
   private async scan(): Promise<void> {
     const changes = new Map<string, DocumentState>();
-    const documents = await this.journal.listDocuments();
+    // A row written with `deleted` doubling as "released" (before refactor
+    // step R7b) gets its live base back, as journal v5 migrates an
+    // IndexedDB journal; an in-memory journal has no migrations.
+    const released = new Map(releasedRows(await this.journal.listDocuments(), await this.journal.listDeferred()).map((state) => [state.documentId, state]));
+    for (const state of released.values()) changes.set(state.documentId, state);
+    const documents = (await this.journal.listDocuments()).map((state) => released.get(state.documentId) ?? state);
     const known = new Set(documents.map((state) => state.documentId));
     for (const operation of await this.journal.listPending()) {
       if (operation.baseRevisionId !== "" || operation.deleted || known.has(operation.documentId)) continue;
@@ -366,6 +384,34 @@ export interface LocalMove {
  */
 export function hasBase(state: DocumentState): boolean {
   return state.revisionId !== "";
+}
+
+/** Whether the engine gave up the document's file (`absence = released`, design §4.1): it has none here, whatever its base. */
+export function released(state: DocumentState): boolean {
+  return state.binding === null && state.absence === "released";
+}
+
+/**
+ * Whether the document is live here: its base is a live revision and the
+ * engine has not released its file. Its file may still be gone: the user
+ * deleted it (`absence = user-deleted`), and the push deletes it.
+ */
+export function liveHere(state: DocumentState | undefined): state is DocumentState {
+  return state !== undefined && !state.deleted && !released(state);
+}
+
+/**
+ * The document's earlier revisions once `state` replaces `current`
+ * (DocumentState.prior; design §4.6): the base it leaves when the base moves
+ * to another revision, then the ones `state` names (a synced revision's
+ * parent), then those `current` had. A document's history on a server is a
+ * line, so each is an ancestor of the new base.
+ */
+function priorAfter(state: DocumentState, current: DocumentState | undefined): { prior?: string[] } {
+  const left = current !== undefined && hasBase(current) && current.revisionId !== state.revisionId ? [current.revisionId] : [];
+  const all = [...left, ...(state.prior ?? []), ...(current?.prior ?? [])].filter((revision) => revision !== "" && revision !== state.revisionId);
+  if (all.length === 0 && state.prior === undefined && current?.prior === undefined) return {};
+  return { prior: [...new Set(all)].slice(0, priorRevisionLimit) };
 }
 
 function unbound(absence: Absence): { binding: null; absence: Absence } {

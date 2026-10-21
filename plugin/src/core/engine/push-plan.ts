@@ -1,5 +1,6 @@
 import { sha256Hex } from "../hash";
 import type {
+  DeferredRevision,
   DocumentKindName,
   DocumentState,
   PendingOperation,
@@ -16,8 +17,8 @@ export interface PushPlanSource {
   documents: readonly DocumentState[];
   /** Every pending operation: a document with one has its outbox already, and waits for it. */
   pending: readonly PendingOperation[];
-  /** Documents and paths the merge path owns or a blocker keeps (parked). */
-  parked: { documents: ReadonlySet<string>; paths: ReadonlySet<string> };
+  /** Every deferred remote revision (`ahead`, design §4.1): a document whose revision the merge path or a blocker holds waits (busyClaims). */
+  deferred: readonly DeferredRevision[];
   listed: readonly string[];
   read: (path: string) => Promise<Uint8Array | null>;
   inScope: (path: string) => boolean;
@@ -40,6 +41,10 @@ export interface PushPlan {
   adopted: { state: DocumentState; path: string }[];
   /** Operations that bring a tombstoned document back from an untracked file: recorded with the document bound to it (Bindings.revived). */
   revivals: Set<string>;
+  /** Documents the restored server lacks whose bound path another claim takes: each is re-created at a copy name (design §4.6, displace intent). */
+  yielding: { state: DocumentState; spelling: string }[];
+  /** Documents the restored server lacks whose file the user deleted: the journal forgets them. */
+  forgotten: string[];
 }
 
 /**
@@ -60,26 +65,30 @@ export interface PushPlan {
  *   at its path unless the user deleted that document's file since the
  *   tombstone was pulled or the document has an outbox (PO-13).
  *
- * A document with an outbox or parked by the merge path or a blocker waits,
- * and so do its paths: one outbox per document (§4.1).
+ * A document with an outbox, or whose remote revision the merge path or a
+ * blocker holds, waits, and so do its paths: one outbox per document
+ * (§4.1).
  */
 export async function planPush(
   source: PushPlanSource,
   dirty: DirtyPaths,
 ): Promise<PushPlan> {
-  const { space, parked } = source;
+  const { space } = source;
+  const blocked = busyClaims(source.documents, source.deferred);
   const busyDocuments = new Set([
-    ...parked.documents,
+    ...blocked.documents,
     ...source.pending.map((operation) => operation.documentId),
   ]);
   const busyPaths = new Set([
-    ...parked.paths,
+    ...blocked.paths,
     ...source.pending.map((operation) => operation.path),
   ]);
-  // A busy document's synced path waits with it: a create there would be
-  // refused while the server still has the document there (C3).
+  // A document waiting for its outbox keeps its synced path: a create
+  // there would be refused while the server still has the document there
+  // (C3). One whose revision is deferred claims the deferred revision's
+  // path instead (busyClaims), the server's newest.
   for (const state of source.documents)
-    if (busyDocuments.has(state.documentId) && hasBase(state) && !state.deleted) busyPaths.add(state.path);
+    if (busyDocuments.has(state.documentId) && !blocked.documents.has(state.documentId) && hasBase(state) && !state.deleted) busyPaths.add(state.path);
   const dirtyFiles = new Set(
     [...dirty.paths].map((path) => space.filesystemKey(path)),
   );
@@ -111,10 +120,31 @@ export async function planPush(
   const revivals = new Set<string>();
   const adopting = new Set<string>();
 
+  const ghosts: { state: DocumentState; spelling: string }[] = [];
+  const forgotten: string[] = [];
   for (const state of source.documents) {
     if (!hasBase(state)) continue;
     const binding = state.binding;
     const live = !state.deleted;
+    if (ghost(state)) {
+      // The restored server lacks it (design §4.6): re-created below, under
+      // its own id, from the file it is bound to. Without one there is
+      // nothing here to re-create, nor on the server to delete.
+      if (binding === null || binding === undefined) {
+        // The user deleted its file too: nothing is left of it anywhere, so
+        // the journal forgets it (no tombstone to commit on a server that
+        // never had it, and no claim on a path it holds nowhere).
+        if (state.absence === "user-deleted" && !busyDocuments.has(state.documentId)) forgotten.push(state.documentId);
+        continue;
+      }
+      if (!source.inScope(binding.spelling)) continue;
+      if (busyDocuments.has(state.documentId) || busyPaths.has(binding.spelling)) {
+        wait(binding.spelling);
+        continue;
+      }
+      ghosts.push({ state, spelling: binding.spelling });
+      continue;
+    }
     if (binding === null || binding === undefined) {
       if (
         !live ||
@@ -230,6 +260,46 @@ export async function planPush(
     });
   }
 
+  // Each ghost is re-created at its bound spelling, under its own id, unless
+  // another claim takes that path (C3): the newest server claim of a document
+  // the server has, or another outgoing operation. Then it yields, re-created
+  // at a copy name by a displace intent (`yielding`), never refused.
+  const yielding: { state: DocumentState; spelling: string }[] = [];
+  if (ghosts.length > 0) {
+    const ahead = new Map(source.deferred.map((deferred) => [deferred.revision.documentId, deferred.revision]));
+    const claims: string[] = [];
+    for (const state of source.documents) {
+      if (ghost(state) && !ahead.has(state.documentId)) continue;
+      const newest = ahead.get(state.documentId) ?? state;
+      if (hasBase(state) && !newest.deleted) claims.push(newest.path);
+    }
+    const outgoing = [...source.pending, ...removals, ...renames.map((rename) => rename.operation), ...edits, ...creates].filter((operation) => !operation.deleted).map((operation) => operation.path);
+    for (const { state, spelling } of ghosts) {
+      const taken = (path: string) => space.collides(path, spelling, "server");
+      if (claims.some(taken) || outgoing.some(taken)) {
+        yielding.push({ state, spelling });
+        continue;
+      }
+      const content = await source.read(spelling);
+      if (content === null) {
+        wait(spelling);
+        continue;
+      }
+      const create: PendingOperation = {
+        revisionId: source.newId(),
+        documentId: state.documentId,
+        baseRevisionId: "",
+        path: spelling,
+        contentHash: sha256Hex(content),
+        size: BigInt(content.length),
+        kind: state.kind,
+        deleted: false,
+      };
+      creates.push(create);
+      outgoing.push(spelling);
+    }
+  }
+
   return {
     operations: [
       ...removals,
@@ -240,7 +310,49 @@ export async function planPush(
     waiting,
     adopted,
     revivals,
+    yielding,
+    forgotten,
   };
+}
+
+/**
+ * A document the restored server lacks (design §4.6, SPEC.md §6.1): a live
+ * base this device synced, which a resync found no head of (`seq` 0). The
+ * next push re-creates it under its own id.
+ */
+export function ghost(state: DocumentState): boolean {
+  return hasBase(state) && !state.deleted && state.seq === 0n;
+}
+
+/** Documents a deferred remote revision keeps from pushing, and the server claims they hold (busyClaims). */
+export interface Busy {
+  documents: Set<string>;
+  paths: Set<string>;
+}
+
+/**
+ * The documents whose local changes wait because their newest server
+ * revision is deferred (design §4.5 step 2, §4.8): the merge path holds it
+ * (`local-changes`), or a blocker does (`unmaterializable`, `out-of-scope`,
+ * `too-large`). A commit of theirs would be refused, its base being behind
+ * the server's head. Their server claims wait with them (C3): the
+ * deferred revision's path, where the server has the document, and the
+ * file the document is bound to here, wherever a local rename put it. A path is never held
+ * for any other reason.
+ */
+export function busyClaims(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): Busy {
+  const busy: Busy = { documents: new Set(), paths: new Set() };
+  const states = new Map(documents.map((state) => [state.documentId, state]));
+  for (const { revision, reason } of deferred) {
+    if (reason === "invalid-path" || reason === "path-conflict") continue;
+    busy.documents.add(revision.documentId);
+    busy.paths.add(revision.path);
+    // Its file waits with it where the file is: a path its file left is
+    // free for the document the server has there (PO-11).
+    const spelling = states.get(revision.documentId)?.binding?.spelling;
+    if (spelling !== undefined) busy.paths.add(spelling);
+  }
+  return busy;
 }
 
 /** A new revision of a known document: `content` at `path`, or a tombstone (null). */

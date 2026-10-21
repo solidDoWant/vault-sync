@@ -529,16 +529,22 @@ describe("SyncEngine pull", () => {
       expect(await h.journal.getCursor()).toBe(3n);
     });
 
-    it("keeps content the server lost and hands those documents to the merge hook", async () => {
+    it("keeps content the server lost and commits it again on the head the restore rolled back to", async () => {
       const h = await syncedThenRestored();
+      const restoredHead = h.server.head("a")?.id;
 
       await h.engine.pull();
 
       // a2 and c1 exist only on this device now: nothing is overwritten or deleted.
       expect(await files(h.vault)).toEqual(new Map([["a.md", "a2"], ["b.md", "b1"], ["c.md", "c1"]]));
-      expect(h.merges.map((request) => request.remote.documentId)).toEqual(["a"]);
-      expect(text(h.merges[0]?.local.content ?? null)).toBe("a2");
+      // a's restored head a1 is one this device synced before a2: nothing is concurrent, so no merge (design §4.6).
+      expect(h.merges).toEqual([]);
+      expect((await h.journal.getDocument("a"))?.revisionId).toBe(restoredHead);
       expect((await h.journal.getDocument("b"))?.revisionId).toBe(h.server.head("b")?.id);
+
+      await h.engine.push();
+      expect(h.server.head("a")).toMatchObject({ parentRevId: restoredHead, deleted: false });
+      expect(h.server.liveFiles().get("a.md")).toBe("a2");
     });
 
     it("applies documents the restored server has and this device does not", async () => {

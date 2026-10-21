@@ -93,6 +93,8 @@ export class InMemoryServer {
   private headSeq = 0n;
   /** Anchors handed out so far; a restore does not rewind it, so it never hands out an anchor again (SPEC.md §6.1). */
   private anchors = 0n;
+  /** Every revision id commit handed out, with the version it named, kept across restores (newRevisionId). */
+  private readonly issued = new Map<string, string>();
   private readonly maxPageSize: number;
   private readonly maxDownloadBytes: number;
   readonly maxChunkBytes: number;
@@ -256,7 +258,7 @@ export class InMemoryServer {
     }
     this.headSeq++;
     const revision = create(RevisionSchema, {
-      id: `${input.documentId}@${String(this.headSeq)}`,
+      id: this.newRevisionId(input.documentId, `${bytesToHex(blobId)} ${input.path} ${String(input.deleted ?? false)}`),
       documentId: input.documentId,
       vaultId: this.vaultId,
       seq: this.headSeq,
@@ -321,6 +323,20 @@ export class InMemoryServer {
     const anchor = new Uint8Array(16);
     new DataView(anchor.buffer).setBigUint64(8, this.anchors);
     return anchor;
+  }
+
+  /**
+   * The id of the revision committed at the current head seq: `document@seq`.
+   * A restored server's seq values repeat, but a client generates each
+   * revision id (UUIDv7): an id a lost revision had names the same revision
+   * only when committed again as it was (`version`, a retried commit), and
+   * gets a suffix otherwise.
+   */
+  private newRevisionId(documentId: string, version: string): string {
+    let id = `${documentId}@${String(this.headSeq)}`;
+    for (let again = 1; this.issued.has(id) && this.issued.get(id) !== version; again++) id = `${documentId}@${String(this.headSeq)}~${String(again)}`;
+    this.issued.set(id, version);
+    return id;
   }
 
   /** Forgets every revision after `seq`, as a database restore from a backup would. */

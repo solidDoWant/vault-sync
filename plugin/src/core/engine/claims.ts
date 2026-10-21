@@ -2,6 +2,7 @@ import type { Journal } from "../journal/journal";
 import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
 import type { VaultAdapter } from "../vault/adapter";
 import type { PathRules } from "../vaultpath/platform";
+import { liveHere } from "./bindings";
 import type { PathEquivalence, PathSpace } from "./pathspace";
 
 /**
@@ -19,7 +20,7 @@ export type ClaimKind = "disk" | "server-known" | "server-newer" | "outgoing" | 
 export interface Claim {
   kind: ClaimKind;
   path: string;
-  /** The claiming document; none for a disk claim (bindings come with R4). */
+  /** The claiming document; for a disk claim, the document bound to the file, none for an untracked file. */
   documentId?: string;
 }
 
@@ -63,12 +64,49 @@ export class PathClaims {
   /** The claims as the journal and the vault have them now. */
   static async load(space: PathSpace, journal: ClaimJournal, vault: ClaimVault): Promise<PathClaims> {
     const claims: Claim[] = [];
-    for (const path of await vault.list()) claims.push({ kind: "disk", path });
-    for (const state of await journal.listDocuments()) if (!state.deleted) claims.push({ kind: "server-known", path: state.path, documentId: state.documentId });
+    const documents = await journal.listDocuments();
+    // A listed file is claimed by the document bound to it (C1), if any.
+    const bound = new Map<string, string>();
+    for (const state of documents) if (state.binding) bound.set(state.binding.fileKey, state.documentId);
+    for (const path of await vault.list()) {
+      const documentId = bound.get(space.filesystemKey(path));
+      claims.push(documentId === undefined ? { kind: "disk", path } : { kind: "disk", path, documentId });
+    }
+    // A released document holds no path here: its newest server claim is its deferred revision.
+    for (const state of documents) if (liveHere(state)) claims.push({ kind: "server-known", path: state.path, documentId: state.documentId });
     for (const { revision } of await journal.listDeferred()) if (!revision.deleted) claims.push({ kind: "server-newer", path: revision.path, documentId: revision.documentId });
     for (const operation of await journal.listPending()) claims.push({ kind: "outgoing", path: operation.path, documentId: operation.documentId });
     for (const record of await journal.listConflicts()) if (record.copyPath !== null) claims.push({ kind: "reserved", path: record.copyPath, documentId: record.documentId });
     return new PathClaims(space, vault, claims);
+  }
+
+  /** These claims and `more`: a claim the journal does not hold yet, such as the remote revision being decided. */
+  with(more: readonly Claim[]): PathClaims {
+    return new PathClaims(this.space, this.vault, [...this.claims, ...more]);
+  }
+
+  /**
+   * `fileHolder` of §4.2, for every file in the way: the documents bound to
+   * a listed file that collides with `path` under the file key, folders
+   * included (§3.2), each with the spelling the vault holds. Untracked files
+   * are left out: they are no document's.
+   */
+  fileHolders(path: string): { documentId: string; spelling: string }[] {
+    return this.collisions(path, "file").flatMap((claim) => (claim.kind === "disk" && claim.documentId !== undefined ? [{ documentId: claim.documentId, spelling: claim.path }] : []));
+  }
+
+  /**
+   * `serverHolder` of §4.2: the document the server is known to have at
+   * `K(path)`, its deferred revision superseding its synced path, or
+   * undefined.
+   */
+  serverHolder(path: string): string | undefined {
+    const key = this.space.serverKey(path);
+    const newer = new Set(this.claims.filter((claim) => claim.kind === "server-newer").map((claim) => claim.documentId));
+    const holder = this.claims.find(
+      (claim) => (claim.kind === "server-newer" || (claim.kind === "server-known" && !newer.has(claim.documentId))) && this.space.serverKey(claim.path) === key,
+    );
+    return holder?.documentId;
   }
 
   /** Every claim colliding with `path` under `equivalence`, folders included (§3.2). */

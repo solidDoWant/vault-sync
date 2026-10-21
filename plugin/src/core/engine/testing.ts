@@ -341,6 +341,22 @@ export async function files(vault: VaultAdapter): Promise<Map<string, string>> {
   return result;
 }
 
+/**
+ * Each document's newest server claim (design §4.2 C2, INV-2): its deferred
+ * revision's path when one waits, else its base's path; a deleted newest
+ * revision claims nothing. A released document keeps its live base, so its
+ * claim is the revision it waits for, not the path it left.
+ */
+export async function newestServerClaims(journal: Journal): Promise<[string, string][]> {
+  const ahead = new Map((await journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.revision]));
+  const claims: [string, string][] = [];
+  for (const state of await journal.listDocuments()) {
+    const newest = ahead.get(state.documentId) ?? state;
+    if (!newest.deleted) claims.push([state.documentId, newest.path]);
+  }
+  return claims;
+}
+
 export function text(content: Uint8Array | null): string | null {
   return content === null ? null : decoder.decode(content);
 }
@@ -1156,13 +1172,9 @@ export class PropertyWorld {
     if (owner !== undefined && owner !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}, an inode bound to ${owner}`);
   }
 
-  /** P3 (INV-1, INV-2) at a durable point: no two live journal documents, and no two live outboxes, collide under the path key. */
+  /** P3 (INV-1, INV-2) at a durable point: no two documents' newest server claims, and no two live outboxes, collide under the path key. */
   private async checkExclusivity(): Promise<void> {
-    const live = (await this.journal.listDocuments()).filter((state) => !state.deleted);
-    this.collisions(
-      "live documents",
-      live.map((state) => [state.documentId, state.path]),
-    );
+    this.collisions("live documents", await newestServerClaims(this.journal));
     const outbox = new Map<string, PendingOperation>();
     for (const operation of await this.journal.listPending()) outbox.set(operation.documentId, operation);
     this.collisions(
