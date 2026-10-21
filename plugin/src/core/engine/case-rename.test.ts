@@ -121,3 +121,29 @@ describe.each(["windows", "macos"] as const)("a remote case-only rename of a loc
     expect(await files(h.vault)).toEqual(h.server.liveFiles());
   });
 });
+
+describe.each(["windows", "macos"] as const)("a rename onto a case variant of a path another rename vacates on %s", (platform) => {
+  it.each([
+    ["first", ["1", "2"]],
+    ["last", ["2", "1"]],
+  ] as const)("commits the vacating rename first, keeping both ids with no conflict (the vacating rename %s in the journal)", async (_, ids) => {
+    const h = harness({ merge: "default", pathRules: { platform } });
+    // The journal lists documents by id: the order the push finds the two renames in.
+    h.server.commit({ documentId: ids[0], path: "a.md", content: "a\n" });
+    h.server.commit({ documentId: ids[1], path: "b.md", content: "b\n" });
+    await h.engine.pull();
+
+    await h.vault.rename("a.md", "z.md");
+    await h.vault.rename("b.md", "A.md");
+    const summary = await h.engine.push();
+
+    expect(summary).toMatchObject({ conflicts: 0, rejected: [] });
+    expect(h.server.liveDocuments()).toEqual(
+      new Map([
+        ["A.md", ids[1]],
+        ["z.md", ids[0]],
+      ]),
+    );
+    expect(await h.journal.listConflicts()).toEqual([]);
+  });
+});

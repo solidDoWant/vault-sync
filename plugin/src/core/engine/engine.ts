@@ -2022,7 +2022,7 @@ export class SyncEngine {
       handled.add(freed.path);
       if (!movedAway.has(this.pathSpace.fileKey(to))) displaced.push(freed);
     }
-    edits.push(...dependencyOrder(renames, (operation) => renameOf.get(operation.path)));
+    edits.push(...dependencyOrder(renames, (operation) => renameOf.get(operation.path), this.pathSpace.fileKey));
 
     // A file at a path the user vacated since the last push, by a rename
     // away or by deleting the document's file, is a new one (#254): the old
@@ -2676,11 +2676,16 @@ function syncedState(remote: RemoteRevision): DocumentState {
  * cycle (two files swapped) the rest go in their own order: the server refuses
  * one, which then moves to a conflict-copy path (SPEC.md §6.3).
  */
-function dependencyOrder(operations: readonly PendingOperation[], fromOf: (operation: PendingOperation) => string | undefined): PendingOperation[] {
+function dependencyOrder(operations: readonly PendingOperation[], fromOf: (operation: PendingOperation) => string | undefined, fileKey: (path: string) => string): PendingOperation[] {
   const ordered: PendingOperation[] = [];
   let remaining = [...operations];
+  // Paths compare as the vault compares them: a rename onto a case variant of a path waits for the rename away from it.
+  const vacates = (other: PendingOperation, path: string) => {
+    const from = fromOf(other);
+    return from !== undefined && fileKey(from) === fileKey(path);
+  };
   while (remaining.length > 0) {
-    const ready = remaining.filter((operation) => !remaining.some((other) => other !== operation && fromOf(other) === operation.path));
+    const ready = remaining.filter((operation) => !remaining.some((other) => other !== operation && vacates(other, operation.path)));
     const next = ready.length > 0 ? ready : remaining;
     ordered.push(...next);
     remaining = remaining.filter((operation) => !next.includes(operation));
