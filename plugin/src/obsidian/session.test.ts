@@ -642,6 +642,39 @@ describe("SyncSession", () => {
       expect(await files(vault)).toEqual(server.liveFiles());
     });
 
+    it("resolves after a user's rename failed to reach the journal, and a new session over the same journal pushes the rename", async () => {
+      // A failed binding transition stops the engine; a restart's scan (E7) reconciles bindings with the disk.
+      class FailingJournal extends InMemoryJournal {
+        fail = false;
+        override async transact(changes: Parameters<Journal["transact"]>[0]): Promise<void> {
+          if (this.fail) throw new Error("journal write failed");
+          await super.transact(changes);
+        }
+      }
+      const server = new InMemoryServer();
+      server.commit({ documentId: "a", path: "a.md", content: "the note" });
+      const vault = new InMemoryVault();
+      const journal = new FailingJournal();
+      const statuses: SessionStatus[] = [];
+      const failed = session({ server, vault, journal, statuses });
+      await failed.start();
+
+      journal.fail = true;
+      await vault.rename("a.md", "b.md");
+      await failed.syncNow();
+      // The rename that was not pushed still counts as pending.
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "error", pending: 1, message: "journal write failed" });
+      });
+      await expect(failed.stop()).resolves.toBeUndefined();
+      journal.fail = false;
+
+      await session({ server, vault, journal }).start();
+
+      expect(server.liveFiles()).toEqual(new Map([["b.md", "the note"]]));
+      expect(await files(vault)).toEqual(server.liveFiles());
+    });
+
     it("stops before ready without ever starting", async () => {
       const server = new InMemoryServer();
       const calls: string[] = [];

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { sha256Hex } from "../hash";
 import type { DocumentState, JournalChanges } from "../journal/journal";
@@ -368,6 +368,103 @@ describe("Bindings rules", () => {
 
     await expect(owner.put(base("A", "a.md", "a1"), { kind: "kept" })).rejects.toThrow("journal write failed");
     expect((await binding(journal, "A")).binding?.spelling).toBe("a.md");
+  });
+
+  // A v2 journal's migration may bind two documents to one file key (indexeddb.ts deriveV3Records).
+  async function duplicated(journal: InMemoryJournal): Promise<void> {
+    await journal.putDocument(bound(base("Y1", "y.md", "y1")));
+    await journal.putDocument(bound(base("Y2", "Y.md", "y2"), "y.md"));
+  }
+
+  const neither = { binding: null };
+
+  it("unbinds every document bound to the file an engine write binds another document to, not only the first found (C1)", async () => {
+    const journal = new InMemoryJournal();
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    await owner.put(base("X", "y.md", "x1"), { kind: "applied" });
+
+    expect(await binding(journal, "Y1")).toEqual({ ...neither, absence: "released" });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "released" });
+  });
+
+  it("unbinds every document bound at a rename's target, not only the first found", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    await owner.renamed("a.md", "y.md");
+
+    expect((await binding(journal, "A")).binding?.spelling).toBe("y.md");
+    expect(await binding(journal, "Y1")).toEqual({ ...neither, absence: "user-deleted" });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "user-deleted" });
+  });
+
+  it("unbinds every document bound to a deleted file in one journal transaction (E3, §4.3)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    points.count = 0;
+    await owner.deleted("y.md", "user");
+
+    expect(points.count).toBe(1);
+    expect(await binding(journal, "Y1")).toEqual({ ...neither, absence: "user-deleted" });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "user-deleted" });
+  });
+
+  it("writes every row the start-up scan changes in one journal transaction (E7, §4.3)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    // Both files were deleted while the app was closed; neither is in the vault.
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await journal.putDocument(bound(base("B", "b.md", "b1")));
+    points.count = 0;
+
+    await new Bindings(journal, new InMemoryVault(), space).idle();
+
+    expect(points.count).toBe(1);
+    expect(await binding(journal, "A")).toEqual({ ...neither, absence: "user-deleted" });
+    expect(await binding(journal, "B")).toEqual({ ...neither, absence: "user-deleted" });
+  });
+
+  it("settles after a user's rename whose transition failed, with no unhandled rejection, while a push still rejects", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    // The global type of Node's process, which the plugin's tsconfig leaves out.
+    const process = (globalThis as unknown as { process: { on(event: string, listener: (reason: unknown) => void): void; off(event: string, listener: (reason: unknown) => void): void } }).process;
+    const unhandled: unknown[] = [];
+    const listener = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", listener);
+    try {
+      const journal = new FailingJournal();
+      const h = harness({ journal });
+      h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+      await h.engine.pull();
+
+      journal.fail = true;
+      await h.vault.rename("a.md", "b.md");
+      // The rename is reported even though its transition failed.
+      await vi.waitFor(() => {
+        expect(h.localChanges).toHaveLength(1);
+      });
+      // Unhandled rejections are reported once the microtask queue drains.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(unhandled).toEqual([]);
+      await expect(h.engine.settled()).resolves.toBeUndefined();
+      await expect(h.engine.push()).rejects.toThrow("journal write failed");
+    } finally {
+      process.off("unhandledRejection", listener);
+    }
   });
 
   it("rejects a push after a user's rename whose transition failed, instead of pushing without it", async () => {
