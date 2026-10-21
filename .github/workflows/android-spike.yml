@@ -107,7 +107,11 @@ jobs:
         run: |
           nix develop -c make plugin-build
           cd plugin
-          nix develop -c npm install --no-save appium@^3 appium-uiautomator2-driver @wdio/appium-service@^9
+          nix develop -c npm install --no-save appium@^3 @wdio/appium-service@^9
+          # Appium 3 only finds drivers listed in package.json or installed
+          # into APPIUM_HOME (~/.appium).
+          nix develop -c npx appium driver install uiautomator2
+          nix develop -c npx appium driver list --installed
 
       - name: Plugin e2e on Android
         env:
