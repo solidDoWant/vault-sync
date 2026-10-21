@@ -290,6 +290,21 @@ describe("InMemoryVault", () => {
       expect([a, b]).not.toContain(recreated);
     });
 
+    it("taps each change synchronously, before any watcher sees it", async () => {
+      const vault = new InMemoryVault();
+      const order: string[] = [];
+      // The watchers subscribe first, so subscription order alone would run them before the tap.
+      vault.watch((event) => order.push(`watcher ${event.type} ${event.path}`));
+      vault.handle("engine").watch((event) => order.push(`engine watcher ${event.type} ${event.path}`));
+      vault.tapInodes((event) => order.push(`tap ${event.type} ${event.path}`));
+      const written = vault.write("a.md", new Uint8Array([1]));
+      // Tapped within the call, before the change's promise could settle.
+      expect(order[0]).toBe("tap create a.md");
+      await written;
+      await vault.handle("engine").rename("a.md", "b.md");
+      expect(order).toEqual(["tap create a.md", "watcher create a.md", "engine watcher create a.md", "tap rename b.md", "watcher rename b.md", "engine watcher rename b.md"]);
+    });
+
     it("taps every change with its inode and the actor whose handle made it", async () => {
       const vault = new InMemoryVault({ pathRules: { platform: "macos" }, filesystem: "faithful" });
       const user = vault.handle("user");

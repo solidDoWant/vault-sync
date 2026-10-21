@@ -23,15 +23,17 @@ import { restoreWindow } from "./restore-scenarios";
 import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
 import { mergedDuringPush } from "./scenarios";
 import { StallError } from "./network";
+import { recordedCase, replayOptions } from "./regression";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink } from "./shrink";
 
 const environment = simEnvironment();
 const suites = new Set(environment.suites);
 /**
- * Marks a seed's case recorded with the faithful filesystem: the regressions
- * suite replays cases without it, so such a case replays only with
- * `SIM_SEED=N SIM_FAITHFUL_FS=1`.
+ * Marks a seed's case recorded with the faithful filesystem, so it does not
+ * overwrite the folded case of the same seed. The case itself records the
+ * setting (RegressionCase.faithfulFilesystem), and the regressions suite
+ * replays it with it.
  */
 const faithfulSuffix = environment.faithfulFilesystem ? "-faithful-fs" : "";
 
@@ -98,7 +100,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
-    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}${faithfulSuffix}`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
+    const written = await new Control(environment.controlUrl).report(recordedCase(`seed-${String(seed)}${faithfulSuffix}`, options, final.violations, steps));
 
     expect.fail(
       [
@@ -134,7 +136,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
     const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
-    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}-retention${faithfulSuffix}`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
+    const written = await new Control(environment.controlUrl).report(recordedCase(`seed-${String(seed)}-retention${faithfulSuffix}`, options, final.violations, steps));
 
     expect.fail(
       [
@@ -157,8 +159,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
 describe.runIf(suites.has("regressions") && environment.regressions.length > 0)("committed regression cases", () => {
   it.each(environment.regressions.map((regression) => [regression.name, regression] as const))("%s keeps every invariant", async (_name, regression) => {
-    const engines = regression.engines ?? 1;
-    const result = await runSteps(environment, { seed: regression.seed, clients: regression.clients, engines, platforms: seededPlatforms(regression.seed, engines), commitRetryBackoff: regression.commitRetryBackoff }, regression.steps);
+    const result = await runSteps(environment, replayOptions(regression), regression.steps);
     expect(result.violations, tail(result.trace)).toEqual([]);
   });
 });

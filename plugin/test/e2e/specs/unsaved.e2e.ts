@@ -5,13 +5,13 @@ import { callHarness } from "../obsidian";
 // Unsaved keystrokes in a note that a sync deletes (#181): a remote delete of
 // the note, or the engine moving an unsynced note aside for a remote
 // document arriving at its path. The harness types into a real Markdown
-// editor and, in the same turn (before Obsidian's 2-second autosave), has
-// vault-sync's sync session pull and push against an in-memory server. The
-// engine deletes through the Obsidian adapter, which must save the editor
-// and refuse the delete instead of discarding the keystrokes (SPEC.md §8).
-// The session never pushes on its own: each scenario's syncs are its own, so
-// a debounced push falling due while the harness awaits Obsidian cannot take
-// a sync's place (#589).
+// editor and, holding Obsidian's 2-second autosave until the sync is over,
+// has vault-sync's sync session pull and push against an in-memory server
+// (#600). The engine deletes through the Obsidian adapter, which must save
+// the editor and refuse the delete instead of discarding the keystrokes
+// (SPEC.md §8). The session never pushes on its own: each scenario's syncs
+// are its own, so a debounced push falling due while the harness awaits
+// Obsidian cannot take a sync's place (#589).
 
 const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
 
@@ -27,7 +27,7 @@ async function openNote(path: string): Promise<void> {
 describe("Unsaved keystrokes in a note a sync deletes", function () {
   before(async function () {
     await callHarness("setUpSession");
-    await callHarness("startSession", { automaticPush: false });
+    await callHarness("startSession");
   });
 
   it("survive a remote delete of the note", async function () {

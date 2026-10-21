@@ -133,9 +133,10 @@ jobs:
           echo "seeds $FIRST_SEED to $(( FIRST_SEED + SEEDS - 1 )), $STEPS steps, faithful filesystem"
           mkdir -p build/sim-regressions
           cp sim/regressions/*.json build/sim-regressions/
-          # Only the seeded schedules (the seeds suite): the
-          # regression cases and scripted scenarios were recorded on the
-          # folded vault. The exit status goes into the summary instead of
+          # Only the seeded schedules (the seeds suite): the scripted
+          # scenarios were written for the folded vault, and each regression
+          # case replays with the setting it recorded, which the gating job
+          # already covers. The exit status goes into the summary instead of
           # failing the step.
           status=0
           SIM_FAITHFUL_FS=1 VAULT_SYNC_SIM_SUITES=seeds \
@@ -149,7 +150,10 @@ jobs:
             echo
             echo "Seeds $FIRST_SEED to $(( FIRST_SEED + SEEDS - 1 )), $STEPS steps: the simulation exited with status $status."
             echo
-            if [[ $status -ne 0 ]]; then ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL"; fi
+            if [[ $status -ne 0 ]]; then
+              ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL" sim-faithful-fs \
+                "The faithful-filesystem simulation failed (non-gating until R7: no issue is filed and the workflow does not fail)"
+            fi
             echo
             ./scripts/sim-shadow-report.sh build/sim-output.txt
           } >> "$GITHUB_STEP_SUMMARY"
