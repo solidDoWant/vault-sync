@@ -23,7 +23,7 @@ fi
 
 # One compose project per run, so concurrent runs (e.g. several worktrees)
 # do not share or tear down each other's containers.
-compose=(docker compose --project-name "vault-sync-test-$$" --file deploy/compose/compose.test.yaml)
+compose_files=(deploy/compose/compose.test.yaml)
 
 postgres_version="${VAULT_SYNC_TEST_POSTGRES_VERSION:-}"
 if [[ -n "$postgres_version" ]]; then
@@ -32,8 +32,13 @@ if [[ -n "$postgres_version" ]]; then
 		echo "with-test-stack: no compose override for VAULT_SYNC_TEST_POSTGRES_VERSION=${postgres_version} (expected ${override})" >&2
 		exit 2
 	fi
-	compose+=(--file "$override")
+	compose_files+=("$override")
 fi
+
+compose=(docker compose --project-name "vault-sync-test-$$")
+for file in "${compose_files[@]}"; do
+	compose+=(--file "$file")
+done
 
 cleanup() {
 	"${compose[@]}" down --volumes --remove-orphans --timeout 5 >/dev/null 2>&1 || true
@@ -42,21 +47,13 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-# Pull first, retrying with backoff: a registry's transient 5xx or rate limit
-# must not fail the run (#606). Cached images make this a no-op.
-pull_attempt=1
-until "${compose[@]}" pull --quiet; do
-	if ((pull_attempt >= 4)); then
-		echo "with-test-stack: pulling the test images failed ${pull_attempt} times; giving up" >&2
-		exit 1
-	fi
-	delay=$((5 * 3 ** (pull_attempt - 1)))
-	echo "with-test-stack: pulling the test images failed (attempt ${pull_attempt}); retrying in ${delay}s" >&2
-	sleep "$delay"
-	pull_attempt=$((pull_attempt + 1))
-done
+# Pull first (scripts/test-images.sh): only images not already present, so
+# images restored from CI's cache never touch the registry, retrying with
+# backoff, longer on a rate limit, so a registry's transient 5xx or 429 does
+# not fail the run (#606, #727).
+./scripts/test-images.sh pull "${compose_files[@]}"
 
-"${compose[@]}" up --detach --wait --wait-timeout 120 --quiet-pull
+"${compose[@]}" up --detach --wait --wait-timeout 120 --pull missing --quiet-pull
 
 if [[ -n "$postgres_version" ]]; then
 	# server_version_num is major * 10000 + minor for PostgreSQL 10 and newer.

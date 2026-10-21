@@ -7,7 +7,9 @@
 # rate limits used to fail CI (#606): every image comes from Google's Docker
 # Hub mirror, mirror.gcr.io, which serves the same content (same digests).
 # Not ECR Public: its anonymous data limit is exhausted on GitHub's shared
-# runner IPs. scripts/with-test-stack.sh also retries the pull with backoff.
+# runner IPs. scripts/with-test-stack.sh also retries the pull with backoff
+# (scripts/test-images.sh), and CI caches the images (.github/actions/test-images,
+# #727).
 name: vault-sync-test
 
 services:

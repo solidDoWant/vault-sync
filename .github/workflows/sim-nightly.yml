@@ -70,6 +70,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/nix-dev-shell
+      # The test stack's images from the actions cache (#727).
+      - uses: ./.github/actions/test-images
       - name: Long simulation
         id: simulation
         run: |
@@ -188,6 +190,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/nix-dev-shell
+      # The test stack's images from the actions cache (#727).
+      - uses: ./.github/actions/test-images
       - name: Long simulation on the faithful filesystem
         run: |
           set -euo pipefail

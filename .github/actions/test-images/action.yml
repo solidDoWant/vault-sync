@@ -1,0 +1,49 @@
+name: test-images
+description: >-
+  Provide the digest-pinned images of the docker compose test stack
+  (deploy/compose/compose.test*.yaml) from an actions cache, so the jobs that
+  run scripts/with-test-stack.sh do not pull them from a rate-limited public
+  registry on every run (#606, #727). On a cache miss the images are pulled
+  (scripts/test-images.sh, with backoff) and saved to the cache; if that pull
+  fails, the step does not fail the job and with-test-stack.sh pulls (and
+  retries) again. Keyed on the compose files, which hold the digests.
+runs:
+  using: composite
+  steps:
+    # A loaded image answers to its digest reference (name:tag@sha256:...)
+    # only with the containerd image store; the classic store drops the
+    # digest on `docker save`/`docker load`.
+    - name: Use Docker's containerd image store
+      shell: bash
+      run: |
+        set -euo pipefail
+        if docker info --format '{{json .DriverStatus}}' | grep -q io.containerd.snapshotter; then
+          exit 0
+        fi
+        config=/etc/docker/daemon.json
+        current='{}'
+        if [[ -s $config ]]; then current=$(sudo cat "$config"); fi
+        jq '.features["containerd-snapshotter"] = true' <<<"$current" | sudo tee "$config" >/dev/null
+        sudo systemctl restart docker
+        docker info --format '{{json .DriverStatus}}' | grep -q io.containerd.snapshotter
+    - id: cache
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ runner.temp }}/test-images.tar
+        key: test-images-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('deploy/compose/compose.test*.yaml', 'scripts/test-images.sh') }}
+    - name: Load the cached test images
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: ./scripts/test-images.sh load "$RUNNER_TEMP/test-images.tar"
+    - name: Pull and save the test images
+      id: save
+      if: steps.cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      shell: bash
+      run: ./scripts/test-images.sh save "$RUNNER_TEMP/test-images.tar"
+    - if: steps.cache.outputs.cache-hit != 'true' && steps.save.outcome == 'success'
+      uses: actions/cache/save@v4
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/test-images.tar
+        key: ${{ steps.cache.outputs.cache-primary-key }}
