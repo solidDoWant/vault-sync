@@ -39,6 +39,7 @@
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
+import { sha256Hex } from "../plugin/src/core/hash";
 import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { VaultEvent } from "../plugin/src/core/vault/adapter";
@@ -256,30 +257,69 @@ function textLines(content: Uint8Array): string[] | undefined {
 }
 
 /**
- * Whether the merged `result` carries the local edit of `local` over `base`
- * (null if unknown or none): the harness's own check, independent of the
- * merge code, of what a merge hook reports as merged (#301). It does if it
- * is the local content, or if both are text and every non-empty line local
- * added over the base is in the result's text (a merge may join it to the
- * other side's last line, where that has no final newline). A local edit that only removed
- * lines passes. A binary local content passes only if the result is it.
+ * Every content a device's vaults held, by SHA-256 (hex): where the harness
+ * finds the base or remote content of a merge whose hook never read it,
+ * without reading it again, which would add calls to the run (#717). A
+ * device's merge base is the content of the revision it last synced, which
+ * it either pushed from its disk or pulled onto it, so its vaults held it.
  */
-export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null): boolean {
+export class KnownContents {
+  private readonly contents = new Map<string, Uint8Array>();
+
+  add(content: Uint8Array): void {
+    this.contents.set(sha256Hex(content), content);
+  }
+
+  /** The content hashing to `hash`, or null if the device never held it. */
+  get(hash: string): Uint8Array | null {
+    return this.contents.get(hash) ?? null;
+  }
+}
+
+/** Takes one `line` from `counts`, if there is one left. */
+function take(counts: Map<string, number>, line: string): boolean {
+  const count = counts.get(line) ?? 0;
+  if (count === 0) return false;
+  counts.set(line, count - 1);
+  return true;
+}
+
+/** How often each line occurs in `lines`. */
+function lineCounts(lines: readonly string[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const line of lines) counts.set(line, (counts.get(line) ?? 0) + 1);
+  return counts;
+}
+
+/**
+ * Whether the merged `result` carries the local edit of `local` over `base`
+ * (null if unknown or none), with `remote` the other side's content (null if
+ * unknown or none): the harness's own check, independent of the merge code,
+ * of what a merge hook reports as merged (#301). It does if it is the local
+ * content, or if both are text and every non-empty line local added over the
+ * base is a line of the result, as often as local added it (#717). One added
+ * line may instead be joined to the other side's last line, where that has no
+ * final newline: the only place a line merge joins two lines. Without a base,
+ * every non-empty local line must be in the result. A local edit that only
+ * removed lines passes. A binary local content passes only if the result is it.
+ */
+export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null, remote: Uint8Array | null): boolean {
   if (local.length === result.length && local.every((byte, index) => byte === result[index])) return true;
   const localLines = textLines(local);
   const resultLines = textLines(result);
   if (localLines === undefined || resultLines === undefined) return false;
-  const remaining = new Map<string, number>();
-  for (const line of (base === null ? undefined : textLines(base)) ?? []) remaining.set(line, (remaining.get(line) ?? 0) + 1);
-  // Text, not lines: a merge may join an added line to the other side's last line, where that has no final newline.
-  const resultText = resultLines.join("\n");
+  const remaining = lineCounts((base === null ? undefined : textLines(base)) ?? []);
+  const available = lineCounts(resultLines);
+  // The other side's last line, if it has no final newline (an empty text has no last line to end).
+  const unterminated = (remote === null ? undefined : textLines(remote))?.at(-1);
+  let joined = false;
   for (const line of localLines) {
-    const count = remaining.get(line) ?? 0;
-    if (count > 0) {
-      remaining.set(line, count - 1);
+    if (take(remaining, line) || line === "" || take(available, line)) continue;
+    if (!joined && unterminated !== undefined && unterminated !== "" && take(available, unterminated + line)) {
+      joined = true;
       continue;
     }
-    if (line !== "" && !resultText.includes(line)) return false;
+    return false;
   }
   return true;
 }

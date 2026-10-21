@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 
+import { sha256Hex } from "../plugin/src/core/hash";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import { pathPool } from "./client";
 import { EngineUser } from "./engine-user";
-import { carriesLocalEdit, checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, KnownContents, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
 
 const at = "step 1";
 
@@ -402,31 +403,95 @@ describe("carriesLocalEdit", () => {
   const text = (value: string) => new TextEncoder().encode(value);
 
   it("accepts the local content itself, also binary", () => {
-    expect(carriesLocalEdit(new Uint8Array([0xff, 0]), new Uint8Array([0xff, 0]), null)).toBe(true);
+    expect(carriesLocalEdit(new Uint8Array([0xff, 0]), new Uint8Array([0xff, 0]), null, null)).toBe(true);
   });
 
   it("accepts a merged result that holds every line the local edit added over the base, whatever its line endings", () => {
-    expect(carriesLocalEdit(text("a\nlocal\nb\n"), text("remote\r\na\r\nlocal\r\nb\r\n"), text("a\nb\n"))).toBe(true);
+    expect(carriesLocalEdit(text("a\nlocal\nb\n"), text("remote\r\na\r\nlocal\r\nb\r\n"), text("a\nb\n"), text("remote\na\nb\n"))).toBe(true);
     // A local edit that only removed a line has nothing to carry.
-    expect(carriesLocalEdit(text("a\n"), text("a\nb\nremote\n"), text("a\nb\n"))).toBe(true);
+    expect(carriesLocalEdit(text("a\n"), text("a\nb\nremote\n"), text("a\nb\n"), text("a\nb\nremote\n"))).toBe(true);
   });
 
   it("accepts a line the merge joined to the other side's last line, which has no final newline", () => {
-    expect(carriesLocalEdit(text("a\nlocal\n"), text("remote, unterminatedlocal\n"), text("a\n"))).toBe(true);
+    // What the line merge makes of a local line appended after a remote edit of the base's last line that dropped its newline.
+    expect(carriesLocalEdit(text("a\nb\nlocal\n"), text("a\nremote, unterminatedlocal\n"), text("a\nb\n"), text("a\nremote, unterminated"))).toBe(true);
+  });
+
+  it("accepts a correct merge in which the remote side deleted a line the local side kept", () => {
+    expect(carriesLocalEdit(text("a\nb\nlocal\n"), text("a\nlocal\n"), text("a\nb\n"), text("a\n"))).toBe(true);
   });
 
   it("rejects a result that dropped a line the local edit added: the remote content reported as merged", () => {
-    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\nremote\n"), text("a\n"))).toBe(false);
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\nremote\n"), text("a\n"), text("a\nremote\n"))).toBe(false);
     // A line added a second time counts: the base holds it once.
-    expect(carriesLocalEdit(text("a\na\n"), text("b\n"), text("a\n"))).toBe(false);
+    expect(carriesLocalEdit(text("a\na\n"), text("b\n"), text("a\n"), text("b\n"))).toBe(false);
+  });
+
+  it("rejects a result that holds a short added line only within another line (#717)", () => {
+    // `a`, `-` and `first` occur in the remote's text, but not as lines.
+    expect(carriesLocalEdit(text("x\na\n"), text("x\nbanana\n"), text("x\n"), text("x\nbanana\n"))).toBe(false);
+    expect(carriesLocalEdit(text("x\n-\n"), text("x\n- item\n"), text("x\n"), text("x\n- item\n"))).toBe(false);
+    expect(carriesLocalEdit(text("x\nfirst\n"), text("x\nfrom the first engine's user\n"), text("x\n"), text("x\nfrom the first engine's user\n"))).toBe(false);
+  });
+
+  it("needs each added line in the result as often as the local edit added it", () => {
+    expect(carriesLocalEdit(text("x\n-\n-\n"), text("x\n-\nremote\n"), text("x\n"), text("x\nremote\n"))).toBe(false);
+    expect(carriesLocalEdit(text("x\n-\n-\n"), text("x\n-\n-\nremote\n"), text("x\n"), text("x\nremote\n"))).toBe(true);
+  });
+
+  it("accepts a joined line only after the other side's unterminated last line, and only once", () => {
+    const [local, result, base] = [text("a\nb\nlocal\n"), text("a\nBlocal\n"), text("a\nb\n")];
+    expect(carriesLocalEdit(local, result, base, text("a\nB"))).toBe(true);
+    // Unknown remote content, a remote last line that ends with a newline, or one that is not the prefix: no join.
+    expect(carriesLocalEdit(local, result, base, null)).toBe(false);
+    expect(carriesLocalEdit(local, result, base, text("a\nB\n"))).toBe(false);
+    expect(carriesLocalEdit(local, result, base, text("a\nC"))).toBe(false);
+    // A second added line cannot hide in another joined line.
+    expect(carriesLocalEdit(text("a\nb\nlocal\nmore\n"), text("a\nBlocal\nBmore\n"), base, text("a\nB"))).toBe(false);
   });
 
   it("without a base, needs every local line in the result", () => {
-    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\n"), null)).toBe(false);
-    expect(carriesLocalEdit(text("a\n"), text("remote\na\n"), null)).toBe(true);
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\n"), null, null)).toBe(false);
+    expect(carriesLocalEdit(text("a\n"), text("remote\na\n"), null, null)).toBe(true);
+    expect(carriesLocalEdit(text("a\nb\nlocal\n"), text("a\nlocal\n"), null, text("a\n"))).toBe(false);
   });
 
   it("rejects any other result for binary local content", () => {
-    expect(carriesLocalEdit(new Uint8Array([0xff]), new Uint8Array([0xff, 1]), null)).toBe(false);
+    expect(carriesLocalEdit(new Uint8Array([0xff]), new Uint8Array([0xff, 1]), null, null)).toBe(false);
+  });
+});
+
+describe("KnownContents", () => {
+  it("finds a content it was given by its SHA-256, and nothing else", () => {
+    const known = new KnownContents();
+    const content = new TextEncoder().encode("a\nb\n");
+    known.add(content);
+    // SHA-256 of "a\nb\n", computed independently (sha256sum).
+    expect(known.get("911169ddaaf146aff539f58c26c489af3b892dff0fe283c1c264c65ae5aa59a2")).toEqual(content);
+    expect(known.get(sha256Hex(new TextEncoder().encode("a\n")))).toBeNull();
+  });
+});
+
+describe("lost-write of a merge the hook reports as merged (#717)", () => {
+  const text = (value: string) => new TextEncoder().encode(value);
+  /** The local write, then what the observer records of a merge of it into `result`; the lost-write violations, with only `result` surviving. */
+  function lostWrites(local: Uint8Array, result: Uint8Array, base: Uint8Array | null, remote: Uint8Array | null): string[] {
+    const ledger = new UserLedger();
+    ledger.write({ hash: sha256Hex(local), path: "a.md", at });
+    if (carriesLocalEdit(local, result, base, remote)) ledger.merged(sha256Hex(local), sha256Hex(result));
+    return checkLostWrites("e1", ledger, new Set([sha256Hex(result)])).map((violation) => violation.invariant);
+  }
+
+  it("reports a merge hook that drops a one-word local addition but reports it as merged", () => {
+    const remote = text("x\nfrom the first engine's user\n");
+    expect(lostWrites(text("x\nfirst\n"), remote, text("x\n"), remote)).toEqual(["lost-write"]);
+  });
+
+  it("reports nothing for a correct merge where the remote deleted an unchanged line, with the base the device held", () => {
+    const known = new KnownContents();
+    const base = text("a\nb\n");
+    known.add(base);
+    // The hook did not read the base: the observer finds it by the journal's base hash.
+    expect(lostWrites(text("a\nb\nlocal\n"), text("a\nlocal\n"), known.get(sha256Hex(base)), text("a\n"))).toEqual([]);
   });
 });

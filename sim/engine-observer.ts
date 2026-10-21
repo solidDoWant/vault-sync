@@ -47,7 +47,7 @@ import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory"
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
-import { carriesLocalEdit, checkEngineEchoes, UserLedger } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, KnownContents, UserLedger } from "./invariants";
 import { errorCode, settle, StallError } from "./network";
 import { Random } from "./random";
 import type { EngineOperation } from "./schedule";
@@ -117,6 +117,8 @@ export class EngineObserver {
   private emitting: InodeEvent["actor"] | undefined;
   /** What the user did, for the lost-write and phantom-delete checks (sim/invariants.ts). */
   readonly ledger: UserLedger;
+  /** Every content the device's vaults held, whoever wrote it: a merge's base where the hook did not read it (#717). It survives crashes, as the disk does. */
+  private readonly contents = new KnownContents();
   private readonly user: EngineUser;
   /** The last push that completed. */
   lastPush: PushSummary | undefined;
@@ -144,11 +146,15 @@ export class EngineObserver {
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
     this.vault.tapInodes((event) => {
       this.emitting = event.actor;
+      this.record(this.vault, event);
       this.inodeEvents.push({ ...event, step: context.stepNumber() });
     });
     this.engineVault = new MutableVault(this.vault.handle("engine"), (from, to, rename) => this.user.engineRenamed(from, to, rename));
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
-    this.config.tapInodes((event) => (this.emitting = event.actor));
+    this.config.tapInodes((event) => {
+      this.emitting = event.actor;
+      this.record(this.config, event);
+    });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
     this.ledger = new UserLedger(platform);
@@ -161,6 +167,17 @@ export class EngineObserver {
       serverSeq: () => context.serverSeq(),
       pathPool: context.pathPool,
     });
+  }
+
+  /** Records in `contents` what a create or modify left in `vault`: the in-memory vault reads it synchronously, within the change. */
+  private record(vault: InMemoryVault, event: InodeEvent): void {
+    if (event.type !== "create" && event.type !== "modify") return;
+    void vault.read(event.path).then(
+      (content) => {
+        this.contents.add(content);
+      },
+      () => undefined,
+    );
   }
 
   /**
@@ -650,11 +667,12 @@ export class EngineObserver {
         this.context.log(`${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`);
       },
       merge: async (request) => {
-        // The base as the hook read it, if it did: the harness never reads it again, which would add calls to the run.
-        let base: Uint8Array | null = null;
+        // The base and the remote content as the hook read them, if it did: the harness never reads them again, which would add calls to the run.
+        const read: { base?: Uint8Array | null; remote?: Uint8Array | null } = {};
         const outcome = await (this.merge ?? threeWayMerge)({
           ...request,
-          readBaseContent: async () => (base = await request.readBaseContent()),
+          readBaseContent: async () => (read.base = await request.readBaseContent()),
+          readRemoteContent: async () => (read.remote = await request.readRemoteContent()),
         });
         // What the merge path made of the local content: it survives there
         // (sim/invariants.ts), but only where the harness's own check finds the
@@ -662,7 +680,10 @@ export class EngineObserver {
         // local content itself, which then survives by being found.
         if (outcome.status === "merged" && request.local.content !== null && outcome.content !== null) {
           const [local, merged] = [sha256Hex(request.local.content), sha256Hex(outcome.content)];
-          const carries = carriesLocalEdit(request.local.content, outcome.content, base);
+          // Where the hook did not read the base (or the server purged it), the device's vaults held it (KnownContents).
+          const base = request.base === undefined || request.base.deleted ? null : (read.base ?? this.contents.get(request.base.baseHash));
+          const remote = read.remote !== undefined ? read.remote : request.remote.deleted ? null : this.contents.get(request.remote.contentHash);
+          const carries = carriesLocalEdit(request.local.content, outcome.content, base, remote);
           if (carries) this.ledger.merged(local, merged);
           this.context.log(`${this.name} merge at ${outcome.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`);
         }

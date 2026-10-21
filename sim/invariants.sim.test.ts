@@ -111,13 +111,24 @@ async function deleteOnFirstEngine(endpoints: SimEndpoints, before: (run: SimRun
 
 const nothing = () => Promise.resolve("nothing");
 
+/** The contents of concurrentEdits: the note `e1` creates, `e1`'s edit of it and `e2`'s. */
+interface ConcurrentContents {
+  base: string;
+  first: string;
+  second: string;
+}
+
 /**
  * Two POSIX engines whose users edit `notes/a.md` concurrently (#301): `e1`
  * creates it, `e2` syncs it, `e1`'s user adds a line and pushes, `e2`'s user
  * adds another, `e2` gets `merge` as its merge hook and pulls, so the hook
  * merges the two edits, and pushes.
  */
-async function concurrentEdits(endpoints: SimEndpoints, merge: MergeHook | undefined): Promise<{ result: RunResult; run: SimRun }> {
+async function concurrentEdits(
+  endpoints: SimEndpoints,
+  merge: MergeHook | undefined,
+  contents: ConcurrentContents = { base: "a\n", first: "a\nfrom the first engine's user\n", second: "from the second engine's user\na\n" },
+): Promise<{ result: RunResult; run: SimRun }> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "posix"] });
   const [first, second] = run.observers;
   if (first === undefined || second === undefined) throw new Error("the run has two engines");
@@ -125,15 +136,15 @@ async function concurrentEdits(endpoints: SimEndpoints, merge: MergeHook | undef
     await settle();
     await run.drain();
   };
-  run.context.log(await first.edit("notes/a.md", encoder.encode("a\n")));
+  run.context.log(await first.edit("notes/a.md", encoder.encode(contents.base)));
   run.context.log(first.startPush());
   await drain();
   run.context.log(second.startPull());
   await drain();
-  run.context.log(await first.edit("notes/a.md", encoder.encode("a\nfrom the first engine's user\n")));
+  run.context.log(await first.edit("notes/a.md", encoder.encode(contents.first)));
   run.context.log(first.startPush());
   await drain();
-  run.context.log(await second.edit("notes/a.md", encoder.encode("from the second engine's user\na\n")));
+  run.context.log(await second.edit("notes/a.md", encoder.encode(contents.second)));
   second.merge = merge;
   run.context.log(second.startPull());
   await drain();
@@ -372,6 +383,23 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     const trace = tail(result.trace);
     expect(invariants(result), trace).toEqual(["lost-write"]);
     expect(result.violations[0]?.detail, trace).toContain("e2's user wrote");
+  });
+
+  it("catches a merge that drops a one-word local addition the remote content holds within a line, but reports it as merged (#717)", async () => {
+    const dropLocal: MergeHook = async (request) => ({ status: "merged", path: request.remote.path, content: await request.readRemoteContent() });
+    const { result } = await concurrentEdits(environment, dropLocal, { base: "a\n", first: "a\nfrom the first engine's user\n", second: "a\nfirst\n" });
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toEqual(["lost-write"]);
+    expect(result.violations[0]?.detail, trace).toContain("e2's user wrote");
+  });
+
+  it("passes a correct merge, by a hook that never reads the base, of a remote delete of a line the local edit kept (#717)", async () => {
+    // The line merge of the two edits, which this hook knows without reading the base.
+    const known: MergeHook = (request) => Promise.resolve({ status: "merged", path: request.remote.path, content: encoder.encode("a\nlocal\n") });
+    const { result, run } = await concurrentEdits(environment, known, { base: "a\nb\n", first: "a\n", second: "a\nb\nlocal\n" });
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    for (const engine of run.observers) expect(new TextDecoder().decode(await engine.read("notes/a.md")), trace).toBe("a\nlocal\n");
   });
 
   // #422 item 7: on a server that was never restored or purged, a pull that resyncs is a bug.
