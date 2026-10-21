@@ -323,15 +323,20 @@ describe("ensureDevice", () => {
     await expect(failure).rejects.not.toBeInstanceOf(DeviceLimitError);
   });
 
-  it("retries a registration after a crash with the same registration id and name (#428)", async () => {
+  it.each([
+    ["UNAVAILABLE", new ConnectError("connection reset", Code.Unavailable)],
+    ["DEADLINE_EXCEEDED", new ConnectError("deadline exceeded", Code.DeadlineExceeded)],
+    ["a RESOURCE_EXHAUSTED without the device-limit reason", resourceExhausted("too many requests")],
+    ["a network error", new TypeError("Failed to fetch")],
+  ])("retries a registration after %s with the same registration id and name (#428)", async (_, failure) => {
     let lose = true;
     const server = fakeServer({
       registerDevice: () => {
-        // The server registers the device, then the plugin dies before it
-        // reads the response.
+        // The server may have registered the device before the plugin lost
+        // the response, so the retry must not look like a new install.
         if (lose) {
           lose = false;
-          throw new ConnectError("connection reset", Code.Unavailable);
+          throw failure;
         }
         return "device-1";
       },
@@ -371,6 +376,94 @@ describe("ensureDevice", () => {
 
     expect(server.registrationIds).toHaveLength(2);
     expect(server.registrationIds[0]).not.toBe(server.registrationIds[1]);
+  });
+
+  it.each([
+    ["INVALID_ARGUMENT", Code.InvalidArgument, DeviceNameError],
+    ["ALREADY_EXISTS", Code.AlreadyExists, ConnectError],
+  ])("drops the saved registration after a %s refusal, so the next attempt registers anew (#428)", async (_, code, thrown) => {
+    let refuse = true;
+    const server = fakeServer({
+      registerDevice: () => {
+        if (refuse) {
+          refuse = false;
+          throw new ConnectError("refused", code);
+        }
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Laptop" };
+    let disk = "";
+    const options = {
+      data,
+      save: () => {
+        disk = JSON.stringify(data);
+        return Promise.resolve();
+      },
+      client: server.client,
+      accessToken: () => Promise.resolve(tokenFor("alice")),
+      defaultDeviceName: "desktop",
+    };
+
+    const failure = ensureDevice(options);
+    await expect(failure).rejects.toBeInstanceOf(thrown);
+    // What a restart reads holds no registration to resend.
+    const reloaded = { ...parsePluginData(JSON.parse(disk)), deviceName: "Renamed" };
+    expect(reloaded.pendingDevice).toBeUndefined();
+    expect(await ensureDevice({ ...options, data: reloaded })).toBe("device-1");
+
+    expect(server.registrationIds).toHaveLength(2);
+    expect(server.registrationIds[1]).not.toBe(server.registrationIds[0]);
+    expect(server.registered).toEqual(["Renamed"]);
+  });
+
+  it("registers the renamed device after the server refused its name (#428, #557)", async () => {
+    const server = fakeServer({
+      registerDevice: (name) => {
+        // A name the server refuses for a rule this device does not apply.
+        if (name.startsWith("Refused")) throw new ConnectError("name must be valid UTF-8 without control, format or line separator characters", Code.InvalidArgument);
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Refused phone" };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+
+    await expect(ensureDevice(options)).rejects.toBeInstanceOf(DeviceNameError);
+    // Trying again without renaming is refused again: nothing was registered.
+    await expect(ensureDevice(options)).rejects.toBeInstanceOf(DeviceNameError);
+    data.deviceName = "Phone";
+    expect(await ensureDevice(options)).toBe("device-1");
+
+    expect(server.registered).toEqual(["Phone"]);
+    expect(data.device?.id).toBe("device-1");
+    expect(data.pendingDevice).toBeUndefined();
+  });
+
+  it.each([
+    ["account", "bob", undefined],
+    ["server", "alice", "https://other.example"],
+  ])("does not resend another %s's unfinished registration (#428)", async (_, subject, serverUrl) => {
+    let fail = true;
+    const server = fakeServer({
+      registerDevice: () => {
+        if (fail) {
+          fail = false;
+          throw new ConnectError("connection reset", Code.Unavailable);
+        }
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Laptop" };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+
+    await expect(ensureDevice(options)).rejects.toThrow();
+    data.deviceName = "Work laptop";
+    if (serverUrl !== undefined) data.serverUrl = serverUrl;
+    expect(await ensureDevice({ ...options, accessToken: () => Promise.resolve(tokenFor(subject)) })).toBe("device-1");
+
+    expect(server.registrationIds).toHaveLength(2);
+    expect(server.registrationIds[1]).not.toBe(server.registrationIds[0]);
+    expect(server.registered).toEqual(["Work laptop"]);
   });
 });
 

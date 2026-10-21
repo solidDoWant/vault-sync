@@ -77,7 +77,14 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
     id = (await options.client.devices.registerDevice({ name: pending.name, registrationId: pending.registrationId })).device?.id;
   } catch (error) {
     if (isDeviceLimit(error)) throw new DeviceLimitError(errorMessage(error));
-    if (error instanceof ConnectError && error.code === Code.InvalidArgument) throw new DeviceNameError(error.rawMessage);
+    if (isRefusal(error)) {
+      // The server registered nothing under this request, so the next attempt
+      // mints a new registration id and takes the current Device name: a name
+      // the server refuses must not stay stuck in plugin data (#428).
+      delete data.pendingDevice;
+      await options.save();
+      if (error.code === Code.InvalidArgument) throw new DeviceNameError(error.rawMessage);
+    }
     throw error;
   }
   if (id === undefined || id === "") throw new Error("the server registered the device but returned no id");
@@ -85,6 +92,19 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
   delete data.pendingDevice;
   await options.save();
   return id;
+}
+
+/**
+ * A RegisterDevice error meaning the server registered nothing under the
+ * request: INVALID_ARGUMENT (a refused name or a malformed registration id)
+ * or ALREADY_EXISTS (the registration id is taken by a device with another
+ * name or key). Transient or ambiguous errors (UNAVAILABLE,
+ * DEADLINE_EXCEEDED, network errors, a RESOURCE_EXHAUSTED without the
+ * device-limit reason) are not refusals: the first call may have registered
+ * the device, so a retry must send the same registration id.
+ */
+function isRefusal(error: unknown): error is ConnectError {
+  return error instanceof ConnectError && (error.code === Code.InvalidArgument || error.code === Code.AlreadyExists);
 }
 
 function sameAccount(stored: Account, account: Account): boolean {
