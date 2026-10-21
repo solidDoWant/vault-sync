@@ -1,4 +1,13 @@
-import { releasedRows, type Absence, type Binding, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
+import {
+  priorRevisionLimit,
+  releasedRows,
+  type Absence,
+  type Binding,
+  type DocumentState,
+  type Journal,
+  type JournalChanges,
+  type PendingOperation,
+} from "../journal/journal";
 import type { VaultAdapter } from "../vault/adapter";
 import type { PathSpace } from "./pathspace";
 
@@ -34,7 +43,15 @@ export type BindingChange =
   | { kind: "adopted"; path: string }
   | { kind: "kept" };
 
-type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "listDeferred" | "documentsByFileKey" | "transact">;
+type BindingsJournal = Pick<
+  Journal,
+  | "getDocument"
+  | "listDocuments"
+  | "listPending"
+  | "listDeferred"
+  | "documentsByFileKey"
+  | "transact"
+>;
 type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
 
 /**
@@ -57,7 +74,10 @@ export class Bindings {
   }
   private scanPending = true;
   /** The documents the scan unbound for a file missing at their binding's file key (see renamed). */
-  private readonly missing = new Map<string, { documentId: string; seen: string }>();
+  private readonly missing = new Map<
+    string,
+    { documentId: string; seen: string }
+  >();
 
   constructor(
     private readonly journal: BindingsJournal,
@@ -86,9 +106,21 @@ export class Bindings {
   put(state: DocumentState, change: BindingChange): Promise<void> {
     return this.serialize(async () => {
       const current = await this.journal.getDocument(state.documentId);
-      const next = { ...state, ...this.bindingAfter(state, current, change) };
-      if (change.kind === "applied" || change.kind === "merged") next.binding = await this.keptName(current?.binding, next.binding);
-      const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
+      const next = {
+        ...state,
+        ...this.bindingAfter(state, current, change),
+        ...priorAfter(state, current),
+      };
+      if (change.kind === "applied" || change.kind === "merged")
+        next.binding = await this.keptName(current?.binding, next.binding);
+      const others =
+        next.binding === null
+          ? []
+          : await this.unbindOthers(
+              next.documentId,
+              next.binding.spelling,
+              "released",
+            );
       await this.journal.transact({ putDocuments: [...others, next] });
     });
   }
@@ -103,8 +135,15 @@ export class Bindings {
   created(operation: PendingOperation): Promise<void> {
     return this.serialize(async () => {
       const row = this.createRow(operation);
-      const others = await this.unbindOthers(operation.documentId, operation.path, "released");
-      await this.journal.transact({ addPending: [operation], putDocuments: [...others, row] });
+      const others = await this.unbindOthers(
+        operation.documentId,
+        operation.path,
+        "released",
+      );
+      await this.journal.transact({
+        addPending: [operation],
+        putDocuments: [...others, row],
+      });
     });
   }
 
@@ -128,9 +167,24 @@ export class Bindings {
   revived(operation: PendingOperation): Promise<void> {
     return this.serialize(async () => {
       const state = await this.journal.getDocument(operation.documentId);
-      if (state === undefined) throw new Error(`no document ${operation.documentId} to bring back`);
-      const others = await this.unbindOthers(operation.documentId, operation.path, "released");
-      await this.journal.transact({ addPending: [operation], putDocuments: [...others, { ...state, binding: this.bound(operation.path, operation.contentHash), absence: null }] });
+      if (state === undefined)
+        throw new Error(`no document ${operation.documentId} to bring back`);
+      const others = await this.unbindOthers(
+        operation.documentId,
+        operation.path,
+        "released",
+      );
+      await this.journal.transact({
+        addPending: [operation],
+        putDocuments: [
+          ...others,
+          {
+            ...state,
+            binding: this.bound(operation.path, operation.contentHash),
+            absence: null,
+          },
+        ],
+      });
     });
   }
 
@@ -143,14 +197,26 @@ export class Bindings {
     return this.serialize(async () => {
       const pending = await this.journal.listPending();
       const removed = new Set(revisionIds);
-      const left = new Set(pending.filter((operation) => !removed.has(operation.revisionId)).map((operation) => operation.documentId));
+      const left = new Set(
+        pending
+          .filter((operation) => !removed.has(operation.revisionId))
+          .map((operation) => operation.documentId),
+      );
       const documents = new Set<string>();
       for (const operation of pending) {
-        if (!removed.has(operation.revisionId) || left.has(operation.documentId)) continue;
+        if (
+          !removed.has(operation.revisionId) ||
+          left.has(operation.documentId)
+        )
+          continue;
         const state = await this.journal.getDocument(operation.documentId);
-        if (state !== undefined && !hasBase(state)) documents.add(operation.documentId);
+        if (state !== undefined && !hasBase(state))
+          documents.add(operation.documentId);
       }
-      await this.journal.transact({ removePending: revisionIds, removeDocuments: [...documents] });
+      await this.journal.transact({
+        removePending: revisionIds,
+        removeDocuments: [...documents],
+      });
     });
   }
 
@@ -164,7 +230,12 @@ export class Bindings {
     await this.idle();
     const creates = new Map<string, string>();
     for (const operation of await this.journal.listPending()) {
-      if (operation.baseRevisionId === "" && !operation.deleted && !creates.has(operation.documentId)) creates.set(operation.documentId, operation.path);
+      if (
+        operation.baseRevisionId === "" &&
+        !operation.deleted &&
+        !creates.has(operation.documentId)
+      )
+        creates.set(operation.documentId, operation.path);
     }
     const moves: LocalMove[] = [];
     for (const state of await this.journal.listDocuments()) {
@@ -172,7 +243,13 @@ export class Bindings {
       if (binding === undefined || binding === null) continue;
       // A document bound on a tombstone (a local change that won over a remote delete) holds its file as a move from the tombstone's path.
       const from = hasBase(state) ? state.path : creates.get(state.documentId);
-      if (from !== undefined && from !== binding.spelling) moves.push({ documentId: state.documentId, from, to: binding.spelling, created: !hasBase(state) });
+      if (from !== undefined && from !== binding.spelling)
+        moves.push({
+          documentId: state.documentId,
+          from,
+          to: binding.spelling,
+          created: !hasBase(state),
+        });
     }
     return moves;
   }
@@ -200,12 +277,40 @@ export class Bindings {
       // lowest id, keeps it; the others are released, not user-deleted, as
       // the user deleted nothing (C1, #641).
       const [found, ...duplicates] = await this.journal.documentsByFileKey(key);
-      const lost = found === undefined && missing !== undefined ? await this.journal.getDocument(missing.documentId) : undefined;
-      const moved = found ?? (lost === undefined || lost.binding !== null ? undefined : { ...lost, binding: { spelling: from, fileKey: key, seen: missing?.seen ?? lost.baseHash } });
-      const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
-      changes.push(...duplicates.map((other) => ({ ...other, ...unbound("released") })));
-      if (moved !== undefined) changes.push({ ...moved, binding: { spelling: to, fileKey: this.space.filesystemKey(to), seen: moved.binding?.seen ?? moved.baseHash }, absence: null });
-      if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
+      const lost =
+        found === undefined && missing !== undefined
+          ? await this.journal.getDocument(missing.documentId)
+          : undefined;
+      const moved =
+        found ??
+        (lost === undefined || lost.binding !== null
+          ? undefined
+          : {
+              ...lost,
+              binding: {
+                spelling: from,
+                fileKey: key,
+                seen: missing?.seen ?? lost.baseHash,
+              },
+            });
+      const changes = this.space.oneFile(from, to)
+        ? []
+        : await this.unbindOthers(moved?.documentId, to, "user-deleted");
+      changes.push(
+        ...duplicates.map((other) => ({ ...other, ...unbound("released") })),
+      );
+      if (moved !== undefined)
+        changes.push({
+          ...moved,
+          binding: {
+            spelling: to,
+            fileKey: this.space.filesystemKey(to),
+            seen: moved.binding?.seen ?? moved.baseHash,
+          },
+          absence: null,
+        });
+      if (changes.length > 0)
+        await this.journal.transact({ putDocuments: changes });
     });
   }
 
@@ -216,8 +321,13 @@ export class Bindings {
    */
   deleted(path: string, by: "user" | "engine"): Promise<void> {
     return this.serialize(async () => {
-      const changes = await this.unbindOthers(undefined, path, by === "user" ? "user-deleted" : "released");
-      if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
+      const changes = await this.unbindOthers(
+        undefined,
+        path,
+        by === "user" ? "user-deleted" : "released",
+      );
+      if (changes.length > 0)
+        await this.journal.transact({ putDocuments: changes });
     });
   }
 
@@ -246,12 +356,24 @@ export class Bindings {
     // A row written with `deleted` doubling as "released" (before refactor
     // step R7b) gets its live base back, as journal v5 migrates an
     // IndexedDB journal; an in-memory journal has no migrations.
-    const released = new Map(releasedRows(await this.journal.listDocuments(), await this.journal.listDeferred()).map((state) => [state.documentId, state]));
+    const released = new Map(
+      releasedRows(
+        await this.journal.listDocuments(),
+        await this.journal.listDeferred(),
+      ).map((state) => [state.documentId, state]),
+    );
     for (const state of released.values()) changes.set(state.documentId, state);
-    const documents = (await this.journal.listDocuments()).map((state) => released.get(state.documentId) ?? state);
+    const documents = (await this.journal.listDocuments()).map(
+      (state) => released.get(state.documentId) ?? state,
+    );
     const known = new Set(documents.map((state) => state.documentId));
     for (const operation of await this.journal.listPending()) {
-      if (operation.baseRevisionId !== "" || operation.deleted || known.has(operation.documentId)) continue;
+      if (
+        operation.baseRevisionId !== "" ||
+        operation.deleted ||
+        known.has(operation.documentId)
+      )
+        continue;
       known.add(operation.documentId);
       const row = this.createRow(operation);
       documents.push(row);
@@ -260,7 +382,8 @@ export class Bindings {
     // A file the vault holds under another spelling than its binding's was
     // respelled while the app was not watching: the binding takes the
     // vault's spelling, as a rename event (E1) would have given it.
-    const listed = this.space.rules.platform === "posix" ? [] : await this.vault.list();
+    const listed =
+      this.space.rules.platform === "posix" ? [] : await this.vault.list();
     for (const state of documents) {
       let binding = state.binding;
       let absence = state.absence ?? null;
@@ -271,20 +394,38 @@ export class Bindings {
       // A binding keyed by another `F` than the platform's (recorded before
       // Android's shared storage got its case-insensitive fold, #699) takes
       // the platform's, or documentByFileKey would not find it.
-      if (binding !== null && binding.fileKey !== this.space.filesystemKey(binding.spelling)) binding = { ...binding, fileKey: this.space.filesystemKey(binding.spelling) };
-      if (binding !== null && (await this.vault.stat(binding.spelling)) === null) {
-        this.missing.set(binding.fileKey, { documentId: state.documentId, seen: binding.seen });
+      if (
+        binding !== null &&
+        binding.fileKey !== this.space.filesystemKey(binding.spelling)
+      )
+        binding = {
+          ...binding,
+          fileKey: this.space.filesystemKey(binding.spelling),
+        };
+      if (
+        binding !== null &&
+        (await this.vault.stat(binding.spelling)) === null
+      ) {
+        this.missing.set(binding.fileKey, {
+          documentId: state.documentId,
+          seen: binding.seen,
+        });
         binding = null;
         absence = "user-deleted";
       }
       if (binding !== null && !listed.includes(binding.spelling)) {
         const key = binding.fileKey;
-        const spellings = listed.filter((path) => this.space.filesystemKey(path) === key);
-        if (spellings.length === 1 && spellings[0] !== undefined) binding = { ...binding, spelling: spellings[0] };
+        const spellings = listed.filter(
+          (path) => this.space.filesystemKey(path) === key,
+        );
+        if (spellings.length === 1 && spellings[0] !== undefined)
+          binding = { ...binding, spelling: spellings[0] };
       }
-      if (binding !== state.binding || absence !== (state.absence ?? null)) changes.set(state.documentId, { ...state, binding, absence });
+      if (binding !== state.binding || absence !== (state.absence ?? null))
+        changes.set(state.documentId, { ...state, binding, absence });
     }
-    if (changes.size > 0) await this.journal.transact({ putDocuments: [...changes.values()] });
+    if (changes.size > 0)
+      await this.journal.transact({ putDocuments: [...changes.values()] });
   }
 
   /** The row of a create not acknowledged yet: no base, bound to the file the create reads. */
@@ -303,40 +444,79 @@ export class Bindings {
     };
   }
 
-  private bindingAfter(state: DocumentState, current: DocumentState | undefined, change: BindingChange): { binding: Binding | null; absence: Absence | null } {
+  private bindingAfter(
+    state: DocumentState,
+    current: DocumentState | undefined,
+    change: BindingChange,
+  ): { binding: Binding | null; absence: Absence | null } {
     const kept = current?.binding;
     switch (change.kind) {
       case "applied":
-        return state.deleted ? unbound("never") : { binding: this.written(kept, state.path, state.baseHash), absence: null };
+        return state.deleted
+          ? unbound("never")
+          : {
+              binding: this.written(kept, state.path, state.baseHash),
+              absence: null,
+            };
       case "merged":
-        if (change.hash !== null) return { binding: this.written(kept, change.path, change.hash), absence: null };
-        return unbound(current?.absence === "user-deleted" ? "user-deleted" : "never");
+        if (change.hash !== null)
+          return {
+            binding: this.written(kept, change.path, change.hash),
+            absence: null,
+          };
+        return unbound(
+          current?.absence === "user-deleted" ? "user-deleted" : "never",
+        );
       case "acknowledged":
         if (state.deleted) return unbound("user-deleted");
         // A document the journal did not have: its create, bound where it was committed.
-        if (current === undefined || kept === undefined) return { binding: this.bound(state.path, change.hash), absence: null };
+        if (current === undefined || kept === undefined)
+          return {
+            binding: this.bound(state.path, change.hash),
+            absence: null,
+          };
         // The user deleted the file the commit read (E3): a file there now is another one.
         if (kept === null) return unbound(current.absence ?? "user-deleted");
         return { binding: { ...kept, seen: change.hash }, absence: null };
       case "released":
         return unbound("released");
       case "moved":
-        return { binding: this.bound(state.path, kept?.seen ?? state.baseHash), absence: null };
+        return {
+          binding: this.bound(state.path, kept?.seen ?? state.baseHash),
+          absence: null,
+        };
       case "adopted":
-        return { binding: this.bound(change.path, state.baseHash), absence: null };
+        return {
+          binding: this.bound(change.path, state.baseHash),
+          absence: null,
+        };
       case "kept":
-        if (kept === undefined) return state.deleted ? unbound("never") : { binding: this.bound(state.path, state.baseHash), absence: null };
+        if (kept === undefined)
+          return state.deleted
+            ? unbound("never")
+            : {
+                binding: this.bound(state.path, state.baseHash),
+                absence: null,
+              };
         return { binding: kept, absence: current?.absence ?? null };
     }
   }
 
   /** The rows that leave every document other than `documentId` bound to the file at `path` with none, for `absence`. */
-  private async unbindOthers(documentId: string | undefined, path: string, absence: Absence): Promise<DocumentState[]> {
+  private async unbindOthers(
+    documentId: string | undefined,
+    path: string,
+    absence: Absence,
+  ): Promise<DocumentState[]> {
     // Every row at the key, not one probe: a v2 journal's migration may have
     // bound two documents to one file key (indexeddb.ts deriveV3Records),
     // and a probe that finds `documentId` itself would hide the other.
-    const bound = await this.journal.documentsByFileKey(this.space.filesystemKey(path));
-    return bound.filter((other) => other.documentId !== documentId).map((other) => ({ ...other, ...unbound(absence) }));
+    const bound = await this.journal.documentsByFileKey(
+      this.space.filesystemKey(path),
+    );
+    return bound
+      .filter((other) => other.documentId !== documentId)
+      .map((other) => ({ ...other, ...unbound(absence) }));
   }
 
   /**
@@ -345,9 +525,17 @@ export class Bindings {
    * of one file (a case-only rename on a case-insensitive platform) keeps
    * the file's name, so the binding keeps its spelling.
    */
-  private written(kept: Binding | null | undefined, path: string, seen: string): Binding {
+  private written(
+    kept: Binding | null | undefined,
+    path: string,
+    seen: string,
+  ): Binding {
     const binding = this.bound(path, seen);
-    return kept !== undefined && kept !== null && kept.fileKey === binding.fileKey ? { ...binding, spelling: kept.spelling } : binding;
+    return kept !== undefined &&
+      kept !== null &&
+      kept.fileKey === binding.fileKey
+      ? { ...binding, spelling: kept.spelling }
+      : binding;
   }
 
   /**
@@ -358,10 +546,24 @@ export class Bindings {
    * the binding keeps its spelling (a vault that folds names more than the
    * platform's file key does, design §3.1, X-18).
    */
-  private async keptName(kept: Binding | null | undefined, written: Binding | null): Promise<Binding | null> {
-    if (written === null || kept === undefined || kept === null || kept.spelling === written.spelling) return written;
+  private async keptName(
+    kept: Binding | null | undefined,
+    written: Binding | null,
+  ): Promise<Binding | null> {
+    if (
+      written === null ||
+      kept === undefined ||
+      kept === null ||
+      kept.spelling === written.spelling
+    )
+      return written;
     const listed = await this.vault.list();
-    if (!listed.includes(kept.spelling) || listed.includes(written.spelling) || (await this.vault.stat(written.spelling)) === null) return written;
+    if (
+      !listed.includes(kept.spelling) ||
+      listed.includes(written.spelling) ||
+      (await this.vault.stat(written.spelling)) === null
+    )
+      return written;
     return { ...kept, seen: written.seen };
   }
 
@@ -396,8 +598,41 @@ export function released(state: DocumentState): boolean {
  * engine has not released its file. Its file may still be gone: the user
  * deleted it (`absence = user-deleted`), and the push deletes it.
  */
-export function liveHere(state: DocumentState | undefined): state is DocumentState {
+export function liveHere(
+  state: DocumentState | undefined,
+): state is DocumentState {
   return state !== undefined && !state.deleted && !released(state);
+}
+
+/**
+ * The document's earlier revisions once `state` replaces `current`
+ * (DocumentState.prior; design §4.6): the base it leaves when the base moves
+ * to another revision, then the ones `state` names (a synced revision's
+ * parent), then those `current` had. A document's history on a server is a
+ * line, so each is an ancestor of the new base.
+ */
+function priorAfter(
+  state: DocumentState,
+  current: DocumentState | undefined,
+): { prior?: string[] } {
+  const left =
+    current !== undefined &&
+    hasBase(current) &&
+    current.revisionId !== state.revisionId
+      ? [current.revisionId]
+      : [];
+  const all = [
+    ...left,
+    ...(state.prior ?? []),
+    ...(current?.prior ?? []),
+  ].filter((revision) => revision !== "" && revision !== state.revisionId);
+  if (
+    all.length === 0 &&
+    state.prior === undefined &&
+    current?.prior === undefined
+  )
+    return {};
+  return { prior: [...new Set(all)].slice(0, priorRevisionLimit) };
 }
 
 function unbound(absence: Absence): { binding: null; absence: Absence } {

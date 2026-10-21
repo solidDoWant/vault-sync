@@ -1,5 +1,13 @@
 import { sha256Hex } from "../hash";
-import type { ConflictRecord, DocumentState, Intent, Journal, JournalChanges, PendingOperation } from "../journal/journal";
+import {
+  priorRevisionLimit,
+  type ConflictRecord,
+  type DocumentState,
+  type Intent,
+  type Journal,
+  type JournalChanges,
+  type PendingOperation,
+} from "../journal/journal";
 import { isVaultError } from "../vault/adapter";
 import { hasBase, type Bindings } from "./bindings";
 import type { PathSpace } from "./pathspace";
@@ -21,7 +29,10 @@ interface MoveSteps {
 
 /** What the intents need of the engine. */
 export interface IntentsHost {
-  journal: Pick<Journal, "putIntent" | "listIntents" | "getDocument" | "listPending">;
+  journal: Pick<
+    Journal,
+    "putIntent" | "listIntents" | "getDocument" | "listPending"
+  >;
   bindings: Bindings;
   space: PathSpace;
   read: (path: string) => Promise<Uint8Array | null>;
@@ -52,12 +63,23 @@ export class Intents {
   constructor(private readonly host: IntentsHost) {}
 
   /** Moves `documentId`'s file from `from` to `to` under its own id (W(a)); `recreate` for a document the server lost. */
-  displace(documentId: string, from: string, to: string, record: ConflictRecord, recreate = false): Promise<boolean> {
+  displace(
+    documentId: string,
+    from: string,
+    to: string,
+    record: ConflictRecord,
+    recreate = false,
+  ): Promise<boolean> {
     return this.move("displace", documentId, from, to, record, recreate);
   }
 
   /** Moves `documentId`'s file from `from` to `to` and gives it up (W(b)): the file is untracked there. */
-  detach(documentId: string, from: string, to: string, record: ConflictRecord): Promise<boolean> {
+  detach(
+    documentId: string,
+    from: string,
+    to: string,
+    record: ConflictRecord,
+  ): Promise<boolean> {
     return this.move("detach", documentId, from, to, record, false);
   }
 
@@ -78,29 +100,63 @@ export class Intents {
         await this.finish(intent, steps);
         continue;
       }
-      const atFrom = steps.from === steps.to ? atTo : await this.host.read(steps.from);
-      if (atFrom !== null && sha256Hex(atFrom) === steps.hash && (atTo === null || steps.from === steps.to)) {
+      const atFrom =
+        steps.from === steps.to ? atTo : await this.host.read(steps.from);
+      if (
+        atFrom !== null &&
+        sha256Hex(atFrom) === steps.hash &&
+        (atTo === null || steps.from === steps.to)
+      ) {
         if (await this.rename(steps)) await this.finish(intent, steps);
-        else await this.host.bindings.transact(() => Promise.resolve({ removeIntents: [intent.id] }));
+        else
+          await this.host.bindings.transact(() =>
+            Promise.resolve({ removeIntents: [intent.id] }),
+          );
         continue;
       }
       if (atTo === null && atFrom === null) {
         await this.host.bindings.transact(async () => this.deleted(intent));
         continue;
       }
-      await this.host.bindings.transact(() => Promise.resolve({ removeIntents: [intent.id] }));
+      await this.host.bindings.transact(() =>
+        Promise.resolve({ removeIntents: [intent.id] }),
+      );
     }
   }
 
-  private async move(kind: "displace" | "detach", documentId: string, from: string, to: string, record: ConflictRecord, recreate: boolean): Promise<boolean> {
+  private async move(
+    kind: "displace" | "detach",
+    documentId: string,
+    from: string,
+    to: string,
+    record: ConflictRecord,
+    recreate: boolean,
+  ): Promise<boolean> {
     const content = await this.host.read(from);
     // Nothing there to move: its event is still to come.
     if (content === null) return false;
-    const steps: MoveSteps = { from, to, hash: sha256Hex(content), record: { ...record, copyHash: sha256Hex(content) }, recreate };
-    const id = await this.host.journal.putIntent({ kind, documentId, steps: steps as unknown as Record<string, unknown> });
-    const intent: Intent = { id, kind, documentId, steps: steps as unknown as Record<string, unknown> };
+    const steps: MoveSteps = {
+      from,
+      to,
+      hash: sha256Hex(content),
+      record: { ...record, copyHash: sha256Hex(content) },
+      recreate,
+    };
+    const id = await this.host.journal.putIntent({
+      kind,
+      documentId,
+      steps: steps as unknown as Record<string, unknown>,
+    });
+    const intent: Intent = {
+      id,
+      kind,
+      documentId,
+      steps: steps as unknown as Record<string, unknown>,
+    };
     if (!(await this.rename(steps))) {
-      await this.host.bindings.transact(() => Promise.resolve({ removeIntents: [id] }));
+      await this.host.bindings.transact(() =>
+        Promise.resolve({ removeIntents: [id] }),
+      );
       return false;
     }
     await this.finish(intent, steps);
@@ -124,25 +180,81 @@ export class Intents {
     await this.host.bindings.transact(async () => {
       const state = await this.host.journal.getDocument(intent.documentId);
       if (state === undefined) return { removeIntents: [intent.id] };
-      const operations = (await this.host.journal.listPending()).filter((operation) => operation.documentId === intent.documentId);
-      const binding = { spelling: steps.to, fileKey: this.host.space.filesystemKey(steps.to), seen: steps.hash };
-      const changes: JournalChanges = { putConflicts: [steps.record], removeIntents: [intent.id] };
+      const operations = (await this.host.journal.listPending()).filter(
+        (operation) => operation.documentId === intent.documentId,
+      );
+      const binding = {
+        spelling: steps.to,
+        fileKey: this.host.space.filesystemKey(steps.to),
+        seen: steps.hash,
+      };
+      const changes: JournalChanges = {
+        putConflicts: [steps.record],
+        removeIntents: [intent.id],
+      };
       if (intent.kind === "detach") {
         // Its outbox goes: the file is a new document's now.
-        return { ...changes, putDocuments: [{ ...state, binding: null, absence: "released" }], removePending: operations.map((operation) => operation.revisionId) };
+        return {
+          ...changes,
+          putDocuments: [{ ...state, binding: null, absence: "released" }],
+          removePending: operations.map((operation) => operation.revisionId),
+        };
       }
       if (steps.recreate) {
         // The server lost the document: it is created again at its file's new path, under its own id.
         const size = BigInt((await this.host.read(steps.to))?.length ?? 0);
-        const create: PendingOperation = { revisionId: this.host.newId(), documentId: state.documentId, baseRevisionId: "", path: steps.to, contentHash: steps.hash, size, kind: state.kind, deleted: false };
-        const row: DocumentState = { documentId: state.documentId, path: steps.to, revisionId: "", seq: 0n, baseHash: "", size: 0n, kind: state.kind, deleted: true, binding, absence: null };
-        return { ...changes, putDocuments: [row], removePending: operations.map((operation) => operation.revisionId), addPending: [create] };
+        const create: PendingOperation = {
+          revisionId: this.host.newId(),
+          documentId: state.documentId,
+          baseRevisionId: "",
+          path: steps.to,
+          contentHash: steps.hash,
+          size,
+          kind: state.kind,
+          deleted: false,
+        };
+        // It keeps the revisions this device synced of it (DocumentState.prior): a known document, not a new file (rule W).
+        const prior = [state.revisionId, ...(state.prior ?? [])].slice(
+          0,
+          priorRevisionLimit,
+        );
+        const row: DocumentState = {
+          documentId: state.documentId,
+          path: steps.to,
+          revisionId: "",
+          seq: 0n,
+          baseHash: "",
+          size: 0n,
+          kind: state.kind,
+          deleted: true,
+          binding,
+          absence: null,
+          prior,
+        };
+        return {
+          ...changes,
+          putDocuments: [row],
+          removePending: operations.map((operation) => operation.revisionId),
+          addPending: [create],
+        };
       }
       // The push derives the document's next operation from its binding: a
       // rename to `to` from its synced path, or its create there.
       const moved = operations.filter((operation) => !operation.deleted);
-      const creates = hasBase(state) ? [] : moved.map((operation) => ({ ...operation, revisionId: this.host.newId(), path: steps.to, contentHash: steps.hash }));
-      return { ...changes, putDocuments: [{ ...state, binding, absence: null }], removePending: moved.map((operation) => operation.revisionId), addPending: creates.slice(0, 1) };
+      const creates = hasBase(state)
+        ? []
+        : moved.map((operation) => ({
+            ...operation,
+            revisionId: this.host.newId(),
+            path: steps.to,
+            contentHash: steps.hash,
+          }));
+      return {
+        ...changes,
+        putDocuments: [{ ...state, binding, absence: null }],
+        removePending: moved.map((operation) => operation.revisionId),
+        addPending: creates.slice(0, 1),
+      };
     });
     if (intent.kind === "detach") this.host.markDirty(steps.to);
     this.host.markDirty(steps.from);
@@ -152,10 +264,20 @@ export class Intents {
   /** The intent's file is gone from both paths: the user deleted it (E3). */
   private async deleted(intent: Intent): Promise<JournalChanges> {
     const state = await this.host.journal.getDocument(intent.documentId);
-    const operations = (await this.host.journal.listPending()).filter((operation) => operation.documentId === intent.documentId && !operation.deleted);
-    const changes: JournalChanges = { removeIntents: [intent.id], removePending: operations.map((operation) => operation.revisionId) };
+    const operations = (await this.host.journal.listPending()).filter(
+      (operation) =>
+        operation.documentId === intent.documentId && !operation.deleted,
+    );
+    const changes: JournalChanges = {
+      removeIntents: [intent.id],
+      removePending: operations.map((operation) => operation.revisionId),
+    };
     if (state === undefined) return changes;
-    if (!hasBase(state)) return { ...changes, removeDocuments: [state.documentId] };
-    return { ...changes, putDocuments: [{ ...state, binding: null, absence: "user-deleted" }] };
+    if (!hasBase(state))
+      return { ...changes, removeDocuments: [state.documentId] };
+    return {
+      ...changes,
+      putDocuments: [{ ...state, binding: null, absence: "user-deleted" }],
+    };
   }
 }

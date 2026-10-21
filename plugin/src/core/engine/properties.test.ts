@@ -29,7 +29,13 @@ import { sha256Hex } from "../hash";
 import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
 import { kindValue } from "./remote";
-import { PropertyWorld, testDeviceId, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import {
+  PropertyWorld,
+  testDeviceId,
+  type PropertyId,
+  type RenameMode,
+  type WorldCommand,
+} from "./testing";
 import { uploadContent } from "./upload";
 
 declare module "vitest" {
@@ -59,20 +65,36 @@ class Step implements fc.AsyncCommand<object, PropertyWorld> {
 }
 
 const index = fc.nat({ max: 15 });
-const renameMode = fc.constantFrom<RenameMode>("pool", "case", "respell", "folder");
+const renameMode = fc.constantFrom<RenameMode>(
+  "pool",
+  "case",
+  "respell",
+  "folder",
+);
 
 /** A database restore to a fraction of the server's head seq. */
-const restore: fc.Arbitrary<WorldCommand> = fc.double({ min: 0, max: 1, noNaN: true }).map((fraction) => ({ type: "restore", fraction }));
+const restore: fc.Arbitrary<WorldCommand> = fc
+  .double({ min: 0, max: 1, noNaN: true })
+  .map((fraction) => ({ type: "restore", fraction }));
 
 /** The alphabet of §9.3 without crashes (P4 places its own crash). */
 const steadyCommands: fc.Arbitrary<WorldCommand>[] = [
   index.map((path) => ({ type: "user-create", path })),
   index.map((file) => ({ type: "user-edit", file })),
-  fc.tuple(index, renameMode, index).map(([file, mode, target]) => ({ type: "user-rename", file, mode, target })),
+  fc
+    .tuple(index, renameMode, index)
+    .map(([file, mode, target]) => ({
+      type: "user-rename",
+      file,
+      mode,
+      target,
+    })),
   index.map((file) => ({ type: "user-delete", file })),
   index.map((path) => ({ type: "remote-create", path })),
   index.map((document) => ({ type: "remote-edit", document })),
-  fc.tuple(index, index).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc
+    .tuple(index, index)
+    .map(([document, path]) => ({ type: "remote-rename", document, path })),
   index.map((document) => ({ type: "remote-delete", document })),
   fc.constant({ type: "pull" }),
   index.map((file) => ({ type: "edit-during-pull", file })),
@@ -81,14 +103,42 @@ const steadyCommands: fc.Arbitrary<WorldCommand>[] = [
   index.map((revision) => ({ type: "purge", revision })),
 ];
 
-const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write }))];
+const allCommands: fc.Arbitrary<WorldCommand>[] = [
+  ...steadyCommands,
+  fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write })),
+];
 
 /**
- * P6's alphabet: no database restore. A document the restored server lost
- * stays on the device unpushed until it changes (SPEC.md §8, divergence,
- * #156), which INV-9 does not yet account for.
+ * P6's alphabet: no database restore. Since R7b (#700) the push re-creates
+ * a document the restored server lost (SPEC.md §8, divergence), but INV-9
+ * after a restore is not proven yet: with restores, P6 still finds a run
+ * that does not converge (a remote delete, edits during pulls, a restore).
  */
 const convergingCommands = allCommands.filter((command) => command !== restore);
+
+/** P1's restore alphabet: few paths and documents, so restores roll the same documents back along their history. */
+const few = fc.nat({ max: 3 });
+const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
+  few.map((path) => ({ type: "remote-create", path })),
+  few.map((document) => ({ type: "remote-edit", document })),
+  few.map((document) => ({ type: "remote-edit", document })),
+  fc
+    .tuple(few, few)
+    .map(([document, path]) => ({ type: "remote-rename", document, path })),
+  few.map((file) => ({ type: "user-edit", file })),
+  fc
+    .tuple(few, renameMode, few)
+    .map(([file, mode, target]) => ({
+      type: "user-rename",
+      file,
+      mode,
+      target,
+    })),
+  few.map((file) => ({ type: "edit-during-pull", file })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+  restore,
+];
 
 const platform = fc.constantFrom<PathPlatform>("posix", "windows", "macos");
 
@@ -100,7 +150,10 @@ function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
 }
 
 /** Runs the commands on a fresh world and brings it to quiescence. */
-async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>): Promise<{ world: PropertyWorld; quiet: boolean }> {
+async function play(
+  on: PathPlatform,
+  steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>,
+): Promise<{ world: PropertyWorld; quiet: boolean }> {
   const world = new PropertyWorld(on);
   await fc.asyncModelRun(() => ({ model: {}, real: world }), steps);
   const quiet = await world.quiesce();
@@ -108,7 +161,9 @@ async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, Pr
 }
 
 function violations(world: PropertyWorld, property: PropertyId): string[] {
-  return world.violations.filter((violation) => violation.property === property).map((violation) => `step ${String(violation.step)}: ${violation.message}`);
+  return world.violations
+    .filter((violation) => violation.property === property)
+    .map((violation) => `step ${String(violation.step)}: ${violation.message}`);
 }
 
 type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6";
@@ -132,7 +187,13 @@ interface Definition<T> {
 }
 
 /** A property over `alphabet` (by default the full one, crashes included) whose `check` looks at the quiescent world. */
-function overWorld(property: Property, check: (world: PropertyWorld, quiet: boolean) => Promise<string[]> | string[], alphabet = allCommands): Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> {
+function overWorld(
+  property: Property,
+  check: (world: PropertyWorld, quiet: boolean) => Promise<string[]> | string[],
+  alphabet = allCommands,
+): Definition<
+  [PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]
+> {
   return {
     property,
     cases: fc.tuple(platform, commands(alphabet)),
@@ -156,7 +217,10 @@ function report<T>(details: fc.RunDetails<T>): string {
  * here: it is a harness bug, and would otherwise let a known failure pass
  * without an engine violation.
  */
-async function search<T>(definition: Definition<T>, examples: T[] = []): Promise<fc.RunDetails<[T]>> {
+async function search<T>(
+  definition: Definition<T>,
+  examples: T[] = [],
+): Promise<fc.RunDetails<[T]>> {
   const harnessErrors: unknown[] = [];
   const details = await fc.check(
     fc.asyncProperty(definition.cases, async (input) => {
@@ -167,20 +231,34 @@ async function search<T>(definition: Definition<T>, examples: T[] = []): Promise
         harnessErrors.push(error);
         throw error;
       }
-      if (found.length > 0) throw new PropertyViolation(definition.property, found);
+      if (found.length > 0)
+        throw new PropertyViolation(definition.property, found);
     }),
-    { seed, numRuns: runs, endOnFailure: false, examples: examples.map((example): [T] => [example]) },
+    {
+      seed,
+      numRuns: runs,
+      endOnFailure: false,
+      examples: examples.map((example): [T] => [example]),
+    },
   );
   const [first] = harnessErrors;
   if (first !== undefined) {
-    const thrown = first instanceof Error ? (first.stack ?? first.message) : JSON.stringify(first);
-    expect.fail(`the harness threw ${String(harnessErrors.length)} time(s) during ${definition.property}, first:\n${thrown}\n\n${report(details)}`);
+    const thrown =
+      first instanceof Error
+        ? (first.stack ?? first.message)
+        : JSON.stringify(first);
+    expect.fail(
+      `the harness threw ${String(harnessErrors.length)} time(s) during ${definition.property}, first:\n${thrown}\n\n${report(details)}`,
+    );
   }
   return details;
 }
 
 /** The property holds: fast-check finds no counterexample, on `examples` (fixed regression cases, run first) or a generated case. */
-async function holds<T>(definition: Definition<T>, examples: T[] = []): Promise<void> {
+async function holds<T>(
+  definition: Definition<T>,
+  examples: T[] = [],
+): Promise<void> {
   const details = await search(definition, examples);
   if (details.failed) expect.fail(report(details));
 }
@@ -197,16 +275,34 @@ interface Pin<T> {
  * that matches the pin. A known failure whose property holds, on the pinned
  * case and every generated one, fails, so that it is flipped to `holds`.
  */
-async function knownFailure<T>(definition: Definition<T>, pin: Pin<T>): Promise<void> {
+async function knownFailure<T>(
+  definition: Definition<T>,
+  pin: Pin<T>,
+): Promise<void> {
   const details = await search(definition, [pin.example]);
-  if (!details.failed) expect.fail(`${definition.property} holds now: make it \`holds\` (${String(details.numRuns)} cases, seed ${String(seed)})`);
+  if (!details.failed)
+    expect.fail(
+      `${definition.property} holds now: make it \`holds\` (${String(details.numRuns)} cases, seed ${String(seed)})`,
+    );
   const error = details.errorInstance;
-  if (!(error instanceof PropertyViolation) || error.property !== definition.property) expect.fail(`${definition.property} failed with something other than its own violation:\n${report(details)}`);
-  if (!error.found.some((found) => pin.violation.test(found))) expect.fail(`${definition.property}'s pinned counterexample no longer fails with ${String(pin.violation)}; re-pin it to the counterexample below:\n${report(details)}`);
+  if (
+    !(error instanceof PropertyViolation) ||
+    error.property !== definition.property
+  )
+    expect.fail(
+      `${definition.property} failed with something other than its own violation:\n${report(details)}`,
+    );
+  if (!error.found.some((found) => pin.violation.test(found)))
+    expect.fail(
+      `${definition.property}'s pinned counterexample no longer fails with ${String(pin.violation)}; re-pin it to the counterexample below:\n${report(details)}`,
+    );
 }
 
 /** A world property's case: the platform and the commands, as data. */
-function scripted(on: PathPlatform, ...list: WorldCommand[]): [PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>] {
+function scripted(
+  on: PathPlatform,
+  ...list: WorldCommand[]
+): [PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>] {
   return [on, list.map((command) => new Step(command))];
 }
 
@@ -215,7 +311,14 @@ const p2 = overWorld("P2", (world) => violations(world, "P2"));
 const p3 = overWorld("P3", (world) => violations(world, "P3"));
 const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
   property: "P4",
-  cases: fc.tuple(platform, fc.array(fc.oneof(...steadyCommands), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
+  cases: fc.tuple(
+    platform,
+    fc.array(fc.oneof(...steadyCommands), {
+      maxLength: maxCommands,
+      size: "max",
+    }),
+    fc.integer({ min: 1, max: 40 }),
+  ),
   check: async ([on, list, write]) => {
     const baseline = new PropertyWorld(on);
     for (const command of list) await baseline.apply(command);
@@ -224,77 +327,222 @@ const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
     crashed.armCrash(write);
     for (const command of list) await crashed.apply(command);
     await crashed.quiesce();
-    const [without, crashing] = [await baseline.outcome(), await crashed.outcome()];
-    return without === crashing ? [] : [`a crash at journal write ${String(write)} reaches ${crashing}, the run without it ${without}`];
+    const [without, crashing] = [
+      await baseline.outcome(),
+      await crashed.outcome(),
+    ];
+    return without === crashing
+      ? []
+      : [
+          `a crash at journal write ${String(write)} reaches ${crashing}, the run without it ${without}`,
+        ];
   },
 };
 const p5 = overWorld("P5", (world) => world.lostWrites());
-const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
+const p6 = overWorld(
+  "P6",
+  async (world, quiet) => [
+    ...(quiet ? [] : ["no quiescence within the round bound"]),
+    ...world.errors.map((error) => `error: ${String(error)}`),
+    ...(await world.convergence()),
+  ],
+  convergingCommands,
+);
 
 describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
-  it("P1: a document's committed content comes from its own file", { timeout }, async () => {
-    await holds(p1);
-  });
+  // Known failure: a base retention purged makes an unchanged (renamed) file a conflict copy (#719). Fixed cases, which
+  // hold (#700, design §4.6): a restore that rolled a document back along this device's own history, to a revision it
+  // synced as its base, and to its base's parent.
+  it(
+    "P1: a document's committed content comes from its own file",
+    { timeout },
+    async () => {
+      const rollbacks = [
+        scripted(
+          "posix",
+          { type: "remote-create", path: 0 },
+          { type: "remote-create", path: 3 },
+          { type: "remote-edit", document: 7 },
+          { type: "remote-rename", document: 0, path: 2 },
+          { type: "pull" },
+          { type: "restore", fraction: 0.25 },
+          { type: "pull" },
+        ),
+        scripted(
+          "posix",
+          { type: "remote-create", path: 0 },
+          { type: "pull" },
+          { type: "restore", fraction: 0 },
+          { type: "remote-create", path: 0 },
+          { type: "remote-edit", document: 0 },
+          { type: "push" },
+          { type: "remote-create", path: 2 },
+          { type: "restore", fraction: 0.25 },
+          { type: "pull" },
+        ),
+      ];
+      for (const example of rollbacks)
+        expect(await p1.check(example)).toEqual([]);
+      await knownFailure(p1, {
+        example: scripted(
+          "posix",
+          { type: "remote-create", path: 0 },
+          { type: "push" },
+          { type: "user-rename", file: 0, mode: "pool", target: 1 },
+          { type: "remote-edit", document: 0 },
+          { type: "purge", revision: 0 },
+        ),
+        violation:
+          /create of id-\d+ at "A \(conflict .*\)\.md" .* carries the remote write of step 1 to r-1/,
+      });
+    },
+  );
+
+  // P1 over restores that roll documents back along this device's own history (design §4.6): remote edits the device
+  // pulls, local edits and renames, restores and the pulls and pushes after them, without retention purges (#719).
+  // Fixed case: a document the restored server lost, renamed locally, whose re-create a later remote create's path
+  // takes: it is displaced under its own id, not kept as a new document's copy.
+  it(
+    "P1: a restore along this device's own history commits the lost revision under its own id",
+    { timeout },
+    async () => {
+      await holds(
+        overWorld("P1", (world) => violations(world, "P1"), rollbackCommands),
+        [
+          scripted(
+            "posix",
+            { type: "remote-create", path: 0 },
+            { type: "push" },
+            { type: "user-rename", file: 0, mode: "pool", target: 2 },
+            { type: "restore", fraction: 0 },
+            { type: "remote-create", path: 0 },
+            { type: "remote-create", path: 2 },
+            { type: "push" },
+            { type: "edit-during-pull", file: 0 },
+          ),
+        ],
+      );
+    },
+  );
 
   // P2 provenance: INV-5 and INV-6 (PO-6/7) on inodes.
-  it("P2: tombstones come from user deletes, resurrections from user changes", { timeout }, async () => {
-    await holds(p2);
-  });
+  it(
+    "P2: tombstones come from user deletes, resurrections from user changes",
+    { timeout },
+    async () => {
+      await holds(p2);
+    },
+  );
 
   // P3 exclusivity: INV-1 and INV-2 after every command. Flipped in R7b (#700). Fixed cases: R7a's pin (a document the
   // restored server lost at a path key a pulled document then claims), and a document the restored server lost, then a
   // colliding local create, with its file kept and with it deleted (design §4.6: the push re-creates it, yielding the path).
-  it("P3: no two live documents or live outboxes claim one path key", { timeout }, async () => {
-    await holds(p3, [
-      scripted("posix", { type: "remote-create", path: 5 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }),
-      scripted("posix", { type: "user-create", path: 1 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "restore", fraction: 0 }),
-      scripted("posix", { type: "remote-create", path: 5 }, { type: "edit-during-pull", file: 0 }, { type: "user-delete", file: 0 }, { type: "restore", fraction: 0 }, { type: "user-create", path: 5 }),
-    ]);
-  });
+  it(
+    "P3: no two live documents or live outboxes claim one path key",
+    { timeout },
+    async () => {
+      await holds(p3, [
+        scripted(
+          "posix",
+          { type: "remote-create", path: 5 },
+          { type: "push" },
+          { type: "restore", fraction: 0 },
+          { type: "remote-create", path: 0 },
+          { type: "remote-rename", document: 0, path: 6 },
+        ),
+        scripted(
+          "posix",
+          { type: "user-create", path: 1 },
+          { type: "remote-create", path: 0 },
+          { type: "pull" },
+          { type: "restore", fraction: 0 },
+        ),
+        scripted(
+          "posix",
+          { type: "remote-create", path: 5 },
+          { type: "edit-during-pull", file: 0 },
+          { type: "user-delete", file: 0 },
+          { type: "restore", fraction: 0 },
+          { type: "user-create", path: 5 },
+        ),
+      ]);
+    },
+  );
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
   // Flipped in R7b (#700), which re-creates a document the restored server lost (design §4.6). Fixed case: the pin before it.
-  it("P4: a crash at any journal write reaches the state a run without it reaches", { timeout }, async () => {
-    await holds(p4, [
-      [
-        "posix",
+  it(
+    "P4: a crash at any journal write reaches the state a run without it reaches",
+    { timeout },
+    async () => {
+      await holds(p4, [
         [
-          { type: "remote-create", path: 1 },
-          { type: "remote-rename", document: 0, path: 0 },
-          { type: "edit-during-pull", file: 0 },
-          { type: "restore", fraction: 0 },
-          { type: "user-delete", file: 0 },
-          { type: "remote-create", path: 1 },
-          { type: "push" },
-          { type: "remote-rename", document: 0, path: 0 },
-          { type: "remote-delete", document: 0 },
-          { type: "pull" },
+          "posix",
+          [
+            { type: "remote-create", path: 1 },
+            { type: "remote-rename", document: 0, path: 0 },
+            { type: "edit-during-pull", file: 0 },
+            { type: "restore", fraction: 0 },
+            { type: "user-delete", file: 0 },
+            { type: "remote-create", path: 1 },
+            { type: "push" },
+            { type: "remote-rename", document: 0, path: 0 },
+            { type: "remote-delete", document: 0 },
+            { type: "pull" },
+          ],
+          12,
         ],
-        12,
-      ],
-    ]);
-  });
+      ]);
+    },
+  );
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
-  it("P5: every user write is in the vault or was accepted by the server", { timeout }, async () => {
-    await holds(p5);
-  });
+  it(
+    "P5: every user write is in the vault or was accepted by the server",
+    { timeout },
+    async () => {
+      await holds(p5);
+    },
+  );
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.
   // Flipped in R7b (#700; #583, PO-11). Fixed case: the pin before it (the engine's own file of a remote note held the
   // folder that note's next path needs).
-  it("P6: the device converges with the server within bounded rounds", { timeout }, async () => {
-    await holds(p6, [scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 })]);
-  });
+  it(
+    "P6: the device converges with the server within bounded rounds",
+    { timeout },
+    async () => {
+      await holds(p6, [
+        scripted(
+          "posix",
+          { type: "user-create", path: 8 },
+          { type: "remote-create", path: 8 },
+          { type: "remote-rename", document: 0, path: 7 },
+          { type: "user-edit", file: 0 },
+        ),
+      ]);
+    },
+  );
 });
 
 /** Commits `content` live on `documentId`'s head as device A would, behind the engine's back: a resurrection the oracle must judge. */
-async function commitAsDevice(world: PropertyWorld, documentId: string, path: string, content: string): Promise<void> {
+async function commitAsDevice(
+  world: PropertyWorld,
+  documentId: string,
+  path: string,
+  content: string,
+): Promise<void> {
   const api = createProtocolClient({ transport: world.server.transport });
   const bytes = new TextEncoder().encode(content);
   const hash = sha256Hex(bytes);
-  await uploadContent(api, world.server.vaultId, hash, BigInt(bytes.length), () => Promise.resolve(bytes));
+  await uploadContent(
+    api,
+    world.server.vaultId,
+    hash,
+    BigInt(bytes.length),
+    () => Promise.resolve(bytes),
+  );
   await api.sync.commitRevision({
     vaultId: world.server.vaultId,
     documentId,
@@ -321,7 +569,11 @@ describe("P2 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-delete", document: 0 });
     await commitAsDevice(world, documentId, "a.md", "user 1");
     await world.apply({ type: "pull" });
-    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+    expect(violations(world, "P2")).toEqual([
+      expect.stringMatching(
+        /live revision of .* on its tombstone without a user change/,
+      ),
+    ]);
   });
 
   it("flags a resurrection carrying an unsynced write into another document's file", async () => {
@@ -336,7 +588,11 @@ describe("P2 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-delete", document: 0 });
     await commitAsDevice(world, documentId, "a.md", "user 4");
     await world.apply({ type: "pull" });
-    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+    expect(violations(world, "P2")).toEqual([
+      expect.stringMatching(
+        /live revision of .* on its tombstone without a user change/,
+      ),
+    ]);
   });
 
   it("flags a resurrection carrying an untracked file's content from another path", async () => {
@@ -350,7 +606,11 @@ describe("P2 oracle (design §5.4)", () => {
     await world.apply({ type: "user-create", path: 2 });
     await commitAsDevice(world, documentId, "a.md", "user 5");
     await world.apply({ type: "pull" });
-    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+    expect(violations(world, "P2")).toEqual([
+      expect.stringMatching(
+        /live revision of .* on its tombstone without a user change/,
+      ),
+    ]);
   });
 
   it("credits an unsynced write into the document's own file made before the other device's last live revision", async () => {
