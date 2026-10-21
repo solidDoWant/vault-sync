@@ -85,6 +85,19 @@ describe("checkLostWrites", () => {
     expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
   });
 
+  it("forks to the engine's conflict copy only the writes whose file is at the original path when the copy is written, not one renamed away before (#761)", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.renamed("a.md", "z.md", new Set(), "xx");
+    // Another write of the same content at a.md, from which the engine writes its conflict copy.
+    ledger.write({ hash: "xx", path: "a.md", at: "step 2" });
+    const copy = "a (conflict e3 2026-01-02 030405).md";
+    ledger.forkCopy("a.md", copy);
+    ledger.replace("xx", copy);
+    // z.md is lost: the user's overwrite of the copy replaced only the second write.
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("e1's user wrote xx to a.md at step 1") as unknown as string]);
+  });
+
   describe("given the engine's conflict copy of a user's file, which the user renamed after the file itself was deleted or renamed away (#745)", () => {
     const encode = (content: string) => new TextEncoder().encode(content);
     /** The user writes at `writtenAt` and renames the file to `original`, where the merge copies it. */
