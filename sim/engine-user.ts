@@ -11,7 +11,6 @@
 import { sha256Hex } from "../plugin/src/core/hash";
 import type { Journal } from "../plugin/src/core/journal/journal";
 import { isVaultError, type VaultAdapter } from "../plugin/src/core/vault/adapter";
-import { pathPool } from "./client";
 import { copiedFrom, pathMatcher, type UserLedger } from "./invariants";
 import type { Random } from "./random";
 import type { EngineOperation } from "./schedule";
@@ -34,6 +33,8 @@ export interface EngineUserOptions {
   touched: (path: string) => void;
   /** The server's head seq, recorded with each write and rename for the resurrected-delete check. */
   serverSeq: () => bigint;
+  /** The paths the user creates files at and renames them to (RunContext.pathPool). */
+  pathPool: readonly string[];
 }
 
 export class EngineUser {
@@ -47,7 +48,7 @@ export class EngineUser {
     try {
       switch (operation) {
         case "create":
-          return await this.write(random.pick(pathPool), random, "creates");
+          return await this.write(random.pick(this.options.pathPool), random, "creates");
         case "edit": {
           const path = await this.pickFile(random);
           return path === undefined ? `${name} user edit: no file` : await this.write(path, random, "edits");
@@ -55,7 +56,7 @@ export class EngineUser {
         case "rename": {
           const from = await this.pickFile(random);
           if (from === undefined) return `${name} user rename: no file`;
-          const to = random.pick(pathPool);
+          const to = random.pick(this.options.pathPool);
           if (to === from) return `${name} user rename of ${from}: same path`;
           return await this.rename(from, to);
         }

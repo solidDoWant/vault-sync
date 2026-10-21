@@ -11,10 +11,40 @@ export interface InMemoryVaultOptions {
    * Writes and renames to a path the platform cannot hold reject with
    * "unmaterializable". Under `windows` and `macos` rules, paths are matched
    * as those platforms' filesystems match them, ignoring case and Unicode
-   * form (by the engine's file key, PathSpace), and a file keeps the spelling it was
-   * created with. Defaults to `posix`, which is case-sensitive.
+   * form (see `filesystem`), and a file keeps the spelling it was created
+   * with. Defaults to `posix`, which is case-sensitive.
    */
   pathRules?: PathRules;
+  /**
+   * Which spellings name one file under `windows` and `macos` rules
+   * (docs/design/engine-path-ownership.md §3.1):
+   *
+   * - `folded` (the default): those with one engine file key
+   *   (PathSpace.fileKey, the path key of the filesystem's name), so
+   *   `Straße.md` and `STRASSE.md` are one file. Coarser than any real
+   *   filesystem (the design's X-18).
+   * - `faithful`: those the platform's filesystem takes for one
+   *   (PathSpace.filesystemKey, `F`), as NTFS and APFS do: `Straße.md` and
+   *   `STRASSE.md` are two files, so are NFC and NFD `Café.md` under
+   *   `windows`, while `ı.md` and `I.md` are one.
+   */
+  filesystem?: "folded" | "faithful";
+}
+
+/** Who made a change, as the simulation harness tells them apart (InMemoryVault.handle). */
+export type VaultActor = "user" | "engine";
+
+/**
+ * A change as the harness's inode tap sees it (docs/design/engine-path-ownership.md
+ * §5.4): the event, the inode of the file it changed and who changed it. A
+ * create mints an inode, a write or a rename (by anyone) keeps it, a delete
+ * ends it.
+ */
+export type InodeEvent = VaultEvent & { inode: number; actor: VaultActor };
+
+/** A view of an InMemoryVault whose changes are attributed to one actor. */
+export interface VaultHandle extends VaultAdapter {
+  renameFolder(from: string, to: string): Promise<void>;
 }
 
 interface StoredFile {
@@ -22,6 +52,8 @@ interface StoredFile {
   path: string;
   data: Uint8Array;
   mtime: number;
+  /** The harness inode: minted on create, kept by writes and renames. */
+  inode: number;
 }
 
 /**
@@ -30,9 +62,13 @@ interface StoredFile {
  * Preconditions are checked synchronously with the change, so atomically.
  */
 export class InMemoryVault implements VaultAdapter {
-  /** Files by lookup key: the path itself, or its file key (PathSpace) on a case-insensitive platform. */
+  /** Files by lookup key: the path itself, or (on a case-insensitive platform) its file key or filesystem key (PathSpace), per `filesystem`. */
   private readonly files = new Map<string, StoredFile>();
   private readonly listeners = new Set<VaultListener>();
+  private readonly inodeTaps = new Set<(event: InodeEvent) => void>();
+  private lastInode = 0;
+  /** Who is making the change being applied: a handle's actor while its call runs, else the user. */
+  private actor: VaultActor = "user";
   private readonly now: () => number;
   private readonly pathRules: PathRules;
   private readonly key: (path: string) => string;
@@ -51,7 +87,60 @@ export class InMemoryVault implements VaultAdapter {
   constructor(options: InMemoryVaultOptions = {}) {
     this.now = options.now ?? Date.now;
     this.pathRules = options.pathRules ?? posixPathRules;
-    this.key = new PathSpace(this.pathRules).fileKey;
+    const space = new PathSpace(this.pathRules);
+    this.key = options.filesystem === "faithful" ? (path) => space.filesystemKey(path) : space.fileKey;
+  }
+
+  /**
+   * Harness only: the inode of the file at `path` (any spelling of it), or
+   * undefined. The engine never sees inodes (docs/design/engine-path-ownership.md §5.4).
+   */
+  inodeOf(path: string): number | undefined {
+    return this.files.get(this.key(path))?.inode;
+  }
+
+  /**
+   * Harness only: calls `listener` with every change, tagged with its inode
+   * and actor, synchronously and before the watchers. Returns the unsubscribe.
+   */
+  tapInodes(listener: (event: InodeEvent) => void): () => void {
+    const subscription = (event: InodeEvent) => {
+      listener(event);
+    };
+    this.inodeTaps.add(subscription);
+    return () => {
+      this.inodeTaps.delete(subscription);
+    };
+  }
+
+  /**
+   * Harness only: this vault as `actor` changes it. Reads and watches are the
+   * vault's own; every change made through the handle is tapped as
+   * `actor`'s. Changes made on the vault itself are the user's.
+   */
+  handle(actor: VaultActor): VaultHandle {
+    const as =
+      <A extends unknown[]>(change: (...args: A) => Promise<void>) =>
+      (...args: A): Promise<void> => {
+        const previous = this.actor;
+        this.actor = actor;
+        try {
+          // Every change is applied (or refused) synchronously, so the actor covers exactly its events.
+          return change(...args);
+        } finally {
+          this.actor = previous;
+        }
+      };
+    return {
+      list: () => this.list(),
+      read: (path) => this.read(path),
+      stat: (path) => this.stat(path),
+      watch: (listener) => this.watch(listener),
+      write: as((path: string, data: Uint8Array, precondition?: WritePrecondition) => this.write(path, data, precondition)),
+      rename: as((from: string, to: string) => this.rename(from, to)),
+      renameFolder: as((from: string, to: string) => this.renameFolder(from, to)),
+      delete: as((path: string, precondition?: DeletePrecondition) => this.delete(path, precondition)),
+    };
   }
 
   list(): Promise<string[]> {
@@ -73,8 +162,9 @@ export class InMemoryVault implements VaultAdapter {
     }
     // An existing file keeps its name, as a case-insensitive filesystem keeps it.
     const stored = existing?.path ?? path;
-    this.files.set(this.key(path), { path: stored, data: data.slice(), mtime: this.now() });
-    this.emit(existing === undefined ? { type: "create", path: stored } : { type: "modify", path: stored });
+    const inode = existing?.inode ?? ++this.lastInode;
+    this.files.set(this.key(path), { path: stored, data: data.slice(), mtime: this.now(), inode });
+    this.emit(existing === undefined ? { type: "create", path: stored } : { type: "modify", path: stored }, inode);
     return Promise.resolve();
   }
 
@@ -88,7 +178,7 @@ export class InMemoryVault implements VaultAdapter {
     if (this.conflicts(to, this.key(from))) return Promise.reject(new VaultError("path-conflict", to));
     this.files.delete(this.key(from));
     this.files.set(this.key(to), { ...file, path: to });
-    this.emit({ type: "rename", path: to, oldPath: file.path });
+    this.emit({ type: "rename", path: to, oldPath: file.path }, file.inode);
     return Promise.resolve();
   }
 
@@ -117,7 +207,7 @@ export class InMemoryVault implements VaultAdapter {
     if ([...this.files.keys()].some((key) => !moving.has(key) && (key === toKey || toKey.startsWith(`${key}/`)))) return Promise.reject(new VaultError("path-conflict", to));
     for (const [key] of moves) this.files.delete(key);
     for (const [, file, target] of moves) this.files.set(this.key(target), { ...file, path: target });
-    for (const [, file, target] of moves) this.emit({ type: "rename", path: target, oldPath: file.path });
+    for (const [, file, target] of moves) this.emit({ type: "rename", path: target, oldPath: file.path }, file.inode);
     return Promise.resolve();
   }
 
@@ -126,7 +216,7 @@ export class InMemoryVault implements VaultAdapter {
     if (file === undefined) return Promise.reject(new VaultError("not-found", path));
     if (precondition !== undefined && !holds(file, precondition.expectedHash)) return Promise.reject(new VaultError("changed", path));
     this.files.delete(this.key(path));
-    this.emit({ type: "delete", path: file.path });
+    this.emit({ type: "delete", path: file.path }, file.inode);
     return Promise.resolve();
   }
 
@@ -157,7 +247,8 @@ export class InMemoryVault implements VaultAdapter {
     return false;
   }
 
-  private emit(event: VaultEvent): void {
+  private emit(event: VaultEvent, inode: number): void {
+    for (const tap of [...this.inodeTaps]) tap({ ...event, inode, actor: this.actor });
     for (const listener of [...this.listeners]) {
       try {
         listener(event);
