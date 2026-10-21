@@ -22,6 +22,13 @@ export interface RegressionCase {
    * engine without a user.
    */
   engines?: number;
+  /**
+   * Whether the run used the faithful filesystem (RunOptions.faithfulFilesystem,
+   * SIM_FAITHFUL_FS=1): the regressions suite replays the case with it.
+   * Absent in folded cases and in every case recorded before #598, which
+   * replay on the folded vault.
+   */
+  faithfulFilesystem?: boolean;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];

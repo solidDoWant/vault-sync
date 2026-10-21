@@ -46,11 +46,30 @@ grep -qxF "make test-sim SIM_SEED=12 SIM_STEPS=3000 SIM_CLIENTS=3 SIM_ENGINES=2"
 [[ $(grep -c "SIM FAILURE: seed 7 " "$work/report") -eq 1 ]] || fail "seed 7 is listed more than once"
 ! grep -qF "not-a-violation" "$work/report" || fail "a trace line was copied"
 ! grep -qF "e3 user writes" "$work/report" || fail "the trace was copied"
+grep -qF "The nightly simulation failed: https://example.test/run/1" "$work/report" || fail "the default heading is missing"
+grep -qF '`sim-regressions` artifact' "$work/report" || fail "the default artifact is missing"
+grep -qF "faithfulFilesystem" "$work/report" || fail "the note on faithful-filesystem cases is missing"
+
+# The faithful-filesystem job (non-gating) names its own artifact and heading.
+cat >"$work/faithful" <<'EOF2'
+AssertionError: SIM FAILURE: seed 9 violated invariants (3000 steps, 3 clients):
+  lost-write: e3's user wrote 0a1b2c3d to Straße.md at step 4; it is in no vault
+Regression case written to /tmp/x/seed-9-faithful-fs.json.
+Replay with: make test-sim SIM_SEED=9 SIM_STEPS=3000 SIM_CLIENTS=3 SIM_ENGINES=2 SIM_FAITHFUL_FS=1
+EOF2
+"$script" "$work/faithful" "https://example.test/run/3" sim-faithful-fs "The faithful-filesystem simulation (non-gating) failed" >"$work/report"
+grep -qF "The faithful-filesystem simulation (non-gating) failed: https://example.test/run/3" "$work/report" || fail "the given heading is missing"
+grep -qF '`sim-faithful-fs` artifact' "$work/report" || fail "the given artifact is missing"
+! grep -qF "sim-regressions" "$work/report" || fail "the faithful report names the gating job's artifact"
+! grep -qF "The nightly simulation failed" "$work/report" || fail "the faithful report uses the gating job's heading"
+grep -qxF "make test-sim SIM_SEED=9 SIM_STEPS=3000 SIM_CLIENTS=3 SIM_ENGINES=2 SIM_FAITHFUL_FS=1" "$work/report" || fail "the faithful replay command is missing"
+if "$script" "$work/faithful" "https://example.test/run/3" 'x`y' >/dev/null 2>&1; then fail "an artifact name with Markdown was accepted"; fi
 
 printf 'ok\n FAIL setup\n' >"$work/output"
 "$script" "$work/output" "https://example.test/run/2" >"$work/report"
 grep -qF "No seed reported a violation" "$work/report" || fail "a failure without a seed is not explained"
 
 if "$script" "$work/output" >/dev/null 2>&1; then fail "a missing argument was accepted"; fi
+if "$script" "$work/output" url artifact heading extra >/dev/null 2>&1; then fail "an extra argument was accepted"; fi
 
 echo "sim-nightly-report: ok"
