@@ -91,6 +91,25 @@ const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer
  */
 const convergingCommands = allCommands.filter((command) => command !== restore);
 
+/**
+ * The one-spelling-folder alphabet (#737): paths whose folders differ only in
+ * case, on a faithful filesystem where a folder has one spelling, so a remote
+ * document at `Notes/b.md` lands in the `notes/` folder already on disk.
+ */
+const folderPaths: readonly string[] = ["notes/a.md", "Notes/b.md", "NOTES/a.md", "notes/b.md", "c.md"];
+const folderCommands: fc.Arbitrary<WorldCommand>[] = [
+  index.map((path) => ({ type: "user-create", path })),
+  index.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(index, fc.constantFrom<RenameMode>("pool", "case"), index).map(([file, mode, target]) => ({ type: "user-rename", file, mode, target })),
+  index.map((file) => ({ type: "user-delete", file })),
+  index.map((path) => ({ type: "remote-create", path })),
+  index.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(index, index).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  index.map((document) => ({ type: "remote-delete", document })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+];
+
 /** P1's restore alphabet: few paths and documents, so restores roll the same documents back along their history. */
 const few = fc.nat({ max: 3 });
 const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
@@ -116,8 +135,8 @@ function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
 }
 
 /** Runs the commands on a fresh world and brings it to quiescence. */
-async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, filesystem: "folded" | "faithful" = "folded"): Promise<{ world: PropertyWorld; quiet: boolean }> {
-  const world = new PropertyWorld(on, filesystem);
+async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, filesystem: "folded" | "faithful" = "folded", paths?: readonly string[]): Promise<{ world: PropertyWorld; quiet: boolean }> {
+  const world = new PropertyWorld(on, filesystem, paths);
   await fc.asyncModelRun(() => ({ model: {}, real: world }), steps);
   const quiet = await world.quiesce();
   return { world, quiet };
@@ -272,6 +291,15 @@ const p7: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWor
   cases: fc.tuple(platform, commands(echoCommands)),
   check: async ([on, steps]) => (await play(on, steps, "faithful")).world.ownChangesReported(),
 };
+/** P6 where a folder has one spelling on disk (#737): INV-9 with folders compared under `F`, and INV-10 (P7's oracle), no own write reported as the user's. */
+const p6Folders: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P6",
+  cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(folderCommands)),
+  check: async ([on, steps]) => {
+    const { world, quiet } = await play(on, steps, "faithful", folderPaths);
+    return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence()), ...world.ownChangesReported()];
+  },
+};
 const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
 
 describe("engine properties (design §9.3)", () => {
@@ -359,6 +387,11 @@ describe("engine properties (design §9.3)", () => {
   // folder that note's next path needs).
   it("P6: the device converges with the server within bounded rounds", { timeout }, async () => {
     await holds(p6, [scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 })]);
+  });
+
+  it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {
+    // notes/ is on disk; the remote document Notes/b.md lands in it as notes/b.md (#737).
+    await holds(p6Folders, [scripted("windows", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-create", path: 1 }, { type: "pull" })]);
   });
 });
 

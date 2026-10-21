@@ -729,6 +729,8 @@ export class PropertyWorld {
   readonly violations: Violation[] = [];
   /** Crashes that happened. */
   crashes = 0;
+  /** The paths commands pick from. */
+  readonly paths: readonly string[];
   /** Every change the engine reported as a local one (`onLocalChange`), in order. */
   readonly localChanges: VaultEvent[] = [];
   /** The vault events a user change emitted (the vault emits synchronously within the change). */
@@ -743,9 +745,11 @@ export class PropertyWorld {
    * `filesystem` is the in-memory vault's (`folded` by default): on the
    * `faithful` one, `F` decides the file, so `Straße.md` and `STRASSE.md` are
    * two files on every platform and NFC and NFD `Café.md` two on `windows`.
+   * `paths` are the paths commands pick from (`worldPaths` by default).
    */
-  constructor(platform: PathPlatform = "posix", filesystem: "folded" | "faithful" = "folded") {
+  constructor(platform: PathPlatform = "posix", filesystem: "folded" | "faithful" = "folded", paths: readonly string[] = worldPaths) {
     this.pathRules = { platform };
+    this.paths = paths;
     this.server = new InMemoryServer({ maxPageSize: 3, maxDownloadBytes: 64, now: () => testDate });
     this.vault = new InMemoryVault({ pathRules: this.pathRules, now: () => testDate.getTime(), filesystem });
     // Keyed as the vault looks files up: by `F` on the faithful vault; on the folded one by the file key, so `ı.md` and `I.md` are one file on `windows` and `macos`.
@@ -791,7 +795,7 @@ export class PropertyWorld {
     const step = ++this.step;
     switch (command.type) {
       case "user-create":
-        await this.userCreate(worldPaths[command.path % worldPaths.length] ?? "a.md");
+        await this.userCreate(this.paths[command.path % this.paths.length] ?? "a.md");
         break;
       case "user-edit":
         await this.userEdit(command.file);
@@ -803,7 +807,7 @@ export class PropertyWorld {
         await this.userDelete(command.file);
         break;
       case "remote-create":
-        await this.remoteCommit(`r-${String(step)}`, worldPaths[command.path % worldPaths.length] ?? "a.md", this.remoteContent(`r-${String(step)}`), false);
+        await this.remoteCommit(`r-${String(step)}`, this.paths[command.path % this.paths.length] ?? "a.md", this.remoteContent(`r-${String(step)}`), false);
         break;
       case "remote-edit":
       case "remote-rename":
@@ -813,7 +817,7 @@ export class PropertyWorld {
         if (picked === undefined) break;
         const [path, documentId] = picked;
         if (command.type === "remote-edit") await this.remoteCommit(documentId, path, this.remoteContent(documentId), false);
-        else if (command.type === "remote-rename") await this.remoteCommit(documentId, worldPaths[command.path % worldPaths.length] ?? "a.md", undefined, false);
+        else if (command.type === "remote-rename") await this.remoteCommit(documentId, this.paths[command.path % this.paths.length] ?? "a.md", undefined, false);
         else await this.remoteCommit(documentId, path, undefined, true);
         break;
       }
@@ -886,8 +890,15 @@ export class PropertyWorld {
     const aliases = (path: string) => live.some(([other]) => other !== path && space.collides(other, path, "file") && !space.collides(other, path, "server"));
     const aliased = live.filter(([path]) => aliases(path));
     const held = [...(await files(this.vault))].filter(([path]) => !kept.has(path));
-    const vault = held.filter(([path]) => !aliases(path)).map(([path, content]) => `${path}=${content}`).sort(byText);
-    const server = live.filter(([path]) => !aliases(path)).map(([path, content]) => `${path}=${content}`).sort(byText);
+    // Folder segments compare under `F`, the final segment exactly (INV-9,
+    // PO-10): a folder has one spelling on disk, so the server's `X/b.md` is
+    // held as `x/b.md` where the vault has `x/` (#737).
+    const spelling = (path: string): string => {
+      const slash = path.lastIndexOf("/");
+      return slash < 0 ? path : `${space.filesystemKey(path.slice(0, slash))}${path.slice(slash)}`;
+    };
+    const vault = held.filter(([path]) => !aliases(path)).map(([path, content]) => `${spelling(path)}=${content}`).sort(byText);
+    const server = live.filter(([path]) => !aliases(path)).map(([path, content]) => `${spelling(path)}=${content}`).sort(byText);
     if (vault.join("\n") !== server.join("\n")) problems.push(`vault ${JSON.stringify(vault)} differs from the server's live documents ${JSON.stringify(server)}`);
     for (const [path] of aliased) {
       const group = aliased.filter(([other]) => space.oneFile(other, path));
@@ -1008,7 +1019,7 @@ export class PropertyWorld {
     let to: string;
     switch (mode) {
       case "pool":
-        to = worldPaths[target % worldPaths.length] ?? "a.md";
+        to = this.paths[target % this.paths.length] ?? "a.md";
         break;
       case "case":
         to = from === from.toUpperCase() ? from.toLowerCase() : from.toUpperCase();

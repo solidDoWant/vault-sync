@@ -152,6 +152,19 @@ export function harnessAliases(
 }
 
 /**
+ * The key INV-9 compares a path under: its folder segments under `F`, its
+ * final segment exactly (design §5.1, PO-10). A folder has one spelling on
+ * disk, so a live document at `Notes/x.md` is held as `notes/x.md` when
+ * `notes/` is there (#737).
+ */
+export function convergenceKey(path: string, platform: PathPlatform): string {
+  const slash = path.lastIndexOf("/");
+  return slash < 0
+    ? path
+    : `${filesystemKey(path.slice(0, slash), platform)}${path.slice(slash)}`;
+}
+
+/**
  * The check of each live document against what a quiesced device holds
  * (`files`, path to content hash) and reports as unmaterializable: held with
  * the head's content, or missing for a reason the harness agrees with (the
@@ -171,20 +184,30 @@ export function checkLiveDocuments(device: {
 }): Violation[] {
   const { name, platform, heads, files, unmaterializable } = device;
   const violations: Violation[] = [];
+  // One listed file per key: a folder has one spelling on the faithful
+  // filesystem, so two files share a key only on the folded vault (X-18),
+  // whose last one wins here; an exact match is looked up first anyway.
+  const held = new Map<string, string>();
+  for (const path of files.keys())
+    held.set(convergenceKey(path, platform), path);
+  /** The content this device holds for a live path, its folders spelled as on disk. */
+  const localAt = (path: string): string | undefined =>
+    files.get(path) ??
+    files.get(held.get(convergenceKey(path, platform)) ?? path);
   for (const [path, hash] of heads) {
     // Not this device's to sync (config sync off, or its category): deferred, never written.
     if (device.isSynced?.(path) === false) {
       device.outOfScope?.add(path);
       continue;
     }
-    const local = files.get(path);
+    const local = localAt(path);
     // Of live documents one file here under two path keys, the device holds
     // the one that arrived first; the others are unmaterializable (alias).
     const aliases = harnessAliases(path, heads.keys(), platform);
     if (
       aliases.length > 0 &&
       local !== hash &&
-      !aliases.some((alias) => files.get(alias) === heads.get(alias))
+      !aliases.some((alias) => localAt(alias) === heads.get(alias))
     ) {
       violations.push({
         invariant: "engine-convergence",
@@ -868,6 +891,9 @@ export class EngineObserver {
     const files = new Map<string, string>();
     for (const path of await this.synced.list())
       files.set(path, sha256Hex(await this.synced.read(path)));
+    const live = new Set(
+      [...heads.files.keys()].map((path) => convergenceKey(path, this.platform)),
+    );
     const unmaterializable = await this.unmaterializable();
     const outOfScope = new Set<string>();
     // Where the engine keeps an unmaterializable document's edited file (SPEC.md §8): not a live path, and not to be removed.
@@ -895,7 +921,11 @@ export class EngineObserver {
         });
     }
     for (const path of files.keys()) {
-      if (!heads.files.has(path) && !kept.has(path))
+      if (
+        !heads.files.has(path) &&
+        !live.has(convergenceKey(path, this.platform)) &&
+        !kept.has(path)
+      )
         violations.push({
           invariant: "engine-convergence",
           detail: `${this.name} holds ${path}, which is not a live document`,

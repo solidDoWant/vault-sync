@@ -1,0 +1,1130 @@
+{
+  "name": "seed-100133-faithful-fs",
+  "seed": 100133,
+  "clients": 3,
+  "engines": 2,
+  "commitRetryBackoff": 30,
+  "faithfulFilesystem": true,
+  "notificationPulls": true,
+  "violations": [
+    {
+      "invariant": "engine-deferred",
+      "detail": "e3 deferred c2.r2 (local-changes) without local changes"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 64034133
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 1893389492
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "pull",
+      "arg": 122186350
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 649500802
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 4116409615
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 3331665658
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 540199369
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "crash",
+      "client": 2
+    },
+    {
+      "kind": "drop-response",
+      "pick": 864853542
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 1252388119
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 1945570553
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 1956407269
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 1286063189
+    },
+    {
+      "kind": "reorder",
+      "pick": 3181623501
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 4286959602
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 3934410816
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "crash",
+      "client": 0
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "push",
+      "arg": 3379441206
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 882220406
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 1169421843
+    },
+    {
+      "kind": "crash",
+      "client": 1
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 4265567582
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 1339714844
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "delay",
+      "pick": 2368677127,
+      "steps": 5
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 273206608
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "pull",
+      "arg": 2336599369
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 2383608875
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 4183019700
+    },
+    {
+      "kind": "delay",
+      "pick": 3441869805,
+      "steps": 1
+    },
+    {
+      "kind": "delay",
+      "pick": 873833800,
+      "steps": 5
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 1125405639
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 181015073
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "rename",
+      "arg": 1374905328
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 3252870460
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "rename",
+      "arg": 890936017
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 1611558116
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "drop-response",
+      "pick": 420489764
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 2821509974
+    },
+    {
+      "kind": "reorder",
+      "pick": 3982031160
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 2999200611
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 2820543243
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "create",
+      "arg": 3014149031
+    },
+    {
+      "kind": "reorder",
+      "pick": 1369598557
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "reorder",
+      "pick": 1800850429
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 3390730123
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 324804779
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 3052041809
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 1011291229
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 775230876
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 870462777
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "rename",
+      "arg": 499157050
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 1686494841
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 2769104013
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 713937268
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 1200316981
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "delete",
+      "arg": 241577047
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 427594973
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "rename",
+      "arg": 2774645624
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 4288591927
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 3668575207
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 4233117808
+    },
+    {
+      "kind": "drop-response",
+      "pick": 678439816
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "push",
+      "arg": 470539457
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 1304091522
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 1897544132
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 1975088372
+    },
+    {
+      "kind": "drop-response",
+      "pick": 2668435528
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "delay",
+      "pick": 2207048433,
+      "steps": 4
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 1963790545
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 3465412001
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 2772081361
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 1021264464
+    },
+    {
+      "kind": "delay",
+      "pick": 2667949822,
+      "steps": 8
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 3789024264
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 1129858809
+    },
+    {
+      "kind": "crash",
+      "client": 0
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "delete",
+      "arg": 2106178501
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "partition",
+      "client": 0,
+      "steps": 3
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "drop-response",
+      "pick": 4067570533
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 2750841905
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 2968118243
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 814082831
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 2427879251
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "partition",
+      "client": 1,
+      "steps": 8
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 3110534239
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "create",
+      "arg": 3804985160
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 2733796737
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 1153707122
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "delete",
+      "arg": 675128860
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 880981538
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 1072400190
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "delete",
+      "arg": 4068318984
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "pull",
+      "arg": 2260197729
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 4004905931
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 1290665417
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 2667655374
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "pull",
+      "arg": 715603609
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "delete",
+      "arg": 2948787954
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 2952770112
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 3752410191
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 3155592261
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 3086958730
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 3604340859
+    },
+    {
+      "kind": "crash",
+      "client": 0
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "pull",
+      "arg": 1455892310
+    },
+    {
+      "kind": "deliver-response"
+    }
+  ]
+}

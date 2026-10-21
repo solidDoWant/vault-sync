@@ -307,7 +307,12 @@ export class Bindings {
       if (binding !== null && !listed.includes(binding.spelling)) {
         const key = binding.fileKey;
         const spellings = listed.filter((path) => this.space.filesystemKey(path) === key);
-        if (spellings.length === 1 && spellings[0] !== undefined) binding = { ...binding, spelling: spellings[0] };
+        // Folders are not respelled (INV-9, #737): a folder has one spelling
+        // on disk, which the engine never chases. A binding spelled like the
+        // file but for such folders (the server's `Notes/a.md` for the file
+        // `notes/a.md`) keeps its spelling, or the push would take the
+        // folder's disk spelling for the user's rename.
+        if (spellings.length === 1 && spellings[0] !== undefined && !this.space.sameButFolderSpelling(spellings[0], binding.spelling)) binding = { ...binding, spelling: spellings[0] };
       }
       if (binding !== state.binding || absence !== (state.absence ?? null)) changes.set(state.documentId, { ...state, binding, absence });
     }

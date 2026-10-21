@@ -85,3 +85,21 @@ describe("checkLiveDocuments with an F-alias group (#736, #749)", () => {
     expect(checkLiveDocuments({ name: "e0", platform: "posix", heads, files: new Map([upper]), unmaterializable: new Map([["ı.md", "alias"]]) }).map((violation) => violation.invariant).sort()).toEqual(["engine-convergence", "engine-unmaterializable"]);
   });
 });
+
+describe("checkLiveDocuments with a folder of one spelling on disk (#737)", () => {
+  const heads = new Map([["Notes/x.md", "x-hash"]]);
+  const check = (platform: "windows" | "posix", files: [string, string][]) => checkLiveDocuments({ name: "e0", platform, heads, files: new Map(files), unmaterializable: new Map() }).map((violation) => violation.detail);
+
+  it("takes the live document as held where the device spells only its folder otherwise", () => {
+    expect(check("windows", [["notes/x.md", "x-hash"]])).toEqual([]);
+  });
+
+  it("still compares the content and the final segment exactly", () => {
+    expect(check("windows", [["notes/x.md", "other-hash"]])).toEqual(["e0 holds other content at Notes/x.md"]);
+    expect(check("windows", [["notes/X.md", "x-hash"]])).toEqual(["e0 is missing Notes/x.md"]);
+  });
+
+  it("expects the server's spelling on posix, where the folders are two", () => {
+    expect(check("posix", [["notes/x.md", "x-hash"]])).toEqual(["e0 is missing Notes/x.md"]);
+  });
+});

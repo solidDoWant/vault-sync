@@ -146,6 +146,21 @@ describe("PathSpace", () => {
     expect(posix.oneFile("a.md", "a.md")).toBe(true);
   });
 
+  it("tells paths spelled alike but for folders one file takes for one from other spellings (#737)", () => {
+    expect(windows.sameButFolderSpelling("notes/a.md", "Notes/a.md")).toBe(true);
+    expect(windows.sameButFolderSpelling("NOTES/sub/a.md", "notes/Sub/a.md")).toBe(true);
+    expect(windows.sameButFolderSpelling("a.md", "a.md")).toBe(true);
+    // The final segment compares exactly: a case-only rename of the file is a respelling.
+    expect(windows.sameButFolderSpelling("a.md", "A.md")).toBe(false);
+    expect(windows.sameButFolderSpelling("notes/a.md", "Notes/A.md")).toBe(false);
+    expect(windows.sameButFolderSpelling("xa.md", "ya.md")).toBe(false);
+    // Folders compare under F, not K: Straße/ and STRASSE/ are two folders.
+    expect(windows.sameButFolderSpelling("Straße/a.md", "STRASSE/a.md")).toBe(false);
+    expect(windows.sameButFolderSpelling("a.md", "x/a.md")).toBe(false);
+    expect(macos.sameButFolderSpelling(`${nfc("Café")}/a.md`, `${nfd("CAFÉ")}/a.md`)).toBe(true);
+    expect(posix.sameButFolderSpelling("notes/a.md", "Notes/a.md")).toBe(false);
+  });
+
   it("lists a path's folders outermost first", () => {
     expect(posix.ancestors("a.md")).toEqual([]);
     expect(posix.ancestors("a/b/c.md")).toEqual(["a", "a/b"]);
