@@ -759,11 +759,15 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
         if held("issue", n):
             plan.skipped.append((target, f"held: {held('issue', n)}"))
             continue
-        if n in issues_with_pr:
+        key = f"worker:{n}"
+        handed_back = ((sessions.get(key) or {}).get("handoff") or {}).get("state")
+        # A worker that handed back question/blocked usually left a draft PR;
+        # once the planner answers (status:todo again) it resumes on that PR.
+        answered = issue.status == "status:todo" and handed_back in ("question", "blocked")
+        if n in issues_with_pr and not answered:
             if issue.status == "status:todo":
                 plan.skipped.append((target, f"todo but has open PR #{issues_with_pr[n][0]}"))
             continue
-        key = f"worker:{n}"
         if issue.status == "status:in-progress":
             sess = sessions.get(key, {})
             if (sess.get("handoff") or {}).get("state") in ("blocked", "question"):
@@ -783,12 +787,13 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
         tier_note = ["current phase", "no/earlier milestone", "later-phase filler"][issue_sort(n)[0]]
         crit = "critical" if issue_sort(n)[1] == 0 else "other"
         trigger = f"Implement issue #{n}: {issue.title}"
-        handed_back = ((sessions.get(key) or {}).get("handoff") or {}).get("state")
         if handed_back in ("question", "blocked"):
             trigger = (f"Issue #{n} is status:todo again after you handed back `{handed_back}`: the planner has "
                        "answered or unblocked it. Read the latest comments on the issue, then continue.")
+        draft = issues_with_pr[n][0] if n in issues_with_pr else None
+        claims = (f"issue:{n}",) + ((f"pr:{draft}",) if draft else ())
         add(Job(key, "issue-worker", 5, issue_sort(n), f"ready ({tier_note}, {crit}, unblocks {deps.get(n, 0)})",
-                trigger, n, None, (f"issue:{n}",), issue_locks(issue, cfg)))
+                trigger, n, draft, claims, issue_locks(issue, cfg)))
 
     plan.jobs.sort(key=lambda j: (j.tier, j.sort, j.key))
     return plan

@@ -189,6 +189,16 @@ class PlanTest(unittest.TestCase):
         plan = plan_for(snap([issue(1)]), {"sessions": sessions})
         self.assertIn("answered or unblocked", plan.jobs[0].trigger)
 
+    def test_answered_question_resumes_despite_draft_pr(self):
+        sessions = {"worker:1": {"role": "issue-worker", "issue": 1, "handoff": {"state": "question"}}}
+        sn = snap([issue(1)], [pr(10, 1, draft=True)])
+        plan = plan_for(sn, {"sessions": sessions})
+        self.assertEqual(keys(plan), ["worker:1"])
+        self.assertEqual(plan.jobs[0].pr, 10)
+        self.assertIn("answered or unblocked", plan.jobs[0].trigger)
+        # Without a hand-back, a todo issue with an open PR is still skipped.
+        self.assertEqual(keys(plan_for(sn, {"sessions": {}})), [])
+
     def test_special_jobs_and_release_lock(self):
         specials = {"hunt-1": {"role": "bug-hunter", "brief": "sync under faults", "priority": 0},
                     "rel": {"role": "release-manager", "brief": "release 0.2.0", "priority": 1}}
