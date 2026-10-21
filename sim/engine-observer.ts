@@ -446,6 +446,20 @@ export class EngineObserver {
     return `${this.name} crashed and restarted with its vault and journal`;
   }
 
+  /**
+   * The app is killed, its user renames or deletes files while it is not
+   * running (`changes`, with no engine watching, so no event reaches it),
+   * and it starts again over the same vault and journal: a change the
+   * engine never recorded, which only the start-up scan sees. Logged as a
+   * crash after the changes, as for one the app was killed before it
+   * recorded.
+   */
+  async crashWhileChanging(changes: (user: { move: (from: string, to: string) => Promise<string>; remove: (path: string) => Promise<string> }) => Promise<string[]>): Promise<string[]> {
+    this.engine.dispose();
+    const entries = await changes({ move: (from, to) => this.user.rename(from, to), remove: (path) => this.user.remove(path) });
+    return [...entries, this.crash()];
+  }
+
   /** The engine-level invariants, checked once the run has quiesced. */
   async check(heads: ServerHeads): Promise<Violation[]> {
     await this.settled();

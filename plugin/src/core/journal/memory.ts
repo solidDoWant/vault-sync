@@ -141,6 +141,7 @@ export class InMemoryJournal implements Journal {
         state.cursorAnchor = copy(cursor.anchor);
       }
       for (const document of changes.putDocuments ?? []) state.documents.set(document.documentId, copy(document));
+      for (const documentId of changes.removeDocuments ?? []) state.documents.delete(documentId);
       for (const revisionId of changes.removePending ?? []) state.pending.delete(revisionId);
       for (const revisionId of changes.sealPending ?? []) {
         const operation = state.pending.get(revisionId);

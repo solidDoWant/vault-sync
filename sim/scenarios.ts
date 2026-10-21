@@ -1435,7 +1435,7 @@ export interface LostRenameResult extends KnownHeldPathResult {
 /**
  * A rename lost to a crash, against a concurrent edit (#280, #167 item 2).
  * Both engines sync `note.md`. The second engine's user renames it to
- * `moved.md`, and the app is killed before the engine records the rename, so
+ * `moved.md` while the app is killed, so the engine never records the rename, and
  * its next push (a full scan) sees a missing file and a new one: a delete of
  * the note plus a new document at `moved.md`. Meanwhile the first engine's
  * user edits the note and pushes, before (`editor-first`) or after
@@ -1477,9 +1477,10 @@ export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-
   await pull(second);
   const before = await liveDocuments(run);
 
-  if (variant === "deleted-note-path") log(await second.remove("moved.md"));
-  log(await second.move("note.md", "moved.md"));
-  log(second.crash());
+  // Made while the app is killed, so the engine never records them (since
+  // refactor step R5a a rename or delete it handled survives a crash).
+  const entries = await second.crashWhileChanging(async (user) => [...(variant === "deleted-note-path" ? [await user.remove("moved.md")] : []), await user.move("note.md", "moved.md")]);
+  for (const entry of entries) log(entry);
   log(await first.edit("note.md", encoder.encode(edited)));
   if (order === "editor-first") {
     await push(first);

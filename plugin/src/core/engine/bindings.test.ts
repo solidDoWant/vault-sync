@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it, vi } from "vitest";
 
 import { sha256Hex } from "../hash";
@@ -195,7 +196,10 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
 
     h.restart();
 
-    expect(await h.engine.bindingShadow()).toEqual([{ documentId: "A", binding: "other.md", absence: null, derived: "a.md" }]);
+    // Since refactor step R5a the derived ownership reads local moves from
+    // bindings: the binding moves A away from a.md, whose file the derived
+    // ownership still finds holding A's synced content, so it takes none.
+    expect(await h.engine.bindingShadow()).toEqual([{ documentId: "A", binding: "other.md", absence: null, derived: null }]);
   });
 
   it("reports a document the derived ownership has a file for but whose binding has none", async () => {
@@ -542,5 +546,107 @@ describe("Bindings rules", () => {
     await h.vault.rename("a.md", "b.md");
     await expect(h.engine.push()).rejects.toThrow("journal write failed");
     expect(h.server.liveDocuments()).toEqual(new Map([["a.md", "A"]]));
+  });
+});
+
+// Refactor step R5a (design §9.2, #622): a create not acknowledged yet is a
+// journal row bound to its file (§4.3, E2 note), written with its pending
+// operation in one transaction, so it survives a crash and a restart, and a
+// local rename of its file is a binding change like any other (E1).
+describe("pending creates as bindings (refactor step R5a)", () => {
+  /** Writes e.md and pushes it with every CommitRevision failing: the create stays pending. Returns its document id. */
+  async function pendingCreate(h: Harness): Promise<string> {
+    await h.vault.write("e.md", bytes("mine"));
+    h.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+    };
+    await expect(h.engine.push()).rejects.toThrow();
+    h.server.interceptor = undefined;
+    const [operation] = await h.journal.listPending();
+    if (operation === undefined) throw new Error("no pending create");
+    return operation.documentId;
+  }
+
+  const created = { revisionId: "", deleted: true, binding: { spelling: "e.md", fileKey: "e.md", seen: hash("mine") }, absence: null };
+
+  it("records a create not acknowledged yet with a row bound to its file, and keeps both over a restart", async () => {
+    const h = harness({ merge: "default" });
+    const mine = await pendingCreate(h);
+
+    expect(await h.journal.getDocument(mine)).toMatchObject({ ...created, path: "e.md" });
+    h.restart();
+    await h.engine.settled();
+    expect(await h.journal.getDocument(mine)).toMatchObject({ ...created, path: "e.md" });
+    expect(await h.journal.listPending()).toMatchObject([{ documentId: mine, path: "e.md", baseRevisionId: "" }]);
+
+    await h.engine.push();
+
+    expect(h.server.liveDocuments()).toEqual(new Map([["e.md", mine]]));
+    expect(await row(h, mine)).toEqual({ binding: created.binding, absence: null });
+  });
+
+  it("writes a create's pending operation and its row in one journal transaction, so a crash right after keeps both", async () => {
+    let armed = true;
+    class CrashAfterCreate extends InMemoryJournal {
+      override async transact(changes: JournalChanges): Promise<void> {
+        await super.transact(changes);
+        if (armed && (changes.addPending?.length ?? 0) > 0) {
+          armed = false;
+          throw new Crash("crash after the create is recorded");
+        }
+      }
+    }
+    const journal = new CrashAfterCreate();
+    const h = harness({ merge: "default", journal });
+    await h.vault.write("e.md", bytes("mine"));
+    await expect(h.engine.push()).rejects.toBeInstanceOf(Crash);
+    const [operation] = await journal.listPending();
+    expect(operation).toBeDefined();
+    const mine = operation?.documentId ?? "";
+    expect(await journal.getDocument(mine)).toMatchObject({ ...created, path: "e.md" });
+
+    h.restart();
+    await h.engine.settled();
+    expect(await journal.getDocument(mine)).toMatchObject({ ...created, path: "e.md" });
+    await h.engine.push();
+
+    // The create is committed once, under its own id.
+    expect(h.server.liveDocuments()).toEqual(new Map([["e.md", mine]]));
+    expect(h.server.history(mine)).toHaveLength(1);
+    expect(await journal.listPending()).toEqual([]);
+  });
+
+  it("gives a create recorded without a row (before refactor step R5a) one at start-up", async () => {
+    const journal = new InMemoryJournal();
+    const vault = new InMemoryVault();
+    await vault.write("e.md", bytes("mine"));
+    await journal.addPending({ revisionId: "r", documentId: "N", baseRevisionId: "", path: "e.md", contentHash: hash("mine"), size: 4n, kind: "text", deleted: false });
+
+    await new Bindings(journal, vault, new PathSpace()).idle();
+
+    expect(await journal.getDocument("N")).toMatchObject({ ...created, path: "e.md" });
+  });
+
+  it("follows a rename of a create's file made while the start-up scan runs", async () => {
+    const h = harness({ merge: "default" });
+    const mine = await pendingCreate(h);
+
+    h.restart();
+    await h.vault.rename("e.md", "f.md");
+    await h.engine.settled();
+
+    expect(await row(h, mine)).toEqual({ binding: { ...created.binding, spelling: "f.md", fileKey: "f.md" }, absence: null });
+  });
+
+  it("removes a create's row with its pending operation when a pull supersedes the create", async () => {
+    const h = harness({ merge: "default" });
+    const mine = await pendingCreate(h);
+    h.server.commit({ documentId: "D", path: "e.md", content: "mine" });
+
+    await h.engine.pull();
+
+    expect(await h.journal.listPending()).toEqual([]);
+    expect(await h.journal.getDocument(mine)).toBeUndefined();
+    expect(await row(h, "D")).toEqual({ binding: created.binding, absence: null });
   });
 });

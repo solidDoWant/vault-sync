@@ -288,7 +288,7 @@ export class IndexedDbJournal implements Journal {
   transact(changes: JournalChanges): Promise<void> {
     const stores = new Set<StoreName>();
     if (changes.cursor !== undefined) stores.add("meta");
-    if (nonEmpty(changes.putDocuments)) stores.add("documents");
+    if (nonEmpty(changes.putDocuments) || nonEmpty(changes.removeDocuments)) stores.add("documents");
     if (nonEmpty(changes.removePending) || nonEmpty(changes.sealPending) || nonEmpty(changes.addPending)) stores.add("pending");
     if (nonEmpty(changes.removeDeferred) || nonEmpty(changes.putDeferred)) stores.add("deferred");
     if (nonEmpty(changes.putConflicts)) stores.add("conflicts");
@@ -454,6 +454,7 @@ function writeChanges(transaction: IDBTransaction, abort: (error: Error) => void
 
   if (changes.cursor !== undefined) putCursor(transaction.objectStore("meta"), changes.cursor.seq, changes.cursor.anchor);
   for (const document of changes.putDocuments ?? []) transaction.objectStore("documents").put(document);
+  for (const documentId of changes.removeDocuments ?? []) transaction.objectStore("documents").delete(documentId);
   if (pending !== undefined) {
     const store = transaction.objectStore("pending");
     for (const key of removed) store.delete(key);

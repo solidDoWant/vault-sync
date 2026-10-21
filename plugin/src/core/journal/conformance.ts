@@ -580,10 +580,12 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       await journal.putDeferred(sampleDeferred("doc-3", "r3"));
       const intent = await journal.putIntent({ kind: "commit", documentId: "doc-1", steps: {} });
       const kept = await journal.putIntent({ kind: "merge", documentId: "doc-3", steps: {} });
+      await journal.putDocument(sampleDocument({ documentId: "doc-9", path: "gone.md" }));
       const anchor = new Uint8Array(16).fill(4);
       await journal.transact({
         cursor: { seq: 5n, anchor },
         putDocuments: [sampleDocument({ revisionId: "acknowledged", binding: { spelling: "note.md", fileKey: "note.md", seen: "bb" }, absence: null })],
+        removeDocuments: ["doc-9", "never-added"],
         removePending: ["acknowledged", "never-added"],
         sealPending: ["to-seal"],
         addPending: [samplePending({ revisionId: "next", baseRevisionId: "acknowledged" })],
@@ -596,6 +598,8 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       assertEqual(await reopened.getCursor(), 5n, "cursor");
       assertEqual(await reopened.getCursorAnchor(), new Uint8Array(16).fill(4), "cursor anchor");
       assertEqual(await reopened.getDocument("doc-1"), sampleDocument({ revisionId: "acknowledged", binding: { spelling: "note.md", fileKey: "note.md", seen: "bb" }, absence: null }), "document");
+      assertEqual(await reopened.getDocument("doc-9"), undefined, "removed document");
+      assertEqual(await reopened.findDocumentByPath("gone.md"), undefined, "removed document by path");
       assertEqual(
         await reopened.listPending(),
         [samplePending({ revisionId: "to-seal", documentId: "doc-2", sealed: true }), samplePending({ revisionId: "next", baseRevisionId: "acknowledged" })],
@@ -649,6 +653,7 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       run: async (journal, reopen) => {
         await journal.setCursor(2n);
         await journal.putDocument(sampleDocument());
+        await journal.putDocument(sampleDocument({ documentId: "doc-7", path: "seven.md" }));
         await journal.addPending(samplePending({ revisionId: "pending" }));
         await journal.addPending(samplePending({ revisionId: "other", documentId: "doc-3" }));
         await journal.putDeferred(sampleDeferred("doc-2", "r2"));
@@ -658,6 +663,7 @@ export const journalConformance: readonly JournalConformanceCase[] = [
         const changes: JournalChanges = {
           cursor: { seq: 6n },
           putDocuments: [sampleDocument({ revisionId: "changed", binding: null, absence: "user-deleted" })],
+          removeDocuments: ["doc-7"],
           removePending: ["other"],
           removeDeferred: ["doc-2"],
           putDeferred: [sampleDeferred("doc-5", "r5")],
