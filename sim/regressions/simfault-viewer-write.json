@@ -1,0 +1,51 @@
+{
+  "name": "simfault-viewer-write",
+  "seed": 1,
+  "clients": 3,
+  "engines": 2,
+  "commitRetryBackoff": 30,
+  "notificationPulls": true,
+  "users": 3,
+  "violations": [
+    {
+      "invariant": "revoked-write",
+      "detail": "the server accepted BeginBlob of c1 (u1, viewer)"
+    },
+    {
+      "invariant": "revoked-write",
+      "detail": "the server accepted PutBlobChunk of c1 (u1, viewer)"
+    },
+    {
+      "invariant": "revoked-write",
+      "detail": "the server accepted CommitBlob of c1 (u1, viewer)"
+    },
+    {
+      "invariant": "revoked-write",
+      "detail": "the server accepted CommitRevision of c1 (u1, viewer)"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 985302531
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 4075179499
+    },
+    {
+      "kind": "membership",
+      "pick": 3188543236
+    }
+  ]
+}

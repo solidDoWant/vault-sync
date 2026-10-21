@@ -85,6 +85,28 @@ describe("generateSchedule", () => {
     expect(JSON.parse(JSON.stringify(schedule))).toEqual(schedule);
   });
 
+  it("generates exactly the schedules of before #35 when the run has no membership changes", () => {
+    // The pinned digest above, now with membership steps known to the generator.
+    const schedule = generateSchedule({ seed: 4242, steps: 2000, clients: 3, engines: 2, membership: false });
+    expect(bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(schedule))))).toBe("9570346746379d65eb865a659dfcdfe58c6cde458990d5be7cb21b11971effd5");
+    expect(schedule.some((step) => step.kind === "membership")).toBe(false);
+  });
+
+  it("changes members' roles between the steps of the seed's plain schedule when the run has membership changes", () => {
+    const options = { seed: 99, steps: 3000, clients: 3, engines: 2 };
+    const plain = generateSchedule(options);
+    const schedule = generateSchedule({ ...options, membership: true });
+    const membership = schedule.filter((step) => step.kind === "membership");
+    // About one in a hundred steps.
+    expect(membership.length).toBeGreaterThanOrEqual(15);
+    expect(membership.length).toBeLessThanOrEqual(60);
+    expect(schedule.filter((step) => step.kind !== "membership")).toEqual(plain);
+    expect(generateSchedule({ ...options, membership: true })).toEqual(schedule);
+    // With retention too, the plain schedule and its retention steps are unchanged.
+    const both = generateSchedule({ ...options, membership: true, retention: true });
+    expect(both.filter((step) => step.kind !== "membership")).toEqual(generateSchedule({ ...options, retention: true }));
+  });
+
   it("has every engine's user make every kind of change when the run has engines", () => {
     const schedule = generateSchedule({ seed: 99, steps: 3000, clients: 3, engines: 2 });
     const engineSteps = schedule.flatMap((step) => (step.kind === "engine-operation" ? [step] : []));

@@ -25,6 +25,7 @@ export function recordedCase(name: string, options: RunOptions, violations: Viol
     ...(options.faithfulFilesystem === true ? { faithfulFilesystem: true } : {}),
     ...(options.notificationPulls === true ? { notificationPulls: true } : {}),
     ...(options.retention === true ? { retention: true } : {}),
+    ...(options.users !== undefined && options.users > 1 ? { users: options.users } : {}),
     violations,
     steps,
   };
@@ -49,6 +50,7 @@ export function replayOptions(regression: RegressionCase): RunOptions {
     faithfulFilesystem: regression.faithfulFilesystem === true,
     notificationPulls: regression.notificationPulls === true,
     retention: regression.retention === true,
+    ...(regression.users !== undefined && regression.users > 1 ? { users: regression.users } : {}),
   };
 }
 

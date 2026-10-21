@@ -42,7 +42,10 @@ type regressionCase struct {
 	NotificationPulls bool `json:"notificationPulls,omitempty"`
 	// Retention is set when the run had retention purges (the retention
 	// suite, #646); absent in cases recorded before it.
-	Retention  bool            `json:"retention,omitempty"`
+	Retention bool `json:"retention,omitempty"`
+	// Users is the vault's users (#35); absent with one user and in cases
+	// recorded before it.
+	Users      int             `json:"users,omitempty"`
 	Violations []violation     `json:"violations"`
 	Steps      json.RawMessage `json:"steps"`
 }
