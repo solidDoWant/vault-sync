@@ -38,8 +38,25 @@ function deviceRows(): Promise<Row[]> {
 }
 
 // The list shows a device's name isolated (U+2068 … U+2069), so it cannot reorder the text around it.
-async function otherRow(): Promise<Row | undefined> {
-  return (await deviceRows()).find((row) => row.name === `\u2068${otherDeviceName}\u2069`);
+async function rowNamed(name: string): Promise<Row | undefined> {
+  return (await deviceRows()).find((row) => row.name === `\u2068${name}\u2069`);
+}
+
+function otherRow(): Promise<Row | undefined> {
+  return rowNamed(otherDeviceName);
+}
+
+/** Lets vault-sync handle what the server or the harness answered meanwhile, so a check that something did not happen does not come too early. */
+function settle() {
+  return browser.executeObsidian(() => new Promise<void>((resolve) => setTimeout(resolve, 250)));
+}
+
+function openSettings() {
+  return browser.executeObsidian(({ app }, id) => {
+    const setting = (app as unknown as { setting: { open(): void; openTabById(id: string): void } }).setting;
+    setting.open();
+    setting.openTabById(id);
+  }, pluginId);
 }
 
 /** Clicks the Remove button of the named row (a disabled button ignores the click, as it does for the user). */
@@ -155,11 +172,7 @@ describe("the settings device list", function () {
     expect((await callHarness("serverDeviceIds")).sort()).toEqual([thisDevice, otherDevice].sort());
     await callHarness("interceptRemoveDevice");
 
-    await browser.executeObsidian(({ app }, id) => {
-      const setting = (app as unknown as { setting: { open(): void; openTabById(id: string): void } }).setting;
-      setting.open();
-      setting.openTabById(id);
-    }, pluginId);
+    await openSettings();
     await browser.waitUntil(async () => (await deviceRows()).length === 2, { timeoutMsg: "the device list never showed both devices" });
     // Once the settings are open: they, their modals and notices may be in a document of their own.
     await recordNotices();
@@ -214,5 +227,64 @@ describe("the settings device list", function () {
       { deviceId: otherDevice, forwarded: true },
     ]);
     expect(await callHarness("serverDeviceIds")).toEqual([thisDevice]);
+  });
+
+  // Runs after the test above, signed in with this device the only one.
+  it("does not let an older list repaint a removed device, and reloads nothing once the settings are closed (#634)", async function () {
+    const thisDevice = await browser.executeObsidian(({ app }, id) => {
+      const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+      return plugin?.data.device?.id ?? null;
+    }, pluginId);
+    expect(thisDevice).not.toBeNull();
+    const staleName = "e2e device of a stale list";
+    const closedName = "e2e device removed after closing";
+    const stale = await callHarness("registerAnotherDevice", staleName);
+    const closed = await callHarness("registerAnotherDevice", closedName);
+    await callHarness("interceptRemoveDevice");
+    await openSettings();
+    await browser.waitUntil(async () => (await deviceRows()).length === 3, { timeoutMsg: "the device list never showed the three devices" });
+    await recordNotices();
+    const failedBefore = await removalFailedNotices();
+
+    // A removal held while the list is rendered again, whose ListDevices the
+    // server answers with the device still in it and the harness holds. The
+    // removal then succeeds and reloads the list; the held, older response
+    // arrives last and must not bring the removed device back.
+    const removalsBefore = (await callHarness("removeDeviceCalls")).length;
+    await callHarness("holdNextRemoveDevice");
+    await clickRemove(staleName);
+    await confirmRemove();
+    await browser.waitUntil(async () => (await callHarness("removeDeviceCalls")).length === removalsBefore + 1, { timeoutMsg: "the removal sent no RemoveDevice" });
+    await callHarness("holdNextListDevices");
+    await renderSettings();
+    await browser.waitUntil(() => callHarness("listDevicesHeld"), { timeoutMsg: "the re-rendered list sent no ListDevices" });
+    expect(await callHarness("releaseRemoveDevice")).toBe(true);
+    await browser.waitUntil(async () => (await deviceRows()).length === 2, { timeoutMsg: "the reloaded list never showed the two devices left" });
+    expect(await rowNamed(staleName)).toBeUndefined();
+    expect(await callHarness("releaseListDevices")).toBe(true);
+    await settle();
+    expect(await rowNamed(staleName)).toBeUndefined();
+    expect((await deviceRows()).length).toBe(2);
+
+    // A removal held until the settings were closed: when it succeeds, the
+    // closed tab's list is not loaded again.
+    await callHarness("holdNextRemoveDevice");
+    await clickRemove(closedName);
+    await confirmRemove();
+    await browser.waitUntil(async () => (await callHarness("removeDeviceCalls")).length === removalsBefore + 2, { timeoutMsg: "the second removal sent no RemoveDevice" });
+    await browser.executeObsidian(({ app }) => {
+      (app as unknown as { setting: { close(): void } }).setting.close();
+    });
+    const listings = await callHarness("listDevicesCalls");
+    expect(await callHarness("releaseRemoveDevice")).toBe(true);
+    await browser.waitUntil(async () => (await callHarness("serverDeviceIds")).length === 1, { timeoutMsg: "the server never removed the device" });
+    await settle();
+    expect(await callHarness("listDevicesCalls")).toBe(listings);
+    expect(await removalFailedNotices()).toBe(failedBefore);
+    expect(await callHarness("serverDeviceIds")).toEqual([thisDevice]);
+    expect((await callHarness("removeDeviceCalls")).slice(removalsBefore)).toEqual([
+      { deviceId: stale, forwarded: true },
+      { deviceId: closed, forwarded: true },
+    ]);
   });
 });
