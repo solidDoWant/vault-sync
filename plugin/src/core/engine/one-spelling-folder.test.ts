@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { InMemoryVault } from "../vault/memory";
-import { files, harness, type Harness } from "./testing";
+import { InMemoryServer } from "./memory-server";
+import { Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, type Harness } from "./testing";
 
 // On NTFS, APFS and Android's shared storage a folder has one spelling: with
 // `notes/` on disk, a file written at `Notes/b.md` lands as `notes/b.md`. The
@@ -11,6 +12,7 @@ import { files, harness, type Harness } from "./testing";
 
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value);
+const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
 
 function faithful(platform: "windows" | "macos" | "android"): Harness {
   return harness({ merge: "default", pathRules: { platform }, vault: new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" }) });
@@ -122,5 +124,54 @@ describe.each(["windows", "macos", "android"] as const)("a folder with one spell
         ["Notes/b.md", "b\nlocal\n"],
       ]),
     );
+  });
+
+  describe("a merge of a remote rename that respells only the folder, interrupted by a crash (R8 intent replay)", () => {
+    async function scenario(crashAfter: number) {
+      const server = new InMemoryServer();
+      const points = new CrashPoints();
+      const vault = new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" });
+      const h = harness({ merge: "default", server, vault, journal: new CrashingJournal(points), pathRules: { platform }, wrapVault: (inner) => new CrashingVault(inner, points) });
+      server.commit({ documentId: "a", path: "notes/a.md", content: lines("one", "two", "three") });
+      await h.engine.pull();
+      await h.vault.write("notes/a.md", bytes(lines("one (local)", "two", "three")));
+      await h.engine.settled();
+      server.commit({ documentId: "a", path: "Notes/a.md", content: lines("one", "two", "three (remote)") });
+      points.count = 0;
+      points.crashAfter = crashAfter;
+      try {
+        await h.engine.pull();
+      } catch (error) {
+        if (!(error instanceof Crash)) throw error;
+      } finally {
+        points.crashAfter = 0;
+      }
+      h.restart();
+      for (let round = 0; round < 4; round++) await h.engine.push();
+      await h.engine.settled();
+      return { server, h };
+    }
+
+    it.each(Array.from({ length: 10 }, (_, index) => index))("finishes the merge once, never moves the file, and leaves no echo expectation behind (crash after durable change %i)", async (crashAfter) => {
+      const { server, h } = await scenario(crashAfter);
+      const merged = lines("one (local)", "two", "three (remote)");
+
+      // The folder keeps its one spelling; the merged note is at the server's path.
+      expect(await h.vault.list()).toEqual(["notes/a.md"]);
+      expect(await files(h.vault)).toEqual(new Map([["notes/a.md", merged]]));
+      expect(server.liveFiles()).toEqual(new Map([["Notes/a.md", merged]]));
+      expect(await h.journal.listIntents()).toEqual([]);
+      expect(await h.journal.listPending()).toEqual([]);
+      expect(await h.journal.listConflicts()).toEqual([]);
+      expect(h.localChanges.filter((event) => event.type === "rename")).toEqual([]);
+
+      // No expectation of the skipped rename waits to swallow the user's own.
+      const before = h.localChanges.length;
+      await h.vault.rename("notes/a.md", "notes/A.md");
+      await h.engine.settled();
+      expect(h.localChanges.slice(before)).toEqual([{ type: "rename", path: "notes/A.md", oldPath: "notes/a.md" }]);
+      await h.engine.push();
+      expect(server.liveFiles()).toEqual(new Map([["notes/A.md", merged]]));
+    });
   });
 });
