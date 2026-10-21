@@ -15,7 +15,7 @@ import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
 import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, SyncController, type ClosableJournal } from "./controller";
-import { currentDeviceId, deviceRows, listDevices, removeOtherDevice } from "./devices";
+import { currentDeviceId, DeviceRemovals, deviceRows, listDevices, removeOtherDevice } from "./devices";
 import { parsePluginData, type PluginData } from "./data";
 import { DeviceNameError } from "./device-name";
 import { SyncSession, type SyncSessionOptions } from "./session";
@@ -158,6 +158,8 @@ interface Fixture {
   vault: InMemoryVault;
   statuses: SyncStatus[];
   saves: number;
+  /** What the last save wrote to data.json, as Obsidian stores it; a restart of Obsidian reads it. */
+  saved: string | undefined;
   events: string[];
   controller: SyncController;
 }
@@ -174,11 +176,13 @@ function fixture(server: ReturnType<typeof fakeServer>, data: PluginData, overri
     vault,
     statuses,
     saves: 0,
+    saved: undefined,
     events,
     controller: new SyncController({
       data: () => data,
       save: () => {
         result.saves++;
+        result.saved = JSON.stringify(data);
         return Promise.resolve();
       },
       authState: () => auth.state,
@@ -840,6 +844,8 @@ describe("a device removed from another device (#590)", () => {
     expect(server.sync.liveFiles()).toEqual(new Map());
     // Stored, so a restart of Obsidian waits for the user too.
     expect(parsePluginData(JSON.parse(JSON.stringify(f.data))).device).toMatchObject({ id: "device-1", removed: true });
+    expect(f.saved).toBeDefined();
+    expect(parsePluginData(JSON.parse(f.saved ?? "{}")).device).toMatchObject({ id: "device-1", removed: true });
 
     // Never registered again without the user: not on an update or a restart.
     await f.controller.update();
@@ -856,6 +862,27 @@ describe("a device removed from another device (#590)", () => {
     expect(server.sync.revisionAt(1n).deviceId).toBe("device-2");
     expect(await f.controller.session?.rejected()).toEqual([]);
     await f.controller.stop();
+  });
+
+  it("still waits for the user after Obsidian restarts from the saved data (#625)", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    server.removed.add("device-1");
+    await f.vault.write("unsynced.md", bytes("written after the removal"));
+    await f.controller.syncNow();
+    await statusBecomes(f.statuses, "device-removed");
+    await f.controller.stop();
+
+    // A new plugin instance, as after a restart, with only what data.json holds.
+    const restarted = fixture(server, parsePluginData(JSON.parse(f.saved ?? "{}")));
+    await restarted.controller.update();
+
+    expect(restarted.statuses.at(-1)?.state).toBe("device-removed");
+    expect(restarted.events).toEqual([]);
+    expect(server.registered).toEqual(["desktop"]);
+    await restarted.controller.stop();
   });
 
   it("does not report an edit as refused when its commit landed, its response was lost, and the device was removed before the retry", async () => {
@@ -957,5 +984,46 @@ describe("the device list (#590)", () => {
     expect(deviceRows(await listDevices(server.client), currentDeviceId(f.data), formatDate).map((row) => row.id)).toEqual(["device-1"]);
     expect(server.removed).toEqual(new Set(["device-2"]));
     await f.controller.stop();
+  });
+
+  it("sends one removal when the same device is removed twice, while the first runs or after it (#625)", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    await ensureDevice({ data: { ...settings }, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "Phone" });
+    const requests: string[] = [];
+    let release = () => {};
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const removals = new DeviceRemovals(async (deviceId) => {
+      requests.push(deviceId);
+      await held;
+      await removeOtherDevice(server.client, f.data, deviceId);
+    });
+
+    const first = removals.start("device-2");
+    const second = removals.start("device-2");
+    expect(removals.has("device-2")).toBe(true);
+    release();
+
+    await expect(first).resolves.toBe(true);
+    await expect(second).resolves.toBe(false);
+    await expect(removals.start("device-2")).resolves.toBe(false);
+    expect(requests).toEqual(["device-2"]);
+    expect(server.removed).toEqual(new Set(["device-2"]));
+    await f.controller.stop();
+  });
+
+  it("lets a failed removal be tried again (#625)", async () => {
+    let attempts = 0;
+    const removals = new DeviceRemovals(() => {
+      attempts++;
+      return attempts === 1 ? Promise.reject(new Error("offline")) : Promise.resolve();
+    });
+
+    await expect(removals.start("device-2")).rejects.toThrow("offline");
+    expect(removals.has("device-2")).toBe(false);
+    await expect(removals.start("device-2")).resolves.toBe(true);
+    expect(attempts).toBe(2);
   });
 });

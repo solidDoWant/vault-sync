@@ -5,7 +5,7 @@ import type { AuthState } from "../core/auth/tokens";
 import type { ConfigCategory, ConfigSyncSettings } from "../core/config/policy";
 import { connectProblem } from "./controller";
 import { configSyncSettings, type ConnectedVault, type PluginData } from "./data";
-import type { DeviceRow } from "./devices";
+import { DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
@@ -65,12 +65,15 @@ const accountDescriptions: Record<AuthState, string> = {
  */
 export class VaultSyncSettingTab extends PluginSettingTab {
   private statusSetting: Setting | undefined;
+  /** Kept across renders, so a list rebuilt while a removal runs cannot send it again. */
+  private readonly removals: DeviceRemovals;
 
   constructor(
     app: App,
     private readonly host: SettingsHost,
   ) {
     super(app, host);
+    this.removals = new DeviceRemovals((deviceId) => host.removeDevice(deviceId));
   }
 
   // display() is the settings API of every Obsidian since 0.9.7; the
@@ -210,9 +213,20 @@ export class VaultSyncSettingTab extends PluginSettingTab {
             row.addButton((button) =>
               button
                 .setButtonText("Remove")
+                .setDisabled(this.removals.has(device.id))
                 .onClick(() => {
+                  if (this.removals.has(device.id)) return;
                   new ConfirmRemoveDeviceModal(this.app, device, () => {
-                    host.removeDevice(device.id).then(load, (error: unknown) => new Notice(`Vault Sync: could not remove the device: ${errorMessage(error)}`));
+                    button.setDisabled(true);
+                    this.removals.start(device.id).then(
+                      (removed) => {
+                        if (removed) load();
+                      },
+                      (error: unknown) => {
+                        button.setDisabled(false);
+                        new Notice(`Vault Sync: could not remove the device: ${errorMessage(error)}`);
+                      },
+                    );
                   }).open();
                 }),
             );

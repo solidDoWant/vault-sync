@@ -58,3 +58,33 @@ export async function removeOtherDevice(client: ProtocolClient, data: PluginData
   if (deviceId === currentDeviceId(data)) throw new Error("this device cannot remove itself; remove it from another device");
   await client.devices.removeDevice({ deviceId });
 }
+
+/**
+ * The device list's removals (#625): at most one RemoveDevice per device. A
+ * second request for a device whose removal is in flight, or done, is ignored
+ * instead of reaching the server, which would refuse it with NOT_FOUND. A
+ * failed removal can be tried again.
+ */
+export class DeviceRemovals {
+  private readonly started = new Set<string>();
+
+  constructor(private readonly remove: (deviceId: string) => Promise<void>) {}
+
+  /** Whether `deviceId`'s removal is in flight or done. */
+  has(deviceId: string): boolean {
+    return this.started.has(deviceId);
+  }
+
+  /** Removes `deviceId`; resolves `false`, without a request, if its removal is in flight or done. */
+  async start(deviceId: string): Promise<boolean> {
+    if (this.started.has(deviceId)) return false;
+    this.started.add(deviceId);
+    try {
+      await this.remove(deviceId);
+    } catch (error) {
+      this.started.delete(deviceId);
+      throw error;
+    }
+    return true;
+  }
+}
