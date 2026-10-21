@@ -437,8 +437,10 @@ export default class VaultSyncE2EHarness extends Plugin {
    * pull and push, as a remote change arriving while the user types would
    * (unsaved.e2e.ts). Obsidian saves the typed text 2 s later at the
    * earliest, and the in-memory server answers at once. With `create`, the
-   * note is first created with that text and opened in source mode, in the
-   * same turn, so vault-sync's debounced push cannot sync it before.
+   * note is first created with that text and opened in source mode. The
+   * steps before the sync await Obsidian, so the session must have been
+   * started with `automaticPush: false`: a debounced push falling due in
+   * between would otherwise sync the note first (#589).
    */
   async typeThenSync(path: string, cursor: { line: number; ch: number }, typed: string, create?: string): Promise<TypedSyncResult> {
     if (create !== undefined) {
@@ -623,8 +625,14 @@ export default class VaultSyncE2EHarness extends Plugin {
    * Starts sync in the vault-sync plugin over the session's server and the
    * open vault's IndexedDB journal, through a new connection each time: only
    * what the journal stored survives vault-sync's disable/enable cycle.
+   * With `automaticPush: false` the session never pushes on its own (no
+   * debounced push after a local change or a merge), so the only pulls and
+   * pushes after the start are the spec's (syncSession, typeThenSync): a
+   * push the engine started on its own would otherwise run first whenever
+   * it falls due while a spec awaits, and the spec's own push, queued behind
+   * it, would see what that one left (#589).
    */
-  async startSession(): Promise<SessionStart> {
+  async startSession(options: { automaticPush?: boolean } = {}): Promise<SessionStart> {
     const session = this.requireSession();
     session.journal?.close();
     session.journal = await openVaultJournal(this.app, session.journalKey);
@@ -637,6 +645,7 @@ export default class VaultSyncE2EHarness extends Plugin {
       api: createProtocolClient({ transport: session.server.transport }),
       journal: session.journal,
       onLocalChange: (event) => changes.push(event),
+      ...(options.automaticPush === false ? { pushDebounceMs: null } : {}),
     });
     return { cursor: summary === undefined ? null : String(summary.cursor), applied: summary?.applied ?? 0, listChangesSince: [...session.listChangesSince] };
   }
