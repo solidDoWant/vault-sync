@@ -1,9 +1,10 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 
 import {
   ARGON2_BOUNDS,
   DecryptError,
+  derivePassphraseKeys,
   deriveSubkey,
   generateKey,
   generateKeyPair,
@@ -11,6 +12,7 @@ import {
   NONCE_SIZE,
   open,
   openFrom,
+  parsePassphraseHeader,
   pathKey,
   SALT_SIZE,
   seal,
@@ -18,6 +20,7 @@ import {
   SUITE_V1,
   type SubkeyLabel,
   TAG_SIZE,
+  unwrapWithKey,
   unwrapWithPassphrase,
   wrapWithPassphrase,
 } from "./e2ee";
@@ -33,8 +36,13 @@ interface Construction {
   headerSize: number;
   /** The header and nonce bytes to flip; all of them if absent. */
   flipped?: number[];
-  seal(aad: Uint8Array): Uint8Array;
-  open(sealed: Uint8Array, aad: Uint8Array): Uint8Array;
+  seal(aad: Uint8Array): Uint8Array | Promise<Uint8Array>;
+  open(sealed: Uint8Array, aad: Uint8Array): Uint8Array | Promise<Uint8Array>;
+}
+
+/** Asserts that `attempt` throws or rejects with a DecryptError. */
+async function expectDecryptError(attempt: () => Uint8Array | Promise<Uint8Array>, message?: string): Promise<void> {
+  await expect((async () => attempt())(), message).rejects.toThrow(DecryptError);
 }
 
 function constructions(): Construction[] {
@@ -63,7 +71,7 @@ function constructions(): Construction[] {
       // Every flip that passes the bounds costs a derivation, so one byte of
       // each field: version, memory, iterations, parallelism, salt, nonce.
       flipped: [0, 4, 8, 9, 10, 25, 26, 49],
-      seal: (aad) => wrapWithPassphrase(passphrase, plaintext, aad, params),
+      seal: async (aad) => (await wrapWithPassphrase(passphrase, plaintext, aad, params)).wrapped,
       open: (sealed, aad) => unwrapWithPassphrase(passphrase, sealed, aad),
     },
   ];
@@ -87,33 +95,36 @@ describe("opening fails closed", ARGON2_TIMEOUT, () => {
   for (const construction of constructions()) {
     describe(construction.name, () => {
       const aad = encoder.encode("vault 1, epoch 3");
-      const sealed = construction.seal(aad);
+      let sealed: Uint8Array = new Uint8Array(0);
+      beforeAll(async () => {
+        sealed = await construction.seal(aad);
+      }, ARGON2_TIMEOUT.timeout);
 
-      it("opens the untouched ciphertext", () => {
-        expect(construction.open(sealed, aad).length).toBe(1);
+      it("opens the untouched ciphertext", async () => {
+        expect((await construction.open(sealed, aad)).length).toBe(1);
       });
 
-      it("refuses an unknown suite version", () => {
+      it("refuses an unknown suite version", async () => {
         for (const version of [0x00, 0x02, 0x80, 0xff]) {
           const tampered = sealed.slice();
           tampered[0] = version;
-          expect(() => construction.open(tampered, aad)).toThrow(DecryptError);
+          await expectDecryptError(() => construction.open(tampered, aad));
         }
       });
 
-      it("refuses modified associated data", () => {
+      it("refuses modified associated data", async () => {
         for (const other of [new Uint8Array(0), encoder.encode("vault 1, epoch 4"), Uint8Array.of(...aad, 0)]) {
-          expect(() => construction.open(sealed, other)).toThrow(DecryptError);
+          await expectDecryptError(() => construction.open(sealed, other));
         }
       });
 
-      it("refuses every truncation", () => {
+      it("refuses every truncation", async () => {
         for (let length = 0; length < sealed.length; length++) {
-          expect(() => construction.open(sealed.subarray(0, length), aad), `length ${String(length)}`).toThrow(DecryptError);
+          await expectDecryptError(() => construction.open(sealed.subarray(0, length), aad), `length ${String(length)}`);
         }
       });
 
-      it("refuses any flipped header, nonce or tag bit", () => {
+      it("refuses any flipped header, nonce or tag bit", async () => {
         const positions = [sealed.length - 1, sealed.length - TAG_SIZE];
         for (let index = 0; index < construction.headerSize + NONCE_SIZE; index++) {
           if (construction.flipped === undefined || construction.flipped.includes(index)) {
@@ -123,7 +134,7 @@ describe("opening fails closed", ARGON2_TIMEOUT, () => {
         for (const index of positions) {
           const tampered = sealed.slice();
           tampered[index] = (tampered[index] ?? 0) ^ 0x01;
-          expect(() => construction.open(tampered, aad), `byte ${String(index)}`).toThrow(DecryptError);
+          await expectDecryptError(() => construction.open(tampered, aad), `byte ${String(index)}`);
         }
       });
     });
@@ -167,19 +178,23 @@ describe("sealTo", () => {
 });
 
 describe("wrapWithPassphrase", ARGON2_TIMEOUT, () => {
-  it("uses the default parameters and a fresh salt", () => {
+  // The minimum parameters keep the derivations cheap.
+  const minimum = { memory: ARGON2_BOUNDS.minMemory, iterations: ARGON2_BOUNDS.minIterations, parallelism: 1 };
+
+  it("uses the default parameters and a fresh salt", async () => {
     const secret = encoder.encode("secret");
     const empty = new Uint8Array(0);
-    const first = wrapWithPassphrase("passphrase", secret, empty);
-    const second = wrapWithPassphrase("passphrase", secret, empty);
+    const first = await wrapWithPassphrase("passphrase", secret, empty);
+    const second = await wrapWithPassphrase("passphrase", secret, empty);
     // memory 65536 KiB, 3 iterations, 1 lane.
-    expect(Array.from(first.subarray(0, 10))).toEqual([SUITE_V1, 0, 1, 0, 0, 0, 0, 0, 3, 1]);
-    expect(bytesToHex(first.subarray(10, 10 + SALT_SIZE))).not.toBe(bytesToHex(second.subarray(10, 10 + SALT_SIZE)));
-    expect(unwrapWithPassphrase("passphrase", first, empty)).toEqual(secret);
-    expect(() => wrapWithPassphrase("", secret, empty)).toThrow();
+    expect(Array.from(first.wrapped.subarray(0, 10))).toEqual([SUITE_V1, 0, 1, 0, 0, 0, 0, 0, 3, 1]);
+    expect(bytesToHex(first.wrapped.subarray(10, 10 + SALT_SIZE))).not.toBe(bytesToHex(second.wrapped.subarray(10, 10 + SALT_SIZE)));
+    expect(bytesToHex(first.authKey)).not.toBe(bytesToHex(second.authKey));
+    expect(await unwrapWithPassphrase("passphrase", first.wrapped, empty)).toEqual(secret);
+    await expect(wrapWithPassphrase("", secret, empty)).rejects.toThrow();
   });
 
-  it("refuses parameters outside the bounds", () => {
+  it("refuses parameters outside the bounds", async () => {
     const secret = encoder.encode("secret");
     const empty = new Uint8Array(0);
     for (const params of [
@@ -188,8 +203,71 @@ describe("wrapWithPassphrase", ARGON2_TIMEOUT, () => {
       { memory: ARGON2_BOUNDS.minMemory, iterations: 2, parallelism: 0 },
       { memory: ARGON2_BOUNDS.minMemory + 0.5, iterations: 2, parallelism: 1 },
     ]) {
-      expect(() => wrapWithPassphrase("passphrase", secret, empty, params), JSON.stringify(params)).toThrow(/out of bounds/);
+      await expect(wrapWithPassphrase("passphrase", secret, empty, params), JSON.stringify(params)).rejects.toThrow(/out of bounds/);
     }
+  });
+
+  // An unlock derives once: it reads the parameters and salt, derives both
+  // keys, presents the auth key to the server and opens the wrapped secret
+  // with the wrap key. The auth key, which the server sees, opens nothing.
+  it("returns an auth key that does not open the wrapped secret", async () => {
+    const secret = encoder.encode("user private key");
+    const aad = encoder.encode("user 1");
+    const { wrapped, authKey } = await wrapWithPassphrase("passphrase", secret, aad, minimum);
+    expect(authKey.length).toBe(KEY_SIZE);
+
+    const { params, salt } = parsePassphraseHeader(wrapped.subarray(0, 1 + 4 + 4 + 1 + SALT_SIZE));
+    expect(params).toEqual(minimum);
+    const keys = await derivePassphraseKeys("passphrase", params, salt);
+    expect(bytesToHex(keys.authKey)).toBe(bytesToHex(authKey));
+    expect(bytesToHex(keys.wrapKey)).not.toBe(bytesToHex(keys.authKey));
+    expect(unwrapWithKey(keys.wrapKey, wrapped, aad)).toEqual(secret);
+    expect(() => unwrapWithKey(keys.authKey, wrapped, aad)).toThrow(DecryptError);
+    expect(bytesToHex(wrapped)).not.toContain(bytesToHex(authKey));
+  });
+
+  it("refuses a bad header before deriving", () => {
+    const header = Uint8Array.of(SUITE_V1, 0, 0, 0x4c, 0, 0, 0, 0, 2, 1, ...new Uint8Array(SALT_SIZE));
+    expect(parsePassphraseHeader(header).params).toEqual(minimum);
+    expect(() => parsePassphraseHeader(header.subarray(0, header.length - 1))).toThrow(DecryptError);
+    expect(() => parsePassphraseHeader(Uint8Array.of(0x02, ...header.subarray(1)))).toThrow(DecryptError);
+    expect(() => parsePassphraseHeader(Uint8Array.of(...header.subarray(0, 9), 0, ...header.subarray(10)))).toThrow(DecryptError);
+  });
+
+  it("refuses an empty passphrase or a wrong-sized salt", async () => {
+    const salt = new Uint8Array(SALT_SIZE);
+    await expect(derivePassphraseKeys("", minimum, salt)).rejects.toThrow();
+    await expect(derivePassphraseKeys("passphrase", minimum, salt.subarray(1))).rejects.toThrow();
+  });
+});
+
+// The derivation takes from a few hundred milliseconds to seconds on a phone;
+// it must not hold the UI thread for all of it (#657). A timer queued before
+// the call fires only if the derivation hands control back to the event loop
+// before it completes.
+describe("passphrase derivation does not block the event loop", ARGON2_TIMEOUT, () => {
+  const minimum = { memory: ARGON2_BOUNDS.minMemory, iterations: ARGON2_BOUNDS.minIterations, parallelism: 1 };
+
+  async function yieldsBeforeCompleting(run: () => Promise<unknown>): Promise<boolean> {
+    let ticked = false;
+    const timer = setTimeout(() => {
+      ticked = true;
+    }, 0);
+    try {
+      await run();
+      return ticked;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  it("yields while unlocking", async () => {
+    const { wrapped } = await wrapWithPassphrase("passphrase", encoder.encode("secret"), new Uint8Array(0), minimum);
+    expect(await yieldsBeforeCompleting(() => unwrapWithPassphrase("passphrase", wrapped, new Uint8Array(0)))).toBe(true);
+  });
+
+  it("yields while creating the wrapped key", async () => {
+    expect(await yieldsBeforeCompleting(() => wrapWithPassphrase("passphrase", encoder.encode("secret"), new Uint8Array(0), minimum))).toBe(true);
   });
 });
 

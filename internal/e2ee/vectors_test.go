@@ -16,7 +16,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
+
+	"github.com/solidDoWant/vault-sync/internal/pathkey"
 )
 
 // Regenerate testdata/crypto/vectors.json with
@@ -112,6 +115,8 @@ type passphraseVector struct {
 	Nonce       string `json:"nonce"`
 	Secret      string `json:"secret"`
 	AAD         string `json:"aad"`
+	WrapKey     string `json:"wrap_key"`
+	AuthKey     string `json:"auth_key"`
 	Wrapped     string `json:"wrapped"`
 }
 
@@ -353,6 +358,9 @@ func generate(t *testing.T) vectorFile {
 		salt := fixed("passphrase salt "+testCase.params.String(), SaltSize)
 		nonce := fixed("passphrase nonce "+testCase.params.String(), NonceSize)
 		secret := fixed("passphrase secret", KeySize)
+		wrapped, keys, err := wrapWith(testCase.passphrase, testCase.params, salt, nonce, secret, testCase.aad)
+		require.NoError(t, err)
+
 		file.Passphrase = append(file.Passphrase, passphraseVector{
 			Name:        testCase.name,
 			Passphrase:  testCase.passphrase,
@@ -363,7 +371,9 @@ func generate(t *testing.T) vectorFile {
 			Nonce:       hex.EncodeToString(nonce),
 			Secret:      hex.EncodeToString(secret),
 			AAD:         hex.EncodeToString(testCase.aad),
-			Wrapped:     hex.EncodeToString(must(wrapWith(testCase.passphrase, testCase.params, salt, nonce, secret, testCase.aad))),
+			WrapKey:     hex.EncodeToString(keys.WrapKey),
+			AuthKey:     hex.EncodeToString(keys.AuthKey),
+			Wrapped:     hex.EncodeToString(wrapped),
 		})
 	}
 
@@ -450,12 +460,18 @@ func rejected(t *testing.T, file vectorFile) []rejectedVector {
 		return append(header, salt...)
 	}
 	wrapAs := func(version byte, params Argon2Params) []byte {
-		return must(sealAfterHeader(wrapHeader(version, params), passphraseKey(passVec.Passphrase, params, salt), passNonce, secret, nil))
+		// Out-of-bounds parameters cannot go through DerivePassphraseKeys.
+		stretched := argon2.IDKey([]byte(passVec.Passphrase), salt, params.Iterations, params.Memory, params.Parallelism, KeySize)
+		wrapKey := must(hkdf.Key(sha256.New, stretched, nil, passphraseWrapInfo, KeySize))
+
+		return must(sealAfterHeader(wrapHeader(version, params), wrapKey, passNonce, secret, nil))
 	}
 	params := Argon2Params{Memory: passVec.Memory, Iterations: passVec.Iterations, Parallelism: passVec.Parallelism}
 
 	add("passphrase: suite 02", "passphrase", "", passVec.Passphrase, nil, wrapAs(0x02, params))
 	add("passphrase: wrong passphrase", "passphrase", "", passVec.Passphrase+" ", nil, wrapped)
+	add("passphrase: sealed under the auth key", "passphrase", "", passVec.Passphrase, nil,
+		must(sealAfterHeader(wrapped[:passphraseHeaderSize], unhex(t, passVec.AuthKey), passNonce, secret, nil)))
 	add("passphrase: aad added", "passphrase", "", passVec.Passphrase, []byte("user"), wrapped)
 	add("passphrase: tag truncated by one byte", "passphrase", "", passVec.Passphrase, nil, wrapped[:len(wrapped)-1])
 	add("passphrase: tag removed", "passphrase", "", passVec.Passphrase, nil, wrapped[:len(wrapped)-TagSize])
@@ -619,10 +635,28 @@ func TestSharedVectors(t *testing.T) {
 			t.Run(vector.Name, func(t *testing.T) {
 				params := Argon2Params{Memory: vector.Memory, Iterations: vector.Iterations, Parallelism: vector.Parallelism}
 				aad := unhex(t, vector.AAD)
-				wrapped := must(wrapWith(vector.Passphrase, params, unhex(t, vector.Salt), unhex(t, vector.Nonce), unhex(t, vector.Secret), aad))
+				salt := unhex(t, vector.Salt)
+				wrapped, keys, err := wrapWith(vector.Passphrase, params, salt, unhex(t, vector.Nonce), unhex(t, vector.Secret), aad)
+				require.NoError(t, err)
 				assert.Equal(t, vector.Wrapped, hex.EncodeToString(wrapped))
+				assert.Equal(t, vector.WrapKey, hex.EncodeToString(keys.WrapKey))
+				assert.Equal(t, vector.AuthKey, hex.EncodeToString(keys.AuthKey))
+
+				// The keys follow docs/design/crypto.md, computed here from the
+				// primitives and the documented labels, not by the package.
+				stretched := argon2.IDKey([]byte(pathkey.NFC(vector.Passphrase)), salt, vector.Iterations, vector.Memory, vector.Parallelism, KeySize)
+				assert.Equal(t, vector.WrapKey, hex.EncodeToString(must(hkdf.Key(sha256.New, stretched, nil, "vault-sync/v1/passphrase/wrap", KeySize))))
+				assert.Equal(t, vector.AuthKey, hex.EncodeToString(must(hkdf.Key(sha256.New, stretched, nil, "vault-sync/v1/passphrase/auth", KeySize))))
 
 				secret := must(UnwrapWithPassphrase(vector.Passphrase, unhex(t, vector.Wrapped), aad))
+				assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
+
+				parsedParams, parsedSalt, err := ParsePassphraseHeader(unhex(t, vector.Wrapped))
+				require.NoError(t, err)
+				assert.Equal(t, params, parsedParams)
+				assert.Equal(t, vector.Salt, hex.EncodeToString(parsedSalt))
+
+				secret = must(UnwrapWithKey(unhex(t, vector.WrapKey), unhex(t, vector.Wrapped), aad))
 				assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
 			})
 		}
