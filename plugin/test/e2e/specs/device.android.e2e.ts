@@ -211,7 +211,8 @@ describe("vault-sync on an Android device", function () {
     expect((await syncStatus()).state).toBe("syncing");
 
     shell("am", "force-stop", appId);
-    expect(shell("pidof", appId).trim()).toBe("");
+    // pidof prints nothing (and exits 1) once no process is left.
+    expect(shell("pidof", appId, "||", "true").trim()).toBe("");
     await foregroundObsidian();
 
     await waitForIdle("sync never resumed and became idle after the relaunch");
