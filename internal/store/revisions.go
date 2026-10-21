@@ -20,7 +20,8 @@ var (
 	ErrRevisionConflict = errors.New("revision_id was already committed with different fields")
 	// ErrIDInUse: the document or revision id is taken outside this vault.
 	ErrIDInUse = errors.New("id is already in use")
-	// ErrDeviceNotFound: the device does not belong to the committing user.
+	// ErrDeviceNotFound: the device does not belong to the committing user,
+	// or it was removed.
 	ErrDeviceNotFound = errors.New("device not found")
 	// ErrDocumentNotFound: a base revision was given for a document that
 	// does not exist in this vault.
@@ -134,6 +135,41 @@ func (vault *VaultStore) CommitRevision(ctx context.Context, revision NewRevisio
 	return committed, nil
 }
 
+// lockDevice checks that deviceID is userID's and not removed, and holds
+// its row lock until the commit ends. RemoveDevice updates the same row, so
+// it waits for every commit in flight, and a commit that starts after it
+// sees the removal: removal takes effect on every server process with
+// PostgreSQL as the only coordination. The lock is taken after the vault
+// row's, and nothing locks a device row before a vault row, so no deadlock
+// arises; it serializes only one device's commits to different vaults. It
+// also refreshes the device's last_seen, at most once per
+// deviceLastSeenGranularity.
+func lockDevice(ctx context.Context, tx pgx.Tx, deviceID, userID uuid.UUID) error {
+	var stale bool
+
+	err := tx.QueryRow(ctx, `
+		SELECT last_seen IS NULL OR last_seen < now() - $3::interval FROM devices
+		WHERE id = $1 AND user_id = $2 AND removed_at IS NULL
+		FOR NO KEY UPDATE`, deviceID, userID, deviceLastSeenGranularity).Scan(&stale)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrDeviceNotFound
+	}
+
+	if err != nil {
+		return fmt.Errorf("lock device: %w", err)
+	}
+
+	if !stale {
+		return nil
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE devices SET last_seen = now() WHERE id = $1`, deviceID); err != nil {
+		return fmt.Errorf("record device activity: %w", err)
+	}
+
+	return nil
+}
+
 func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision NewRevision) (Revision, error) {
 	// NO KEY UPDATE, like BeginBlobUpload: inserts referencing the vault
 	// take KEY SHARE locks on it and must not be blocked.
@@ -144,16 +180,8 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		return Revision{}, notFound(err, "lock vault")
 	}
 
-	var owned bool
-
-	err = tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND user_id = $2)`,
-		revision.DeviceID, revision.UserID).Scan(&owned)
-	if err != nil {
-		return Revision{}, fmt.Errorf("look up device: %w", err)
-	}
-
-	if !owned {
-		return Revision{}, ErrDeviceNotFound
+	if err := lockDevice(ctx, tx, revision.DeviceID, revision.UserID); err != nil {
+		return Revision{}, err
 	}
 
 	// Idempotency comes before the head comparison: a retry whose first

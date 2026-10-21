@@ -9,7 +9,7 @@ import { createProtocolClient } from "../protocol/client";
 import { InMemoryVault } from "../vault/memory";
 import { describeValue, journalConformance, runJournalConformanceCase, sampleConflict, sampleDeferred, sampleDocument, samplePending } from "./conformance";
 import { IndexedDbJournal, JournalClosedError, JournalMigrationError, journalMigrations, JournalVersionError, type JournalMigration } from "./indexeddb";
-import type { ConflictRecord, DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, Journal, JournalChanges, NewIntent, PendingOperation } from "./journal";
 import { InMemoryJournal } from "./memory";
 
 const name = "journal";
@@ -32,12 +32,29 @@ const addKindIndex: JournalMigration = (transaction) => {
 /** The schema before the conflict log (#18): what devices that synced before it have. */
 const v1Migrations = journalMigrations.slice(0, 1);
 
-/** Everything a journal holds, in comparable form. `conflicts: false` for a v1 journal, which has no conflict log. */
-async function snapshot(journal: Journal, { conflicts = true } = {}) {
+/** The schema before path ownership (journal v3): what devices that synced before it have. */
+const v2Migrations = journalMigrations.slice(0, 2);
+
+/**
+ * Everything a journal holds, in comparable form. `conflicts: false` for a
+ * v1 journal, which has no conflict log; `v2Fields: true` leaves out the
+ * fields journal v3 added, to compare an upgraded journal with its v1 or v2
+ * self.
+ */
+async function snapshot(journal: Journal, { conflicts = true, v2Fields = false } = {}) {
+  const documents = (await journal.listDocuments()).sort((a, b) => a.documentId.localeCompare(b.documentId));
+  const pending = await journal.listPending();
+  if (v2Fields) {
+    for (const state of documents) {
+      delete state.binding;
+      delete state.absence;
+    }
+    for (const operation of pending) delete operation.sealed;
+  }
   return describeValue({
     cursor: await journal.getCursor(),
-    documents: (await journal.listDocuments()).sort((a, b) => a.documentId.localeCompare(b.documentId)),
-    pending: await journal.listPending(),
+    documents,
+    pending,
     deferred: (await journal.listDeferred()).sort((a, b) => a.revision.documentId.localeCompare(b.revision.documentId)),
     ...(conflicts ? { conflicts: await journal.listConflicts() } : {}),
   });
@@ -260,6 +277,11 @@ describe("IndexedDbJournal", () => {
       removeDeferred = (documentId: string) => this.points.durable(() => this.inner.removeDeferred(documentId));
       putConflict = (conflict: ConflictRecord) => this.points.durable(() => this.inner.putConflict(conflict));
       listConflicts = () => this.inner.listConflicts();
+      documentByFileKey = (fileKey: string) => this.inner.documentByFileKey(fileKey);
+      putIntent = (intent: NewIntent) => this.points.durable(() => this.inner.putIntent(intent));
+      listIntents = () => this.inner.listIntents();
+      removeIntent = (id: number) => this.points.durable(() => this.inner.removeIntent(id));
+      transact = (changes: JournalChanges) => this.points.durable(() => this.inner.transact(changes));
     }
 
     async function device() {
@@ -432,7 +454,7 @@ describe("IndexedDbJournal", () => {
       const before = await populate(factory, v1Migrations);
 
       const upgraded = await IndexedDbJournal.open(factory, name);
-      expect(await snapshot(upgraded, { conflicts: false })).toBe(before);
+      expect(await snapshot(upgraded, { conflicts: false, v2Fields: true })).toBe(before);
       expect(await upgraded.getCursor()).toBe(42n);
       expect(await upgraded.listConflicts()).toEqual([]);
       await upgraded.putConflict(sampleConflict("c1"));
@@ -443,6 +465,136 @@ describe("IndexedDbJournal", () => {
       const reopened = await IndexedDbJournal.open(factory, name);
       expect(await reopened.listConflicts()).toEqual([sampleConflict("c1", { reason: "binary" }), sampleConflict("c2")]);
       reopened.close();
+    });
+
+    describe("from v2 to v3 (path ownership)", () => {
+      const live = sampleDocument({ documentId: "live", path: "Notes/Ä.md", baseHash: "h-live" });
+      const tombstone = sampleDocument({ documentId: "tombstone", path: "gone.md", deleted: true });
+      const released = sampleDocument({ documentId: "released", path: "con.md", deleted: true, baseHash: "h-released" });
+      const edited = sampleDocument({ documentId: "edited", path: "edited.md" });
+      const renamed = sampleDocument({ documentId: "renamed", path: "old.md" });
+      const deletedLocally = sampleDocument({ documentId: "deleted-locally", path: "doomed.md" });
+      const recreated = sampleDocument({ documentId: "recreated", path: "back.md", deleted: true });
+      const operations = [
+        samplePending({ revisionId: "p-edit", documentId: "edited", path: "edited.md", contentHash: "h-edit" }),
+        // Several operations for one document, as a v2 crash can leave (#371): the last one decides.
+        samplePending({ revisionId: "p-rename-1", documentId: "renamed", path: "middle.md", contentHash: "h-1" }),
+        samplePending({ revisionId: "p-create", documentId: "created", baseRevisionId: "", path: "new.md", contentHash: "h-new" }),
+        samplePending({ revisionId: "p-rename-2", documentId: "renamed", path: "New.md", contentHash: "h-2" }),
+        samplePending({ revisionId: "p-edit-before-delete", documentId: "deleted-locally", path: "doomed.md", contentHash: "h-3" }),
+        samplePending({ revisionId: "p-delete", documentId: "deleted-locally", path: "doomed.md", deleted: true }),
+        samplePending({ revisionId: "p-recreate", documentId: "recreated", path: "back.md", contentHash: "h-back" }),
+      ];
+      const deferrals = [
+        sampleDeferred("released", "r-released", { reason: "unmaterializable", unmaterializable: "reserved-name" }),
+        sampleDeferred("tombstone", "r-tombstone", { reason: "path-conflict" }),
+        sampleDeferred("edited", "r-edited", { merging: { path: "edited.md", contentHash: "h-merged" } }),
+      ];
+      /** A Windows-like file key: case folded. */
+      const fileKey = (path: string) => path.toUpperCase();
+
+      async function populateV2(factory: IDBFactory) {
+        const journal = await IndexedDbJournal.open(factory, name, v2Migrations);
+        await journal.setCursor(42n, new Uint8Array(16).fill(3));
+        for (const state of [live, tombstone, released, edited, renamed, deletedLocally, recreated]) await journal.putDocument(state);
+        for (const operation of operations) await journal.addPending(operation);
+        for (const deferral of deferrals) await journal.putDeferred(deferral);
+        await journal.putConflict(sampleConflict("c1"));
+        const before = await snapshot(journal);
+        journal.close();
+        return before;
+      }
+
+      it("keeps every v2 record and field, in order", async () => {
+        const factory = new FakeIDBFactory();
+        const before = await populateV2(factory);
+
+        const upgraded = await IndexedDbJournal.open(factory, name, journalMigrations, { fileKey });
+        expect(await snapshot(upgraded, { v2Fields: true })).toBe(before);
+        expect(await upgraded.getCursorAnchor()).toEqual(new Uint8Array(16).fill(3));
+        // The merge-in-progress marker stays for the engine that still reads it; no intent is made of it yet.
+        expect((await upgraded.getDeferred("edited"))?.merging).toEqual({ path: "edited.md", contentHash: "h-merged" });
+        expect(await upgraded.listIntents()).toEqual([]);
+        upgraded.close();
+      });
+
+      it("binds, marks absent and seals what the v2 records say", async () => {
+        const factory = new FakeIDBFactory();
+        await populateV2(factory);
+
+        const upgraded = await IndexedDbJournal.open(factory, name, journalMigrations, { fileKey });
+        const fields = Object.fromEntries((await upgraded.listDocuments()).map((state) => [state.documentId, [state.binding, state.absence]]));
+        expect(fields).toEqual({
+          live: [{ spelling: "Notes/Ä.md", fileKey: "NOTES/Ä.MD", seen: "h-live" }, null],
+          tombstone: [null, "never"],
+          released: [null, "released"],
+          edited: [{ spelling: "edited.md", fileKey: "EDITED.MD", seen: "h-edit" }, null],
+          renamed: [{ spelling: "New.md", fileKey: "NEW.MD", seen: "h-2" }, null],
+          "deleted-locally": [null, "user-deleted"],
+          recreated: [{ spelling: "back.md", fileKey: "BACK.MD", seen: "h-back" }, null],
+        });
+        // A pending create gets no document row: the engine still reads every row as a synced base.
+        expect(await upgraded.getDocument("created")).toBeUndefined();
+        expect((await upgraded.listPending()).map((operation) => [operation.revisionId, operation.sealed])).toEqual(operations.map((operation) => [operation.revisionId, true]));
+        expect((await upgraded.documentByFileKey("NEW.MD"))?.documentId).toBe("renamed");
+        expect(await upgraded.documentByFileKey("OLD.MD")).toBeUndefined();
+        upgraded.close();
+      });
+
+      it("keys bindings by the path itself without a device file key", async () => {
+        const factory = new FakeIDBFactory();
+        await populateV2(factory);
+
+        const upgraded = await IndexedDbJournal.open(factory, name);
+        expect((await upgraded.getDocument("live"))?.binding).toEqual({ spelling: "Notes/Ä.md", fileKey: "Notes/Ä.md", seen: "h-live" });
+        upgraded.close();
+      });
+
+      it("leaves the v2 journal as it was when the upgrade fails", async () => {
+        const factory = new FakeIDBFactory();
+        const before = await populateV2(factory);
+
+        const failing = () => {
+          throw new Error("file key bug");
+        };
+        await expect(IndexedDbJournal.open(factory, name, journalMigrations, { fileKey: failing })).rejects.toThrow(JournalMigrationError);
+
+        const reopened = await IndexedDbJournal.open(factory, name, v2Migrations);
+        expect(await snapshot(reopened)).toBe(before);
+        reopened.close();
+      });
+
+      it("lets an engine resume from the upgraded journal with no resync", async () => {
+        const server = new InMemoryServer();
+        const vault = new InMemoryVault();
+        const factory = new FakeIDBFactory();
+        const engineOver = (journal: Journal) =>
+          new SyncEngine({ vaultId: server.vaultId, deviceId: "device-1", api: createProtocolClient({ transport: server.transport }), vault, journal, merge: deferAllMerges, pushDebounceMs: null });
+        server.commit({ documentId: "a", path: "a.md", content: "a1" });
+        const v2 = await IndexedDbJournal.open(factory, name, v2Migrations);
+        const first = engineOver(v2);
+        await first.pull();
+        await vault.write("b.md", new TextEncoder().encode("b1"));
+        await first.push();
+        first.dispose();
+        v2.close();
+
+        server.commit({ documentId: "a", path: "a.md", content: "a2" });
+        const since: bigint[] = [];
+        server.interceptor = (method, request) => {
+          if (method === "ListChanges") since.push((request as { sinceSeq: bigint }).sinceSeq);
+        };
+        const v3 = await IndexedDbJournal.open(factory, name);
+        const second = engineOver(v3);
+        const summary = await second.pull();
+        second.dispose();
+
+        expect(since[0]).toBe(2n);
+        expect(summary).toMatchObject({ applied: 1, resynced: false, deferred: 0 });
+        expect(await files(vault)).toEqual(server.liveFiles());
+        expect((await v3.documentByFileKey("b.md"))?.path).toBe("b.md");
+        v3.close();
+      });
     });
 
     it("migrates existing data, cursor and conflict log included, through a later migration that rewrites records", async () => {

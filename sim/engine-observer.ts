@@ -31,7 +31,7 @@ import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } f
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
-import type { ConflictRecord, PendingOperation } from "../plugin/src/core/journal/journal";
+import type { ConflictRecord, JournalChanges, PendingOperation } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
@@ -491,27 +491,56 @@ class AppKilled extends Error {
   override readonly name = "AppKilled";
 }
 
-/** The device's journal: an InMemoryJournal that can kill the app at one chosen addPending (haltOnPending), or at the next removal of a deferral (haltOnDeferralRemoval). */
+/**
+ * The device's journal: an InMemoryJournal that can kill the app at one
+ * chosen recording of a pending operation (haltOnPending), or at the next
+ * removal of a deferral (haltOnDeferralRemoval), whether the engine makes it
+ * on its own (addPending, removeDeferred) or within a `transact`, which then
+ * either commits whole before the kill ("after") or not at all ("before").
+ */
 class HaltingJournal extends InMemoryJournal {
   halt: { when: "before" | "after"; matches: (operation: PendingOperation) => boolean } | undefined;
 
   override async addPending(operation: PendingOperation): Promise<void> {
-    const halt = this.halt?.matches(operation) === true ? this.halt : undefined;
-    if (halt !== undefined) this.halt = undefined;
-    if (halt?.when === "before") throw new AppKilled(`app killed before recording ${operation.path}`);
+    const halt = this.takePendingHalt([operation]);
+    if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);
     await super.addPending(operation);
-    if (halt?.when === "after") throw new AppKilled(`app killed after recording ${operation.path}`);
+    if (halt?.when === "after") throw new AppKilled(`app killed after recording ${halt.path}`);
   }
 
   /** Set by haltOnDeferralRemoval; cleared when it kills the app. */
   haltOnDeferralRemoval = false;
 
   override async removeDeferred(documentId: string): Promise<void> {
-    if (this.haltOnDeferralRemoval && (await this.getDeferred(documentId)) !== undefined) {
-      this.haltOnDeferralRemoval = false;
-      throw new AppKilled("app killed before removing a deferred revision");
-    }
+    await this.haltBeforeDeferralRemoval([documentId]);
     await super.removeDeferred(documentId);
+  }
+
+  override async transact(changes: JournalChanges): Promise<void> {
+    await this.haltBeforeDeferralRemoval(changes.removeDeferred ?? []);
+    const halt = this.takePendingHalt(changes.addPending ?? []);
+    if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);
+    await super.transact(changes);
+    if (halt?.when === "after") throw new AppKilled(`app killed after recording ${halt.path}`);
+  }
+
+  /** The armed pending halt, disarmed, if one of `operations` matches it. */
+  private takePendingHalt(operations: readonly PendingOperation[]): { when: "before" | "after"; path: string } | undefined {
+    const halt = this.halt;
+    const operation = halt === undefined ? undefined : operations.find((candidate) => halt.matches(candidate));
+    if (halt === undefined || operation === undefined) return undefined;
+    this.halt = undefined;
+    return { when: halt.when, path: operation.path };
+  }
+
+  private async haltBeforeDeferralRemoval(documentIds: readonly string[]): Promise<void> {
+    if (!this.haltOnDeferralRemoval) return;
+    for (const documentId of documentIds) {
+      if ((await this.getDeferred(documentId)) !== undefined) {
+        this.haltOnDeferralRemoval = false;
+        throw new AppKilled("app killed before removing a deferred revision");
+      }
+    }
   }
 }
 
