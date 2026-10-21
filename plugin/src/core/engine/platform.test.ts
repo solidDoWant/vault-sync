@@ -690,7 +690,7 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
       // rename not yet pushed, held in memory only, so the journal had it and
       // the other document both live at plan.md. After a restart its stale
       // edit took the other document's file, and the server tombstoned it.
-      it.each([false, true])("keeps the file a local rename moved as a new document, the other document untouched (restart: %s)", async (restart) => {
+      it.each([false, true])("keeps the file a local rename moved as the document's own, the other document untouched (restart: %s)", async (restart) => {
         const h = await parkedWithPendingEdit();
         await h.vault.rename("plan.md", "notes.md");
 
@@ -706,22 +706,22 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         await h.engine.pull();
         await h.engine.push();
 
-        // The moved file is released with the path, as a kept file is (#391): the edit is live as a new document.
+        // The moved file stays the document's (PO-11, #690; R7b): no server claim needs notes.md, so the
+        // local rename and edit are the document's own and win over the remote rename, as a pending one does.
         expect(await files(h.vault)).toEqual(
           new Map([
-            ["draft.md", "one\ntwo\n"],
             ["notes.md", "one\ntwo (edited)\n"],
             ["plan.md", "another note\n"],
           ]),
         );
-        const live = h.server.liveDocuments();
-        expect(live.get("draft.md")).toBe("doc");
-        expect(live.get("plan.md")).toBe("other");
-        expect(live.get("notes.md")).not.toBeUndefined();
-        expect(live.get("notes.md")).not.toBe("doc");
+        expect(h.server.liveDocuments()).toEqual(
+          new Map([
+            ["notes.md", "doc"],
+            ["plan.md", "other"],
+          ]),
+        );
         expect(h.server.liveFiles()).toEqual(
           new Map([
-            ["draft.md", "one\ntwo\n"],
             ["notes.md", "one\ntwo (edited)\n"],
             ["plan.md", "another note\n"],
           ]),
