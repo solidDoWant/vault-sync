@@ -313,4 +313,4 @@ Work is tracked as GitHub milestones and parent issues. Each phase ends with a b
 
 ## 16. Open questions
 
-Tracked as issues labelled `question`. Decisions made autonomously by the project-manager agent are logged on the decision-log issue for later human review.
+Tracked as issues labelled `question`. Decisions made autonomously by the planner agent are logged on the decision-log issue for later human review.

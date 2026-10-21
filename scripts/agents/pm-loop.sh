@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# LEGACY: superseded by scheduler-loop.sh (scheduler.py + docs/agents/planner.md);
+# kept only as the rollback path. Do not run both at once.
+#
 # Runs the project-manager agent (docs/agents/project-manager.md) in a restart
 # loop. Each iteration is one headless Claude Code session = one PM cycle; the
 # PM keeps its state in .pm/state.md and on GitHub, so a crash, VM restart, or
