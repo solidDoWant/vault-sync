@@ -80,6 +80,31 @@ describe.each(["windows", "macos", "android"] as const)("a folder with one spell
     expect(h.server.liveDocuments()).toEqual(new Map([["notes/A.md", "a"]]));
   });
 
+  it("keeps the note bound to its file after a remote rename that respelled only its folder, across a restart", async () => {
+    const h = faithful(platform);
+    h.server.commit({ documentId: "a", path: "notes/a.md", content: "a\n" });
+    await h.engine.pull();
+    h.server.commit({ documentId: "a", path: "Notes/a.md" });
+    await h.engine.pull();
+    await h.engine.settled();
+    const seq = h.server.currentHeadSeq;
+
+    h.restart();
+    await h.engine.push();
+    await h.engine.settled();
+    await h.vault.write("notes/a.md", bytes("a\nlocal\n"));
+    await h.engine.settled();
+    await h.engine.push();
+
+    // The start-up scan saw no move or new file: the user's edit is the note's next revision, at the server's spelling.
+    expect(h.localChanges).toEqual([{ type: "modify", path: "notes/a.md" }]);
+    expect(h.server.currentHeadSeq).toBe(seq + 1n);
+    expect(h.server.liveDocuments()).toEqual(new Map([["Notes/a.md", "a"]]));
+    expect(h.server.liveFiles()).toEqual(new Map([["Notes/a.md", "a\nlocal\n"]]));
+    // The binding keeps the server's spelling, which names the file under `F`.
+    expect((await h.journal.getDocument("a"))?.binding?.spelling).toBe("Notes/a.md");
+  });
+
   it("reports the user's write into the folder at the spelling of an earlier engine write", async () => {
     const h = faithful(platform);
     h.server.commit({ documentId: "a", path: "notes/a.md", content: "a\n" });

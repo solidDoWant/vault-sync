@@ -1142,7 +1142,7 @@ export class SyncEngine {
    * expectation of a change the engine is about to make there (SPEC.md §8):
    * `path` itself if the vault lists it, otherwise the listed spelling the
    * filesystem takes for the same file (`F`, PO-10), otherwise `path`. The
-   * expectation then matches events exactly, so a user's change of another
+   * expectation then matches events under `F` (EchoSuppressor), so a user's change of another
    * file whose spelling merely has the same path key is never taken for the
    * engine's (#380), and the engine's change of `Straße.md` beside
    * `STRASSE.md`, or of NFC `Café.md` beside NFD `Café.md` on Windows, two
@@ -2243,8 +2243,12 @@ export class SyncEngine {
     return { cursor: { seq: feed.seq, anchor: feed.anchor } };
   }
 
-  /** The engine moves a file: the document bound to it keeps it (E1, design §4.3). */
-  /** The engine moves a file, its echo expected (INV-10), and its binding follows (moveFile). */
+  /**
+   * The engine moves a file: the document bound to it keeps it (E1, design
+   * §4.3). The move's echo is expected (moveFile, INV-10); a move that would
+   * respell only folders is not made, and the binding records `to`, which
+   * Bindings looks up under `F` (PO-10), so it still names the file on disk.
+   */
   private async renameFile(from: string, to: string): Promise<void> {
     await this.moveFile(from, to);
     await this.bindings.renamed(from, to);
