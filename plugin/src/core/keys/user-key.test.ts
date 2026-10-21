@@ -14,6 +14,11 @@ const cheap: Argon2Params = {
 };
 const passphrase = "correct horse battery staple";
 
+// Every test here derives Argon2id keys (a few hundred milliseconds each at
+// the cheapest bounds, several times that on a loaded machine), so they get a
+// timeout sized to that work instead of vitest's 5 s default.
+const ARGON2_TIMEOUT = { timeout: 60_000 };
+
 function device(server: MemoryUserKeyServer) {
   return createProtocolClient({ transport: server.transport }).userKeys;
 }
@@ -27,7 +32,7 @@ function contains(haystack: Uint8Array, needle: Uint8Array): boolean {
   return false;
 }
 
-describe("enabling end-to-end encryption", () => {
+describe("enabling end-to-end encryption", ARGON2_TIMEOUT, () => {
   it("creates the key pair on the device and sends only the public key, the wrapped private key and the verifier", async () => {
     const server = new MemoryUserKeyServer();
 
@@ -74,7 +79,7 @@ describe("enabling end-to-end encryption", () => {
   });
 });
 
-describe("unlocking on another device", () => {
+describe("unlocking on another device", ARGON2_TIMEOUT, () => {
   it("holds the same key pair as the device that enabled encryption", async () => {
     const server = new MemoryUserKeyServer();
     const { key } = await enableEncryption(device(server), passphrase, cheap);

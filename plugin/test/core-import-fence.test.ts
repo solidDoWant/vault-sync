@@ -72,7 +72,8 @@ const forbidden: Record<string, string> = {
     "declare const window: { require: (id: string) => unknown };\nexport const o = window.require(`obsidian`);\n",
 };
 
-describe("src/core import fence", () => {
+// Each test runs eslint with the full config; the first one loads it.
+describe("src/core import fence", { timeout: 30_000 }, () => {
   // Every TypeScript extension the core program can pull in (an .mts or .cts
   // file is reachable from a .ts import).
   for (const [name, source] of Object.entries(forbidden)) {

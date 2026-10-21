@@ -27,7 +27,9 @@ async function lint(source: string): Promise<ESLint.LintResult> {
   return result;
 }
 
-describe("simulation harness lint", () => {
+// The first lint builds the type-checked program of the core and the harness,
+// which takes seconds and several times that on a loaded machine.
+describe("simulation harness lint", { timeout: 60_000 }, () => {
   it("reports a floating promise in a sim file and names the file", async () => {
     const result = await lint("export async function work(): Promise<void> {}\nwork();\n");
     expect(result.filePath).toBe(probeFile);
