@@ -2134,19 +2134,9 @@ export class SyncEngine {
     return this.bindings.dropped([revisionId]);
   }
 
-  /**
-   * Every document row the engine writes goes through Bindings, which gives
-   * it the binding `change` makes. A file the write unbinds the document
-   * from is untracked now (design §4.1): the push looks at it again, and
-   * commits it as a new document if it is still there (a local rename of a
-   * document a remote delete removed, #486).
-   */
-  private async putDocument(state: DocumentState, change: BindingChange): Promise<void> {
-    const before = (await this.journal.getDocument(state.documentId))?.binding;
-    await this.bindings.put(state, change);
-    if (before === undefined || before === null) return;
-    const after = (await this.journal.getDocument(state.documentId))?.binding;
-    if (after === undefined || after === null || !this.pathSpace.oneFile(after.spelling, before.spelling)) this.markDirty(before.spelling);
+  /** Every document row the engine writes goes through Bindings, which gives it the binding `change` makes. */
+  private putDocument(state: DocumentState, change: BindingChange): Promise<void> {
+    return this.bindings.put(state, change);
   }
 
   /** The engine moves a file: the document bound to it keeps it (E1, design §4.3). */
