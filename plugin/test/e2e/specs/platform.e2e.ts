@@ -63,9 +63,6 @@ describe("Platform path rules", function () {
   });
 
   it("let the adapter report a name the file system refuses as unmaterializable", async function () {
-    // Android's Capacitor reports the name as FILE_NOTCREATED, which the
-    // adapter does not classify yet (#705): skipped there until it does.
-    if ((await obsidianPage.getPlatform()).isAndroidApp) this.skip();
     // A 300-byte name, over every platform's 255. The engine's rules would
     // refuse it before writing, so the adapter is called directly.
     const name = `${"n".repeat(297)}.md`;
