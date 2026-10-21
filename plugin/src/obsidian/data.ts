@@ -35,6 +35,23 @@ export interface PluginData {
    * the server.
    */
   configSync?: ConfigSyncSettings;
+  /**
+   * Secret: the user's unlocked end-to-end encryption key pair (SPEC.md
+   * §9.3), cached on this device after it was created or unlocked with the
+   * recovery passphrase, for the account it belongs to. Kept only here,
+   * never synced, logged or shown; dropped on sign-out.
+   */
+  userKey?: CachedUserKey;
+}
+
+/** The user's key pair as cached on the device, hex-encoded, with the account it belongs to. */
+export interface CachedUserKey {
+  publicKey: string;
+  privateKey: string;
+  /** The server and account, as in RegisteredDevice. */
+  serverUrl: string;
+  issuer: string;
+  subject: string;
 }
 
 /** An OIDC issuer and the client signed in as. */
@@ -111,8 +128,13 @@ export function parsePluginData(raw: unknown): PluginData {
   if (vault !== undefined) data.vault = vault;
   const configSync = parseConfigSync(stored.configSync);
   if (configSync !== undefined) data.configSync = configSync;
+  const userKey = record(stored.userKey, ["publicKey", "privateKey", "serverUrl", "issuer", "subject"]);
+  if (userKey !== undefined && hexKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey)) data.userKey = userKey;
   return data;
 }
+
+/** A 32-byte key in lowercase hex. */
+const hexKey = /^[0-9a-f]{64}$/;
 
 /** This device's config sync settings: the stored ones, or the defaults (off). */
 export function configSyncSettings(data: PluginData): ConfigSyncSettings {
