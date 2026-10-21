@@ -4,15 +4,16 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 import { sha256Hex } from "../hash";
-import type { ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
+import type { Absence, ConflictReason, ConflictRecord, DeferReason, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
 import { uuidv7 } from "../uuid";
-import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
+import { isVaultError, type DeletePrecondition, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
+import { Bindings, type BindingChange } from "./bindings";
 import { PathClaims, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
@@ -100,6 +101,20 @@ export const defaultRateLimitBackoff: Readonly<Backoff> = { initialMs: 1000, max
 
 /** The engine's download cap unless SyncEngineOptions.maxDownloadBytes sets one: 1 GiB. */
 export const defaultMaxDownloadBytes = 1024 * 1024 * 1024;
+
+/**
+ * A document whose binding (design §4.1) disagrees with the ownership the
+ * engine derives today (SyncEngine.bindingShadow, refactor step R4).
+ */
+export interface BindingDivergence {
+  documentId: string;
+  /** The binding's spelling; null for none, undefined if the row records no binding. */
+  binding: string | null | undefined;
+  /** Why the document has no binding, if it has none. */
+  absence: Absence | null | undefined;
+  /** The file the engine's derived ownership takes to be the document's, or null for none. */
+  derived: string | null;
+}
 
 /**
  * A document whose remote revision is larger than the engine's download cap
@@ -275,6 +290,8 @@ export class SyncEngine {
   private readonly maxDownloadBytes: bigint;
   /** How paths compare: server keys, file keys, filesystem names and folders. */
   private readonly pathSpace: PathSpace;
+  /** Which local file is each document (design §4.1): maintained in shadow mode, read by nothing but bindingShadow (refactor step R4). */
+  private readonly bindings: Bindings;
   private readonly echoes = new EchoSuppressor();
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
@@ -335,6 +352,7 @@ export class SyncEngine {
     this.onUnmaterializable = options.onUnmaterializable ?? (() => undefined);
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.pathSpace = new PathSpace(this.pathRules);
+    this.bindings = new Bindings(this.journal, this.vault, this.pathSpace);
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
@@ -359,6 +377,7 @@ export class SyncEngine {
   async settled(): Promise<void> {
     await this.events;
     await this.work;
+    await this.bindings.idle();
   }
 
   /**
@@ -527,7 +546,7 @@ export class SyncEngine {
       if (content !== null) {
         if (sha256Hex(content) !== state.baseHash) return;
         try {
-          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(state.path)), () => this.vault.delete(state.path, { expectedHash: state.baseHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(state.path)), () => this.deleteFile(state.path, { expectedHash: state.baseHash }));
         } catch (error) {
           // Saved locally since the check (#163): a local edit, so the file stays, as above.
           if (isVaultError(error, "changed")) return;
@@ -535,7 +554,7 @@ export class SyncEngine {
         }
       }
     }
-    await this.journal.putDocument({ ...state, deleted: true });
+    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
   }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
@@ -668,7 +687,7 @@ export class SyncEngine {
     if (pending.some((operation) => operation.revisionId === remote.revisionId)) {
       // This device's own commit, whose response was lost. The disk already
       // holds it, or a newer local edit, which the next push sends on top.
-      if (state?.revisionId !== remote.revisionId) await this.journal.putDocument(syncedState(remote));
+      if (state?.revisionId !== remote.revisionId) await this.putDocument(syncedState(remote), { kind: "acknowledged", hash: remote.contentHash });
       if (state !== undefined && !remote.deleted) this.carryDelete(remote.documentId, state.revisionId, remote.revisionId);
       await this.journal.removePending(remote.revisionId);
       // Changes left for after the operation (a newer edit, a rename that
@@ -689,7 +708,7 @@ export class SyncEngine {
         await this.journal.addPending({ ...operation, revisionId: this.newId(), baseRevisionId: remote.revisionId });
         await this.journal.removePending(operation.revisionId);
       }
-      await this.journal.putDocument(syncedState(remote));
+      await this.putDocument(syncedState(remote), { kind: "acknowledged", hash: remote.contentHash });
       for (const operation of pending) this.changes.paths.add(operation.path);
       this.schedulePush();
       return "applied";
@@ -821,7 +840,7 @@ export class SyncEngine {
     // deferred one, applied by a retry after the cursor passed it). Removed
     // after the journal update: interrupted in between, the revision is found
     // applied and its deferral removed then, so it is never dropped unapplied.
-    await this.journal.putDocument(syncedState(remote));
+    await this.putDocument(syncedState(remote), { kind: "applied" });
     // A local rename of the deleted document is a rename of nothing now.
     if (remote.deleted && state !== undefined && !state.deleted) this.forgetRenamesFrom(state.path);
     if (deferred !== undefined) await this.journal.removeDeferred(remote.documentId);
@@ -893,11 +912,11 @@ export class SyncEngine {
     if (remote.deleted) {
       if (source === undefined) return;
       if (expectedHash === null) throw new Error(`no base hash for ${source}`);
-      await this.echoed(this.echoes.expectDelete(await this.heldSpelling(source)), () => this.vault.delete(source, { expectedHash }));
+      await this.echoed(this.echoes.expectDelete(await this.heldSpelling(source)), () => this.deleteFile(source, { expectedHash }));
       return;
     }
     if (source !== undefined && source !== remote.path) {
-      await this.echoed(this.echoes.expectRename(await this.heldSpelling(source), remote.path), () => this.vault.rename(source, remote.path));
+      await this.echoed(this.echoes.expectRename(await this.heldSpelling(source), remote.path), () => this.renameFile(source, remote.path));
     }
     if (inspection.sourceHash === remote.contentHash) return;
     if (content === undefined) throw new Error(`content of ${remote.revisionId} was not downloaded`);
@@ -921,7 +940,7 @@ export class SyncEngine {
     const key = this.pathSpace.fileKey(path);
     const actual = (await this.vault.list()).find((candidate) => candidate !== path && this.pathSpace.fileKey(candidate) === key);
     if (actual === undefined || (await this.localSpelling(actual, documentId))) return;
-    await this.echoed(this.echoes.expectRename(actual, path), () => this.vault.rename(actual, path));
+    await this.echoed(this.echoes.expectRename(actual, path), () => this.renameFile(actual, path));
   }
 
   /** Whether a local rename of `documentId` not yet pushed, or a pending operation of it, put its file at exactly `path`. */
@@ -1084,7 +1103,7 @@ export class SyncEngine {
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
     if (pending.some((operation) => operation.deleted || this.pathSpace.fileKey(operation.path) !== key)) return false;
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
-    await this.journal.putDocument({ ...state, deleted: true });
+    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
     return true;
   }
 
@@ -1115,7 +1134,7 @@ export class SyncEngine {
     const key = this.pathSpace.fileKey(state.path);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId && !operation.deleted);
     for (const operation of pending) await this.journal.removePending(operation.revisionId);
-    await this.journal.putDocument({ ...state, deleted: true });
+    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
     for (const operation of pending) if (this.pathSpace.fileKey(operation.path) !== key) this.changes.paths.add(operation.path);
     this.forgetRenamesFrom(state.path);
   }
@@ -1211,12 +1230,12 @@ export class SyncEngine {
     if (follow !== undefined && this.inScope(follow) && (await this.vault.stat(follow)) !== null) {
       const holder = await this.documentAt(follow);
       if (holder === undefined || holder.documentId === documentId) {
-        await this.journal.putDocument({ ...state, path: follow });
+        await this.putDocument({ ...state, path: follow }, { kind: "moved" });
         return true;
       }
     }
     if (follow !== undefined) this.changes.paths.add(follow);
-    await this.journal.putDocument({ ...state, deleted: true });
+    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
     return true;
   }
 
@@ -1376,7 +1395,7 @@ export class SyncEngine {
       await this.journal.putConflict(this.conflictRecord(documentId, path, "path-taken", copyPath, hash, ""));
     }
     const target = copyPath;
-    if ((await this.vault.stat(target)) === null) await this.echoed(this.echoes.expectRename(await this.heldSpelling(path), target), () => this.vault.rename(path, target));
+    if ((await this.vault.stat(target)) === null) await this.echoed(this.echoes.expectRename(await this.heldSpelling(path), target), () => this.renameFile(path, target));
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId !== documentId || operation.path !== path || operation.deleted) continue;
       await this.journal.addPending({ ...operation, revisionId: this.newId(), path: target });
@@ -1499,7 +1518,7 @@ export class SyncEngine {
           await this.dropOperationsAt(outcome.path, remote.documentId);
           if (!sameContent(await this.readOrNull(outcome.path), remaining)) return false;
           const expectedHash = sha256Hex(remaining);
-          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(outcome.path)), () => this.vault.delete(outcome.path, { expectedHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(outcome.path)), () => this.deleteFile(outcome.path, { expectedHash }));
         }
       }
       await this.journal.putDeferred({
@@ -1518,13 +1537,13 @@ export class SyncEngine {
       if (outcome.content === null) {
         if (current !== null) {
           const expectedHash = sha256Hex(current);
-          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(local.path)), () => this.vault.delete(local.path, { expectedHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(local.path)), () => this.deleteFile(local.path, { expectedHash }));
         }
       } else {
         let there = outcome.path === local.path ? current : await this.readOrNull(outcome.path);
         if (outcome.path !== local.path && current !== null) {
           if (there !== null && !respelled) return false;
-          await this.echoed(this.echoes.expectRename(await this.heldSpelling(local.path), outcome.path), () => this.vault.rename(local.path, outcome.path));
+          await this.echoed(this.echoes.expectRename(await this.heldSpelling(local.path), outcome.path), () => this.renameFile(local.path, outcome.path));
           there = current;
         }
         const merged = outcome.content;
@@ -1554,7 +1573,7 @@ export class SyncEngine {
       if (operation.documentId === remote.documentId) await this.journal.removePending(operation.revisionId);
     }
     if (!ownFile) await this.dropOperationsAt(local.path, remote.documentId);
-    await this.journal.putDocument(syncedState(remote));
+    await this.putDocument(syncedState(remote), { kind: "merged", path: outcome.path, hash: outcome.content === null ? null : sha256Hex(outcome.content) });
     // A local rename of the deleted document is a rename of nothing now: the
     // file it moved, if kept, is pushed as a new document.
     if (remote.deleted && ownFile) this.forgetRenamesFrom(state.path);
@@ -1793,7 +1812,7 @@ export class SyncEngine {
         this.count(summary, await this.applyRevision(incoming));
       } else if (state.revisionId === remote.revisionId) {
         // Same revision; renumber it, as the restored server's seq values may differ.
-        if (state.seq !== remote.seq) await this.journal.putDocument({ ...state, seq: remote.seq });
+        if (state.seq !== remote.seq) await this.putDocument({ ...state, seq: remote.seq }, { kind: "kept" });
       } else if (this.outOfScope(remote, state)) {
         this.count(summary, await this.defer(remote, "out-of-scope"));
       } else if (this.overCap(remote)) {
@@ -1807,7 +1826,7 @@ export class SyncEngine {
     // which the restored server's own revisions of it would look applied:
     // seq 0 is no revision of this server (see applyRevision).
     for (const state of await this.journal.listDocuments()) {
-      if (!heads.has(state.documentId) && state.seq !== 0n) await this.journal.putDocument({ ...state, seq: 0n });
+      if (!heads.has(state.documentId) && state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
     await this.journal.resetCursor(seq, anchor);
     summary.cursor = seq;
@@ -2275,7 +2294,7 @@ export class SyncEngine {
       throw new RemoteContentError(`CommitRevision for ${operation.revisionId} returned another revision`);
     }
     const remote = toIncoming(revision).remote;
-    await this.journal.putDocument({
+    await this.putDocument({
       documentId: operation.documentId,
       path: operation.path,
       revisionId: revision.id,
@@ -2285,7 +2304,7 @@ export class SyncEngine {
       kind: operation.kind,
       deleted: operation.deleted,
       anchor: cursorAnchor(revision),
-    });
+    }, { kind: "acknowledged", hash: operation.contentHash });
     await this.journal.removePending(operation.revisionId);
     if (state !== undefined && !operation.deleted) this.carryDelete(operation.documentId, state.revisionId, revision.id);
     // The document moved: a local rename not pushed yet is from its new path now (#280).
@@ -2445,7 +2464,7 @@ export class SyncEngine {
     // Already moved before an interruption, if the copy's path holds a file;
     // a file at the old path is then a new one, which the next round pushes.
     if (atPath !== null && (await this.vault.stat(copyPath)) === null) {
-      await this.echoed(this.echoes.expectRename(await this.heldSpelling(operation.path), copyPath), () => this.vault.rename(operation.path, copyPath));
+      await this.echoed(this.echoes.expectRename(await this.heldSpelling(operation.path), copyPath), () => this.renameFile(operation.path, copyPath));
     }
     const content = await this.readOrNull(copyPath);
     if (content === null) return;
@@ -2672,6 +2691,7 @@ export class SyncEngine {
       this.recordChange(event, undefined, own, own ? await this.syncedSpelling(event.oldPath) : undefined);
     }
     else this.recordChange(event, event.type === "delete" ? await this.deletedFile(event.path) : undefined);
+    await this.transition(event);
     try {
       this.onLocalChange(event);
     } catch (error) {
@@ -2690,6 +2710,83 @@ export class SyncEngine {
   /** Whether `remote` is not this device's to apply now: its path, or the path its document has here, is out of scope. */
   private outOfScope(remote: RemoteRevision, state: DocumentState | undefined): boolean {
     return !this.inScope(remote.path) || (state !== undefined && !state.deleted && !this.inScope(state.path));
+  }
+
+  /** Every document row the engine writes goes through Bindings, which gives it the binding `change` makes. */
+  private putDocument(state: DocumentState, change: BindingChange): Promise<void> {
+    return this.bindings.put(state, change);
+  }
+
+  /** The engine moves a file: the document bound to it keeps it (E1, design §4.3). */
+  private async renameFile(from: string, to: string): Promise<void> {
+    await this.vault.rename(from, to);
+    await this.bindings.renamed(from, to);
+  }
+
+  /** The engine deletes a file: its document no longer has it, unless the write that follows binds it again. */
+  private async deleteFile(path: string, precondition?: DeletePrecondition): Promise<void> {
+    await this.vault.delete(path, precondition);
+    await this.bindings.deleted(path, "engine");
+  }
+
+  /** Records a user's rename or delete as its binding transition (E1–E3), before the event counts as handled (PO-2). */
+  private async transition(event: VaultEvent): Promise<void> {
+    try {
+      if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path);
+      else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
+    } catch {
+      // Shadow mode (refactor step R4): nothing decides by bindings yet, so a
+      // failed transition only shows in bindingShadow.
+    }
+  }
+
+  /**
+   * The differential check of refactor step R4 (design §9.2,
+   * `binding-shadow`): every document whose binding disagrees with the
+   * ownership the engine still derives (followRename, movedAway,
+   * localMoveAt) about which local file is the document. Report only:
+   * nothing decides by bindings yet. Runs between pulls and pushes, once
+   * every event received so far is handled.
+   */
+  async bindingShadow(): Promise<BindingDivergence[]> {
+    await this.events;
+    const run = this.work.then(async () => {
+      await this.bindings.idle();
+      return this.shadowDivergences();
+    });
+    this.work = run.catch(() => undefined);
+    return run;
+  }
+
+  private async shadowDivergences(): Promise<BindingDivergence[]> {
+    const divergences: BindingDivergence[] = [];
+    for (const state of await this.journal.listDocuments()) {
+      const derived = await this.derivedFile(state);
+      const binding = state.binding;
+      if (binding === undefined) {
+        divergences.push({ documentId: state.documentId, binding: undefined, absence: undefined, derived });
+        continue;
+      }
+      const bound = binding === null ? null : binding.spelling;
+      const agree = bound === null || derived === null ? bound === derived : this.pathSpace.oneFile(bound, derived);
+      if (!agree) divergences.push({ documentId: state.documentId, binding: bound, absence: state.absence ?? null, derived });
+    }
+    return divergences;
+  }
+
+  /**
+   * Which local file the engine's derived ownership takes to be the
+   * document's, or null for none: its synced path unless a local move took
+   * it away (movedAway), followed to where it went (followRename), unless
+   * another document's local move holds that file (localMoveAt).
+   */
+  private async derivedFile(state: DocumentState): Promise<string | null> {
+    if (state.deleted) return null;
+    const found = await this.followRename(state, { path: state.path, content: await this.readOrNull(state.path) });
+    if (found.content === null) return null;
+    if (found.path === state.path && (await this.movedAway(state))) return null;
+    const mover = await this.localMoveAt(found.path, state.documentId);
+    return mover === undefined ? found.path : null;
   }
 
   private async readOrNull(path: string): Promise<Uint8Array | null> {
