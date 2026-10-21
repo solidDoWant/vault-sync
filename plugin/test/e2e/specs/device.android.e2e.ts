@@ -167,8 +167,18 @@ function dontKeepActivities(on: boolean) {
  * activity leaves it, while the task record still names the app.
  */
 function obsidianActivityAlive(): boolean {
-  const pattern = new RegExp(`Hist #\\d+: ActivityRecord\\{[^}]*\\b${appId.replaceAll(".", "\\.")}/`);
+  // The entry may be padded ("Hist  #0:").
+  const pattern = new RegExp(`Hist\\s+#\\d+:\\s+ActivityRecord\\{[^}]*\\b${appId.replaceAll(".", "\\.")}/`);
   return pattern.test(shell("dumpsys", "activity", "activities"));
+}
+
+/** The lines of the activity list that name Obsidian, for a failure message. */
+function obsidianActivityLines(): string {
+  return shell("dumpsys", "activity", "activities")
+    .split("\n")
+    .filter((line) => line.includes(`${appId}/`))
+    .map((line) => line.trim())
+    .join("\n");
 }
 
 /** Sends Obsidian to the background with the home button. */
@@ -271,6 +281,8 @@ describe("vault-sync on an Android device", function () {
     const note = "Destroyed activity.md";
     const text = "edited, then the activity was destroyed\n";
     await writeNote(note, text);
+    // The activity list is read right: Obsidian's activity is in it now.
+    if (!obsidianActivityAlive()) throw new Error(`Obsidian's activity is not in the activity list while it is in the foreground:\n${obsidianActivityLines()}`);
     background();
     // The scenario really happened: Android destroyed the activity. Obsidian
     // keeps its WebView's JavaScript across the activity's recreation (a
