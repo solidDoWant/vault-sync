@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { InMemoryJournal } from "../journal/memory";
 import type { InMemoryServer } from "./memory-server";
+import { threeWayMerge } from "./merge";
 import { Crash, CrashingJournal, CrashingVault, CrashPoints, files, harness, text, type Harness } from "./testing";
 
 // A server restored from a backup has lost history this device already
@@ -124,6 +125,31 @@ describe("SyncEngine resync after a server restore", () => {
       expect(contents).toContain("other device");
     });
 
+    // #719 (design §4.6): a revision deferred before the restore proves nothing about a base the restore lost.
+    it("keeps both versions of a revision deferred before the restore, once the file is back at the lost base", async () => {
+      let deferring = true;
+      const h = harness({ merge: (request) => (deferring ? Promise.resolve({ status: "deferred" }) : threeWayMerge(request)) });
+      h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+      h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+      await h.engine.pull();
+      await h.vault.write("x.md", new TextEncoder().encode("local edit"));
+      await h.engine.settled();
+      h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+      await h.engine.pull();
+      expect((await h.journal.getDeferred("x"))?.revision.revisionId).toBe(h.server.head("x")?.id);
+      await h.vault.write("x.md", new TextEncoder().encode("x1"));
+      await h.engine.settled();
+      h.server.restoreTo(1n);
+      expect(await h.engine.pull()).toMatchObject({ resynced: true });
+      deferring = false;
+
+      await h.engine.push();
+
+      const contents = [...(await files(h.vault)).values()];
+      expect(contents).toContain("x1");
+      expect(contents).toContain("x2");
+    });
+
     it("applies a later revision of one this device had deleted", async () => {
       const h = harness();
       h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
@@ -200,6 +226,26 @@ describe("SyncEngine resync after a server restore", () => {
       expect(contents).toContain("x3");
       expect(contents).toContain("other device");
       expect([...h.server.liveFiles().values()]).toEqual(expect.arrayContaining(["x3", "other device"]));
+    });
+
+    // #719: a revision that follows a restored head this device never merged proves nothing about the lost base, so
+    // the unchanged file, which holds the lost revision, is never overwritten (principle 1).
+    it("keeps both versions when a later revision follows a restored head whose merge was deferred", async () => {
+      let deferring = true;
+      const h = harness({ merge: (request) => (deferring ? Promise.resolve({ status: "deferred" }) : threeWayMerge(request)) });
+      await rolledBack(h);
+      h.server.commit({ documentId: "x", path: "x.md", content: "other device" }); // 3
+      expect(await h.engine.pull()).toMatchObject({ resynced: true });
+      deferring = false;
+      h.server.commit({ documentId: "x", path: "x.md", content: "other device again" }); // 4
+
+      expect(await h.engine.pull()).toMatchObject({ resynced: false });
+      await h.engine.push();
+
+      const contents = [...(await files(h.vault)).values()];
+      expect(contents).toContain("x3");
+      expect(contents).toContain("other device again");
+      expect([...h.server.liveFiles().values()]).toEqual(expect.arrayContaining(["x3", "other device again"]));
     });
 
     it("keeps both versions when the journal cannot prove the restored head an ancestor", async () => {

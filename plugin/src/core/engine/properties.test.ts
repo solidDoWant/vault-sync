@@ -5,14 +5,13 @@
 // harness's oracle (inodes, content origins, bindings) is independent of the
 // engine's journal.
 //
-// Each property that the engine violates today is a `knownFailure` with the
-// issue that tracks its class, pinned to a minimal counterexample and the
-// violation it fails with; the pinned case runs first, at any seed. Flipping
-// one to `holds` is the refactor's progress measure (§9.2): a known failure
-// whose property starts to hold fails the suite. A run that throws anything
+// Every property `holds`; each counterexample a fixed issue was found by runs
+// first, at any seed, as a fixed example. (A property the engine violated was
+// a known failure pinned to its counterexample until #719 flipped the last
+// one, P1; see git history to pin one again.) A run that throws anything
 // but a PropertyViolation (a TypeError, a broken harness invariant) is a
-// harness bug and fails every property, known failures included, so a broken
-// harness cannot pass for an engine violation (#587).
+// harness bug and fails every property, so a broken harness cannot pass for
+// an engine violation (#587).
 //
 // Runs are deterministic: a fixed seed and bounded runs (§9.3's 2,000 cases
 // per PR, up to 40 commands each), no wall clock. VAULT_SYNC_PROPERTY_RUNS and
@@ -110,7 +109,7 @@ const folderCommands: fc.Arbitrary<WorldCommand>[] = [
   fc.constant({ type: "push" }),
 ];
 
-/** P1's restore alphabet: few paths and documents, so restores roll the same documents back along their history. */
+/** P1's restore alphabet: few paths and documents, so restores roll the same documents back along their history, and purges remove bases a restore may have kept or lost (#719). */
 const few = fc.nat({ max: 3 });
 const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
   few.map((path) => ({ type: "remote-create", path })),
@@ -123,6 +122,7 @@ const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
   fc.constant({ type: "pull" }),
   fc.constant({ type: "push" }),
   restore,
+  few.map((revision) => ({ type: "purge", revision })),
 ];
 
 const platform = fc.constantFrom<PathPlatform>("posix", "windows", "macos");
@@ -188,8 +188,7 @@ function report<T>(details: fc.RunDetails<T>): string {
 /**
  * Searches for a counterexample, trying `examples` first. Any error but a
  * PropertyViolation thrown in any run (shrinking included) fails the test
- * here: it is a harness bug, and would otherwise let a known failure pass
- * without an engine violation.
+ * here: it is a harness bug, never an engine violation.
  */
 async function search<T>(definition: Definition<T>, examples: T[] = []): Promise<fc.RunDetails<[T]>> {
   const harnessErrors: unknown[] = [];
@@ -218,26 +217,6 @@ async function search<T>(definition: Definition<T>, examples: T[] = []): Promise
 async function holds<T>(definition: Definition<T>, examples: T[] = []): Promise<void> {
   const details = await search(definition, examples);
   if (details.failed) expect.fail(report(details));
-}
-
-/** A known failure's pinned minimal counterexample and the violation it fails with. */
-interface Pin<T> {
-  example: T;
-  violation: RegExp;
-}
-
-/**
- * The engine violates the property today. Its pinned counterexample runs
- * first, whatever the seed, and must fail with a violation of this property
- * that matches the pin. A known failure whose property holds, on the pinned
- * case and every generated one, fails, so that it is flipped to `holds`.
- */
-async function knownFailure<T>(definition: Definition<T>, pin: Pin<T>): Promise<void> {
-  const details = await search(definition, [pin.example]);
-  if (!details.failed) expect.fail(`${definition.property} holds now: make it \`holds\` (${String(details.numRuns)} cases, seed ${String(seed)})`);
-  const error = details.errorInstance;
-  if (!(error instanceof PropertyViolation) || error.property !== definition.property) expect.fail(`${definition.property} failed with something other than its own violation:\n${report(details)}`);
-  if (!error.found.some((found) => pin.violation.test(found))) expect.fail(`${definition.property}'s pinned counterexample no longer fails with ${String(pin.violation)}; re-pin it to the counterexample below:\n${report(details)}`);
 }
 
 /** A world property's case: the platform and the commands, as data. */
@@ -304,25 +283,23 @@ const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiesc
 
 describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
-  // Known failure: a base retention purged makes an unchanged (renamed) file a conflict copy (#719). Fixed cases, which
-  // hold (#700, design §4.6): a restore that rolled a document back along this device's own history, to a revision it
-  // synced as its base, and to its base's parent; and #690's 20k-case counterexample (a blocked document keeps its
-  // moved file, never a new document's).
+  // Flipped in #719. Fixed cases (#700, design §4.6): a restore that rolled a document back along this device's own
+  // history, to a revision it synced as its base, and to its base's parent; #690's 20k-case counterexample (a blocked
+  // document keeps its moved file, never a new document's); and #719's pin, a base retention purged under an unchanged
+  // (renamed) file, which merges the pulled edit with the rename instead of keeping a conflict copy.
   it("P1: a document's committed content comes from its own file", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-create", path: 3 }, { type: "remote-edit", document: 7 }, { type: "remote-rename", document: 0, path: 2 }, { type: "pull" }, { type: "restore", fraction: 0.25 }, { type: "pull" }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "remote-create", path: 2 }, { type: "restore", fraction: 0.25 }, { type: "pull" }),
       scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "purge", revision: 0 }),
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
-    await knownFailure(p1, {
-      example: scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
-      violation: /create of id-\d+ at "A \(conflict .*\)\.md" .* carries the remote write of step 1 to r-1/,
-    });
+    await holds(p1, fixed);
   });
 
   // P1 over restores that roll documents back along this device's own history (design §4.6): remote edits the device
-  // pulls, local edits and renames, restores and the pulls and pushes after them, without retention purges (#719).
+  // pulls, local edits and renames, restores and the pulls and pushes after them, and retention purges (#719).
   // Fixed case: a document the restored server lost, renamed locally, whose re-create a later remote create's path
   // takes: it is displaced under its own id, not kept as a new document's copy; and one whose respelled file another
   // document the server has holds under the server's key (20k cases), re-created at a copy name under its own id,
