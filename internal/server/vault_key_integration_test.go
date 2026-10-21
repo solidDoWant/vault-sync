@@ -619,3 +619,46 @@ func TestVaultKeyProceduresEnforceRolesAgainstPostgres(t *testing.T) {
 	_, err = fixture.rotate(t, 0, alice, nextEpoch(t, alice.vaultID, 0, key, alice))
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), err)
 }
+
+// An owner removing themselves from an E2EE vault with RemoveMember is
+// refused and pointed to LeaveVault; nothing changes. In a plaintext vault
+// it still works.
+func TestRemoveMemberRefusesSelfRemovalFromAnE2EEVaultAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.keyedMember(t, "alice")
+	bob := fixture.keyedMember(t, "bob")
+
+	vaultID := fixture.e2eeVault(t, alice, false)
+	fixture.join(t, alice, bob, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER)
+
+	first, err := e2ee.GenerateKey()
+	require.NoError(t, err)
+
+	_, err = fixture.rotate(t, 0, alice, nextEpoch(t, alice.vaultID, 0, first, alice, bob))
+	require.NoError(t, err)
+
+	second, err := e2ee.GenerateKey()
+	require.NoError(t, err)
+
+	for _, next := range []*vaultsyncv1.NextEpoch{nextEpoch(t, alice.vaultID, 1, second, bob), nil} {
+		err := fixture.removeWithEpoch(t, alice, alice, next)
+		require.Error(t, err)
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err), err)
+		assert.Contains(t, err.Error(), "LeaveVault")
+
+		assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, fixture.roleIn(t, alice.token, vaultID), "alice stays")
+
+		state := fixture.epochs(t, bob)
+		assert.Equal(t, uint32(1), state.GetCurrentEpoch())
+		assert.False(t, state.GetRotationPending())
+		assert.Len(t, fixture.ownSlots(t, bob), 1, "no slot for a new epoch")
+	}
+
+	// A plaintext vault: unchanged.
+	plain := fixture.createVault(t, alice.token, "Plain").GetId()
+	alice.vaultID = plain
+	fixture.join(t, alice, bob, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER)
+
+	require.NoError(t, fixture.removeWithEpoch(t, alice, alice, nil))
+	assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_UNSPECIFIED, fixture.roleIn(t, alice.token, plain))
+}
