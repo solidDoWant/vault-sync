@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { createProtocolClient } from "../plugin/src/core/protocol/client";
 import { SyncService } from "../plugin/src/gen/vaultsync/v1/sync_pb";
-import { errorCode, settle, SimNetwork, StallError, stallTurns } from "./network";
+import { errorCode, retryAfterHeadMovedMarker, settle, SimNetwork, StallError, stallTurns } from "./network";
 
 // These tests exercise the fault injector itself, so the far side is a
 // trivial in-process handler that records what reached it. The simulation
@@ -16,13 +16,17 @@ function setup(commitRetryBackoff?: number) {
   /** Revision ids the server refuses, with the code it refuses them with. */
   const refuse = new Map<string, Code>();
   const violations: { invariant: string; detail: string }[] = [];
+  const applied = new Map<string, { id: string; documentId: string; seq: bigint }>();
   const server = createRouterTransport(({ service }) => {
     service(SyncService, {
       commitRevision: (request) => {
         const code = refuse.get(request.revisionId);
         if (code !== undefined) throw new ConnectError("refused", code);
         received.push(request.revisionId);
-        return { revision: { id: request.revisionId, seq: BigInt(received.length) } };
+        // Idempotent, as the real server: a retry gets the applied revision back.
+        const revision = applied.get(request.revisionId) ?? { id: request.revisionId, documentId: request.documentId, seq: BigInt(applied.size + 1) };
+        applied.set(request.revisionId, revision);
+        return { revision };
       },
     });
   });
@@ -34,11 +38,11 @@ function setup(commitRetryBackoff?: number) {
   });
   const clients = [0, 1].map((index) => createProtocolClient({ transport: network.transport(index, server) }));
   /** Sends a commit from `client` and tracks how it settles. */
-  const commit = (client: number, revisionId: string): { current: Settled } => {
+  const commit = (client: number, revisionId: string, documentId = ""): { current: Settled } => {
     const result: { current: Settled } = { current: { state: "pending" } };
     const api = clients[client];
     if (api === undefined) throw new Error("no such client");
-    api.sync.commitRevision({ revisionId }).then(
+    api.sync.commitRevision({ revisionId, documentId }).then(
       (response) => (result.current = { state: "ok", seq: response.revision?.seq ?? -1n }),
       (error: unknown) => (result.current = { state: "failed", code: errorCode(error) }),
     );
@@ -178,6 +182,44 @@ describe("SimNetwork", () => {
       });
     }
 
+    it("marks the retry's trace entry when another commit moved its document's head since it was applied (#284)", async () => {
+      const { network, commit } = setup();
+      commit(0, "a", "d1");
+      await settle();
+      expect(await network.deliverRequest()).not.toContain(retryAfterHeadMovedMarker);
+      network.dropResponse(0);
+      await settle();
+
+      // A retry while the head is still the applied revision is not marked.
+      commit(0, "a", "d1");
+      await settle();
+      expect(await network.deliverRequest()).not.toContain(retryAfterHeadMovedMarker);
+      network.dropResponse(0);
+      await settle();
+
+      // Another document's commit does not move d1's head.
+      commit(1, "b", "d2");
+      await settle();
+      await network.deliverRequest();
+      network.deliverResponse();
+      await settle();
+      commit(0, "a", "d1");
+      await settle();
+      expect(await network.deliverRequest()).not.toContain(retryAfterHeadMovedMarker);
+      network.dropResponse(0);
+      await settle();
+
+      // A commit of d1 on top of it does.
+      commit(1, "c", "d1");
+      await settle();
+      await network.deliverRequest();
+      network.deliverResponse();
+      await settle();
+      commit(0, "a", "d1");
+      await settle();
+      expect(await network.deliverRequest()).toContain(`c0 CommitRevision(a) -> ok ${retryAfterHeadMovedMarker}`);
+    });
+
     it("reports nothing when the server never applied the refused revision (its request was lost)", async () => {
       const { network, refuse, violations, commit } = setup();
       refuse.set("a", Code.FailedPrecondition);
@@ -306,6 +348,28 @@ describe("SimNetwork", () => {
       expect(network.fireDueTimers()).toEqual([]);
     });
 
+    it("measures a retry's backoff sent while draining from the clock draining moved on, so it waits behind a timer due before its backoff ends (#310)", async () => {
+      const { network, commit } = setup(30);
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+      const fired: string[] = [];
+      // Due at steps 10 and 35.
+      network.timers(1).setTimeout(() => fired.push("first"), 10_000);
+      network.timers(1).setTimeout(() => fired.push("second"), 35_000);
+      // Draining (the step counter stays at 0) moves the clock on to step 10.
+      expect(network.passTime()).toBe("c1 backoff timer fired");
+
+      // The retry, sent at clock step 10, waits until step 40: after the timer due at 35.
+      commit(0, "a");
+      await settle();
+      expect(network.passTime()).toBe("c1 backoff timer fired");
+      expect(fired).toEqual(["first", "second"]);
+      expect(network.passTime()).toBe("#1 c0 CommitRevision(a) retry backoff elapsed");
+      expect(network.passTime()).toBeUndefined();
+    });
+
     it("does not pass time for a retry that a fault delayed once its backoff was over", async () => {
       const { network, commit } = setup(30);
       commit(0, "a");
@@ -376,6 +440,32 @@ describe("SimNetwork", () => {
       };
 
       expect(await network.untilSettled(busy(), () => "busy")).toBe("done");
+    });
+
+    // Work that something else moves on now and then, more than stallTurns turns in all but never stallTurns quiet turns in a row (#310).
+    const pumped = async (action: () => unknown) => {
+      for (let round = 0; round < 3; round++) {
+        for (let turn = 0; turn < stallTurns / 2; turn++) await settle();
+        action();
+      }
+      return "done";
+    };
+
+    it("counts a backoff timer firing as network activity (#310)", async () => {
+      const { network } = setup();
+      for (let timer = 0; timer < 3; timer++) network.timers(1).setTimeout(() => undefined, 1000);
+
+      expect(await network.untilSettled(pumped(() => network.fireNextTimer()), () => "timers")).toBe("done");
+    });
+
+    it("counts a message leaving the network as activity (#310)", async () => {
+      const { network, commit } = setup();
+      for (const revision of ["a", "b", "c"]) commit(0, revision);
+      await settle();
+      for (let delivery = 0; delivery < 3; delivery++) await network.deliverRequest();
+
+      // Delivering a response sends nothing: only its removal from the network is activity.
+      expect(await network.untilSettled(pumped(() => network.deliverResponse()), () => "responses")).toBe("done");
     });
   });
 

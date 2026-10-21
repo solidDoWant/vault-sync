@@ -37,12 +37,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Two shapes, each on its own runner: CI's default (3 scripted clients, 2
+  # engine users) with every suite, and an engine-heavy one (4 scripted
+  # clients, 3 engine users, so every seed has all three platforms' path
+  # rules among the engines) with the seeded suites only, which caught the
+  # case-insensitive engine bugs the default shape missed (#379, #380, #381).
   simulation:
+    name: simulation (${{ matrix.shape.name }})
     runs-on: ubuntu-latest
     timeout-minutes: 330
     permissions:
       contents: read
       issues: write
+    strategy:
+      fail-fast: false
+      matrix:
+        shape:
+          - { name: default, clients: 3, engines: 2, suites: "", artifact: sim-regressions }
+          - { name: engine-heavy, clients: 4, engines: 3, suites: "seeds,retention", artifact: sim-regressions-engine-heavy }
     env:
       # Inputs reach the scripts only through the environment, never
       # interpolated into a script.
@@ -50,6 +62,10 @@ jobs:
       STEPS: ${{ inputs.steps || '3000' }}
       FIRST_SEED: ${{ inputs.first_seed }}
       RUN_NUMBER: ${{ github.run_number }}
+      CLIENTS: ${{ matrix.shape.clients }}
+      ENGINES: ${{ matrix.shape.engines }}
+      SUITES: ${{ matrix.shape.suites }}
+      ARTIFACT: ${{ matrix.shape.artifact }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -62,14 +78,16 @@ jobs:
           [[ $SEEDS =~ ^[0-9]+$ && $STEPS =~ ^[0-9]+$ && $RUN_NUMBER =~ ^[0-9]+$ ]] || { echo "seeds and steps must be numbers" >&2; exit 2; }
           if [[ -z $FIRST_SEED ]]; then FIRST_SEED=$(( 100000 + RUN_NUMBER * SEEDS )); fi
           [[ $FIRST_SEED =~ ^[0-9]+$ ]] || { echo "first_seed must be a number" >&2; exit 2; }
-          echo "seeds $FIRST_SEED to $(( FIRST_SEED + SEEDS - 1 )), $STEPS steps"
+          echo "seeds $FIRST_SEED to $(( FIRST_SEED + SEEDS - 1 )), $STEPS steps, $CLIENTS scripted clients, $ENGINES engine users${SUITES:+, suites $SUITES}"
+          # Unset runs every suite.
+          if [[ -n $SUITES ]]; then export VAULT_SYNC_SIM_SUITES=$SUITES; fi
           # Failing seeds are minimized into a copy of the committed cases,
           # uploaded below; the checkout stays clean.
           mkdir -p build/sim-regressions
           cp sim/regressions/*.json build/sim-regressions/
           nix develop -c make test-sim \
             SIM_FIRST_SEED="$FIRST_SEED" SIM_SEEDS="$SEEDS" SIM_STEPS="$STEPS" \
-            SIM_CLIENTS=3 SIM_ENGINES=2 SIM_SHRINK_RUNS=10 SIM_TIMEOUT=300m \
+            SIM_CLIENTS="$CLIENTS" SIM_ENGINES="$ENGINES" SIM_SHRINK_RUNS=10 SIM_TIMEOUT=300m \
             SIM_REGRESSION_DIR=build/sim-regressions 2>&1 | tee build/sim-output.txt
       - name: Binding-shadow report
         if: always()
@@ -81,7 +99,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: sim-regressions
+          name: ${{ matrix.shape.artifact }}
           path: |
             build/sim-regressions/
             build/sim-output.txt
@@ -95,7 +113,8 @@ jobs:
         run: |
           set -euo pipefail
           touch build/sim-output.txt
-          ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL" > build/sim-issue.md
+          ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL" "$ARTIFACT" \
+            "The nightly simulation ($CLIENTS scripted clients, $ENGINES engine users) failed" > build/sim-issue.md
           seeds=$(grep -oE 'SIM FAILURE: seed [0-9]+' build/sim-output.txt | grep -oE '[0-9]+$' | sort -nu | head -10 | paste -sd, - | sed 's/,/, /g' || true)
           title="sim: nightly simulation failed${seeds:+ (seeds $seeds)}"
           # One open issue at a time: later failures are added to it as comments.

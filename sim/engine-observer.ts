@@ -218,6 +218,16 @@ export class EngineObserver {
     return `${this.name} user will save ${path} just before the engine's next change of it`;
   }
 
+  /**
+   * Makes the engine's next write, delete or rename of `path` never finish, as
+   * a disk that stops answering would. Engine work the harness waits for after
+   * that never finishes either, with nothing on the network: a stall (#310).
+   */
+  hangBeforeNextEngineChange(path: string): string {
+    this.engineVault.beforeNextChange(path, () => new Promise<void>(() => undefined));
+    return `${this.name}'s next change of ${path} will never finish`;
+  }
+
   /** Whether a save armed by saveBeforeNextEngineChange has not landed yet. */
   get savePending(): boolean {
     return this.engineVault.pending;
