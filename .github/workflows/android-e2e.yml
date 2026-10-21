@@ -37,9 +37,15 @@ env:
 
 jobs:
   android:
-    name: plugin-e2e (android-emulator)
+    name: plugin-e2e (android-emulator, ${{ matrix.emulator }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # TEMPORARY (#704 diagnosis): emulator 37.2.12's renderer segfaults
+    # (SwiftShader JIT code) on some runs even with Vulkan off. Older builds.
+    strategy:
+      fail-fast: false
+      matrix:
+        emulator: [current, "14214601", "12414864"]
     defaults:
       run:
         shell: bash
@@ -66,6 +72,13 @@ jobs:
           yes | "$sdk/sdkmanager" --licenses > /dev/null || true
           "$sdk/sdkmanager" --install emulator platform-tools "$ANDROID_IMAGE" > /dev/null
           echo no | "$sdk/avdmanager" create avd -n obsidian_test -k "$ANDROID_IMAGE" -d pixel_6 --force
+          if [[ "${{ matrix.emulator }}" != current ]]; then
+            curl -fsSL --proto '=https' -o "$RUNNER_TEMP/emulator.zip" "https://dl.google.com/android/repository/emulator-linux_x64-${{ matrix.emulator }}.zip"
+            sha256sum "$RUNNER_TEMP/emulator.zip"
+            rm -rf "$ANDROID_HOME/emulator"
+            unzip -q "$RUNNER_TEMP/emulator.zip" -d "$ANDROID_HOME"
+          fi
+          grep Pkg.Revision "$ANDROID_HOME/emulator/source.properties"
 
       - name: Boot the emulator
         run: |
@@ -128,6 +141,6 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-e2e-logs
+          name: android-e2e-logs-${{ matrix.emulator }}
           path: ${{ runner.temp }}/e2e-logs
           if-no-files-found: ignore
