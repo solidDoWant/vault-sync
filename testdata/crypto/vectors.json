@@ -226,7 +226,9 @@
       "nonce": "98e9be2cbee4665627a18ab3789ea97c4143277e268a5676",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "757365722030313930643665342d386331652d376133622d396432662d356536613762386339643065",
-      "wrapped": "01000100000000000301eed2137caef5147cebffbc9ff2c38e9c98e9be2cbee4665627a18ab3789ea97c4143277e268a567670ef3ec76d69c582227f50803ab9b9112d0cc6c44b8d58f6c9fda0e630c1dfc9ca6187c3ee7726e40a00221e8e6aef6e"
+      "wrap_key": "1b28406b360e45c200b1f5df7888d651acfd91a09c6fca0a0d12bd1de82ee887",
+      "auth_key": "5cd53f47d0351bf073fa7be72b3b89770fcf85f886d2daef3a1e3131739721fe",
+      "wrapped": "01000100000000000301eed2137caef5147cebffbc9ff2c38e9c98e9be2cbee4665627a18ab3789ea97c4143277e268a5676a52318996326aef57de34cd8e4408ee5da44ef87f2ea983fc52526494feb1e8259b67d6e9fca6caeb997921889026592"
     },
     {
       "name": "minimum parameters, empty aad",
@@ -238,7 +240,9 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "wrap_key": "14ca7c4eab5c37e61fa358e87b19700ef31a575bb924ac928300f9619a79578d",
+      "auth_key": "9a41254811cc0f863621888509b36ac88c7106a08bed9dd2958b5437e6bfbeba",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "two lanes",
@@ -250,7 +254,9 @@
       "nonce": "c63acf511064a296659cd5f5f74c57156803f3cffd6befe7",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrapped": "0100004c0000000002025a3427c62eef117a6141eca7c999339dc63acf511064a296659cd5f5f74c57156803f3cffd6befe71108f61155bb9c73944ac746e26198bebc090e78582ca93820c7d90917f29fd9747e0749c0dcabbe84cbe9512e10de88"
+      "wrap_key": "7301093835ac26517770fc85b6df1189fc8398dd3cd87c98d643fffcc321eddf",
+      "auth_key": "67a2c6aa9e843a9fc73132eaeec9e2f7db7107483b8c7226b629c60ede2684c3",
+      "wrapped": "0100004c0000000002025a3427c62eef117a6141eca7c999339dc63acf511064a296659cd5f5f74c57156803f3cffd6befe7735005f40eb8cfcecf68e6ad504b6550e3e1e300c4713eb34dabdd0354b0396fe160d0c98978377822f452c0b335338e"
     },
     {
       "name": "precomposed passphrase",
@@ -262,7 +268,9 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe33f2ac5e8783c97a9299880e7fc10b0828333300f060e2b8125ae1aa74a774630fc1dc22df8240f1ca834bfec9509380"
+      "wrap_key": "152d3e7724e0d6b17a8f330623347632c37bd450e3fd95591bff3170ccb2452d",
+      "auth_key": "25a408791876ac820a03d9069e19bba499098e1cceaa88fc835dfa05ae23e39f",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbedd40c31b0b1e607e8e89e13bfe343db4eb16261eb7d17df02473f5afefb00615c5baad8c726645ced5154aa2ddcf7f95"
     },
     {
       "name": "decomposed passphrase",
@@ -274,7 +282,9 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe33f2ac5e8783c97a9299880e7fc10b0828333300f060e2b8125ae1aa74a774630fc1dc22df8240f1ca834bfec9509380"
+      "wrap_key": "152d3e7724e0d6b17a8f330623347632c37bd450e3fd95591bff3170ccb2452d",
+      "auth_key": "25a408791876ac820a03d9069e19bba499098e1cceaa88fc835dfa05ae23e39f",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbedd40c31b0b1e607e8e89e13bfe343db4eb16261eb7d17df02473f5afefb00615c5baad8c726645ced5154aa2ddcf7f95"
     },
     {
       "name": "Unicode 17 mark, precomposed passphrase",
@@ -286,7 +296,9 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe9b044d79eb9d4ba220d30d807966f4cab30737b3aac75fac490745166bba937ec15f7e949ef99df0c97b07816ebb9d3a"
+      "wrap_key": "48d69e655ea53c791667b2cefe4357af4975b2909a8d5fbf3a0a4bf5730b97d5",
+      "auth_key": "c6400266c9bdced633d46f45eaccad3ae2fba01162e62c317fd0a182583a11bc",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe8a95bc7b9468f4c81a495cb1ee7346904ee02c4b716a7e8adafb19d445a311cf7619ddd9ed3e6810e525bf1f131df7d2"
     },
     {
       "name": "Unicode 17 mark, decomposed passphrase",
@@ -298,7 +310,9 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe9b044d79eb9d4ba220d30d807966f4cab30737b3aac75fac490745166bba937ec15f7e949ef99df0c97b07816ebb9d3a"
+      "wrap_key": "48d69e655ea53c791667b2cefe4357af4975b2909a8d5fbf3a0a4bf5730b97d5",
+      "auth_key": "c6400266c9bdced633d46f45eaccad3ae2fba01162e62c317fd0a182583a11bc",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe8a95bc7b9468f4c81a495cb1ee7346904ee02c4b716a7e8adafb19d445a311cf7619ddd9ed3e6810e525bf1f131df7d2"
     }
   ],
   "rejected": [
@@ -461,35 +475,42 @@
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f068b918475521f8e3b1b00b3f6a4ae1b"
+      "sealed": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb39b735ffc5681c85e3a7fd3a0d0dd33f4"
     },
     {
       "name": "passphrase: wrong passphrase",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple ",
       "aad": "",
-      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
+    },
+    {
+      "name": "passphrase: sealed under the auth key",
+      "kind": "passphrase",
+      "passphrase": "correct horse battery staple",
+      "aad": "",
+      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe3dd56715acdff535c2d3d191d923a32f7e14fff3ea7a221e4be492dd2cd9975e1d2066b8a3b4d8c3461b04cbdcc25a31"
     },
     {
       "name": "passphrase: aad added",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "75736572",
-      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "passphrase: tag truncated by one byte",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dff"
+      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2dd"
     },
     {
       "name": "passphrase: tag removed",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f"
+      "sealed": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3"
     },
     {
       "name": "passphrase: header only",
@@ -503,63 +524,63 @@
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000201f548e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "0100004c000000000201f548e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "passphrase: iterations changed in header",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000301f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "0100004c000000000301f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "passphrase: memory below minimum",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004bff0000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe36cb15862a4de43671ba523d3e98bc8d66c757896e41dcf5b35e9e1ca0755e99c246101de5e9c295e6c5adbb081633c5"
+      "sealed": "0100004bff0000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbea22935b79c0996cf37c40e9c3e18c73e8b92085541e9d4ac4a5a4b2ee9338f4aa4f9e1ffed4c3af2274f3d4c129b3de7"
     },
     {
       "name": "passphrase: iterations below minimum",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000101f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe6df477e399ce45032e3bb6525a7d28ccfff270c8f1cb8efab15762b83712128e9a28e8e573a0cbfaf60c9019cf84463c"
+      "sealed": "0100004c000000000101f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbefd596557d20fa1ad081edf02ffee662d081777328a6edae93e61c2cc67c77bc6fb12e98e3bd392b59a9484ffc56050d9"
     },
     {
       "name": "passphrase: parallelism above maximum",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000205f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeae10e42c741918bae99f3e6b0023de315d8bd491c9cacb518c84bca0d73c6971e601ca7447e16c0ecd9f6026c9108989"
+      "sealed": "0100004c000000000205f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe7fc04d10a39615cccd1ec1ce878ab8c68bf17530741dce4f26388939c0750be160ba5d3821b14c5bee5a343c1c6ab20d"
     },
     {
       "name": "passphrase: memory above maximum",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "01000200010000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "01000200010000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "passphrase: iterations above maximum",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000901f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "0100004c000000000901f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "passphrase: parallelism zero",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "0100004c000000000200f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "0100004c000000000200f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     },
     {
       "name": "passphrase: memory 4 GiB",
       "kind": "passphrase",
       "passphrase": "correct horse battery staple",
       "aad": "",
-      "sealed": "01ffffffff0000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe85da4797ec027bae74c706ca5d455175379c2c36fb004046b928947fd7c35b0f5ac685f68dbbd6c05c43b867c32dffea"
+      "sealed": "01ffffffff0000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     }
   ]
 }

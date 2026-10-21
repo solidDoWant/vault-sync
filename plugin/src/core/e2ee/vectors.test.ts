@@ -9,6 +9,7 @@ import shared from "../../../../testdata/crypto/vectors.json";
 import {
   blobId,
   DecryptError,
+  derivePassphraseKeys,
   deriveSubkey,
   open,
   openFrom,
@@ -17,6 +18,7 @@ import {
   sealToWith,
   sealWithNonce,
   type SubkeyLabel,
+  unwrapWithKey,
   unwrapWithPassphrase,
   wrapWith,
 } from "./e2ee";
@@ -101,12 +103,25 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   }
 
   for (const vector of shared.passphrase) {
-    it(`wraps and unwraps with a passphrase: ${vector.name}`, () => {
+    it(`wraps and unwraps with a passphrase: ${vector.name}`, async () => {
       const params = { memory: vector.memory, iterations: vector.iterations, parallelism: vector.parallelism };
       const aad = hexToBytes(vector.aad);
-      const wrapped = wrapWith(vector.passphrase, params, hexToBytes(vector.salt), hexToBytes(vector.nonce), hexToBytes(vector.secret), aad);
+      const { wrapped, keys } = await wrapWith(
+        vector.passphrase,
+        params,
+        hexToBytes(vector.salt),
+        hexToBytes(vector.nonce),
+        hexToBytes(vector.secret),
+        aad,
+      );
       expect(bytesToHex(wrapped)).toBe(vector.wrapped);
-      expect(bytesToHex(unwrapWithPassphrase(vector.passphrase, hexToBytes(vector.wrapped), aad))).toBe(vector.secret);
+      expect(bytesToHex(keys.wrapKey)).toBe(vector.wrap_key);
+      expect(bytesToHex(keys.authKey)).toBe(vector.auth_key);
+      const derived = await derivePassphraseKeys(vector.passphrase, params, hexToBytes(vector.salt));
+      expect(bytesToHex(derived.wrapKey)).toBe(vector.wrap_key);
+      expect(bytesToHex(derived.authKey)).toBe(vector.auth_key);
+      expect(bytesToHex(await unwrapWithPassphrase(vector.passphrase, hexToBytes(vector.wrapped), aad))).toBe(vector.secret);
+      expect(bytesToHex(unwrapWithKey(hexToBytes(vector.wrap_key), hexToBytes(vector.wrapped), aad))).toBe(vector.secret);
     });
   }
 
@@ -124,10 +139,10 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   });
 
   for (const vector of shared.rejected) {
-    it(`refuses: ${vector.name}`, () => {
+    it(`refuses: ${vector.name}`, async () => {
       const sealed = hexToBytes(vector.sealed);
       const aad = hexToBytes(vector.aad);
-      const attempt = (): Uint8Array => {
+      const attempt = (): Uint8Array | Promise<Uint8Array> => {
         switch (vector.kind) {
           case "aead":
             return open(hexToBytes(vector.key ?? ""), sealed, aad);
@@ -139,7 +154,7 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
             throw new Error(`unknown kind ${vector.kind}`);
         }
       };
-      expect(attempt).toThrow(DecryptError);
+      await expect((async () => attempt())()).rejects.toThrow(DecryptError);
     });
   }
 });
