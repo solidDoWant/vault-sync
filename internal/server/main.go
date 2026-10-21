@@ -126,6 +126,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Vaults:                   queries,
 		Memberships:              queries,
 		Membership:               &api.MembershipService{Store: queries, Logger: logger},
+		UserKeys:                 &api.UserKeyService{Store: queries, Logger: logger},
 		Sync:                     &api.SyncService{Store: queries, Logger: logger},
 		Blobs:                    blobs,
 		Realtime:                 hub,

@@ -103,6 +103,9 @@ type Options struct {
 	// Membership serves MembershipService. When nil, MembershipService is
 	// unimplemented. Its Logger defaults to Logger.
 	Membership *api.MembershipService
+	// UserKeys serves UserKeyService. When nil, UserKeyService is
+	// unimplemented. Its Logger defaults to Logger.
+	UserKeys *api.UserKeyService
 	// Sync serves SyncService. When nil, SyncService is unimplemented. Its
 	// Logger defaults to Logger.
 	Sync *api.SyncService
@@ -296,6 +299,17 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 		membership = service
 	}
 
+	var userKeys vaultsyncv1connect.UserKeyServiceHandler = vaultsyncv1connect.UnimplementedUserKeyServiceHandler{}
+
+	if options.UserKeys != nil {
+		service := *options.UserKeys
+		if service.Logger == nil {
+			service.Logger = options.Logger
+		}
+
+		userKeys = service
+	}
+
 	mux := http.NewServeMux()
 	serverInfo := api.ServerInfoService{OIDCIssuerURL: options.OIDCIssuerURL, OIDCClientID: options.OIDCClientID}
 
@@ -311,6 +325,7 @@ func newAPIHandler(options Options, metrics *rpcMetrics, limiter *userLimiter) h
 	mux.Handle(vaultsyncv1connect.NewVaultServiceHandler(vaults, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewDeviceServiceHandler(devices, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewMembershipServiceHandler(membership, handlerOptions...))
+	mux.Handle(vaultsyncv1connect.NewUserKeyServiceHandler(userKeys, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewSyncServiceHandler(syncHandler, handlerOptions...))
 	mux.Handle(vaultsyncv1connect.NewBlobServiceHandler(blobs, handlerOptions...))
 
