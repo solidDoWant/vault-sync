@@ -1,10 +1,12 @@
 import { Code, ConnectError } from "@connectrpc/connect";
+import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 
 import { sha256Hex } from "../hash";
 import type { DocumentState, JournalChanges } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import { InMemoryVault } from "../vault/memory";
+import type { PathPlatform } from "../vaultpath/platform";
 import { Bindings } from "./bindings";
 import { PathSpace } from "./pathspace";
 import { Crash, CrashingJournal, CrashPoints, harness, type Harness } from "./testing";
@@ -420,6 +422,39 @@ describe("Bindings rules", () => {
     expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "user-deleted" });
   });
 
+  it("moves the first of two documents bound to a renamed file and releases the other (C1, #641)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    points.count = 0;
+    await owner.renamed("y.md", "z.md");
+
+    expect(points.count).toBe(1);
+    expect(await binding(journal, "Y1")).toEqual({ binding: { spelling: "z.md", fileKey: "z.md", seen: hash("y1") }, absence: null });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "released" });
+    expect(await journal.documentsByFileKey("y.md")).toEqual([]);
+  });
+
+  it("releases the other of two documents bound to a file the user renames case-only on Windows (C1, #641)", async () => {
+    const windows = new PathSpace({ platform: "windows" });
+    const journal = new InMemoryJournal();
+    const y1 = base("Y1", "y.md", "y1");
+    const y2 = base("Y2", "Y.md", "y2");
+    await journal.putDocument({ ...y1, binding: { spelling: "y.md", fileKey: windows.filesystemKey("y.md"), seen: y1.baseHash }, absence: null });
+    await journal.putDocument({ ...y2, binding: { spelling: "y.md", fileKey: windows.filesystemKey("y.md"), seen: y2.baseHash }, absence: null });
+    const vault = new InMemoryVault({ pathRules: { platform: "windows" } });
+    await vault.write("y.md", bytes("y1"));
+    const owner = new Bindings(journal, vault, windows);
+    await owner.idle();
+
+    await owner.renamed("y.md", "Y.md");
+
+    expect((await binding(journal, "Y1")).binding?.spelling).toBe("Y.md");
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "released" });
+  });
+
   it("unbinds every document bound to a deleted file in one journal transaction (E3, §4.3)", async () => {
     const points = new CrashPoints();
     const journal = new CrashingJournal(points);
@@ -648,5 +683,74 @@ describe("pending creates as bindings (refactor step R5a)", () => {
     expect(await h.journal.listPending()).toEqual([]);
     expect(await h.journal.getDocument(mine)).toBeUndefined();
     expect(await row(h, "D")).toEqual({ binding: created.binding, absence: null });
+  });
+});
+
+// Design §10.1 fix rule (#641): a property over Bindings that generates the
+// class, journals a v2 migration left with several documents bound at one
+// file key (indexeddb.ts deriveV3Records), followed by user renames and
+// deletes, and checks C1 (INV-1) after every transition: no file key a
+// transition touched has two bound documents, and every binding names a file
+// the vault holds. A duplicate no transition touched is the migration's.
+describe("Bindings keep one document per file key over v2 duplicates (C1, #641)", () => {
+  const pool = ["a.md", "A.md", "b.md", "y.md", "Y.md", "z.md"];
+  type Step = { type: "rename"; from: number; to: number } | { type: "delete"; path: number };
+  const path = fc.nat({ max: pool.length - 1 });
+  const step: fc.Arbitrary<Step> = fc.oneof(
+    fc.tuple(path, path).map(([from, to]): Step => ({ type: "rename", from, to })),
+    path.map((at): Step => ({ type: "delete", path: at })),
+  );
+
+  it("binds at most one document to each file key a transition touched, and only to files the vault holds", async () => {
+    await fc.assert(
+      fc.asyncProperty(fc.constantFrom<PathPlatform>("posix", "windows"), fc.array(path, { minLength: 1, maxLength: 5 }), fc.array(step, { maxLength: 8 }), async (platform, bound, steps) => {
+        const space = new PathSpace({ platform });
+        const journal = new InMemoryJournal();
+        const vault = new InMemoryVault({ pathRules: { platform } });
+        // The disk as the user changes it: file key → spelling.
+        const disk = new Map<string, string>();
+        for (const [index, at] of bound.entries()) {
+          const spelling = pool[at] ?? "";
+          const key = space.filesystemKey(spelling);
+          if (!disk.has(key)) {
+            disk.set(key, spelling);
+            await vault.write(spelling, bytes(spelling));
+          }
+          const content = `d${String(index)}`;
+          await journal.putDocument({ documentId: `D${String(index)}`, path: spelling, revisionId: `D${String(index)}-1`, seq: 1n, baseHash: hash(content), size: 2n, kind: "text", deleted: false, binding: { spelling, fileKey: key, seen: hash(content) }, absence: null });
+        }
+        const owner = new Bindings(journal, vault, space);
+        await owner.idle();
+        const touched = new Set<string>();
+        for (const next of steps) {
+          if (next.type === "rename") {
+            const from = pool[next.from] ?? "";
+            const to = pool[next.to] ?? "";
+            const [fromKey, toKey] = [space.filesystemKey(from), space.filesystemKey(to)];
+            // The vault renames only an existing file, and never onto another one.
+            if (from === to || !disk.has(fromKey) || (fromKey !== toKey && disk.has(toKey))) continue;
+            disk.delete(fromKey);
+            disk.set(toKey, to);
+            touched.add(fromKey).add(toKey);
+            await owner.renamed(from, to);
+          } else {
+            const at = pool[next.path] ?? "";
+            if (!disk.delete(space.filesystemKey(at))) continue;
+            touched.add(space.filesystemKey(at));
+            await owner.deleted(at, "user");
+          }
+          const holders = new Map<string, string[]>();
+          for (const state of await journal.listDocuments()) {
+            if (state.binding === undefined || state.binding === null) continue;
+            holders.set(state.binding.fileKey, [...(holders.get(state.binding.fileKey) ?? []), state.documentId]);
+          }
+          for (const [key, documents] of holders) {
+            if (touched.has(key)) expect(documents.length, `documents bound at ${key}: ${documents.join(", ")}`).toBe(1);
+            expect(disk.has(key), `${documents.join(", ")} bound at ${key}, which the vault does not hold`).toBe(true);
+          }
+        }
+      }),
+      { seed: 641, numRuns: 500 },
+    );
   });
 });
