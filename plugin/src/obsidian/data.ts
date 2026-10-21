@@ -20,6 +20,13 @@ export interface PluginData {
   deviceName: string;
   /** This install's registered device. Registered once per account, then reused. */
   device?: RegisteredDevice;
+  /**
+   * A device registration that was started but whose result is not stored
+   * in `device` yet. Saved before RegisterDevice is called, so a retry after
+   * a crash or a lost response sends the same registration id and the server
+   * returns the device it already registered (#428).
+   */
+  pendingDevice?: PendingDevice;
   /** The server vault this local vault syncs with. */
   vault?: ConnectedVault;
   /**
@@ -42,6 +49,18 @@ export interface RegisteredDevice {
   /** The server it is registered with (serverBaseUrl). */
   serverUrl: string;
   /** The OIDC issuer and subject of the account that registered it. */
+  issuer: string;
+  subject: string;
+}
+
+/** A RegisterDevice call that may have succeeded without its result being stored. */
+export interface PendingDevice {
+  /** The client-chosen registration id (a canonical lowercase UUID). */
+  registrationId: string;
+  /** The name it registers, kept so a retry sends the same one. */
+  name: string;
+  /** The account it registers for, as in RegisteredDevice. */
+  serverUrl: string;
   issuer: string;
   subject: string;
 }
@@ -80,6 +99,8 @@ export function parsePluginData(raw: unknown): PluginData {
   if (identityProvider !== undefined) data.identityProvider = identityProvider;
   const device = record(stored.device, ["id", "serverUrl", "issuer", "subject"]);
   if (device !== undefined) data.device = device;
+  const pendingDevice = record(stored.pendingDevice, ["registrationId", "name", "serverUrl", "issuer", "subject"]);
+  if (pendingDevice !== undefined) data.pendingDevice = pendingDevice;
   const vault = record(stored.vault, ["id", "name", "serverUrl"]);
   if (vault !== undefined) data.vault = vault;
   const configSync = parseConfigSync(stored.configSync);

@@ -1,6 +1,7 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -89,11 +90,27 @@ type Device struct {
 // commit refreshes it, so that a burst of commits rewrites the row once.
 const deviceLastSeenGranularity = "1 minute"
 
-// RegisterDevice registers a device for userID. publicKey is nil or a 32
-// byte X25519 public key. It returns ErrDeviceLimit when the user already
+// ErrRegistrationConflict is returned when a registration id names a
+// device of the user's, not removed, whose name or public key differ from
+// the registration's.
+var ErrRegistrationConflict = errors.New("registration id already names a different device")
+
+// RegisterDevice registers a device for userID without a registration id,
+// so every call registers a new device. See RegisterDeviceOnce.
+func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name string, publicKey []byte, limit int) (Device, error) {
+	return store.RegisterDeviceOnce(ctx, userID, uuid.NullUUID{}, name, publicKey, limit)
+}
+
+// RegisterDeviceOnce registers a device for userID. publicKey is nil or a
+// 32 byte X25519 public key. It returns ErrDeviceLimit when the user already
 // has limit devices that have not been removed, and ErrUserNotFound when the
 // user does not exist.
-func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name string, publicKey []byte, limit int) (Device, error) {
+//
+// With a valid registrationID it is idempotent: when the user has a device
+// that is not removed with that registration id, it returns that device,
+// without counting it against the limit again, if its name and public key
+// match, and ErrRegistrationConflict otherwise.
+func (store *Store) RegisterDeviceOnce(ctx context.Context, userID uuid.UUID, registrationID uuid.NullUUID, name string, publicKey []byte, limit int) (Device, error) {
 	id, err := uuid.NewV7()
 	if err != nil {
 		return Device{}, fmt.Errorf("generate device id: %w", err)
@@ -107,9 +124,10 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 
 	err = pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
 		// Locking the user row serializes concurrent registrations, so the
-		// limit cannot be overshot. The count must be a separate statement:
-		// under READ COMMITTED it then takes a snapshot after the lock was
-		// granted and sees the devices of registrations that held it before.
+		// limit cannot be overshot and a registration id cannot register
+		// twice. The statements after it must be separate: under READ
+		// COMMITTED each then takes a snapshot after the lock was granted
+		// and sees the devices of registrations that held it before.
 		// The lock must stay the transaction's first statement: holding no
 		// other lock while waiting for it, the transaction cannot be part of
 		// a deadlock cycle, even with transactions whose FK checks hold the
@@ -125,6 +143,23 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 			return fmt.Errorf("lock user: %w", err)
 		}
 
+		if registrationID.Valid {
+			existing, found, err := registeredDevice(ctx, tx, userID, registrationID.UUID)
+			if err != nil {
+				return err
+			}
+
+			if found {
+				if existing.Name != name || !bytes.Equal(existing.PublicKey, publicKey) {
+					return ErrRegistrationConflict
+				}
+
+				device = existing
+
+				return nil
+			}
+		}
+
 		var count int
 		if err := tx.QueryRow(ctx, `SELECT count(*) FROM devices WHERE user_id = $1 AND removed_at IS NULL`, userID).Scan(&count); err != nil {
 			return fmt.Errorf("count devices: %w", err)
@@ -135,8 +170,8 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 		}
 
 		err = tx.QueryRow(ctx, `
-			INSERT INTO devices (id, user_id, name, public_key) VALUES ($1, $2, $3, $4)
-			RETURNING created_at`, id, userID, name, publicKey).Scan(&device.CreatedAt)
+			INSERT INTO devices (id, user_id, name, public_key, registration_id) VALUES ($1, $2, $3, $4, $5)
+			RETURNING created_at`, id, userID, name, publicKey, registrationID).Scan(&device.CreatedAt)
 		if err != nil {
 			return fmt.Errorf("insert device: %w", err)
 		}
@@ -148,6 +183,26 @@ func (store *Store) RegisterDevice(ctx context.Context, userID uuid.UUID, name s
 	}
 
 	return device, nil
+}
+
+// registeredDevice returns userID's device, not removed, registered with
+// registrationID, if there is one.
+func registeredDevice(ctx context.Context, tx pgx.Tx, userID, registrationID uuid.UUID) (Device, bool, error) {
+	var device Device
+
+	err := tx.QueryRow(ctx, `
+		SELECT id, user_id, name, public_key, created_at, last_seen FROM devices
+		WHERE user_id = $1 AND registration_id = $2 AND removed_at IS NULL`, userID, registrationID).
+		Scan(&device.ID, &device.UserID, &device.Name, &device.PublicKey, &device.CreatedAt, &device.LastSeen)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Device{}, false, nil
+	}
+
+	if err != nil {
+		return Device{}, false, fmt.Errorf("look up registration: %w", err)
+	}
+
+	return device, true, nil
 }
 
 // ListDevices returns userID's devices that have not been removed, oldest

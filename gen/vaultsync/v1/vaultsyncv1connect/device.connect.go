@@ -51,7 +51,18 @@ type DeviceServiceClient interface {
 	//
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
 	// a control character (such as U+0000), or a public key
-	// that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+	// that is neither empty nor 32 bytes, or a registration_id that is
+	// neither empty nor a canonical lowercase UUID; RESOURCE_EXHAUSTED, with
+	// an ErrorDetail of reason ERROR_REASON_DEVICE_LIMIT, when the caller has
+	// reached the server's device limit; ALREADY_EXISTS when registration_id
+	// names a device of the caller's, not removed, whose name or public key
+	// differ from the request's.
+	//
+	// A call with a registration_id is idempotent: a retry with the same
+	// registration_id, name and public key returns the device the first call
+	// registered (if it is not removed) and uses no further place under the
+	// device limit, so a client that lost the response, or crashed before
+	// saving it, can retry safely.
 	//
 	// The limit counts the caller's devices that have not been removed
 	// (RemoveDevice), so removing a device frees a place for a new one.
@@ -138,7 +149,18 @@ type DeviceServiceHandler interface {
 	//
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
 	// a control character (such as U+0000), or a public key
-	// that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+	// that is neither empty nor 32 bytes, or a registration_id that is
+	// neither empty nor a canonical lowercase UUID; RESOURCE_EXHAUSTED, with
+	// an ErrorDetail of reason ERROR_REASON_DEVICE_LIMIT, when the caller has
+	// reached the server's device limit; ALREADY_EXISTS when registration_id
+	// names a device of the caller's, not removed, whose name or public key
+	// differ from the request's.
+	//
+	// A call with a registration_id is idempotent: a retry with the same
+	// registration_id, name and public key returns the device the first call
+	// registered (if it is not removed) and uses no further place under the
+	// device limit, so a client that lost the response, or crashed before
+	// saving it, can retry safely.
 	//
 	// The limit counts the caller's devices that have not been removed
 	// (RemoveDevice), so removing a device frees a place for a new one.

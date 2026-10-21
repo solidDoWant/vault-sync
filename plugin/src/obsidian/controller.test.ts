@@ -3,6 +3,7 @@ import { Code, ConnectError, createClient, createRouterTransport } from "@connec
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeviceService } from "../gen/vaultsync/v1/device_pb";
+import { ErrorDetailSchema, ErrorReason } from "../gen/vaultsync/v1/errors_pb";
 import { DeviceSchema, VaultEncryption, VaultRole, VaultSchema } from "../gen/vaultsync/v1/types_pb";
 import { VaultService } from "../gen/vaultsync/v1/vault_pb";
 import type { AuthState } from "../core/auth/tokens";
@@ -27,9 +28,10 @@ afterEach(() => {
 });
 
 /** The device and vault services, faked; sync and blobs from an in-memory server. */
-function fakeServer(options: { registerDevice?: (name: string) => string; role?: VaultRole; listVaults?: () => void } = {}) {
+function fakeServer(options: { registerDevice?: (name: string, registrationId: string) => string; role?: VaultRole; listVaults?: () => void } = {}) {
   const sync = new InMemoryServer();
   const registered: string[] = [];
+  const registrationIds: string[] = [];
   const vaults = [
     create(VaultSchema, {
       id: sync.vaultId,
@@ -51,7 +53,8 @@ function fakeServer(options: { registerDevice?: (name: string) => string; role?:
   const transport = createRouterTransport(({ service }) => {
     service(DeviceService, {
       registerDevice: (request) => {
-        const id = options.registerDevice?.(request.name) ?? `device-${String(registered.length + 1)}`;
+        registrationIds.push(request.registrationId);
+        const id = options.registerDevice?.(request.name, request.registrationId) ?? `device-${String(registered.length + 1)}`;
         registered.push(request.name);
         return { device: create(DeviceSchema, { id, name: request.name }) };
       },
@@ -73,7 +76,13 @@ function fakeServer(options: { registerDevice?: (name: string) => string; role?:
     devices: createClient(DeviceService, transport),
     vaults: createClient(VaultService, transport),
   };
-  return { sync, client, registered };
+  return { sync, client, registered, registrationIds };
+}
+
+/** A RESOURCE_EXHAUSTED error, with the machine-readable reason when one is given. */
+function resourceExhausted(message: string, reason?: ErrorReason): ConnectError {
+  const details = reason === undefined ? [] : [{ desc: ErrorDetailSchema, value: { reason } }];
+  return new ConnectError(message, Code.ResourceExhausted, undefined, details);
 }
 
 const settings: PluginData = {
@@ -188,7 +197,8 @@ describe("ensureDevice", () => {
     };
 
     expect(await ensureDevice(options)).toBe("device-1");
-    expect(saves).toBe(1);
+    // The registration id before the call (#428), then the device.
+    expect(saves).toBe(2);
     // A restart: the stored plugin data, read back.
     const reloaded = parsePluginData(JSON.parse(JSON.stringify(data)));
     expect(await ensureDevice({ ...options, data: reloaded })).toBe("device-1");
@@ -271,7 +281,7 @@ describe("ensureDevice", () => {
   it("reports the server's device limit as such, with the server's message", async () => {
     const server = fakeServer({
       registerDevice: () => {
-        throw new ConnectError("at most 100 devices may be registered", Code.ResourceExhausted);
+        throw resourceExhausted("at most 100 devices may be registered", ErrorReason.DEVICE_LIMIT);
       },
     });
     const data = { ...settings };
@@ -288,10 +298,15 @@ describe("ensureDevice", () => {
     expect(data.device).toBeUndefined();
   });
 
-  it("does not take the per-user limit on concurrent requests for the device limit", async () => {
+  it.each([
+    // The server's limiter, even worded like the device limit: only the reason counts (#428).
+    ["the per-user limit on concurrent requests", resourceExhausted("at most 100 devices may be registered", ErrorReason.TOO_MANY_CONCURRENT_REQUESTS)],
+    // A request over the size limit, or a server too old to send reasons.
+    ["a refusal without a reason", resourceExhausted("at most 100 devices may be registered")],
+  ])("does not take %s for the device limit", async (_, refusal) => {
     const server = fakeServer({
       registerDevice: () => {
-        throw new ConnectError("too many concurrent requests from this user; retry once earlier requests complete", Code.ResourceExhausted);
+        throw refusal;
       },
     });
     const failure = ensureDevice({
@@ -306,6 +321,149 @@ describe("ensureDevice", () => {
       code: Code.ResourceExhausted,
     });
     await expect(failure).rejects.not.toBeInstanceOf(DeviceLimitError);
+  });
+
+  it.each([
+    ["UNAVAILABLE", new ConnectError("connection reset", Code.Unavailable)],
+    ["DEADLINE_EXCEEDED", new ConnectError("deadline exceeded", Code.DeadlineExceeded)],
+    ["a RESOURCE_EXHAUSTED without the device-limit reason", resourceExhausted("too many requests")],
+    ["a network error", new TypeError("Failed to fetch")],
+  ])("retries a registration after %s with the same registration id and name (#428)", async (_, failure) => {
+    let lose = true;
+    const server = fakeServer({
+      registerDevice: () => {
+        // The server may have registered the device before the plugin lost
+        // the response, so the retry must not look like a new install.
+        if (lose) {
+          lose = false;
+          throw failure;
+        }
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Laptop" };
+    let disk = "";
+    const options = {
+      data,
+      save: () => {
+        disk = JSON.stringify(data);
+        return Promise.resolve();
+      },
+      client: server.client,
+      accessToken: () => Promise.resolve(tokenFor("alice")),
+      defaultDeviceName: "desktop",
+    };
+
+    await expect(ensureDevice(options)).rejects.toThrow();
+    // A restart reads what was saved; the user renamed the device meanwhile.
+    const reloaded = { ...parsePluginData(JSON.parse(disk)), deviceName: "Renamed" };
+    expect(await ensureDevice({ ...options, data: reloaded })).toBe("device-1");
+
+    expect(server.registrationIds).toHaveLength(2);
+    expect(server.registrationIds[0]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    expect(server.registrationIds[1]).toBe(server.registrationIds[0]);
+    expect(server.registered).toEqual(["Laptop"]);
+    expect(reloaded.device?.id).toBe("device-1");
+    expect(reloaded.pendingDevice).toBeUndefined();
+  });
+
+  it("uses a new registration id for each account it registers", async () => {
+    const server = fakeServer();
+    const data = { ...settings };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+    await ensureDevice(options);
+    await ensureDevice({ ...options, accessToken: () => Promise.resolve(tokenFor("bob")) });
+
+    expect(server.registrationIds).toHaveLength(2);
+    expect(server.registrationIds[0]).not.toBe(server.registrationIds[1]);
+  });
+
+  it.each([
+    ["INVALID_ARGUMENT", Code.InvalidArgument, DeviceNameError],
+    ["ALREADY_EXISTS", Code.AlreadyExists, ConnectError],
+  ])("drops the saved registration after a %s refusal, so the next attempt registers anew (#428)", async (_, code, thrown) => {
+    let refuse = true;
+    const server = fakeServer({
+      registerDevice: () => {
+        if (refuse) {
+          refuse = false;
+          throw new ConnectError("refused", code);
+        }
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Laptop" };
+    let disk = "";
+    const options = {
+      data,
+      save: () => {
+        disk = JSON.stringify(data);
+        return Promise.resolve();
+      },
+      client: server.client,
+      accessToken: () => Promise.resolve(tokenFor("alice")),
+      defaultDeviceName: "desktop",
+    };
+
+    const failure = ensureDevice(options);
+    await expect(failure).rejects.toBeInstanceOf(thrown);
+    // What a restart reads holds no registration to resend.
+    const reloaded = { ...parsePluginData(JSON.parse(disk)), deviceName: "Renamed" };
+    expect(reloaded.pendingDevice).toBeUndefined();
+    expect(await ensureDevice({ ...options, data: reloaded })).toBe("device-1");
+
+    expect(server.registrationIds).toHaveLength(2);
+    expect(server.registrationIds[1]).not.toBe(server.registrationIds[0]);
+    expect(server.registered).toEqual(["Renamed"]);
+  });
+
+  it("registers the renamed device after the server refused its name (#428, #557)", async () => {
+    const server = fakeServer({
+      registerDevice: (name) => {
+        // A name the server refuses for a rule this device does not apply.
+        if (name.startsWith("Refused")) throw new ConnectError("name must be valid UTF-8 without control, format or line separator characters", Code.InvalidArgument);
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Refused phone" };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+
+    await expect(ensureDevice(options)).rejects.toBeInstanceOf(DeviceNameError);
+    // Trying again without renaming is refused again: nothing was registered.
+    await expect(ensureDevice(options)).rejects.toBeInstanceOf(DeviceNameError);
+    data.deviceName = "Phone";
+    expect(await ensureDevice(options)).toBe("device-1");
+
+    expect(server.registered).toEqual(["Phone"]);
+    expect(data.device?.id).toBe("device-1");
+    expect(data.pendingDevice).toBeUndefined();
+  });
+
+  it.each([
+    ["account", "bob", undefined],
+    ["server", "alice", "https://other.example"],
+  ])("does not resend another %s's unfinished registration (#428)", async (_, subject, serverUrl) => {
+    let fail = true;
+    const server = fakeServer({
+      registerDevice: () => {
+        if (fail) {
+          fail = false;
+          throw new ConnectError("connection reset", Code.Unavailable);
+        }
+        return "device-1";
+      },
+    });
+    const data = { ...settings, deviceName: "Laptop" };
+    const options = { data, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" };
+
+    await expect(ensureDevice(options)).rejects.toThrow();
+    data.deviceName = "Work laptop";
+    if (serverUrl !== undefined) data.serverUrl = serverUrl;
+    expect(await ensureDevice({ ...options, accessToken: () => Promise.resolve(tokenFor(subject)) })).toBe("device-1");
+
+    expect(server.registrationIds).toHaveLength(2);
+    expect(server.registrationIds[1]).not.toBe(server.registrationIds[0]);
+    expect(server.registered).toEqual(["Work laptop"]);
   });
 });
 
@@ -492,7 +650,7 @@ describe("SyncController", () => {
   it("shows the device limit as an error and starts no sync", async () => {
     const server = fakeServer({
       registerDevice: () => {
-        throw new ConnectError("at most 100 devices may be registered", Code.ResourceExhausted);
+        throw resourceExhausted("at most 100 devices may be registered", ErrorReason.DEVICE_LIMIT);
       },
     });
     const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
