@@ -94,6 +94,52 @@ export function harnessAliases(path: string, live: Iterable<string>, platform: P
 }
 
 /**
+ * The check of each live document against what a quiesced device holds
+ * (`files`, path to content hash) and reports as unmaterializable: held with
+ * the head's content, or missing for a reason the harness agrees with (the
+ * platform cannot hold the path, or another live document of its `F`-alias
+ * group holds the one file, design §3.1, decision #52). Adds the documents
+ * not this device's to sync to `outOfScope`.
+ */
+export function checkLiveDocuments(device: {
+  name: string;
+  platform: PathPlatform;
+  /** The server's live heads: path to content hash. */
+  heads: ReadonlyMap<string, string>;
+  files: ReadonlyMap<string, string>;
+  unmaterializable: ReadonlyMap<string, string>;
+  outOfScope?: Set<string>;
+  isSynced?: (path: string) => boolean;
+}): Violation[] {
+  const { name, platform, heads, files, unmaterializable } = device;
+  const violations: Violation[] = [];
+  for (const [path, hash] of heads) {
+    // Not this device's to sync (config sync off, or its category): deferred, never written.
+    if (device.isSynced?.(path) === false) {
+      device.outOfScope?.add(path);
+      continue;
+    }
+    const local = files.get(path);
+    // Of live documents one file here under two path keys, the device holds
+    // the one that arrived first; the others are unmaterializable (alias).
+    const aliases = harnessAliases(path, heads.keys(), platform);
+    if (aliases.length > 0 && local !== hash && !aliases.some((alias) => files.get(alias) === heads.get(alias))) {
+      violations.push({ invariant: "engine-convergence", detail: `${name} holds none of the live documents ${[path, ...aliases].join(", ")}, which are one file here` });
+    }
+    const expectedMissing = harnessUnmaterializable(path, platform) || (aliases.length > 0 && local !== hash);
+    if (expectedMissing && !unmaterializable.has(path)) {
+      violations.push({ invariant: "engine-unmaterializable", detail: `${name} (${platform}) does not report ${path}, which the platform cannot hold` });
+    } else if (!expectedMissing && unmaterializable.has(path)) {
+      violations.push({ invariant: "engine-unmaterializable", detail: `${name} (${platform}) reports ${path} as unmaterializable (${String(unmaterializable.get(path))})` });
+    }
+    if (expectedMissing) continue;
+    if (local === undefined) violations.push({ invariant: "engine-convergence", detail: `${name} is missing ${path}` });
+    else if (local !== hash) violations.push({ invariant: "engine-convergence", detail: `${name} holds other content at ${path}` });
+  }
+  return violations;
+}
+
+/**
  * The seq a schedule's pull step with `arg` gates the engines' pulls on, as a
  * realtime notification would (#277), when the server's head is `head`:
  * undefined for a plain pull, the head itself (a `vault_changed` for the
@@ -610,29 +656,7 @@ export class EngineObserver {
     const outOfScope = new Set<string>();
     // Where the engine keeps an unmaterializable document's edited file (SPEC.md §8): not a live path, and not to be removed.
     const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath === undefined ? [] : [document.localPath])));
-    for (const [path, hash] of heads.files) {
-      // Not this device's to sync (config sync off, or its category): deferred, never written.
-      if (this.synced.isSynced?.(path) === false) {
-        outOfScope.add(path);
-        continue;
-      }
-      const local = files.get(path);
-      // Of live documents one file here under two path keys, the device holds
-      // the one that arrived first; the others are unmaterializable (alias).
-      const aliases = harnessAliases(path, heads.files.keys(), this.platform);
-      if (aliases.length > 0 && local !== hash && !aliases.some((alias) => files.get(alias) === heads.files.get(alias))) {
-        violations.push({ invariant: "engine-convergence", detail: `${this.name} holds none of the live documents ${[path, ...aliases].join(", ")}, which are one file here` });
-      }
-      const expectedMissing = harnessUnmaterializable(path, this.platform) || (aliases.length > 0 && local !== hash);
-      if (expectedMissing && !unmaterializable.has(path)) {
-        violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} (${this.platform}) does not report ${path}, which the platform cannot hold` });
-      } else if (!expectedMissing && unmaterializable.has(path)) {
-        violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} (${this.platform}) reports ${path} as unmaterializable (${String(unmaterializable.get(path))})` });
-      }
-      if (expectedMissing) continue;
-      if (local === undefined) violations.push({ invariant: "engine-convergence", detail: `${this.name} is missing ${path}` });
-      else if (local !== hash) violations.push({ invariant: "engine-convergence", detail: `${this.name} holds other content at ${path}` });
-    }
+    violations.push(...checkLiveDocuments({ name: this.name, platform: this.platform, heads: heads.files, files, unmaterializable, outOfScope, isSynced: (path) => this.synced.isSynced?.(path) !== false }));
     for (const path of unmaterializable.keys()) {
       if (!heads.files.has(path)) violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} reports ${path}, which is not a live document's path` });
     }
