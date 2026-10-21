@@ -75,6 +75,7 @@ var brokenSchedule = []string{
 	"SIM_STEPS=1000",
 	"SIM_CLIENTS=3",
 	"SIM_ENGINES=2",
+	"SIM_FAITHFUL_FS=",
 }
 
 // refusedRetrySchedule is the refused-retry detector's own pinned schedule:
@@ -90,6 +91,7 @@ var refusedRetrySchedule = []string{
 	"SIM_STEPS=1000",
 	"SIM_CLIENTS=3",
 	"SIM_ENGINES=0",
+	"SIM_FAITHFUL_FS=",
 }
 
 // simulation is a running server plus control endpoint.

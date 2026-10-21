@@ -20,6 +20,12 @@ export interface SimEnvironment extends SimEndpoints {
    * schedule has no engine-operation steps, as before #22.
    */
   engines: number;
+  /**
+   * Whether the seeded suites run with the faithful filesystem
+   * (SIM_FAITHFUL_FS=1, RunOptions.faithfulFilesystem). The regression cases
+   * and scripted scenarios never do: they were recorded without it.
+   */
+  faithfulFilesystem: boolean;
   /** Most runs spent minimizing one failing seed (SIM_SHRINK_RUNS). */
   shrinkRuns: number;
   /** Committed regression cases (sim/regressions/*.json), replayed every run. */
