@@ -9,6 +9,7 @@
 
 import { describe, expect, it } from "vitest";
 
+import type { MergeHook } from "../plugin/src/core/engine/merge";
 import { simEnvironment } from "./environment";
 import { serverFeed } from "./invariants";
 import { settle } from "./network";
@@ -110,6 +111,37 @@ async function deleteOnFirstEngine(endpoints: SimEndpoints, before: (run: SimRun
 
 const nothing = () => Promise.resolve("nothing");
 
+/**
+ * Two POSIX engines whose users edit `notes/a.md` concurrently (#301): `e1`
+ * creates it, `e2` syncs it, `e1`'s user adds a line and pushes, `e2`'s user
+ * adds another, `e2` gets `merge` as its merge hook and pulls, so the hook
+ * merges the two edits, and pushes.
+ */
+async function concurrentEdits(endpoints: SimEndpoints, merge: MergeHook | undefined): Promise<{ result: RunResult; run: SimRun }> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const drain = async () => {
+    await settle();
+    await run.drain();
+  };
+  run.context.log(await first.edit("notes/a.md", encoder.encode("a\n")));
+  run.context.log(first.startPush());
+  await drain();
+  run.context.log(second.startPull());
+  await drain();
+  run.context.log(await first.edit("notes/a.md", encoder.encode("a\nfrom the first engine's user\n")));
+  run.context.log(first.startPush());
+  await drain();
+  run.context.log(await second.edit("notes/a.md", encoder.encode("from the second engine's user\na\n")));
+  second.merge = merge;
+  run.context.log(second.startPull());
+  await drain();
+  run.context.log(second.startPush());
+  await drain();
+  return { result: await run.finish(), run };
+}
+
 /** The paths at which the feed has a live revision right after a tombstone of the same document. */
 async function broughtBack(run: SimRun): Promise<string[]> {
   const feed = await serverFeed(run.direct, run.context.vaultId);
@@ -121,6 +153,19 @@ async function broughtBack(run: SimRun): Promise<string[]> {
   }
   return paths;
 }
+
+/** `e2`'s user edits `notes/b.md` to `content` and `e2` pushes it; `e1` pulls the edit (so its delete is of that revision). */
+const committedEdit = (content: string) => async (run: SimRun) => {
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const entries = [await second.edit("notes/b.md", encoder.encode(content)), second.startPush()];
+  await settle();
+  await run.drain();
+  entries.push(first.startPull());
+  await settle();
+  await run.drain();
+  return entries.join("; ");
+};
 
 describe.runIf(suites.has("scenarios"))("resurrected deletes (#276)", () => {
   it("passes the resurrection scenario without a mutation: the delete stays applied everywhere", async () => {
@@ -139,6 +184,30 @@ describe.runIf(suites.has("scenarios"))("resurrected deletes (#276)", () => {
     expect(invariants(result), trace).toEqual(["resurrected-delete"]);
     expect(result.violations[0]?.detail, trace).toMatch(/^e2 brought back .* at notes\/b\.md .* after its delete at notes\/b\.md .* although its user changed no file of it since$/);
     expect(await run.observers[0]?.list(), trace).toEqual(["notes/a.md", "notes/b.md"]);
+    expect(await broughtBack(run), trace).toEqual(["notes/b.md"]);
+  });
+
+  // #422 item 5: the edit was committed before the delete, so it explains nothing (explained(), "already carried").
+  it("catches an engine that brings back a deleted note whose edit its user had already committed before the delete (resurrected-delete)", async () => {
+    const edited = committedEdit("b\nedited and committed before the delete\n");
+    const { result, run } = await deleteOnFirstEngine(
+      environment,
+      async (run) => [await edited(run), run.observers[1]?.keepFileOnNextDelete("notes/b.md")].join("; "),
+      nothing,
+    );
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toEqual(["resurrected-delete"]);
+    expect(result.violations[0]?.detail, trace).toMatch(/^e2 brought back .* at notes\/b\.md .* although its user changed no file of it since$/);
+    expect(await broughtBack(run), trace).toEqual(["notes/b.md"]);
+  });
+
+  // #422 item 5: only the server seq recorded with each change tells this re-creation from the earlier, already committed edit of the same content.
+  it("accepts a re-creation of a deleted note with the content its engine had committed before the delete", async () => {
+    const content = "b\nwritten before and after the delete\n";
+    const { result, run } = await deleteOnFirstEngine(environment, committedEdit(content), async (run) => (await run.observers[1]?.edit("notes/b.md", encoder.encode(content))) ?? "");
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    expect(new TextDecoder().decode(await run.observers[0]?.read("notes/b.md")), trace).toBe(content);
     expect(await broughtBack(run), trace).toEqual(["notes/b.md"]);
   });
 
@@ -269,9 +338,56 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
       // What the engine wrote over the edit, before pushing it: the content the user had edited.
       return run.observers[1]?.overwriteBehindUser("notes/a.md", encoder.encode("a\n")) ?? "";
     });
-    expect(invariants(result), tail(result.trace)).toEqual(["lost-write"]);
-    expect(result.violations[0]?.detail).toContain("e2's user wrote");
-    expect(result.violations[0]?.detail).toContain("to notes/a.md");
+    // The engine also reported its own overwrite as a local change, which engine-echo catches (#422: no longer excused by the user's earlier edit there); the lost edit is lost-write's.
+    expect(invariants(result), tail(result.trace)).toEqual(["engine-echo", "lost-write"]);
+    const lost = result.violations.find((violation) => violation.invariant === "lost-write");
+    expect(lost?.detail).toContain("e2's user wrote");
+    expect(lost?.detail).toContain("to notes/a.md");
+  });
+
+  // #422 item 1: an echo is excused only by the user operation it fired in, not by the path.
+  it("catches an engine echo at a path its user changed earlier in the run (engine-echo)", async () => {
+    // The content the user wrote, so no write is lost: only the unsuppressed engine write is wrong.
+    const result = await twoEngines(environment, async (run) => run.observers[1]?.overwriteBehindUser("notes/a.md", encoder.encode("a\nedited by the second engine's user\n")) ?? "");
+    expect(invariants(result), tail(result.trace)).toEqual(["engine-echo"]);
+    expect(result.violations.map((violation) => violation.detail)).toEqual(["e2 reported its own modify of notes/a.md as a local change"]);
+  });
+
+  it("passes concurrent edits that the merge hook merges (#301)", async () => {
+    const { result, run } = await concurrentEdits(environment, undefined);
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    // Both users' lines are in the note on both engines.
+    for (const engine of run.observers) {
+      const merged = new TextDecoder().decode(await engine.read("notes/a.md"));
+      expect(merged, trace).toContain("from the first engine's user\n");
+      expect(merged, trace).toContain("from the second engine's user\n");
+    }
+  });
+
+  // #422 item 4: lost-write checks what the merge result holds, not the hook's record of having merged.
+  it("catches a merge that drops the local edit but reports it as merged (lost-write)", async () => {
+    const dropLocal: MergeHook = async (request) => ({ status: "merged", path: request.remote.path, content: await request.readRemoteContent() });
+    const { result } = await concurrentEdits(environment, dropLocal);
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toEqual(["lost-write"]);
+    expect(result.violations[0]?.detail, trace).toContain("e2's user wrote");
+  });
+
+  // #422 item 7: on a server that was never restored or purged, a pull that resyncs is a bug.
+  it("catches an engine whose pulls resync on a server that was neither restored nor purged (engine-resync)", async () => {
+    const result = await twoEngines(environment, async (run) => {
+      const second = run.observers[1];
+      if (second === undefined) throw new Error("the run has two engines");
+      // The pull stores a corrupted anchor; the pulls of finish() then send it.
+      const entries = [second.mangleCursorAnchors(), second.startPull()];
+      await settle();
+      await run.drain();
+      return entries.join("; ");
+    });
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toEqual(["engine-resync"]);
+    expect(result.violations[0]?.detail, trace).toMatch(/^e2's pull at step \d+ resynced, although the server was neither restored nor purged$/);
   });
 
   it("attributes to the user a write the macOS vault reports under the file's own spelling, which the engine pushes as an edit (#247)", async () => {
