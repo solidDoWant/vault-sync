@@ -14,8 +14,9 @@ import { IdentityProviderError } from "../core/auth/oidc";
  * - `idle`: the last pull or push succeeded.
  * - `offline`: the last one could not reach the server.
  * - `error`: the last one failed for another reason (`message` says why).
+ * - `device-removed`: this device was removed from the account; sync waits until the user registers it again (#590).
  */
-export type SyncState = "signed-out" | "sign-in-required" | "not-connected" | "starting" | "waiting-for-journal" | "syncing" | "idle" | "offline" | "error";
+export type SyncState = "signed-out" | "sign-in-required" | "not-connected" | "starting" | "waiting-for-journal" | "syncing" | "idle" | "offline" | "error" | "device-removed";
 
 export interface SyncStatus {
   state: SyncState;
@@ -60,6 +61,7 @@ const labels: Record<SyncState, string> = {
   idle: "idle",
   offline: "offline",
   error: "error",
+  "device-removed": "device removed",
 };
 
 /** The status bar's text, e.g. `Vault Sync: idle · 2 conflicts`. */
@@ -80,6 +82,7 @@ const icons: Record<SyncState, string> = {
   idle: "check-circle",
   offline: "wifi-off",
   error: "alert-circle",
+  "device-removed": "smartphone",
 };
 
 /**
@@ -107,6 +110,7 @@ export function statusDescription(status: SyncStatus): string {
     idle: "Up to date with the server.",
     offline: "Cannot reach the server. Local changes are kept and pushed once it is reachable again.",
     error: "Sync failed. Local changes are kept and pushed by a later sync.",
+    "device-removed": "Sync is stopped.",
   };
   const lines = [detail[status.state]];
   if (status.message !== undefined && status.message !== "") lines.push(status.message);

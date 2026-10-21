@@ -396,6 +396,13 @@ func (vault *VaultStore) sameRevision(ctx context.Context, tx pgx.Tx, existing R
 		return false, nil
 	}
 
+	if existing.DeviceID != revision.DeviceID {
+		same, err := removedDeviceOf(ctx, tx, existing.DeviceID, revision.UserID)
+		if err != nil || !same {
+			return false, err
+		}
+	}
+
 	if existing.ParentRevID == revision.BaseRevID {
 		return true, nil
 	}
@@ -417,15 +424,33 @@ func (vault *VaultStore) sameRevision(ctx context.Context, tx pgx.Tx, existing R
 }
 
 // sameRevisionFields compares every field of a retried commit with the
-// revision its first attempt committed, except the parent.
+// revision its first attempt committed, except the parent and the device.
 func sameRevisionFields(existing Revision, revision NewRevision) bool {
 	return existing.DocumentID == revision.DocumentID &&
 		existing.Kind == revision.Kind &&
 		bytes.Equal(existing.ContentRef, revision.ContentRef) &&
 		existing.ContentSize == revision.ContentSize &&
 		existing.Path == revision.Path &&
-		existing.Deleted == revision.Deleted &&
-		existing.DeviceID == revision.DeviceID
+		existing.Deleted == revision.Deleted
+}
+
+// removedDeviceOf reports whether deviceID, the device that committed a
+// revision, is userID's and removed. A retry under another device of the
+// same user after that device was removed is the same installation, which
+// registered again while the response to its first attempt was lost
+// (#590), so it gets the committed revision back. While the committing
+// device is not removed, a retry under another device is a reused revision
+// id. The retrying device was locked as userID's (lockDevice), so another
+// user's device never matches.
+func removedDeviceOf(ctx context.Context, tx pgx.Tx, deviceID, userID uuid.UUID) (bool, error) {
+	var same bool
+
+	err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM devices WHERE id = $1 AND user_id = $2 AND removed_at IS NOT NULL)`, deviceID, userID).Scan(&same)
+	if err != nil {
+		return false, fmt.Errorf("look up committing device: %w", err)
+	}
+
+	return same, nil
 }
 
 // commitError maps constraint violations to CommitRevision errors.

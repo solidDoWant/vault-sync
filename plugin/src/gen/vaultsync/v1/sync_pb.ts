@@ -470,7 +470,11 @@ export const SyncService: GenService<{
    *
    * Commits are idempotent by revision_id: retrying a commit whose response
    * was lost with identical fields returns the already-committed revision,
-   * even if the document's head has moved since.
+   * even if the document's head has moved since. device_id may differ from
+   * the committed revision's only if that device is the caller's and was
+   * removed (RemoveDevice): the installation registered again and retries
+   * its pending commits under the new id. The revision keeps the device
+   * that committed it.
    *
    * Errors:
    * - FAILED_PRECONDITION: base_rev_id is not the current head (the head
@@ -489,7 +493,8 @@ export const SyncService: GenService<{
    *   with different fields.
    * - PERMISSION_DENIED: the caller is a viewer.
    * - NOT_FOUND: the vault does not exist, the caller is not a member, or
-   *   device_id is not one of the caller's devices.
+   *   device_id is not one of the caller's devices that are not removed;
+   *   the last with an ErrorDetail of reason ERROR_REASON_DEVICE_NOT_FOUND.
    *
    * @generated from rpc vaultsync.v1.SyncService.CommitRevision
    */

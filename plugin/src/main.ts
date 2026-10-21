@@ -15,6 +15,7 @@ import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { configFolderHost, ObsidianConfigAdapter, reloadNotifier } from "./obsidian/config-adapter";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
 import { configSyncSettings, oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
+import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
@@ -283,6 +284,22 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     new DeletedFilesModal(this.app, history, await history.deletedDocuments()).open();
   }
 
+  /** The signed-in user's devices, as the settings list them (#590). */
+  async listDevices(): Promise<DeviceRow[]> {
+    return deviceRows(await listDevices(this.protocolClient()), currentDeviceId(this.data), (date) => date.toLocaleString());
+  }
+
+  /** Removes another of the user's devices; it can no longer sync until it registers again. */
+  removeDevice(deviceId: string): Promise<void> {
+    return removeOtherDevice(this.protocolClient(), this.data, deviceId);
+  }
+
+  /** Registers this installation again after its device was removed, and pushes the changes kept meanwhile. */
+  async registerAgain(): Promise<void> {
+    await this.controller?.registerAgain();
+    this.settingTab?.render();
+  }
+
   /** The vaults the signed-in user may connect this vault to. */
   listRemoteVaults(): Promise<Vault[]> {
     return listRemoteVaults(this.protocolClient());
@@ -416,14 +433,19 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   }
 
   private showStatus(status: SyncStatus): void {
+    const removed = status.state === "device-removed";
+    const changed = removed !== (this.status.state === "device-removed");
     this.status = status;
+    if (removed && changed) new Notice(`Vault Sync: ${status.message ?? statusDescription(status)}`, 0);
     this.statusBar?.setText(statusText(status));
     this.statusBar?.setAttribute("aria-label", statusDescription(status));
     if (this.statusRibbon !== undefined) {
       setIcon(this.statusRibbon, statusIcon(status));
       this.statusRibbon.setAttribute("aria-label", statusText(status));
     }
-    this.settingTab?.showStatus();
+    // The settings offer to register again only while the device is removed.
+    if (changed) this.settingTab?.render();
+    else this.settingTab?.showStatus();
     this.refreshConflictViews();
   }
 

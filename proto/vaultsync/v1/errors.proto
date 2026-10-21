@@ -17,6 +17,11 @@ enum ErrorReason {
   // the maximum number of calls in flight on the server replica. It passes
   // once earlier calls complete; the client backs off and retries.
   ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS = 2;
+  // NOT_FOUND from CommitRevision: device_id is not one of the caller's
+  // devices that are not removed, because it was removed (RemoveDevice) or
+  // never registered for the caller. It persists: the installation must
+  // register again (RegisterDevice) and commit under the new device id.
+  ERROR_REASON_DEVICE_NOT_FOUND = 3;
 }
 
 // ErrorDetail is attached to an error (as a Connect error detail) to give
