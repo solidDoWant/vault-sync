@@ -27,7 +27,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: lint
-lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin).
+lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin and sim/).
 	golangci-lint run ./...
 	buf lint
 	./scripts/buf-breaking.sh
@@ -108,7 +108,7 @@ plugin-test: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the plugin's v
 	cd $(PLUGIN_DIR) && npm test
 
 .PHONY: plugin-lint
-plugin-lint: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run eslint and tsc --noEmit over the plugin.
+plugin-lint: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run eslint and tsc --noEmit over the plugin and the simulation harness (sim/).
 	cd $(PLUGIN_DIR) && npm run lint
 	cd $(PLUGIN_DIR) && npm run typecheck
 

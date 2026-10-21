@@ -62,8 +62,13 @@ function setup(acknowledgedKind: (requested: DocumentKind) => DocumentKind) {
 /** Runs `client`'s create, after the pull it needs first, to completion. */
 async function create(client: ScriptedClient): Promise<void> {
   client.start("pull", 0);
-  while (!client.idle) await settle();
+  await untilIdle(client);
   client.start("create", 1);
+  await untilIdle(client);
+}
+
+/** Settles `client`'s network until its operation finished. */
+async function untilIdle(client: ScriptedClient): Promise<void> {
   while (!client.idle) await settle();
 }
 
