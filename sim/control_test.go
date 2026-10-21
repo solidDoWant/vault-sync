@@ -35,7 +35,7 @@ type regressionCase struct {
 	// CommitRetryBackoff is absent in cases recorded before #110.
 	CommitRetryBackoff *int `json:"commitRetryBackoff,omitempty"`
 	// FaithfulFilesystem is set when the run used the faithful filesystem
-	// (SIM_FAITHFUL_FS=1); the regressions suite replays the case with it.
+	// (the seeded default); the regressions suite replays the case with it.
 	FaithfulFilesystem bool `json:"faithfulFilesystem,omitempty"`
 	// NotificationPulls is set when the run gated engine pulls on announced
 	// seqs (#277); absent in cases recorded before it, which pull plainly.

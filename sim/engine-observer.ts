@@ -13,7 +13,7 @@
 // an in-memory vault that refuses the names that platform cannot hold and,
 // for windows and macos, matches paths ignoring case and Unicode form
 // (SPEC.md §8): by default by the engine's file key, or, with the faithful
-// filesystem (SIM_FAITHFUL_FS=1), as NTFS and APFS match them
+// filesystem (the seeded default; SIM_FAITHFUL_FS=0 opts out), as NTFS and APFS match them
 // (docs/design/engine-path-ownership.md §3.1). A live document may then be
 // missing from its vault only if the engine reports it as unmaterializable
 // and the harness's own check agrees that the platform cannot hold its path.
