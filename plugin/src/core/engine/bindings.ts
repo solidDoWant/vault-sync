@@ -1,5 +1,6 @@
 import { priorRevisionLimit, releasedRows, type Absence, type Binding, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
-import type { VaultAdapter } from "../vault/adapter";
+import { sha256Hex } from "../hash";
+import { isVaultError, type VaultAdapter } from "../vault/adapter";
 import type { PathSpace } from "./pathspace";
 
 /**
@@ -35,7 +36,7 @@ export type BindingChange =
   | { kind: "kept" };
 
 type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "listDeferred" | "documentsByFileKey" | "transact">;
-type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
+type BindingsVault = Pick<VaultAdapter, "stat" | "list" | "read">;
 
 /**
  * The owner of every document's `binding` and `absence` (design §4.1, §9.1):
@@ -204,7 +205,10 @@ export class Bindings {
       // lowest id, keeps it; the others are released, not user-deleted, as
       // the user deleted nothing (C1, #641).
       const [found, ...duplicates] = await this.journal.documentsByFileKey(key);
-      const lost = found === undefined && missing !== undefined ? await this.journal.getDocument(missing.documentId) : undefined;
+      // Only the document's own file, with the content the scan expected
+      // there: a new file the user made at the old path and moved away is
+      // another one (PO-1, INV-3), which leaves the document deleted.
+      const lost = found === undefined && missing !== undefined && (await this.holds(to, missing.seen)) ? await this.journal.getDocument(missing.documentId) : undefined;
       const moved = found ?? (lost === undefined || lost.binding !== null ? undefined : { ...lost, binding: { spelling: from, fileKey: key, seen: missing?.seen ?? lost.baseHash } });
       const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
       changes.push(...duplicates.map((other) => ({ ...other, ...unbound("released") })));
@@ -381,6 +385,16 @@ export class Bindings {
     const listed = await this.vault.list();
     if (!listed.includes(kept.spelling) || listed.includes(written.spelling) || (await this.vault.stat(written.spelling)) === null) return written;
     return { ...kept, seen: written.seen };
+  }
+
+  /** Whether the vault's file at `path` has content `seen`. */
+  private async holds(path: string, seen: string): Promise<boolean> {
+    try {
+      return sha256Hex(await this.vault.read(path)) === seen;
+    } catch (error) {
+      if (isVaultError(error)) return false;
+      throw error;
+    }
   }
 
   private bound(spelling: string, seen: string): Binding {
