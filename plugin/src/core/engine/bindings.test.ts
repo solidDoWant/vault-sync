@@ -187,6 +187,24 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
   });
 
+  it("re-keys at start-up a binding recorded under another filesystem key than the platform's (#699)", async () => {
+    // An Android journal from before its shared storage got a case-insensitive file key holds the spelling itself.
+    const h = harness({ merge: "default", pathRules: { platform: "android" }, vault: new InMemoryVault({ pathRules: { platform: "android" } }) });
+    h.server.commit({ documentId: "A", path: "Notes/a.md", content: "a1" });
+    await h.engine.pull();
+    await h.engine.settled();
+    h.engine.dispose();
+    const state = await h.journal.getDocument("A");
+    if (state?.binding == null) throw new Error("no binding");
+    await h.journal.putDocument({ ...state, binding: { ...state.binding, fileKey: "Notes/a.md" } });
+    expect(await h.journal.documentByFileKey("NOTES/A.MD")).toBeUndefined();
+
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "Notes/a.md", fileKey: "NOTES/A.MD", seen: hash("a1") }, absence: null });
+    expect((await h.journal.documentByFileKey("NOTES/A.MD"))?.documentId).toBe("A");
+  });
+
   it("reports a binding that disagrees with the derived ownership", async () => {
     const h = await synced();
     await h.vault.write("other.md", bytes("o"));

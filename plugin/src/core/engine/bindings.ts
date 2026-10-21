@@ -250,6 +250,10 @@ export class Bindings {
         binding = state.deleted ? null : this.bound(state.path, state.baseHash);
         absence = state.deleted ? "never" : null;
       }
+      // A binding keyed by another `F` than the platform's (recorded before
+      // Android's shared storage got its case-insensitive fold, #699) takes
+      // the platform's, or documentByFileKey would not find it.
+      if (binding !== null && binding.fileKey !== this.space.filesystemKey(binding.spelling)) binding = { ...binding, fileKey: this.space.filesystemKey(binding.spelling) };
       if (binding !== null && (await this.vault.stat(binding.spelling)) === null) {
         this.missing.set(binding.fileKey, { documentId: state.documentId, seen: binding.seen });
         binding = null;
