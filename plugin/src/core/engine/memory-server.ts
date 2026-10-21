@@ -232,7 +232,7 @@ export class InMemoryServer {
           if (request.offset > BigInt(blob.length)) throw new ConnectError("offset beyond the blob", Code.OutOfRange);
           const length = Math.min(request.length === 0 ? this.maxDownloadBytes : request.length, this.maxDownloadBytes);
           const start = Number(request.offset);
-          return { data: blob.slice(start, start + length), size: BigInt(blob.length) };
+          return this.respond("DownloadBlob", request, { data: blob.slice(start, start + length), size: BigInt(blob.length) });
         },
       });
     });

@@ -3,7 +3,7 @@ import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
 import { RestoreError, type HistoryEntry } from "../core/engine/history";
 import type { DocumentState } from "../core/journal/journal";
 import { shownPath, visiblePath, type Shown } from "./display-text";
-import { entryLabel, historyTitle, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";
+import { entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";
 import { renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
@@ -112,7 +112,8 @@ export class HistoryModal extends Modal {
     previewEl.createEl("p", { text: "Loading this version…" });
     let content: Uint8Array | undefined;
     try {
-      content = await this.history.readRevision(entry);
+      // Only the start, for a large revision (#656); a restore downloads the rest if it needs it.
+      content = await this.history.readRevision(entry, maxPreviewBytes);
     } catch (error) {
       if (this.selected.entry !== entry) return;
       previewEl.empty();
@@ -120,12 +121,15 @@ export class HistoryModal extends Modal {
       return;
     }
     if (this.selected.entry !== entry) return;
-    this.selected.content = content;
+    const size = Number(entry.size);
+    // Only the complete content can stand in for the revision in a restore.
+    const complete = content.length === size ? content : undefined;
+    this.selected.content = complete;
     previewEl.empty();
-    const preview = previewOf(content);
+    const preview = previewOf(content, size);
     if (preview.kind === "text") {
       previewEl.createEl("pre", { text: preview.text, cls: "vault-sync-history-text" });
-      if (preview.truncated) previewEl.createEl("p", { text: `Only the start is shown (the version is ${sizeLabel(content.length)}).`, cls: "vault-sync-history-hint" });
+      if (preview.truncated) previewEl.createEl("p", { text: `Only the start is shown (the version is ${sizeLabel(size)}).`, cls: "vault-sync-history-hint" });
     } else {
       previewEl.createEl("p", { text: `Binary content, ${sizeLabel(preview.size)}.`, cls: "vault-sync-history-hint" });
     }
@@ -142,7 +146,7 @@ export class HistoryModal extends Modal {
         .setCta()
         .onClick(() => {
           button.setDisabled(true);
-          void this.restore(entry, content).finally(() => {
+          void this.restore(entry, complete).finally(() => {
             button.setDisabled(false);
           });
         }),

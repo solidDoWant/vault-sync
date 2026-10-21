@@ -1,12 +1,13 @@
 import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponent, type Plugin } from "obsidian";
 
-import type { Vault } from "../gen/vaultsync/v1/types_pb";
+import { VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
 import type { ConfigCategory, ConfigSyncSettings } from "../core/config/policy";
 import { connectProblem } from "./controller";
 import { configSyncSettings, type ConnectedVault, type PluginData } from "./data";
 import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
+import { membershipErrorMessage, parseInvitationDays, roleDescription, roleName, roles, type CreatedInvitation, type MemberRow, type Sharing } from "./sharing";
 import type { EncryptionState } from "./encryption";
 import { PassphraseModal, type PassphraseMode } from "./passphrase-modal";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
@@ -38,6 +39,17 @@ export interface SettingsHost extends Plugin {
   removeDevice(deviceId: string): Promise<void>;
   /** Registers this installation again after its device was removed, and starts sync. */
   registerAgain(): Promise<void>;
+  /** The connected vault's Sharing section (#34). */
+  loadSharing(): Promise<Sharing>;
+  /** Creates an invitation to the connected vault, redeemable for `days` days (the server's default when undefined). */
+  createInvitation(role: VaultRole, days: number | undefined): Promise<CreatedInvitation>;
+  revokeInvitation(invitationId: string): Promise<void>;
+  setMemberRole(userId: string, role: VaultRole): Promise<void>;
+  removeMember(userId: string): Promise<void>;
+  /** Leaves the connected vault and disconnects this vault from it. */
+  leaveVault(): Promise<void>;
+  /** Redeems an invite code and resolves with the vault joined. */
+  joinVault(code: string): Promise<Vault>;
   /** Whether end-to-end encryption is enabled for the account, and unlocked on this device. */
   encryptionState(): Promise<EncryptionState>;
   /** Enables end-to-end encryption with a new key (or unlocks one another device just created); resolves whether this device created it. */
@@ -91,6 +103,8 @@ export class VaultSyncSettingTab extends PluginSettingTab {
    * while the tab is hidden, so a removal that settles then reloads nothing.
    */
   private shownDevices: { loads: DeviceListLoads; removeButtons: Map<string, ButtonComponent> } | undefined;
+  /** Bumped by every render, hide and Sharing load, so only the latest load paints the Sharing section, and none once the tab is hidden. */
+  private sharingLoads = 0;
 
   constructor(
     app: App,
@@ -108,6 +122,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
   override hide(): void {
     this.closeDevices();
+    this.sharingLoads++;
     super.hide();
   }
 
@@ -116,6 +131,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     const { containerEl, host } = this;
     containerEl.empty();
     this.closeDevices();
+    this.sharingLoads++;
     const locked = host.settingsLocked;
 
     new Setting(containerEl)
@@ -198,6 +214,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
     if (host.authState === "signed-in") {
       this.renderVault(containerEl);
+      if (host.connectedVault !== undefined) this.renderSharing(containerEl);
       this.renderEncryption(containerEl);
       this.renderDevices(containerEl);
     }
@@ -368,6 +385,169 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     );
   }
 
+  /**
+   * The connected vault's members and invitations (#34). Owners manage them;
+   * editors and viewers see their role and can leave. Every change is sent
+   * and then the section is read again from the server, so a refused change
+   * shows the state the server kept.
+   */
+  private renderSharing(containerEl: HTMLElement): void {
+    const { host } = this;
+    new Setting(containerEl).setName("Sharing").setHeading();
+    const intro = new Setting(containerEl).setDesc("Loading the vault's members…");
+    const section = containerEl.createDiv({ cls: "vault-sync-sharing" });
+    const load = () => {
+      const generation = ++this.sharingLoads;
+      void host.loadSharing().then(
+        (sharing) => {
+          if (generation !== this.sharingLoads) return;
+          section.empty();
+          this.paintSharing(intro, section, sharing, load);
+        },
+        (error: unknown) => {
+          if (generation !== this.sharingLoads) return;
+          intro.setDesc(`Could not load the vault's members: ${errorMessage(error)}`);
+        },
+      );
+    };
+    load();
+  }
+
+  private paintSharing(intro: Setting, section: HTMLElement, sharing: Sharing, reload: () => void): void {
+    const { host } = this;
+    /** Runs a membership change, then reads the section again; a refusal is a notice. */
+    const change = (what: string, run: () => Promise<void>) => {
+      run().then(reload, (error: unknown) => {
+        new Notice(`Vault Sync: could not ${what}: ${membershipErrorMessage(error)}`);
+        reload();
+      });
+    };
+    if (sharing.kind === "not-member") {
+      intro.setDesc("You are no longer a member of this vault, so it cannot sync. Disconnect it above; the files stay in this vault.");
+      return;
+    }
+    const role = sharing.kind === "owner" ? VaultRole.OWNER : sharing.role;
+    intro.setDesc(`Your role: ${roleName(role)}. ${roleDescription(role)}`);
+    intro.settingEl.addClass("vault-sync-sharing-role");
+    if (sharing.kind === "owner") {
+      new Setting(section).setName("Members").setHeading();
+      const members = section.createDiv({ cls: "vault-sync-members" });
+      for (const member of sharing.members) {
+        new Setting(members)
+          .setName(member.label)
+          .setDesc(member.description)
+          .addDropdown((dropdown) => {
+            for (const option of roles) dropdown.addOption(String(option), roleName(option));
+            dropdown.setValue(String(member.role)).onChange((value) => {
+              const next = roles.find((option) => String(option) === value);
+              if (next === undefined) return;
+              new ConfirmModal(this.app, {
+                title: "Change this member's role?",
+                text: `${member.label} becomes ${roleName(next).toLowerCase()}. ${roleDescription(next)}`,
+                confirm: "Change role",
+                onConfirm: () => {
+                  change("change the role", () => host.setMemberRole(member.userId, next));
+                },
+                onCancel: reload,
+              }).open();
+            });
+          })
+          .addButton((button) => {
+            button.setButtonText("Remove").onClick(() => {
+              new ConfirmModal(this.app, {
+                title: "Remove this member?",
+                text: removeMemberText(member),
+                confirm: "Remove member",
+                warning: true,
+                onConfirm: () => {
+                  change("remove the member", () => host.removeMember(member.userId));
+                },
+              }).open();
+            });
+          });
+      }
+
+      new Setting(section).setName("Invitations").setHeading();
+      const invitations = section.createDiv({ cls: "vault-sync-invitations" });
+      if (sharing.invitations.length === 0) new Setting(invitations).setDesc("No pending invitations.");
+      for (const invitation of sharing.invitations) {
+        new Setting(invitations)
+          .setName(invitation.label)
+          .setDesc(invitation.description)
+          .addButton((button) =>
+            button.setButtonText("Revoke").onClick(() => {
+              button.setDisabled(true);
+              change("revoke the invitation", () => host.revokeInvitation(invitation.id));
+            }),
+          );
+      }
+      let inviteRole = VaultRole.EDITOR;
+      let days = "";
+      new Setting(section.createDiv({ cls: "vault-sync-invite" }))
+        .setName("Invite someone")
+        .setDesc("Creates a single-use invite code for the role you choose. Anyone with the code can join until it is used, revoked or expires. Leave the days empty for 7 days; at most 30.")
+        .addDropdown((dropdown) => {
+          for (const option of roles) dropdown.addOption(String(option), roleName(option));
+          dropdown.setValue(String(inviteRole)).onChange((value) => {
+            inviteRole = roles.find((option) => String(option) === value) ?? inviteRole;
+          });
+        })
+        .addText((text) =>
+          text.setPlaceholder("Days").onChange((value) => {
+            days = value;
+          }),
+        )
+        .addButton((button) =>
+          button
+            .setButtonText("Create invitation")
+            .setCta()
+            .onClick(async () => {
+              let parsed: number | undefined;
+              try {
+                parsed = parseInvitationDays(days);
+              } catch (error) {
+                new Notice(`Vault Sync: ${errorMessage(error)}`);
+                return;
+              }
+              button.setDisabled(true);
+              try {
+                const created = await host.createInvitation(inviteRole, parsed);
+                new InviteCodeModal(this.app, created).open();
+              } catch (error) {
+                new Notice(`Vault Sync: could not create the invitation: ${membershipErrorMessage(error)}`);
+              } finally {
+                button.setDisabled(false);
+                reload();
+              }
+            }),
+        );
+    }
+    new Setting(section)
+      .setName("Leave vault")
+      .setDesc("Stops your membership of this vault and disconnects this vault from it. The files stay here. To join again you need a new invitation.")
+      .addButton((button) => {
+        button.setButtonText("Leave vault").onClick(() => {
+          new ConfirmModal(this.app, {
+            title: "Leave this vault?",
+            text: "You stop being a member and this vault stops syncing with it. The files stay in this vault. To join again you need a new invitation from an owner.",
+            confirm: "Leave vault",
+            warning: true,
+            onConfirm: () => {
+              host.leaveVault().then(
+                () => {
+                  this.render();
+                },
+                (error: unknown) => {
+                  new Notice(`Vault Sync: could not leave the vault: ${membershipErrorMessage(error)}`);
+                },
+              );
+            },
+          }).open();
+        });
+        button.buttonEl.addClass("mod-warning");
+      });
+  }
+
   private renderVault(containerEl: HTMLElement): void {
     const { host } = this;
     new Setting(containerEl).setName("Remote vault").setHeading();
@@ -412,6 +592,33 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       (error: unknown) => {
         existing.setDesc(`Could not list your vaults: ${errorMessage(error)}`);
       },
+    );
+
+    let code = "";
+    const join = new Setting(containerEl.createDiv({ cls: "vault-sync-join" }))
+      .setName("Join with an invite code")
+      .setDesc("Paste the code a vault's owner gave you to join their vault and sync this vault with it. To keep the shared vault apart from your notes, open or create another Obsidian vault and join from there.")
+      .addText((text) => {
+        text.setPlaceholder("Invite code").onChange((value) => {
+          code = value;
+        });
+        // A secret: no spell check or autocorrect that could keep it.
+        text.inputEl.spellcheck = false;
+        text.inputEl.autocomplete = "off";
+      });
+    join.addButton((button) =>
+      button.setButtonText("Join").onClick(async () => {
+        button.setDisabled(true);
+        try {
+          const vault = await host.joinVault(code);
+          new Notice(`Vault Sync: you joined ${quotedVaultLabel(vault)} as ${roleName(vault.role).toLowerCase()}.`);
+          await this.connect(vault);
+        } catch (error) {
+          new Notice(`Vault Sync: could not join: ${errorMessage(error)}`);
+        } finally {
+          button.setDisabled(false);
+        }
+      }),
     );
 
     let name = this.app.vault.getName();
@@ -517,6 +724,99 @@ class ConfirmConnectModal extends Modal {
           .onClick(() => {
             this.close();
             this.onConfirm();
+          }),
+      );
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
+  }
+}
+
+function removeMemberText(member: MemberRow): string {
+  return `${member.label} can no longer sync or read this vault. Their changes and history stay. They can join again only with a new invitation.`;
+}
+
+interface ConfirmOptions {
+  title: string;
+  text: string;
+  confirm: string;
+  /** Whether the confirmation is destructive (a warning button). */
+  warning?: boolean;
+  onConfirm: () => void;
+  /** Called when the modal closes without the confirmation. */
+  onCancel?: () => void;
+}
+
+/** A confirmation for a membership change (#34). */
+class ConfirmModal extends Modal {
+  private confirmed = false;
+
+  constructor(
+    app: App,
+    private readonly options: ConfirmOptions,
+  ) {
+    super(app);
+    this.titleEl.setText(options.title);
+  }
+
+  override onOpen(): void {
+    const { contentEl, options } = this;
+    contentEl.empty();
+    contentEl.createEl("p", { text: options.text });
+    new Setting(contentEl)
+      .addButton((button) =>
+        button.setButtonText("Cancel").onClick(() => {
+          this.close();
+        }),
+      )
+      .addButton((button) => {
+        button.setButtonText(options.confirm).onClick(() => {
+          this.confirmed = true;
+          this.close();
+          options.onConfirm();
+        });
+        // What setWarning does; its replacement, setDestructive, needs Obsidian 1.13, above minAppVersion.
+        if (options.warning === true) button.buttonEl.addClass("mod-warning");
+        else button.setCta();
+      });
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
+    if (!this.confirmed) this.options.onCancel?.();
+  }
+}
+
+/** A new invitation's code, shown once (#34): the server keeps only its hash. */
+class InviteCodeModal extends Modal {
+  constructor(
+    app: App,
+    private readonly created: CreatedInvitation,
+  ) {
+    super(app);
+    this.titleEl.setText("Invitation created");
+  }
+
+  override onOpen(): void {
+    const { contentEl, created } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: `Give this code to the person you invite, over a channel you trust. They join as ${roleName(created.invitation.role).toLowerCase()} by entering it under Join with an invite code in Vault Sync's settings. It works once. ${created.invitation.description} It is shown only now: copy it before you close this window.`,
+    });
+    contentEl.createDiv({ text: created.code, cls: "vault-sync-invite-code" });
+    new Setting(contentEl)
+      .addButton((button) =>
+        button.setButtonText("Copy code").onClick(() => {
+          void navigator.clipboard.writeText(created.code).then(() => new Notice("Code copied"));
+        }),
+      )
+      .addButton((button) =>
+        button
+          .setButtonText("Done")
+          .setCta()
+          .onClick(() => {
+            this.close();
           }),
       );
   }

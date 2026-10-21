@@ -4,6 +4,7 @@ import { createConnectTransport } from "@connectrpc/connect-web";
 
 import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
 import { DeviceService } from "../../gen/vaultsync/v1/device_pb";
+import { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { ServerInfoService } from "../../gen/vaultsync/v1/server_info_pb";
 import { SyncService } from "../../gen/vaultsync/v1/sync_pb";
 import { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
@@ -46,6 +47,7 @@ export interface ProtocolClient {
   serverInfo: Client<typeof ServerInfoService>;
   devices: Client<typeof DeviceService>;
   vaults: Client<typeof VaultService>;
+  membership: Client<typeof MembershipService>;
   sync: Client<typeof SyncService>;
   blobs: Client<typeof BlobService>;
   /** The caller's end-to-end encryption key pair (SPEC.md §9.3). */
@@ -63,6 +65,7 @@ export function createProtocolClient(options: ProtocolClientOptions): ProtocolCl
     serverInfo: createClient(ServerInfoService, transport),
     devices: createClient(DeviceService, transport),
     vaults: createClient(VaultService, transport),
+    membership: createClient(MembershipService, transport),
     sync: createClient(SyncService, transport),
     blobs: createClient(BlobService, transport),
     userKeys: createClient(UserKeyService, transport),
