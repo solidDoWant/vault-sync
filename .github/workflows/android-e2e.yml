@@ -108,6 +108,9 @@ jobs:
           timeout 60 "$adb" exec-out screencap -p > "$RUNNER_TEMP/e2e-logs/screen.png" || true
           timeout 60 "$adb" logcat -d > "$RUNNER_TEMP/e2e-logs/logcat.txt" || true
           cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/e2e-logs/" || true
+          # Whether the emulator is still running, and whether the kernel
+          # killed it (out of memory).
+          { pgrep -a qemu || echo "no emulator process"; free -m; sudo dmesg | tail -100; } > "$RUNNER_TEMP/e2e-logs/host.txt" 2>&1 || true
 
       - if: failure()
         uses: actions/upload-artifact@v4
