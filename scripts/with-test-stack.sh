@@ -42,6 +42,20 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+# Pull first, retrying with backoff: a registry's transient 5xx or rate limit
+# must not fail the run (#606). Cached images make this a no-op.
+pull_attempt=1
+until "${compose[@]}" pull --quiet; do
+	if ((pull_attempt >= 4)); then
+		echo "with-test-stack: pulling the test images failed ${pull_attempt} times; giving up" >&2
+		exit 1
+	fi
+	delay=$((5 * 3 ** (pull_attempt - 1)))
+	echo "with-test-stack: pulling the test images failed (attempt ${pull_attempt}); retrying in ${delay}s" >&2
+	sleep "$delay"
+	pull_attempt=$((pull_attempt + 1))
+done
+
 "${compose[@]}" up --detach --wait --wait-timeout 120 --quiet-pull
 
 if [[ -n "$postgres_version" ]]; then

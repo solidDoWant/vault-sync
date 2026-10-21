@@ -79,6 +79,32 @@ function trackReloads(view: TextFileView): { reloads: Promise<void>[]; settled()
   };
 }
 
+/**
+ * Holds Obsidian's autosave of `view` until `release`: TextFileView.requestSave
+ * (a 2 s debounce of save(), called on every edit) only counts the request
+ * meanwhile. Unsaved state the harness makes then stays unsaved however long
+ * the steps after it take on a loaded runner (#600), instead of only until
+ * the debounce fires. An explicit save() (the adapter's, or a spec's) is not
+ * held. `release` restores the debounce and, if a save was requested
+ * meanwhile, requests it again, so Obsidian still saves what is unsaved.
+ */
+function holdAutosave(view: TextFileView): { requests(): number; release(): void } {
+  const own = Object.prototype.hasOwnProperty.call(view, "requestSave");
+  const original = view.requestSave;
+  let requests = 0;
+  view.requestSave = () => {
+    requests++;
+  };
+  return {
+    requests: () => requests,
+    release() {
+      if (own) view.requestSave = original;
+      else delete (view as Partial<TextFileView>).requestSave;
+      if (requests > 0) view.requestSave();
+    },
+  };
+}
+
 /** The editor and disk after a remote delete of an open note (editor.e2e.ts). */
 export interface EditorDeleteResult {
   outcome: string;
@@ -387,7 +413,8 @@ export default class VaultSyncE2EHarness extends Plugin {
    * In the Markdown editor showing `path`: puts the cursor at `cursor`, types
    * `typed` there (unsaved: Obsidian saves 2 s later at the earliest), then
    * writes `remote` through the Obsidian adapter as the engine would apply a
-   * remote revision. All in one turn, so no autosave can come in between.
+   * remote revision. Obsidian's autosave of the view is held until the write
+   * has finished (holdAutosave), so the keystrokes stay unsaved until then.
    */
   async typeThenWriteRemote(path: string, cursor: { line: number; ch: number }, typed: string, remote: string, options: RemoteWriteOptions = {}): Promise<EditorWriteResult> {
     const file = this.app.vault.getFileByPath(path);
@@ -395,14 +422,19 @@ export default class VaultSyncE2EHarness extends Plugin {
     const view = this.markdownView(path);
     const diskBefore = await this.app.vault.read(file);
     const { editor } = view;
-    editor.setCursor(cursor);
-    editor.replaceSelection(typed);
-    if (options.save === true) await view.save();
+    const autosave = holdAutosave(view);
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
-    } catch (error) {
-      outcome = describeError(error);
+      editor.setCursor(cursor);
+      editor.replaceSelection(typed);
+      if (options.save === true) await view.save();
+      try {
+        await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
+      } catch (error) {
+        outcome = describeError(error);
+      }
+    } finally {
+      autosave.release();
     }
     return { outcome, diskBefore, editor: editor.getValue(), cursor: editor.getCursor(), disk: await this.app.vault.read(file) };
   }
@@ -411,7 +443,8 @@ export default class VaultSyncE2EHarness extends Plugin {
    * In the Markdown editor showing `path`: types `typed` at `cursor`
    * (unsaved), then deletes the file through the Obsidian adapter as the
    * engine applies a remote delete, naming the content the disk had (unless
-   * `expectBase` is false: no precondition).
+   * `expectBase` is false: no precondition). Obsidian's autosave of the view
+   * is held until the delete has finished (holdAutosave).
    */
   async typeThenDeleteRemote(path: string, cursor: { line: number; ch: number }, typed: string, expectBase = true): Promise<EditorDeleteResult> {
     const file = this.app.vault.getFileByPath(path);
@@ -419,13 +452,18 @@ export default class VaultSyncE2EHarness extends Plugin {
     const view = this.markdownView(path);
     const diskBefore = await this.app.vault.read(file);
     const { editor } = view;
-    editor.setCursor(cursor);
-    editor.replaceSelection(typed);
+    const autosave = holdAutosave(view);
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).delete(path, expectBase ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
-    } catch (error) {
-      outcome = describeError(error);
+      editor.setCursor(cursor);
+      editor.replaceSelection(typed);
+      try {
+        await new ObsidianVaultAdapter(this.app).delete(path, expectBase ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
+      } catch (error) {
+        outcome = describeError(error);
+      }
+    } finally {
+      autosave.release();
     }
     const after = this.app.vault.getFileByPath(path);
     return { outcome, editor: editor.getValue(), disk: after === null ? null : await this.app.vault.read(after) };
@@ -433,14 +471,16 @@ export default class VaultSyncE2EHarness extends Plugin {
 
   /**
    * In the Markdown editor showing `path`: types `typed` at `cursor`
-   * (unsaved), then, in the same turn, has vault-sync's session (startSession)
-   * pull and push, as a remote change arriving while the user types would
-   * (unsaved.e2e.ts). Obsidian saves the typed text 2 s later at the
-   * earliest, and the in-memory server answers at once. With `create`, the
-   * note is first created with that text and opened in source mode. The
-   * steps before the sync await Obsidian, so the session must have been
-   * started with `automaticPush: false`: a debounced push falling due in
-   * between would otherwise sync the note first (#589).
+   * (unsaved), then has vault-sync's session (startSession) pull and push,
+   * as a remote change arriving while the user types would (unsaved.e2e.ts).
+   * With `create`, the note is first created with that text and opened in
+   * source mode. Obsidian's autosave of the view is held from the keystrokes
+   * until the sync has finished (holdAutosave), so they are unsaved when the
+   * sync reaches the adapter however long it takes (#600); the call throws
+   * if the keystrokes requested no save (the hold would hold nothing) or the
+   * editor matches the disk when the sync starts. The session never pushes
+   * on its own (startSession): the steps before the sync await Obsidian, and
+   * a debounced push falling due in between would sync the note first (#589).
    */
   async typeThenSync(path: string, cursor: { line: number; ch: number }, typed: string, create?: string): Promise<TypedSyncResult> {
     if (create !== undefined) {
@@ -451,14 +491,22 @@ export default class VaultSyncE2EHarness extends Plugin {
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.markdownView(path);
     const { editor } = view;
-    editor.setCursor(cursor);
-    editor.replaceSelection(typed);
-    const diskBefore = await this.app.vault.read(file);
+    const autosave = holdAutosave(view);
+    let diskBefore: string;
     let outcome = "ok";
     try {
-      await this.syncSession();
-    } catch (error) {
-      outcome = describeError(error);
+      editor.setCursor(cursor);
+      editor.replaceSelection(typed);
+      diskBefore = await this.app.vault.read(file);
+      if (autosave.requests() === 0) throw new Error("the keystrokes requested no save: Obsidian's autosave is not held");
+      if (editor.getValue() === (await this.app.vault.read(file))) throw new Error(`${path} has nothing unsaved when the sync starts`);
+      try {
+        await this.syncSession();
+      } catch (error) {
+        outcome = describeError(error);
+      }
+    } finally {
+      autosave.release();
     }
     return { outcome, diskBefore, editor: editor.getValue(), files: await this.vaultFiles() };
   }
@@ -494,27 +542,33 @@ export default class VaultSyncE2EHarness extends Plugin {
 
   /**
    * In the canvas showing `path`: adds a text node reading `nodeText` (unless
-   * null), unsaved (the canvas saves 2 s later at the earliest), then writes
-   * `remote` through the Obsidian adapter. All in one turn, so no autosave
-   * can come in between. The node is added through the canvas's internal API
-   * (not in Obsidian's typings), as a user's click does.
+   * null), unsaved, then writes `remote` through the Obsidian adapter. The
+   * canvas's autosave is held until the write has finished (holdAutosave).
+   * The node is added through the canvas's internal API (not in Obsidian's
+   * typings), as a user's click does.
    */
   async addCanvasNodeThenWriteRemote(path: string, nodeText: string | null, remote: string, options: CanvasWriteOptions = {}): Promise<ViewWriteResult & { reloads?: number; viewAfterReload?: string }> {
     const file = this.app.vault.getFileByPath(path);
     if (file === null) throw new Error(`no file ${path}`);
     const view = this.canvasView(path);
     const diskBefore = await this.app.vault.read(file);
-    if (nodeText !== null) {
-      const { canvas } = view as unknown as { canvas: { createTextNode(options: object): unknown } };
-      canvas.createTextNode({ pos: { x: 0, y: 200 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
-    }
-    if (options.save === true) await view.save();
-    const tracker = options.awaitReload === true ? trackReloads(view) : undefined;
+    const autosave = holdAutosave(view);
+    let tracker: ReturnType<typeof trackReloads> | undefined;
     let outcome = "ok";
     try {
-      await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
-    } catch (error) {
-      outcome = describeError(error);
+      if (nodeText !== null) {
+        const { canvas } = view as unknown as { canvas: { createTextNode(options: object): unknown } };
+        canvas.createTextNode({ pos: { x: 0, y: 200 }, size: { width: 200, height: 60 }, text: nodeText, focus: false });
+      }
+      if (options.save === true) await view.save();
+      tracker = options.awaitReload === true ? trackReloads(view) : undefined;
+      try {
+        await new ObsidianVaultAdapter(this.app).write(path, encoder.encode(remote), options.expectBase === true ? { expectedHash: sha256Hex(encoder.encode(diskBefore)) } : undefined);
+      } catch (error) {
+        outcome = describeError(error);
+      }
+    } finally {
+      autosave.release();
     }
     const result = { outcome, diskBefore, view: view.getViewData(), disk: await this.app.vault.read(file) };
     if (tracker === undefined) return result;
@@ -625,14 +679,15 @@ export default class VaultSyncE2EHarness extends Plugin {
    * Starts sync in the vault-sync plugin over the session's server and the
    * open vault's IndexedDB journal, through a new connection each time: only
    * what the journal stored survives vault-sync's disable/enable cycle.
-   * With `automaticPush: false` the session never pushes on its own (no
-   * debounced push after a local change or a merge), so the only pulls and
-   * pushes after the start are the spec's (syncSession, typeThenSync): a
-   * push the engine started on its own would otherwise run first whenever
-   * it falls due while a spec awaits, and the spec's own push, queued behind
-   * it, would see what that one left (#589).
+   * The session never pushes on its own (no debounced push after a local
+   * change or a merge, and no sync timer), so the only pulls and pushes
+   * after the start are the spec's (syncSession, typeThenSync). A push the
+   * engine started on its own would otherwise run first whenever it falls
+   * due while a spec awaits, and the spec's own push, queued behind it,
+   * would see what that one left (#589). No spec relies on automatic pushes
+   * through the harness, so every session runs without them (#600).
    */
-  async startSession(options: { automaticPush?: boolean } = {}): Promise<SessionStart> {
+  async startSession(): Promise<SessionStart> {
     const session = this.requireSession();
     session.journal?.close();
     session.journal = await openVaultJournal(this.app, session.journalKey);
@@ -645,7 +700,7 @@ export default class VaultSyncE2EHarness extends Plugin {
       api: createProtocolClient({ transport: session.server.transport }),
       journal: session.journal,
       onLocalChange: (event) => changes.push(event),
-      ...(options.automaticPush === false ? { pushDebounceMs: null } : {}),
+      pushDebounceMs: null,
     });
     return { cursor: summary === undefined ? null : String(summary.cursor), applied: summary?.applied ?? 0, listChangesSince: [...session.listChangesSince] };
   }
