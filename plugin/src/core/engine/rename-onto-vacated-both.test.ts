@@ -43,6 +43,44 @@ describe.each(["posix", "macos", "windows"] as const)("both devices renaming a n
     expect(await files(b.vault)).toEqual(server.liveFiles());
     expect(await a.journal.listDeferred()).toEqual([]);
   });
+
+  // #473 AC 1: X ends at c.md, where both users put it, and C at d.md; nothing is moved aside for C's revision, whose
+  // result never needs c.md.
+  it("places the note at the path both devices chose, with every local edit kept (#473)", async () => {
+    const devices = twoDevices({ pathRules: { platform } });
+    const { a, b, server } = devices;
+    await syncedOnBoth(devices, "x.md", "x\n");
+    await syncedOnBoth(devices, "c.md", "c\n");
+    const before = server.liveDocuments();
+    const [x, c] = [before.get("x.md"), before.get("c.md")];
+
+    await b.vault.write("c.md", bytes("c\nremote\n"));
+    await b.vault.rename("c.md", "d.md");
+    await b.vault.rename("x.md", "c.md");
+    await b.vault.write("c.md", bytes("x\nremote\n"));
+    await b.engine.push();
+
+    await a.vault.delete("c.md");
+    await a.vault.rename("x.md", "c.md");
+    await a.vault.write("c.md", bytes("x\nlocal\n"));
+    await a.engine.settled();
+    for (let round = 0; round < 4; round++) {
+      await a.engine.push();
+      await b.engine.push();
+    }
+    await a.engine.pull();
+    await b.engine.pull();
+
+    const documents = server.liveDocuments();
+    expect(documents.get("c.md")).toBe(x);
+    expect(documents.get("d.md")).toBe(c);
+    const contents = [...server.liveFiles().values()];
+    expect(contents.some((content) => content.includes("x\nlocal\n"))).toBe(true);
+    expect(contents.some((content) => content.includes("x\nremote\n"))).toBe(true);
+    expect(server.liveFiles().get("d.md")).toBe("c\nremote\n");
+    expect(await files(a.vault)).toEqual(server.liveFiles());
+    expect(await files(b.vault)).toEqual(server.liveFiles());
+  });
 });
 
 // The merge of a remote revision takes the file a local rename of its

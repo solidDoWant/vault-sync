@@ -1040,6 +1040,9 @@ describe.runIf(suites.has("scenarios"))("scripted renames of one note onto a vac
     }
     expect(result.vaults[1], trace).toEqual(result.vaults[0]);
     expect(result.documents.size, trace).toBe(result.vaults[0]?.size);
+    // #473: X ends at c.md, where both users put it, and C at d.md.
+    expect(result.documents.get("c.md"), trace).toBe(result.before.get("x.md"));
+    expect(result.documents.get("d.md"), trace).toBe(result.before.get("c.md"));
     expect(result.pushes.at(-1), trace).toMatch(/: 0 committed, 0 conflicts, 0 pending$/);
   });
 });

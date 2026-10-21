@@ -160,8 +160,7 @@ export interface JournalChanges {
  * The kinds of multi-step change an intent records (design §4.4). Each
  * kind's `steps` are defined by the refactor step that first writes it.
  */
-export type IntentKind =
-  "apply" | "merge" | "displace" | "detach" | "commit" | "resync";
+export type IntentKind = "apply" | "merge" | "displace" | "detach" | "commit" | "resync";
 
 /** An intent as recorded, before the journal assigned its id. */
 export interface NewIntent {
@@ -318,13 +317,7 @@ export interface RemoteRevision {
  *   wait, and a later revision within the cap (or an engine start with a cap
  *   that fits it) applies it.
  */
-export type DeferReason =
-  | "local-changes"
-  | "invalid-path"
-  | "path-conflict"
-  | "unmaterializable"
-  | "out-of-scope"
-  | "too-large";
+export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "unmaterializable" | "out-of-scope" | "too-large";
 
 export interface DeferredRevision {
   revision: RemoteRevision;
@@ -351,12 +344,7 @@ export interface DeferredRevision {
  * - `base-purged`: concurrent edits whose common base retention purged from
  *   the server (SPEC.md §11), so they could not be merged.
  */
-export type ConflictReason =
-  | "overlapping-edits"
-  | "binary"
-  | "concurrent-create"
-  | "path-taken"
-  | "base-purged";
+export type ConflictReason = "overlapping-edits" | "binary" | "concurrent-create" | "path-taken" | "base-purged";
 
 /** One entry of the conflict log. */
 export interface ConflictRecord {
@@ -392,19 +380,7 @@ export interface ConflictRecord {
  * unmaterializable path, or one out of scope, over the download cap or
  * invalid). Every other row is left as it is, and none is dropped.
  */
-export function releasedRows(
-  documents: readonly DocumentState[],
-  deferred: readonly DeferredRevision[],
-): DocumentState[] {
+export function releasedRows(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): DocumentState[] {
   const waiting = new Set(deferred.map((entry) => entry.revision.documentId));
-  return documents
-    .filter(
-      (state) =>
-        state.deleted &&
-        state.revisionId !== "" &&
-        state.binding === null &&
-        state.absence === "released" &&
-        waiting.has(state.documentId),
-    )
-    .map((state) => ({ ...state, deleted: false }));
+  return documents.filter((state) => state.deleted && state.revisionId !== "" && state.binding === null && state.absence === "released" && waiting.has(state.documentId)).map((state) => ({ ...state, deleted: false }));
 }
