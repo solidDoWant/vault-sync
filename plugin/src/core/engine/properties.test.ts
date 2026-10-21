@@ -271,12 +271,15 @@ describe("engine properties (design §9.3)", () => {
   // Fixed case: a document the restored server lost, renamed locally, whose re-create a later remote create's path
   // takes: it is displaced under its own id, not kept as a new document's copy; and one whose respelled file another
   // document the server has holds under the server's key (20k cases), re-created at a copy name under its own id,
-  // whether a later revision of that document comes or not.
+  // whether a later revision of that document comes or not; and a re-create kept in place whose create a remote
+  // rename's path refuses (#722), moved to a copy name under its own id.
   it("P1: a restore along this device's own history commits the lost revision under its own id", { timeout }, async () => {
     await holds(overWorld("P1", (world) => violations(world, "P1"), rollbackCommands), [
       scripted("posix", { type: "remote-create", path: 3 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }),
       scripted("posix", { type: "remote-create", path: 3 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-create", path: 2 }, { type: "push" }, { type: "edit-during-pull", file: 0 }),
+      // #722: the re-create, kept in place, is refused because a remote rename took its path meanwhile.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 2 }, { type: "user-rename", file: 0, mode: "pool", target: 3 }),
     ]);
   });
 

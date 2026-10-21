@@ -2139,7 +2139,10 @@ export class SyncEngine {
       return;
     }
     if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) return;
-    const conflicts = await this.journal.listConflicts();
+    // A record whose copy is its own path names no move: a document the
+    // restored server lacks, re-created where its file is (design §4.6). Its
+    // refused create still moves to a copy name under its own id (#722).
+    const conflicts = (await this.journal.listConflicts()).filter((record) => record.copyPath !== record.path);
     const movedHere = (path: string) => conflicts.find((record) => record.reason === "path-taken" && record.documentId === operation.documentId && record.copyPath === path);
     // What the server refuses a path for (SPEC.md §5, §6.3): a document other
     // than this one that this device knows of (a live one the journal has,
