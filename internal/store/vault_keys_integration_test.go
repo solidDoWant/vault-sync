@@ -127,6 +127,55 @@ func TestNewE2EEVaultHasNoEpochAndAPendingRotation(t *testing.T) {
 	}
 }
 
+// A new E2EE vault has no key epoch yet, so it refuses every commit until
+// its first epoch exists, epoch 0 included; a plaintext vault accepts
+// epoch 0. Nothing of the refused commit is stored.
+func TestNewE2EEVaultRefusesCommitsBeforeItsFirstEpoch(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	require.NoError(t, err)
+
+	device, err := queries.RegisterDevice(t.Context(), owner, "laptop", nil, 10)
+	require.NoError(t, err)
+
+	content := sha256.Sum256([]byte("content"))
+
+	tests := []struct {
+		name          string
+		encryption    store.Encryption
+		assertErr     require.ErrorAssertionFunc
+		wantRevisions int
+	}{
+		{"an E2EE vault without an epoch", store.EncryptionE2EE, func(t require.TestingT, err error, _ ...any) {
+			require.ErrorIs(t, err, store.ErrEpochNotCurrent)
+		}, 0},
+		{"a plaintext vault", store.EncryptionNone, require.NoError, 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vault, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: test.name, Encryption: test.encryption}, 10)
+			require.NoError(t, err)
+
+			_, err = pool.Exec(t.Context(), "INSERT INTO blobs (vault_id, blob_id, size, state) VALUES ($1, $2, 7, 'complete')", vault.ID, content[:])
+			require.NoError(t, err)
+
+			_, err = queries.InVault(vault.ID).CommitRevision(t.Context(), store.NewRevision{
+				ID: uuid.Must(uuid.NewV7()), DocumentID: uuid.Must(uuid.NewV7()), Kind: "text",
+				ContentRef: content[:], ContentSize: 7, Path: "note.md", PathKey: uuid.NewString(),
+				DeviceID: device.ID, UserID: owner, Epoch: 0,
+			})
+			test.assertErr(t, err)
+
+			var revisions int
+			require.NoError(t, pool.QueryRow(t.Context(), "SELECT count(*) FROM revisions WHERE vault_id = $1", vault.ID).Scan(&revisions))
+			assert.Equal(t, test.wantRevisions, revisions)
+		})
+	}
+}
+
 // Criterion 4: of concurrent rotations with the same expected epoch, on
 // separate connections, exactly one wins; the others get
 // ErrEpochNotCurrent and nothing of theirs is stored.
