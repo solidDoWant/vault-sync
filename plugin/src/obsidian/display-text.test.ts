@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { quotedVaultLabel, shownName, shownPath, vaultLabel, visiblePath } from "./display-text";
+import { quotedVaultLabel, shownName, vaultLabel, visiblePath } from "./display-text";
 
 /** `text` between FSI (U+2068) and PDI (U+2069), as the views isolate it. */
 const iso = (text: string) => `\u2068${text}\u2069`;
@@ -52,7 +52,6 @@ describe("display text", () => {
       ["control characters", "line\nbreak\u0001.md", "line\\u000Abreak\\u0001.md"],
     ])("shows %s in a path visibly", (_, path, shown) => {
       expect(visiblePath(path)).toBe(shown);
-      expect(shownPath(path)).toBe(iso(shown));
     });
 
     it("leaves letters of every script, accents and emoji as they are", () => {

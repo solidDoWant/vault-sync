@@ -1161,7 +1161,7 @@ describe("SyncSession", () => {
       const [, first] = entries;
       if (first === undefined) throw new Error("no first revision");
 
-      expect(entryLabel(first, undefined, () => "then")).toContain(" · earliest kept version of \u2068notes/inv\\u200Boice\\u202Ett.exe.md\u2069 (5 B)");
+      expect(entryLabel(first, undefined, () => "then")).toContain(" · earliest kept version of notes/inv\\u200Boice\\u202Ett.exe.md (5 B)");
       await history.restore(first);
 
       expect(await files(vault)).toEqual(new Map([[path, "first"]]));

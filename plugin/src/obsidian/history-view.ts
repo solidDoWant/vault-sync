@@ -1,5 +1,5 @@
 import type { HistoryEntry, RestoreError } from "../core/engine/history";
-import { quotedName, shownName, shownPath } from "./display-text";
+import { quotedName, shownName, visiblePath } from "./display-text";
 
 // What the history views show for a revision (SPEC.md §11). No Obsidian
 // import, so it is unit-tested; history-modal.ts renders it.
@@ -95,11 +95,11 @@ export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefin
 
 /**
  * What a revision changed relative to the one before it (`previous`, the next
- * older entry). Paths are another member's text: shown as shownPath shows
+ * older entry). Paths are another member's text: shown as visiblePath shows
  * them (#555).
  */
 export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefined): string {
-  const path = shownPath(entry.path);
+  const path = visiblePath(entry.path);
   if (entry.deleted) return `deleted ${path}`;
   // The document's first revision, or the oldest that retention kept.
   if (previous === undefined) return `earliest kept version of ${path} (${sizeLabel(entry.size)})`;

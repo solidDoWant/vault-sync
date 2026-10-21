@@ -71,17 +71,17 @@ describe("history view", () => {
 
     it("says what each revision changed", () => {
       const base = entry({ contentHash: "aa" });
-      expect(changeLabel(base, undefined)).toBe(`earliest kept version of ${iso("plan.md")} (12 B)`);
+      expect(changeLabel(base, undefined)).toBe("earliest kept version of plan.md (12 B)");
       expect(changeLabel(entry({ contentHash: "bb" }), base)).toBe("edited (12 B)");
-      expect(changeLabel(entry({ path: "moved.md" }), base)).toBe(`moved to ${iso("moved.md")}`);
-      expect(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base)).toBe(`moved to ${iso("moved.md")} and edited (12 B)`);
-      expect(changeLabel(entry({ deleted: true }), base)).toBe(`deleted ${iso("plan.md")}`);
-      expect(changeLabel(base, entry({ deleted: true }))).toBe(`restored ${iso("plan.md")} (12 B)`);
+      expect(changeLabel(entry({ path: "moved.md" }), base)).toBe("moved to moved.md");
+      expect(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base)).toBe("moved to moved.md and edited (12 B)");
+      expect(changeLabel(entry({ deleted: true }), base)).toBe("deleted plan.md");
+      expect(changeLabel(base, entry({ deleted: true }))).toBe("restored plan.md (12 B)");
     });
 
     it("puts time, device and change on one line", () => {
       const formatTime = (date: Date) => date.toISOString();
-      expect(entryLabel(entry({ thisDevice: true }), undefined, formatTime)).toBe(`2026-01-02T03:04:00.000Z · this device · earliest kept version of ${iso("plan.md")} (12 B)`);
+      expect(entryLabel(entry({ thisDevice: true }), undefined, formatTime)).toBe("2026-01-02T03:04:00.000Z · this device · earliest kept version of plan.md (12 B)");
       expect(entryLabel(entry({ createdAt: undefined }), undefined, formatTime)).toMatch(/^unknown time · /);
     });
 
@@ -106,7 +106,7 @@ describe("history view", () => {
     });
 
     it("isolates another device's name, so right-to-left letters cannot reorder the label and a trailing mark stays inside (#557)", () => {
-      expect(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then")).toBe(`then · device “${iso("حاسوب 2")}” · earliest kept version of ${iso("plan.md")} (12 B)`);
+      expect(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then")).toBe(`then · device “${iso("حاسوب 2")}” · earliest kept version of plan.md (12 B)`);
       expect(deviceLabel(entry({ deviceName: "Phone\u0301" }))).toBe(`device “${iso("Phone\u0301")}”`);
     });
 
@@ -119,13 +119,13 @@ describe("history view", () => {
       ["a right-to-left override", "notes/\u202etxt.exe.md", "notes/\\u202Etxt.exe.md"],
       ["zero-width characters", "pay\u200bpal\u200d.md", "pay\\u200Bpal\\u200D.md"],
       ["bidi isolates", "a\u2066b\u2069.md", "a\\u2066b\\u2069.md"],
-    ])("shows %s in another member's path visibly and isolated (#555)", (_, path, shown) => {
+    ])("shows %s in another member's path visibly (#555)", (_, path, shown) => {
       const base = entry({ contentHash: "aa" });
-      expect(changeLabel(entry({ path }), base)).toBe(`moved to ${iso(shown)}`);
-      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toBe(`moved to ${iso(shown)} and edited (12 B)`);
-      expect(changeLabel(entry({ path, deleted: true }), base)).toBe(`deleted ${iso(shown)}`);
-      expect(changeLabel(entry({ path }), entry({ deleted: true }))).toBe(`restored ${iso(shown)} (12 B)`);
-      expect(changeLabel(entry({ path }), undefined)).toBe(`earliest kept version of ${iso(shown)} (12 B)`);
+      expect(changeLabel(entry({ path }), base)).toBe(`moved to ${shown}`);
+      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toBe(`moved to ${shown} and edited (12 B)`);
+      expect(changeLabel(entry({ path, deleted: true }), base)).toBe(`deleted ${shown}`);
+      expect(changeLabel(entry({ path }), entry({ deleted: true }))).toBe(`restored ${shown} (12 B)`);
+      expect(changeLabel(entry({ path }), undefined)).toBe(`earliest kept version of ${shown} (12 B)`);
     });
 
     it("names a device by id when its name is nothing but invisible characters", () => {

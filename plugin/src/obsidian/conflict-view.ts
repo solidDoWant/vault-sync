@@ -4,7 +4,7 @@ import type { OpenConflict } from "../core/engine/conflicts";
 import type { DeferredDocument } from "../core/engine/deferred";
 import type { RejectedOperation, TooLargeDocument, UnmaterializableDocument } from "../core/engine/engine";
 import { conflictReasonText, deferredReasonText, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText } from "./conflict-text";
-import { shownPath, visiblePath } from "./display-text";
+import { visiblePath } from "./display-text";
 import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
@@ -158,7 +158,7 @@ export class ConflictView extends ItemView {
 
   private renderConflict(item: HTMLElement, { record, original, copy }: OpenConflict): void {
     item.createDiv({ text: conflictReasonText(record.reason), cls: "vault-sync-conflict-reason" });
-    item.createDiv({ text: `Path: ${shownPath(record.path)} · ${new Date(record.at).toLocaleString()}`, cls: "vault-sync-conflict-path" });
+    item.createDiv({ text: `Path: ${visiblePath(record.path)} · ${new Date(record.at).toLocaleString()}`, cls: "vault-sync-conflict-path" });
     const versions = item.createDiv();
     if (copy === null) {
       this.fileLine(versions, "This device's version (not synced)", original, "vault-sync-conflict-original");

@@ -68,8 +68,3 @@ export function quotedVaultLabel(vault: { id: string; name: string }): string {
 export function visiblePath(path: string): string {
   return path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|[\ud800-\udfff]/gu, (character) => `\\u${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`);
 }
-
-/** A visiblePath, isolated, for use inside a sentence. */
-export function shownPath(path: string): string {
-  return isolated(visiblePath(path));
-}
