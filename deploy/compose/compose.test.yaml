@@ -4,15 +4,15 @@
 # loopback so parallel runs (one compose project each) never collide.
 #
 # No image is pulled from Docker Hub (registry-1.docker.io), whose outages and
-# rate limits used to fail CI (#606): PostgreSQL comes from Docker's official
-# images on ECR Public, versitygw (published only on Docker Hub) from Google's
-# Docker Hub mirror. Both serve the same content as Docker Hub, so the digests
-# match Docker Hub's for the same tag.
+# rate limits used to fail CI (#606): every image comes from Google's Docker
+# Hub mirror, mirror.gcr.io, which serves the same content (same digests).
+# Not ECR Public: its anonymous data limit is exhausted on GitHub's shared
+# runner IPs. scripts/with-test-stack.sh also retries the pull with backoff.
 name: vault-sync-test
 
 services:
   postgres:
-    image: public.ecr.aws/docker/library/postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
+    image: mirror.gcr.io/library/postgres:18.6-alpine@sha256:77f585114c32fbca283dc835b0596f4e52b51b4c6662d7810b2f4084f60a1873
     environment:
       POSTGRES_USER: vault_sync
       POSTGRES_PASSWORD: vault_sync
