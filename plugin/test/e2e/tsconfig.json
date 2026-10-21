@@ -8,6 +8,6 @@
   "compilerOptions": {
     "types": ["node", "@wdio/globals/types", "@wdio/mocha-framework", "wdio-obsidian-service"]
   },
-  "include": ["**/*.ts", "../../wdio.conf.mts"],
+  "include": ["**/*.ts", "../../wdio.conf.mts", "../../wdio.android.conf.mts"],
   "exclude": ["harness/dist"]
 }

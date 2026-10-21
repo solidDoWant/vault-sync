@@ -126,7 +126,13 @@ func TestPluginE2E(t *testing.T) {
 		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
 	}).API
 
-	suite := testinfra.NewChild(t, "node", wdio, "run", "wdio.conf.mts")
+	// SPIKE (#187), throwaway: another WebdriverIO config, e.g. the Android one.
+	wdioConfig := "wdio.conf.mts"
+	if override := os.Getenv("VAULT_SYNC_E2E_WDIO_CONFIG"); override != "" {
+		wdioConfig = override
+	}
+
+	suite := testinfra.NewChild(t, "node", wdio, "run", wdioConfig)
 	suite.Command.Dir = pluginDir
 
 	suite.Command.Env = append(os.Environ(),

@@ -1,0 +1,143 @@
+# SPIKE (#187), throwaway: the plugin e2e suite on the real Obsidian Android
+# app in an Android emulator (KVM) on ubuntu-latest. Not a required check;
+# removed before the spike's PR is marked ready.
+name: android-spike
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/android-spike.yml
+      - plugin/wdio.android.conf.mts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-spike-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  OBSIDIAN_APK_VERSION: "1.14.4"
+  # The digest GitHub reports for the release asset
+  # (gh api repos/obsidianmd/obsidian-releases/releases/tags/v1.14.4).
+  OBSIDIAN_APK_SHA256: b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3
+  ANDROID_API: "34"
+  ANDROID_IMAGE: "system-images;android-34;google_apis;x86_64"
+
+jobs:
+  android:
+    name: android-spike (attempt ${{ matrix.attempt }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3]
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+          nproc
+          free -g
+
+      - name: Download and verify the Obsidian APK
+        run: |
+          start=$(date +%s)
+          dir="$RUNNER_TEMP/obsidian-apk"
+          mkdir "$dir"
+          curl -fsSL --proto '=https' -o "$dir/obsidian.apk" \
+            "https://github.com/obsidianmd/obsidian-releases/releases/download/v${OBSIDIAN_APK_VERSION}/Obsidian-${OBSIDIAN_APK_VERSION}.apk"
+          echo "${OBSIDIAN_APK_SHA256}  $dir/obsidian.apk" | sha256sum -c -
+          echo "VAULT_SYNC_E2E_ANDROID_APK=$dir/obsidian.apk" >> "$GITHUB_ENV"
+          echo "::notice::APK download+verify $(( $(date +%s) - start ))s"
+
+      - name: Install the emulator and system image (Google's sdkmanager)
+        run: |
+          start=$(date +%s)
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
+          yes | "$sdk/sdkmanager" --licenses > /dev/null || true
+          "$sdk/sdkmanager" --install emulator platform-tools "$ANDROID_IMAGE" > /dev/null
+          echo no | "$sdk/avdmanager" create avd -n obsidian_test -k "$ANDROID_IMAGE" -d pixel_6 --force
+          echo "::notice::SDK install $(( $(date +%s) - start ))s"
+
+      - name: Boot the emulator
+        run: |
+          start=$(date +%s)
+          adb="$ANDROID_HOME/platform-tools/adb"
+          nohup "$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -no-snapshot -memory 4096 -cores 2 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          "$adb" wait-for-device
+          until [[ "$("$adb" shell getprop sys.boot_completed | tr -d '\r')" == 1 ]]; do sleep 2; done
+          "$adb" shell settings put global window_animation_scale 0
+          "$adb" shell settings put global transition_animation_scale 0
+          "$adb" shell settings put global animator_duration_scale 0
+          "$adb" shell dumpsys package com.google.android.webview | grep -m1 versionName || true
+          echo "::notice::emulator boot $(( $(date +%s) - start ))s"
+
+      - uses: ./.github/actions/nix-dev-shell
+
+      - name: Build the plugin and install Appium (not saved)
+        run: |
+          nix develop -c make plugin-build
+          cd plugin
+          nix develop -c npm install --no-save appium@^3 appium-uiautomator2-driver @wdio/appium-service@^9
+
+      - name: Plugin e2e on Android
+        env:
+          VAULT_SYNC_E2E_WDIO_CONFIG: wdio.android.conf.mts
+          VAULT_SYNC_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          E2E_TIMEOUT: 45m
+        run: |
+          start=$(date +%s)
+          mkdir -p "$VAULT_SYNC_E2E_LOG_DIR"
+          status=0
+          nix develop -c ./scripts/test-e2e.sh || status=$?
+          echo "::notice::e2e suite $(( $(date +%s) - start ))s, exit $status"
+          exit $status
+
+      - name: Probe device controls for #31's rows
+        if: always()
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          probe() { if "$adb" shell "$@" > /dev/null 2>&1; then echo "::notice::probe ok: $*"; else echo "::warning::probe FAILED: $*"; fi; }
+          probe am start -n md.obsidian/.MainActivity
+          probe input keyevent KEYCODE_HOME
+          probe am start -n md.obsidian/.MainActivity
+          probe am kill md.obsidian
+          probe am force-stop md.obsidian
+          probe settings put global always_finish_activities 1
+          probe settings put global always_finish_activities 0
+          probe cmd connectivity airplane-mode enable
+          probe cmd connectivity airplane-mode disable
+          probe svc wifi disable
+          probe svc wifi enable
+          probe svc data disable
+          probe svc data enable
+          probe dumpsys battery unplug
+          probe settings put global low_power 1
+          probe settings put global low_power 0
+          probe dumpsys deviceidle force-idle
+          probe dumpsys deviceidle unforce
+          probe dumpsys battery reset
+          probe dumpsys batterystats --charged md.obsidian
+          probe am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/DCIM/x.jpg
+          "$adb" shell dumpsys activity activities | grep -i 'md.obsidian' | head -5 || true
+          "$adb" exec-out screencap -p > "$RUNNER_TEMP/e2e-logs/final-screen.png" || true
+          "$adb" logcat -d > "$RUNNER_TEMP/e2e-logs/logcat.txt" || true
+          cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/e2e-logs/" || true
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-spike-logs-${{ matrix.attempt }}
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: ignore
