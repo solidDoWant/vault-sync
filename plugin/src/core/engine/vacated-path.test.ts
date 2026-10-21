@@ -78,6 +78,31 @@ describe("SyncEngine push of a new file at a just-vacated path (#254)", () => {
         expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
       });
 
+      // Design §6.4 item 7 (R5a, #622): the start-up scan's delete lasts until something binds the document again.
+      it("deletes the old document and creates a new one when the file was deleted while the app was closed and another is created at its path before the push", async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "H", path: "h.md", content: "old\n" });
+        await h.engine.pull();
+        h.engine.dispose();
+        await h.vault.delete("h.md");
+        h.restart();
+        await h.engine.settled();
+        await h.vault.write("h.md", bytes("new\n"));
+
+        const summaries = await pushUntilQuiet(h);
+
+        expect(h.server.head("H")?.deleted).toBe(true);
+        expect(contentsOf(h, "H")).toEqual(["old\n"]);
+        const documents = h.server.liveDocuments();
+        expect(documents.size).toBe(1);
+        expect(documents.get("h.md")).toEqual(expect.any(String));
+        expect(documents.get("h.md")).not.toBe("H");
+        expect(h.server.liveFiles()).toEqual(new Map([["h.md", "new\n"]]));
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+      });
+
       it("keeps the old document when the user deletes a file and puts the same content back", async () => {
         const h = harness({ merge: "default", pathRules: { platform } });
         h.server.commit({ documentId: "H", path: "h.md", content: "old\n" });

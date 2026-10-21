@@ -264,9 +264,27 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
-  // Holds since R5a (#622): local renames and pending creates are journal rows (bindings), so a crash no longer loses them.
-  it("P4: a crash at any journal write reaches the state a run without it reaches", { timeout }, async () => {
-    await holds(p4);
+  // Fails today (flips in R8 #572; re-pinned in R5a #622, which fixed the crash-lost rename that was pinned before; this counterexample fails on master too): after a database restore, a crash at a journal write leaves a remote file in the vault that the run without the crash does not keep.
+  it("P4: a crash at any journal write reaches the state a run without it reaches (known failure)", { timeout }, async () => {
+    await knownFailure(p4, {
+      example: [
+        "posix",
+        [
+          { type: "remote-create", path: 1 },
+          { type: "remote-rename", document: 0, path: 0 },
+          { type: "edit-during-pull", file: 0 },
+          { type: "restore", fraction: 0 },
+          { type: "user-delete", file: 0 },
+          { type: "remote-create", path: 1 },
+          { type: "push" },
+          { type: "remote-rename", document: 0, path: 0 },
+          { type: "remote-delete", document: 0 },
+          { type: "pull" },
+        ],
+        12,
+      ],
+      violation: /^a crash at journal write 12 reaches \{"vault":\["a\.md=remote 6"\],"server":\[\]\}, the run without it \{"vault":\[\],"server":\[\]\}$/,
+    });
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
