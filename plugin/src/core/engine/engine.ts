@@ -1808,7 +1808,7 @@ export class SyncEngine {
         if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) continue;
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
-        await this.commitOperation(operation, summary);
+        await this.commitOperation(await this.createFollowsBinding(operation), summary);
         busy = await this.busy();
       }
     }
@@ -1858,6 +1858,24 @@ export class SyncEngine {
       await this.commitOperation(operation, summary);
     }
     return plan.waiting;
+  }
+
+  /**
+   * A create in the outbox whose file a local rename moved (E1): the
+   * create follows the document's binding, under a new revision id, as a
+   * displace intent's does (intents.ts). Otherwise its file is missing at
+   * the create's path, and the moved file would be pushed as another
+   * document (P1; a document re-created after a restore, R7b).
+   */
+  private async createFollowsBinding(operation: PendingOperation): Promise<PendingOperation> {
+    if (operation.baseRevisionId !== "" || operation.deleted) return operation;
+    const spelling = (await this.journal.getDocument(operation.documentId))?.binding?.spelling;
+    if (spelling === undefined || spelling === operation.path || (await this.readOrNull(operation.path)) !== null) return operation;
+    const content = await this.readOrNull(spelling);
+    if (content === null) return operation;
+    const moved: PendingOperation = { ...operation, revisionId: this.newId(), path: spelling, contentHash: sha256Hex(content), size: BigInt(content.length) };
+    await this.journal.transact({ removePending: [operation.revisionId], addPending: [moved] });
+    return moved;
   }
 
   /** The documents whose deferred remote revision keeps their local changes from being pushed, and their server claims (busyClaims). */
