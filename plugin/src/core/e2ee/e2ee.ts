@@ -1,0 +1,364 @@
+/**
+ * End-to-end encryption primitives of SPEC.md §9.3, cipher suite 1:
+ * HKDF-SHA256 sub-keys, XChaCha20-Poly1305 with associated data, an X25519
+ * sealed box for key slots, HMAC-SHA256 path_key and blob_id, and Argon2id
+ * passphrase wrapping.
+ *
+ * Every ciphertext starts with its suite version byte, and every open
+ * authenticates the whole header together with the caller's associated data,
+ * so a ciphertext with an unknown suite, a changed header or associated data,
+ * or a truncated tag fails closed with {@link DecryptError}. The formats are
+ * described in docs/design/crypto.md; testdata/crypto/vectors.json pins them,
+ * and the Go implementation (internal/e2ee) must agree with it.
+ *
+ * Pure JavaScript (@noble/*), so it behaves the same on Electron and Android
+ * WebView. Random bytes come from `crypto.getRandomValues`.
+ */
+import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
+import { randomBytes } from "@noble/ciphers/utils.js";
+import { x25519 } from "@noble/curves/ed25519.js";
+import { argon2id } from "@noble/hashes/argon2.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
+
+import { pathKey as normalizePath } from "../pathkey/pathkey";
+
+/** The suite version byte of every suite 1 ciphertext. */
+export const SUITE_V1 = 0x01;
+/** The size of every symmetric key, sub-key and X25519 key. */
+export const KEY_SIZE = 32;
+/** The XChaCha20-Poly1305 nonce size. */
+export const NONCE_SIZE = 24;
+/** The Poly1305 tag size. */
+export const TAG_SIZE = 16;
+/** The Argon2id salt size of a passphrase-wrapped secret. */
+export const SALT_SIZE = 16;
+
+const SEALED_HEADER_SIZE = 1 + KEY_SIZE;
+const PASSPHRASE_HEADER_SIZE = 1 + 4 + 4 + 1 + SALT_SIZE;
+
+const SUBKEY_INFO_PREFIX = "vault-sync/v1/subkey/";
+const SEALED_BOX_INFO = "vault-sync/v1/sealed-box";
+
+const encoder = new TextEncoder();
+
+/**
+ * Thrown for every ciphertext that does not open: unknown suite, malformed or
+ * short input, or a failed authentication. The causes are deliberately not
+ * told apart.
+ */
+export class DecryptError extends Error {
+  constructor() {
+    super("e2ee: ciphertext does not authenticate");
+    this.name = "DecryptError";
+  }
+}
+
+/** The HKDF sub-keys of a vault epoch key (SPEC.md §9.3). */
+export const SUBKEY_LABELS = ["content", "path", "path_key_secret", "blob_id_secret"] as const;
+export type SubkeyLabel = (typeof SUBKEY_LABELS)[number];
+
+function requireLength(name: string, value: Uint8Array, length: number): void {
+  if (value.length !== length) {
+    throw new Error(`e2ee: ${name} must be ${String(length)} bytes, got ${String(value.length)}`);
+  }
+}
+
+function concat(...parts: Uint8Array[]): Uint8Array {
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
+}
+
+/**
+ * Derives the sub-key named by `label` from a 32-byte epoch key: HKDF-SHA256
+ * with an empty salt and the info "vault-sync/v1/subkey/" + label.
+ */
+export function deriveSubkey(epochKey: Uint8Array, label: SubkeyLabel): Uint8Array {
+  requireLength("epoch key", epochKey, KEY_SIZE);
+  if (!(SUBKEY_LABELS as readonly string[]).includes(label)) {
+    throw new Error(`e2ee: unknown sub-key label ${JSON.stringify(label)}`);
+  }
+  return hkdf(sha256, epochKey, new Uint8Array(0), encoder.encode(SUBKEY_INFO_PREFIX + label), KEY_SIZE);
+}
+
+/** Returns header || nonce || ciphertext, authenticating header || aad. */
+function sealAfterHeader(
+  header: Uint8Array,
+  key: Uint8Array,
+  nonce: Uint8Array,
+  plaintext: Uint8Array,
+  aad: Uint8Array,
+): Uint8Array {
+  requireLength("key", key, KEY_SIZE);
+  requireLength("nonce", nonce, NONCE_SIZE);
+  return concat(header, nonce, xchacha20poly1305(key, nonce, concat(header, aad)).encrypt(plaintext));
+}
+
+/** Opens nonce || ciphertext, authenticating header || aad. */
+function openAfterHeader(header: Uint8Array, key: Uint8Array, rest: Uint8Array, aad: Uint8Array): Uint8Array {
+  requireLength("key", key, KEY_SIZE);
+  if (rest.length < NONCE_SIZE + TAG_SIZE) {
+    throw new DecryptError();
+  }
+  try {
+    return xchacha20poly1305(key, rest.subarray(0, NONCE_SIZE), concat(header, aad)).decrypt(rest.subarray(NONCE_SIZE));
+  } catch {
+    throw new DecryptError();
+  }
+}
+
+/**
+ * Encrypts `plaintext` under a 32-byte key with a fresh random nonce and binds
+ * `aad`: SUITE_V1 || nonce || XChaCha20-Poly1305(plaintext), the associated
+ * data being SUITE_V1 || aad.
+ */
+export function seal(key: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Uint8Array {
+  return sealWithNonce(key, randomBytes(NONCE_SIZE), plaintext, aad);
+}
+
+/**
+ * {@link seal} with a given nonce. Only for the shared test vectors: a nonce
+ * must never be used twice with one key.
+ */
+export function sealWithNonce(key: Uint8Array, nonce: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Uint8Array {
+  return sealAfterHeader(Uint8Array.of(SUITE_V1), key, nonce, plaintext, aad);
+}
+
+/**
+ * Reverses {@link seal}. Throws {@link DecryptError} unless `sealed` is a suite
+ * 1 ciphertext under `key` with exactly this `aad`.
+ */
+export function open(key: Uint8Array, sealed: Uint8Array, aad: Uint8Array): Uint8Array {
+  if (sealed.length < 1 || sealed[0] !== SUITE_V1) {
+    throw new DecryptError();
+  }
+  return openAfterHeader(sealed.subarray(0, 1), key, sealed.subarray(1), aad);
+}
+
+/** Returns a new random 32-byte symmetric key (an epoch key). */
+export function generateKey(): Uint8Array {
+  return randomBytes(KEY_SIZE);
+}
+
+/** Returns a new X25519 key pair. */
+export function generateKeyPair(): { privateKey: Uint8Array; publicKey: Uint8Array } {
+  const privateKey = randomBytes(KEY_SIZE);
+  return { privateKey, publicKey: publicKey(privateKey) };
+}
+
+/** Returns the X25519 public key of a 32-byte private key. */
+export function publicKey(privateKey: Uint8Array): Uint8Array {
+  requireLength("private key", privateKey, KEY_SIZE);
+  return x25519.getPublicKey(privateKey);
+}
+
+/**
+ * HKDF-SHA256 of the X25519 shared secret, salted with the ephemeral and
+ * recipient public keys. Throws for a low-order public key (an all-zero
+ * shared secret).
+ */
+function sealedBoxKey(
+  privateKey: Uint8Array,
+  peerPublicKey: Uint8Array,
+  ephemeralPublicKey: Uint8Array,
+  recipientPublicKey: Uint8Array,
+): Uint8Array {
+  const shared = x25519.getSharedSecret(privateKey, peerPublicKey);
+  if (shared.every((byte) => byte === 0)) {
+    throw new Error("e2ee: low-order X25519 public key");
+  }
+  return hkdf(sha256, shared, concat(ephemeralPublicKey, recipientPublicKey), encoder.encode(SEALED_BOX_INFO), KEY_SIZE);
+}
+
+/**
+ * Encrypts `plaintext` (an epoch key) to an X25519 public key, binding `aad`:
+ * SUITE_V1 || ephemeral public key || nonce || ciphertext, the associated data
+ * being the header || aad.
+ */
+export function sealTo(recipientPublicKey: Uint8Array, plaintext: Uint8Array, aad: Uint8Array): Uint8Array {
+  return sealToWith(recipientPublicKey, randomBytes(KEY_SIZE), randomBytes(NONCE_SIZE), plaintext, aad);
+}
+
+/**
+ * {@link sealTo} with a given ephemeral private key and nonce. Only for the
+ * shared test vectors.
+ */
+export function sealToWith(
+  recipientPublicKey: Uint8Array,
+  ephemeralPrivateKey: Uint8Array,
+  nonce: Uint8Array,
+  plaintext: Uint8Array,
+  aad: Uint8Array,
+): Uint8Array {
+  requireLength("recipient public key", recipientPublicKey, KEY_SIZE);
+  const ephemeralPublicKey = publicKey(ephemeralPrivateKey);
+  const key = sealedBoxKey(ephemeralPrivateKey, recipientPublicKey, ephemeralPublicKey, recipientPublicKey);
+  return sealAfterHeader(concat(Uint8Array.of(SUITE_V1), ephemeralPublicKey), key, nonce, plaintext, aad);
+}
+
+/**
+ * Reverses {@link sealTo} with the recipient's X25519 private key. Throws
+ * {@link DecryptError} unless `sealed` is a suite 1 sealed box to this key
+ * with exactly this `aad`.
+ */
+export function openFrom(recipientPrivateKey: Uint8Array, sealed: Uint8Array, aad: Uint8Array): Uint8Array {
+  const recipientPublicKey = publicKey(recipientPrivateKey);
+  if (sealed.length < SEALED_HEADER_SIZE || sealed[0] !== SUITE_V1) {
+    throw new DecryptError();
+  }
+  const ephemeralPublicKey = sealed.subarray(1, SEALED_HEADER_SIZE);
+  let key: Uint8Array;
+  try {
+    key = sealedBoxKey(recipientPrivateKey, ephemeralPublicKey, ephemeralPublicKey, recipientPublicKey);
+  } catch {
+    throw new DecryptError();
+  }
+  return openAfterHeader(sealed.subarray(0, SEALED_HEADER_SIZE), key, sealed.subarray(SEALED_HEADER_SIZE), aad);
+}
+
+function mac(secret: Uint8Array, data: Uint8Array): Uint8Array {
+  requireLength("secret", secret, KEY_SIZE);
+  return hmac(sha256, secret, data);
+}
+
+/**
+ * The E2EE path_key of a path (SPEC.md §5): HMAC-SHA256(path_key_secret,
+ * UTF-8 of the normalized path).
+ */
+export function pathKey(pathKeySecret: Uint8Array, path: string): Uint8Array {
+  return mac(pathKeySecret, encoder.encode(normalizePath(path)));
+}
+
+/** The E2EE blob_id of a plaintext (SPEC.md §5): HMAC-SHA256(blob_id_secret, plaintext). */
+export function blobId(blobIdSecret: Uint8Array, plaintext: Uint8Array): Uint8Array {
+  return mac(blobIdSecret, plaintext);
+}
+
+/** The Argon2id parameters of a passphrase-wrapped secret. */
+export interface Argon2Params {
+  /** Memory cost in KiB. */
+  memory: number;
+  /** Time cost. */
+  iterations: number;
+  /** Number of lanes. */
+  parallelism: number;
+}
+
+/**
+ * The parameters {@link wrapWithPassphrase} uses by default: 64 MiB, three
+ * passes, one lane. Measurements are in docs/design/crypto.md.
+ */
+export const DEFAULT_ARGON2_PARAMS: Readonly<Argon2Params> = Object.freeze({ memory: 64 * 1024, iterations: 3, parallelism: 1 });
+
+/**
+ * The bounds of the Argon2id parameters a passphrase-wrapped secret may
+ * carry. The upper bounds keep a hostile stored value from making a phone
+ * allocate or compute without limit; the lower bounds refuse parameters weaker
+ * than OWASP's minimum for Argon2id.
+ */
+export const ARGON2_BOUNDS = Object.freeze({
+  minMemory: 19 * 1024,
+  maxMemory: 128 * 1024,
+  minIterations: 2,
+  maxIterations: 8,
+  minParallelism: 1,
+  maxParallelism: 4,
+});
+
+function validParams(params: Argon2Params): boolean {
+  const inRange = (value: number, min: number, max: number) => Number.isInteger(value) && value >= min && value <= max;
+  return (
+    inRange(params.memory, ARGON2_BOUNDS.minMemory, ARGON2_BOUNDS.maxMemory) &&
+    inRange(params.iterations, ARGON2_BOUNDS.minIterations, ARGON2_BOUNDS.maxIterations) &&
+    inRange(params.parallelism, ARGON2_BOUNDS.minParallelism, ARGON2_BOUNDS.maxParallelism)
+  );
+}
+
+function passphraseKey(passphrase: string, params: Argon2Params, salt: Uint8Array): Uint8Array {
+  return argon2id(encoder.encode(passphrase.normalize("NFC")), salt, {
+    m: params.memory,
+    t: params.iterations,
+    p: params.parallelism,
+    dkLen: KEY_SIZE,
+  });
+}
+
+/**
+ * Encrypts `secret` (a user's X25519 private key) under a key derived from
+ * `passphrase` with Argon2id and binds `aad`: SUITE_V1 || memory (u32 BE) ||
+ * iterations (u32 BE) || parallelism (u8) || salt (16) || nonce || ciphertext,
+ * the associated data being the header || aad. The passphrase is
+ * NFC-normalized first, so every device derives the same key from the same
+ * characters. Synchronous: it blocks for the whole derivation.
+ */
+export function wrapWithPassphrase(
+  passphrase: string,
+  secret: Uint8Array,
+  aad: Uint8Array,
+  params: Argon2Params = DEFAULT_ARGON2_PARAMS,
+): Uint8Array {
+  return wrapWith(passphrase, params, randomBytes(SALT_SIZE), randomBytes(NONCE_SIZE), secret, aad);
+}
+
+/**
+ * {@link wrapWithPassphrase} with a given salt and nonce. Only for the shared
+ * test vectors.
+ */
+export function wrapWith(
+  passphrase: string,
+  params: Argon2Params,
+  salt: Uint8Array,
+  nonce: Uint8Array,
+  secret: Uint8Array,
+  aad: Uint8Array,
+): Uint8Array {
+  if (passphrase === "") {
+    throw new Error("e2ee: passphrase is empty");
+  }
+  if (!validParams(params)) {
+    throw new Error(`e2ee: Argon2id parameters out of bounds: ${JSON.stringify(params)}`);
+  }
+  requireLength("salt", salt, SALT_SIZE);
+  const header = new Uint8Array(PASSPHRASE_HEADER_SIZE);
+  const view = new DataView(header.buffer);
+  header[0] = SUITE_V1;
+  view.setUint32(1, params.memory);
+  view.setUint32(5, params.iterations);
+  header[9] = params.parallelism;
+  header.set(salt, 10);
+  return sealAfterHeader(header, passphraseKey(passphrase, params, salt), nonce, secret, aad);
+}
+
+/**
+ * Reverses {@link wrapWithPassphrase}. Throws {@link DecryptError} for a wrong
+ * passphrase, a different `aad`, an unknown suite, a changed header, or
+ * Argon2id parameters outside the bounds, which it refuses before deriving.
+ */
+export function unwrapWithPassphrase(passphrase: string, wrapped: Uint8Array, aad: Uint8Array): Uint8Array {
+  // Refuse what cannot open before paying for the derivation.
+  if (wrapped.length < PASSPHRASE_HEADER_SIZE + NONCE_SIZE + TAG_SIZE || wrapped[0] !== SUITE_V1) {
+    throw new DecryptError();
+  }
+  const view = new DataView(wrapped.buffer, wrapped.byteOffset, wrapped.byteLength);
+  const params: Argon2Params = {
+    memory: view.getUint32(1),
+    iterations: view.getUint32(5),
+    parallelism: view.getUint8(9),
+  };
+  if (!validParams(params)) {
+    throw new DecryptError();
+  }
+  const salt = wrapped.subarray(10, PASSPHRASE_HEADER_SIZE);
+  return openAfterHeader(
+    wrapped.subarray(0, PASSPHRASE_HEADER_SIZE),
+    passphraseKey(passphrase, params, salt),
+    wrapped.subarray(PASSPHRASE_HEADER_SIZE),
+    aad,
+  );
+}
