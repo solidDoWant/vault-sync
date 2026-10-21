@@ -161,9 +161,14 @@ function dontKeepActivities(on: boolean) {
   if (!/Parcel\(\s*00000000\s/.test(reply)) throw new Error(`setAlwaysFinish failed: ${reply.trim()}`);
 }
 
-/** Whether Android still holds an activity of Obsidian's (destroyed activities are gone from the list). */
+/**
+ * Whether Android still holds an activity of Obsidian's: one in a task's
+ * history ("Hist #n: ActivityRecord{... md.obsidian/...}"). A destroyed
+ * activity leaves it, while the task record still names the app.
+ */
 function obsidianActivityAlive(): boolean {
-  return shell("dumpsys", "activity", "activities").includes(`${appId}/`);
+  const pattern = new RegExp(`Hist #\\d+: ActivityRecord\\{[^}]*\\b${appId.replaceAll(".", "\\.")}/`);
+  return pattern.test(shell("dumpsys", "activity", "activities"));
 }
 
 /** Sends Obsidian to the background with the home button. */
@@ -180,7 +185,7 @@ describe("vault-sync on an Android device", function () {
     for (const [chain, ...rule] of natRules) shell("iptables", "-w", "-t", "nat", "-I", chain ?? "", ...rule);
   });
 
-  after(function () {
+  after(async function () {
     // Leave the emulator as the next spec expects it.
     dontKeepActivities(false);
     shell("cmd", "connectivity", "airplane-mode", "disable");
@@ -190,6 +195,13 @@ describe("vault-sync on an Android device", function () {
       } catch {
         // Not inserted: before() failed earlier.
       }
+    }
+    // A test that failed with Obsidian in the background, or outside its
+    // WebView, must not fail the next spec too.
+    try {
+      await foregroundObsidian();
+    } catch (error) {
+      console.warn(`device.android.e2e.ts: could not bring Obsidian back: ${String(error)}`);
     }
   });
 
