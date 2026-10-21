@@ -1320,6 +1320,9 @@ export class SyncEngine {
         if (copyPath === null) return false;
         copyPaths.push(copyPath);
       }
+      // An untracked file the merge took (design §4.5 step 3): a create
+      // bound to it is superseded, before the result is written into it.
+      if (!liveHere(state) && current !== null) await this.supersedeCreates(local.path, remote.documentId);
       if (outcome.content === null) {
         if (current !== null) {
           const expectedHash = sha256Hex(current);
@@ -1348,18 +1351,13 @@ export class SyncEngine {
     }
     // The document's unacknowledged operations are superseded: their commits
     // were refused (the head had moved past their base), and their content is
-    // part of the merge result on disk or of the conflict copy. So are those
-    // of a local file that stood at the remote revision's path without being
-    // this document's (a local create the remote one collided with), whose
-    // content the result or the copy now holds. They go before the rebase, so
+    // part of the merge result on disk or of the conflict copy (as is a
+    // superseded create's, above). They go before the rebase, so
     // a document never has the remote revision as its base while an operation
     // based on an older head is still pending.
-    const ownFile = liveHere(state);
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId === remote.documentId) await this.removeOperation(operation.revisionId);
     }
-    // An untracked file the merge took (design §4.5 step 3): a create bound to it is superseded.
-    if (!ownFile) await this.supersedeCreates(local.path, remote.documentId);
     // A local rename the merge kept is pushed as a rename of the document:
     // its binding is at the result's path, its base at the remote path.
     await this.putDocument(syncedState(remote), { kind: "merged", path: outcome.path, hash: outcome.content === null ? null : sha256Hex(outcome.content) });
@@ -1381,7 +1379,11 @@ export class SyncEngine {
    * (PO-1): a create whose file the user moved elsewhere keeps it.
    */
   private async supersedeCreates(path: string, documentId: string): Promise<void> {
-    for (const holder of await this.journal.documentsByFileKey(this.pathSpace.filesystemKey(path))) {
+    // Under the spelling the vault holds the file at too: a vault that folds
+    // names more than the file key `F` does (X-18) reads another spelling's file at `path`.
+    const keys = new Set([this.pathSpace.filesystemKey(path), this.pathSpace.filesystemKey(await this.heldSpelling(path))]);
+    const holders = (await Promise.all([...keys].map((key) => this.journal.documentsByFileKey(key)))).flat();
+    for (const holder of holders) {
       if (holder.documentId === documentId || hasBase(holder)) continue;
       const operations = (await this.journal.listPending()).filter((operation) => operation.documentId === holder.documentId).map((operation) => operation.revisionId);
       if (operations.length > 0) await this.bindings.dropped(operations);
