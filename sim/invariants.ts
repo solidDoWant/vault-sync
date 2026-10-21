@@ -306,35 +306,23 @@ function lineCounts(lines: readonly string[]): Map<string, number> {
 
 /**
  * Whether the merged `result` carries the local edit of `local` over `base`
- * (null if unknown or none), with `remote` the other side's content (null if
- * unknown or none): the harness's own check, independent of the merge code,
+ * (null if unknown or none): the harness's own check, independent of the merge code,
  * of what a merge hook reports as merged (#301). It does if it is the local
  * content, or if both are text and every non-empty line local added over the
- * base is a line of the result, as often as local added it (#717). One added
- * line may instead be joined to the other side's last line, where that has no
- * final newline: the only place a line merge joins two lines. Without a base,
+ * base is a line of the result, as often as local added it (#717). A line
+ * merge never joins two lines into one (#750), so a line the local edit added
+ * that is only part of a line of the result is not carried. Without a base,
  * every non-empty local line must be in the result. A local edit that only
  * removed lines passes. A binary local content passes only if the result is it.
  */
-export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null, remote: Uint8Array | null): boolean {
+export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null): boolean {
   if (local.length === result.length && local.every((byte, index) => byte === result[index])) return true;
   const localLines = textLines(local);
   const resultLines = textLines(result);
   if (localLines === undefined || resultLines === undefined) return false;
   const remaining = lineCounts((base === null ? undefined : textLines(base)) ?? []);
   const available = lineCounts(resultLines);
-  // The other side's last line, if it has no final newline (an empty text has no last line to end).
-  const unterminated = (remote === null ? undefined : textLines(remote))?.at(-1);
-  let joined = false;
-  for (const line of localLines) {
-    if (take(remaining, line) || line === "" || take(available, line)) continue;
-    if (!joined && unterminated !== undefined && unterminated !== "" && take(available, unterminated + line)) {
-      joined = true;
-      continue;
-    }
-    return false;
-  }
-  return true;
+  return localLines.every((line) => take(remaining, line) || line === "" || take(available, line));
 }
 
 /**
