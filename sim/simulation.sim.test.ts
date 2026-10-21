@@ -153,6 +153,28 @@ describe.runIf(suites.has("regressions") && environment.regressions.length > 0)(
 });
 
 describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
+  it("gates the engines' pulls on an announced seq only with notificationPulls, one gated pull per engine (#661)", async () => {
+    // Pull steps whose arg chooses each kind (notificationSeq): plain, if behind the head, if behind an earlier head.
+    const pulls: Step[] = [0, 1, 2].map((arg) => ({ kind: "operation", client: 0, operation: "pull", arg }));
+    const steps: Step[] = pulls.flatMap((pull) => [pull, ...Array.from({ length: 12 }, (): Step => ({ kind: "deliver-request" })), ...Array.from({ length: 12 }, (): Step => ({ kind: "deliver-response" }))]);
+    const options = { seed: 661, clients: 1, engines: 2, platforms: seededPlatforms(661, 2) };
+    const gated = " starts pull if behind seq ";
+
+    const on = await runSteps(environment, { ...options, notificationPulls: true }, steps);
+    expect(on.violations, tail(on.trace)).toEqual([]);
+    const gatedLines = on.trace.filter((line) => line.includes(gated));
+    const gatedPulls = gatedLines.reduce((count, line) => count + line.split(gated).length - 1, 0);
+    // Two of the three pull steps gate both engines' pulls, and the summary counts each engine's.
+    expect(gatedLines, tail(on.trace)).toHaveLength(2);
+    expect(gatedPulls, tail(on.trace)).toBe(4);
+    expect(summarize(on.trace), tail(on.trace)).toContain("notification-gated pulls 4,");
+
+    const off = await runSteps(environment, { ...options, notificationPulls: false }, steps);
+    expect(off.violations, tail(off.trace)).toEqual([]);
+    expect(off.trace.filter((line) => line.includes(gated)), tail(off.trace)).toEqual([]);
+    expect(summarize(off.trace), tail(off.trace)).toContain("notification-gated pulls 0,");
+  });
+
   it("returns the committed revision when a commit whose response was lost is retried after the head moved", async () => {
     const result = await lostResponseAfterHeadMoved(environment);
     const trace = tail(result.trace);

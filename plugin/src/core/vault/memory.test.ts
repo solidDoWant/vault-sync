@@ -229,6 +229,16 @@ describe("InMemoryVault", () => {
           expect(events).toEqual([{ type: "rename", path: "Notes/Other/c.md", oldPath: "Other/c.md" }]);
         });
 
+        it("keeps the parent's spelling when its only folder is renamed within it under another spelling (#661)", async () => {
+          const notes = vault();
+          await notes.write("Notes/Sub/a.md", new Uint8Array([1]));
+          const events: VaultEvent[] = [];
+          notes.watch((event) => events.push(event));
+          await notes.renameFolder("Notes/Sub", "NOTES/Other");
+          expect(await notes.list()).toEqual(["Notes/Other/a.md"]);
+          expect(events).toEqual([{ type: "rename", path: "Notes/Other/a.md", oldPath: "Notes/Sub/a.md" }]);
+        });
+
         it("respells a whole folder by a case-only folder rename", async () => {
           const notes = vault();
           await notes.write("Notes/a.md", new Uint8Array([1]));
