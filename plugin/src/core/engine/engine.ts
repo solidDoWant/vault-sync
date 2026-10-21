@@ -605,7 +605,12 @@ export class SyncEngine {
     this.backoff = backoff;
   }
 
-  private async pullOnce(): Promise<PullSummary> {
+  private pullOnce(): Promise<PullSummary> {
+    // Rule W reads the document rows per revision (nextHolder): once per pull.
+    return this.bindings.round(() => this.pullRound());
+  }
+
+  private async pullRound(): Promise<PullSummary> {
     // Rule W's moves a crash interrupted are finished first (design §4.4).
     await this.intents.recover();
     const summary: PullSummary = { cursor: await this.journal.getCursor(), applied: 0, deferred: 0, merged: 0, resynced: false };
@@ -897,7 +902,7 @@ export class SyncEngine {
    * one.
    */
   private async nextHolder(path: string, documentId: string): Promise<{ state: DocumentState; spelling: string | undefined } | undefined> {
-    const documents = await this.journal.listDocuments();
+    const documents = await this.bindings.documents();
     // A create not acknowledged yet holds its file as an untracked file does
     // (the merge path keeps it as a conflict copy, or takes it if its
     // content is the revision's, supersedeCreates), unless a local rename moved
