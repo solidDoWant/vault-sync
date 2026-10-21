@@ -1,0 +1,12 @@
+-- Device removal (SPEC.md §9.2; issue #205).
+--
+-- A removed device keeps its row, because revisions.device_id references it
+-- and its revisions keep their attribution; removed_at marks it. A removed
+-- device no longer counts toward the device limit and can no longer commit.
+--
+-- Additive, so the previous release runs unchanged against this schema
+-- during a rolling upgrade (SPEC.md §12): it never names the column. It does
+-- not know about removal either, so until every replica runs this release a
+-- removed device can still commit through a replica of the previous release
+-- (docs/deployment.md).
+ALTER TABLE devices ADD COLUMN removed_at timestamptz;

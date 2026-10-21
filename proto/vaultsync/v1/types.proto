@@ -83,6 +83,9 @@ message Device {
   string name = 2;
   // When the device was registered.
   google.protobuf.Timestamp create_time = 3;
+  // When the device last committed a revision, to within a minute; unset if
+  // it never has. Only ListDevices sets it.
+  google.protobuf.Timestamp last_activity_time = 4;
 }
 
 // ContentRef points at the content of a revision: a complete blob in the same
