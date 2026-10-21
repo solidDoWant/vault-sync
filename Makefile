@@ -43,6 +43,7 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest 
 	./scripts/flake-source_test.sh
 	./scripts/sim-nightly-report_test.sh
 	./scripts/sim-shadow-report_test.sh
+	./scripts/npm-audit_test.sh
 	./scripts/release_test.sh
 	./scripts/agents/wait-ci_test.sh
 	./scripts/with-native-s3.sh --check-pin
@@ -74,6 +75,10 @@ test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wd
 vulncheck: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Report known vulnerabilities in Go and npm dependencies.
 	govulncheck ./...
 	cd $(PLUGIN_DIR) && npm audit --omit=dev
+
+.PHONY: npm-audit
+npm-audit: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Fail on fixable moderate+ vulnerabilities in shipped plugin dependencies; warn on the rest (run in CI).
+	./scripts/npm-audit.sh
 
 ##@ Code Generation
 
