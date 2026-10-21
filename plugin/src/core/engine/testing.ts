@@ -1125,8 +1125,8 @@ export class PropertyWorld {
       // before the last live revision of another device that did not have
       // it: the user's write into an inode bound to the document whose
       // content no server revision of the document carried, or the user's
-      // rename of such an inode to the path the revision commits, which no
-      // server revision of the document had. A write into an untracked
+      // rename of such an inode to a path no server revision of the
+      // document had (the engine may have moved it on since, PO-4). A write into an untracked
       // inode at the path the revision commits counts too: PO-13 adopts such
       // a file at the tombstone's path (E5, INV-6). Inode-exact (§5.5 X-10).
       const earlier = this.revisions.filter((candidate) => candidate.documentId === revision.documentId && candidate.seq < revision.seq);
@@ -1143,7 +1143,7 @@ export class PropertyWorld {
         (operation) =>
           inodes.has(operation.inode) &&
           (((operation.type === "create" || operation.type === "edit") && operation.hash === revision.hash && !carried.has(operation.hash) && (ownInode(operation.inode) || (this.bound.get(operation.inode) === undefined && this.inodes.at(revision.path)?.inode === operation.inode))) ||
-            (operation.type === "rename" && operation.path === revision.path && !named.has(operation.path) && ownInode(operation.inode))),
+            (operation.type === "rename" && operation.path !== undefined && !named.has(operation.path) && ownInode(operation.inode))),
       );
       if (!touched && !unsynced) this.violation("P2", `live revision of ${name} on its tombstone without a user change since step ${String(since)}`);
       if (holder?.hash === revision.hash) this.bind(holder.inode, revision.documentId);

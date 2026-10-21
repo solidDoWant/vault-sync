@@ -157,7 +157,8 @@ export class Bindings {
     for (const state of await this.journal.listDocuments()) {
       const binding = state.binding;
       if (binding === undefined || binding === null) continue;
-      const from = hasBase(state) ? (state.deleted ? undefined : state.path) : creates.get(state.documentId);
+      // A document bound on a tombstone (a local change that won over a remote delete) holds its file as a move from the tombstone's path.
+      const from = hasBase(state) ? state.path : creates.get(state.documentId);
       if (from !== undefined && from !== binding.spelling) moves.push({ documentId: state.documentId, from, to: binding.spelling, created: !hasBase(state) });
     }
     return moves;

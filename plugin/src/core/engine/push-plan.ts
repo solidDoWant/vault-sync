@@ -79,8 +79,7 @@ export async function planPush(
   // A busy document's synced path waits with it: a create there would be
   // refused while the server still has the document there (C3).
   for (const state of source.documents)
-    if (busyDocuments.has(state.documentId) && hasBase(state) && !state.deleted)
-      busyPaths.add(state.path);
+    if (busyDocuments.has(state.documentId) && hasBase(state) && !state.deleted) busyPaths.add(state.path);
   const dirtyFiles = new Set(
     [...dirty.paths].map((path) => space.filesystemKey(path)),
   );
