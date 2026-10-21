@@ -33,6 +33,9 @@ function vaultFiles() {
 
 /** Calls ListVaults from inside Obsidian (Connect JSON over requestUrl). */
 function listVaults(token: string | null) {
+  // The field is `code`, not `status`: Appium (the Android app's driver)
+  // takes a numeric `status` in a script's result for a legacy JSONWP
+  // error code and fails the command.
   return browser.executeObsidian(
     async ({ obsidian }, url, bearer) => {
       const response = await obsidian.requestUrl({
@@ -43,7 +46,7 @@ function listVaults(token: string | null) {
         headers: bearer === null ? {} : { Authorization: `Bearer ${bearer}` },
         throw: false,
       });
-      return { status: response.status, body: response.text };
+      return { code: response.status, body: response.text };
     },
     `${e2eEnvironment.serverUrl}/vaultsync.v1.VaultService/ListVaults`,
     token,
@@ -100,14 +103,14 @@ describe("vault-sync in Obsidian", function () {
 
   it("reaches the harness-started server with the test token", async function () {
     const authorized = await listVaults(e2eEnvironment.token);
-    expect(authorized.status).toBe(200);
+    expect(authorized.code).toBe(200);
     // The test user is a member of no vault, so the decoded ListVaults
     // response is empty (Connect JSON omits an empty list and page token).
     expect(JSON.parse(authorized.body)).toEqual({});
 
     // The token is what gets the request in: without it the server refuses.
     const anonymous = await listVaults(null);
-    expect(anonymous.status).toBe(401);
+    expect(anonymous.code).toBe(401);
     expect(anonymous.body).toContain("unauthenticated");
   });
 });

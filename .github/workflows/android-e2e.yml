@@ -84,6 +84,10 @@ jobs:
               "$adb" shell settings put global window_animation_scale 0
               "$adb" shell settings put global transition_animation_scale 0
               "$adb" shell settings put global animator_duration_scale 0
+              # A root shell, for the device checks' firewall rules
+              # (device.android.e2e.ts).
+              "$adb" root
+              "$adb" wait-for-device
               exit 0
             fi
             sleep 5

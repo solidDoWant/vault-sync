@@ -17,11 +17,15 @@ import { configure, signInAs } from "../signin";
 // runs this file (wdio.conf.mts excludes `*.android.e2e.ts`). The spec
 // drives the device with adb from Node, outside the app.
 //
-// The plugin reaches the server over the emulator's own network (10.0.2.2,
-// the host's loopback), not through `adb reverse` as the other specs do:
-// adb's traffic bypasses the device's network, so airplane mode would not
-// cut it. The fake issuer stays on `adb reverse`; nothing here refreshes a
-// token while the network is off.
+// The plugin reaches the server over the emulator's own network, not
+// through `adb reverse` as the other specs do: adb's traffic bypasses the
+// device's network, so airplane mode would not cut it. vault-sync accepts
+// plain http only to a loopback host, so the spec points it at 127.0.0.2
+// (loopback, and not the 127.0.0.1 that `adb reverse` serves) and has the
+// device's firewall send that address on to 10.0.2.2, the emulator's
+// address for the host's loopback. That needs a root adb shell (`adb root`,
+// as the android-e2e workflow runs after boot). The fake issuer stays on
+// `adb reverse`; nothing here refreshes a token while the network is off.
 //
 // The tests share one sign-in and one connected vault, and run in order.
 
@@ -32,12 +36,16 @@ const serial = process.env.ANDROID_SERIAL ?? "emulator-5554";
 const adb = process.env.ANDROID_HOME === undefined ? "adb" : path.join(process.env.ANDROID_HOME, "platform-tools", "adb");
 const webview = `WEBVIEW_${appId}`;
 
-/** The harness-started server as the emulator's own network reaches it. */
-const serverOverDeviceNetwork = (() => {
-  const url = new URL(e2eEnvironment.serverUrl);
-  url.hostname = "10.0.2.2";
-  return url.toString().replace(/\/$/, "");
-})();
+const serverPort = new URL(e2eEnvironment.serverUrl).port;
+/** The loopback address the device's firewall sends on to the host over the emulator's network. */
+const deviceNetworkAlias = "127.0.0.2";
+/** The harness-started server as vault-sync reaches it over the emulator's own network. */
+const serverOverDeviceNetwork = `http://${deviceNetworkAlias}:${serverPort}`;
+/** The NAT rules that send `deviceNetworkAlias` to the host (10.0.2.2) over the emulator's network. */
+const natRules = [
+  ["OUTPUT", "-p", "tcp", "-d", deviceNetworkAlias, "--dport", serverPort, "-j", "DNAT", "--to-destination", `10.0.2.2:${serverPort}`],
+  ["POSTROUTING", "-p", "tcp", "-d", "10.0.2.2", "--dport", serverPort, "-j", "MASQUERADE"],
+];
 
 function shell(...args: string[]): string {
   return execFileSync(adb, ["-s", serial, "shell", ...args], { encoding: "utf8", timeout: 60_000 });
@@ -144,12 +152,23 @@ function background() {
 describe("vault-sync on an Android device", function () {
   before(async function () {
     if (!(await obsidianPage.getPlatform()).isAndroidApp) throw new Error("device.android.e2e.ts runs only on the Android app (wdio.android.conf.mts)");
+    if (shell("id", "-u").trim() !== "0") throw new Error("device.android.e2e.ts needs a root adb shell: run `adb root` first");
+    // Packets from a loopback source may then leave on the device's network.
+    shell("sysctl", "-w", "net.ipv4.conf.all.route_localnet=1");
+    for (const [chain, ...rule] of natRules) shell("iptables", "-w", "-t", "nat", "-I", chain ?? "", ...rule);
   });
 
   after(function () {
     // Leave the emulator as the next spec expects it.
     shell("settings", "put", "global", "always_finish_activities", "0");
     shell("cmd", "connectivity", "airplane-mode", "disable");
+    for (const [chain, ...rule] of natRules) {
+      try {
+        shell("iptables", "-w", "-t", "nat", "-D", chain ?? "", ...rule);
+      } catch {
+        // Not inserted: before() failed earlier.
+      }
+    }
   });
 
   it("resumes a sync after Obsidian's process is killed mid-push, with the vault equal to the server and no duplicate revision (section 5)", async function () {
