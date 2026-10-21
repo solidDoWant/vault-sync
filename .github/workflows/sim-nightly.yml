@@ -20,6 +20,12 @@ on:
       first_seed:
         description: First seed (empty for the run-number rotation)
         default: ""
+      property_runs:
+        description: Engine property suite cases per property
+        default: "100000"
+      property_seed:
+        description: Engine property suite seed (empty for the run-number rotation)
+        default: ""
 
 # Least privilege: the default token only reads; the job adds issues: write
 # for filing the failure.
@@ -166,3 +172,69 @@ jobs:
             build/sim-regressions/
             build/sim-output.txt
           retention-days: 30
+
+  # The engine property suite (plugin/src/core/engine/properties.test.ts) at
+  # the nightly size of docs/design/engine-path-ownership.md §9.3 and §10.2
+  # (E2): 100,000 cases per property, from a seed that moves with the run
+  # number, so coverage grows over time. Known failures fail on their pinned
+  # counterexample first; a property that holds must hold over every case. A
+  # failure files one issue (later ones are comments on it) with the replay
+  # command.
+  properties:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      issues: write
+    env:
+      PROPERTY_RUNS: ${{ inputs.property_runs || '100000' }}
+      PROPERTY_SEED: ${{ inputs.property_seed }}
+      RUN_NUMBER: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Engine property suite
+        run: |
+          set -euo pipefail
+          [[ $PROPERTY_RUNS =~ ^[0-9]+$ && $RUN_NUMBER =~ ^[0-9]+$ ]] || { echo "property_runs must be a number" >&2; exit 2; }
+          if [[ -z $PROPERTY_SEED ]]; then PROPERTY_SEED=$(( 563 + RUN_NUMBER )); fi
+          [[ $PROPERTY_SEED =~ ^[0-9]+$ ]] || { echo "property_seed must be a number" >&2; exit 2; }
+          echo "PROPERTY_SEED=$PROPERTY_SEED" >> "$GITHUB_ENV"
+          echo "$PROPERTY_RUNS cases per property, seed $PROPERTY_SEED"
+          mkdir -p build
+          nix develop -c make test-properties PROPERTY_RUNS="$PROPERTY_RUNS" PROPERTY_SEED="$PROPERTY_SEED" 2>&1 | tee build/properties-output.txt
+      - name: Upload the output
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: properties
+          path: build/properties-output.txt
+          retention-days: 30
+      - name: File an issue
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p build
+          touch build/properties-output.txt
+          {
+            echo "The nightly engine property suite failed: $PROPERTY_RUNS cases per property, seed ${PROPERTY_SEED:-unknown} ([run]($RUN_URL))."
+            echo
+            echo "Replay with \`make test-properties PROPERTY_RUNS=$PROPERTY_RUNS PROPERTY_SEED=${PROPERTY_SEED:-unknown}\`; fast-check's report below names the counterexample and its replay path."
+            echo
+            echo '```'
+            grep -E 'FAIL|AssertionError|Counterexample|Got |violated|harness threw' build/properties-output.txt | head -60 || true
+            echo '```'
+          } > build/properties-issue.md
+          # One open issue at a time: later failures are added to it as comments.
+          existing=$(gh issue list --state open --search 'in:title "properties: nightly engine property suite failed"' --json number --jq '.[0].number // empty')
+          if [[ -n $existing ]]; then
+            gh issue comment "$existing" --body-file build/properties-issue.md
+          else
+            gh issue create --title "properties: nightly engine property suite failed (seed ${PROPERTY_SEED:-unknown})" --body-file build/properties-issue.md
+          fi

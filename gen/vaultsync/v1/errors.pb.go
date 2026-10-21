@@ -36,6 +36,11 @@ const (
 	// the maximum number of calls in flight on the server replica. It passes
 	// once earlier calls complete; the client backs off and retries.
 	ErrorReason_ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS ErrorReason = 2
+	// NOT_FOUND from CommitRevision: device_id is not one of the caller's
+	// devices that are not removed, because it was removed (RemoveDevice) or
+	// never registered for the caller. It persists: the installation must
+	// register again (RegisterDevice) and commit under the new device id.
+	ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND ErrorReason = 3
 )
 
 // Enum value maps for ErrorReason.
@@ -44,11 +49,13 @@ var (
 		0: "ERROR_REASON_UNSPECIFIED",
 		1: "ERROR_REASON_DEVICE_LIMIT",
 		2: "ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS",
+		3: "ERROR_REASON_DEVICE_NOT_FOUND",
 	}
 	ErrorReason_value = map[string]int32{
 		"ERROR_REASON_UNSPECIFIED":                  0,
 		"ERROR_REASON_DEVICE_LIMIT":                 1,
 		"ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS": 2,
+		"ERROR_REASON_DEVICE_NOT_FOUND":             3,
 	}
 )
 
@@ -133,11 +140,12 @@ const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\n" +
 	"\x19vaultsync/v1/errors.proto\x12\fvaultsync.v1\"@\n" +
 	"\vErrorDetail\x121\n" +
-	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason*y\n" +
+	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason*\x9c\x01\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19ERROR_REASON_DEVICE_LIMIT\x10\x01\x12-\n" +
-	")ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS\x10\x02B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	")ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS\x10\x02\x12!\n" +
+	"\x1dERROR_REASON_DEVICE_NOT_FOUND\x10\x03B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_errors_proto_rawDescOnce sync.Once

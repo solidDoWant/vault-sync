@@ -60,6 +60,13 @@ test-integration-postgres14: ## Run the store/migration integration tests and th
 test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_ENGINES, SIM_SEED, SIM_FAITHFUL_FS, SIM_REGRESSION_DIR).
 	./scripts/test-sim.sh
 
+PROPERTY_RUNS ?= 100000
+PROPERTY_SEED ?= 563
+
+.PHONY: test-properties
+test-properties: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the engine property suite (plugin/src/core/engine/properties.test.ts) at nightly size: PROPERTY_RUNS cases per property (default 100000) from PROPERTY_SEED (default 563).
+	cd $(PLUGIN_DIR) && VAULT_SYNC_PROPERTY_RUNS="$(PROPERTY_RUNS)" VAULT_SYNC_PROPERTY_SEED="$(PROPERTY_SEED)" npx vitest run src/core/engine/properties.test.ts
+
 .PHONY: test-e2e
 test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wdio-obsidian-service; headless via xvfb) against a real server (docker compose; VAULT_SYNC_E2E_MOBILE=1 emulates mobile).
 	./scripts/test-e2e.sh

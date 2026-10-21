@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/errors.proto.
  */
 export const file_vaultsync_v1_errors: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiOAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uKnkKC0Vycm9yUmVhc29uEhwKGEVSUk9SX1JFQVNPTl9VTlNQRUNJRklFRBAAEh0KGUVSUk9SX1JFQVNPTl9ERVZJQ0VfTElNSVQQARItCilFUlJPUl9SRUFTT05fVE9PX01BTllfQ09OQ1VSUkVOVF9SRVFVRVNUUxACQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiOAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uKpwBCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
 
 /**
  * ErrorDetail is attached to an error (as a Connect error detail) to give
@@ -66,6 +66,16 @@ export enum ErrorReason {
    * @generated from enum value: ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS = 2;
    */
   TOO_MANY_CONCURRENT_REQUESTS = 2,
+
+  /**
+   * NOT_FOUND from CommitRevision: device_id is not one of the caller's
+   * devices that are not removed, because it was removed (RemoveDevice) or
+   * never registered for the caller. It persists: the installation must
+   * register again (RegisterDevice) and commit under the new device id.
+   *
+   * @generated from enum value: ERROR_REASON_DEVICE_NOT_FOUND = 3;
+   */
+  DEVICE_NOT_FOUND = 3,
 }
 
 /**

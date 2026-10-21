@@ -51,6 +51,12 @@ export interface RegisteredDevice {
   /** The OIDC issuer and subject of the account that registered it. */
   issuer: string;
   subject: string;
+  /**
+   * The server refused a commit because the device was removed (from
+   * another device, in the device list): sync waits until the user registers
+   * this installation again (#590). Never cleared by the plugin on its own.
+   */
+  removed?: true;
 }
 
 /** A RegisterDevice call that may have succeeded without its result being stored. */
@@ -98,7 +104,7 @@ export function parsePluginData(raw: unknown): PluginData {
   const identityProvider = record(stored.identityProvider, ["issuer", "clientId"]);
   if (identityProvider !== undefined) data.identityProvider = identityProvider;
   const device = record(stored.device, ["id", "serverUrl", "issuer", "subject"]);
-  if (device !== undefined) data.device = device;
+  if (device !== undefined) data.device = (stored.device as Record<string, unknown>).removed === true ? { ...device, removed: true } : device;
   const pendingDevice = record(stored.pendingDevice, ["registrationId", "name", "serverUrl", "issuer", "subject"]);
   if (pendingDevice !== undefined) data.pendingDevice = pendingDevice;
   const vault = record(stored.vault, ["id", "name", "serverUrl"]);

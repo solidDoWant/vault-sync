@@ -387,7 +387,8 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 		return connect.NewError(connect.CodeAlreadyExists,
 			errors.New("a live document's path is a folder of this path, or this path is a folder of a live document's (ignoring case and Unicode normalization)"))
 	case errors.Is(err, store.ErrDeviceNotFound):
-		return connect.NewError(connect.CodeNotFound, errors.New("device not found"))
+		return ReasonError(connect.CodeNotFound, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND,
+			errors.New("device not found: it was removed or is not yours; register this installation again"))
 	case errors.Is(err, store.ErrRevisionConflict),
 		errors.Is(err, store.ErrIDInUse),
 		errors.Is(err, store.ErrKindMismatch),
