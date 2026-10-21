@@ -5,7 +5,7 @@ import { InMemoryServer } from "../core/engine/memory-server";
 import { files } from "../core/engine/testing";
 import type { Journal } from "../core/journal/journal";
 import { InMemoryJournal } from "../core/journal/memory";
-import { createProtocolClient } from "../core/protocol/client";
+import { createProtocolClient, withRequestTimeout } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
 import { shownText } from "./display-text";
 import { entryLabel } from "./history-view";
@@ -254,6 +254,45 @@ describe("SyncSession", () => {
         expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
       });
       expect(await files(vault)).toEqual(new Map([["a.md", "written offline"]]));
+    });
+
+    it("reports offline when the server stops answering without a reset, and pushes the edit once it answers again (#730)", async () => {
+      vi.useFakeTimers();
+      const server = new InMemoryServer();
+      const vault = new InMemoryVault();
+      const statuses: SessionStatus[] = [];
+      // Packets dropped: a call sent meanwhile is never answered, nor reaches the server.
+      let dropping = false;
+      const transport = withRequestTimeout({
+        unary: (...args) => (dropping ? new Promise<never>(() => undefined) : server.transport.unary(...args)),
+        stream: (...args) => server.transport.stream(...args),
+      });
+      const running = session({ server, vault, journal: new InMemoryJournal(), transport, statuses, options: { pushDebounceMs: 1000, syncIntervalMs: 60_000 } });
+      await running.start();
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+
+      dropping = true;
+      await vault.write("a.md", bytes("written while black-holed"));
+      // (vi.waitFor would advance the fake clock, so the push's 30 s are counted by hand.)
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(statuses.at(-1)).toMatchObject({ state: "syncing" });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(statuses.at(-1)).toMatchObject({ state: "syncing" });
+      await vi.advanceTimersByTimeAsync(1);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "offline", pending: 1 });
+      });
+      expect(server.liveFiles()).toEqual(new Map());
+
+      dropping = false;
+      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toEqual({ state: "idle", pending: 0, conflicts: 0 });
+      });
+      expect(server.liveFiles()).toEqual(new Map([["a.md", "written while black-holed"]]));
+      await running.stop();
     });
 
     it("counts every edit and create made while the server is unreachable as pending until the server acknowledges them (#417)", async () => {

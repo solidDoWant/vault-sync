@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { InMemoryIdentityProvider } from "./memory-idp";
 import {
@@ -273,6 +273,24 @@ describe("refreshAccessToken", () => {
 
     await expect(refreshAccessToken(idp.http, endpoints, idp.clientId, refreshToken)).rejects.toBeInstanceOf(IdentityProviderError);
     await expect(refreshAccessToken(idp.http, endpoints, idp.clientId, refreshToken)).rejects.toBeInstanceOf(IdentityProviderError);
+  });
+
+  it("reports a provider that never answers as unreachable after 30 s, not before (#730)", async () => {
+    vi.useFakeTimers();
+    try {
+      const silent: HttpClient = () => new Promise(() => undefined);
+      let failure: unknown;
+      void refreshAccessToken(silent, { issuer: "", deviceAuthorizationEndpoint: "", tokenEndpoint: "https://idp.example/t" }, "c", "r").catch((error: unknown) => {
+        failure = error;
+      });
+      await vi.advanceTimersByTimeAsync(29_999);
+      expect(failure).toBeUndefined();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(failure).toBeInstanceOf(IdentityProviderError);
+      expect((failure as IdentityProviderError).unreachable).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("takes the expiry from expires_in when the access token is not a JWT", async () => {
