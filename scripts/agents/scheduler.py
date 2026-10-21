@@ -563,14 +563,13 @@ class Plan:
     jobs: list  # launchable candidates, best first (claims/locks not yet applied)
     reruns: list  # [(pr, run_ids, failed names)] CI re-runs to issue now
     skipped: list  # [(target, why)] for sched-status
-    gave_up: list  # [(key, issue, pr, why, fingerprint)] newly over a limit
-    planner_reasons: list
+    gave_up: list  # [(key, issue, pr, why, head)] newly over the review-round limit
     notes: list
     cleared: list = field(default_factory=list)  # gave-up keys the planner unblocked
 
 
 def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.datetime) -> Plan:
-    plan = Plan([], [], [], [], [], [])
+    plan = Plan([], [], [], [], [])
     phase = current_phase(snap, cfg)
     deps = dependents(snap)
     sessions = state.get("sessions", {})
@@ -1540,10 +1539,10 @@ class Scheduler:
             if key in busy_keys or key == "planner" or key.startswith("special:"):
                 continue
             issue, pr = sess.get("issue"), sess.get("pr")
-            if key.startswith("reviewer:"):
+            if key.startswith("reviewer:") or not issue:
                 gone = pr not in snap.prs
-            else:
-                gone = issue not in snap.issues if issue else pr not in snap.prs
+            else:  # a worker: its issue closed and its PR (if any) is gone too
+                gone = issue not in snap.issues and pr not in snap.prs
             if not gone:
                 continue
             if sess.get("worktree") and sess["worktree"] not in busy and not self.dry_run:
