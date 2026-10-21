@@ -9,6 +9,7 @@ package vaultsyncv1
 import (
 	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
 	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
+	timestamppb "google.golang.org/protobuf/types/known/timestamppb"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
@@ -41,6 +42,14 @@ const (
 	// never registered for the caller. It persists: the installation must
 	// register again (RegisterDevice) and commit under the new device id.
 	ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND ErrorReason = 3
+	// PERMISSION_DENIED from UnlockUserKey or ChangePassphrase: auth_key is
+	// not the one derived from the user's passphrase. It counts as a failed
+	// attempt.
+	ErrorReason_ERROR_REASON_WRONG_PASSPHRASE ErrorReason = 4
+	// RESOURCE_EXHAUSTED from UnlockUserKey or ChangePassphrase: too many
+	// attempts with a wrong auth_key failed recently. It passes at
+	// ErrorDetail.retry_time, whatever auth_key is presented before then.
+	ErrorReason_ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED ErrorReason = 5
 )
 
 // Enum value maps for ErrorReason.
@@ -50,12 +59,16 @@ var (
 		1: "ERROR_REASON_DEVICE_LIMIT",
 		2: "ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS",
 		3: "ERROR_REASON_DEVICE_NOT_FOUND",
+		4: "ERROR_REASON_WRONG_PASSPHRASE",
+		5: "ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED",
 	}
 	ErrorReason_value = map[string]int32{
-		"ERROR_REASON_UNSPECIFIED":                  0,
-		"ERROR_REASON_DEVICE_LIMIT":                 1,
-		"ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS": 2,
-		"ERROR_REASON_DEVICE_NOT_FOUND":             3,
+		"ERROR_REASON_UNSPECIFIED":                   0,
+		"ERROR_REASON_DEVICE_LIMIT":                  1,
+		"ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS":  2,
+		"ERROR_REASON_DEVICE_NOT_FOUND":              3,
+		"ERROR_REASON_WRONG_PASSPHRASE":              4,
+		"ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED": 5,
 	}
 )
 
@@ -92,7 +105,9 @@ func (ErrorReason) EnumDescriptor() ([]byte, []int) {
 type ErrorDetail struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// Why the call was refused.
-	Reason        ErrorReason `protobuf:"varint,1,opt,name=reason,proto3,enum=vaultsync.v1.ErrorReason" json:"reason,omitempty"`
+	Reason ErrorReason `protobuf:"varint,1,opt,name=reason,proto3,enum=vaultsync.v1.ErrorReason" json:"reason,omitempty"`
+	// When to retry: set only with ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED.
+	RetryTime     *timestamppb.Timestamp `protobuf:"bytes,2,opt,name=retry_time,json=retryTime,proto3" json:"retry_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -134,18 +149,29 @@ func (x *ErrorDetail) GetReason() ErrorReason {
 	return ErrorReason_ERROR_REASON_UNSPECIFIED
 }
 
+func (x *ErrorDetail) GetRetryTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.RetryTime
+	}
+	return nil
+}
+
 var File_vaultsync_v1_errors_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_errors_proto_rawDesc = "" +
 	"\n" +
-	"\x19vaultsync/v1/errors.proto\x12\fvaultsync.v1\"@\n" +
+	"\x19vaultsync/v1/errors.proto\x12\fvaultsync.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"{\n" +
 	"\vErrorDetail\x121\n" +
-	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason*\x9c\x01\n" +
+	"\x06reason\x18\x01 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason\x129\n" +
+	"\n" +
+	"retry_time\x18\x02 \x01(\v2\x1a.google.protobuf.TimestampR\tretryTime*\xef\x01\n" +
 	"\vErrorReason\x12\x1c\n" +
 	"\x18ERROR_REASON_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19ERROR_REASON_DEVICE_LIMIT\x10\x01\x12-\n" +
 	")ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS\x10\x02\x12!\n" +
-	"\x1dERROR_REASON_DEVICE_NOT_FOUND\x10\x03B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
+	"\x1dERROR_REASON_DEVICE_NOT_FOUND\x10\x03\x12!\n" +
+	"\x1dERROR_REASON_WRONG_PASSPHRASE\x10\x04\x12.\n" +
+	"*ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED\x10\x05B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
 var (
 	file_vaultsync_v1_errors_proto_rawDescOnce sync.Once
@@ -162,16 +188,18 @@ func file_vaultsync_v1_errors_proto_rawDescGZIP() []byte {
 var file_vaultsync_v1_errors_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
 var file_vaultsync_v1_errors_proto_msgTypes = make([]protoimpl.MessageInfo, 1)
 var file_vaultsync_v1_errors_proto_goTypes = []any{
-	(ErrorReason)(0),    // 0: vaultsync.v1.ErrorReason
-	(*ErrorDetail)(nil), // 1: vaultsync.v1.ErrorDetail
+	(ErrorReason)(0),              // 0: vaultsync.v1.ErrorReason
+	(*ErrorDetail)(nil),           // 1: vaultsync.v1.ErrorDetail
+	(*timestamppb.Timestamp)(nil), // 2: google.protobuf.Timestamp
 }
 var file_vaultsync_v1_errors_proto_depIdxs = []int32{
 	0, // 0: vaultsync.v1.ErrorDetail.reason:type_name -> vaultsync.v1.ErrorReason
-	1, // [1:1] is the sub-list for method output_type
-	1, // [1:1] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	2, // 1: vaultsync.v1.ErrorDetail.retry_time:type_name -> google.protobuf.Timestamp
+	2, // [2:2] is the sub-list for method output_type
+	2, // [2:2] is the sub-list for method input_type
+	2, // [2:2] is the sub-list for extension type_name
+	2, // [2:2] is the sub-list for extension extendee
+	0, // [0:2] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_errors_proto_init() }
