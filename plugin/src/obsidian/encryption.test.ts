@@ -95,6 +95,36 @@ describe("end-to-end encryption on a device", () => {
     expect(await encryptionState(bob)).toBe("locked");
   });
 
+  it("reports a cached key that is not the account's key on the server as changed, keeps it, and unlocks the server's key", async () => {
+    const server = new MemoryUserKeyServer();
+    const first = device(server);
+    await enableOnDevice(first.options, passphrase);
+    const stale = first.data.userKey;
+    // The server's key is replaced (a fresh database under the same URL and account).
+    server.stored = undefined;
+    const other = device(server);
+    await enableOnDevice(other.options, "another recovery passphrase");
+
+    expect(await encryptionState(first.options)).toBe("key-changed");
+    expect(first.data.userKey).toEqual(stale);
+
+    const replaced = other.data.userKey?.publicKey;
+    await unlockOnDevice(first.options, "another recovery passphrase");
+
+    expect(first.data.userKey?.publicKey).toBe(replaced);
+    expect(first.data.userKey?.publicKey).not.toBe(stale?.publicKey);
+    expect(await encryptionState(first.options)).toBe("unlocked");
+  });
+
+  it("does not report a cached key as unlocked when the server has no key", async () => {
+    const server = new MemoryUserKeyServer();
+    const first = device(server);
+    await enableOnDevice(first.options, passphrase);
+    server.stored = undefined;
+
+    expect(await encryptionState(first.options)).toBe("not-enabled");
+  });
+
   it("drops a malformed cached key when reading plugin data", () => {
     const stored = {
       serverUrl: "https://sync.example",

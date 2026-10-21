@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { createProtocolClient } from "../protocol/client";
-import { unwrapWithPassphrase, type Argon2Params } from "../e2ee/e2ee";
+import { generateKeyPair, parsePassphraseHeader, SUITE_V1, unwrapWithPassphrase, wrapWithPassphrase, type Argon2Params } from "../e2ee/e2ee";
 import { ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS, MemoryUserKeyServer } from "./memory-user-keys";
 import { enableEncryption, NoUserKeyError, PassphraseAttemptsExhaustedError, passphraseProblem, storedPublicKey, unlockUserKey, userKeyAad, WrongPassphraseError } from "./user-key";
 
@@ -126,5 +126,29 @@ describe("unlocking on another device", () => {
     stored.publicKey = new Uint8Array(32).fill(9);
 
     await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow(/does not open/);
+  });
+
+  it("refuses a released key whose private key opens under the stored public key but does not belong to it", async () => {
+    const server = new MemoryUserKeyServer();
+    // A device that knows the passphrase stores a mismatched pair: the
+    // private key of one pair, wrapped and bound to another pair's public key.
+    const claimed = generateKeyPair();
+    const actual = generateKeyPair();
+    const { wrapped, authKey } = await wrapWithPassphrase(passphrase, actual.privateKey, userKeyAad(claimed.publicKey), cheap);
+    const header = parsePassphraseHeader(wrapped);
+    await device(server).createUserKey({
+      publicKey: claimed.publicKey,
+      wrappedPrivateKey: wrapped,
+      params: {
+        suite: SUITE_V1,
+        memoryKib: header.params.memory,
+        iterations: header.params.iterations,
+        parallelism: header.params.parallelism,
+        salt: header.salt,
+      },
+      authKey,
+    });
+
+    await expect(unlockUserKey(device(server), passphrase)).rejects.toThrow("the key the server released does not match its public key");
   });
 });

@@ -5,8 +5,13 @@ import { enableEncryption, PassphraseAttemptsExhaustedError, storedPublicKey, un
 import { currentAccount, sameAccount } from "./controller";
 import type { PluginData } from "./data";
 
-/** Where end-to-end encryption stands for the signed-in account on this device. */
-export type EncryptionState = "not-enabled" | "locked" | "unlocked";
+/**
+ * Where end-to-end encryption stands for the signed-in account on this
+ * device. "key-changed" is locked too: this device holds a key it unlocked
+ * for the account, but the account's key on the server is now another one,
+ * so the cached key is not used and the server's key must be unlocked.
+ */
+export type EncryptionState = "not-enabled" | "locked" | "key-changed" | "unlocked";
 
 export interface EncryptionOptions {
   data: PluginData;
@@ -20,14 +25,18 @@ export interface EncryptionOptions {
 
 /**
  * The account's encryption state on this device: unlocked when this device
- * holds the account's key pair, locked when the account has a key this
- * device has not unlocked, not enabled when the account has none.
+ * holds the account's key pair (the cached public key is the server's), key
+ * changed when it holds another key pair for the account, locked when it
+ * holds none, not enabled when the account has no key on the server. A
+ * cached key is never deleted here: unlocking the server's key replaces it.
  */
 export async function encryptionState(options: EncryptionOptions): Promise<EncryptionState> {
   const account = await currentAccount(options.data, options.accessToken);
+  const stored = await storedPublicKey(options.client);
+  if (stored === undefined) return "not-enabled";
   const cached = options.data.userKey;
-  if (cached !== undefined && sameAccount(cached, account)) return "unlocked";
-  return (await storedPublicKey(options.client)) === undefined ? "not-enabled" : "locked";
+  if (cached === undefined || !sameAccount(cached, account)) return "locked";
+  return cached.publicKey === bytesToHex(stored) ? "unlocked" : "key-changed";
 }
 
 /**

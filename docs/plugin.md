@@ -80,17 +80,18 @@ When this device was removed from another one, its next sync is refused. The plu
 
 ## End-to-end encryption
 
-End-to-end encryption uses a key pair per user (`SPEC.md` §9.3). Its private key never reaches the server unwrapped: the server stores it only wrapped under a key derived from your **recovery passphrase**, and releases the wrapped key only to a device that proves it knows the passphrase. The server stores neither the passphrase nor anything that opens the key without it. While signed in, the settings show an **End-to-end encryption** section with one of three states:
+End-to-end encryption uses a key pair per user (`SPEC.md` §9.3). Its private key never reaches the server unwrapped: the server stores it only wrapped under a key derived from your **recovery passphrase**, and releases the wrapped key only to a device that proves it knows the passphrase. The server stores neither the passphrase nor anything that opens the key without it. While signed in, the settings show an **End-to-end encryption** section with one of four states:
 
 - **Not enabled.** **Enable** asks for a new recovery passphrase twice (at least 10 characters). The plugin creates the key pair on this device, wraps the private key under the passphrase with Argon2id (64 MiB, 3 passes), and sends the server only the public key, the wrapped private key, the wrapping's parameters and a verifier derived from the passphrase. Write the passphrase down: every other device needs it, and nobody, including the server's operator, can recover it or the key without it. Changing the passphrase, rotating the key and recovering a lost passphrase are not available yet.
 - **Enabled on another device.** **Unlock** asks for the passphrase. The plugin derives the verifier from it, the server checks it and releases the wrapped private key, and the plugin unwraps it on this device. This device then holds the same key pair as the others.
 - **Unlocked.** This device holds your key pair.
+- **Key changed.** This device holds a key pair it unlocked for your account, but your account's key on the server is now a different one (for example, the server was reset to a fresh database under the same address). The settings say so, and this device no longer uses its copy: **Unlock** asks for the passphrase of the server's key and replaces the copy with that key. The copy is kept until then, never deleted silently. If the server has no key for your account any more, the state is **Not enabled**.
 
 Deriving the key from the passphrase takes about a second on a desktop and several seconds on a phone; Obsidian stays responsive meanwhile. A wrong passphrase is refused with "The passphrase is wrong." After 10 wrong passphrases within an hour (from any of your devices), the server refuses every attempt, even with the right passphrase, until the hour is over, and the dialog shows when you can try again.
 
 If two devices enable encryption at the same time, the server keeps the first key and refuses the second. The second device then unlocks the first device's key with the passphrase it was given, instead of replacing it. If that was a different passphrase, it reports a wrong passphrase: unlock with the passphrase chosen on the first device.
 
-The unlocked key pair is kept in this device's `data.json` (see [Settings](#settings)), for the account it was unlocked for, which vault-sync never syncs. It is never logged or shown. Signing out forgets it; signing in with another account does not use it. End-to-end encrypted vaults cannot be created or synced yet: the key pair is the first step towards them.
+The unlocked key pair is kept in this device's `data.json` (see [Settings](#settings)), for the account it was unlocked for, which vault-sync never syncs. Each time the settings show the encryption state, the plugin checks that the copy's public key is the server's. It is never logged or shown. Signing out forgets it; signing in with another account does not use it. End-to-end encrypted vaults cannot be created or synced yet: the key pair is the first step towards them.
 
 ## Sync
 
