@@ -208,7 +208,10 @@ export class ScriptedClient {
 
   private async edit(random: Random): Promise<void> {
     const document = this.pickDocument(random, false);
-    if (document === undefined) return this.context.log(`${this.name} edit: no known document`);
+    if (document === undefined) {
+      this.context.log(`${this.name} edit: no known document`);
+      return;
+    }
     const content = this.content(random);
     if (!(await this.upload(content))) return;
     await this.commitWithRetries("edit", {
@@ -223,7 +226,10 @@ export class ScriptedClient {
 
   private async rename(random: Random): Promise<void> {
     const document = this.pickDocument(random, true);
-    if (document === undefined) return this.context.log(`${this.name} rename: no known live document`);
+    if (document === undefined) {
+      this.context.log(`${this.name} rename: no known live document`);
+      return;
+    }
     const path = random.pick(this.context.pathPool);
     await this.commitWithRetries("rename", {
       documentId: document.id,
@@ -237,7 +243,10 @@ export class ScriptedClient {
 
   private async remove(random: Random): Promise<void> {
     const document = this.pickDocument(random, true);
-    if (document === undefined) return this.context.log(`${this.name} delete: no known live document`);
+    if (document === undefined) {
+      this.context.log(`${this.name} delete: no known live document`);
+      return;
+    }
     await this.commitWithRetries("delete", {
       documentId: document.id,
       baseRevisionId: document.head,
@@ -266,7 +275,8 @@ export class ScriptedClient {
         response = await this.api.sync.listChanges({ vaultId: this.context.vaultId, sinceSeq: this.cursor, pageSize });
       } catch (error) {
         this.unexpectedUnless(error, "ListChanges", [Code.Unavailable]);
-        return this.context.log(`${this.name} pull interrupted: ${Code[errorCode(error)]}`);
+        this.context.log(`${this.name} pull interrupted: ${Code[errorCode(error)]}`);
+        return;
       }
       for (const revision of response.revisions) {
         if (revision.seq <= this.cursor) {
@@ -285,7 +295,8 @@ export class ScriptedClient {
       }
       if (!response.hasMore) {
         this.synced = true;
-        return this.context.log(`${this.name} pulled up to seq ${String(this.cursor)}`);
+        this.context.log(`${this.name} pulled up to seq ${String(this.cursor)}`);
+        return;
       }
     }
     this.violation("seq", `${this.name} pull did not finish within ${String(maxPages)} pages`);
@@ -303,17 +314,23 @@ export class ScriptedClient {
       const revisionId = this.context.ids.generate(`${this.name}.r`);
       const result = await this.commit(revisionId, fields);
       if (result.status === "ok") {
-        return this.context.log(`${this.name} ${operation} ${document} acknowledged ${this.context.ids.label(revisionId)} seq=${String(result.revision.seq)}`);
+        this.context.log(`${this.name} ${operation} ${document} acknowledged ${this.context.ids.label(revisionId)} seq=${String(result.revision.seq)}`);
+        return;
       }
-      if (result.status === "gave-up") return this.context.log(`${this.name} ${operation} ${document} gave up after network failures`);
+      if (result.status === "gave-up") {
+        this.context.log(`${this.name} ${operation} ${document} gave up after network failures`);
+        return;
+      }
       const { error } = result;
       if (error.code === Code.FailedPrecondition && fields.baseRevisionId !== "") {
         const head = error.findDetails(DocumentSchema)[0]?.headRevId;
         if (head === undefined || head === "") {
-          return this.violation("protocol", `FAILED_PRECONDITION for ${document} carried no Document detail with the head`);
+          this.violation("protocol", `FAILED_PRECONDITION for ${document} carried no Document detail with the head`);
+          return;
         }
         if (head === revisionId) {
-          return this.violation("protocol", `retry of ${this.context.ids.label(revisionId)} was rejected as stale although it is the head`);
+          this.violation("protocol", `retry of ${this.context.ids.label(revisionId)} was rejected as stale although it is the head`);
+          return;
         }
         this.context.log(`${this.name} ${operation} ${document}: head moved to ${this.context.ids.label(head)}, rebasing`);
         fields = { ...fields, baseRevisionId: head };
@@ -325,7 +342,8 @@ export class ScriptedClient {
         fields = { ...fields, path };
         continue;
       }
-      return this.unexpected(error, `CommitRevision for ${operation} of ${document}`);
+      this.unexpected(error, `CommitRevision for ${operation} of ${document}`);
+      return;
     }
     this.context.log(`${this.name} ${operation} ${document} gave up after ${String(maxConflictRetries + 1)} conflicts`);
   }

@@ -207,6 +207,8 @@ export async function uploadLimitReached(endpoints: SimEndpoints): Promise<Uploa
   const run = await SimRun.start({ ...endpoints, serverUrl: endpoints.limitedServerUrl }, { seed: 0, clients: 0, engines: 3, platforms: ["posix", "posix", "posix"] });
   const [tested, first, second] = run.observers;
   if (tested === undefined || first === undefined || second === undefined) throw new Error("the run has three engines");
+  // The constant is the literal 2 today; this guards against it changing.
+  // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   if (limitedMaxUploadsPerVault !== 2) throw new Error("the scenario fills a limit of 2 upload sessions");
   const network = run.context.network;
   const log = (entry: string) => {
