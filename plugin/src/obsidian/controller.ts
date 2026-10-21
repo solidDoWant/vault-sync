@@ -24,9 +24,38 @@ export class DeviceLimitError extends Error {
   override readonly name = "DeviceLimitError";
   constructor(serverMessage: string) {
     super(
-      `This device cannot be registered: your account has reached the server's limit on registered devices (${serverMessage}). Sync cannot start on this device. Registered devices cannot be removed yet, so ask the server's operator; your local files are untouched.`,
+      `This device cannot be registered: your account has reached the server's limit on registered devices (${serverMessage}). Sync cannot start on this device. Remove a device you no longer use from the device list in Vault Sync's settings on another device, then try again; your local files are untouched.`,
     );
   }
+}
+
+/**
+ * This installation's device was removed from the account (from another
+ * device's device list): the server refuses its commits (#590). Sync waits
+ * for the user to register the installation again (SyncController.registerAgain);
+ * local files and changes not synced yet are kept and pushed after that.
+ */
+export class DeviceRemovedError extends Error {
+  override readonly name = "DeviceRemovedError";
+  constructor() {
+    super(
+      "This device was removed from your account, so it cannot sync. Your files and the changes not synced yet are kept on this device. To sync again, register this device again in Vault Sync's settings; the changes are pushed then.",
+    );
+  }
+}
+
+/**
+ * Whether `error` is the server's refusal of a commit because the device is
+ * not (or no longer) one of the caller's: NOT_FOUND with the
+ * DEVICE_NOT_FOUND reason. A NOT_FOUND without it (the vault is gone, say)
+ * is something else; the message text is never matched.
+ */
+export function isDeviceNotFound(error: unknown): boolean {
+  return (
+    error instanceof ConnectError &&
+    error.code === Code.NotFound &&
+    error.findDetails(ErrorDetailSchema).some((detail) => detail.reason === ErrorReason.DEVICE_NOT_FOUND)
+  );
 }
 
 /** The account a device registration belongs to. */
@@ -65,7 +94,12 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
   const { data } = options;
   const account = await currentAccount(data, options.accessToken);
   const stored = data.device;
-  if (stored !== undefined && sameAccount(stored, account)) return stored.id;
+  if (stored !== undefined && sameAccount(stored, account)) {
+    // Registering again takes the user's say-so: the device may have been
+    // removed on purpose (a lost laptop, say).
+    if (stored.removed === true) throw new DeviceRemovedError();
+    return stored.id;
+  }
   let pending = data.pendingDevice;
   if (pending === undefined || !sameAccount(pending, account)) {
     pending = { registrationId: uuidv7(), name: deviceNameOf(data.deviceName, options.defaultDeviceName), ...account };
@@ -276,6 +310,20 @@ export class SyncController {
     return this.running?.session;
   }
 
+  /**
+   * Registers this installation as a new device after its device was
+   * removed (DeviceRemovedError), and starts sync again with it: the changes
+   * not synced yet are pushed under the new device. Does nothing else when
+   * the device is not marked removed.
+   */
+  registerAgain(): Promise<void> {
+    const data = this.options.data();
+    if (data.device?.removed !== true) return this.update();
+    delete data.device;
+    delete data.pendingDevice;
+    return this.options.save().then(() => this.restart());
+  }
+
   /** Pulls and pushes now, if a session runs. */
   async syncNow(): Promise<void> {
     await this.running?.session.syncNow();
@@ -353,7 +401,7 @@ export class SyncController {
         vaultId: wanted.vault.id,
         deviceId,
         deviceName,
-        api: client,
+        api: this.watchDevice(client, deviceId, generation),
         journal,
         vault: this.options.vault(),
         ...(this.options.ready === undefined ? {} : { ready: this.options.ready }),
@@ -374,20 +422,66 @@ export class SyncController {
       if (!live()) return;
       console.warn(`vault-sync: sync could not start: ${errorMessage(error)}`);
       this.publish({
-        state: isOffline(error) ? "offline" : "error",
+        state: error instanceof DeviceRemovedError ? "device-removed" : isOffline(error) ? "offline" : "error",
         conflicts: 0,
         pending: 0,
         message: errorMessage(error),
       });
       // Offline at startup, say: try again later. The device limit does not
-      // lift by itself, so that waits for the user (a restart or reconnect).
-      if (!(error instanceof DeviceLimitError) && this.options.syncIntervalMs !== null) {
+      // lift by itself, so that waits for the user (a restart or reconnect),
+      // and a removed device waits for the user to register it again.
+      if (!(error instanceof DeviceLimitError) && !(error instanceof DeviceRemovedError) && this.options.syncIntervalMs !== null) {
         this.retry = setTimeout(() => {
           this.retry = undefined;
           if (live()) void this.update();
         }, this.options.syncIntervalMs);
       }
     }
+  }
+
+  /**
+   * The session's server client: a commit refused because `deviceId` was
+   * removed (isDeviceNotFound) marks the device removed in plugin data and
+   * stops the session, which leaves its pending operations in the journal
+   * (#590). The error still reaches the engine, which keeps the operation
+   * pending. The stop is queued, not awaited: the session waits for the
+   * engine, which waits for this call.
+   */
+  private watchDevice(client: ProtocolClient, deviceId: string, generation: number): ProtocolClient {
+    const { sync } = client;
+    return {
+      ...client,
+      sync: {
+        ...sync,
+        commitRevision: async (request, options) => {
+          try {
+            return await sync.commitRevision(request, options);
+          } catch (error) {
+            if (isDeviceNotFound(error)) void this.deviceRemoved(deviceId, generation);
+            throw error;
+          }
+        },
+      },
+    };
+  }
+
+  /** Marks `deviceId` removed and stops sync until the user registers again, unless an update overtook the session that saw it. */
+  private deviceRemoved(deviceId: string, generation: number): Promise<void> {
+    if (generation !== this.generation) return Promise.resolve();
+    this.cancelRetry();
+    const next = ++this.generation;
+    const run = this.queue.then(async () => {
+      if (next !== this.generation) return;
+      const data = this.options.data();
+      if (data.device?.id === deviceId && data.device.removed !== true) {
+        data.device = { ...data.device, removed: true };
+        await this.options.save();
+      }
+      await this.stopRunning();
+      await this.apply(next);
+    });
+    this.queue = run.catch(() => undefined);
+    return run;
   }
 
   private cancelRetry(): void {

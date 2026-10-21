@@ -1,10 +1,12 @@
 import { create } from "@bufbuild/protobuf";
+import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createClient, createRouterTransport } from "@connectrpc/connect";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { DeviceService } from "../gen/vaultsync/v1/device_pb";
 import { ErrorDetailSchema, ErrorReason } from "../gen/vaultsync/v1/errors_pb";
-import { DeviceSchema, VaultEncryption, VaultRole, VaultSchema } from "../gen/vaultsync/v1/types_pb";
+import type { CommitRevisionRequest } from "../gen/vaultsync/v1/sync_pb";
+import { DeviceSchema, VaultEncryption, VaultRole, VaultSchema, type Device, type Revision } from "../gen/vaultsync/v1/types_pb";
 import { VaultService } from "../gen/vaultsync/v1/vault_pb";
 import type { AuthState } from "../core/auth/tokens";
 import { InMemoryServer } from "../core/engine/memory-server";
@@ -13,6 +15,7 @@ import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
 import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, SyncController, type ClosableJournal } from "./controller";
+import { currentDeviceId, deviceRows, listDevices, removeOtherDevice } from "./devices";
 import { parsePluginData, type PluginData } from "./data";
 import { DeviceNameError } from "./device-name";
 import { SyncSession, type SyncSessionOptions } from "./session";
@@ -50,13 +53,37 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
       encryption: VaultEncryption.E2EE,
     }),
   ];
+  /** The devices registered and not removed, oldest first. */
+  const devices: Device[] = [];
+  /** Removed device ids: their commits are refused as the server refuses them (#590). */
+  const removed = new Set<string>();
+  sync.interceptor = (method, request) => {
+    if (method !== "CommitRevision") return;
+    const commit = request as CommitRevisionRequest;
+    if (removed.has(commit.deviceId)) throw deviceNotFound();
+    // A retry under another device id is idempotent only if the device
+    // that committed the revision was removed (the installation registered
+    // again); otherwise the revision id is reused with other fields.
+    const committed = revisionById(sync, commit.revisionId);
+    if (committed !== undefined && committed.deviceId !== commit.deviceId && !removed.has(committed.deviceId)) {
+      throw new ConnectError("revision id reused with other fields", Code.InvalidArgument);
+    }
+  };
   const transport = createRouterTransport(({ service }) => {
     service(DeviceService, {
       registerDevice: (request) => {
         registrationIds.push(request.registrationId);
         const id = options.registerDevice?.(request.name, request.registrationId) ?? `device-${String(registered.length + 1)}`;
         registered.push(request.name);
-        return { device: create(DeviceSchema, { id, name: request.name }) };
+        const device = create(DeviceSchema, { id, name: request.name });
+        devices.push(device);
+        return { device };
+      },
+      listDevices: () => ({ devices: devices.filter((device) => !removed.has(device.id)) }),
+      removeDevice: (request) => {
+        if (!devices.some((device) => device.id === request.deviceId) || removed.has(request.deviceId)) throw new ConnectError("device not found", Code.NotFound);
+        removed.add(request.deviceId);
+        return {};
       },
     });
     service(VaultService, {
@@ -76,7 +103,20 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
     devices: createClient(DeviceService, transport),
     vaults: createClient(VaultService, transport),
   };
-  return { sync, client, registered, registrationIds };
+  return { sync, client, registered, registrationIds, devices, removed };
+}
+
+function revisionById(server: InMemoryServer, revisionId: string): Revision | undefined {
+  for (let seq = 1n; seq <= server.currentHeadSeq; seq++) {
+    const revision = server.revisionAt(seq);
+    if (revision.id === revisionId) return revision;
+  }
+  return undefined;
+}
+
+/** The server's refusal of a commit from a removed device: NOT_FOUND with the DEVICE_NOT_FOUND reason. */
+function deviceNotFound(): ConnectError {
+  return new ConnectError("device not found", Code.NotFound, undefined, [{ desc: ErrorDetailSchema, value: { reason: ErrorReason.DEVICE_NOT_FOUND } }]);
 }
 
 /** A RESOURCE_EXHAUSTED error, with the machine-readable reason when one is given. */
@@ -295,6 +335,9 @@ describe("ensureDevice", () => {
 
     await expect(failure).rejects.toBeInstanceOf(DeviceLimitError);
     await expect(failure).rejects.toThrow(/reached the server's limit on registered devices \(at most 100 devices may be registered\)/);
+    // It points at the device list, where a device can be removed (#590).
+    await expect(failure).rejects.toThrow(/Remove a device you no longer use from the device list in Vault Sync's settings/);
+    await expect(failure).rejects.not.toThrow(/cannot be removed/);
     expect(data.device).toBeUndefined();
   });
 
@@ -760,5 +803,147 @@ describe("SyncController", () => {
       expect(await history.canRestore()).toBe(true);
       await f.controller.stop();
     });
+  });
+});
+
+describe("a device removed from another device (#590)", () => {
+  it("tells the user, keeps the unsynced edit on disk, and pushes it once the user registers this device again", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    server.removed.add("device-1");
+    await f.vault.write("unsynced.md", bytes("written after the removal"));
+    await f.controller.syncNow();
+
+    const status = await statusBecomes(f.statuses, "device-removed");
+    expect(status?.message).toMatch(/This device was removed from your account/);
+    expect(status?.message).toMatch(/register this device again in Vault Sync's settings/);
+    expect(status?.message).not.toMatch(/NOT_FOUND|not found/i);
+    await vi.waitFor(() => {
+      expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`, `stopped ${server.sync.vaultId}`]);
+    });
+    expect(new TextDecoder().decode(await f.vault.read("unsynced.md"))).toBe("written after the removal");
+    expect(server.sync.liveFiles()).toEqual(new Map());
+    // Stored, so a restart of Obsidian waits for the user too.
+    expect(parsePluginData(JSON.parse(JSON.stringify(f.data))).device).toMatchObject({ id: "device-1", removed: true });
+
+    // Never registered again without the user: not on an update or a restart.
+    await f.controller.update();
+    await f.controller.restart();
+    expect(f.statuses.at(-1)?.state).toBe("device-removed");
+    expect(server.registered).toEqual(["desktop"]);
+    expect(f.events).toHaveLength(2);
+
+    await f.controller.registerAgain();
+    await statusBecomes(f.statuses, "idle");
+    expect(server.registered).toEqual(["desktop", "desktop"]);
+    expect(f.data.device).toEqual({ id: "device-2", serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice" });
+    expect(server.sync.liveFiles()).toEqual(new Map([["unsynced.md", "written after the removal"]]));
+    expect(server.sync.revisionAt(1n).deviceId).toBe("device-2");
+    expect(await f.controller.session?.rejected()).toEqual([]);
+    await f.controller.stop();
+  });
+
+  it("does not report an edit as refused when its commit landed, its response was lost, and the device was removed before the retry", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    let lost = false;
+    server.sync.responseInterceptor = (method, request) => {
+      if (method !== "CommitRevision" || lost) return;
+      lost = true;
+      // The commit landed; the device is removed before the response arrives.
+      server.removed.add((request as CommitRevisionRequest).deviceId);
+      throw new ConnectError("connection reset", Code.Unavailable);
+    };
+    await f.vault.write("note.md", bytes("the edit"));
+    await f.controller.syncNow();
+    await statusBecomes(f.statuses, "device-removed");
+    expect(server.sync.currentHeadSeq).toBe(1n);
+
+    await f.controller.registerAgain();
+    const status = await statusBecomes(f.statuses, "idle");
+
+    expect(status).toEqual({ state: "idle", conflicts: 0, pending: 0 });
+    expect(await f.controller.session?.rejected()).toEqual([]);
+    // Committed once, by the device that committed it.
+    expect(server.sync.currentHeadSeq).toBe(1n);
+    expect(server.sync.revisionAt(1n).deviceId).toBe("device-1");
+    expect(server.sync.liveFiles()).toEqual(new Map([["note.md", "the edit"]]));
+    expect(new TextDecoder().decode(await f.vault.read("note.md"))).toBe("the edit");
+    await f.controller.stop();
+  });
+
+  it("does not take a NOT_FOUND without the device reason for a removed device", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    server.sync.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("vault not found", Code.NotFound);
+    };
+    await f.vault.write("note.md", bytes("the edit"));
+    await f.controller.syncNow();
+
+    await statusBecomes(f.statuses, "error");
+    expect(f.data.device?.removed).toBeUndefined();
+    expect(f.events).toEqual([`start ${server.sync.vaultId} as device-1`]);
+    await f.controller.stop();
+  });
+
+  it("registers again only a device marked removed", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+
+    await f.controller.registerAgain();
+
+    expect(server.registered).toEqual(["desktop"]);
+    expect(f.data.device?.id).toBe("device-1");
+    await f.controller.stop();
+  });
+});
+
+describe("the device list (#590)", () => {
+  const formatDate = (date: Date) => date.toISOString();
+
+  it("lists the user's devices with their last activity and marks this one", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    await ensureDevice({ data: { ...settings }, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "‮Phone" });
+    const phone = server.devices[1];
+    if (phone === undefined) throw new Error("no second device");
+    phone.lastActivityTime = timestampFromDate(new Date("2026-10-20T14:03:00Z"));
+
+    const rows = deviceRows(await listDevices(server.client), currentDeviceId(f.data), formatDate);
+
+    expect(rows).toEqual([
+      { id: "device-1", label: "⁨desktop⁩", current: true, description: "This device. Has not synced a change yet." },
+      { id: "device-2", label: "⁨Phone⁩", current: false, description: "Last synced a change 2026-10-20T14:03:00.000Z." },
+    ]);
+    await f.controller.stop();
+  });
+
+  it("removes another device, which then cannot sync, and never this one", async () => {
+    const server = fakeServer();
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId));
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    await ensureDevice({ data: { ...settings }, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "Phone" });
+
+    await expect(removeOtherDevice(server.client, f.data, "device-1")).rejects.toThrow(/cannot remove itself/);
+    await removeOtherDevice(server.client, f.data, "device-2");
+
+    expect(deviceRows(await listDevices(server.client), currentDeviceId(f.data), formatDate).map((row) => row.id)).toEqual(["device-1"]);
+    expect(server.removed).toEqual(new Set(["device-2"]));
+    await f.controller.stop();
   });
 });

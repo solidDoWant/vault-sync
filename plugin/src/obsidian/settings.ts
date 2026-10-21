@@ -5,6 +5,7 @@ import type { AuthState } from "../core/auth/tokens";
 import type { ConfigCategory, ConfigSyncSettings } from "../core/config/policy";
 import { connectProblem } from "./controller";
 import { configSyncSettings, type ConnectedVault, type PluginData } from "./data";
+import type { DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
@@ -29,6 +30,12 @@ export interface SettingsHost extends Plugin {
   readonly configDir: string;
   /** Stores this device's config sync settings and restarts sync with them. */
   setConfigSync(settings: ConfigSyncSettings): Promise<void>;
+  /** The signed-in user's devices (#590). */
+  listDevices(): Promise<DeviceRow[]>;
+  /** Removes another of the user's devices. */
+  removeDevice(deviceId: string): Promise<void>;
+  /** Registers this installation again after its device was removed, and starts sync. */
+  registerAgain(): Promise<void>;
 }
 
 /** The config sync categories as the settings show them (docs/plugin.md). */
@@ -156,12 +163,67 @@ export class VaultSyncSettingTab extends PluginSettingTab {
 
     this.renderConfigSync(containerEl);
 
-    if (host.authState === "signed-in") this.renderVault(containerEl);
+    if (host.authState === "signed-in") {
+      this.renderVault(containerEl);
+      this.renderDevices(containerEl);
+    }
 
     new Setting(containerEl).setName("Sync").setHeading();
     this.statusSetting = new Setting(containerEl).setName("Sync status");
     this.statusSetting.settingEl.addClass("vault-sync-settings-status");
     this.showStatus();
+    if (host.syncStatus.state === "device-removed") {
+      new Setting(containerEl)
+        .setName("Register this device again")
+        .setDesc("This device was removed from your account on another device. Registering it again adds it back to your devices and pushes the changes made on it meanwhile.")
+        .addButton((button) =>
+          button
+            .setButtonText("Register again")
+            .setCta()
+            .onClick(async () => {
+              try {
+                await host.registerAgain();
+              } catch (error) {
+                new Notice(`Vault Sync: could not register this device: ${errorMessage(error)}`);
+              }
+            }),
+        );
+    }
+  }
+
+  /** The user's devices (#590): each with its last activity, and Remove for every one but this device. */
+  private renderDevices(containerEl: HTMLElement): void {
+    const { host } = this;
+    new Setting(containerEl).setName("Devices").setHeading();
+    const intro = new Setting(containerEl).setDesc("Loading your devices…");
+    const list = containerEl.createDiv({ cls: "vault-sync-devices" });
+    const load = () => {
+      void host.listDevices().then(
+        (devices) => {
+          list.empty();
+          intro.setDesc(
+            "The devices registered to your account. Remove one you no longer use: it stops syncing, and its changes not synced yet stay on it until it is registered again. Each device's history stays. Remove this device from another device.",
+          );
+          for (const device of devices) {
+            const row = new Setting(list).setName(device.label).setDesc(device.description);
+            if (device.current) continue;
+            row.addButton((button) =>
+              button
+                .setButtonText("Remove")
+                .onClick(() => {
+                  new ConfirmRemoveDeviceModal(this.app, device, () => {
+                    host.removeDevice(device.id).then(load, (error: unknown) => new Notice(`Vault Sync: could not remove the device: ${errorMessage(error)}`));
+                  }).open();
+                }),
+            );
+          }
+        },
+        (error: unknown) => {
+          intro.setDesc(`Could not list your devices: ${errorMessage(error)}`);
+        },
+      );
+    };
+    load();
   }
 
   /** Updates the sync status line in place, so a status change never rebuilds (and clears) the fields being edited. */
@@ -282,6 +344,44 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     } catch (error) {
       new Notice(`Vault Sync: could not connect: ${errorMessage(error)}`);
     }
+  }
+}
+
+/** The confirmation before another device is removed (#590). */
+class ConfirmRemoveDeviceModal extends Modal {
+  constructor(
+    app: App,
+    private readonly device: DeviceRow,
+    private readonly onConfirm: () => void,
+  ) {
+    super(app);
+    this.titleEl.setText("Remove this device?");
+  }
+
+  override onOpen(): void {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("p", {
+      text: `${this.device.label} will stop syncing. Its files and any changes it has not synced yet stay on it, and are synced if it is registered again there. Its history on the server stays. This cannot be undone from here.`,
+    });
+    new Setting(contentEl)
+      .addButton((button) =>
+        button.setButtonText("Cancel").onClick(() => {
+          this.close();
+        }),
+      )
+      .addButton((button) => {
+        button.setButtonText("Remove device").onClick(() => {
+          this.close();
+          this.onConfirm();
+        });
+        // What setWarning does; its replacement, setDestructive, needs Obsidian 1.13, above minAppVersion.
+        button.buttonEl.addClass("mod-warning");
+      });
+  }
+
+  override onClose(): void {
+    this.contentEl.empty();
   }
 }
 

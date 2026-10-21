@@ -301,3 +301,118 @@ func TestNoCommitLandsAfterRemoveDeviceReturns(t *testing.T) {
 		assert.Equal(t, headAtRemoval, fixture.headSeq(t, alice.vaultID), "round %d", round)
 	}
 }
+
+// A commit from a removed or unknown device says so with a reason, so the
+// plugin can ask the user to register the installation again instead of
+// failing with a bare NOT_FOUND (#590). A vault the caller is not a member
+// of is NOT_FOUND without that reason.
+func TestCommitFromARemovedDeviceCarriesTheDeviceNotFoundReason(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.client(t, "alice", "")
+	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
+	content := alice.content(t, "hello")
+	created := alice.mustCommit(t, alice.create(t, "note.md", content))
+
+	require.NoError(t, removeDeviceOn(t, fixture.replicas[0], alice.token, alice.deviceID))
+
+	for replica := range fixture.replicas {
+		_, err := alice.commitOn(t, replica, alice.next(t, created, "note.md", content, false))
+		requireCode(t, connect.CodeNotFound, err)
+		assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND, api.ErrorReasonOf(err), "replica %d", replica)
+	}
+
+	unknown := *alice
+	unknown.deviceID = newV7(t)
+	_, err := unknown.commit(t, unknown.create(t, "other.md", content))
+	requireCode(t, connect.CodeNotFound, err)
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND, api.ErrorReasonOf(err), "a device that was never registered")
+
+	// Another user's device is not the caller's either.
+	bob := fixture.client(t, "bob", alice.vaultID)
+	fixture.addMember(t, alice.vaultID, "bob", store.RoleEditor)
+
+	borrowed := *bob
+	borrowed.deviceID = fixture.client(t, "carol", "").deviceID
+	_, err = borrowed.commit(t, borrowed.create(t, "borrowed.md", content))
+	requireCode(t, connect.CodeNotFound, err)
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND, api.ErrorReasonOf(err), "another user's device")
+
+	outsider := fixture.client(t, "dave", alice.vaultID)
+	_, err = outsider.commit(t, outsider.create(t, "outsider.md", content))
+	requireCode(t, connect.CodeNotFound, err)
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_UNSPECIFIED, api.ErrorReasonOf(err), "a non-member's commit is refused for the vault, not the device")
+}
+
+// #590 / #591 item 1: a commit landed but its response was lost; the device
+// is then removed, the installation registers again and retries the same
+// commit under its new device id. The retry gets the committed revision back
+// instead of a refusal, because both devices are the committing user's.
+// Another user's device, or a retry that differs in any other field, is
+// still refused.
+func TestRetryUnderAReregisteredDeviceReturnsTheCommittedRevision(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.client(t, "alice", "")
+	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
+	content := alice.content(t, "hello")
+
+	created := alice.mustCommit(t, alice.create(t, "note.md", content))
+	lost := alice.next(t, created, "note.md", alice.content(t, "edited"), false)
+	committed := alice.mustCommit(t, lost) // its response is lost
+	headSeq := fixture.headSeq(t, alice.vaultID)
+
+	require.NoError(t, removeDeviceOn(t, fixture.replicas[0], alice.token, alice.deviceID))
+
+	reregistered := fixture.client(t, "alice", alice.vaultID)
+	retry := cloneCommit(t, lost)
+	retry.DeviceId = reregistered.deviceID
+
+	for replica := range fixture.replicas {
+		revision, err := reregistered.commitOn(t, replica, retry)
+		require.NoError(t, err, "replica %d", replica)
+		assert.True(t, proto.Equal(committed, revision), "replica %d: the retry returns the committed revision", replica)
+	}
+
+	assert.Equal(t, headSeq, fixture.headSeq(t, alice.vaultID), "the retry committed nothing new")
+	assert.Equal(t, alice.deviceID, committed.GetDeviceId(), "the revision keeps the device that committed it")
+
+	// Any other difference is still a reused revision id.
+	changed := cloneCommit(t, retry)
+	changed.Path = []byte("elsewhere.md")
+	_, err := reregistered.commit(t, changed)
+	requireCode(t, connect.CodeInvalidArgument, err)
+
+	// Another user's device is not the same installation.
+	bob := fixture.client(t, "bob", alice.vaultID)
+	fixture.addMember(t, alice.vaultID, "bob", store.RoleEditor)
+
+	stolen := cloneCommit(t, lost)
+	stolen.DeviceId = bob.deviceID
+	_, err = bob.commit(t, stolen)
+	requireCode(t, connect.CodeInvalidArgument, err)
+
+	// A viewer and a non-member are refused before the revision is looked at.
+	carol := fixture.client(t, "carol", alice.vaultID)
+	fixture.addMember(t, alice.vaultID, "carol", store.RoleViewer)
+
+	viewed := cloneCommit(t, lost)
+	viewed.DeviceId = carol.deviceID
+	_, err = carol.commit(t, viewed)
+	requireCode(t, connect.CodePermissionDenied, err)
+
+	dave := fixture.client(t, "dave", alice.vaultID)
+	outside := cloneCommit(t, lost)
+	outside.DeviceId = dave.deviceID
+	_, err = dave.commit(t, outside)
+	requireCode(t, connect.CodeNotFound, err)
+
+	assert.Equal(t, headSeq, fixture.headSeq(t, alice.vaultID))
+}
+
+func cloneCommit(t *testing.T, request *vaultsyncv1.CommitRevisionRequest) *vaultsyncv1.CommitRevisionRequest {
+	t.Helper()
+
+	clone, ok := proto.Clone(request).(*vaultsyncv1.CommitRevisionRequest)
+	require.True(t, ok)
+
+	return clone
+}
