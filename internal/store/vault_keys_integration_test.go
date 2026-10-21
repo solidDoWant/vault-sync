@@ -457,3 +457,57 @@ func TestListMissingSlotsPagesByEpochAndUser(t *testing.T) {
 	assert.Equal(t, int32(2), pages[2][0].Epoch)
 	assert.NotEqual(t, pages[0][0].UserID, pages[1][0].UserID)
 }
+
+// An owner who removes themselves from an E2EE vault would create, and so
+// know, the epoch meant to exclude them: RemoveMember refuses it and the
+// vault is unchanged. LeaveVault is the way out.
+func TestRemoveMemberRefusesSelfRemovalFromAnE2EEVault(t *testing.T) {
+	fixture := newKeyFixture(t, 1)
+	other := fixture.members[0]
+
+	_, err := fixture.pool.Exec(t.Context(), `UPDATE vault_members SET role = 'owner' WHERE vault_id = $1 AND user_id = $2`, fixture.vault.VaultID(), other)
+	require.NoError(t, err)
+
+	countSlots := func() int {
+		var slots int
+		require.NoError(t, fixture.pool.QueryRow(t.Context(), `SELECT count(*) FROM key_slots WHERE vault_id = $1`, fixture.vault.VaultID()).Scan(&slots))
+
+		return slots
+	}
+
+	slotsBefore := countSlots()
+
+	for _, next := range []*store.NextEpoch{new(fixture.nextEpoch(t, 1, other)), nil} {
+		err := fixture.vault.RemoveMember(t.Context(), fixture.owner, fixture.owner, next)
+		require.ErrorIs(t, err, store.ErrSelfRemoval)
+		assert.True(t, fixture.isMember(t, fixture.owner), "the owner stays")
+		assert.Equal(t, store.KeyState{Encryption: store.EncryptionE2EE, CurrentEpoch: 1}, fixture.state(t))
+		assert.Equal(t, slotsBefore, countSlots())
+	}
+
+	require.NoError(t, fixture.vault.LeaveVault(t.Context(), fixture.owner))
+	assert.False(t, fixture.isMember(t, fixture.owner))
+}
+
+func TestRemoveMemberLetsAnOwnerRemoveThemselvesFromAPlaintextVault(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	require.NoError(t, err)
+
+	other, err := queries.UpsertUser(t.Context(), testIssuer, "other")
+	require.NoError(t, err)
+
+	created, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: "Plain", Encryption: store.EncryptionNone}, 10)
+	require.NoError(t, err)
+
+	_, err = pool.Exec(t.Context(), `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, 'owner')`, created.ID, other)
+	require.NoError(t, err)
+
+	require.NoError(t, queries.InVault(created.ID).RemoveMember(t.Context(), owner, owner, nil))
+
+	var member bool
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM vault_members WHERE vault_id = $1 AND user_id = $2)`, created.ID, owner).Scan(&member))
+	assert.False(t, member)
+}

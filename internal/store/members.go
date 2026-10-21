@@ -349,7 +349,9 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 // new epoch commit together (see RotateEpoch for its errors), so no revision
 // is accepted under an epoch the removed member holds once the removal is
 // visible. A plaintext vault takes no next epoch (ErrUnexpectedNextEpoch); an E2EE
-// vault requires one (ErrNextEpochRequired).
+// vault requires one (ErrNextEpochRequired). An E2EE vault refuses
+// removedBy removing themselves (ErrSelfRemoval): they would know the next
+// epoch, so they leave with LeaveVault instead.
 //
 // It returns ErrMemberNotFound when the user is not a member and
 // ErrLastOwner when they are the vault's last owner. The removal is
@@ -359,6 +361,8 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uuid.UUID, next *NextEpoch) error {
 	return vault.removeMember(ctx, userID, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
 		switch {
+		case state.Encryption == EncryptionE2EE && removedBy == userID:
+			return ErrSelfRemoval
 		case state.Encryption != EncryptionE2EE && next != nil:
 			return ErrUnexpectedNextEpoch
 		case state.Encryption != EncryptionE2EE:

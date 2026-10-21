@@ -21,6 +21,11 @@ var (
 	// ErrUnexpectedNextEpoch is returned when a member of a plaintext vault
 	// is removed with a next epoch.
 	ErrUnexpectedNextEpoch = errors.New("a plaintext vault takes no next epoch")
+	// ErrSelfRemoval is returned when an owner removes themselves from an
+	// E2EE vault with RemoveMember: they would create, and so know, the
+	// epoch meant to exclude them. LeaveVault leaves the rotation to a
+	// remaining owner.
+	ErrSelfRemoval = errors.New("an owner cannot remove themselves from an end-to-end encrypted vault with RemoveMember; use LeaveVault")
 	// ErrInvalidRecipients is returned when key slots are missing for a
 	// recipient the epoch must be wrapped to, or name a recipient that may
 	// not have one.

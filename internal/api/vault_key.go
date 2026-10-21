@@ -117,6 +117,8 @@ func KeyError(err error) error {
 			errors.New("expected_epoch is not the vault's current epoch; list the vault's epochs and adopt the current one"))
 	case errors.Is(err, store.ErrNotEncrypted):
 		return connect.NewError(connect.CodeFailedPrecondition, store.ErrNotEncrypted)
+	case errors.Is(err, store.ErrSelfRemoval):
+		return connect.NewError(connect.CodeFailedPrecondition, store.ErrSelfRemoval)
 	case errors.Is(err, store.ErrNextEpochRequired),
 		errors.Is(err, store.ErrUnexpectedNextEpoch),
 		errors.Is(err, store.ErrInvalidRecipients),
