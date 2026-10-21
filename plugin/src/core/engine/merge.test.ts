@@ -1183,6 +1183,8 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
             ? harness({ merge: "default", server: scenario.server?.() })
             : harness({ merge: "default", server: scenario.server?.(), journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
         await scenario.prepare(h);
+        // The prepared changes' binding transitions are durable changes of their own, before the push's.
+        await h.engine.settled();
         return h;
       };
       const state = async (h: Harness) => ({

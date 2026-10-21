@@ -540,6 +540,21 @@ export const journalMigrations: readonly JournalMigration[] = [
       });
     };
   },
+  // Version 4: bindings derived again (refactor step R4, design §6.2 as
+  // amended). Until R4 the engine wrote document rows with the binding of
+  // the row it replaced, or none, so a v3 row's binding may be stale; from
+  // R4 on the engine maintains them (engine/bindings.ts). Only `binding`
+  // and `absence` change.
+  (transaction, context) => {
+    const documents = transaction.objectStore("documents");
+    const deferred = transaction.objectStore("deferred").getAll();
+    const states = documents.getAll();
+    const operations = transaction.objectStore("pending").getAll();
+    operations.onsuccess = () => {
+      const derived = deriveV3Records(states.result as DocumentState[], operations.result as PendingOperation[], deferred.result as DeferredRevision[], context.fileKey);
+      for (const state of derived.documents) documents.put(state);
+    };
+  },
 ];
 
 /**

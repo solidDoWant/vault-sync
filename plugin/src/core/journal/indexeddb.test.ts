@@ -359,6 +359,8 @@ describe("IndexedDbJournal", () => {
           await d.vault.write("a.md", encoder.encode("a2"));
           await d.vault.rename("b.md", "b2.md");
           await d.vault.write("c.md", encoder.encode("c1 is longer than one chunk"));
+          // The changes' binding transitions are durable changes of their own, before the push's.
+          await d.engine.settled();
         },
         // The pull afterwards moves the cursor over the device's own revisions,
         // which a resumed push may already have done.
@@ -465,6 +467,29 @@ describe("IndexedDbJournal", () => {
       const reopened = await IndexedDbJournal.open(factory, name);
       expect(await reopened.listConflicts()).toEqual([sampleConflict("c1", { reason: "binary" }), sampleConflict("c2")]);
       reopened.close();
+    });
+
+    // Refactor step R4: rows the engine wrote before it maintained bindings
+    // may carry a stale one (design §6.2 as amended), so v4 derives them again.
+    it("derives every binding again from v3 to v4, whatever the row carried", async () => {
+      const factory = new FakeIDBFactory();
+      const v3 = await IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 3));
+      const stale = sampleDocument({ documentId: "stale", path: "now.md", baseHash: "h-now" });
+      await v3.putDocument({ ...stale, binding: { spelling: "before.md", fileKey: "before.md", seen: "h-before" }, absence: null });
+      const unrecorded = sampleDocument({ documentId: "unrecorded", path: "plain.md", baseHash: "h-plain" });
+      await v3.putDocument(unrecorded);
+      const tombstone = sampleDocument({ documentId: "tombstone", path: "gone.md", deleted: true });
+      await v3.putDocument({ ...tombstone, binding: { spelling: "gone.md", fileKey: "gone.md", seen: "h" }, absence: null });
+      await v3.addPending(samplePending({ revisionId: "p-delete", documentId: "unrecorded", path: "plain.md", deleted: true }));
+      v3.close();
+
+      const v4 = await IndexedDbJournal.open(factory, name, journalMigrations, { fileKey: (path) => path.toUpperCase() });
+      expect(await v4.getDocument("stale")).toEqual({ ...stale, binding: { spelling: "now.md", fileKey: "NOW.MD", seen: "h-now" }, absence: null });
+      expect(await v4.getDocument("unrecorded")).toEqual({ ...unrecorded, binding: null, absence: "user-deleted" });
+      expect(await v4.getDocument("tombstone")).toEqual({ ...tombstone, binding: null, absence: "never" });
+      expect((await v4.documentByFileKey("NOW.MD"))?.documentId).toBe("stale");
+      expect(await v4.documentByFileKey("before.md")).toBeUndefined();
+      v4.close();
     });
 
     describe("from v2 to v3 (path ownership)", () => {

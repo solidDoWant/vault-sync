@@ -65,6 +65,12 @@ jobs:
             SIM_FIRST_SEED="$FIRST_SEED" SIM_SEEDS="$SEEDS" SIM_STEPS="$STEPS" \
             SIM_CLIENTS=3 SIM_ENGINES=2 SIM_SHRINK_RUNS=10 SIM_TIMEOUT=300m \
             SIM_REGRESSION_DIR=build/sim-regressions 2>&1 | tee build/sim-output.txt
+      - name: Binding-shadow report
+        if: always()
+        run: |
+          set -euo pipefail
+          touch build/sim-output.txt
+          ./scripts/sim-shadow-report.sh build/sim-output.txt >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the minimized cases
         if: failure()
         uses: actions/upload-artifact@v4
@@ -148,6 +154,8 @@ jobs:
               ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL" sim-faithful-fs \
                 "The faithful-filesystem simulation failed (non-gating until R7: no issue is filed and the workflow does not fail)"
             fi
+            echo
+            ./scripts/sim-shadow-report.sh build/sim-output.txt
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload the output and minimized cases
         if: always()
