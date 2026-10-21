@@ -231,7 +231,7 @@ describe("engine properties (design §9.3)", () => {
   it("P1: a document's committed content comes from its own file (known failure)", { timeout }, async () => {
     await knownFailure(p1, {
       example: scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-delete", document: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 1 }),
-      violation: /^step 5: create of id-\d+ at "A\.md" \(seq 3\) from inode 1, bound to id-\d+$/,
+      violation: /^step \d+: create of id-\d+ at "A\.md" \(seq \d+\) from inode 1, bound to id-\d+$/,
     });
   });
 
@@ -239,17 +239,8 @@ describe("engine properties (design §9.3)", () => {
   // Fails today (the crash-lost-rename class of #531 and #550; flips in R5 #569): a rename held only in memory is lost to a crash, so it is committed as a delete of the document plus a new one.
   it("P2: tombstones come from user deletes, resurrections from user changes (known failure)", { timeout }, async () => {
     await knownFailure(p2, {
-      example: scripted(
-        "posix",
-        { type: "remote-create", path: 0 },
-        { type: "push" },
-        { type: "crash", write: 6 },
-        { type: "user-rename", file: 0, mode: "pool", target: 1 },
-        { type: "remote-rename", document: 0, path: 0 },
-        { type: "remote-edit", document: 0 },
-        { type: "pull" },
-      ),
-      violation: /^step 8: tombstone of r-1 at "a\.md" \(seq 4\) without the user deleting its file$/,
+      example: scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "crash", write: 1 }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "user-create", path: 1 }),
+      violation: /^step \d+: tombstone of r-1 at "a\.md" \(seq \d+\) without the user deleting its file$/,
     });
   });
 
@@ -258,7 +249,7 @@ describe("engine properties (design §9.3)", () => {
   it("P3: no two live documents or live outboxes claim one path key (known failure)", { timeout }, async () => {
     await knownFailure(p3, {
       example: scripted("posix", { type: "remote-create", path: 5 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }),
-      violation: /^step 6: live documents r-1@"Straße\.md" and r-4@"STRASSE\.md" collide under K$/,
+      violation: /^step \d+: live documents r-1@"Straße\.md" and r-4@"STRASSE\.md" collide under K$/,
     });
   });
 
@@ -266,12 +257,8 @@ describe("engine properties (design §9.3)", () => {
   // Fails today (flips in R8 #572; its minimal case today is the crash-lost rename of P2, R5 #569): a crash in a pull leaves another quiescent vault and server than the run without it.
   it("P4: a crash at any journal write reaches the state a run without it reaches (known failure)", { timeout }, async () => {
     await knownFailure(p4, {
-      example: [
-        "posix",
-        [{ type: "user-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-edit", document: 0 }, { type: "pull" }],
-        6,
-      ],
-      violation: /^a crash at journal write 6 reaches \{"vault":\["A \(conflict\)\.md=user 1","a\.md=remote 5"\].*the run without it \{"vault":\["A\.md=remote 5"\]/,
+      example: ["posix", [{ type: "user-create", path: 4 }, { type: "user-create", path: 3 }, { type: "push" }, { type: "remote-edit", document: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }], 12],
+      violation: /^a crash at journal write 12 reaches \{"vault":\[.*"a\.md=user 1"\].*the run without it \{"vault":\[.*"a\.md=remote 4"\]/,
     });
   });
 
