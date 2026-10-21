@@ -66,6 +66,36 @@ func (memory *memoryStore) RegisterDevice(_ context.Context, userID uuid.UUID, n
 	return device, nil
 }
 
+func (memory *memoryStore) ListDevices(_ context.Context, userID uuid.UUID) ([]store.Device, error) {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	var devices []store.Device
+
+	for _, device := range memory.devices {
+		if device.UserID == userID {
+			devices = append(devices, device)
+		}
+	}
+
+	return devices, nil
+}
+
+func (memory *memoryStore) RemoveDevice(_ context.Context, userID, deviceID uuid.UUID) error {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	for index, device := range memory.devices {
+		if device.ID == deviceID && device.UserID == userID {
+			memory.devices = append(memory.devices[:index], memory.devices[index+1:]...)
+
+			return nil
+		}
+	}
+
+	return store.ErrDeviceNotFound
+}
+
 func (memory *memoryStore) userCount() int {
 	memory.mu.Lock()
 	defer memory.mu.Unlock()

@@ -1,113 +1,194 @@
-import type { ConflictRecord, DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, Intent, Journal, JournalChanges, NewIntent, PendingOperation } from "./journal";
+
+/** Everything the journal holds; a transaction works on a copy and replaces it whole. */
+interface State {
+  cursor: bigint;
+  cursorAnchor: Uint8Array | undefined;
+  documents: Map<string, DocumentState>;
+  /** By revision id, in insertion order. */
+  pending: Map<string, PendingOperation>;
+  deferred: Map<string, DeferredRevision>;
+  conflicts: Map<string, ConflictRecord>;
+  intents: Map<number, Intent>;
+  nextIntentId: number;
+}
 
 /** A non-durable Journal for unit tests and the simulation harness. */
 export class InMemoryJournal implements Journal {
-  private cursor = 0n;
-  private cursorAnchor: Uint8Array | undefined;
-  private readonly documents = new Map<string, DocumentState>();
-  private readonly pending = new Map<string, PendingOperation>();
-  private readonly deferred = new Map<string, DeferredRevision>();
-  private readonly conflicts = new Map<string, ConflictRecord>();
+  private state: State = {
+    cursor: 0n,
+    cursorAnchor: undefined,
+    documents: new Map(),
+    pending: new Map(),
+    deferred: new Map(),
+    conflicts: new Map(),
+    intents: new Map(),
+    nextIntentId: 1,
+  };
 
   getCursor(): Promise<bigint> {
-    return Promise.resolve(this.cursor);
+    return Promise.resolve(this.state.cursor);
   }
 
   getCursorAnchor(): Promise<Uint8Array | undefined> {
-    return Promise.resolve(this.cursorAnchor === undefined ? undefined : this.cursorAnchor.slice());
+    return Promise.resolve(copy(this.state.cursorAnchor));
   }
 
   setCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
-    if (seq < this.cursor) {
-      return Promise.reject(new RangeError(`cursor cannot move backwards from ${String(this.cursor)} to ${String(seq)}`));
-    }
-    return this.resetCursor(seq, anchor);
+    return this.change({ cursor: anchor === undefined ? { seq } : { seq, anchor } });
   }
 
   resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
-    this.cursor = seq;
-    this.cursorAnchor = anchor === undefined ? undefined : anchor.slice();
-    return Promise.resolve();
+    return this.change({ cursor: anchor === undefined ? { seq, reset: true } : { seq, anchor, reset: true } });
   }
 
   getDocument(documentId: string): Promise<DocumentState | undefined> {
-    const state = this.documents.get(documentId);
-    return Promise.resolve(state === undefined ? undefined : copyDocument(state));
+    return Promise.resolve(copy(this.state.documents.get(documentId)));
   }
 
   findDocumentByPath(path: string): Promise<DocumentState | undefined> {
-    const found = this.sortedDocuments().find((state) => state.path === path && !state.deleted);
-    return Promise.resolve(found === undefined ? undefined : copyDocument(found));
+    return Promise.resolve(copy(this.sortedDocuments().find((state) => state.path === path && !state.deleted)));
+  }
+
+  documentByFileKey(fileKey: string): Promise<DocumentState | undefined> {
+    return Promise.resolve(copy(this.sortedDocuments().find((state) => state.binding?.fileKey === fileKey)));
   }
 
   listDocuments(): Promise<DocumentState[]> {
-    return Promise.resolve(this.sortedDocuments().map(copyDocument));
+    return Promise.resolve(this.sortedDocuments().map(copy));
   }
 
   /** The documents in id order (UTF-16 code units), IndexedDB's key order. */
   private sortedDocuments(): DocumentState[] {
-    return [...this.documents.values()].sort((a, b) => (a.documentId < b.documentId ? -1 : a.documentId > b.documentId ? 1 : 0));
+    return [...this.state.documents.values()].sort((a, b) => (a.documentId < b.documentId ? -1 : a.documentId > b.documentId ? 1 : 0));
   }
 
   putDocument(state: DocumentState): Promise<void> {
-    this.documents.set(state.documentId, copyDocument(state));
-    return Promise.resolve();
+    return this.change({ putDocuments: [state] });
   }
 
   addPending(operation: PendingOperation): Promise<void> {
-    if (this.pending.has(operation.revisionId)) {
-      return Promise.reject(new Error(`revision ${operation.revisionId} is already pending`));
-    }
-    this.pending.set(operation.revisionId, { ...operation });
-    return Promise.resolve();
+    return this.update((state) => {
+      addPending(state, operation);
+    });
   }
 
   listPending(): Promise<PendingOperation[]> {
-    return Promise.resolve([...this.pending.values()].map((operation) => ({ ...operation })));
+    return Promise.resolve([...this.state.pending.values()].map(copy));
   }
 
   removePending(revisionId: string): Promise<void> {
-    this.pending.delete(revisionId);
-    return Promise.resolve();
+    return this.change({ removePending: [revisionId] });
   }
 
   putDeferred(deferred: DeferredRevision): Promise<void> {
-    this.deferred.set(deferred.revision.documentId, copyDeferred(deferred));
-    return Promise.resolve();
+    return this.change({ putDeferred: [deferred] });
   }
 
   getDeferred(documentId: string): Promise<DeferredRevision | undefined> {
-    const deferred = this.deferred.get(documentId);
-    return Promise.resolve(deferred === undefined ? undefined : copyDeferred(deferred));
+    return Promise.resolve(copy(this.state.deferred.get(documentId)));
   }
 
   listDeferred(): Promise<DeferredRevision[]> {
-    return Promise.resolve([...this.deferred.values()].map(copyDeferred));
+    return Promise.resolve([...this.state.deferred.values()].map(copy));
   }
 
   removeDeferred(documentId: string): Promise<void> {
-    this.deferred.delete(documentId);
-    return Promise.resolve();
+    return this.change({ removeDeferred: [documentId] });
   }
 
   putConflict(conflict: ConflictRecord): Promise<void> {
-    this.conflicts.set(conflict.id, { ...conflict });
-    return Promise.resolve();
+    return this.change({ putConflicts: [conflict] });
   }
 
   listConflicts(): Promise<ConflictRecord[]> {
-    return Promise.resolve([...this.conflicts.values()].map((conflict) => ({ ...conflict })));
+    return Promise.resolve([...this.state.conflicts.values()].map(copy));
+  }
+
+  putIntent(intent: NewIntent): Promise<number> {
+    let id = 0;
+    return this.update((state) => {
+      id = state.nextIntentId++;
+      state.intents.set(id, { ...copy(intent), id });
+    }).then(() => id);
+  }
+
+  listIntents(): Promise<Intent[]> {
+    return Promise.resolve([...this.state.intents.values()].map(copy));
+  }
+
+  removeIntent(id: number): Promise<void> {
+    return this.change({ removeIntents: [id] });
+  }
+
+  transact(changes: JournalChanges): Promise<void> {
+    return this.change(changes);
+  }
+
+  /** transact's work, which the single-change methods share; subclasses that wrap transact do not see those calls. */
+  private change(changes: JournalChanges): Promise<void> {
+    return this.update((state) => {
+      const { cursor } = changes;
+      if (cursor !== undefined) {
+        if (cursor.reset !== true && cursor.seq < state.cursor) {
+          throw new RangeError(`cursor cannot move backwards from ${String(state.cursor)} to ${String(cursor.seq)}`);
+        }
+        state.cursor = cursor.seq;
+        state.cursorAnchor = copy(cursor.anchor);
+      }
+      for (const document of changes.putDocuments ?? []) state.documents.set(document.documentId, copy(document));
+      for (const revisionId of changes.removePending ?? []) state.pending.delete(revisionId);
+      for (const revisionId of changes.sealPending ?? []) {
+        const operation = state.pending.get(revisionId);
+        if (operation === undefined) throw new Error(`cannot seal revision ${revisionId}: it is not pending`);
+        state.pending.set(revisionId, { ...operation, sealed: true });
+      }
+      for (const operation of changes.addPending ?? []) {
+        for (const other of state.pending.values()) {
+          if (other.documentId === operation.documentId && other.revisionId !== operation.revisionId) {
+            throw new Error(`document ${operation.documentId} already has pending revision ${other.revisionId}`);
+          }
+        }
+        addPending(state, operation);
+      }
+      for (const documentId of changes.removeDeferred ?? []) state.deferred.delete(documentId);
+      for (const deferred of changes.putDeferred ?? []) state.deferred.set(deferred.revision.documentId, copy(deferred));
+      for (const conflict of changes.putConflicts ?? []) state.conflicts.set(conflict.id, copy(conflict));
+      for (const id of changes.removeIntents ?? []) state.intents.delete(id);
+    });
+  }
+
+  /**
+   * Runs `change` on a copy of the state and keeps the copy only if it
+   * succeeds: all or nothing, as an IndexedDB transaction. The copy is
+   * shallow: `change` replaces stored values, never mutates them.
+   */
+  private update(change: (state: State) => void): Promise<void> {
+    const current = this.state;
+    const next: State = {
+      ...current,
+      documents: new Map(current.documents),
+      pending: new Map(current.pending),
+      deferred: new Map(current.deferred),
+      conflicts: new Map(current.conflicts),
+      intents: new Map(current.intents),
+    };
+    try {
+      change(next);
+    } catch (error) {
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
+    this.state = next;
+    return Promise.resolve();
   }
 }
 
-function copyDeferred(deferred: DeferredRevision): DeferredRevision {
-  const copy: DeferredRevision = { reason: deferred.reason, revision: { ...deferred.revision } };
-  if (deferred.merging !== undefined) copy.merging = { ...deferred.merging };
-  if (deferred.unmaterializable !== undefined) copy.unmaterializable = deferred.unmaterializable;
-  return copy;
+function addPending(state: State, operation: PendingOperation): void {
+  if (state.pending.has(operation.revisionId)) throw new Error(`revision ${operation.revisionId} is already pending`);
+  state.pending.set(operation.revisionId, copy(operation));
 }
 
-/** A copy of `state` that shares no array with it, as IndexedDB's structured clone. */
-function copyDocument(state: DocumentState): DocumentState {
-  return state.anchor === undefined ? { ...state } : { ...state, anchor: state.anchor.slice() };
+/** A deep copy sharing nothing with `value`, as IndexedDB's structured clone. */
+function copy<T>(value: T): T {
+  return structuredClone(value);
 }
