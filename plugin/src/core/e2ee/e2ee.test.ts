@@ -141,7 +141,8 @@ describe("opening fails closed", ARGON2_TIMEOUT, () => {
   }
 });
 
-describe("randomness", () => {
+// Each test seals hundreds to 100,000 messages: seconds of work on a loaded machine.
+describe("randomness", ARGON2_TIMEOUT, () => {
   it("draws a fresh nonce for every seal", () => {
     const samples = 100_000;
     const key = generateKey();
