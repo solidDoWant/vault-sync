@@ -1,4 +1,4 @@
-import type { ConflictRecord, DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
+import type { Absence, Binding, ConflictRecord, DeferredRevision, DocumentState, Intent, Journal, JournalChanges, NewIntent, PendingOperation } from "./journal";
 
 /**
  * The durable Journal (SPEC.md §8), on IndexedDB: Obsidian desktop
@@ -39,6 +39,10 @@ export class IndexedDbJournal implements Journal {
    * If another connection holds the database open and does not step aside
    * for the upgrade, the open waits for it and calls `options.onBlocked`, so
    * the caller can tell the user why sync has not started.
+   *
+   * `options.fileKey` is the device's file key (`F`), which the upgrade from
+   * schema 2 records in every binding it derives; it defaults to the POSIX
+   * one, the path itself.
    */
   static open(
     factory: IDBFactory,
@@ -62,7 +66,8 @@ export class IndexedDbJournal implements Journal {
         const transaction = request.transaction;
         if (transaction === null) return;
         try {
-          for (let from = event.oldVersion; from < version; from++) migrations[from]?.(transaction);
+          const context: JournalMigrationContext = { fileKey: options.fileKey ?? ((path) => path) };
+          for (let from = event.oldVersion; from < version; from++) migrations[from]?.(transaction, context);
         } catch (error) {
           transaction.abort();
           reject(new JournalMigrationError(`journal schema migration ${String(event.oldVersion)} to ${String(version)} failed`, { cause: error }));
@@ -231,14 +236,8 @@ export class IndexedDbJournal implements Journal {
   }
 
   putConflict(conflict: ConflictRecord): Promise<void> {
-    return this.transaction(["conflicts"], "readwrite", (transaction) => {
-      const store = transaction.objectStore("conflicts");
-      const request = store.index("id").getKey(conflict.id);
-      request.onsuccess = () => {
-        // Replacing in place: the same key, so the same place in the log.
-        if (request.result === undefined) store.add(conflict);
-        else store.put(conflict, request.result);
-      };
+    return this.transaction(["conflicts"], "readwrite", (transaction, abort) => {
+      putConflictIn(transaction.objectStore("conflicts"), conflict, abort);
       return () => undefined;
     });
   }
@@ -248,6 +247,80 @@ export class IndexedDbJournal implements Journal {
       // Keys are auto-incremented, so key order is the order recorded.
       const request = transaction.objectStore("conflicts").getAll();
       return () => request.result as ConflictRecord[];
+    });
+  }
+
+  documentByFileKey(fileKey: string): Promise<DocumentState | undefined> {
+    return this.transaction(["documents"], "readonly", (transaction) => {
+      // Records with equal index keys come in primary key (documentId) order.
+      const request = transaction.objectStore("documents").index(fileKeyIndex).get(fileKey);
+      return () => request.result as DocumentState | undefined;
+    });
+  }
+
+  putIntent(intent: NewIntent): Promise<number> {
+    return this.transaction(["intents"], "readwrite", (transaction) => {
+      // The store's key generator assigns `id`, in increasing order.
+      const request = transaction.objectStore("intents").add(intent);
+      return () => request.result as number;
+    });
+  }
+
+  listIntents(): Promise<Intent[]> {
+    return this.transaction(["intents"], "readonly", (transaction) => {
+      const request = transaction.objectStore("intents").getAll();
+      return () => request.result as Intent[];
+    });
+  }
+
+  removeIntent(id: number): Promise<void> {
+    return this.transact({ removeIntents: [id] });
+  }
+
+  transact(changes: JournalChanges): Promise<void> {
+    const stores = new Set<StoreName>();
+    if (changes.cursor !== undefined) stores.add("meta");
+    if (nonEmpty(changes.putDocuments)) stores.add("documents");
+    if (nonEmpty(changes.removePending) || nonEmpty(changes.sealPending) || nonEmpty(changes.addPending)) stores.add("pending");
+    if (nonEmpty(changes.removeDeferred) || nonEmpty(changes.putDeferred)) stores.add("deferred");
+    if (nonEmpty(changes.putConflicts)) stores.add("conflicts");
+    if (nonEmpty(changes.removeIntents)) stores.add("intents");
+    if (stores.size === 0) return this.transaction(["meta"], "readonly", () => () => undefined);
+    return this.transaction([...stores], "readwrite", (transaction, abort) => {
+      // Read what the checks need first; the writes are issued only once
+      // every read is in, so a refused change writes nothing.
+      let cursor: bigint | undefined;
+      let pending: StoredPending[] | undefined;
+      let waiting = 1;
+      const ready = () => {
+        if (--waiting > 0) return;
+        try {
+          writeChanges(transaction, abort, changes, cursor, pending);
+        } catch (error) {
+          abort(asError(error));
+        }
+      };
+      if (changes.cursor !== undefined && changes.cursor.reset !== true) {
+        waiting++;
+        const request = transaction.objectStore("meta").get(cursorKey);
+        request.onsuccess = () => {
+          cursor = request.result === undefined ? 0n : (request.result as bigint);
+          ready();
+        };
+      }
+      if (stores.has("pending")) {
+        waiting++;
+        const store = transaction.objectStore("pending");
+        const keys = store.getAllKeys();
+        const values = store.getAll();
+        values.onsuccess = () => {
+          // Both requests ran in order over one store in one transaction, so keys line up with values.
+          pending = (values.result as PendingOperation[]).map((operation, index) => ({ key: keys.result[index] ?? -1, operation }));
+          ready();
+        };
+      }
+      ready();
+      return () => undefined;
     });
   }
 
@@ -307,14 +380,97 @@ export class IndexedDbJournal implements Journal {
 }
 
 /** One step of the journal's schema history: upgrades the database from version `index` to `index + 1`, inside the versionchange transaction. */
-export type JournalMigration = (transaction: IDBTransaction) => void;
+export type JournalMigration = (transaction: IDBTransaction, context: JournalMigrationContext) => void;
+
+/** What a migration may know of the device: it runs before the engine, and cannot read the disk. */
+export interface JournalMigrationContext {
+  /** The device's file key (`F`) of a path. */
+  fileKey: (path: string) => string;
+}
 
 export interface JournalOpenOptions {
   /** Called when the open has to wait for another connection that keeps the database open. The open still completes once that connection closes. */
   onBlocked?: () => void;
+  /** The device's filesystem key (`F`: PathSpace.filesystemKey for its platform), for the migrations; defaults to the path itself, POSIX's. */
+  fileKey?: (path: string) => string;
 }
 
-type StoreName = "meta" | "documents" | "pending" | "deferred" | "conflicts";
+type StoreName = "meta" | "documents" | "pending" | "deferred" | "conflicts" | "intents";
+
+/** The documents index on `binding.fileKey`: a document without a binding is not in it. */
+const fileKeyIndex = "binding.fileKey";
+
+/** A pending operation with its key in the store. */
+interface StoredPending {
+  key: IDBValidKey;
+  operation: PendingOperation;
+}
+
+function nonEmpty(list: readonly unknown[] | undefined): boolean {
+  return list !== undefined && list.length > 0;
+}
+
+/**
+ * Issues transact's writes, given the stored cursor and pending operations
+ * it checks against (each undefined if the change does not need it).
+ * Throws, before writing anything, on a change it refuses.
+ */
+function writeChanges(transaction: IDBTransaction, abort: (error: Error) => void, changes: JournalChanges, cursor: bigint | undefined, pending: StoredPending[] | undefined): void {
+  if (changes.cursor !== undefined && cursor !== undefined && changes.cursor.seq < cursor) {
+    throw new RangeError(`cursor cannot move backwards from ${String(cursor)} to ${String(changes.cursor.seq)}`);
+  }
+  // The pending store as this transaction leaves it, by revision id: every check runs against it before any write.
+  const kept = new Map<string, StoredPending>((pending ?? []).map((entry) => [entry.operation.revisionId, entry]));
+  const removed: IDBValidKey[] = [];
+  for (const revisionId of changes.removePending ?? []) {
+    const entry = kept.get(revisionId);
+    if (entry === undefined) continue;
+    removed.push(entry.key);
+    kept.delete(revisionId);
+  }
+  const sealed: StoredPending[] = [];
+  for (const revisionId of changes.sealPending ?? []) {
+    const entry = kept.get(revisionId);
+    if (entry === undefined) throw new Error(`cannot seal revision ${revisionId}: it is not pending`);
+    sealed.push({ key: entry.key, operation: { ...entry.operation, sealed: true } });
+  }
+  for (const operation of changes.addPending ?? []) {
+    if (kept.has(operation.revisionId)) throw new Error(`revision ${operation.revisionId} is already pending`);
+    for (const other of kept.values()) {
+      if (other.operation.documentId === operation.documentId) {
+        throw new Error(`document ${operation.documentId} already has pending revision ${other.operation.revisionId}`);
+      }
+    }
+    kept.set(operation.revisionId, { key: -1, operation });
+  }
+
+  if (changes.cursor !== undefined) putCursor(transaction.objectStore("meta"), changes.cursor.seq, changes.cursor.anchor);
+  for (const document of changes.putDocuments ?? []) transaction.objectStore("documents").put(document);
+  if (pending !== undefined) {
+    const store = transaction.objectStore("pending");
+    for (const key of removed) store.delete(key);
+    for (const { key, operation } of sealed) store.put(operation, key);
+    for (const operation of changes.addPending ?? []) store.add(operation);
+  }
+  for (const documentId of changes.removeDeferred ?? []) transaction.objectStore("deferred").delete(documentId);
+  for (const deferred of changes.putDeferred ?? []) transaction.objectStore("deferred").put(deferred);
+  for (const conflict of changes.putConflicts ?? []) putConflictIn(transaction.objectStore("conflicts"), conflict, abort);
+  for (const id of changes.removeIntents ?? []) transaction.objectStore("intents").delete(id);
+}
+
+/** Adds `conflict` to the log, or replaces the record with its id in place: the same key, so the same place in the log. */
+function putConflictIn(store: IDBObjectStore, conflict: ConflictRecord, abort: (error: Error) => void): void {
+  const request = store.index("id").getKey(conflict.id);
+  request.onsuccess = () => {
+    try {
+      if (request.result === undefined) store.add(conflict);
+      else store.put(conflict, request.result);
+    } catch (error) {
+      // DataCloneError, say: fail the transaction with it, not with an uncaught exception in this handler.
+      abort(asError(error));
+    }
+  };
+}
 
 const cursorKey = "cursor";
 /** The anchor of the revision at the cursor; written in the same transaction as the cursor, and absent if it has none. */
@@ -355,7 +511,76 @@ export const journalMigrations: readonly JournalMigration[] = [
     const conflicts = transaction.db.createObjectStore("conflicts", { autoIncrement: true });
     conflicts.createIndex("id", "id", { unique: true });
   },
+  // Version 3: path ownership (docs/design/engine-path-ownership.md §6.1,
+  // §6.2). Documents gain `binding` and `absence`, indexed by the binding's
+  // file key; pending operations gain `sealed`, indexed by document; and the
+  // `intents` store is added. Existing records are only added to
+  // (deriveV3Records): the engine still reads every v2 field as before.
+  (transaction, context) => {
+    const documents = transaction.objectStore("documents");
+    documents.createIndex(fileKeyIndex, fileKeyIndex);
+    const pending = transaction.objectStore("pending");
+    pending.createIndex("documentId", "documentId");
+    const intents = transaction.db.createObjectStore("intents", { keyPath: "id", autoIncrement: true });
+    intents.createIndex("documentId", "documentId");
+
+    // Requests run in order, so all four reads are in when the last succeeds.
+    const deferred = transaction.objectStore("deferred").getAll();
+    const states = documents.getAll();
+    const pendingKeys = pending.getAllKeys();
+    const operations = pending.getAll();
+    operations.onsuccess = () => {
+      const derived = deriveV3Records(states.result as DocumentState[], operations.result as PendingOperation[], deferred.result as DeferredRevision[], context.fileKey);
+      for (const state of derived.documents) documents.put(state);
+      derived.pending.forEach((operation, index) => {
+        const key = pendingKeys.result[index];
+        // A throw here aborts the upgrade, which leaves the v2 journal as it was.
+        if (key === undefined) throw new Error("pending operations and their keys disagree");
+        pending.put(operation, key);
+      });
+    };
+  },
 ];
+
+/**
+ * The v3 fields of a v2 journal's records (design §6.2), from what the
+ * journal holds alone. It only adds information: every v2 field keeps its
+ * value, so the engine, which still reads them all, behaves as before.
+ * - A live document is bound to the file at its path, as last synced.
+ * - A deleted document whose deferral is `unmaterializable` was released (a
+ *   release stored `deleted: true` over a live base); any other deleted
+ *   document never had a file here.
+ * - A document's last pending operation overrides both: a delete means the
+ *   user deleted the file, and any other operation binds the document to
+ *   the file at its path, with the content the engine read there.
+ * - Every pending operation is sealed, since any may have been sent.
+ *
+ * `pending` is in key (insertion) order, and the result's `pending` lines
+ * up with it. A pending create has no document row and gets none here,
+ * since the engine reads every row as a synced base until refactor step R5
+ * (design §6.2 as amended).
+ */
+export function deriveV3Records(
+  documents: readonly DocumentState[],
+  pending: readonly PendingOperation[],
+  deferred: readonly DeferredRevision[],
+  fileKey: (path: string) => string,
+): { documents: DocumentState[]; pending: PendingOperation[] } {
+  const released = new Set(deferred.filter((entry) => entry.reason === "unmaterializable").map((entry) => entry.revision.documentId));
+  const lastOperation = new Map<string, PendingOperation>();
+  for (const operation of pending) lastOperation.set(operation.documentId, operation);
+  const bound = (spelling: string, seen: string): { binding: Binding; absence: null } => ({ binding: { spelling, fileKey: fileKey(spelling), seen }, absence: null });
+  const unbound = (absence: Absence): { binding: null; absence: Absence } => ({ binding: null, absence });
+  return {
+    documents: documents.map((state) => {
+      const operation = lastOperation.get(state.documentId);
+      if (operation !== undefined) return { ...state, ...(operation.deleted ? unbound("user-deleted") : bound(operation.path, operation.contentHash)) };
+      if (!state.deleted) return { ...state, ...bound(state.path, state.baseHash) };
+      return { ...state, ...unbound(released.has(state.documentId) ? "released" : "never") };
+    }),
+    pending: pending.map((operation) => ({ ...operation, sealed: true })),
+  };
+}
 
 /** The journal was written by a newer vault-sync than this one. */
 export class JournalVersionError extends Error {

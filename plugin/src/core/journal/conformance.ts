@@ -1,4 +1,4 @@
-import type { ConflictRecord, DeferredRevision, DocumentState, Journal, PendingOperation } from "./journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, Journal, JournalChanges, PendingOperation } from "./journal";
 
 /**
  * Shared Journal conformance suite, run against every implementation (the
@@ -466,4 +466,224 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       assertEqual(await journal.listConflicts(), [sampleConflict("c1")], "conflict log");
     },
   },
+  {
+    name: "keeps a document's binding and absence, copied, and none where none was given",
+    run: async (journal, reopen) => {
+      const bound = sampleDocument({ binding: { spelling: "Note.md", fileKey: "NOTE.MD", seen: "aa" }, absence: null });
+      const released = sampleDocument({ documentId: "doc-2", path: "con.md", deleted: true, binding: null, absence: "released" });
+      await journal.putDocument(bound);
+      await journal.putDocument(released);
+      await journal.putDocument(sampleDocument({ documentId: "doc-3", path: "other.md" }));
+      if (bound.binding) bound.binding.spelling = "mutated.md";
+      const reopened = await reopen();
+      const read = await reopened.getDocument("doc-1");
+      assertEqual(read, sampleDocument({ binding: { spelling: "Note.md", fileKey: "NOTE.MD", seen: "aa" }, absence: null }), "bound document");
+      if (read?.binding) read.binding.seen = "mutated";
+      assertEqual(
+        (await reopened.listDocuments()).map((state) => [state.documentId, state.binding, state.absence]),
+        [
+          ["doc-1", { spelling: "Note.md", fileKey: "NOTE.MD", seen: "aa" }, null],
+          ["doc-2", null, "released"],
+          ["doc-3", undefined, undefined],
+        ],
+        "listed bindings and absences",
+      );
+    },
+  },
+  {
+    name: "finds a document by its binding's file key, not by its path",
+    run: async (journal, reopen) => {
+      const binding = (spelling: string, fileKey: string) => ({ spelling, fileKey, seen: "aa" });
+      await journal.putDocument(sampleDocument({ documentId: "b", path: "base.md", binding: binding("Moved.md", "MOVED.MD"), absence: null }));
+      await journal.putDocument(sampleDocument({ documentId: "a", path: "x.md", binding: binding("moved.md", "MOVED.MD"), absence: null }));
+      await journal.putDocument(sampleDocument({ documentId: "c", path: "plain.md" }));
+      await journal.putDocument(sampleDocument({ documentId: "d", path: "gone.md", deleted: true, binding: null, absence: "user-deleted" }));
+      await journal.putDocument(sampleDocument({ documentId: "e", path: "kept.md", binding: binding("kept.md", "KEPT.MD"), absence: null }));
+      await journal.putDocument(sampleDocument({ documentId: "e", path: "kept.md", binding: binding("Elsewhere.md", "ELSEWHERE.MD"), absence: null }));
+      const reopened = await reopen();
+      assertEqual((await reopened.documentByFileKey("MOVED.MD"))?.documentId, "a", "the lowest document id of two bound to one file key");
+      assertEqual(await reopened.documentByFileKey("base.md"), undefined, "a base path is no file key");
+      assertEqual(await reopened.documentByFileKey("plain.md"), undefined, "a document without a binding");
+      assertEqual(await reopened.documentByFileKey("gone.md"), undefined, "a document whose binding is null");
+      assertEqual(await reopened.documentByFileKey("KEPT.MD"), undefined, "the file key of a replaced binding");
+      assertEqual(await reopened.documentByFileKey("ELSEWHERE.MD"), sampleDocument({ documentId: "e", path: "kept.md", binding: binding("Elsewhere.md", "ELSEWHERE.MD"), absence: null }), "document by its binding's file key");
+      assertEqual(await reopened.documentByFileKey("moved.md"), undefined, "file keys compare exactly");
+    },
+  },
+  {
+    name: "keeps a pending operation's seal",
+    run: async (journal, reopen) => {
+      await journal.addPending(samplePending({ revisionId: "a", sealed: true }));
+      await journal.addPending(samplePending({ revisionId: "b", documentId: "doc-2", sealed: false }));
+      await journal.addPending(samplePending({ revisionId: "c", documentId: "doc-3" }));
+      assertEqual(
+        (await (await reopen()).listPending()).map((operation) => [operation.revisionId, operation.sealed]),
+        [
+          ["a", true],
+          ["b", false],
+          ["c", undefined],
+        ],
+        "seals",
+      );
+    },
+  },
+  {
+    name: "records intents oldest first with increasing ids until removed",
+    run: async (journal, reopen) => {
+      const steps = { revision: { seq: 2n ** 62n, path: "a.md" }, copy: null, anchor: new Uint8Array([1, 2]) };
+      const first = await journal.putIntent({ kind: "merge", documentId: "doc-1", steps });
+      steps.revision.path = "mutated.md";
+      const second = await journal.putIntent({ kind: "displace", documentId: "doc-2", steps: { from: "a.md", to: "a (1).md" } });
+      const third = await journal.putIntent({ kind: "apply", documentId: "doc-1", steps: {} });
+      if (!(first < second && second < third)) throw new JournalConformanceFailure(`intent ids ${String(first)}, ${String(second)}, ${String(third)} do not increase`);
+      let reopened = await reopen();
+      const listed = await reopened.listIntents();
+      assertEqual(
+        listed,
+        [
+          { id: first, kind: "merge", documentId: "doc-1", steps: { revision: { seq: 2n ** 62n, path: "a.md" }, copy: null, anchor: new Uint8Array([1, 2]) } },
+          { id: second, kind: "displace", documentId: "doc-2", steps: { from: "a.md", to: "a (1).md" } },
+          { id: third, kind: "apply", documentId: "doc-1", steps: {} },
+        ],
+        "intents",
+      );
+      const [read] = listed;
+      if (read !== undefined) read.documentId = "mutated";
+      await reopened.removeIntent(second);
+      await reopened.removeIntent(second);
+      await reopened.removeIntent(third + 1000);
+      reopened = await reopen();
+      assertEqual(
+        (await reopened.listIntents()).map((intent) => [intent.id, intent.documentId]),
+        [
+          [first, "doc-1"],
+          [third, "doc-1"],
+        ],
+        "intents after removal",
+      );
+      const fourth = await reopened.putIntent({ kind: "detach", documentId: "doc-3", steps: {} });
+      if (fourth <= third) throw new JournalConformanceFailure(`intent id ${String(fourth)} after a reopen does not follow ${String(third)}`);
+    },
+  },
+  {
+    name: "applies every part of a transaction together",
+    run: async (journal, reopen) => {
+      await journal.setCursor(3n);
+      await journal.addPending(samplePending({ revisionId: "acknowledged" }));
+      await journal.addPending(samplePending({ revisionId: "to-seal", documentId: "doc-2" }));
+      await journal.putDeferred(sampleDeferred("doc-3", "r3"));
+      const intent = await journal.putIntent({ kind: "commit", documentId: "doc-1", steps: {} });
+      const kept = await journal.putIntent({ kind: "merge", documentId: "doc-3", steps: {} });
+      const anchor = new Uint8Array(16).fill(4);
+      await journal.transact({
+        cursor: { seq: 5n, anchor },
+        putDocuments: [sampleDocument({ revisionId: "acknowledged", binding: { spelling: "note.md", fileKey: "note.md", seen: "bb" }, absence: null })],
+        removePending: ["acknowledged", "never-added"],
+        sealPending: ["to-seal"],
+        addPending: [samplePending({ revisionId: "next", baseRevisionId: "acknowledged" })],
+        removeDeferred: ["doc-3"],
+        putDeferred: [sampleDeferred("doc-4", "r4")],
+        putConflicts: [sampleConflict("c1")],
+        removeIntents: [intent],
+      });
+      const reopened = await reopen();
+      assertEqual(await reopened.getCursor(), 5n, "cursor");
+      assertEqual(await reopened.getCursorAnchor(), new Uint8Array(16).fill(4), "cursor anchor");
+      assertEqual(await reopened.getDocument("doc-1"), sampleDocument({ revisionId: "acknowledged", binding: { spelling: "note.md", fileKey: "note.md", seen: "bb" }, absence: null }), "document");
+      assertEqual(
+        await reopened.listPending(),
+        [samplePending({ revisionId: "to-seal", documentId: "doc-2", sealed: true }), samplePending({ revisionId: "next", baseRevisionId: "acknowledged" })],
+        "pending operations, the sealed one in its place",
+      );
+      assertEqual(await reopened.listDeferred(), [sampleDeferred("doc-4", "r4")], "deferrals");
+      assertEqual(await reopened.listConflicts(), [sampleConflict("c1")], "conflict log");
+      assertEqual((await reopened.listIntents()).map((entry) => entry.id), [kept], "intents");
+    },
+  },
+  {
+    name: "resets the cursor backwards in a transaction only when asked to",
+    run: async (journal, reopen) => {
+      await journal.setCursor(9n);
+      await assertRejects(journal.transact({ cursor: { seq: 4n } }), RangeError, "a transaction moving the cursor backwards");
+      await journal.transact({ cursor: { seq: 4n, reset: true } });
+      assertEqual(await (await reopen()).getCursor(), 4n, "cursor after a reset in a transaction");
+    },
+  },
+  {
+    name: "keeps at most one pending operation per document through transactions",
+    run: async (journal, reopen) => {
+      await journal.transact({ addPending: [samplePending({ revisionId: "first" })] });
+      await assertRejects(journal.transact({ addPending: [samplePending({ revisionId: "second" })] }), Error, "a second operation for the document");
+      await assertRejects(
+        journal.transact({ addPending: [samplePending({ revisionId: "x", documentId: "doc-2" }), samplePending({ revisionId: "y", documentId: "doc-2" })] }),
+        Error,
+        "two operations for one document in one transaction",
+      );
+      // Replacing the document's operation in one transaction is allowed.
+      await journal.transact({ removePending: ["first"], addPending: [samplePending({ revisionId: "second" })] });
+      // addPending alone does not enforce it (the engine before refactor step R5).
+      await journal.addPending(samplePending({ revisionId: "legacy" }));
+      assertEqual((await (await reopen()).listPending()).map((operation) => operation.revisionId), ["second", "legacy"], "pending operations");
+    },
+  },
+  // Injected failures: each transaction below has a part that fails after
+  // others were issued, so a journal that is not all-or-nothing keeps them.
+  ...(
+    [
+      ["an already pending revision id", { addPending: [samplePending({ revisionId: "pending" })] }],
+      ["a seal of an operation that is not pending", { sealPending: ["unknown"] }],
+      ["a second pending operation for a document", { addPending: [samplePending({ revisionId: "another", documentId: "doc-1" })] }],
+      ["a cursor moving backwards", { cursor: { seq: 1n } }],
+      // Not structured-cloneable: the store itself refuses it (DataCloneError).
+      ["a value the journal cannot store", { putConflicts: [sampleConflict("c9", { path: (() => "x") as unknown as string })] }],
+    ] as const
+  ).map(
+    ([failure, failing]): JournalConformanceCase => ({
+      name: `changes nothing when a transaction fails on ${failure}`,
+      run: async (journal, reopen) => {
+        await journal.setCursor(2n);
+        await journal.putDocument(sampleDocument());
+        await journal.addPending(samplePending({ revisionId: "pending" }));
+        await journal.addPending(samplePending({ revisionId: "other", documentId: "doc-3" }));
+        await journal.putDeferred(sampleDeferred("doc-2", "r2"));
+        await journal.putConflict(sampleConflict("c1"));
+        const intent = await journal.putIntent({ kind: "merge", documentId: "doc-2", steps: {} });
+        const before = await contents(journal);
+        const changes: JournalChanges = {
+          cursor: { seq: 6n },
+          putDocuments: [sampleDocument({ revisionId: "changed", binding: null, absence: "user-deleted" })],
+          removePending: ["other"],
+          removeDeferred: ["doc-2"],
+          putDeferred: [sampleDeferred("doc-5", "r5")],
+          putConflicts: [sampleConflict("c2")],
+          removeIntents: [intent],
+        };
+        let failed = false;
+        try {
+          await journal.transact({ ...changes, ...failing });
+        } catch {
+          failed = true;
+        }
+        if (!failed) throw new JournalConformanceFailure(`a transaction with ${failure} succeeded`);
+        const reopened = await reopen();
+        assertEqual(await contents(reopened), before, "journal after the failed transaction");
+        // The same transaction without the failing part goes through.
+        await reopened.transact(changes);
+        if ((await contents(reopened)) === before) throw new JournalConformanceFailure("the transaction without the failing part changed nothing");
+      },
+    }),
+  ),
 ];
+
+/** Everything a journal holds, in comparable form. */
+async function contents(journal: Journal): Promise<string> {
+  return describeValue({
+    cursor: await journal.getCursor(),
+    anchor: await journal.getCursorAnchor(),
+    documents: await journal.listDocuments(),
+    pending: await journal.listPending(),
+    deferred: (await journal.listDeferred()).sort((a, b) => (a.revision.documentId < b.revision.documentId ? -1 : 1)),
+    conflicts: await journal.listConflicts(),
+    intents: await journal.listIntents(),
+  });
+}

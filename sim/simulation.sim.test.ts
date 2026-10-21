@@ -28,6 +28,12 @@ import { shrink } from "./shrink";
 
 const environment = simEnvironment();
 const suites = new Set(environment.suites);
+/**
+ * Marks a seed's case recorded with the faithful filesystem: the regressions
+ * suite replays cases without it, so such a case replays only with
+ * `SIM_SEED=N SIM_FAITHFUL_FS=1`.
+ */
+const faithfulSuffix = environment.faithfulFilesystem ? "-faithful-fs" : "";
 
 /** The last lines of a trace, enough to see how a failure came about. */
 function tail(trace: readonly string[], lines = 80): string {
@@ -69,7 +75,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     // Without engine users (SIM_ENGINES=0) `engines` stays unset: one engine
     // only pulls, and a recorded case replays the same way.
     const engines = environment.engines === 0 ? undefined : environment.engines;
-    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff };
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
     if (result.violations.length === 0) return;
@@ -80,7 +86,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
-    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
+    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}${faithfulSuffix}`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
 
     expect.fail(
       [
@@ -89,7 +95,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
         `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
         describeViolations(final),
         `Regression case written to ${written}.`,
-        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}`,
+        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}${environment.faithfulFilesystem ? " SIM_FAITHFUL_FS=1" : ""}`,
         "Trace of the minimized schedule (last lines):",
         tail(final.trace),
       ].join("\n"),
@@ -104,7 +110,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
   it.each(environment.seeds)("seed %i keeps every invariant while retention purges", async (seed) => {
     const engines = environment.engines === 0 ? undefined : environment.engines;
-    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true };
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true, faithfulFilesystem: environment.faithfulFilesystem };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     purged.push(...result.purged);
     console.log(`seed ${String(seed)} with retention (${options.platforms.join(", ")} path rules): ${String(result.purged.length)} revisions purged, ${summarize(result.trace)}`);
@@ -115,7 +121,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
     const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
-    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}-retention`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
+    const written = await new Control(environment.controlUrl).report({ name: `seed-${String(seed)}-retention${faithfulSuffix}`, seed, clients: options.clients, engines: options.engines, commitRetryBackoff: options.commitRetryBackoff, violations: final.violations, steps });
 
     expect.fail(
       [
@@ -124,7 +130,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
         `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
         describeViolations(final),
         `Regression case written to ${written}.`,
-        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}`,
+        `Replay with: make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}${environment.faithfulFilesystem ? " SIM_FAITHFUL_FS=1" : ""}`,
         "Trace of the minimized schedule (last lines):",
         tail(final.trace),
       ].join("\n"),

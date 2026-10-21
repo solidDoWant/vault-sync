@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
+import { pathPool } from "./client";
 import { EngineUser } from "./engine-user";
 import { checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
 
@@ -284,7 +285,7 @@ describe("checkPhantomDeletes", () => {
       const vault = new InMemoryVault();
       const journal = new InMemoryJournal();
       const ledger = new UserLedger();
-      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, touched: () => undefined, serverSeq: () => 1n });
+      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, touched: () => undefined, serverSeq: () => 1n, pathPool });
       await vault.write("a.md", encode("aa"));
       await journal.putDocument({ documentId: "d1", path: "a.md", revisionId: "r1", seq: 1n, baseHash: "aa", size: 2n, kind: "text", deleted: false });
       await user.rename("a.md", "b.md");

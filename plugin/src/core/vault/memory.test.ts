@@ -4,7 +4,7 @@ import shared from "../../../../testdata/paths/vectors.json";
 import { sha256Hex } from "../hash";
 import { isVaultError, type VaultAdapter, type VaultEvent, type VaultListener } from "./adapter";
 import { ConformanceFailure, runConformanceCase, vaultAdapterConformance, type ConformanceCase } from "./conformance";
-import { InMemoryVault } from "./memory";
+import { InMemoryVault, type InodeEvent } from "./memory";
 
 const fast = { eventTimeoutMs: 200, quietPeriodMs: 10 };
 
@@ -170,6 +170,176 @@ describe("InMemoryVault", () => {
         });
       });
     }
+  });
+
+  // Faithful filesystem (docs/design/engine-path-ownership.md §3.1, step R2):
+  // the platform's own name equivalence F decides which spellings are one
+  // file, not the server's path key. The expectations are written out per
+  // case from what NTFS and APFS do, not derived from the vault's key.
+  describe("faithful filesystem", () => {
+    const faithful = (platform: "posix" | "windows" | "macos") => new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" });
+    const nfc = "Café.md";
+    const nfd = "Café.md";
+
+    for (const platform of ["posix", "windows", "macos"] as const) {
+      describe(`VaultAdapter conformance (${platform} path rules)`, () => {
+        for (const testCase of vaultAdapterConformance) {
+          it(testCase.name, async () => {
+            await runConformanceCase(
+              testCase,
+              () => {
+                const vault = faithful(platform);
+                return { adapter: vault, renameFolder: (from: string, to: string) => vault.renameFolder(from, to) };
+              },
+              fast,
+            );
+          });
+        }
+      });
+    }
+
+    // [first, second, one file under windows rules, one file under macos rules]
+    const pairs: [string, string, boolean, boolean][] = [
+      ["a.md", "A.md", true, true],
+      ["Straße.md", "STRASSE.md", false, false],
+      ["straße.md", "Straße.md", true, true],
+      [nfc, nfd, false, true],
+      [nfc, "CAFÉ.md", true, true],
+      ["ı.md", "I.md", true, true],
+      ["i.md", "ı.md", true, true],
+      ["ß.md", "SS.md", false, false],
+    ];
+    for (const [first, second, windows, macos] of pairs) {
+      for (const [platform, one] of [
+        ["windows", windows],
+        ["macos", macos],
+        ["posix", first === second],
+      ] as const) {
+        it(`holds ${JSON.stringify(first)} and ${JSON.stringify(second)} as ${one ? "one file" : "two files"} under ${platform} rules`, async () => {
+          const vault = faithful(platform);
+          await vault.write(first, new Uint8Array([1]));
+          expect((await vault.stat(second)) !== null).toBe(one);
+          await vault.write(second, new Uint8Array([2]));
+          expect((await vault.list()).sort()).toEqual(one ? [first] : [first, second].sort());
+          expect(await vault.read(first)).toEqual(new Uint8Array([one ? 2 : 1]));
+        });
+      }
+    }
+
+    it("renames a file onto a spelling that is another file only if that file is absent, under windows rules", async () => {
+      const vault = faithful("windows");
+      await vault.write("Straße.md", new Uint8Array([1]));
+      await vault.write("STRASSE.md", new Uint8Array([2]));
+      await expect(vault.rename("Straße.md", "STRASSE.md")).rejects.toSatisfy((error) => isVaultError(error, "already-exists"));
+      await vault.delete("STRASSE.md");
+      await vault.rename("Straße.md", "STRASSE.md");
+      expect(await vault.list()).toEqual(["STRASSE.md"]);
+      expect(await vault.read("strasse.md")).toEqual(new Uint8Array([1]));
+      await expect(vault.read("straße.md")).rejects.toSatisfy((error) => isVaultError(error, "not-found"));
+    });
+
+    it("keeps folders apart by the filesystem's names, not the path key, under macos rules", async () => {
+      const vault = faithful("macos");
+      await vault.write("straße/a.md", new Uint8Array([1]));
+      await vault.write("STRASSE", new Uint8Array([2]));
+      await vault.write("STRASSE2/b.md", new Uint8Array([3]));
+      await expect(vault.write("Straße", new Uint8Array([4]))).rejects.toSatisfy((error) => isVaultError(error, "path-conflict"));
+      await expect(vault.write("strasse/c.md", new Uint8Array([4]))).rejects.toSatisfy((error) => isVaultError(error, "path-conflict"));
+      await expect(vault.renameFolder("STRASSE", "x")).rejects.toSatisfy((error) => isVaultError(error, "not-found"));
+      await vault.renameFolder("STRAßE", "moved");
+      expect((await vault.list()).sort()).toEqual(["STRASSE", "STRASSE2/b.md", "moved/a.md"]);
+    });
+
+    it("keeps the folded behaviour by default", async () => {
+      const vault = new InMemoryVault({ pathRules: { platform: "windows" } });
+      await vault.write("Straße.md", new Uint8Array([1]));
+      await vault.write(nfc, new Uint8Array([1]));
+      expect((await vault.stat("STRASSE.md")) !== null).toBe(true);
+      expect((await vault.stat(nfd)) !== null).toBe(true);
+    });
+  });
+
+  // Harness inodes (docs/design/engine-path-ownership.md §5.4): a create
+  // mints an inode, a rename by anyone and a write keep it, a delete ends it.
+  describe("harness inodes", () => {
+    it("mints an inode on create, keeps it across writes and renames, and ends it on delete", async () => {
+      const vault = new InMemoryVault({ pathRules: { platform: "windows" } });
+      expect(vault.inodeOf("a.md")).toBeUndefined();
+      await vault.write("a.md", new Uint8Array([1]));
+      await vault.write("b.md", new Uint8Array([1]));
+      const a = vault.inodeOf("a.md");
+      const b = vault.inodeOf("b.md");
+      expect(a).toBeDefined();
+      expect(b).toBeDefined();
+      expect(a).not.toBe(b);
+      expect(vault.inodeOf("A.MD")).toBe(a);
+      await vault.write("a.md", new Uint8Array([2]));
+      expect(vault.inodeOf("a.md")).toBe(a);
+      await vault.rename("a.md", "A.md");
+      expect(vault.inodeOf("A.md")).toBe(a);
+      await vault.rename("A.md", "notes/c.md");
+      expect(vault.inodeOf("notes/c.md")).toBe(a);
+      await vault.renameFolder("notes", "Other");
+      expect(vault.inodeOf("Other/c.md")).toBe(a);
+      expect(vault.inodeOf("notes/c.md")).toBeUndefined();
+      await vault.delete("Other/c.md");
+      expect(vault.inodeOf("Other/c.md")).toBeUndefined();
+      await vault.write("Other/c.md", new Uint8Array([1]));
+      const recreated = vault.inodeOf("Other/c.md");
+      expect(recreated).toBeDefined();
+      expect([a, b]).not.toContain(recreated);
+    });
+
+    it("taps every change with its inode and the actor whose handle made it", async () => {
+      const vault = new InMemoryVault({ pathRules: { platform: "macos" }, filesystem: "faithful" });
+      const user = vault.handle("user");
+      const engine = vault.handle("engine");
+      const tapped: InodeEvent[] = [];
+      const watched: VaultEvent[] = [];
+      vault.tapInodes((event) => tapped.push(event));
+      engine.watch((event) => watched.push(event));
+      await user.write("a.md", new Uint8Array([1]));
+      const inode = vault.inodeOf("a.md") ?? -1;
+      await engine.write("a.md", new Uint8Array([2]));
+      await engine.rename("a.md", "b.md");
+      await expect(engine.rename("missing.md", "c.md")).rejects.toSatisfy((error) => isVaultError(error, "not-found"));
+      // A change on the vault itself, right after the engine's refused one, is the user's.
+      await vault.delete("b.md");
+      await vault.write("c.md", new Uint8Array([3]));
+      const other = vault.inodeOf("c.md") ?? -1;
+      await engine.delete("c.md");
+      expect(tapped).toEqual([
+        { type: "create", path: "a.md", inode, actor: "user" },
+        { type: "modify", path: "a.md", inode, actor: "engine" },
+        { type: "rename", path: "b.md", oldPath: "a.md", inode, actor: "engine" },
+        { type: "delete", path: "b.md", inode, actor: "user" },
+        { type: "create", path: "c.md", inode: other, actor: "user" },
+        { type: "delete", path: "c.md", inode: other, actor: "engine" },
+      ]);
+      // What a handle's watchers see is the plain event: the engine never sees inodes or actors.
+      expect(watched).toEqual([
+        { type: "create", path: "a.md" },
+        { type: "modify", path: "a.md" },
+        { type: "rename", path: "b.md", oldPath: "a.md" },
+        { type: "delete", path: "b.md" },
+        { type: "create", path: "c.md" },
+        { type: "delete", path: "c.md" },
+      ]);
+    });
+
+    it("attributes a folder rename's moves to the handle that made it", async () => {
+      const vault = new InMemoryVault();
+      await vault.write("n/a.md", new Uint8Array([1]));
+      await vault.write("n/b.md", new Uint8Array([2]));
+      const inodes = [vault.inodeOf("n/a.md"), vault.inodeOf("n/b.md")];
+      const tapped: InodeEvent[] = [];
+      vault.tapInodes((event) => tapped.push(event));
+      await vault.handle("engine").renameFolder("n", "m");
+      expect(tapped).toEqual([
+        { type: "rename", path: "m/a.md", oldPath: "n/a.md", inode: inodes[0], actor: "engine" },
+        { type: "rename", path: "m/b.md", oldPath: "n/b.md", inode: inodes[1], actor: "engine" },
+      ]);
+    });
   });
 
   it("uses the injected clock for mtimes", async () => {

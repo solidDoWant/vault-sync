@@ -55,7 +55,7 @@ test-integration-postgres14: ## Run the store/migration integration tests and th
 	./scripts/test-integration-postgres14.sh
 
 .PHONY: test-sim
-test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_ENGINES, SIM_SEED, SIM_REGRESSION_DIR).
+test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_ENGINES, SIM_SEED, SIM_FAITHFUL_FS, SIM_REGRESSION_DIR).
 	./scripts/test-sim.sh
 
 .PHONY: test-e2e
