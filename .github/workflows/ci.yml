@@ -98,6 +98,8 @@ jobs:
           # release (where this change branched from master) from history.
           fetch-depth: 0
       - uses: ./.github/actions/nix-dev-shell
+      # The test stack's images from the actions cache (#727).
+      - uses: ./.github/actions/test-images
       - name: Integration tests
         run: nix develop -c make test-integration
 
@@ -116,6 +118,8 @@ jobs:
           # The rolling-upgrade test builds the previous release from history.
           fetch-depth: 0
       - uses: ./.github/actions/nix-dev-shell
+      # The test stack's images from the actions cache (#727).
+      - uses: ./.github/actions/test-images
       - name: Integration tests on PostgreSQL 14
         run: nix develop -c make test-integration-postgres14
 
@@ -151,6 +155,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/nix-dev-shell
+      # The test stack's images from the actions cache (#727).
+      - uses: ./.github/actions/test-images
       - name: Simulation
         run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
 
@@ -202,6 +208,8 @@ jobs:
       # xvfb, exactly as `make test-e2e` runs in the dev VM.
       - if: runner.os == 'Linux'
         uses: ./.github/actions/nix-dev-shell
+      - if: runner.os == 'Linux'
+        uses: ./.github/actions/test-images
       - if: runner.os == 'Linux'
         name: Plugin e2e (Linux, Nix dev shell)
         run: nix develop -c make test-e2e
