@@ -14,7 +14,7 @@ import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState,
 import { InMemoryJournal } from "../journal/memory";
 import { isVaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
-import type { PathPlatform, PathRules } from "../vaultpath/platform";
+import { unmaterializableReason, type PathPlatform, type PathRules } from "../vaultpath/platform";
 import { SyncEngine, type PushSummary, type UnmaterializableDocument } from "./engine";
 import type { MergeHook, MergeRequest } from "./merge";
 import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
@@ -629,6 +629,7 @@ export type WorldCommand =
   | { type: "remote-rename"; document: number; path: number }
   | { type: "remote-delete"; document: number }
   | { type: "pull" }
+  | { type: "edit-during-pull"; file: number }
   | { type: "push" }
   | { type: "crash"; write: number }
   | { type: "restore"; fraction: number }
@@ -636,10 +637,14 @@ export type WorldCommand =
 
 /**
  * The paths commands pick from: case variants, NFC/NFD spellings, ß/SS
- * (one path key, two files on every platform), and a folder whose name is
- * also a file name.
+ * (one path key, two files on every platform), a folder whose name is also a
+ * file name, and names Windows cannot hold (a forbidden character, a trailing
+ * dot): on `windows` a remote create or rename onto one makes the document
+ * unmaterializable there, and the user cannot create one (#587). The colon is
+ * not second: `a:b.md` is a drive prefix the server refuses on every platform
+ * (SPEC.md §6).
  */
-export const worldPaths: readonly string[] = ["a.md", "A.md", "b.md", "Café.md", "Café.md", "Straße.md", "STRASSE.md", "x", "x/a.md", "X/b.md", "y/x.md"];
+export const worldPaths: readonly string[] = ["a.md", "A.md", "b.md", "Café.md", "Café.md", "Straße.md", "STRASSE.md", "x", "x/a.md", "X/b.md", "y/x.md", "no:te.md", "b.md."];
 
 /** The remote device's id: its commits are not device A's. */
 export const remoteDeviceId = "device-remote";
@@ -770,6 +775,14 @@ export class PropertyWorld {
       case "pull":
         await this.run(() => this.engine.pull());
         break;
+      case "edit-during-pull": {
+        // The user saves while a pull is under way, before the engine has
+        // handled the save's vault event (#587).
+        const pulling = this.run(() => this.engine.pull());
+        await this.userEdit(command.file);
+        await pulling;
+        break;
+      }
       case "push":
         await this.run(() => this.engine.push());
         break;
@@ -816,8 +829,15 @@ export class PropertyWorld {
   /** INV-9 at quiescence: the problems found, empty if the device converged with the server. */
   async convergence(): Promise<string[]> {
     const problems: string[] = [];
-    const vault = [...(await files(this.vault))].map(([path, content]) => `${path}=${content}`).sort(byText);
-    const server = [...this.server.liveFiles()].map(([path, content]) => `${path}=${content}`).sort(byText);
+    // Modulo unmaterializable (INV-9): a live document whose path this platform
+    // cannot hold has no file here, and the earlier version of one, where the
+    // device kept it, is no copy of the server's.
+    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && unmaterializableReason(document.path, this.pathRules) !== undefined ? [document.localPath] : [])));
+    const vault = [...(await files(this.vault))].filter(([path]) => !kept.has(path)).map(([path, content]) => `${path}=${content}`).sort(byText);
+    const server = [...this.server.liveFiles()]
+      .filter(([path]) => unmaterializableReason(path, this.pathRules) === undefined)
+      .map(([path, content]) => `${path}=${content}`)
+      .sort(byText);
     if (vault.join("\n") !== server.join("\n")) problems.push(`vault ${JSON.stringify(vault)} differs from the server's live documents ${JSON.stringify(server)}`);
     const pending = await this.journal.listPending();
     if (pending.length > 0) problems.push(`pending operations left: ${pending.map((operation) => `${operation.documentId}@${operation.path}`).join(", ")}`);

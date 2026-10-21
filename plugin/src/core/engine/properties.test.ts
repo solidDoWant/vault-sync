@@ -5,24 +5,39 @@
 // harness's oracle (inodes, content origins, bindings) is independent of the
 // engine's journal.
 //
-// Each property that the engine violates today is `it.fails` with the issue
-// that tracks its class. Flipping one to `it` is the refactor's progress
-// measure (§9.2): an `it.fails` whose property starts to hold fails the suite.
+// Each property that the engine violates today is a `knownFailure` with the
+// issue that tracks its class, pinned to a minimal counterexample and the
+// violation it fails with; the pinned case runs first, at any seed. Flipping
+// one to `holds` is the refactor's progress measure (§9.2): a known failure
+// whose property starts to hold fails the suite. A run that throws anything
+// but a PropertyViolation (a TypeError, a broken harness invariant) is a
+// harness bug and fails every property, known failures included, so a broken
+// harness cannot pass for an engine violation (#587).
 //
 // Runs are deterministic: a fixed seed and bounded runs (§9.3's 2,000 cases
-// per PR, up to 40 commands each), no wall clock. To explore, change `seed`
-// or `runs` locally; fast-check prints the counterexample and its replay
-// path.
+// per PR, up to 40 commands each), no wall clock. VAULT_SYNC_PROPERTY_RUNS and
+// VAULT_SYNC_PROPERTY_SEED, read by vitest.config.ts, change both (`make
+// test-properties`: 100,000 cases a night); fast-check prints the
+// counterexample and its replay path.
 
 import fc from "fast-check";
-import { describe, expect, it } from "vitest";
+import { describe, expect, inject, it } from "vitest";
 
 import type { PathPlatform } from "../vaultpath/platform";
 import { PropertyWorld, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
 
-const runs = 2000;
-const seed = 563;
+declare module "vitest" {
+  export interface ProvidedContext {
+    /** The suite's size, from vitest.config.ts. */
+    properties: { runs: number; seed: number };
+  }
+}
+
+const prCases = 2000;
+const { runs, seed } = inject("properties");
 const maxCommands = 40;
+/** Five minutes per 2,000 cases. */
+const timeout = 300_000 * Math.max(1, runs / prCases);
 
 class Step implements fc.AsyncCommand<object, PropertyWorld> {
   constructor(readonly command: WorldCommand) {}
@@ -54,6 +69,7 @@ const steadyCommands: fc.Arbitrary<WorldCommand>[] = [
   fc.tuple(index, index).map(([document, path]) => ({ type: "remote-rename", document, path })),
   index.map((document) => ({ type: "remote-delete", document })),
   fc.constant({ type: "pull" }),
+  index.map((file) => ({ type: "edit-during-pull", file })),
   fc.constant({ type: "push" }),
   restore,
   index.map((revision) => ({ type: "purge", revision })),
@@ -89,62 +105,174 @@ function violations(world: PropertyWorld, property: PropertyId): string[] {
   return world.violations.filter((violation) => violation.property === property).map((violation) => `step ${String(violation.step)}: ${violation.message}`);
 }
 
-/** Asserts that `check` finds nothing after every run of `alphabet` (by default the full one, crashes included). */
-async function holds(check: (world: PropertyWorld, quiet: boolean) => Promise<string[]> | string[], alphabet = allCommands): Promise<void> {
-  await fc.assert(
-    fc.asyncProperty(platform, commands(alphabet), async (on, steps) => {
-      const { world, quiet } = await play(on, steps);
-      expect(await check(world, quiet)).toEqual([]);
-    }),
-    { seed, numRuns: runs, endOnFailure: false },
-  );
+type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6";
+
+/** The only error a property run may fail with: the property found what it checks for. */
+class PropertyViolation extends Error {
+  constructor(
+    readonly property: Property,
+    readonly found: readonly string[],
+  ) {
+    super(`${property} violated:\n${found.join("\n")}`);
+    this.name = "PropertyViolation";
+  }
 }
 
-describe("engine properties (design §9.3)", { timeout: 300_000 }, () => {
+/** One property: the arbitrary its cases come from and the check that returns what it finds wrong in a case. */
+interface Definition<T> {
+  property: Property;
+  cases: fc.Arbitrary<T>;
+  check: (input: T) => Promise<string[]>;
+}
+
+/** A property over `alphabet` (by default the full one, crashes included) whose `check` looks at the quiescent world. */
+function overWorld(property: Property, check: (world: PropertyWorld, quiet: boolean) => Promise<string[]> | string[], alphabet = allCommands): Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> {
+  return {
+    property,
+    cases: fc.tuple(platform, commands(alphabet)),
+    check: async ([on, steps]) => {
+      const { world, quiet } = await play(on, steps);
+      return await check(world, quiet);
+    },
+  };
+}
+
+/** fast-check's report of a run, with the error its counterexample failed with. */
+function report<T>(details: fc.RunDetails<T>): string {
+  const error = details.errorInstance;
+  const message = error instanceof Error ? error.message : String(error);
+  return `${fc.defaultReportMessage(details) ?? "no counterexample"}${details.failed ? `\nGot ${message}` : ""}`;
+}
+
+/**
+ * Searches for a counterexample, trying `examples` first. Any error but a
+ * PropertyViolation thrown in any run (shrinking included) fails the test
+ * here: it is a harness bug, and would otherwise let a known failure pass
+ * without an engine violation.
+ */
+async function search<T>(definition: Definition<T>, examples: T[] = []): Promise<fc.RunDetails<[T]>> {
+  const harnessErrors: unknown[] = [];
+  const details = await fc.check(
+    fc.asyncProperty(definition.cases, async (input) => {
+      let found: string[];
+      try {
+        found = await definition.check(input);
+      } catch (error) {
+        harnessErrors.push(error);
+        throw error;
+      }
+      if (found.length > 0) throw new PropertyViolation(definition.property, found);
+    }),
+    { seed, numRuns: runs, endOnFailure: false, examples: examples.map((example): [T] => [example]) },
+  );
+  const [first] = harnessErrors;
+  if (first !== undefined) {
+    const thrown = first instanceof Error ? (first.stack ?? first.message) : JSON.stringify(first);
+    expect.fail(`the harness threw ${String(harnessErrors.length)} time(s) during ${definition.property}, first:\n${thrown}\n\n${report(details)}`);
+  }
+  return details;
+}
+
+/** The property holds: fast-check finds no counterexample. */
+async function holds<T>(definition: Definition<T>): Promise<void> {
+  const details = await search(definition);
+  if (details.failed) expect.fail(report(details));
+}
+
+/** A known failure's pinned minimal counterexample and the violation it fails with. */
+interface Pin<T> {
+  example: T;
+  violation: RegExp;
+}
+
+/**
+ * The engine violates the property today. Its pinned counterexample runs
+ * first, whatever the seed, and must fail with a violation of this property
+ * that matches the pin. A known failure whose property holds, on the pinned
+ * case and every generated one, fails, so that it is flipped to `holds`.
+ */
+async function knownFailure<T>(definition: Definition<T>, pin: Pin<T>): Promise<void> {
+  const details = await search(definition, [pin.example]);
+  if (!details.failed) expect.fail(`${definition.property} holds now: make it \`holds\` (${String(details.numRuns)} cases, seed ${String(seed)})`);
+  const error = details.errorInstance;
+  if (!(error instanceof PropertyViolation) || error.property !== definition.property) expect.fail(`${definition.property} failed with something other than its own violation:\n${report(details)}`);
+  if (!error.found.some((found) => pin.violation.test(found))) expect.fail(`${definition.property}'s pinned counterexample no longer fails with ${String(pin.violation)}; re-pin it to the counterexample below:\n${report(details)}`);
+}
+
+/** A world property's case: the platform and the commands, as data. */
+function scripted(on: PathPlatform, ...list: WorldCommand[]): [PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>] {
+  return [on, list.map((command) => new Step(command))];
+}
+
+const p1 = overWorld("P1", (world) => violations(world, "P1"));
+const p2 = overWorld("P2", (world) => violations(world, "P2"));
+const p3 = overWorld("P3", (world) => violations(world, "P3"));
+const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
+  property: "P4",
+  cases: fc.tuple(platform, fc.array(fc.oneof(...steadyCommands), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
+  check: async ([on, list, write]) => {
+    const baseline = new PropertyWorld(on);
+    for (const command of list) await baseline.apply(command);
+    await baseline.quiesce();
+    const crashed = new PropertyWorld(on);
+    crashed.armCrash(write);
+    for (const command of list) await crashed.apply(command);
+    await crashed.quiesce();
+    const [without, crashing] = [await baseline.outcome(), await crashed.outcome()];
+    return without === crashing ? [] : [`a crash at journal write ${String(write)} reaches ${crashing}, the run without it ${without}`];
+  },
+};
+const p5 = overWorld("P5", (world) => world.lostWrites());
+const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
+
+describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
   // Fails today (#545, flips in R5 #569): a note renamed or edited after a remote delete of it was committed comes back as a new document, not as the original.
-  it.fails("P1: a document's committed content comes from its own file", async () => {
-    await holds((world) => violations(world, "P1"));
+  it("P1: a document's committed content comes from its own file (known failure)", { timeout }, async () => {
+    await knownFailure(p1, {
+      example: scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-delete", document: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 1 }),
+      violation: /^step \d+: create of id-\d+ at "A\.md" \(seq \d+\) from inode 1, bound to id-\d+$/,
+    });
   });
 
   // P2 provenance: INV-5 and INV-6 (PO-6/7) on inodes.
   // Fails today (the crash-lost-rename class of #531 and #550; flips in R5 #569): a rename held only in memory is lost to a crash, so it is committed as a delete of the document plus a new one.
-  it.fails("P2: tombstones come from user deletes, resurrections from user changes", async () => {
-    await holds((world) => violations(world, "P2"));
+  it("P2: tombstones come from user deletes, resurrections from user changes (known failure)", { timeout }, async () => {
+    await knownFailure(p2, {
+      example: scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "crash", write: 1 }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "user-create", path: 1 }),
+      violation: /^step \d+: tombstone of r-1 at "a\.md" \(seq \d+\) without the user deleting its file$/,
+    });
   });
 
   // P3 exclusivity: INV-1 and INV-2 after every command.
   // Fails today (flips in R7 #571): after a database restore the journal keeps a document the server lost live at a path key another document then claims.
-  it.fails("P3: no two live documents or live outboxes claim one path key", async () => {
-    await holds((world) => violations(world, "P3"));
+  it("P3: no two live documents or live outboxes claim one path key (known failure)", { timeout }, async () => {
+    await knownFailure(p3, {
+      example: scripted("posix", { type: "remote-create", path: 5 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }),
+      violation: /^step \d+: live documents r-1@"Straße\.md" and r-4@"STRASSE\.md" collide under K$/,
+    });
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
   // Fails today (flips in R8 #572; its minimal case today is the crash-lost rename of P2, R5 #569): a crash in a pull leaves another quiescent vault and server than the run without it.
-  it.fails("P4: a crash at any journal write reaches the state a run without it reaches", async () => {
-    await fc.assert(
-      fc.asyncProperty(platform, fc.array(fc.oneof(...steadyCommands), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 }), async (on, list, write) => {
-        const baseline = new PropertyWorld(on);
-        for (const command of list) await baseline.apply(command);
-        await baseline.quiesce();
-        const crashed = new PropertyWorld(on);
-        crashed.armCrash(write);
-        for (const command of list) await crashed.apply(command);
-        await crashed.quiesce();
-        expect(await crashed.outcome()).toEqual(await baseline.outcome());
-      }),
-      { seed, numRuns: runs, endOnFailure: false },
-    );
+  it("P4: a crash at any journal write reaches the state a run without it reaches (known failure)", { timeout }, async () => {
+    await knownFailure(p4, {
+      example: ["posix", [{ type: "user-create", path: 4 }, { type: "user-create", path: 3 }, { type: "push" }, { type: "remote-edit", document: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }], 12],
+      violation: /^a crash at journal write 12 reaches \{"vault":\[.*"a\.md=user 1"\].*the run without it \{"vault":\[.*"a\.md=remote 4"\]/,
+    });
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
-  it("P5: every user write is in the vault or was accepted by the server", async () => {
-    await holds((world) => world.lostWrites());
+  it("P5: every user write is in the vault or was accepted by the server", { timeout }, async () => {
+    await holds(p5);
   });
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.
   // Fails today (#583, blocked by R7 #571; PO-11): the engine's own file of a remote note holds the folder that note's next path needs, and the revision stays deferred (path-conflict) for good.
-  it.fails("P6: the device converges with the server within bounded rounds", async () => {
-    await holds(async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
+  it("P6: the device converges with the server within bounded rounds (known failure)", { timeout }, async () => {
+    await knownFailure(p6, {
+      example: scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
+      violation: /^deferred revisions left: r-2 \(path-conflict\)$/,
+    });
   });
 });
