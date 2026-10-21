@@ -4,16 +4,19 @@ import (
 	"bytes"
 	"crypto/ecdh"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/argon2"
@@ -132,6 +135,49 @@ type rejectedVector struct {
 	Sealed     string `json:"sealed"`
 }
 
+type keySlotVector struct {
+	Name                string `json:"name"`
+	RecipientPrivateKey string `json:"recipient_private_key"`
+	RecipientPublicKey  string `json:"recipient_public_key"`
+	EphemeralPrivateKey string `json:"ephemeral_private_key"`
+	Nonce               string `json:"nonce"`
+	VaultID             string `json:"vault_id"`
+	Epoch               uint64 `json:"epoch"`
+	RecipientKind       string `json:"recipient_kind"`
+	RecipientID         string `json:"recipient_id"`
+	EpochKey            string `json:"epoch_key"`
+	AD                  string `json:"ad"`
+	Sealed              string `json:"sealed"`
+}
+
+func (vector keySlotVector) slot() KeySlot {
+	return KeySlot{VaultID: vector.VaultID, Epoch: vector.Epoch, RecipientKind: RecipientKind(vector.RecipientKind), RecipientID: vector.RecipientID}
+}
+
+type keyCommitmentVector struct {
+	Name       string `json:"name"`
+	EpochKey   string `json:"epoch_key"`
+	VaultID    string `json:"vault_id"`
+	Epoch      uint64 `json:"epoch"`
+	Commitment string `json:"commitment"`
+}
+
+// rejectedKeySlotVector is a key slot that must not open as the slot it
+// names.
+type rejectedKeySlotVector struct {
+	Name                string `json:"name"`
+	RecipientPrivateKey string `json:"recipient_private_key"`
+	VaultID             string `json:"vault_id"`
+	Epoch               uint64 `json:"epoch"`
+	RecipientKind       string `json:"recipient_kind"`
+	RecipientID         string `json:"recipient_id"`
+	Sealed              string `json:"sealed"`
+}
+
+func (vector rejectedKeySlotVector) slot() KeySlot {
+	return KeySlot{VaultID: vector.VaultID, Epoch: vector.Epoch, RecipientKind: RecipientKind(vector.RecipientKind), RecipientID: vector.RecipientID}
+}
+
 type vectorFile struct {
 	Description string             `json:"description"`
 	Standards   standardVectors    `json:"standards"`
@@ -142,6 +188,11 @@ type vectorFile struct {
 	BlobID      []blobIDVector     `json:"blob_id"`
 	Passphrase  []passphraseVector `json:"passphrase"`
 	Rejected    []rejectedVector   `json:"rejected"`
+
+	KeySlot                []keySlotVector         `json:"key_slot"`
+	KeyCommitment          []keyCommitmentVector   `json:"key_commitment"`
+	RejectedKeySlots       []rejectedKeySlotVector `json:"rejected_key_slots"`
+	RejectedKeyCommitments []keyCommitmentVector   `json:"rejected_key_commitments"`
 }
 
 // fixed returns n deterministic bytes for a test input named by label.
@@ -379,7 +430,146 @@ func generate(t *testing.T) vectorFile {
 
 	file.Rejected = rejected(t, file)
 
+	generateKeySlots(&file)
+
 	return file
+}
+
+const (
+	vectorVaultID      = "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e"
+	vectorOtherVaultID = "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f"
+	vectorUserID       = "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f"
+	vectorOtherUserID  = "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e10"
+	vectorEscrowID     = "escrow-2026"
+)
+
+// generateKeySlots adds the key slot and key commitment vectors, and the
+// slots and commitments that must be refused.
+//
+//nolint:funlen // One flat list of vectors reads best in one place.
+func generateKeySlots(file *vectorFile) {
+	slotCases := []struct {
+		name string
+		slot KeySlot
+	}{
+		{"user, epoch 1", KeySlot{VaultID: vectorVaultID, Epoch: 1, RecipientKind: RecipientUser, RecipientID: vectorUserID}},
+		{"escrow, epoch 2", KeySlot{VaultID: vectorVaultID, Epoch: 2, RecipientKind: RecipientEscrow, RecipientID: vectorEscrowID}},
+		{"user, epoch above 32 bits", KeySlot{VaultID: vectorVaultID, Epoch: 1 << 32, RecipientKind: RecipientUser, RecipientID: vectorUserID}},
+	}
+	for _, testCase := range slotCases {
+		recipient := fixed("key slot recipient "+testCase.name, KeySize)
+		ephemeral := fixed("key slot ephemeral "+testCase.name, KeySize)
+		nonce := fixed("key slot nonce "+testCase.name, NonceSize)
+		epochKey := fixed("key slot epoch key "+testCase.name, KeySize)
+		recipientPublicKey := must(PublicKey(recipient))
+		file.KeySlot = append(file.KeySlot, keySlotVector{
+			Name:                testCase.name,
+			RecipientPrivateKey: hex.EncodeToString(recipient),
+			RecipientPublicKey:  hex.EncodeToString(recipientPublicKey),
+			EphemeralPrivateKey: hex.EncodeToString(ephemeral),
+			Nonce:               hex.EncodeToString(nonce),
+			VaultID:             testCase.slot.VaultID,
+			Epoch:               testCase.slot.Epoch,
+			RecipientKind:       string(testCase.slot.RecipientKind),
+			RecipientID:         testCase.slot.RecipientID,
+			EpochKey:            hex.EncodeToString(epochKey),
+			AD:                  hex.EncodeToString(must(testCase.slot.AD())),
+			Sealed:              hex.EncodeToString(must(sealKeySlotWith(recipientPublicKey, ephemeral, nonce, epochKey, testCase.slot))),
+		})
+	}
+
+	commitmentCases := []struct {
+		name    string
+		vaultID string
+		epoch   uint64
+	}{
+		{"epoch 1", vectorVaultID, 1},
+		{"epoch 2", vectorVaultID, 2},
+		{"other vault, epoch 1", vectorOtherVaultID, 1},
+		{"epoch above 32 bits", vectorVaultID, 1 << 32},
+	}
+
+	commitmentKey := fixed("key commitment epoch key", KeySize)
+
+	for _, testCase := range commitmentCases {
+		file.KeyCommitment = append(file.KeyCommitment, keyCommitmentVector{
+			Name:       testCase.name,
+			EpochKey:   hex.EncodeToString(commitmentKey),
+			VaultID:    testCase.vaultID,
+			Epoch:      testCase.epoch,
+			Commitment: hex.EncodeToString(must(KeyCommitment(commitmentKey, testCase.vaultID, testCase.epoch))),
+		})
+	}
+
+	// Slots opened as another slot: the user slot of epoch 1 under every
+	// field changed.
+	userVec := file.KeySlot[0]
+	rejectSlot := func(name string, slot KeySlot, recipientPrivateKey string, sealed []byte) {
+		file.RejectedKeySlots = append(file.RejectedKeySlots, rejectedKeySlotVector{
+			Name:                name,
+			RecipientPrivateKey: recipientPrivateKey,
+			VaultID:             slot.VaultID,
+			Epoch:               slot.Epoch,
+			RecipientKind:       string(slot.RecipientKind),
+			RecipientID:         slot.RecipientID,
+			Sealed:              hex.EncodeToString(sealed),
+		})
+	}
+	userSlot := userVec.slot()
+	userSealed := must(hex.DecodeString(userVec.Sealed))
+	withSlot := func(change func(*KeySlot)) KeySlot {
+		slot := userSlot
+		change(&slot)
+
+		return slot
+	}
+
+	rejectSlot("other vault", withSlot(func(slot *KeySlot) { slot.VaultID = vectorOtherVaultID }), userVec.RecipientPrivateKey, userSealed)
+	rejectSlot("other epoch", withSlot(func(slot *KeySlot) { slot.Epoch = 2 }), userVec.RecipientPrivateKey, userSealed)
+	rejectSlot("epoch differing above 32 bits", withSlot(func(slot *KeySlot) { slot.Epoch = 1 + 1<<32 }), userVec.RecipientPrivateKey, userSealed)
+	rejectSlot("other recipient id", withSlot(func(slot *KeySlot) { slot.RecipientID = vectorOtherUserID }), userVec.RecipientPrivateKey, userSealed)
+	rejectSlot("other recipient kind, same id", withSlot(func(slot *KeySlot) { slot.RecipientKind = RecipientEscrow }), userVec.RecipientPrivateKey, userSealed)
+	rejectSlot("other recipient key", userSlot, hex.EncodeToString(fixed("key slot other recipient", KeySize)), userSealed)
+
+	escrowVec := file.KeySlot[1]
+	escrowSealed := must(hex.DecodeString(escrowVec.Sealed))
+	rejectSlot("escrow slot as a user slot", KeySlot{VaultID: escrowVec.VaultID, Epoch: escrowVec.Epoch, RecipientKind: RecipientUser, RecipientID: vectorUserID}, escrowVec.RecipientPrivateKey, escrowSealed)
+	rejectSlot("escrow slot, other escrow id", KeySlot{VaultID: escrowVec.VaultID, Epoch: escrowVec.Epoch, RecipientKind: RecipientEscrow, RecipientID: vectorEscrowID + "x"}, escrowVec.RecipientPrivateKey, escrowSealed)
+
+	// Boxes that authenticate under the slot's associated data but do not
+	// hold a 32-byte key.
+	recipient := must(hex.DecodeString(userVec.RecipientPrivateKey))
+	recipientPublicKey := must(PublicKey(recipient))
+	ephemeral := fixed("key slot rejected ephemeral", KeySize)
+	nonce := fixed("key slot rejected nonce", NonceSize)
+	userAD := must(userSlot.AD())
+
+	for _, size := range []int{0, KeySize - 1, KeySize + 1} {
+		rejectSlot(fmt.Sprintf("%d-byte key", size), userSlot, userVec.RecipientPrivateKey,
+			must(sealToWith(recipientPublicKey, ephemeral, nonce, fixed("key slot short key", size), userAD)))
+	}
+
+	// A sealed box of the epoch key without the key-slot label, as a box
+	// sealed for another purpose would be.
+	rejectSlot("associated data without the key-slot label", userSlot, userVec.RecipientPrivateKey,
+		must(sealToWith(recipientPublicKey, ephemeral, nonce, must(hex.DecodeString(userVec.EpochKey)), userAD[len(keySlotLabel):])))
+
+	// Commitments that must not verify.
+	commitVec := file.KeyCommitment[0]
+	commitment := must(hex.DecodeString(commitVec.Commitment))
+	rejectCommitment := func(name, epochKey, vaultID string, epoch uint64, commitment []byte) {
+		file.RejectedKeyCommitments = append(file.RejectedKeyCommitments, keyCommitmentVector{
+			Name: name, EpochKey: epochKey, VaultID: vaultID, Epoch: epoch, Commitment: hex.EncodeToString(commitment),
+		})
+	}
+
+	rejectCommitment("other epoch key", hex.EncodeToString(fixed("key commitment other epoch key", KeySize)), commitVec.VaultID, commitVec.Epoch, commitment)
+	rejectCommitment("other vault", commitVec.EpochKey, vectorOtherVaultID, commitVec.Epoch, commitment)
+	rejectCommitment("other epoch", commitVec.EpochKey, commitVec.VaultID, 2, commitment)
+	rejectCommitment("truncated by one byte", commitVec.EpochKey, commitVec.VaultID, commitVec.Epoch, commitment[:len(commitment)-1])
+	rejectCommitment("empty", commitVec.EpochKey, commitVec.VaultID, commitVec.Epoch, nil)
+	rejectCommitment("flipped bit", commitVec.EpochKey, commitVec.VaultID, commitVec.Epoch, flip(commitment, len(commitment)-1))
+	rejectCommitment("extended by one byte", commitVec.EpochKey, commitVec.VaultID, commitVec.Epoch, append(slices.Clone(commitment), 0x00))
 }
 
 func (params Argon2Params) String() string {
@@ -680,6 +870,73 @@ func TestSharedVectors(t *testing.T) {
 		}
 	})
 
+	t.Run("key slot", func(t *testing.T) {
+		require.NotEmpty(t, file.KeySlot)
+
+		for _, vector := range file.KeySlot {
+			t.Run(vector.Name, func(t *testing.T) {
+				slot := vector.slot()
+
+				// The associated data follows docs/design/crypto.md, built here
+				// from the documented layout, not by the package.
+				assert.Equal(t, vector.AD, hex.EncodeToString(documentedSlotAD(t, vector)))
+				assert.Equal(t, vector.AD, hex.EncodeToString(must(slot.AD())))
+
+				sealed := must(sealKeySlotWith(unhex(t, vector.RecipientPublicKey), unhex(t, vector.EphemeralPrivateKey), unhex(t, vector.Nonce), unhex(t, vector.EpochKey), slot))
+				assert.Equal(t, vector.Sealed, hex.EncodeToString(sealed))
+
+				// The slot is a sealed box with the documented associated data.
+				assert.Equal(t, vector.EpochKey, hex.EncodeToString(must(OpenFrom(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), unhex(t, vector.AD)))))
+
+				epochKey := must(OpenKeySlot(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), slot))
+				assert.Equal(t, vector.EpochKey, hex.EncodeToString(epochKey))
+			})
+		}
+	})
+
+	t.Run("key commitment", func(t *testing.T) {
+		require.NotEmpty(t, file.KeyCommitment)
+
+		for _, vector := range file.KeyCommitment {
+			t.Run(vector.Name, func(t *testing.T) {
+				epochKey := unhex(t, vector.EpochKey)
+
+				// HMAC-SHA256 over the documented layout, not computed by the
+				// package.
+				documented := hmac.New(sha256.New, epochKey)
+				documented.Write([]byte("vault-sync/v1/key-commitment"))
+				documented.Write(uuidBytes(t, vector.VaultID))
+				documented.Write(binary.BigEndian.AppendUint64(nil, vector.Epoch))
+				assert.Equal(t, vector.Commitment, hex.EncodeToString(documented.Sum(nil)))
+
+				assert.Equal(t, vector.Commitment, hex.EncodeToString(must(KeyCommitment(epochKey, vector.VaultID, vector.Epoch))))
+				require.NoError(t, VerifyKeyCommitment(epochKey, unhex(t, vector.Commitment), vector.VaultID, vector.Epoch))
+			})
+		}
+	})
+
+	t.Run("rejected key slots", func(t *testing.T) {
+		require.NotEmpty(t, file.RejectedKeySlots)
+
+		for _, vector := range file.RejectedKeySlots {
+			t.Run(vector.Name, func(t *testing.T) {
+				_, err := OpenKeySlot(unhex(t, vector.RecipientPrivateKey), unhex(t, vector.Sealed), vector.slot())
+				require.ErrorIs(t, err, ErrDecrypt)
+			})
+		}
+	})
+
+	t.Run("rejected key commitments", func(t *testing.T) {
+		require.NotEmpty(t, file.RejectedKeyCommitments)
+
+		for _, vector := range file.RejectedKeyCommitments {
+			t.Run(vector.Name, func(t *testing.T) {
+				err := VerifyKeyCommitment(unhex(t, vector.EpochKey), unhex(t, vector.Commitment), vector.VaultID, vector.Epoch)
+				require.ErrorIs(t, err, ErrKeyCommitment)
+			})
+		}
+	})
+
 	t.Run("rejected", func(t *testing.T) {
 		require.NotEmpty(t, file.Rejected)
 
@@ -704,4 +961,38 @@ func TestSharedVectors(t *testing.T) {
 			})
 		}
 	})
+}
+
+func uuidBytes(t *testing.T, value string) []byte {
+	t.Helper()
+
+	parsed, err := uuid.Parse(value)
+	require.NoError(t, err)
+
+	return parsed[:]
+}
+
+// documentedSlotAD builds a slot's associated data from the layout in
+// docs/design/crypto.md.
+func documentedSlotAD(t *testing.T, vector keySlotVector) []byte {
+	t.Helper()
+
+	ad := slices.Concat([]byte("vault-sync/v1/key-slot"), uuidBytes(t, vector.VaultID))
+	ad = binary.BigEndian.AppendUint64(ad, vector.Epoch)
+
+	switch vector.RecipientKind {
+	case "user":
+		id := uuidBytes(t, vector.RecipientID)
+		ad = append(ad, 0x01, byte(len(id)))
+
+		return append(ad, id...)
+	case "escrow":
+		ad = append(ad, 0x02, byte(len(vector.RecipientID)))
+
+		return append(ad, vector.RecipientID...)
+	default:
+		require.Failf(t, "unknown recipient kind", "%q", vector.RecipientKind)
+
+		return nil
+	}
 }
