@@ -27,6 +27,7 @@ jobs:
     outputs:
       code: ${{ steps.filter.outputs.code }}
       chart: ${{ steps.filter.outputs.chart }}
+      npm: ${{ steps.filter.outputs.npm }}
       # Windows/macOS e2e on PRs only when plugin-side files change; always on master.
       desktop: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop == 'true' }}
     steps:
@@ -49,6 +50,8 @@ jobs:
               - 'docs/{configuration,deployment}.md'
             desktop:
               - '{plugin/**,.github/**,nix/**,flake.*}'
+            npm:
+              - '{plugin/package.json,plugin/package-lock.json,scripts/npm-audit.sh}'
 
   # The test tiers run as parallel jobs (they used to be sequential steps of
   # one ~9 minute job). Everything runs inside the flake's dev shell so CI
@@ -146,6 +149,21 @@ jobs:
       - uses: ./.github/actions/nix-dev-shell
       - name: Simulation
         run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
+
+  # npm advisories, only when the plugin's dependency manifests (or the check
+  # itself) change. Fails only on fixable moderate+ advisories in dependencies
+  # the plugin ships; unfixable and dev-only ones are warnings
+  # (scripts/npm-audit.sh).
+  npm-audit:
+    needs: changes
+    if: needs.changes.outputs.npm == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/nix-dev-shell
+      - name: npm vulnerabilities in shipped plugin dependencies
+        run: nix develop -c make npm-audit
 
   # The plugin e2e suite in a pinned real Obsidian (docs/testing/e2e.md):
   # desktop on Linux, Windows (plugin changes and master) and macOS (ditto), plus Obsidian's emulated mobile mode
@@ -254,7 +272,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts]
+    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts, npm-audit]
     if: always()
     runs-on: ubuntu-latest
     steps:
