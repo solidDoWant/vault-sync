@@ -1,5 +1,6 @@
 import { priorRevisionLimit, releasedRows, type Absence, type Binding, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
-import type { VaultAdapter } from "../vault/adapter";
+import { sha256Hex } from "../hash";
+import { isVaultError, type VaultAdapter } from "../vault/adapter";
 import type { PathSpace } from "./pathspace";
 
 /**
@@ -35,7 +36,7 @@ export type BindingChange =
   | { kind: "kept" };
 
 type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "listDeferred" | "documentsByFileKey" | "transact">;
-type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
+type BindingsVault = Pick<VaultAdapter, "stat" | "list" | "read">;
 
 /**
  * The owner of every document's `binding` and `absence` (design §4.1, §9.1):
@@ -55,6 +56,9 @@ export class Bindings {
     return this.scanPending;
   }
   private scanPending = true;
+  /** How many rounds are running, and the document rows they read (round). */
+  private rounds = 0;
+  private snapshot: Map<string, DocumentState> | undefined;
   /** The documents the scan unbound for a file missing at their binding's file key (see renamed). */
   private readonly missing = new Map<string, { documentId: string; seen: string }>();
 
@@ -74,6 +78,31 @@ export class Bindings {
   }
 
   /**
+   * Runs `task` with the journal's document rows read once and kept in
+   * memory (`documents`) until it ends: a pull reads them per revision
+   * (rule W's file holders), and an IndexedDB journal reads every row per
+   * call. Every write of a document row goes through here (write), so the
+   * copy stays the journal's.
+   */
+  async round<T>(task: () => Promise<T>): Promise<T> {
+    this.rounds++;
+    try {
+      return await task();
+    } finally {
+      if (--this.rounds === 0) this.snapshot = undefined;
+    }
+  }
+
+  /** Every document row, in id order as the journal lists them, once every transition and write queued so far has finished. */
+  documents(): Promise<DocumentState[]> {
+    return this.serialize(async () => {
+      if (this.rounds === 0) return this.journal.listDocuments();
+      this.snapshot ??= new Map((await this.journal.listDocuments()).map((state) => [state.documentId, state]));
+      return [...this.snapshot.values()].sort((left, right) => (left.documentId < right.documentId ? -1 : left.documentId > right.documentId ? 1 : 0)).map((state) => ({ ...state }));
+    });
+  }
+
+  /**
    * Resolves once every transition and write queued so far has finished.
    * A failed one rejected to its caller, and fails every later one.
    */
@@ -88,7 +117,7 @@ export class Bindings {
       const next = { ...state, ...this.bindingAfter(state, current, change), ...priorAfter(state, current) };
       if (change.kind === "applied" || change.kind === "merged") next.binding = await this.keptName(current?.binding, next.binding);
       const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
-      await this.journal.transact({ putDocuments: [...others, next] });
+      await this.write({ putDocuments: [...others, next] });
     });
   }
 
@@ -103,7 +132,7 @@ export class Bindings {
     return this.serialize(async () => {
       const row = this.createRow(operation);
       const others = await this.unbindOthers(operation.documentId, operation.path, "released");
-      await this.journal.transact({ addPending: [operation], putDocuments: [...others, row] });
+      await this.write({ addPending: [operation], putDocuments: [...others, row] });
     });
   }
 
@@ -115,7 +144,7 @@ export class Bindings {
   transact(build: () => Promise<JournalChanges | undefined>): Promise<void> {
     return this.serialize(async () => {
       const changes = await build();
-      if (changes !== undefined) await this.journal.transact(changes);
+      if (changes !== undefined) await this.write(changes);
     });
   }
 
@@ -129,7 +158,7 @@ export class Bindings {
       const state = await this.journal.getDocument(operation.documentId);
       if (state === undefined) throw new Error(`no document ${operation.documentId} to bring back`);
       const others = await this.unbindOthers(operation.documentId, operation.path, "released");
-      await this.journal.transact({ addPending: [operation], putDocuments: [...others, { ...state, binding: this.bound(operation.path, operation.contentHash), absence: null }] });
+      await this.write({ addPending: [operation], putDocuments: [...others, { ...state, binding: this.bound(operation.path, operation.contentHash), absence: null }] });
     });
   }
 
@@ -149,7 +178,7 @@ export class Bindings {
         const state = await this.journal.getDocument(operation.documentId);
         if (state !== undefined && !hasBase(state)) documents.add(operation.documentId);
       }
-      await this.journal.transact({ removePending: revisionIds, removeDocuments: [...documents] });
+      await this.write({ removePending: revisionIds, removeDocuments: [...documents] });
     });
   }
 
@@ -176,12 +205,15 @@ export class Bindings {
       // lowest id, keeps it; the others are released, not user-deleted, as
       // the user deleted nothing (C1, #641).
       const [found, ...duplicates] = await this.journal.documentsByFileKey(key);
-      const lost = found === undefined && missing !== undefined ? await this.journal.getDocument(missing.documentId) : undefined;
+      // Only the document's own file, with the content the scan expected
+      // there: a new file the user made at the old path and moved away is
+      // another one (PO-1, INV-3), which leaves the document deleted.
+      const lost = found === undefined && missing !== undefined && (await this.holds(to, missing.seen)) ? await this.journal.getDocument(missing.documentId) : undefined;
       const moved = found ?? (lost === undefined || lost.binding !== null ? undefined : { ...lost, binding: { spelling: from, fileKey: key, seen: missing?.seen ?? lost.baseHash } });
       const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
       changes.push(...duplicates.map((other) => ({ ...other, ...unbound("released") })));
       if (moved !== undefined) changes.push({ ...moved, binding: { spelling: to, fileKey: this.space.filesystemKey(to), seen: moved.binding?.seen ?? moved.baseHash }, absence: null });
-      if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
+      if (changes.length > 0) await this.write({ putDocuments: changes });
     });
   }
 
@@ -193,7 +225,7 @@ export class Bindings {
   deleted(path: string, by: "user" | "engine"): Promise<void> {
     return this.serialize(async () => {
       const changes = await this.unbindOthers(undefined, path, by === "user" ? "user-deleted" : "released");
-      if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
+      if (changes.length > 0) await this.write({ putDocuments: changes });
     });
   }
 
@@ -203,6 +235,20 @@ export class Bindings {
    * every later one fails with its error: nothing may decide by bindings
    * until a restart's scan (E7) has reconciled them with the disk (PO-3).
    */
+  /** Applies `changes` to the journal, and to the rows `documents` keeps for a round. */
+  private async write(changes: JournalChanges): Promise<void> {
+    try {
+      await this.journal.transact(changes);
+    } catch (error) {
+      this.snapshot = undefined;
+      throw error;
+    }
+    const snapshot = this.snapshot;
+    if (snapshot === undefined) return;
+    for (const state of changes.putDocuments ?? []) snapshot.set(state.documentId, { ...state });
+    for (const documentId of changes.removeDocuments ?? []) snapshot.delete(documentId);
+  }
+
   private serialize<T>(task: () => Promise<T>): Promise<T> {
     const run = this.queue.then(task);
     this.queue = run;
@@ -260,7 +306,7 @@ export class Bindings {
       }
       if (binding !== state.binding || absence !== (state.absence ?? null)) changes.set(state.documentId, { ...state, binding, absence });
     }
-    if (changes.size > 0) await this.journal.transact({ putDocuments: [...changes.values()] });
+    if (changes.size > 0) await this.write({ putDocuments: [...changes.values()] });
   }
 
   /** The row of a create not acknowledged yet: no base, bound to the file the create reads. */
@@ -339,6 +385,16 @@ export class Bindings {
     const listed = await this.vault.list();
     if (!listed.includes(kept.spelling) || listed.includes(written.spelling) || (await this.vault.stat(written.spelling)) === null) return written;
     return { ...kept, seen: written.seen };
+  }
+
+  /** Whether the vault's file at `path` has content `seen`. */
+  private async holds(path: string, seen: string): Promise<boolean> {
+    try {
+      return sha256Hex(await this.vault.read(path)) === seen;
+    } catch (error) {
+      if (isVaultError(error)) return false;
+      throw error;
+    }
   }
 
   private bound(spelling: string, seen: string): Binding {

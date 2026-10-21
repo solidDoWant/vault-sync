@@ -90,7 +90,6 @@ export class EngineUser {
     await this.options.vault.rename(from, to);
     const serverSeq = this.options.serverSeq();
     this.recordRename(from, to);
-    for (const original of copiedFrom(from, this.options.name)) this.options.ledger.forkCopy(original, to);
     const hash = sha256Hex(await this.options.vault.read(to));
     this.options.ledger.renamed(from, to, documents, hash);
     this.options.ledger.changed({ paths: [from, to], result: { path: to, hash }, serverSeq, at: this.options.now() });
@@ -134,6 +133,18 @@ export class EngineUser {
     this.renamedFrom.delete(from);
     this.movedDocuments.delete(from);
     this.options.ledger.movedByEngine(from, to);
+  }
+
+  /**
+   * Runs `write`, the engine's own write of a file at `path`. A write of the
+   * engine's conflict copy of a path (SPEC.md §6.3, §7) holds what the file
+   * there held at that moment, so the user's writes whose file is there are
+   * followed to the copy as well (#745): the user may rename, overwrite or
+   * delete the copy later, whatever became of the file it was copied from.
+   */
+  async engineWrote(path: string, write: () => Promise<void>): Promise<void> {
+    await write();
+    for (const original of copiedFrom(path, this.options.name)) this.options.ledger.forkCopy(original, path);
   }
 
   /**

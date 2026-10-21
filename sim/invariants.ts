@@ -105,8 +105,8 @@ export class UserLedger {
   /**
    * Where each write's file went (`write` is its index): every path it had
    * since (by path key) and where it is now, until the user deleted it. A
-   * write has one, plus one for each conflict copy of its file the user
-   * renamed (forkCopy).
+   * write has one, plus one for each conflict copy the engine wrote of its
+   * file (forkCopy).
    */
   private readonly tracks: { write: number; paths: Set<string>; current: string | undefined }[] = [];
   /** Local content handed to the merge hook, to the contents it became (the merged result and the conflict copy). */
@@ -168,15 +168,21 @@ export class UserLedger {
   }
 
   /**
-   * The user renamed to `to` the engine's conflict copy of the file at
-   * `original` (SPEC.md §6.3, §7): the engine wrote the copy with what that
-   * file held, so the writes whose file is at `original` are followed to
-   * `to` as well, where the user may overwrite or delete them.
+   * The engine wrote `copy`, its conflict copy of the file at `original`
+   * (SPEC.md §6.3, §7), with what that file held: the writes whose file is at
+   * `original` now are followed to `copy` as well, and from there through the
+   * user's renames, where the user may overwrite or delete them (#745). The
+   * fork is taken when the copy is written, not when the user renames it: by
+   * then the user may have deleted or renamed the file at `original`, or
+   * written another one there that the copy does not hold.
    */
-  forkCopy(original: string, to: string): void {
+  forkCopy(original: string, copy: string): void {
     const match = this.match;
-    const [key, target] = [match(original), match(to)];
-    for (const track of [...this.tracks]) if (track.current === key) this.tracks.push({ write: track.write, paths: new Set([target]), current: target });
+    const [key, target] = [match(original), match(copy)];
+    for (const track of [...this.tracks]) {
+      if (track.current !== key || this.tracks.some((other) => other.write === track.write && other.current === target)) continue;
+      this.tracks.push({ write: track.write, paths: new Set([target]), current: target });
+    }
   }
 
   /** The engine moved the file at `from` to `to` (applying a remote rename): the writes it holds are followed there, for the lost-write check only. */

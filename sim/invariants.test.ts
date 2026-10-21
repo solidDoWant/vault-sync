@@ -77,12 +77,58 @@ describe("checkLostWrites", () => {
   it("follows a write to the engine's conflict copy of its file once the user renames the copy, so overwriting the renamed copy replaces it", () => {
     const ledger = new UserLedger();
     ledger.write({ hash: "xx", path: "notes/c.md", at });
-    ledger.forkCopy("notes/c.md", "a.md");
+    ledger.forkCopy("notes/c.md", "notes/c (conflict e3 2026-01-02 030405).md");
     ledger.renamed("notes/c (conflict e3 2026-01-02 030405).md", "a.md", new Set(), "xx");
     ledger.replace("xx", "b.md");
     expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.invariant)).toEqual(["lost-write"]);
     ledger.replace("xx", "a.md");
     expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  describe("given the engine's conflict copy of a user's file, which the user renamed after the file itself was deleted or renamed away (#745)", () => {
+    const encode = (content: string) => new TextEncoder().encode(content);
+    /** The user writes at `writtenAt` and renames the file to `original`, where the merge copies it. */
+    const setup = async (original: string, writtenAt = original) => {
+      const vault = new InMemoryVault();
+      const ledger = new UserLedger();
+      const user = new EngineUser({ name: "e5", vault, journal: new InMemoryJournal(), ledger, now: () => at, serverSeq: () => 1n, pathPool });
+      await user.write(writtenAt, encode("mine"));
+      if (writtenAt !== original) await user.rename(writtenAt, original);
+      const copy = original.replace(/\.md$/u, " (conflict e5 2026-01-02 030405).md");
+      // The merge keeps the user's content as the engine's conflict copy and the remote content at the file's path.
+      await user.engineWrote(copy, () => vault.write(copy, encode("mine")));
+      await vault.write(original, encode("theirs"));
+      // Every content but the user's first one is still in the vault.
+      const lost = () => checkLostWrites("e5", ledger, new Set(["theirs", "new"].map((content) => sha256Hex(encode(content))))).map((violation) => violation.detail);
+      return { user, vault, copy, lost };
+    };
+
+    it("credits the user's overwrite of the renamed copy after the user deleted the original file (seed 100121)", async () => {
+      const { user, copy, lost } = await setup("STRASSE.md");
+      await user.remove("STRASSE.md");
+      await user.rename(copy, "A.md");
+      expect(lost()).toEqual([expect.stringContaining(`wrote ${sha256Hex(encode("mine")).slice(0, 8)} to STRASSE.md`) as unknown as string]);
+      await user.write("A.md", encode("new"));
+      expect(lost()).toEqual([]);
+    });
+
+    it("credits the user's overwrite of the renamed copy after the user renamed the original file away (seed 100106)", async () => {
+      const { user, copy, lost } = await setup("b.md", "CON.md");
+      await user.rename("b.md", "d.md");
+      await user.rename(copy, "notes/c.md");
+      await user.write("notes/c.md", encode("new"));
+      expect(lost()).toEqual([]);
+    });
+
+    it("does not credit an overwrite of the renamed copy to a write the user made at the original path after the copy", async () => {
+      const { user, vault, copy, lost } = await setup("b.md");
+      // A later write of the same content at b.md, whose file is then lost without the user deleting it.
+      await user.write("b.md", encode("mine"));
+      await vault.delete("b.md");
+      await user.rename(copy, "A.md");
+      await user.write("A.md", encode("new"));
+      expect(lost()).toHaveLength(1);
+    });
   });
 
   it("follows a write's file through the user's renames: overwriting it at its new path replaces it", () => {
