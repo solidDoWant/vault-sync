@@ -4,7 +4,7 @@ import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import { pathPool } from "./client";
 import { EngineUser } from "./engine-user";
-import { checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
 
 const at = "step 1";
 
@@ -26,7 +26,53 @@ describe("checkLostWrites", () => {
 
   it("accepts a write the user replaced or deleted themselves", () => {
     const ledger = ledgerWith("aa");
-    ledger.replace("aa");
+    ledger.replace("aa", "aa.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  it("reports a lost write of content X although the user later overwrote another file holding X", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.write({ hash: "xx", path: "b.md", at });
+    ledger.replace("xx", "b.md");
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("e1's user wrote xx to a.md") as unknown as string]);
+    expect(ledger.owed()).toEqual(new Set(["xx"]));
+  });
+
+  it("does not excuse a write by a replacement that came before it, as of the same content at the same path", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.replace("xx", "a.md");
+    ledger.write({ hash: "xx", path: "a.md", at: "step 2" });
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("at step 2") as unknown as string]);
+  });
+
+  it("follows a write's file where the engine moved it, so overwriting it there replaces it", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "d.md", at });
+    ledger.replace("xx", "A.md");
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.invariant)).toEqual(["lost-write"]);
+    ledger.fileMoved("d.md", "A.md");
+    ledger.replace("xx", "A.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  it("follows a write to the engine's conflict copy of its file once the user renames the copy, so overwriting the renamed copy replaces it", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "notes/c.md", at });
+    ledger.forkCopy("notes/c.md", "a.md");
+    ledger.renamed("notes/c (conflict e3 2026-01-02 030405).md", "a.md", new Set(), "xx");
+    ledger.replace("xx", "b.md");
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.invariant)).toEqual(["lost-write"]);
+    ledger.replace("xx", "a.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  it("follows a write's file through the user's renames: overwriting it at its new path replaces it", () => {
+    const ledger = new UserLedger("macos");
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.renamed("a.md", "b.md", new Set(), "xx");
+    ledger.replace("xx", "B.md");
     expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
   });
 
@@ -38,7 +84,7 @@ describe("checkLostWrites", () => {
     // The merge result was replaced by the user: the write is no longer owed.
     const replaced = ledgerWith("aa");
     replaced.merged("aa", "merged");
-    replaced.replace("merged");
+    replaced.replace("merged", "aa.md");
     expect(checkLostWrites("e1", replaced, new Set())).toEqual([]);
   });
 
@@ -51,7 +97,7 @@ describe("checkLostWrites", () => {
 
   it("owes the unreplaced writes and their merge results", () => {
     const ledger = ledgerWith("aa", "bb");
-    ledger.replace("bb");
+    ledger.replace("bb", "bb.md");
     ledger.merged("aa", "cc");
     expect(ledger.owed()).toEqual(new Set(["aa", "cc"]));
   });
@@ -287,7 +333,7 @@ describe("checkPhantomDeletes", () => {
       const vault = new InMemoryVault();
       const journal = new InMemoryJournal();
       const ledger = new UserLedger();
-      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, touched: () => undefined, serverSeq: () => 1n, pathPool });
+      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, serverSeq: () => 1n, pathPool });
       await vault.write("a.md", encode("aa"));
       await journal.putDocument({ documentId: "d1", path: "a.md", revisionId: "r1", seq: 1n, baseHash: "aa", size: 2n, kind: "text", deleted: false });
       await user.rename("a.md", "b.md");
@@ -332,35 +378,55 @@ describe("checkPhantomDeletes", () => {
 });
 
 describe("checkEngineEchoes", () => {
-  const echoes = (...args: Parameters<typeof checkEngineEchoes>) => checkEngineEchoes(...args).map((violation) => violation.detail);
-
-  it("accepts changes at paths the user changed and reports every other one as the engine's own", () => {
-    const events = [
+  it("accepts exactly the events a change of the user's emitted and reports every other one as the engine's own", () => {
+    const user = [
       { type: "modify", path: "a.md" },
-      { type: "create", path: "b.md" },
       { type: "rename", path: "c.md", oldPath: "a.md" },
+    ] as const;
+    const engine = [
+      { type: "create", path: "b.md" },
       { type: "delete", path: "d.md" },
     ] as const;
-    expect(echoes("e1", events, new Set(["a.md", "c.md"]), "posix")).toEqual(["e1 reported its own create of b.md as a local change", "e1 reported its own delete of d.md as a local change"]);
+    const reported = checkEngineEchoes("e1", [user[0], engine[0], user[1], engine[1]], new Set(user)).map((violation) => violation.detail);
+    expect(reported).toEqual(["e1 reported its own create of b.md as a local change", "e1 reported its own delete of d.md as a local change"]);
   });
 
-  // A case-insensitive vault keeps the spelling a file has: the user's write
-  // of STRASSE.md over straße.md is reported as a modify of straße.md (#247).
-  it.each([
-    ["macos", "STRASSE.md", "straße.md"],
-    ["windows", "A.md", "a.md"],
-    ["macos", "notes/Cafe\u0301.md", "NOTES/café.md"],
-    ["windows", "Notes/A.md", "notes/a.md"],
-  ] as const)("under %s rules, attributes a change the vault reports at another spelling of the user's path %s to the user", (platform, touched, reported) => {
-    expect(echoes("e1", [{ type: "modify", path: reported }], new Set([touched]), platform)).toEqual([]);
+  it("reports an engine echo at a path the user changed earlier in the run: no path excuses another event", () => {
+    const userWrite = { type: "modify", path: "a.md" } as const;
+    const echo = { type: "modify", path: "a.md" } as const;
+    expect(checkEngineEchoes("e1", [userWrite, echo], new Set([userWrite])).map((violation) => violation.detail)).toEqual(["e1 reported its own modify of a.md as a local change"]);
+  });
+});
+
+describe("carriesLocalEdit", () => {
+  const text = (value: string) => new TextEncoder().encode(value);
+
+  it("accepts the local content itself, also binary", () => {
+    expect(carriesLocalEdit(new Uint8Array([0xff, 0]), new Uint8Array([0xff, 0]), null)).toBe(true);
   });
 
-  it.each(["macos", "windows"] as const)("under %s rules, still reports the engine's own change at a path the user never changed under any spelling", (platform) => {
-    expect(echoes("e1", [{ type: "modify", path: "straße.md" }], new Set(["STRASS.md", "strasse.md.md", "a.md"]), platform)).toEqual(["e1 reported its own modify of straße.md as a local change"]);
+  it("accepts a merged result that holds every line the local edit added over the base, whatever its line endings", () => {
+    expect(carriesLocalEdit(text("a\nlocal\nb\n"), text("remote\r\na\r\nlocal\r\nb\r\n"), text("a\nb\n"))).toBe(true);
+    // A local edit that only removed a line has nothing to carry.
+    expect(carriesLocalEdit(text("a\n"), text("a\nb\nremote\n"), text("a\nb\n"))).toBe(true);
   });
 
-  it("under posix rules, where a.md and A.md are two files, reports the engine's own change at a case variant of the user's path", () => {
-    expect(echoes("e1", [{ type: "modify", path: "a.md" }], new Set(["A.md"]), "posix")).toEqual(["e1 reported its own modify of a.md as a local change"]);
-    expect(echoes("e1", [{ type: "modify", path: "straße.md" }], new Set(["STRASSE.md"]), "posix")).toEqual(["e1 reported its own modify of straße.md as a local change"]);
+  it("accepts a line the merge joined to the other side's last line, which has no final newline", () => {
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("remote, unterminatedlocal\n"), text("a\n"))).toBe(true);
+  });
+
+  it("rejects a result that dropped a line the local edit added: the remote content reported as merged", () => {
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\nremote\n"), text("a\n"))).toBe(false);
+    // A line added a second time counts: the base holds it once.
+    expect(carriesLocalEdit(text("a\na\n"), text("b\n"), text("a\n"))).toBe(false);
+  });
+
+  it("without a base, needs every local line in the result", () => {
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\n"), null)).toBe(false);
+    expect(carriesLocalEdit(text("a\n"), text("remote\na\n"), null)).toBe(true);
+  });
+
+  it("rejects any other result for binary local content", () => {
+    expect(carriesLocalEdit(new Uint8Array([0xff]), new Uint8Array([0xff, 1]), null)).toBe(false);
   });
 });

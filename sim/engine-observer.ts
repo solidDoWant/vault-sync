@@ -19,8 +19,9 @@
 // and the harness's own check agrees that the platform cannot hold its path.
 //
 // The user and the engine change the vault through their own handles, so the
-// harness's inode tap (§5.4) records who made each change; nothing checks
-// that record yet, and the engine never sees it.
+// harness's inode tap (§5.4) records who made each change; the engine never
+// sees that record. The engine-echo check uses it: an event the engine
+// reports as a local change must be one that a change of the user's emitted.
 //
 // A scenario may turn on config folder sync (#28, SPEC.md §8): the engine then
 // syncs a ConfigSyncVault over the vault and a config folder of its own, and
@@ -31,7 +32,7 @@ import { Code } from "@connectrpc/connect";
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
+import { configPrefix, ConfigSyncVault } from "../plugin/src/core/config/config-vault";
 import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
 import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } from "../plugin/src/core/engine/engine";
 import { RestoreError } from "../plugin/src/core/engine/history";
@@ -41,12 +42,12 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import type { ConflictRecord, JournalChanges, PendingOperation } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
-import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
+import type { DeletePrecondition, VaultAdapter, VaultEvent, VaultListener, WritePrecondition } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
-import { checkEngineEchoes, UserLedger } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, UserLedger } from "./invariants";
 import { errorCode, settle, StallError } from "./network";
 import { Random } from "./random";
 import type { EngineOperation } from "./schedule";
@@ -105,8 +106,15 @@ export class EngineObserver {
   private engine: SyncEngine;
   private busy = false;
   private readonly localChanges: VaultEvent[] = [];
-  /** Paths the scenario edited as the user: their events are expected local changes. */
-  private readonly userEdited = new Set<string>();
+  /**
+   * The events the engine received while a change of the user's was emitted:
+   * the only ones it may report as local changes (engine-echo). The vaults
+   * emit synchronously within the change, after the inode tap, so each is
+   * tied to the user operation it fired in, with no path matching.
+   */
+  private readonly userEvents = new WeakSet<VaultEvent>();
+  /** The actor of the change the vaults are emitting, from their inode taps. */
+  private emitting: InodeEvent["actor"] | undefined;
   /** What the user did, for the lost-write and phantom-delete checks (sim/invariants.ts). */
   readonly ledger: UserLedger;
   private readonly user: EngineUser;
@@ -114,6 +122,8 @@ export class EngineObserver {
   lastPush: PushSummary | undefined;
   /** The last pull that completed. */
   lastPull: PullSummary | undefined;
+  /** Where each of the engine's pulls that resynced (PullSummary.resynced) completed, e.g. `step 120`. */
+  readonly resyncs: string[] = [];
   /** The merge hook of the engine (and of the engines after a crash); the default is the engine's, threeWayMerge. */
   merge: MergeHook | undefined;
   /** The jitter of the engines' backoff, the same in every replay. */
@@ -132,9 +142,13 @@ export class EngineObserver {
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
-    this.vault.tapInodes((event) => this.inodeEvents.push({ ...event, step: context.stepNumber() }));
+    this.vault.tapInodes((event) => {
+      this.emitting = event.actor;
+      this.inodeEvents.push({ ...event, step: context.stepNumber() });
+    });
     this.engineVault = new MutableVault(this.vault.handle("engine"), (from, to, rename) => this.user.engineRenamed(from, to, rename));
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
+    this.config.tapInodes((event) => (this.emitting = event.actor));
     this.synced = this.engineVault;
     this.engine = this.createEngine();
     this.ledger = new UserLedger(platform);
@@ -144,7 +158,6 @@ export class EngineObserver {
       journal: this.journal,
       ledger: this.ledger,
       now: () => `step ${String(context.stepNumber())}`,
-      touched: (path) => this.userEdited.add(path),
       serverSeq: () => context.serverSeq(),
       pathPool: context.pathPool,
     });
@@ -199,6 +212,7 @@ export class EngineObserver {
             return;
           }
           this.lastPull = summary;
+          if (summary.resynced) this.resyncs.push(`step ${String(this.context.stepNumber())}`);
           this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred${summary.resynced ? ", resynced" : ""}`);
         },
         (error: unknown) => {
@@ -238,7 +252,6 @@ export class EngineObserver {
    * disk: what Obsidian's autosave can do (#163).
    */
   saveBeforeNextEngineChange(path: string, content: Uint8Array): string {
-    this.userEdited.add(path);
     this.engineVault.beforeNextChange(path, async () => {
       this.context.log(`${this.name} user saves ${path} (${String(content.length)} B) just before the engine changes it`);
       // As the user: the ledger records the save, which replaces what the user had written there.
@@ -275,8 +288,6 @@ export class EngineObserver {
     for (const path of await this.vault.list()) {
       if (!path.startsWith(`${from}/`)) continue;
       const moved = `${to}/${path.slice(from.length + 1)}`;
-      this.userEdited.add(path);
-      this.userEdited.add(moved);
       moves.push([path, moved]);
     }
     await this.vault.renameFolder(from, to);
@@ -336,25 +347,45 @@ export class EngineObserver {
   async setConfigSync(settings: ConfigSyncSettings): Promise<string> {
     await this.settled();
     this.engine.dispose();
-    this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config, settings, ownFolders: ["plugins/vault-sync"] });
+    // The engine changes the config folder through its own handle, so the tap tells its changes from Obsidian's.
+    this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config.handle("engine"), settings, ownFolders: ["plugins/vault-sync"] });
     this.engine = this.createEngine();
     return `${this.name} config sync ${settings.enabled ? `on (${Object.entries(settings.categories).filter(([, on]) => on).map(([category]) => category).join(", ")})` : "off"}, engine restarted`;
   }
 
   /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
   async editConfig(relative: string, content: Uint8Array): Promise<string> {
-    this.userEdited.add(`.obsidian/${relative}`);
     await this.config.write(relative, content);
+    this.recordConfigWrite(relative, content);
     await this.settled();
     return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
   }
 
   /** Deletes `relative` from the config folder as Obsidian would. */
   async removeConfig(relative: string): Promise<string> {
-    this.userEdited.add(`.obsidian/${relative}`);
+    await this.recordConfigDelete(relative);
     await this.config.delete(relative);
     await this.settled();
     return `${this.name} Obsidian deletes config ${relative}`;
+  }
+
+  /** Records Obsidian's write of the config file at `relative` as a change on the device, for the resurrected-delete check: it may bring a deleted config document back. */
+  private recordConfigWrite(relative: string, content: Uint8Array): void {
+    const path = `${configPrefix}/${relative}`;
+    this.ledger.changed({ paths: [path], result: { path, hash: sha256Hex(content) }, serverSeq: this.context.serverSeq(), at: `step ${String(this.context.stepNumber())}` });
+  }
+
+  /**
+   * Records Obsidian's delete of the config file at `relative` as the user's
+   * delete of the documents the engine knows there, synced or pending, for
+   * the phantom-delete check: deleting a config file is a change on the
+   * device, as a note's delete is.
+   */
+  private async recordConfigDelete(relative: string): Promise<void> {
+    const path = `${configPrefix}/${relative}`;
+    const synced = await this.journal.findDocumentByPath(path);
+    if (synced !== undefined) this.ledger.deletedDocuments.add(synced.documentId);
+    for (const operation of await this.journal.listPending()) if (operation.path === path) this.ledger.deletedDocuments.add(operation.documentId);
   }
 
   /** The config folder's files, sorted (whether or not they sync). */
@@ -375,6 +406,17 @@ export class EngineObserver {
   keepFileOnNextDelete(path: string): string {
     this.engineVault.keepOnNextDelete(path);
     return `${this.name} MUTATION: the engine's next delete of ${path} will leave the file`;
+  }
+
+  /**
+   * Mutation for the harness's own tests: from now on the anchor the engine
+   * stores with its cursor is corrupted, as an anchor mangled between the
+   * server and the journal would be, so its next pull finds the history
+   * diverged and resyncs although the server was never restored (#422).
+   */
+  mangleCursorAnchors(): string {
+    this.journal.mangleAnchors = true;
+    return `${this.name} MUTATION: cursor anchors are corrupted from now on`;
   }
 
   /** The engine's conflict log. */
@@ -564,7 +606,7 @@ export class EngineObserver {
       if (deferred.reason === "out-of-scope" && (outOfScope.has(deferred.revision.path) || deferred.revision.deleted)) continue;
       violations.push({ invariant: "engine-deferred", detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes` });
     }
-    violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEdited, this.platform));
+    violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEvents));
     for (const violation of violations) this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
     await this.shadowCheck();
     return violations;
@@ -588,7 +630,9 @@ export class EngineObserver {
       vaultId: this.context.vaultId,
       deviceId: this.deviceId,
       api: this.api,
-      vault: this.synced,
+      vault: new AttributedVault(this.synced, (event) => {
+        if (this.emitting === "user") this.userEvents.add(event);
+      }),
       journal: this.journal,
       onLocalChange: (event) => this.localChanges.push(event),
       onAcknowledged: (revision) => {
@@ -606,12 +650,21 @@ export class EngineObserver {
         this.context.log(`${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`);
       },
       merge: async (request) => {
-        const outcome = await (this.merge ?? threeWayMerge)(request);
-        // What the merge path made of the local content: it survives there (sim/invariants.ts).
-        if (outcome.status === "merged" && request.local.content !== null) {
-          const local = sha256Hex(request.local.content);
-          if (outcome.content !== null) this.ledger.merged(local, sha256Hex(outcome.content));
-          if (outcome.conflict !== undefined) this.ledger.merged(local, sha256Hex(outcome.conflict.content));
+        // The base as the hook read it, if it did: the harness never reads it again, which would add calls to the run.
+        let base: Uint8Array | null = null;
+        const outcome = await (this.merge ?? threeWayMerge)({
+          ...request,
+          readBaseContent: async () => (base = await request.readBaseContent()),
+        });
+        // What the merge path made of the local content: it survives there
+        // (sim/invariants.ts), but only where the harness's own check finds the
+        // edit (#301), not because the hook says so. A conflict copy is the
+        // local content itself, which then survives by being found.
+        if (outcome.status === "merged" && request.local.content !== null && outcome.content !== null) {
+          const [local, merged] = [sha256Hex(request.local.content), sha256Hex(outcome.content)];
+          const carries = carriesLocalEdit(request.local.content, outcome.content, base);
+          if (carries) this.ledger.merged(local, merged);
+          this.context.log(`${this.name} merge at ${outcome.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`);
         }
         return outcome;
       },
@@ -662,12 +715,31 @@ class HaltingJournal extends InMemoryJournal {
   /** Set by haltOnDeferralRemoval; cleared when it kills the app. */
   haltOnDeferralRemoval = false;
 
+  /** Mutation (mangleCursorAnchors): every anchor stored with the cursor is corrupted. */
+  mangleAnchors = false;
+
+  override setCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
+    return super.setCursor(seq, this.mangled(anchor));
+  }
+
+  override resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
+    return super.resetCursor(seq, this.mangled(anchor));
+  }
+
+  private mangled(anchor: Uint8Array | undefined): Uint8Array | undefined {
+    if (!this.mangleAnchors || anchor === undefined || anchor.length === 0) return anchor;
+    const copy = anchor.slice();
+    copy[0] = (copy[0] ?? 0) ^ 0xff;
+    return copy;
+  }
+
   override async removeDeferred(documentId: string): Promise<void> {
     await this.haltBeforeDeferralRemoval([documentId]);
     await super.removeDeferred(documentId);
   }
 
   override async transact(changes: JournalChanges): Promise<void> {
+    if (changes.cursor !== undefined) changes = { ...changes, cursor: { ...changes.cursor, anchor: this.mangled(changes.cursor.anchor) } };
     await this.haltBeforeDeferralRemoval(changes.removeDeferred ?? []);
     const halt = this.takePendingHalt(changes.addPending ?? []);
     if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);
@@ -717,6 +789,45 @@ class MutableVault extends InterleavingVault {
   override async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     if (this.keep.delete(path)) return;
     await super.delete(path, precondition);
+  }
+}
+
+/**
+ * The engine's vault, passing every event it receives to `received` first,
+ * synchronously, while the change that emitted it is still being applied.
+ */
+class AttributedVault implements VaultAdapter {
+  constructor(
+    private readonly inner: VaultAdapter,
+    private readonly received: (event: VaultEvent) => void,
+  ) {}
+
+  list(): Promise<string[]> {
+    return this.inner.list();
+  }
+  read(path: string): Promise<Uint8Array> {
+    return this.inner.read(path);
+  }
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    return this.inner.write(path, data, precondition);
+  }
+  rename(from: string, to: string): Promise<void> {
+    return this.inner.rename(from, to);
+  }
+  delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    return this.inner.delete(path, precondition);
+  }
+  stat(path: string): ReturnType<VaultAdapter["stat"]> {
+    return this.inner.stat(path);
+  }
+  watch(listener: VaultListener): () => void {
+    return this.inner.watch((event) => {
+      this.received(event);
+      listener(event);
+    });
+  }
+  isSynced(path: string): boolean {
+    return this.inner.isSynced?.(path) ?? true;
   }
 }
 

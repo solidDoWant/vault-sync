@@ -2863,6 +2863,8 @@ export interface RestoredServerResult {
   trace: string[];
   /** Whether the behind engine's pull after the restore resynced. */
   resynced: boolean | undefined;
+  /** Whether its pull before the restore resynced (it must not: the server had not diverged), and the resyncs any engine reported before the restore. */
+  beforeRestore: { resynced: boolean | undefined; resyncs: string[] };
   /** The behind engine's vault after that pull: path to content. */
   vault: Map<string, string>;
   /** The server's live paths at the end. */
@@ -2908,6 +2910,7 @@ export async function restoredServer(endpoints: SimEndpoints): Promise<RestoredS
   await pull(second);
   if (second.lastPull?.cursor !== 3n) throw new Error(`expected the second engine at seq 3, it is at ${String(second.lastPull?.cursor)}`);
 
+  const beforeRestore = { resynced: second.lastPull?.resynced, resyncs: run.observers.flatMap((engine) => engine.resyncs.map((at) => `${engine.name} at ${at}`)) };
   await run.restore();
   await pull(third);
   for (const index of [1, 2, 3]) log(await third.edit(`notes/after-${String(index)}.md`, encoder.encode(textLines(`written after the restore ${String(index)}`))));
@@ -2919,7 +2922,7 @@ export async function restoredServer(endpoints: SimEndpoints): Promise<RestoredS
   const vault = new Map<string, string>();
   for (const path of await second.list()) vault.set(path, decoder.decode((await second.read(path)) ?? new Uint8Array()));
   const lastPull = () => second.lastPull;
-  return { trace: run.trace, resynced: lastPull()?.resynced, vault, serverFiles: await liveFiles(run) };
+  return { trace: run.trace, resynced: lastPull()?.resynced, beforeRestore, vault, serverFiles: await liveFiles(run) };
 }
 
 /**

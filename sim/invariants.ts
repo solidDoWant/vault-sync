@@ -4,10 +4,13 @@
 // the final vaults and the server's history:
 //
 // - `lost-write`: every write of a user (a create or edit) survives, unless
-//   that user replaced it themselves (wrote over it or deleted the file
-//   holding it). It survives if its content is in a final vault, in history
-//   (downloaded and verified), or in what the merge path made of it: the
-//   merged result or the conflict copy, which must survive in turn. This
+//   that user replaced it themselves: wrote over or deleted, after it, the
+//   file holding it, at a path that write's file had (keyed by content and
+//   path, so replacing one file excuses no other write of the same content).
+//   It survives if its content is in a final vault, in history (downloaded
+//   and verified), or in a merged result the harness checked carries it
+//   (carriesLocalEdit), which must survive in turn. A conflict copy is the
+//   local content itself, so it survives only by being found. This
 //   covers every acknowledged edit and also the ones a buggy engine never
 //   pushed.
 // - `phantom-delete`: every tombstone in the change feed was committed by a
@@ -27,8 +30,9 @@
 //   only through a concurrent edit (SPEC.md §4) or the user's re-creation of
 //   the file (§8), never because an engine failed to apply a delete.
 // - `engine-echo`: every change an engine reported as local (its
-//   onLocalChange events) is at a path its user changed. The engine's own
-//   writes, renames and deletes must never be reported (echo suppression).
+//   onLocalChange events) was emitted by a change its user made. The
+//   engine's own writes, renames and deletes must never be reported (echo
+//   suppression), not even at a path the user changed before.
 //
 // The checks are pure functions over recorded data, unit tested in
 // invariants.test.ts.
@@ -91,8 +95,19 @@ export interface EngineCrash {
 /** What one engine's user did to its vault, and what the merge path made of local content. */
 export class UserLedger {
   readonly writes: UserWrite[] = [];
-  /** Contents the user overwrote or deleted themselves: no longer owed. */
-  readonly replaced = new Set<string>();
+  /**
+   * Contents the user overwrote or deleted themselves, by `hash path-key` of
+   * where, to how many writes there had been then: those writes of it are no
+   * longer owed, if their file had that path.
+   */
+  private readonly replaced = new Map<string, number>();
+  /**
+   * Where each write's file went (`write` is its index): every path it had
+   * since (by path key) and where it is now, until the user deleted it. A
+   * write has one, plus one for each conflict copy of its file the user
+   * renamed (forkCopy).
+   */
+  private readonly tracks: { write: number; paths: Set<string>; current: string | undefined }[] = [];
   /** Local content handed to the merge hook, to the contents it became (the merged result and the conflict copy). */
   readonly mergedInto = new Map<string, Set<string>>();
   /** Documents whose file the user deleted. */
@@ -108,7 +123,9 @@ export class UserLedger {
   constructor(readonly platform: PathPlatform = "posix") {}
 
   write(write: UserWrite): void {
+    const key = pathMatcher(this.platform)(write.path);
     this.writes.push(write);
+    this.tracks.push({ write: this.writes.length - 1, paths: new Set([key]), current: key });
     for (const rename of this.at(write.path)) rename.hashes.add(write.hash);
   }
 
@@ -119,6 +136,7 @@ export class UserLedger {
   /** The user renamed the file at `from`, which the engine could take for `documents`, to `to`, where it holds `hash`. */
   renamed(from: string, to: string, documents: ReadonlySet<string>, hash: string): void {
     const key = pathMatcher(this.platform)(to);
+    this.follow(from, key);
     for (const rename of this.at(from)) {
       rename.current = key;
       rename.paths.add(key);
@@ -134,14 +152,44 @@ export class UserLedger {
    */
   movedByEngine(from: string, to: string): void {
     const key = pathMatcher(this.platform)(to);
+    this.follow(from, key);
     for (const rename of this.at(from)) {
       rename.current = key;
       rename.paths.add(key);
     }
   }
 
+  /**
+   * The user renamed to `to` the engine's conflict copy of the file at
+   * `original` (SPEC.md §6.3, §7): the engine wrote the copy with what that
+   * file held, so the writes whose file is at `original` are followed to
+   * `to` as well, where the user may overwrite or delete them.
+   */
+  forkCopy(original: string, to: string): void {
+    const match = pathMatcher(this.platform);
+    const [key, target] = [match(original), match(to)];
+    for (const track of [...this.tracks]) if (track.current === key) this.tracks.push({ write: track.write, paths: new Set([target]), current: target });
+  }
+
+  /** The engine moved the file at `from` to `to` (applying a remote rename): the writes it holds are followed there, for the lost-write check only. */
+  fileMoved(from: string, to: string): void {
+    this.follow(from, pathMatcher(this.platform)(to));
+  }
+
+  /** The writes whose file is at `from` are at `to` (a path key) now. */
+  private follow(from: string, to: string): void {
+    const key = pathMatcher(this.platform)(from);
+    for (const track of this.tracks) {
+      if (track.current !== key) continue;
+      track.current = to;
+      track.paths.add(to);
+    }
+  }
+
   /** The user deleted the file at `path`. */
   deleted(path: string): void {
+    const key = pathMatcher(this.platform)(path);
+    for (const track of this.tracks) if (track.current === key) track.current = undefined;
     for (const rename of this.at(path)) rename.current = undefined;
   }
 
@@ -155,8 +203,14 @@ export class UserLedger {
     this.crashes.push({ serverSeq, renames: this.renames.length });
   }
 
-  replace(hash: string): void {
-    this.replaced.add(hash);
+  /** The user overwrote or deleted the file at `path`, which held `hash`. */
+  replace(hash: string, path: string): void {
+    this.replaced.set(`${hash} ${pathMatcher(this.platform)(path)}`, this.writes.length);
+  }
+
+  /** Whether the user replaced `hash` after write number `index`, at a path that write's file had. */
+  replacedAfter(hash: string, index: number): boolean {
+    return this.tracks.some((track) => track.write === index && [...track.paths].some((path) => (this.replaced.get(`${hash} ${path}`) ?? 0) > index));
   }
 
   merged(local: string, result: string): void {
@@ -176,14 +230,58 @@ export class UserLedger {
    */
   owed(): Set<string> {
     const owed = new Set<string>();
-    const visit = (hash: string): void => {
-      if (owed.has(hash) || this.replaced.has(hash)) return;
-      owed.add(hash);
-      for (const result of this.mergedInto.get(hash) ?? []) visit(result);
-    };
-    for (const write of this.writes) visit(write.hash);
+    this.writes.forEach((write, index) => {
+      const seen = new Set<string>();
+      const visit = (hash: string): void => {
+        if (seen.has(hash) || this.replacedAfter(hash, index)) return;
+        seen.add(hash);
+        owed.add(hash);
+        for (const result of this.mergedInto.get(hash) ?? []) visit(result);
+      };
+      visit(write.hash);
+    });
     return owed;
   }
+}
+
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/** The lines of UTF-8 `content`, without line endings, or undefined if it is not UTF-8. */
+function textLines(content: Uint8Array): string[] | undefined {
+  try {
+    return strictDecoder.decode(content).split("\n").map((line) => line.replace(/\r$/u, ""));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the merged `result` carries the local edit of `local` over `base`
+ * (null if unknown or none): the harness's own check, independent of the
+ * merge code, of what a merge hook reports as merged (#301). It does if it
+ * is the local content, or if both are text and every non-empty line local
+ * added over the base is in the result's text (a merge may join it to the
+ * other side's last line, where that has no final newline). A local edit that only removed
+ * lines passes. A binary local content passes only if the result is it.
+ */
+export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null): boolean {
+  if (local.length === result.length && local.every((byte, index) => byte === result[index])) return true;
+  const localLines = textLines(local);
+  const resultLines = textLines(result);
+  if (localLines === undefined || resultLines === undefined) return false;
+  const remaining = new Map<string, number>();
+  for (const line of (base === null ? undefined : textLines(base)) ?? []) remaining.set(line, (remaining.get(line) ?? 0) + 1);
+  // Text, not lines: a merge may join an added line to the other side's last line, where that has no final newline.
+  const resultText = resultLines.join("\n");
+  for (const line of localLines) {
+    const count = remaining.get(line) ?? 0;
+    if (count > 0) {
+      remaining.set(line, count - 1);
+      continue;
+    }
+    if (line !== "" && !resultText.includes(line)) return false;
+  }
+  return true;
 }
 
 /**
@@ -192,16 +290,16 @@ export class UserLedger {
  * verified by the harness).
  */
 export function checkLostWrites(engine: string, ledger: UserLedger, present: ReadonlySet<string>): Violation[] {
-  const survives = (hash: string, seen: Set<string>): boolean => {
-    if (ledger.replaced.has(hash) || present.has(hash)) return true;
+  const survives = (hash: string, index: number, seen: Set<string>): boolean => {
+    if (ledger.replacedAfter(hash, index) || present.has(hash)) return true;
     if (seen.has(hash)) return false;
     seen.add(hash);
-    for (const result of ledger.mergedInto.get(hash) ?? []) if (survives(result, seen)) return true;
+    for (const result of ledger.mergedInto.get(hash) ?? []) if (survives(result, index, seen)) return true;
     return false;
   };
   const violations: Violation[] = [];
-  for (const write of ledger.writes) {
-    if (survives(write.hash, new Set())) continue;
+  for (const [index, write] of ledger.writes.entries()) {
+    if (survives(write.hash, index, new Set())) continue;
     violations.push({
       invariant: "lost-write",
       detail: `${engine}'s user wrote ${write.hash.slice(0, 8)} to ${write.path} at ${write.at}; it is in no vault, not in history and in no merge result or conflict copy`,
@@ -379,21 +477,19 @@ function explained(engine: EngineChanges, revisions: readonly FeedRevision[]): b
 }
 
 /**
- * `engine-echo`: the local changes `engine` reported at a path its user never
- * changed, i.e. its own writes, renames and deletes it took for the user's.
- * `touched` holds the paths the user changed, as the user spelled them. On a
- * case-insensitive platform (windows, macos) the vault resolves another
- * spelling to the same file and reports the change under the file's own
- * spelling (#247): the user's write of `STRASSE.md` over `straße.md` is a
- * modify of `straße.md`. So paths match as the engine's vault matches them:
- * by path key there (SPEC.md §5), exactly under posix.
+ * `engine-echo`: the local changes `engine` reported that no change of its
+ * user's emitted, i.e. its own writes, renames and deletes it took for the
+ * user's. `userEvents` holds the events the engine received while a change of
+ * the user's was being applied (the vaults emit synchronously within the
+ * change), so an event is excused only by the very user operation it fired
+ * in: an engine write at a path the user changed earlier is still reported.
+ * On a case-insensitive platform the vault reports a change under the file's
+ * own spelling (#247), which needs no path matching here.
  */
-export function checkEngineEchoes(engine: string, events: readonly VaultEvent[], touched: ReadonlySet<string>, platform: PathPlatform): Violation[] {
-  const key = pathMatcher(platform);
-  const touchedKeys = new Set([...touched].map(key));
+export function checkEngineEchoes(engine: string, events: readonly VaultEvent[], userEvents: { has(event: VaultEvent): boolean }): Violation[] {
   const violations: Violation[] = [];
   for (const event of events) {
-    if (touchedKeys.has(key(event.path))) continue;
+    if (userEvents.has(event)) continue;
     violations.push({ invariant: "engine-echo", detail: `${engine} reported its own ${event.type} of ${event.path} as a local change` });
   }
   return violations;

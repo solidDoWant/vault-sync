@@ -29,8 +29,6 @@ export interface EngineUserOptions {
   ledger: UserLedger;
   /** Where the user is, for the ledger: e.g. `step 120`. */
   now: () => string;
-  /** Called with every path the user changes, so the engine's events there count as local changes. */
-  touched: (path: string) => void;
   /** The server's head seq, recorded with each write and rename for the resurrected-delete check. */
   serverSeq: () => bigint;
   /** The paths the user creates files at and renames them to (RunContext.pathPool). */
@@ -74,12 +72,13 @@ export class EngineUser {
 
   /** Writes `source` (or new content chosen with it) to `path`, creating or editing the file; records the write. */
   async write(path: string, source: Random | Uint8Array, verb = "writes"): Promise<string> {
-    const current = await this.current(path);
-    const content = source instanceof Uint8Array ? source : this.content(source, current);
-    this.options.touched(path);
+    const content = source instanceof Uint8Array ? source : this.content(source, await this.current(path));
+    // What the write replaces, read in the same tick as the write (the in-memory vault reads synchronously), so an engine write in between is not taken for the user's.
+    const replaced = this.snapshot(path);
     await this.options.vault.write(path, content);
     // Only once the vault took it: what was there is replaced, and the new content is owed.
-    if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
+    const current = await replaced;
+    if (current !== undefined) this.replaced(sha256Hex(current), path);
     const hash = sha256Hex(content);
     this.options.ledger.write({ hash, path, at: this.options.now() });
     this.options.ledger.changed({ paths: [path], result: { path, hash }, serverSeq: this.options.serverSeq(), at: this.options.now() });
@@ -88,11 +87,10 @@ export class EngineUser {
 
   async rename(from: string, to: string): Promise<string> {
     const documents = await this.documentsAt(from);
-    this.options.touched(from);
-    this.options.touched(to);
     await this.options.vault.rename(from, to);
     const serverSeq = this.options.serverSeq();
     this.recordRename(from, to);
+    for (const original of copiedFrom(from, this.options.name)) this.options.ledger.forkCopy(original, to);
     const hash = sha256Hex(await this.options.vault.read(to));
     this.options.ledger.renamed(from, to, documents, hash);
     this.options.ledger.changed({ paths: [from, to], result: { path: to, hash }, serverSeq, at: this.options.now() });
@@ -101,11 +99,11 @@ export class EngineUser {
 
   /** Deletes `path`, recording the document the engine knows there (synced or pending) as deleted by the user. */
   async remove(path: string): Promise<string> {
-    const current = await this.current(path);
     const documents = await this.documentsAt(path);
-    this.options.touched(path);
+    const deleted = this.snapshot(path);
     await this.options.vault.delete(path);
-    if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
+    const current = await deleted;
+    if (current !== undefined) this.replaced(sha256Hex(current), path);
     for (const document of documents) this.options.ledger.deletedDocuments.add(document);
     this.options.ledger.deleted(path);
     // Deleted, the moved file is followed no further: a file created there later is another one.
@@ -125,6 +123,8 @@ export class EngineUser {
     const key = pathMatcher(this.options.ledger.platform);
     if (!copiedFrom(to, this.options.name).some((original) => key(original) === key(from))) {
       await rename();
+      // The same file, wherever the engine moved it (a remote rename): the user's writes it holds go with it.
+      this.options.ledger.fileMoved(from, to);
       return;
     }
     const documents = await this.documentsAt(from);
@@ -168,6 +168,20 @@ export class EngineUser {
     origins.add(from);
     for (const origin of this.renamedFrom.get(from) ?? []) origins.add(origin);
     this.renamedFrom.set(to, origins);
+  }
+
+  /**
+   * Records that the user replaced `hash` at `path`. A file the engine kept at
+   * its conflict copy of a path (SPEC.md §6.3), by a move or a write, is the
+   * file that was there, so it counts as a replacement at that path too.
+   */
+  private replaced(hash: string, path: string): void {
+    for (const at of [path, ...copiedFrom(path, this.options.name)]) this.options.ledger.replace(hash, at);
+  }
+
+  /** The file at `path` as of this call, without waiting: the vault takes the snapshot synchronously. */
+  private snapshot(path: string): Promise<Uint8Array | undefined> {
+    return this.options.vault.read(path).catch(() => undefined);
   }
 
   private async current(path: string): Promise<Uint8Array | undefined> {

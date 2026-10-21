@@ -119,6 +119,8 @@ export class SimRun {
   private stepNumber = 0;
   /** The revisions retention purged during the run (SimRun.purge), by id. */
   readonly purged = new Map<string, FeedRevision>();
+  /** Whether the run had retention purge (SimRun.purge) or restored a backup (SimRun.restore). */
+  private purgedOrRestored = { purged: false, restored: false };
 
   private constructor(
     readonly context: RunContext,
@@ -252,6 +254,7 @@ export class SimRun {
    * expect exactly these to be gone.
    */
   async purge(revisionIds: readonly string[]): Promise<string[]> {
+    this.purgedOrRestored.purged = true;
     const before = await serverFeed(this.direct, this.context.vaultId);
     const feed = new Map(before.map((revision) => [revision.revisionId, revision]));
     // Each document's head (live or tombstone) before the purge: the last of its revisions in the feed.
@@ -303,6 +306,7 @@ export class SimRun {
    * restores checks its own outcome instead.
    */
   async restore(): Promise<bigint> {
+    this.purgedOrRestored.restored = true;
     const headSeq = await this.control.restore(this.context.vaultId);
     this.context.log(`database restored to seq ${String(headSeq)}`);
     return headSeq;
@@ -325,6 +329,10 @@ export class SimRun {
     await settle();
     await this.drain();
     const heads = await serverHeads(this.direct, this.context.vaultId);
+    for (const violation of this.checkHarnessSeq(heads.lastSeq)) {
+      this.context.violations.push(violation);
+      this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
+    }
     for (const observer of this.observers) {
       try {
         this.context.violations.push(...(await observer.check(heads)));
@@ -369,6 +377,23 @@ export class SimRun {
       if (this.observers.every((observer) => observer.lastPush?.committed === 0 && observer.lastPush.conflicts === 0)) return;
     }
     this.context.violations.push({ invariant: "liveness", detail: `the engines still committed after ${String(maxPushRounds)} rounds of pushes` });
+  }
+
+  /**
+   * `server-seq`: after the last pulls, the harness's serverSeq (a lower
+   * bound, taken from replies) is the feed head, unless a restore lowered the
+   * head. `engine-resync`: in a run that neither restores nor purges, no
+   * engine pull resynced; the server never diverged from any cursor (#155).
+   */
+  private checkHarnessSeq(lastSeq: bigint): Violation[] {
+    const violations: Violation[] = [];
+    const { purged, restored } = this.purgedOrRestored;
+    if (!restored && this.context.serverSeq() !== lastSeq) violations.push({ invariant: "server-seq", detail: `the harness's server seq is ${String(this.context.serverSeq())}, the feed ends at ${String(lastSeq)}` });
+    if (purged || restored) return violations;
+    for (const observer of this.observers) {
+      for (const at of observer.resyncs) violations.push({ invariant: "engine-resync", detail: `${observer.name}'s pull at ${at} resynced, although the server was neither restored nor purged` });
+    }
+    return violations;
   }
 
   /** The user-visible invariants (sim/invariants.ts): no lost write, no file gone without a delete, no delete undone without a user's change. */

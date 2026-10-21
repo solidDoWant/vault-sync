@@ -56,8 +56,12 @@ export interface RunContext {
   /** The schedule step being executed. */
   stepNumber: () => number;
   /**
-   * The server's head seq: the highest seq any reply has carried. Every call
-   * goes through the network, which sees every reply, so it is exact.
+   * The server's head seq as far as the harness knows it: the highest seq a
+   * CommitRevision or ListChanges reply has carried. It is a lower bound,
+   * not exact: a commit whose reply was lost moves the head unseen until the
+   * next reply that shows it. SimRun.finish() checks that it equals the feed
+   * head at the end of a run (`server-seq`), so the plumbing cannot lag
+   * unnoticed.
    */
   serverSeq: () => bigint;
   /**
