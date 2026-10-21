@@ -156,7 +156,6 @@ describe.runIf(suites.has("members"))("seeded schedules with several users and m
     for (const kind of ["demoted", "promoted", "removed", "rejoined"] as const) changes[kind] += result.membershipChanges[kind];
     const made = result.membershipChanges;
     console.log(`seed ${String(seed)} with ${String(memberUsers)} users (${options.platforms.join(", ")} path rules): ${String(made.demoted)} demoted, ${String(made.promoted)} promoted, ${String(made.removed)} removed, ${String(made.rejoined)} rejoined, ${summarize(result.trace)}`);
-    reportShadow(`seed ${String(seed)} with members`, result.trace);
     if (result.violations.length === 0) return;
 
     const invariants = new Set(result.violations.map((violation) => violation.invariant));

@@ -57,7 +57,9 @@ export async function membershipChanges(endpoints: SimEndpoints): Promise<Member
       await run.step({ kind: "deliver-response", client: 1 });
     }
   };
-  const membership = (entry: string) => run.context.log(entry);
+  const membership = (entry: string) => {
+    run.context.log(entry);
+  };
   /** The trace's server answers to c1's calls since trace line `start`. */
   const memberOutcomesSince = (start: number) => run.trace.slice(start).filter((line) => /#\d+ c1 \w+.* -> /.test(line));
   const documents = async () => new Set((await serverFeed(run.direct, run.context.vaultId)).map((revision) => revision.documentId));
