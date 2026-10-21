@@ -169,3 +169,52 @@ describe.each(["macos", "windows"] as const)("an unpushed case-only rename on %s
     expect(await b.engine.push()).toEqual(quiet);
   });
 });
+
+// The renamed note's bytes equal the deleted note's synced content (an empty
+// note, a template): the file at the path is still the renamed note's, which
+// the vault moved there, never the deleted note's back (#550).
+describe.each([
+  ["posix", "a.md"],
+  ["macos", "a.md"],
+  ["macos", "A.md"],
+  ["windows", "A.md"],
+] as const)(
+  "a rename onto a deleted note's path with the same content, on %s, to %s (#550)",
+  (platform, target) => {
+    it.each([false, true])(
+      "keeps the renamed note's id and the delete (restart: %s)",
+      async (restart) => {
+        const devices = twoDevices({ pathRules: { platform } });
+        const { a, b, server } = devices;
+        await syncedOnBoth(devices, "x.md", "same\n");
+        await syncedOnBoth(devices, "a.md", "same\n");
+        const before = server.liveDocuments();
+        const renamed = before.get("x.md");
+        const deleted = before.get("a.md");
+        expect(renamed).toBeDefined();
+        expect(deleted).toBeDefined();
+
+        await a.vault.delete("a.md");
+        await a.engine.settled();
+        if (restart) a.restart();
+        await a.vault.rename("x.md", target);
+        await a.engine.settled();
+        for (let round = 0; round < 4; round++) {
+          await a.engine.push();
+          await b.engine.push();
+        }
+        await a.engine.pull();
+        await b.engine.pull();
+
+        expect(server.liveDocuments()).toEqual(new Map([[target, renamed]]));
+        expect(server.liveFiles()).toEqual(new Map([[target, "same\n"]]));
+        expect(await files(a.vault)).toEqual(server.liveFiles());
+        expect(await files(b.vault)).toEqual(server.liveFiles());
+        expect(await a.journal.listDeferred()).toEqual([]);
+        expect(await b.journal.listDeferred()).toEqual([]);
+        expect(await a.engine.push()).toEqual(quiet);
+        expect(await b.engine.push()).toEqual(quiet);
+      },
+    );
+  },
+);
