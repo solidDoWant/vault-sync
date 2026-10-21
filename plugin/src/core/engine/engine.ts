@@ -1172,7 +1172,9 @@ export class SyncEngine {
    */
   private async localVersion(state: DocumentState | undefined, found: { path: string; content: Uint8Array | null }): Promise<LocalVersion> {
     if (!liveHere(state)) return found;
-    const binding = state.binding;
+    // The binding as it is now: the engine's own rename of the file (a
+    // clean apply interrupted by a save) moved it since `state` was read.
+    const binding = (await this.journal.getDocument(state.documentId))?.binding ?? state.binding;
     if (binding === undefined) return this.followRename(state, found);
     if (binding === null) {
       // The user deleted its file, or a crash hid the engine's own move of
