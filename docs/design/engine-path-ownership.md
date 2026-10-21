@@ -709,14 +709,14 @@ Shrinking gives minimal command sequences. Each `it.fails` carries the issue it 
 
 ### 10.2 Phase 2 exit bar (all must hold)
 
-- **E1.** 7 consecutive nightly runs green:
+- **E1.** 3 consecutive nightly runs green (owner decision 2026-10-21; was 7):
   - 100 seeds × 3,000 steps each, plain and retention schedules, with server restore steps enabled;
   - `SIM_CLIENTS=3` and enough engines that `posix`, `windows` and `macos` all run (`SIM_ENGINES=3`);
   - the faithful-filesystem vault (R2) on;
   - no checker exception beyond X-2's exact window (with X-3/X-6/X-7 inside it).
 
-  At today's 45 minutes per 50 seeds that is about 1.5 h a night. Seven nights are 700 seeds, or 2.1 M steps, with no failure. That puts the 95 % upper bound on the per-seed failure rate at about 0.43 % (the rule of three), against today's 20 % (#471: 10 of 50) and 5 % (#526: 7 of 134).
-- **E2.** The property suite (§9.3) is green at 100,000 cases a night for the same 7 nights, and no `it.fails` is left.
+  At today's 45 minutes per 50 seeds that is about 1.5 h a night. Three nights are 300 seeds, or 0.9 M steps, with no failure: a 95 % upper bound on the per-seed failure rate of about 1 % (the rule of three), against today's 20 % (#471: 10 of 50) and 5 % (#526: 7 of 134). The nightly keeps running after Phase 2 closes, so later failures still surface.
+- **E2.** The property suite (§9.3) is green at 100,000 cases a night for the same 3 nights, and no `it.fails` is left.
 - **E3.** No open bug of severity medium or above with `area:plugin` or `area:sim` in the Phase 2 milestone. Every issue blocked on #552 is closed or re-triaged with a cited rule.
 - **E4.** Every simulation invariant has a mutation test that fails it: an engine mutant per invariant, including `identity` and `journal-holder`.
 - **E5.** None of the 64 identifiers in §8.2 remains in `plugin/src/core` (checked by grep in CI), except `resolving` as the W(b) guard.

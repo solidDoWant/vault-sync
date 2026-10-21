@@ -36,7 +36,7 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
 
 ## Rules
 
-- **Time box.** If you have been working for ~45 minutes in this run and the issue is not done, commit and push what you have, open (or update) the PR as a **draft** describing what is left, and hand back with `HANDOFF: incomplete` — the scheduler resumes this session in the next free slot, after reviews and CI fixes that were waiting. Work in progress is then never only on this VM. When you finish a resumed run, mark the draft ready (`gh pr ready`).
+- **Time box.** If you have been working for ~45 minutes in this run (~90 minutes for an engine refactor step — a sub-issue of #552 titled `refactor(engine):` — where a restart means reloading a very large context) and the issue is not done, commit and push what you have, open (or update) the PR as a **draft** describing what is left, and hand back with `HANDOFF: incomplete` — the scheduler resumes this session in the next free slot, after reviews and CI fixes that were waiting. Work in progress is then never only on this VM. When you finish a resumed run, mark the draft ready (`gh pr ready`).
 
 - Never push to `master`, never merge your own PR, never modify acceptance tests to make them pass.
 - Before pushing to an existing PR, check `gh pr view <PR> --json autoMergeRequest`; if auto-merge is armed, disarm it first (`gh pr merge <PR> --disable-auto`) so unreviewed commits cannot merge.
