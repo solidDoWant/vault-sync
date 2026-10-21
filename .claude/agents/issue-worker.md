@@ -26,6 +26,7 @@ You implement exactly one GitHub issue in this repository, working in your own g
 - **Time box.** If you have been working for ~45 minutes and the issue is not done, commit and push what you have, open (or update) the PR as a **draft** describing what is left, and report back to the project manager instead of continuing — a single long-running worker holds the whole cycle open.
 
 - Never push to `master`, never merge your own PR, never modify acceptance tests to make them pass.
+- Before pushing to an existing PR, check `gh pr view <PR> --json autoMergeRequest`; if auto-merge is armed, disarm it first (`gh pr merge <PR> --disable-auto`) so unreviewed commits cannot merge.
 - Never weaken lint/CI configuration to get green.
 - Update docs and `SPEC.md` in the same PR when behavior changes.
 - If you hit an environment problem you cannot fix inside the VM, stop and report it with the exact error.
