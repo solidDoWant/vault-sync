@@ -79,7 +79,8 @@ export interface VaultHistory {
   /** The id of the synced document at `path`, if a live one is there. */
   documentAt(path: string): Promise<string | undefined>;
   history(documentId: string, pageToken?: string): Promise<HistoryPage>;
-  readRevision(entry: HistoryEntry): Promise<Uint8Array>;
+  /** `entry`'s content; with `limit`, only its first `limit` bytes when it is larger (#656), for a preview. */
+  readRevision(entry: HistoryEntry, limit?: number): Promise<Uint8Array>;
   /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one; `path` restores it there instead of at its own path (#420). */
   restore(entry: HistoryEntry, content?: Uint8Array, path?: string): Promise<RemoteRevision>;
   /**
@@ -188,7 +189,7 @@ export class SyncSession {
         return state === undefined || state.deleted ? undefined : state.documentId;
       },
       history: (documentId, pageToken) => engine.history(documentId, pageToken),
-      readRevision: (entry) => engine.readRevision(entry),
+      readRevision: (entry, limit) => engine.readRevision(entry, limit),
       restore: async (entry, content, path) => {
         try {
           return await engine.restore(entry, content, path);

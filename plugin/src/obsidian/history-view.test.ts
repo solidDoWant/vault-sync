@@ -48,6 +48,19 @@ describe("history view", () => {
       const preview = previewOf(long);
       expect(preview).toEqual({ kind: "text", text: "a".repeat(maxPreviewBytes - 1), truncated: true });
     });
+
+    it("previews the start of a larger revision by that revision's size (#656)", () => {
+      const start = encoder.encode("a".repeat(maxPreviewBytes));
+      expect(previewOf(start, maxPreviewBytes + 1)).toEqual({ kind: "text", text: "a".repeat(maxPreviewBytes), truncated: true });
+      expect(previewOf(start, maxPreviewBytes)).toEqual({ kind: "text", text: "a".repeat(maxPreviewBytes), truncated: false });
+
+      // "é" is two bytes; the downloaded start ends inside it.
+      const cut = encoder.encode(`${"a".repeat(maxPreviewBytes - 1)}é`).subarray(0, maxPreviewBytes);
+      expect(previewOf(cut, maxPreviewBytes + 5)).toEqual({ kind: "text", text: "a".repeat(maxPreviewBytes - 1), truncated: true });
+
+      const binary = new Uint8Array(maxPreviewBytes).fill(0);
+      expect(previewOf(binary, 10_000_000)).toEqual({ kind: "binary", size: 10_000_000 });
+    });
   });
 
   describe("labels", () => {
