@@ -497,10 +497,14 @@ export class SyncEngine {
     return { documentId: revision.documentId, path: revision.path, reason, revision, localPath };
   }
 
-  /** The file a document keeps on this device while its remote revision waits: its bound file, if the vault has it. */
+  /**
+   * The file a document keeps on this device while its remote revision
+   * waits: its bound file, if the vault has it. A tombstone's bound file is
+   * the user's change that brings it back (localVersion).
+   */
   private async keptFile(state: DocumentState | undefined): Promise<string | undefined> {
     const spelling = state?.binding?.spelling;
-    if (state === undefined || state.deleted || spelling === undefined || !this.inScope(spelling)) return undefined;
+    if (state === undefined || spelling === undefined || !this.inScope(spelling)) return undefined;
     return (await this.vault.stat(spelling)) !== null ? spelling : undefined;
   }
 

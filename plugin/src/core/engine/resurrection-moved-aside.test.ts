@@ -36,3 +36,35 @@ describe.each(["posix", "macos", "windows"] as const)("a deleted note brought ba
     expect(await h.journal.listPending()).toEqual([]);
   });
 });
+
+// Seed 100039 (#700): the other device brings the note back at a path Windows cannot hold. The revision waits as
+// unmaterializable, and this device keeps the moved-aside edit, reported as the document's kept file (SPEC.md §8).
+describe("a deleted note brought back on another device at a path Windows cannot hold", () => {
+  it("keeps this device's moved-aside edit and reports it as the document's kept file", async () => {
+    const h = harness({ merge: "default", pathRules: { platform: "windows" } });
+    await h.vault.write("s.md", bytes("s\n"));
+    await h.engine.push();
+    const documentId = h.server.liveDocuments().get("s.md") ?? "";
+    h.server.commit({ documentId, path: "s.md", deleted: true, deviceId: "phone" });
+    h.server.commit({ documentId: "other", path: "s.md", content: "other\n", deviceId: "phone" });
+
+    await h.vault.write("s.md", bytes("s\nlocal\n"));
+    await h.engine.settled();
+    await h.engine.pull();
+    moveHeadBeforeCommit(h, () => h.server.commit({ documentId, path: "ab:c.md", content: "s\nremote\n", deviceId: "phone" }));
+    for (let round = 0; round < 4; round++) await h.engine.push();
+    await h.engine.pull();
+
+    const unmaterializable = await h.engine.unmaterializable();
+    expect(unmaterializable.map((document) => [document.documentId, document.path])).toEqual([[documentId, "ab:c.md"]]);
+    const kept = unmaterializable[0]?.localPath;
+    expect(kept).toBeDefined();
+    expect(new TextDecoder().decode((await h.vault.read(kept ?? "")) ?? new Uint8Array())).toBe("s\nlocal\n");
+    // Every other file is a live document's.
+    const local = await files(h.vault);
+    local.delete(kept ?? "");
+    const live = h.server.liveFiles();
+    live.delete("ab:c.md");
+    expect(local).toEqual(live);
+  });
+});
