@@ -12,16 +12,24 @@ export type PathEquivalence = "server" | "file";
  * - `serverKey` (`K`): the path key (SPEC.md §5), NFC and full case folding.
  *   What the server keeps unique, so what conflict-copy names stay clear of.
  * - `filesystemKey` (`F`): the platform filesystem's name equivalence
- *   (identity on `posix`, simple upper case per UTF-16 unit on `windows`,
- *   NFD plus that on `macos`). Which spellings name one file on the device.
+ *   (identity on `posix`, simple upper case per UTF-16 unit on `windows` and
+ *   `android`, NFD plus that on `macos`). Which spellings name one file on
+ *   the device.
  *
  * `K` and `F` are not ordered: `Straße.md` and `STRASSE.md` share a `K` but
- * are two NTFS or APFS files, and `ı.md` and `I.md` are one NTFS or APFS file
- * with two `K`s (`ı` folds to itself, but its upper case is `I`). The engine's
- * `fileKey` is their join on a case-insensitive platform, `K` of `F`: two
- * spellings with one `K` or one `F` have one file key, so a document at
- * `I.md` is never taken for a stranger to the file at `ı.md` (§6.4 item 4).
- * Where one file key holds two files (`ß`/`SS`), `oneFile` tells them apart.
+ * are two NTFS, APFS or FAT files, and `ı.md` and `I.md` are one file with
+ * two `K`s (`ı` folds to itself, but its upper case is `I`). The engine's
+ * `fileKey` on a case-insensitive platform is `K` of `F`. Two spellings with
+ * one `F` always have one file key, so a document at `I.md` is never taken
+ * for a stranger to the file at `ı.md` (§6.4 item 4). Two spellings with one
+ * `K` almost always do too, but not always: it is not the exact join of the
+ * two. On `windows` and `android`, which do not normalize first, `F` upper-
+ * cases U+0345 COMBINING GREEK YPOGEGRAMMENI (combining class 240) to U+0399
+ * (class 0), which canonical reordering no longer moves. So `α` U+0345 U+0301
+ * and `α` U+0301 U+0345, canonically equivalent (one `K`), get two file
+ * keys, and are two names on the device too (#585); the first also shares
+ * an `F`, and so a file key, with `α` `ι` U+0301, whose `K` differs. Where
+ * one file key holds two files (`ß`/`SS`), `oneFile` tells them apart.
  */
 export class PathSpace {
   readonly rules: PathRules;

@@ -1008,7 +1008,7 @@ describe("SyncSession", () => {
       server.commit({ documentId: "colon", path: "ab:c.md", content: "a colon\n" });
       server.commit({ documentId: "quote", path: 'say "hi"/note.md', content: "a quote\n" });
       const vault = new InMemoryVault();
-      const running = session({ server, vault, journal: new InMemoryJournal(), options: { pathRules: { platform: "posix", sharedStorage: true } } });
+      const running = session({ server, vault, journal: new InMemoryJournal(), options: { pathRules: { platform: "android" } } });
       await running.start();
 
       const listed = (await running.unmaterializable()).map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));

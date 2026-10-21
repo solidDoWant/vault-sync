@@ -12,8 +12,8 @@ describe("pathRulesFor", () => {
     expect(pathRulesFor(desktop, "/home/a/vault")).toEqual({ platform: "posix", root: "/home/a/vault" });
   });
 
-  it("gives Android the POSIX rules with its shared storage's character set", () => {
-    expect(pathRulesFor({ ...desktop, isAndroidApp: true })).toEqual({ platform: "posix", sharedStorage: true });
+  it("gives Android its shared storage's rules, whose filesystem folds case (#544)", () => {
+    expect(pathRulesFor({ ...desktop, isAndroidApp: true })).toEqual({ platform: "android" });
   });
 });
 
