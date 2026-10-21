@@ -1,4 +1,4 @@
-import { Modal, Notice, PluginSettingTab, Setting, type App, type Plugin } from "obsidian";
+import { Modal, Notice, PluginSettingTab, Setting, type App, type ButtonComponent, type Plugin } from "obsidian";
 
 import type { Vault } from "../gen/vaultsync/v1/types_pb";
 import type { AuthState } from "../core/auth/tokens";
@@ -67,6 +67,11 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private statusSetting: Setting | undefined;
   /** Kept across renders, so a list rebuilt while a removal runs cannot send it again. */
   private readonly removals: DeviceRemovals;
+  /**
+   * The device list on screen: a removal that settles after the tab was
+   * rendered again updates this one, not the list it was started from.
+   */
+  private shownDevices: { reload(): void; removeButtons: Map<string, ButtonComponent> } | undefined;
 
   constructor(
     app: App,
@@ -86,6 +91,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   render(): void {
     const { containerEl, host } = this;
     containerEl.empty();
+    this.shownDevices = undefined;
     const locked = host.settingsLocked;
 
     new Setting(containerEl)
@@ -200,17 +206,20 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("Devices").setHeading();
     const intro = new Setting(containerEl).setDesc("Loading your devices…");
     const list = containerEl.createDiv({ cls: "vault-sync-devices" });
+    const removeButtons = new Map<string, ButtonComponent>();
     const load = () => {
       void host.listDevices().then(
         (devices) => {
           list.empty();
+          removeButtons.clear();
           intro.setDesc(
             "The devices registered to your account. Remove one you no longer use: it stops syncing, and its changes not synced yet stay on it until it is registered again. Each device's history stays. Remove this device from another device.",
           );
           for (const device of devices) {
             const row = new Setting(list).setName(device.label).setDesc(device.description);
             if (device.current) continue;
-            row.addButton((button) =>
+            row.addButton((button) => {
+              removeButtons.set(device.id, button);
               button
                 .setButtonText("Remove")
                 .setDisabled(this.removals.has(device.id))
@@ -220,16 +229,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
                     button.setDisabled(true);
                     this.removals.start(device.id).then(
                       (removed) => {
-                        if (removed) load();
+                        if (removed) this.shownDevices?.reload();
                       },
                       (error: unknown) => {
-                        button.setDisabled(false);
+                        this.shownDevices?.removeButtons.get(device.id)?.setDisabled(false);
                         new Notice(`Vault Sync: could not remove the device: ${errorMessage(error)}`);
                       },
                     );
                   }).open();
-                }),
-            );
+                });
+            });
           }
         },
         (error: unknown) => {
@@ -237,6 +246,7 @@ export class VaultSyncSettingTab extends PluginSettingTab {
         },
       );
     };
+    this.shownDevices = { reload: load, removeButtons };
     load();
   }
 
