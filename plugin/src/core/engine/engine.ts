@@ -1186,6 +1186,12 @@ export class SyncEngine {
    * any: an untracked file, since rule W moved every other document's away.
    */
   private async localVersion(state: DocumentState | undefined, found: { path: string; content: Uint8Array | null }): Promise<LocalVersion> {
+    if (state?.deleted === true && state.binding) {
+      // A tombstone bound to a file: the user's change that brings it back,
+      // which rule W may have moved aside to a copy name (design §4.5 step 4).
+      const content = await this.readOrNull(state.binding.spelling);
+      if (content !== null) return { path: state.binding.spelling, content };
+    }
     if (!liveHere(state)) return found;
     // The binding as it is now: the engine's own rename of the file (a
     // clean apply interrupted by a save) moved it since `state` was read.

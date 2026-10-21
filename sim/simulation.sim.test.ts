@@ -1528,22 +1528,21 @@ describe.runIf(suites.has("scenarios"))("scripted crash in a pull that brings a 
 });
 
 describe.runIf(suites.has("scenarios"))("scripted parked note's file renamed, then a restart, against another note at its old path (#459)", () => {
-  it("keeps the other note at plan.md, the renamed file as a new note, and brings the parked note back at draft.md", async () => {
+  it("keeps the other note at plan.md and the parked note at its renamed file, with the edit and the local rename winning", async () => {
     const result = await parkedEditAtReusedPath(environment, "renamed-file");
     const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}\ntombstoned: ${JSON.stringify(result.tombstoned)}`;
 
     expect(result.violations, trace).toEqual([]);
     const note = result.before.get("plan.md");
     expect(note, trace).toBeDefined();
-    expect(result.documents.get("draft.md"), trace).toBe(note);
+    // A blocked document keeps the file the user moved it to (design §6.4 item 10, PO-11): its local rename wins over
+    // the remote one to draft.md, and its edit merges with the remote revision. Before #700 the renamed file was
+    // released as a new note and the parked note came back at draft.md.
+    expect(result.documents.get("notes.md"), trace).toBe(note);
     // Before #459 the parked note took the other note's file for its own after the restart, and the server tombstoned the other note.
     expect(result.documents.get("plan.md"), trace).toBeDefined();
     expect(result.documents.get("plan.md"), trace).not.toBe(note);
-    expect(result.documents.get("notes.md"), trace).toBeDefined();
-    expect(result.documents.get("notes.md"), trace).not.toBe(note);
-    expect(result.documents.get("notes.md"), trace).not.toBe(result.documents.get("plan.md"));
     const expected = new Map([
-      ["draft.md", "one\ntwo\n"],
       ["notes.md", "one\ntwo (edited)\n"],
       ["plan.md", "another note\n"],
     ]);
