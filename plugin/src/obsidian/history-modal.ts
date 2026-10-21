@@ -2,6 +2,7 @@ import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
 
 import { RestoreError, type HistoryEntry } from "../core/engine/history";
 import type { DocumentState } from "../core/journal/journal";
+import { visiblePath } from "./display-text";
 import { entryLabel, otherPathValue, previewOf, sizeLabel } from "./history-view";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
@@ -32,7 +33,7 @@ export class HistoryModal extends Modal {
     path: string,
   ) {
     super(app);
-    this.titleEl.setText(`History of ${path}`);
+    this.titleEl.setText(`History of ${visiblePath(path)}`);
     this.modalEl.addClass("vault-sync-history");
   }
 
@@ -149,7 +150,7 @@ export class HistoryModal extends Modal {
   private async restore(entry: HistoryEntry, content: Uint8Array | undefined, path?: string): Promise<void> {
     try {
       const restored = await this.history.restore(entry, content, path);
-      new Notice(`Vault Sync: restored ${restored.path} to the version of ${entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt)}.`);
+      new Notice(`Vault Sync: restored ${visiblePath(restored.path)} to the version of ${entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt)}.`);
       this.selected = undefined;
       this.previewEl.empty();
       await this.load(true);
@@ -204,7 +205,7 @@ export class DeletedFilesModal extends FuzzySuggestModal<DocumentState> {
   }
 
   getItemText(item: DocumentState): string {
-    return item.path;
+    return visiblePath(item.path);
   }
 
   onChooseItem(item: DocumentState): void {

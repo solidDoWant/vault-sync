@@ -1,5 +1,5 @@
 import type { HistoryEntry, RestoreError } from "../core/engine/history";
-import { withoutInvisibleCharacters } from "./device-name";
+import { quotedName, shownName, visiblePath } from "./display-text";
 
 // What the history views show for a revision (SPEC.md §11). No Obsidian
 // import, so it is unit-tested; history-modal.ts renders it.
@@ -33,22 +33,17 @@ export function previewOf(content: Uint8Array): Preview {
   return { kind: "binary", size: content.length };
 }
 
-/** Double quotation marks, which could close the label's quotes early. */
-const doubleQuotes = /["«»“”„‟″‶〝〞〟＂]/gu;
-
 /**
  * Who committed a revision: this device, or another one by the name the
  * server reports (quoted, so another user's name cannot pass for "this
- * device"), or by id when it reports none. The name loses invisible
- * characters that could reorder or hide parts of the label, and its double
- * quotes become `'`, so it cannot end the quotes early (#548).
+ * device"), or by id when it reports none. The name is shown as shownName
+ * shows it and isolated (quotedName), so it cannot reorder, hide or end the
+ * label early (#548, #557).
  */
 export function deviceLabel(entry: Pick<HistoryEntry, "deviceId" | "deviceName" | "thisDevice">): string {
   if (entry.thisDevice) return "this device";
-  const name = withoutInvisibleCharacters(entry.deviceName ?? "")
-    .replace(doubleQuotes, "'")
-    .trim();
-  if (name !== "") return `device “${name}”`;
+  const name = shownName(entry.deviceName ?? "");
+  if (name !== "") return `device ${quotedName(name)}`;
   if (entry.deviceId === "") return "an unknown device";
   return `device ${entry.deviceId.slice(0, 8)}`;
 }
@@ -98,12 +93,17 @@ export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefin
   return `${when} · ${deviceLabel(entry)} · ${changeLabel(entry, previous)}`;
 }
 
-/** What a revision changed relative to the one before it (`previous`, the next older entry). */
+/**
+ * What a revision changed relative to the one before it (`previous`, the next
+ * older entry). Paths are another member's text: shown as visiblePath shows
+ * them (#555).
+ */
 export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefined): string {
-  if (entry.deleted) return `deleted ${entry.path}`;
+  const path = visiblePath(entry.path);
+  if (entry.deleted) return `deleted ${path}`;
   // The document's first revision, or the oldest that retention kept.
-  if (previous === undefined) return `earliest kept version of ${entry.path} (${sizeLabel(entry.size)})`;
-  if (previous.deleted) return `restored ${entry.path} (${sizeLabel(entry.size)})`;
-  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? `moved to ${entry.path}` : `moved to ${entry.path} and edited (${sizeLabel(entry.size)})`;
+  if (previous === undefined) return `earliest kept version of ${path} (${sizeLabel(entry.size)})`;
+  if (previous.deleted) return `restored ${path} (${sizeLabel(entry.size)})`;
+  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? `moved to ${path}` : `moved to ${path} and edited (${sizeLabel(entry.size)})`;
   return `edited (${sizeLabel(entry.size)})`;
 }

@@ -3,7 +3,8 @@ import { ItemView, normalizePath, Notice, TFile, type WorkspaceLeaf } from "obsi
 import type { OpenConflict } from "../core/engine/conflicts";
 import type { DeferredDocument } from "../core/engine/deferred";
 import type { RejectedOperation, TooLargeDocument, UnmaterializableDocument } from "../core/engine/engine";
-import { conflictReasonText, deferredReasonText, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import { conflictReasonText, deferredReasonText, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText } from "./conflict-text";
+import { visiblePath } from "./display-text";
 import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
@@ -122,7 +123,7 @@ export class ConflictView extends ItemView {
       const list = root.createEl("ul", { cls: "vault-sync-too-large" });
       for (const document of tooLarge) {
         const item = list.createEl("li", { cls: "vault-sync-too-large-document" });
-        item.createDiv({ text: document.path, cls: "vault-sync-too-large-path" });
+        item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-too-large-path" });
         item.createDiv({ text: tooLargeText(document.size), cls: "vault-sync-too-large-reason" });
         if (document.localPath !== undefined) this.fileLine(item, "Earlier version on this device", document.localPath, "vault-sync-too-large-local");
       }
@@ -131,7 +132,7 @@ export class ConflictView extends ItemView {
     if (rejected.length > 0 || deferred.length > 0 || heldByOpenView !== undefined) root.createEl("h4", { text: "Files that are not synced" });
     if (heldByOpenView !== undefined) {
       const item = root.createDiv({ cls: "vault-sync-held" });
-      this.fileLine(item, "Waiting for", heldByOpenView, "vault-sync-held-path", visiblePath(heldByOpenView));
+      this.fileLine(item, "Waiting for", heldByOpenView, "vault-sync-held-path");
       item.createDiv({ text: openViewText(heldByOpenView), cls: "vault-sync-held-reason" });
     }
     if (rejected.length > 0) {
@@ -139,7 +140,7 @@ export class ConflictView extends ItemView {
       const list = root.createEl("ul", { cls: "vault-sync-rejected" });
       for (const { operation, reason, error } of rejected) {
         const item = list.createEl("li", { cls: "vault-sync-rejected-file" });
-        this.fileLine(item, operation.deleted ? "Deleted file" : "File", operation.path, "vault-sync-rejected-path", visiblePath(operation.path));
+        this.fileLine(item, operation.deleted ? "Deleted file" : "File", operation.path, "vault-sync-rejected-path");
         item.createDiv({ text: rejectedReasonText(reason, errorMessage(error)), cls: "vault-sync-rejected-reason" });
       }
     }
@@ -157,7 +158,7 @@ export class ConflictView extends ItemView {
 
   private renderConflict(item: HTMLElement, { record, original, copy }: OpenConflict): void {
     item.createDiv({ text: conflictReasonText(record.reason), cls: "vault-sync-conflict-reason" });
-    item.createDiv({ text: `Path: ${record.path} · ${new Date(record.at).toLocaleString()}`, cls: "vault-sync-conflict-path" });
+    item.createDiv({ text: `Path: ${visiblePath(record.path)} · ${new Date(record.at).toLocaleString()}`, cls: "vault-sync-conflict-path" });
     const versions = item.createDiv();
     if (copy === null) {
       this.fileLine(versions, "This device's version (not synced)", original, "vault-sync-conflict-original");
@@ -175,20 +176,20 @@ export class ConflictView extends ItemView {
   }
 
   private renderUnmaterializable(item: HTMLElement, document: UnmaterializableDocument): void {
-    item.createDiv({ text: document.path, cls: "vault-sync-unmaterializable-path" });
+    item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-unmaterializable-path" });
     item.createDiv({ text: unmaterializableReasonText(document.reason), cls: "vault-sync-unmaterializable-reason" });
     if (document.localPath !== undefined) this.fileLine(item, "Earlier version on this device", document.localPath, "vault-sync-unmaterializable-local");
   }
 
   /** A label and a link that opens `path`, or "no longer exists". */
-  private fileLine(parent: HTMLElement, label: string, path: string | null, cls: string, text = path ?? ""): void {
+  private fileLine(parent: HTMLElement, label: string, path: string | null, cls: string): void {
     const line = parent.createDiv();
     line.appendText(`${label}: `);
     if (path === null) {
       line.createSpan({ text: "no longer exists", cls });
       return;
     }
-    const link = line.createEl("a", { text, href: "#", cls });
+    const link = line.createEl("a", { text: visiblePath(path), href: "#", cls });
     link.addEventListener("click", (event) => {
       event.preventDefault();
       void this.openPath(path, event.ctrlKey || event.metaKey);
