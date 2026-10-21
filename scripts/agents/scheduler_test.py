@@ -19,6 +19,7 @@ import time
 import unittest
 from pathlib import Path
 
+sys.dont_write_bytecode = True  # no __pycache__ in the checkout
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import scheduler as s  # noqa: E402
 
