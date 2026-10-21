@@ -16,6 +16,7 @@ import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, type BindingChange, type LocalMove } from "./bindings";
 import { PathClaims, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
+import { movedBeforeDelete } from "./decide";
 import { planPush, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
@@ -839,6 +840,12 @@ export class SyncEngine {
     const baseOnDisk = baseContent !== null && sha256Hex(baseContent) === baseHash;
 
     if (remote.deleted) {
+      // A local rename not pushed yet wins over the remote delete (PO-9).
+      const moved = movedBeforeDelete(state, remote);
+      if (moved !== undefined) {
+        const content = await this.readOrNull(moved);
+        if (content !== null) return { kind: "dirty", path: moved, content };
+      }
       // Nothing there: the engine already deleted it, or the user deleted it too. Both agree.
       if (basePath === undefined || baseContent === null) return { kind: "applied" };
       // The user deleted its file, and another document's binding holds the
@@ -1940,6 +1947,7 @@ export class SyncEngine {
       }
       // A create's document gets its row with the operation (Bindings.created).
       if (operation.baseRevisionId === "" && !(await this.known(operation.documentId))) await this.bindings.created(operation);
+      else if (plan.revivals.has(operation.revisionId)) await this.bindings.revived(operation);
       else await this.journal.addPending(operation);
       await this.commitOperation(operation, summary);
     }

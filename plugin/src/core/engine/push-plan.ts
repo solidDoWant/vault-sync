@@ -38,6 +38,8 @@ export interface PushPlan {
   waiting: Set<string>;
   /** Documents whose synced content is back in an untracked file at their path after the user deleted their file: the push binds them to it again. */
   adopted: { state: DocumentState; path: string }[];
+  /** Operations that bring a tombstoned document back from an untracked file: recorded with the document bound to it (Bindings.revived). */
+  revivals: Set<string>;
 }
 
 /**
@@ -107,6 +109,7 @@ export async function planPush(
   const edits: PendingOperation[] = [];
   const creates: PendingOperation[] = [];
   const adopted: { state: DocumentState; path: string }[] = [];
+  const revivals = new Set<string>();
   const adopting = new Set<string>();
 
   for (const state of source.documents) {
@@ -211,7 +214,9 @@ export async function planPush(
       tombstone.absence !== "user-deleted" &&
       !busyDocuments.has(tombstone.documentId)
     ) {
-      edits.push(operation(source, tombstone, file, content));
+      const revival = operation(source, tombstone, file, content);
+      revivals.add(revival.revisionId);
+      edits.push(revival);
       continue;
     }
     creates.push({
@@ -235,6 +240,7 @@ export async function planPush(
     ],
     waiting,
     adopted,
+    revivals,
   };
 }
 

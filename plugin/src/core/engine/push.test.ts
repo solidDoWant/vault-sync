@@ -143,12 +143,13 @@ describe("SyncEngine push", () => {
       expect(await h.journal.getDocument("a")).toMatchObject({ revisionId: pending[0]?.revisionId, baseHash: sha256Hex(bytes("a2")) });
     });
 
-    it("brings a deleted document back when a file reappears at its path", async () => {
+    it("brings a document another device deleted back when a file reappears at its path", async () => {
       const h = harness();
       h.server.commit({ documentId: "a", path: "a.md", content: "a1" });
       await h.engine.pull();
-      await h.vault.delete("a.md");
-      await h.engine.push();
+      h.server.commit({ documentId: "a", path: "a.md", deleted: true });
+      await h.engine.pull();
+      expect(await h.vault.stat("a.md")).toBeNull();
       const tombstone = h.server.head("a");
       expect(tombstone?.deleted).toBe(true);
       await h.vault.write("a.md", bytes("back again"));
@@ -160,6 +161,24 @@ describe("SyncEngine push", () => {
       expect(head).toMatchObject({ deleted: false, parentRevId: tombstone?.id });
       expect(h.server.history("a")).toHaveLength(3);
       expect((await h.journal.listDocuments()).map((document) => document.documentId)).toEqual(["a"]);
+    });
+
+    it("pushes a file at the path of a document this device deleted as a new document (PO-13)", async () => {
+      const h = harness();
+      h.server.commit({ documentId: "a", path: "a.md", content: "a1" });
+      await h.engine.pull();
+      await h.vault.delete("a.md");
+      await h.engine.push();
+      const tombstone = h.server.head("a");
+      expect(tombstone?.deleted).toBe(true);
+      await h.vault.write("a.md", bytes("a new note"));
+
+      await h.engine.push();
+
+      expect(h.server.liveFiles()).toEqual(new Map([["a.md", "a new note"]]));
+      expect(h.server.liveDocuments().get("a.md")).not.toBe("a");
+      expect(h.server.head("a")?.id).toBe(tombstone?.id);
+      expect(await h.engine.push()).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
     });
 
     it("pushes an edit made while an earlier operation of the document was pending on top of it", async () => {
