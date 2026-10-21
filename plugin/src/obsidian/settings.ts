@@ -5,7 +5,7 @@ import type { AuthState } from "../core/auth/tokens";
 import type { ConfigCategory, ConfigSyncSettings } from "../core/config/policy";
 import { connectProblem } from "./controller";
 import { configSyncSettings, type ConnectedVault, type PluginData } from "./data";
-import { DeviceRemovals, type DeviceRow } from "./devices";
+import { DeviceListLoads, DeviceRemovals, type DeviceRow } from "./devices";
 import { quotedVaultLabel, vaultLabel } from "./display-text";
 import { errorMessage, statusDescription, statusText, type SyncStatus } from "./status";
 
@@ -79,9 +79,10 @@ export class VaultSyncSettingTab extends PluginSettingTab {
   private readonly removals: DeviceRemovals;
   /**
    * The device list on screen: a removal that settles after the tab was
-   * rendered again updates this one, not the list it was started from.
+   * rendered again updates this one, not the list it was started from. None
+   * while the tab is hidden, so a removal that settles then reloads nothing.
    */
-  private shownDevices: { reload(): void; removeButtons: Map<string, ButtonComponent> } | undefined;
+  private shownDevices: { loads: DeviceListLoads; removeButtons: Map<string, ButtonComponent> } | undefined;
 
   constructor(
     app: App,
@@ -97,11 +98,16 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     this.render();
   }
 
+  override hide(): void {
+    this.closeDevices();
+    super.hide();
+  }
+
   /** Rebuilds the tab, e.g. after the account state changed. */
   render(): void {
     const { containerEl, host } = this;
     containerEl.empty();
-    this.shownDevices = undefined;
+    this.closeDevices();
     const locked = host.settingsLocked;
 
     new Setting(containerEl)
@@ -217,47 +223,51 @@ export class VaultSyncSettingTab extends PluginSettingTab {
     const intro = new Setting(containerEl).setDesc("Loading your devices…");
     const list = containerEl.createDiv({ cls: "vault-sync-devices" });
     const removeButtons = new Map<string, ButtonComponent>();
-    const load = () => {
-      void host.listDevices().then(
-        (devices) => {
-          list.empty();
-          removeButtons.clear();
-          intro.setDesc(
-            "The devices registered to your account. Remove one you no longer use: it stops syncing, and its changes not synced yet stay on it until it is registered again. Each device's history stays. Remove this device from another device.",
-          );
-          for (const device of devices) {
-            const row = new Setting(list).setName(device.label).setDesc(device.description);
-            if (device.current) continue;
-            row.addButton((button) => {
-              removeButtons.set(device.id, button);
-              button
-                .setButtonText("Remove")
-                .setDisabled(this.removals.has(device.id))
-                .onClick(() => {
-                  if (this.removals.has(device.id)) return;
-                  new ConfirmRemoveDeviceModal(this.app, device, () => {
-                    button.setDisabled(true);
-                    this.removals.start(device.id).then(
-                      (removed) => {
-                        if (removed) this.shownDevices?.reload();
-                      },
-                      (error: unknown) => {
-                        this.shownDevices?.removeButtons.get(device.id)?.setDisabled(false);
-                        new Notice(`Vault Sync: could not remove the device: ${errorMessage(error)}`);
-                      },
-                    );
-                  }).open();
-                });
-            });
-          }
-        },
-        (error: unknown) => {
-          intro.setDesc(`Could not list your devices: ${errorMessage(error)}`);
-        },
-      );
-    };
-    this.shownDevices = { reload: load, removeButtons };
-    load();
+    const loads = new DeviceListLoads(() => host.listDevices(), {
+      rows: (devices) => {
+        list.empty();
+        removeButtons.clear();
+        intro.setDesc(
+          "The devices registered to your account. Remove one you no longer use: it stops syncing, and its changes not synced yet stay on it until it is registered again. Each device's history stays. Remove this device from another device.",
+        );
+        for (const device of devices) {
+          const row = new Setting(list).setName(device.label).setDesc(device.description);
+          if (device.current) continue;
+          row.addButton((button) => {
+            removeButtons.set(device.id, button);
+            button
+              .setButtonText("Remove")
+              .setDisabled(this.removals.has(device.id))
+              .onClick(() => {
+                if (this.removals.has(device.id)) return;
+                new ConfirmRemoveDeviceModal(this.app, device, () => {
+                  button.setDisabled(true);
+                  this.removals.start(device.id).then(
+                    (removed) => {
+                      if (removed) this.shownDevices?.loads.load();
+                    },
+                    (error: unknown) => {
+                      this.shownDevices?.removeButtons.get(device.id)?.setDisabled(false);
+                      new Notice(`Vault Sync: could not remove the device: ${errorMessage(error)}`);
+                    },
+                  );
+                }).open();
+              });
+          });
+        }
+      },
+      error: (error) => {
+        intro.setDesc(`Could not list your devices: ${errorMessage(error)}`);
+      },
+    });
+    this.shownDevices = { loads, removeButtons };
+    loads.load();
+  }
+
+  /** Stops the device list on screen from loading and painting: the tab was hidden or is rendered again. */
+  private closeDevices(): void {
+    this.shownDevices?.loads.close();
+    this.shownDevices = undefined;
   }
 
   /** Updates the sync status line in place, so a status change never rebuilds (and clears) the fields being edited. */

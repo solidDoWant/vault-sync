@@ -15,7 +15,7 @@ import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
 import { connectNeedsConfirmation, connectProblem, DeviceLimitError, ensureDevice, listRemoteVaults, SyncController, type ClosableJournal } from "./controller";
-import { currentDeviceId, DeviceRemovals, deviceRows, listDevices, removeOtherDevice } from "./devices";
+import { currentDeviceId, DeviceListLoads, DeviceRemovals, deviceRows, type DeviceRow, listDevices, removeOtherDevice } from "./devices";
 import { parsePluginData, type PluginData } from "./data";
 import { DeviceNameError } from "./device-name";
 import { SyncSession, type SyncSessionOptions } from "./session";
@@ -1025,5 +1025,85 @@ describe("the device list (#590)", () => {
     expect(removals.has("device-2")).toBe(false);
     await expect(removals.start("device-2")).resolves.toBe(true);
     expect(attempts).toBe(2);
+  });
+});
+
+describe("DeviceListLoads", () => {
+  const row = (id: string): DeviceRow => ({ id, label: id, current: false, description: "" });
+
+  /** A device list whose ListDevices calls are held until the test settles them, in any order. */
+  function heldList() {
+    const calls: { resolve(rows: DeviceRow[]): void; reject(error: Error): void }[] = [];
+    const painted: string[][] = [];
+    const errors: string[] = [];
+    const loads = new DeviceListLoads(() => new Promise<DeviceRow[]>((resolve, reject) => calls.push({ resolve, reject })), {
+      rows: (rows) => painted.push(rows.map((shown) => shown.id)),
+      error: (error) => errors.push(error instanceof Error ? error.message : String(error)),
+    });
+    return { loads, calls, painted, errors };
+  }
+
+  /** Lets the settled ListDevices calls' callbacks run. */
+  const settle = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+  it("ignores an older ListDevices response that resolves after a reload's (#634)", async () => {
+    const { loads, calls, painted } = heldList();
+    loads.load();
+    // A removal of device-2 succeeds and reloads the list while the first load is held.
+    loads.load();
+    expect(calls).toHaveLength(2);
+    calls[1]?.resolve([row("device-1")]);
+    await settle();
+    calls[0]?.resolve([row("device-1"), row("device-2")]);
+    await settle();
+
+    expect(painted).toEqual([["device-1"]]);
+  });
+
+  it("ignores an older ListDevices failure, and an older success after a reload's failure (#634)", async () => {
+    const { loads, calls, painted, errors } = heldList();
+    loads.load();
+    loads.load();
+    calls[1]?.resolve([row("device-1")]);
+    await settle();
+    calls[0]?.reject(new Error("offline"));
+    await settle();
+    expect(painted).toEqual([["device-1"]]);
+    expect(errors).toEqual([]);
+
+    loads.load();
+    loads.load();
+    calls[3]?.reject(new Error("offline"));
+    await settle();
+    calls[2]?.resolve([row("device-1"), row("device-2")]);
+    await settle();
+    expect(painted).toEqual([["device-1"]]);
+    expect(errors).toEqual(["offline"]);
+  });
+
+  it("paints the latest load when it resolves last", async () => {
+    const { loads, calls, painted } = heldList();
+    loads.load();
+    loads.load();
+    calls[0]?.resolve([row("device-1"), row("device-2")]);
+    await settle();
+    calls[1]?.resolve([row("device-1")]);
+    await settle();
+
+    expect(painted).toEqual([["device-1"]]);
+  });
+
+  it("sends and paints nothing once the list is closed (#634)", async () => {
+    const { loads, calls, painted, errors } = heldList();
+    loads.load();
+    loads.close();
+    calls[0]?.resolve([row("device-1")]);
+    await settle();
+    // A removal that settles after the settings were closed reloads the list.
+    loads.load();
+
+    expect(calls).toHaveLength(1);
+    expect(painted).toEqual([]);
+    expect(errors).toEqual([]);
   });
 });

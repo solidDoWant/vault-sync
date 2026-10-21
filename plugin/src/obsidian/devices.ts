@@ -88,3 +88,46 @@ export class DeviceRemovals {
     return true;
   }
 }
+
+/** Where a device list shows what its loads resolve to. */
+export interface DeviceListView {
+  rows(rows: DeviceRow[]): void;
+  error(error: unknown): void;
+}
+
+/**
+ * The ListDevices loads of one device list on screen (#634). Only the latest
+ * load may paint it: an older response that resolves last, e.g. the first
+ * load's after a removal reloaded the list, would show the removed device
+ * again. Once closed (the list is no longer shown), it sends and paints
+ * nothing.
+ */
+export class DeviceListLoads {
+  private latest = 0;
+  private closed = false;
+
+  constructor(
+    private readonly list: () => Promise<DeviceRow[]>,
+    private readonly view: DeviceListView,
+  ) {}
+
+  /** Lists the devices and paints them, unless a later load was started or the list was closed by then. */
+  load(): void {
+    if (this.closed) return;
+    const load = ++this.latest;
+    const current = () => !this.closed && load === this.latest;
+    void this.list().then(
+      (rows) => {
+        if (current()) this.view.rows(rows);
+      },
+      (error: unknown) => {
+        if (current()) this.view.error(error);
+      },
+    );
+  }
+
+  /** Stops the list's loads: the ones in flight paint nothing, and later ones are not sent. */
+  close(): void {
+    this.closed = true;
+  }
+}

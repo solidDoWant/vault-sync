@@ -201,6 +201,8 @@ interface RemoveDeviceIntercept {
   next: "pass" | "fail" | "hold";
   /** Ends the held call: fails it when given true, sends it otherwise. */
   release: ((fail: boolean) => void) | undefined;
+  /** vault-sync's ListDevices calls since then (#634): how many, and the next one held until released. */
+  listDevices: { calls: number; next: "pass" | "hold"; release: (() => void) | undefined };
 }
 
 const encoder = new TextEncoder();
@@ -1012,22 +1014,27 @@ export default class VaultSyncE2EHarness extends Plugin {
 
   /** The ids of the signed-in user's devices that the server lists (not removed). */
   async serverDeviceIds(): Promise<string[]> {
-    return (await this.vaultSync().protocolClient().devices.listDevices({})).devices.map((device) => device.id);
+    // Not through the intercept: the harness's own calls are not vault-sync's.
+    const client = this.uninterceptedClient?.() ?? this.vaultSync().protocolClient();
+    return (await client.devices.listDevices({})).devices.map((device) => device.id);
   }
 
   /**
    * Routes vault-sync's RemoveDevice calls through the harness from now on
    * (devices.e2e.ts): each call is recorded (`removeDeviceCalls`), and the
    * next one can be failed without reaching the server (`failNextRemoveDevice`)
-   * or held until `releaseRemoveDevice` (`holdNextRemoveDevice`). Every
-   * other RPC goes to the server unchanged.
+   * or held until `releaseRemoveDevice` (`holdNextRemoveDevice`). Its
+   * ListDevices calls are counted (`listDevicesCalls`), and the next one can
+   * be held, already answered by the server, until `releaseListDevices`
+   * (`holdNextListDevices`). Every other RPC goes to the server unchanged.
    */
   interceptRemoveDevice(): void {
     const plugin = this.vaultSync();
     if (this.removeDeviceIntercept !== undefined) return;
-    const intercept: RemoveDeviceIntercept = { calls: [], next: "pass", release: undefined };
+    const intercept: RemoveDeviceIntercept = { calls: [], next: "pass", release: undefined, listDevices: { calls: 0, next: "pass", release: undefined } };
     this.removeDeviceIntercept = intercept;
     const original = plugin.protocolClient.bind(plugin);
+    this.uninterceptedClient = original;
     plugin.protocolClient = () => {
       const client = original();
       const devices = client.devices;
@@ -1045,6 +1052,15 @@ export default class VaultSyncE2EHarness extends Plugin {
             }
             call.forwarded = true;
             return devices.removeDevice(request, options);
+          },
+          listDevices: async (request, options) => {
+            const listing = intercept.listDevices;
+            const mode = listing.next;
+            listing.next = "pass";
+            listing.calls++;
+            const response = await devices.listDevices(request, options);
+            if (mode === "hold") await new Promise<void>((resolve) => (listing.release = resolve));
+            return response;
           },
         },
       };
@@ -1068,12 +1084,36 @@ export default class VaultSyncE2EHarness extends Plugin {
     return release !== undefined;
   }
 
+  holdNextListDevices(): void {
+    this.requireRemoveDeviceIntercept().listDevices.next = "hold";
+  }
+
+  /** Whether a held ListDevices was answered by the server and is waiting for `releaseListDevices`. */
+  listDevicesHeld(): boolean {
+    return this.requireRemoveDeviceIntercept().listDevices.release !== undefined;
+  }
+
+  /** Hands the held ListDevices' response to vault-sync; false if none is held. */
+  releaseListDevices(): boolean {
+    const listing = this.requireRemoveDeviceIntercept().listDevices;
+    const release = listing.release;
+    listing.release = undefined;
+    release?.();
+    return release !== undefined;
+  }
+
+  /** How many ListDevices calls vault-sync made since `interceptRemoveDevice`. */
+  listDevicesCalls(): number {
+    return this.requireRemoveDeviceIntercept().listDevices.calls;
+  }
+
   /** Every RemoveDevice call since `interceptRemoveDevice`, and whether it was sent to the server. */
   removeDeviceCalls(): { deviceId: string; forwarded: boolean }[] {
     return this.requireRemoveDeviceIntercept().calls.map((call) => ({ ...call }));
   }
 
   private removeDeviceIntercept: RemoveDeviceIntercept | undefined;
+  private uninterceptedClient: (() => ReturnType<VaultSyncPlugin["protocolClient"]>) | undefined;
 
   private requireRemoveDeviceIntercept() {
     if (this.removeDeviceIntercept === undefined) throw new Error("interceptRemoveDevice() first");
