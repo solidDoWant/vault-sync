@@ -2,8 +2,9 @@ import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
 
 import { RestoreError, type HistoryEntry } from "../core/engine/history";
 import type { DocumentState } from "../core/journal/journal";
-import { visiblePath } from "./display-text";
-import { entryLabel, otherPathValue, previewOf, sizeLabel } from "./history-view";
+import { shownPath, visiblePath, type Shown } from "./display-text";
+import { entryLabel, historyTitle, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";
+import { renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
 import { errorMessage } from "./status";
 
@@ -33,7 +34,8 @@ export class HistoryModal extends Modal {
     path: string,
   ) {
     super(app);
-    this.titleEl.setText(`History of ${visiblePath(path)}`);
+    this.titleEl.empty();
+    renderShown(this.titleEl, historyTitle(path));
     this.modalEl.addClass("vault-sync-history");
   }
 
@@ -84,7 +86,8 @@ export class HistoryModal extends Modal {
   private renderList(): void {
     this.listEl.empty();
     this.entries.forEach((entry, index) => {
-      const row = this.listEl.createDiv({ cls: "vault-sync-history-entry", text: entryLabel(entry, this.entries[index + 1], formatTime) });
+      const row = this.listEl.createDiv({ cls: "vault-sync-history-entry" });
+      renderShown(row, entryLabel(entry, this.entries[index + 1], formatTime));
       row.dataset.revisionId = entry.revisionId;
       row.setAttribute("role", "button");
       row.tabIndex = 0;
@@ -150,13 +153,14 @@ export class HistoryModal extends Modal {
   private async restore(entry: HistoryEntry, content: Uint8Array | undefined, path?: string): Promise<void> {
     try {
       const restored = await this.history.restore(entry, content, path);
-      new Notice(`Vault Sync: restored ${visiblePath(restored.path)} to the version of ${entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt)}.`);
+      new Notice(shownFragment(["Vault Sync: restored ", shownPath(restored.path), ` to the version of ${entry.createdAt === undefined ? "an unknown time" : formatTime(entry.createdAt)}.`]));
       this.selected = undefined;
       this.previewEl.empty();
       await this.load(true);
     } catch (error) {
-      const message = error instanceof RestoreError ? error.message : errorMessage(error);
-      new Notice(`Vault Sync: the version could not be restored: ${message}`);
+      // Built here, not taken from the engine's message: the path in it may be another member's (#605).
+      const message: Shown = error instanceof RestoreError ? restoreFailureText(error) : [errorMessage(error)];
+      new Notice(shownFragment(["Vault Sync: the version could not be restored: ", ...message]));
       const otherPath = error instanceof RestoreError && (error.reason === "path-taken" || (error.reason === "invalid-path" && path !== undefined));
       if (otherPath && this.selected?.entry === entry) this.offerOtherPath(entry, content, error, path);
     }

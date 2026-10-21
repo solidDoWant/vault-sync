@@ -7,6 +7,7 @@ import type { Journal } from "../core/journal/journal";
 import { InMemoryJournal } from "../core/journal/memory";
 import { createProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
+import { shownText } from "./display-text";
 import { entryLabel } from "./history-view";
 import { SyncSession, type SessionStatus, type SyncSessionOptions } from "./session";
 import { UnsavedEditsError } from "./unsaved-edits";
@@ -1161,7 +1162,7 @@ describe("SyncSession", () => {
       const [, first] = entries;
       if (first === undefined) throw new Error("no first revision");
 
-      expect(entryLabel(first, undefined, () => "then")).toContain(" · earliest kept version of notes/inv\\u200Boice\\u202Ett.exe.md (5 B)");
+      expect(shownText(entryLabel(first, undefined, () => "then"))).toContain(" · earliest kept version of notes/inv\\u200Boice\\u202Ett.exe.md (5 B)");
       await history.restore(first);
 
       expect(await files(vault)).toEqual(new Map([[path, "first"]]));

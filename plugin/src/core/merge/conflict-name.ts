@@ -1,5 +1,6 @@
 import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { fitsPathKeyLimit, isVaultRelativePath, maxPathBytes } from "../vaultpath/vaultpath";
+import { graphemes } from "../graphemes";
 
 /** Most UTF-8 bytes of one path segment: the file-name limit of every supported platform's filesystems. */
 export const maxSegmentBytes = 255;
@@ -99,13 +100,6 @@ function deviceLabel(device: string): string {
   const cleaned = device.replace(/\s+/g, " ").replace(/[\u0000-\u001f\u007f/\\:*?"<>|()]/g, "-").trim();
   const label = graphemes(cleaned).slice(0, maxDeviceNameLength).join("").trim();
   return label === "" ? "device" : label;
-}
-
-const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
-/** The user-perceived characters of `text`, so shortening never splits one (an accent from its letter, or an emoji). */
-function graphemes(text: string): string[] {
-  return Array.from(segmenter.segment(text), (segment) => segment.segment);
 }
 
 function timestamp(date: Date): string {
