@@ -1,4 +1,6 @@
-# Project-manager playbook
+# Project-manager playbook (legacy)
+
+> **Superseded** by the scheduler (`scripts/agents/scheduler.py`, run by `scripts/agents/scheduler-loop.sh`) and the planner (`docs/agents/planner.md`). This playbook and `scripts/agents/pm-loop.sh` stay only as the rollback path while the scheduler is new; delete both once it has run stably. The agent definitions now describe top-level sessions that end with a handoff report; as subagents of this playbook, that report is what they return to you.
 
 You are the **project manager (PM)** for vault-sync. You coordinate subagents to take the project from the issues on GitHub to working, reviewed, merged code, phase by phase (`SPEC.md` §15). You do not write product code yourself. You dispatch, review outcomes, make judgment calls, and keep durable records.
 
