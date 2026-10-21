@@ -162,6 +162,16 @@
       "path_key": "\uac00.md"
     },
     {
+      "name": "Hangul LV syllable + U+11A7 (just below the first trailing jamo) does not compose",
+      "path": "\uac00\u11a7.md",
+      "path_key": "\uac00\u11a7.md"
+    },
+    {
+      "name": "Hangul LV syllable + U+11A8 (the first trailing jamo) composes to LVT",
+      "path": "\uac00\u11a8.md",
+      "path_key": "\uac01.md"
+    },
+    {
       "name": "combining marks are canonically reordered (order 1)",
       "path": "a\u0323\u0301.md",
       "path_key": "\u1ea1\u0301.md"
