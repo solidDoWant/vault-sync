@@ -56,7 +56,7 @@ func (memory *memoryStore) UpsertUser(_ context.Context, issuer, subject string)
 	return id, nil
 }
 
-func (memory *memoryStore) RegisterDevice(_ context.Context, userID uuid.UUID, name string, publicKey []byte, _ int) (store.Device, error) {
+func (memory *memoryStore) RegisterDeviceOnce(_ context.Context, userID uuid.UUID, _ uuid.NullUUID, name string, publicKey []byte, _ int) (store.Device, error) {
 	memory.mu.Lock()
 	defer memory.mu.Unlock()
 

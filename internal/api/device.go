@@ -32,7 +32,10 @@ const (
 
 // DeviceStore persists devices. *store.Store implements it.
 type DeviceStore interface {
-	RegisterDevice(ctx context.Context, userID uuid.UUID, name string, publicKey []byte, limit int) (store.Device, error)
+	// RegisterDeviceOnce registers a device for userID; a retry with the
+	// same valid registrationID, name and public key returns the device
+	// already registered (store.ErrRegistrationConflict when they differ).
+	RegisterDeviceOnce(ctx context.Context, userID uuid.UUID, registrationID uuid.NullUUID, name string, publicKey []byte, limit int) (store.Device, error)
 	// ListDevices returns userID's devices that have not been removed,
 	// oldest first.
 	ListDevices(ctx context.Context, userID uuid.UUID) ([]store.Device, error)
@@ -76,10 +79,26 @@ func (service DeviceService) RegisterDevice(ctx context.Context, request *connec
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("public_key must be empty or exactly %d bytes", PublicKeyBytes))
 	}
 
-	device, err := service.Devices.RegisterDevice(ctx, user.ID, name, publicKey, MaxDevicesPerUser)
+	var registrationID uuid.NullUUID
+
+	if value := request.Msg.GetRegistrationId(); value != "" {
+		id, err := authz.ParseID(value)
+		if err != nil {
+			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("registration_id: %w", err))
+		}
+
+		registrationID = uuid.NullUUID{UUID: id, Valid: true}
+	}
+
+	device, err := service.Devices.RegisterDeviceOnce(ctx, user.ID, registrationID, name, publicKey, MaxDevicesPerUser)
 	if err != nil {
 		if errors.Is(err, store.ErrDeviceLimit) {
-			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("at most %d devices may be registered", MaxDevicesPerUser))
+			return nil, ReasonError(connect.CodeResourceExhausted, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_LIMIT,
+				fmt.Errorf("at most %d devices may be registered", MaxDevicesPerUser))
+		}
+
+		if errors.Is(err, store.ErrRegistrationConflict) {
+			return nil, connect.NewError(connect.CodeAlreadyExists, errors.New("registration_id already names a device with a different name or public key"))
 		}
 
 		service.Logger.ErrorContext(ctx, "cannot register device", "error", err)
