@@ -42,13 +42,18 @@ export function movedBeforeDelete(state: DocumentState | undefined, remote: Remo
  *   revision (an unmaterializable path, out of scope, too large, invalid),
  *   so the holder cannot move: it gives its file up, which stays as an
  *   untracked copy the push commits as a new document (PO-11).
- * - `keep` (W(c)): the holder's newest server claim is the path, under the
- *   file key (`ı.md` for `I.md` on Windows, design §6.4 item 4): the path
- *   stays its own, and the document waits, listed (`path-conflict`). So
- *   does a holder whose own revision the vault refused (`path-conflict`:
- *   an untracked file is in that revision's way).
+ * - `alias`: the holder's newest server claim is another path under the
+ *   server's key but one file on this device (`ı.md` and `I.md` on
+ *   Windows, design §3.1, §6.4 item 4). The device can hold only one of the
+ *   two live documents: the holder keeps its file, and the document is
+ *   unmaterializable here (`alias`), a non-disk blocker that claims no path,
+ *   until the server moves the holder away (decision #52).
+ * - `keep` (W(c)): the holder's newest server claim is the path under the
+ *   server's key: the path stays its own, and the document waits, listed
+ *   (`path-conflict`). So does a holder whose own revision the vault
+ *   refused (`path-conflict`: an untracked file is in that revision's way).
  */
-export type HolderMove = "displace" | "recreate" | "resolve" | "detach" | "keep";
+export type HolderMove = "displace" | "recreate" | "resolve" | "detach" | "alias" | "keep";
 
 export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined, outbox: readonly PendingOperation[], path: string, space: PathSpace): HolderMove {
   // A create not acknowledged yet that a local rename moved: a local move.
@@ -57,7 +62,10 @@ export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined
   const binding = holder.binding;
   const moved = holder.deleted || (binding !== undefined && binding !== null && binding.spelling !== holder.path) || outbox.some((operation) => !operation.deleted && operation.path !== holder.path);
   if (moved) return "displace";
-  if (ahead === undefined || (!ahead.revision.deleted && space.collides(ahead.revision.path, path, "file"))) return "keep";
+  if (ahead === undefined || (!ahead.revision.deleted && space.collides(ahead.revision.path, path, "file"))) {
+    const claim = ahead === undefined ? holder.path : ahead.revision.path;
+    return space.collides(claim, path, "server") ? "keep" : "alias";
+  }
   // The vault refused the holder's own revision: an untracked file is in its
   // way, which a retry (SyncEngine.retryRefusedPaths) or the user clears.
   // The holder's file stays meanwhile.

@@ -11,7 +11,7 @@
 import { sha256Hex } from "../plugin/src/core/hash";
 import type { Journal } from "../plugin/src/core/journal/journal";
 import { isVaultError, type VaultAdapter } from "../plugin/src/core/vault/adapter";
-import { copiedFrom, pathMatcher, type UserLedger } from "./invariants";
+import { copiedFrom, type UserLedger } from "./invariants";
 import type { Random } from "./random";
 import type { EngineOperation } from "./schedule";
 
@@ -120,7 +120,7 @@ export class EngineUser {
    * delete of them (#509).
    */
   async engineRenamed(from: string, to: string, rename: () => Promise<void>): Promise<void> {
-    const key = pathMatcher(this.options.ledger.platform);
+    const key = this.options.ledger.match;
     if (!copiedFrom(to, this.options.name).some((original) => key(original) === key(from))) {
       await rename();
       // The same file, wherever the engine moved it (a remote rename): the user's writes it holds go with it.
