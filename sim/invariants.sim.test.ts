@@ -377,6 +377,22 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(result.violations[0]?.detail, trace).toContain("e2's user wrote");
   });
 
+  // #422 item 7: on a server that was never restored or purged, a pull that resyncs is a bug.
+  it("catches an engine whose pulls resync on a server that was neither restored nor purged (engine-resync)", async () => {
+    const result = await twoEngines(environment, async (run) => {
+      const second = run.observers[1];
+      if (second === undefined) throw new Error("the run has two engines");
+      // The pull stores a corrupted anchor; the pulls of finish() then send it.
+      const entries = [second.mangleCursorAnchors(), second.startPull()];
+      await settle();
+      await run.drain();
+      return entries.join("; ");
+    });
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toEqual(["engine-resync"]);
+    expect(result.violations[0]?.detail, trace).toMatch(/^e2's pull at step \d+ resynced, although the server was neither restored nor purged$/);
+  });
+
   it("attributes to the user a write the macOS vault reports under the file's own spelling, which the engine pushes as an edit (#247)", async () => {
     const { result, run } = await macosUserWritesAnotherSpelling(environment, () => Promise.resolve("no mutation"));
     const trace = tail(result.trace);

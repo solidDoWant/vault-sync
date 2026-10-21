@@ -480,6 +480,17 @@ export class EngineObserver {
     return `${this.name} MUTATION: the engine's next delete of ${path} will leave the file`;
   }
 
+  /**
+   * Mutation for the harness's own tests: from now on the anchor the engine
+   * stores with its cursor is corrupted, as an anchor mangled between the
+   * server and the journal would be, so its next pull finds the history
+   * diverged and resyncs although the server was never restored (#422).
+   */
+  mangleCursorAnchors(): string {
+    this.journal.mangleAnchors = true;
+    return `${this.name} MUTATION: cursor anchors are corrupted from now on`;
+  }
+
   /** The engine's conflict log. */
   conflicts(): Promise<ConflictRecord[]> {
     return this.journal.listConflicts();
@@ -725,12 +736,31 @@ class HaltingJournal extends InMemoryJournal {
   /** Set by haltOnDeferralRemoval; cleared when it kills the app. */
   haltOnDeferralRemoval = false;
 
+  /** Mutation (mangleCursorAnchors): every anchor stored with the cursor is corrupted. */
+  mangleAnchors = false;
+
+  override setCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
+    return super.setCursor(seq, this.mangled(anchor));
+  }
+
+  override resetCursor(seq: bigint, anchor?: Uint8Array): Promise<void> {
+    return super.resetCursor(seq, this.mangled(anchor));
+  }
+
+  private mangled(anchor: Uint8Array | undefined): Uint8Array | undefined {
+    if (!this.mangleAnchors || anchor === undefined || anchor.length === 0) return anchor;
+    const copy = anchor.slice();
+    copy[0] = (copy[0] ?? 0) ^ 0xff;
+    return copy;
+  }
+
   override async removeDeferred(documentId: string): Promise<void> {
     await this.haltBeforeDeferralRemoval([documentId]);
     await super.removeDeferred(documentId);
   }
 
   override async transact(changes: JournalChanges): Promise<void> {
+    if (changes.cursor !== undefined) changes = { ...changes, cursor: { ...changes.cursor, anchor: this.mangled(changes.cursor.anchor) } };
     await this.haltBeforeDeferralRemoval(changes.removeDeferred ?? []);
     const halt = this.takePendingHalt(changes.addPending ?? []);
     if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);

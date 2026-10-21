@@ -260,7 +260,8 @@ function textLines(content: Uint8Array): string[] | undefined {
  * (null if unknown or none): the harness's own check, independent of the
  * merge code, of what a merge hook reports as merged (#301). It does if it
  * is the local content, or if both are text and every non-empty line local
- * added over the base is in the result. A local edit that only removed
+ * added over the base is in the result's text (a merge may join it to the
+ * other side's last line, where that has no final newline). A local edit that only removed
  * lines passes. A binary local content passes only if the result is it.
  */
 export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null): boolean {
@@ -270,14 +271,15 @@ export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Ui
   if (localLines === undefined || resultLines === undefined) return false;
   const remaining = new Map<string, number>();
   for (const line of (base === null ? undefined : textLines(base)) ?? []) remaining.set(line, (remaining.get(line) ?? 0) + 1);
-  const inResult = new Set(resultLines);
+  // Text, not lines: a merge may join an added line to the other side's last line, where that has no final newline.
+  const resultText = resultLines.join("\n");
   for (const line of localLines) {
     const count = remaining.get(line) ?? 0;
     if (count > 0) {
       remaining.set(line, count - 1);
       continue;
     }
-    if (line !== "" && !inResult.has(line)) return false;
+    if (line !== "" && !resultText.includes(line)) return false;
   }
   return true;
 }

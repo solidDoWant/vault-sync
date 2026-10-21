@@ -409,6 +409,10 @@ describe("carriesLocalEdit", () => {
     expect(carriesLocalEdit(text("a\n"), text("a\nb\nremote\n"), text("a\nb\n"))).toBe(true);
   });
 
+  it("accepts a line the merge joined to the other side's last line, which has no final newline", () => {
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("remote, unterminatedlocal\n"), text("a\n"))).toBe(true);
+  });
+
   it("rejects a result that dropped a line the local edit added: the remote content reported as merged", () => {
     expect(carriesLocalEdit(text("a\nlocal\n"), text("a\nremote\n"), text("a\n"))).toBe(false);
     // A line added a second time counts: the base holds it once.
