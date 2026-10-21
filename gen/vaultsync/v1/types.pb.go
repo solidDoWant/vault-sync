@@ -302,9 +302,12 @@ type Device struct {
 	// Human-readable device name, for example "Laptop".
 	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
 	// When the device was registered.
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// When the device last committed a revision, to within a minute; unset if
+	// it never has. Only ListDevices sets it.
+	LastActivityTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=last_activity_time,json=lastActivityTime,proto3" json:"last_activity_time,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *Device) Reset() {
@@ -354,6 +357,13 @@ func (x *Device) GetName() string {
 func (x *Device) GetCreateTime() *timestamppb.Timestamp {
 	if x != nil {
 		return x.CreateTime
+	}
+	return nil
+}
+
+func (x *Device) GetLastActivityTime() *timestamppb.Timestamp {
+	if x != nil {
+		return x.LastActivityTime
 	}
 	return nil
 }
@@ -672,12 +682,13 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	"\bhead_seq\x18\x05 \x01(\x04R\aheadSeq\x12+\n" +
 	"\x04role\x18\x06 \x01(\x0e2\x17.vaultsync.v1.VaultRoleR\x04role\x12;\n" +
 	"\vcreate_time\x18\a \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"createTime\"i\n" +
+	"createTime\"\xb3\x01\n" +
 	"\x06Device\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12;\n" +
 	"\vcreate_time\x18\x03 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"createTime\"9\n" +
+	"createTime\x12H\n" +
+	"\x12last_activity_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\x10lastActivityTime\"9\n" +
 	"\n" +
 	"ContentRef\x12\x17\n" +
 	"\ablob_id\x18\x01 \x01(\fR\x06blobId\x12\x12\n" +
@@ -750,15 +761,16 @@ var file_vaultsync_v1_types_proto_depIdxs = []int32{
 	2, // 1: vaultsync.v1.Vault.role:type_name -> vaultsync.v1.VaultRole
 	8, // 2: vaultsync.v1.Vault.create_time:type_name -> google.protobuf.Timestamp
 	8, // 3: vaultsync.v1.Device.create_time:type_name -> google.protobuf.Timestamp
-	0, // 4: vaultsync.v1.Document.kind:type_name -> vaultsync.v1.DocumentKind
-	0, // 5: vaultsync.v1.Revision.kind:type_name -> vaultsync.v1.DocumentKind
-	5, // 6: vaultsync.v1.Revision.content_ref:type_name -> vaultsync.v1.ContentRef
-	8, // 7: vaultsync.v1.Revision.create_time:type_name -> google.protobuf.Timestamp
-	8, // [8:8] is the sub-list for method output_type
-	8, // [8:8] is the sub-list for method input_type
-	8, // [8:8] is the sub-list for extension type_name
-	8, // [8:8] is the sub-list for extension extendee
-	0, // [0:8] is the sub-list for field type_name
+	8, // 4: vaultsync.v1.Device.last_activity_time:type_name -> google.protobuf.Timestamp
+	0, // 5: vaultsync.v1.Document.kind:type_name -> vaultsync.v1.DocumentKind
+	0, // 6: vaultsync.v1.Revision.kind:type_name -> vaultsync.v1.DocumentKind
+	5, // 7: vaultsync.v1.Revision.content_ref:type_name -> vaultsync.v1.ContentRef
+	8, // 8: vaultsync.v1.Revision.create_time:type_name -> google.protobuf.Timestamp
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_types_proto_init() }
