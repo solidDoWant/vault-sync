@@ -2,7 +2,7 @@ import { IDBDatabase as FakeIDBDatabase, IDBFactory as FakeIDBFactory } from "fa
 import { describe, expect, it } from "vitest";
 
 import { SyncEngine } from "../engine/engine";
-import type { MergeHook } from "../engine/merge";
+import { threeWayMerge, type MergeHook } from "../engine/merge";
 import { InMemoryServer } from "../engine/memory-server";
 import { Crash, CrashingVault, CrashPoints, files } from "../engine/testing";
 import { createProtocolClient } from "../protocol/client";
@@ -619,6 +619,112 @@ describe("IndexedDbJournal", () => {
         expect(await files(vault)).toEqual(server.liveFiles());
         expect((await v3.documentByFileKey("b.md"))?.path).toBe("b.md");
         v3.close();
+      });
+
+      it("lets an engine finish a v2 engine's unacknowledged create and interrupted merge once, with no resync", async () => {
+        const server = new InMemoryServer();
+        const vault = new InMemoryVault();
+        const factory = new FakeIDBFactory();
+        const encoder = new TextEncoder();
+        const engineOver = (journal: Journal, merge: MergeHook) =>
+          new SyncEngine({ vaultId: server.vaultId, deviceId: "device-1", api: createProtocolClient({ transport: server.transport }), vault, journal, merge, pushDebounceMs: null });
+        server.commit({ documentId: "a", path: "a.md", content: "a1" });
+        server.commit({ documentId: "c", path: "c.md", content: "1\n2\n3\n4\n5\n" });
+        const merged = "1 local\n2\n3\n4\n5 remote\n";
+
+        // The v2 engine merges for real; the app dies right after a merge
+        // result reached the disk, before the engine recorded the merge.
+        const v2 = await IndexedDbJournal.open(factory, name, v2Migrations);
+        let crashAfterMerging = false;
+        const crashing: Journal = Object.create(v2) as Journal;
+        crashing.putDeferred = async (deferred) => {
+          await v2.putDeferred(deferred);
+          if (!crashAfterMerging || deferred.merging === undefined) return;
+          await vault.write(deferred.merging.path, encoder.encode(merged));
+          throw new Crash("crash after the merge result was written");
+        };
+        const first = engineOver(crashing, threeWayMerge);
+        await first.pull();
+        const cursor = await v2.getCursor();
+
+        // A create whose commit never reaches the server.
+        await vault.write("b.md", encoder.encode("b1"));
+        server.interceptor = (method) => {
+          if (method === "CommitRevision") throw new Error("connection lost");
+        };
+        await expect(first.push()).rejects.toThrow();
+        server.interceptor = undefined;
+        const [create] = await v2.listPending();
+        expect(create).toMatchObject({ path: "b.md", baseRevisionId: "" });
+
+        // Concurrent edits of c.md, merged by the v2 engine until the crash.
+        await vault.write("c.md", encoder.encode("1 local\n2\n3\n4\n5\n"));
+        server.commit({ documentId: "c", path: "c.md", content: "1\n2\n3\n4\n5 remote\n" });
+        crashAfterMerging = true;
+        await expect(first.pull()).rejects.toThrow(Crash);
+        first.dispose();
+        expect((await v2.getDeferred("c"))?.merging?.path).toBe("c.md");
+        expect(await v2.listPending()).toEqual([create]);
+        expect(server.liveDocuments().has("b.md")).toBe(false);
+        v2.close();
+
+        server.commit({ documentId: "a", path: "a.md", content: "a2" });
+        const since: bigint[] = [];
+        server.interceptor = (method, request) => {
+          if (method === "ListChanges") since.push((request as { sinceSeq: bigint }).sinceSeq);
+        };
+        const v3 = await IndexedDbJournal.open(factory, name);
+        // This engine never merges: only the migrated merge record can finish c.md's merge.
+        const second = engineOver(v3, deferAllMerges);
+        const summary = await second.pull();
+        await second.push();
+        await second.pull();
+        second.dispose();
+
+        expect(since[0]).toBe(cursor);
+        expect(summary).toMatchObject({ resynced: false, deferred: 0 });
+        expect(await files(vault)).toEqual(server.liveFiles());
+        expect(server.liveFiles().get("c.md")).toBe(merged);
+        // The create is committed once, under the revision id the v2 engine gave it.
+        const documentId = create?.documentId ?? "";
+        expect(server.liveDocuments().get("b.md")).toBe(documentId);
+        expect(server.history(documentId).map((revision) => revision.id)).toEqual([create?.revisionId]);
+        expect(await v3.listPending()).toEqual([]);
+        expect(await v3.listDeferred()).toEqual([]);
+        expect(await v3.listConflicts()).toEqual([]);
+        v3.close();
+      });
+
+      it("leaves the v2 journal as it was when the upgrade fails after writing derived records", async () => {
+        const factory = new FakeIDBFactory();
+        const before = await populateV2(factory);
+
+        const upgrade = journalMigrations[2];
+        if (upgrade === undefined) throw new Error("no v3 migration");
+        /** What the failing upgrade had written in its transaction when it failed. */
+        const written = { bound: -1, sealed: -1 };
+        const failAfterWrites: JournalMigration = (transaction, context) => {
+          upgrade(transaction, context);
+          // Requests run in order: this one succeeds after the upgrade's reads,
+          // so after it issued its writes, and the next one sees them.
+          const documents = transaction.objectStore("documents");
+          const after = documents.get(live.documentId);
+          after.onsuccess = () => {
+            const bound = documents.index("binding.fileKey").count();
+            const pending = transaction.objectStore("pending").getAll();
+            pending.onsuccess = () => {
+              written.bound = bound.result;
+              written.sealed = (pending.result as PendingOperation[]).filter((operation) => operation.sealed === true).length;
+              throw new Error("migration bug after the derived writes");
+            };
+          };
+        };
+        await expect(IndexedDbJournal.open(factory, name, [...v2Migrations, failAfterWrites], { fileKey })).rejects.toThrow(JournalMigrationError);
+        expect(written).toEqual({ bound: 4, sealed: operations.length });
+
+        const reopened = await IndexedDbJournal.open(factory, name, v2Migrations);
+        expect(await snapshot(reopened)).toBe(before);
+        reopened.close();
       });
     });
 

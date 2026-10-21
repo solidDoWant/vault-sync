@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/device.proto.
  */
 export const file_vaultsync_v1_device: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiOQoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDCI+ChZSZWdpc3RlckRldmljZVJlc3BvbnNlEiQKBmRldmljZRgBIAEoCzIULnZhdWx0c3luYy52MS5EZXZpY2UiFAoSTGlzdERldmljZXNSZXF1ZXN0IjwKE0xpc3REZXZpY2VzUmVzcG9uc2USJQoHZGV2aWNlcxgBIAMoCzIULnZhdWx0c3luYy52MS5EZXZpY2UiKAoTUmVtb3ZlRGV2aWNlUmVxdWVzdBIRCglkZXZpY2VfaWQYASABKAkiFgoUUmVtb3ZlRGV2aWNlUmVzcG9uc2UynQIKDURldmljZVNlcnZpY2USXQoOUmVnaXN0ZXJEZXZpY2USIy52YXVsdHN5bmMudjEuUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0GiQudmF1bHRzeW5jLnYxLlJlZ2lzdGVyRGV2aWNlUmVzcG9uc2UiABJUCgtMaXN0RGV2aWNlcxIgLnZhdWx0c3luYy52MS5MaXN0RGV2aWNlc1JlcXVlc3QaIS52YXVsdHN5bmMudjEuTGlzdERldmljZXNSZXNwb25zZSIAElcKDFJlbW92ZURldmljZRIhLnZhdWx0c3luYy52MS5SZW1vdmVEZXZpY2VSZXF1ZXN0GiIudmF1bHRzeW5jLnYxLlJlbW92ZURldmljZVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZGV2aWNlLnByb3RvEgx2YXVsdHN5bmMudjEiUgoVUmVnaXN0ZXJEZXZpY2VSZXF1ZXN0EgwKBG5hbWUYASABKAkSEgoKcHVibGljX2tleRgCIAEoDBIXCg9yZWdpc3RyYXRpb25faWQYAyABKAkiPgoWUmVnaXN0ZXJEZXZpY2VSZXNwb25zZRIkCgZkZXZpY2UYASABKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlIhQKEkxpc3REZXZpY2VzUmVxdWVzdCI8ChNMaXN0RGV2aWNlc1Jlc3BvbnNlEiUKB2RldmljZXMYASADKAsyFC52YXVsdHN5bmMudjEuRGV2aWNlIigKE1JlbW92ZURldmljZVJlcXVlc3QSEQoJZGV2aWNlX2lkGAEgASgJIhYKFFJlbW92ZURldmljZVJlc3BvbnNlMp0CCg1EZXZpY2VTZXJ2aWNlEl0KDlJlZ2lzdGVyRGV2aWNlEiMudmF1bHRzeW5jLnYxLlJlZ2lzdGVyRGV2aWNlUmVxdWVzdBokLnZhdWx0c3luYy52MS5SZWdpc3RlckRldmljZVJlc3BvbnNlIgASVAoLTGlzdERldmljZXMSIC52YXVsdHN5bmMudjEuTGlzdERldmljZXNSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkxpc3REZXZpY2VzUmVzcG9uc2UiABJXCgxSZW1vdmVEZXZpY2USIS52YXVsdHN5bmMudjEuUmVtb3ZlRGV2aWNlUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW1vdmVEZXZpY2VSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM", [file_vaultsync_v1_types]);
 
 /**
  * RegisterDeviceRequest describes the device to register.
@@ -37,6 +37,15 @@ export type RegisterDeviceRequest = Message<"vaultsync.v1.RegisterDeviceRequest"
    * @generated from field: bytes public_key = 2;
    */
   publicKey: Uint8Array;
+
+  /**
+   * Client-chosen idempotency key: empty, or a canonical lowercase UUID the
+   * client stores before its first attempt and sends with every retry of
+   * the same registration. Empty registers a new device on every call.
+   *
+   * @generated from field: string registration_id = 3;
+   */
+  registrationId: string;
 };
 
 /**
@@ -152,7 +161,18 @@ export const DeviceService: GenService<{
    *
    * Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
    * a control character (such as U+0000), or a public key
-   * that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+   * that is neither empty nor 32 bytes, or a registration_id that is
+   * neither empty nor a canonical lowercase UUID; RESOURCE_EXHAUSTED, with
+   * an ErrorDetail of reason ERROR_REASON_DEVICE_LIMIT, when the caller has
+   * reached the server's device limit; ALREADY_EXISTS when registration_id
+   * names a device of the caller's, not removed, whose name or public key
+   * differ from the request's.
+   *
+   * A call with a registration_id is idempotent: a retry with the same
+   * registration_id, name and public key returns the device the first call
+   * registered (if it is not removed) and uses no further place under the
+   * device limit, so a client that lost the response, or crashed before
+   * saving it, can retry safely.
    *
    * The limit counts the caller's devices that have not been removed
    * (RemoveDevice), so removing a device frees a place for a new one.
