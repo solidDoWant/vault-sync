@@ -10,7 +10,7 @@ import type { Backoff, Timers } from "../backoff";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { createProtocolClient } from "../protocol/client";
-import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState, Journal, PendingOperation, RemoteRevision } from "../journal/journal";
+import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState, Intent, Journal, JournalChanges, NewIntent, PendingOperation, RemoteRevision } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import { isVaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
@@ -469,6 +469,22 @@ export class CrashAtWriteJournal implements Journal {
   }
   listConflicts(): Promise<ConflictRecord[]> {
     return this.read(() => this.inner.listConflicts());
+  }
+  documentByFileKey(fileKey: string): Promise<DocumentState | undefined> {
+    return this.read(() => this.inner.documentByFileKey(fileKey));
+  }
+  putIntent(intent: NewIntent): Promise<number> {
+    return this.life.journalWrite(() => this.inner.putIntent(intent));
+  }
+  listIntents(): Promise<Intent[]> {
+    return this.read(() => this.inner.listIntents());
+  }
+  removeIntent(id: number): Promise<void> {
+    return this.life.journalWrite(() => this.inner.removeIntent(id));
+  }
+  /** One journal write: the transaction lands whole, then the crash point may fire — never part of it. */
+  transact(changes: JournalChanges): Promise<void> {
+    return this.life.journalWrite(() => this.inner.transact(changes));
   }
 }
 
