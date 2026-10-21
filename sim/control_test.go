@@ -39,9 +39,12 @@ type regressionCase struct {
 	FaithfulFilesystem bool `json:"faithfulFilesystem,omitempty"`
 	// NotificationPulls is set when the run gated engine pulls on announced
 	// seqs (#277); absent in cases recorded before it, which pull plainly.
-	NotificationPulls bool            `json:"notificationPulls,omitempty"`
-	Violations        []violation     `json:"violations"`
-	Steps             json.RawMessage `json:"steps"`
+	NotificationPulls bool `json:"notificationPulls,omitempty"`
+	// QueuedPushes is set when busy engines queued their push steps (#422);
+	// absent in cases recorded before it, which skip them.
+	QueuedPushes bool            `json:"queuedPushes,omitempty"`
+	Violations   []violation     `json:"violations"`
+	Steps        json.RawMessage `json:"steps"`
 }
 
 var regressionName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,99}$`)

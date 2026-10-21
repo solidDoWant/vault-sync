@@ -12,6 +12,7 @@ import { describe, expect, it } from "vitest";
 import type { MergeHook } from "../plugin/src/core/engine/merge";
 import { simEnvironment } from "./environment";
 import { serverFeed } from "./invariants";
+import { engineCommitsBeforeQuiesce } from "./summary";
 import { settle } from "./network";
 import { runSeed, SimRun, type RunResult, type SimEndpoints } from "./runner";
 
@@ -231,7 +232,7 @@ describe.runIf(suites.has("scenarios"))("resurrected deletes (#276)", () => {
 
 describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
   it("keeps every invariant when engines' users make random changes under faults, with Windows rules among the engines", async () => {
-    const result = await runSeed(environment, { seed: 2, clients: environment.clients, steps: Math.min(environment.steps, 800), engines: 2, platforms: ["windows", "posix"] });
+    const result = await runSeed(environment, { seed: 2, clients: environment.clients, steps: Math.min(environment.steps, 800), engines: 2, platforms: ["windows", "posix"], queuedPushes: true });
     const trace = tail(result.trace);
 
     expect(result.violations, trace).toEqual([]);
@@ -244,6 +245,8 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(count(new RegExp(`${engines} user renames`)), trace).toBeGreaterThan(0);
     expect(count(new RegExp(`${engines} user deletes`)), trace).toBeGreaterThan(0);
     expect(count(new RegExp(`${engines} acknowledged `)), trace).toBeGreaterThan(10);
+    // The engines commit while the faults are still on, not only once they heal (#422 item 3).
+    expect(engineCommitsBeforeQuiesce(result.trace), trace).toBeGreaterThanOrEqual(3);
     expect(count(new RegExp(`${windows} tracks .* as unmaterializable`)), trace).toBeGreaterThan(0);
     expect(count(/restarted with its vault and journal/), trace).toBeGreaterThan(0);
     expect(count(/lost/), trace).toBeGreaterThan(0);

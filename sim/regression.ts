@@ -23,6 +23,7 @@ export function recordedCase(name: string, options: RunOptions, violations: Viol
     commitRetryBackoff: options.commitRetryBackoff,
     ...(options.faithfulFilesystem === true ? { faithfulFilesystem: true } : {}),
     ...(options.notificationPulls === true ? { notificationPulls: true } : {}),
+    ...(options.queuedPushes === true ? { queuedPushes: true } : {}),
     violations,
     steps,
   };
@@ -44,5 +45,6 @@ export function replayOptions(regression: RegressionCase): RunOptions {
     commitRetryBackoff: regression.commitRetryBackoff,
     faithfulFilesystem: regression.faithfulFilesystem === true,
     notificationPulls: regression.notificationPulls === true,
+    queuedPushes: regression.queuedPushes === true,
   };
 }

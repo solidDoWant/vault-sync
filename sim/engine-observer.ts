@@ -32,7 +32,7 @@ import { Code } from "@connectrpc/connect";
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
+import { configPrefix, ConfigSyncVault } from "../plugin/src/core/config/config-vault";
 import { configCategories, defaultConfigSyncSettings, type ConfigSyncSettings } from "../plugin/src/core/config/policy";
 import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } from "../plugin/src/core/engine/engine";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
@@ -124,6 +124,14 @@ export class EngineObserver {
   private readonly journal = new HaltingJournal();
   private engine: SyncEngine;
   private busy = false;
+  /**
+   * Whether a push step that found the engine busy queues a push for when it
+   * is next idle (RunOptions.queuedPushes, #422), as the plugin pushes after
+   * a local change once its pull is done; otherwise the step is skipped.
+   */
+  queuePushes = false;
+  /** A push queued by such a step, started when the engine's pull or push ends. */
+  private pushQueued = false;
   private readonly localChanges: VaultEvent[] = [];
   /**
    * The events the engine received while a change of the user's was emitted:
@@ -197,7 +205,12 @@ export class EngineObserver {
 
   /** The user changes the vault (seeded with `arg`), or the engine starts a push; returns the trace entry. Never waits for the engine. */
   async userOperation(operation: EngineOperation, arg: number): Promise<string> {
-    return operation === "push" ? this.startPush() : this.user.perform(operation, new Random(arg));
+    if (operation !== "push") return this.user.perform(operation, new Random(arg));
+    if (this.busy && this.queuePushes) {
+      this.pushQueued = true;
+      return `${this.name} busy, push queued`;
+    }
+    return this.startPush();
   }
 
   get name(): string {
@@ -243,7 +256,7 @@ export class EngineObserver {
         },
       )
       .finally(() => {
-        if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
+        if (this.context.network.incarnation(this.index) === incarnation) this.idleAgain();
       });
     return ifBehind === undefined ? `${this.name} starts pull` : `${this.name} starts pull if behind seq ${String(ifBehind)}`;
   }
@@ -398,12 +411,14 @@ export class EngineObserver {
         const relative = random.pick(seededConfigFiles);
         const content = encoder.encode(`${this.name} config ${String(random.uint32())}\n`);
         await this.config.write(relative, content);
+        this.recordConfigWrite(relative, content);
         return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
       }
       case "delete": {
         const files = (await this.config.list()).sort();
         if (files.length === 0) return `${this.name} Obsidian deletes config: no file`;
         const relative = random.pick(files);
+        await this.recordConfigDelete(relative);
         await this.config.delete(relative);
         return `${this.name} Obsidian deletes config ${relative}`;
       }
@@ -413,15 +428,36 @@ export class EngineObserver {
   /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
   async editConfig(relative: string, content: Uint8Array): Promise<string> {
     await this.config.write(relative, content);
+    this.recordConfigWrite(relative, content);
     await this.settled();
     return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
   }
 
   /** Deletes `relative` from the config folder as Obsidian would. */
   async removeConfig(relative: string): Promise<string> {
+    await this.recordConfigDelete(relative);
     await this.config.delete(relative);
     await this.settled();
     return `${this.name} Obsidian deletes config ${relative}`;
+  }
+
+  /** Records Obsidian's write of the config file at `relative` as a change on the device, for the resurrected-delete check: it may bring a deleted config document back. */
+  private recordConfigWrite(relative: string, content: Uint8Array): void {
+    const path = `${configPrefix}/${relative}`;
+    this.ledger.changed({ paths: [path], result: { path, hash: sha256Hex(content) }, serverSeq: this.context.serverSeq(), at: `step ${String(this.context.stepNumber())}` });
+  }
+
+  /**
+   * Records Obsidian's delete of the config file at `relative` as the user's
+   * delete of the documents the engine knows there, synced or pending, for
+   * the phantom-delete check: deleting a config file is a change on the
+   * device, as a note's delete is.
+   */
+  private async recordConfigDelete(relative: string): Promise<void> {
+    const path = `${configPrefix}/${relative}`;
+    const synced = await this.journal.findDocumentByPath(path);
+    if (synced !== undefined) this.ledger.deletedDocuments.add(synced.documentId);
+    for (const operation of await this.journal.listPending()) if (operation.path === path) this.ledger.deletedDocuments.add(operation.documentId);
   }
 
   /** The config folder's files, sorted (whether or not they sync). */
@@ -480,7 +516,7 @@ export class EngineObserver {
         },
       )
       .finally(() => {
-        if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
+        if (this.context.network.incarnation(this.index) === incarnation) this.idleAgain();
       });
     return `${this.name} starts push`;
   }
@@ -504,6 +540,14 @@ export class EngineObserver {
     return () => !this.journal.haltOnDeferralRemoval;
   }
 
+  /** The engine's pull or push ended: it is idle, unless a queued push starts now. */
+  private idleAgain(): void {
+    this.busy = false;
+    if (!this.pushQueued) return;
+    this.pushQueued = false;
+    this.context.log(`${this.startPush()} (queued)`);
+  }
+
   /** The app is killed: the engine and its in-flight calls are gone; the vault and journal remain. */
   crash(): string {
     this.context.network.crash(this.index);
@@ -511,6 +555,8 @@ export class EngineObserver {
     this.engine.dispose();
     this.engine = this.createEngine();
     this.busy = false;
+    // The queued push died with the app.
+    this.pushQueued = false;
     return `${this.name} crashed and restarted with its vault and journal`;
   }
 
@@ -624,8 +670,11 @@ export class EngineObserver {
         // (sim/invariants.ts), but only where the harness's own check finds the
         // edit (#301), not because the hook says so. A conflict copy is the
         // local content itself, which then survives by being found.
-        if (outcome.status === "merged" && request.local.content !== null && outcome.content !== null && carriesLocalEdit(request.local.content, outcome.content, base)) {
-          this.ledger.merged(sha256Hex(request.local.content), sha256Hex(outcome.content));
+        if (outcome.status === "merged" && request.local.content !== null && outcome.content !== null) {
+          const [local, merged] = [sha256Hex(request.local.content), sha256Hex(outcome.content)];
+          const carries = carriesLocalEdit(request.local.content, outcome.content, base);
+          if (carries) this.ledger.merged(local, merged);
+          this.context.log(`${this.name} merge at ${outcome.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`);
         }
         return outcome;
       },

@@ -73,7 +73,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     // Without engine users (SIM_ENGINES=0) `engines` stays unset: one engine
     // only pulls, and a recorded case replays the same way.
     const engines = environment.engines === 0 ? undefined : environment.engines;
-    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true, queuedPushes: true };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
     reportShadow(`seed ${String(seed)}`, result.trace);
@@ -110,7 +110,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
   it.each(environment.seeds)("seed %i keeps every invariant while retention purges", async (seed) => {
     const engines = environment.engines === 0 ? undefined : environment.engines;
-    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true, queuedPushes: true };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     purged.push(...result.purged);
     console.log(`seed ${String(seed)} with retention (${options.platforms.join(", ")} path rules): ${String(result.purged.length)} revisions purged, ${summarize(result.trace)}`);

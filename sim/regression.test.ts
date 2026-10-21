@@ -13,8 +13,8 @@ function throughDisk(regression: RegressionCase): RegressionCase {
   return JSON.parse(JSON.stringify(regression)) as RegressionCase;
 }
 
-function seededOptions(faithfulFilesystem: boolean, notificationPulls = true): RunOptions {
-  return { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem, notificationPulls };
+function seededOptions(faithfulFilesystem: boolean, notificationPulls = true, queuedPushes = true): RunOptions {
+  return { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem, notificationPulls, queuedPushes };
 }
 
 describe("regression cases", () => {
@@ -53,10 +53,20 @@ describe("regression cases", () => {
     expect(replayOptions(regression).notificationPulls).toBe(true);
   });
 
+  it("replay a case recorded with queued engine pushes with them, and one recorded without them without (#422)", () => {
+    const queued = throughDisk(recordedCase("seed-42", seededOptions(false), violations, steps));
+    expect(queued.queuedPushes).toBe(true);
+    expect(replayOptions(queued).queuedPushes).toBe(true);
+
+    const skipped = throughDisk(recordedCase("seed-42", seededOptions(false, true, false), violations, steps));
+    expect(skipped).not.toHaveProperty("queuedPushes");
+    expect(replayOptions(skipped)).toEqual(seededOptions(false, true, false));
+  });
+
   it("replay a case from before #22 and #110 with one engine and no commit retry backoff", () => {
     const legacy = throughDisk({ name: "seed-3", seed: 3, clients: 2, violations, steps });
 
-    expect(replayOptions(legacy)).toEqual({ seed: 3, clients: 2, engines: 1, platforms: seededPlatforms(3, 1), commitRetryBackoff: undefined, faithfulFilesystem: false, notificationPulls: false });
+    expect(replayOptions(legacy)).toEqual({ seed: 3, clients: 2, engines: 1, platforms: seededPlatforms(3, 1), commitRetryBackoff: undefined, faithfulFilesystem: false, notificationPulls: false, queuedPushes: false });
   });
 
   it("record the minimized steps and their violations", () => {

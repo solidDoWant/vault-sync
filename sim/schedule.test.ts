@@ -101,6 +101,22 @@ describe("generateSchedule", () => {
     expect(JSON.parse(JSON.stringify(schedule))).toEqual(schedule);
   });
 
+  it("adds deliveries of the engines' own calls between the steps of the seed's plain schedule when the run has engine deliveries (#422)", () => {
+    const options = { seed: 99, steps: 3000, clients: 3, engines: 2 };
+    const plain = generateSchedule(options);
+    const schedule = generateSchedule({ ...options, engineDeliveries: true });
+    const added = schedule.filter((step) => (step.kind === "deliver-request" || step.kind === "deliver-response") && step.client !== undefined);
+    // About one in two steps; plain deliveries never name a client.
+    expect(plain.some((step) => (step.kind === "deliver-request" || step.kind === "deliver-response") && step.client !== undefined)).toBe(false);
+    expect(added.length).toBeGreaterThanOrEqual(1200);
+    expect(added.length).toBeLessThanOrEqual(1800);
+    // The engines are the network's clients after the three scripted ones.
+    expect(new Set(added.map((step) => (step.kind === "deliver-request" || step.kind === "deliver-response" ? step.client : undefined)))).toEqual(new Set([3, 4]));
+    expect(new Set(added.map((step) => step.kind))).toEqual(new Set(["deliver-request", "deliver-response"]));
+    expect(schedule.filter((step) => !added.includes(step))).toEqual(plain);
+    expect(generateSchedule({ ...options, engines: 0, engineDeliveries: true })).toEqual(generateSchedule({ ...options, engines: 0 }));
+  });
+
   it("has every engine's user make every kind of change when the run has engines", () => {
     const schedule = generateSchedule({ seed: 99, steps: 3000, clients: 3, engines: 2 });
     const engineSteps = schedule.flatMap((step) => (step.kind === "engine-operation" ? [step] : []));

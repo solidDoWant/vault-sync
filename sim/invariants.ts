@@ -101,8 +101,13 @@ export class UserLedger {
    * longer owed, if their file had that path.
    */
   private readonly replaced = new Map<string, number>();
-  /** For each write (by index), every path its file had since (by path key) and where it is now, until the user deleted it. */
-  private readonly tracks: { paths: Set<string>; current: string | undefined }[] = [];
+  /**
+   * Where each write's file went (`write` is its index): every path it had
+   * since (by path key) and where it is now, until the user deleted it. A
+   * write has one, plus one for each conflict copy of its file the user
+   * renamed (forkCopy).
+   */
+  private readonly tracks: { write: number; paths: Set<string>; current: string | undefined }[] = [];
   /** Local content handed to the merge hook, to the contents it became (the merged result and the conflict copy). */
   readonly mergedInto = new Map<string, Set<string>>();
   /** Documents whose file the user deleted. */
@@ -120,7 +125,7 @@ export class UserLedger {
   write(write: UserWrite): void {
     const key = pathMatcher(this.platform)(write.path);
     this.writes.push(write);
-    this.tracks.push({ paths: new Set([key]), current: key });
+    this.tracks.push({ write: this.writes.length - 1, paths: new Set([key]), current: key });
     for (const rename of this.at(write.path)) rename.hashes.add(write.hash);
   }
 
@@ -152,6 +157,23 @@ export class UserLedger {
       rename.current = key;
       rename.paths.add(key);
     }
+  }
+
+  /**
+   * The user renamed to `to` the engine's conflict copy of the file at
+   * `original` (SPEC.md §6.3, §7): the engine wrote the copy with what that
+   * file held, so the writes whose file is at `original` are followed to
+   * `to` as well, where the user may overwrite or delete them.
+   */
+  forkCopy(original: string, to: string): void {
+    const match = pathMatcher(this.platform);
+    const [key, target] = [match(original), match(to)];
+    for (const track of [...this.tracks]) if (track.current === key) this.tracks.push({ write: track.write, paths: new Set([target]), current: target });
+  }
+
+  /** The engine moved the file at `from` to `to` (applying a remote rename): the writes it holds are followed there, for the lost-write check only. */
+  fileMoved(from: string, to: string): void {
+    this.follow(from, pathMatcher(this.platform)(to));
   }
 
   /** The writes whose file is at `from` are at `to` (a path key) now. */
@@ -188,8 +210,7 @@ export class UserLedger {
 
   /** Whether the user replaced `hash` after write number `index`, at a path that write's file had. */
   replacedAfter(hash: string, index: number): boolean {
-    const paths = this.tracks[index]?.paths ?? new Set<string>();
-    return [...paths].some((path) => (this.replaced.get(`${hash} ${path}`) ?? 0) > index);
+    return this.tracks.some((track) => track.write === index && [...track.paths].some((path) => (this.replaced.get(`${hash} ${path}`) ?? 0) > index));
   }
 
   merged(local: string, result: string): void {

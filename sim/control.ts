@@ -35,6 +35,11 @@ export interface RegressionCase {
    * #277, which replay with plain pulls.
    */
   notificationPulls?: boolean;
+  /**
+   * Whether busy engines queued their push steps (RunOptions.queuedPushes,
+   * #422). Absent in cases recorded before #422, which skip them.
+   */
+  queuedPushes?: boolean;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];

@@ -80,6 +80,11 @@ export interface ScheduleOptions {
   retention?: boolean;
   /** Whether the engines' devices change their config sync between steps (#422); needs engines. Without it (the default) no engine-config step is generated. */
   configSync?: boolean;
+  /**
+   * Whether deliveries of the engines' own calls are added between steps
+   * (#422); needs engines. Without it (the default) none is added.
+   */
+  engineDeliveries?: boolean;
 }
 
 /** Relative frequency of each step kind in a generated schedule. */
@@ -145,8 +150,36 @@ export function generateSchedule(options: ScheduleOptions): Step[] {
   for (let index = 0; index < options.steps; index++) {
     steps.push(generateStep(random, weights, options.clients, engines));
   }
-  const configured = options.configSync === true && engines > 0 ? withConfigSync(options.seed, steps, engines) : steps;
+  const delivered = options.engineDeliveries === true && engines > 0 ? withEngineDeliveries(options.seed, steps, options.clients, engines) : steps;
+  const configured = options.configSync === true && engines > 0 ? withConfigSync(options.seed, delivered, engines) : delivered;
   return options.retention === true ? withRetention(options.seed, configured) : configured;
+}
+
+/**
+ * On average, a schedule with engine deliveries delivers one of an engine's
+ * calls (a request or a response) after this many steps (#422).
+ */
+export const engineDeliveryInterval = 2;
+
+/**
+ * `steps` with deliveries of the engines' own calls between them (#422),
+ * from the seed's own stream, as withRetention inserts its steps. A push or
+ * pull of an engine takes many round trips (page after page, blob after
+ * blob), and the plain schedule's deliveries are shared with every scripted
+ * client, so without these an engine seldom finishes a push before the
+ * faults heal. The engines are the network's clients after the scripted
+ * ones. Faults still reach their calls as before.
+ */
+function withEngineDeliveries(seed: number, steps: readonly Step[], clients: number, engines: number): Step[] {
+  const random = Random.derive(seed, "engine-deliveries");
+  const result: Step[] = [];
+  for (const step of steps) {
+    result.push(step);
+    if (random.int(engineDeliveryInterval) !== 0) continue;
+    const client = clients + random.int(engines);
+    result.push(random.chance(0.5) ? { kind: "deliver-request", client } : { kind: "deliver-response", client });
+  }
+  return result;
 }
 
 /** On average, a schedule with config sync changes an engine's config once in this many steps (#422). */

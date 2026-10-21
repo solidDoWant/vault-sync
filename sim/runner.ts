@@ -79,6 +79,14 @@ export interface RunOptions {
    * plainly, so they replay unchanged.
    */
   notificationPulls?: boolean;
+  /**
+   * Whether an engine push step that finds the engine busy queues the push
+   * for when it is next idle (EngineObserver.queuePushes, #422), so engines
+   * commit during the faulty part of a seeded schedule, not only after the
+   * faults heal. Seeded suites turn it on; scripted scenarios and regression
+   * cases recorded before #422 skip such a push, so they replay unchanged.
+   */
+  queuedPushes?: boolean;
 }
 
 /**
@@ -192,7 +200,9 @@ export class SimRun {
       const observerDevice = (await setup.devices.registerDevice({ name: `sim engine ${String(engine)}` })).device;
       if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
       const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
-      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform, options.faithfulFilesystem === true ? "faithful" : "folded"));
+      const observer = new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform, options.faithfulFilesystem === true ? "faithful" : "folded");
+      observer.queuePushes = options.queuedPushes === true;
+      observers.push(observer);
     }
     const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true);
     run.stepNumber = () => simRun.stepNumber;
@@ -507,8 +517,8 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
 /** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
   // Without `engines` the engine has no user, as before #22.
-  // Engines with users also change their config sync (#422).
-  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention, configSync: (options.engines ?? 0) > 0 });
+  // Engines with users also change their config sync, and get deliveries of their own calls (#422).
+  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention, configSync: (options.engines ?? 0) > 0, engineDeliveries: (options.engines ?? 0) > 0 });
   return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 

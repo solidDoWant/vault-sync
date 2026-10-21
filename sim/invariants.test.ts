@@ -47,6 +47,27 @@ describe("checkLostWrites", () => {
     expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("at step 2") as unknown as string]);
   });
 
+  it("follows a write's file where the engine moved it, so overwriting it there replaces it", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "d.md", at });
+    ledger.replace("xx", "A.md");
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.invariant)).toEqual(["lost-write"]);
+    ledger.fileMoved("d.md", "A.md");
+    ledger.replace("xx", "A.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  it("follows a write to the engine's conflict copy of its file once the user renames the copy, so overwriting the renamed copy replaces it", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "notes/c.md", at });
+    ledger.forkCopy("notes/c.md", "a.md");
+    ledger.renamed("notes/c (conflict e3 2026-01-02 030405).md", "a.md", new Set(), "xx");
+    ledger.replace("xx", "b.md");
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.invariant)).toEqual(["lost-write"]);
+    ledger.replace("xx", "a.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
   it("follows a write's file through the user's renames: overwriting it at its new path replaces it", () => {
     const ledger = new UserLedger("macos");
     ledger.write({ hash: "xx", path: "a.md", at });

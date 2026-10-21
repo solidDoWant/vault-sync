@@ -90,6 +90,7 @@ export class EngineUser {
     await this.options.vault.rename(from, to);
     const serverSeq = this.options.serverSeq();
     this.recordRename(from, to);
+    for (const original of copiedFrom(from, this.options.name)) this.options.ledger.forkCopy(original, to);
     const hash = sha256Hex(await this.options.vault.read(to));
     this.options.ledger.renamed(from, to, documents, hash);
     this.options.ledger.changed({ paths: [from, to], result: { path: to, hash }, serverSeq, at: this.options.now() });
@@ -122,6 +123,8 @@ export class EngineUser {
     const key = pathMatcher(this.options.ledger.platform);
     if (!copiedFrom(to, this.options.name).some((original) => key(original) === key(from))) {
       await rename();
+      // The same file, wherever the engine moved it (a remote rename): the user's writes it holds go with it.
+      this.options.ledger.fileMoved(from, to);
       return;
     }
     const documents = await this.documentsAt(from);

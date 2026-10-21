@@ -9,6 +9,22 @@ function counter(line: string, name: string): number | undefined {
 }
 
 describe("summarize", () => {
+  it("counts the engines' commits before the faults heal, and config sync changes (#422)", () => {
+    const line = summarize([
+      "10: e3 acknowledged e3.x2 seq=4 base=-",
+      "11: c0 create c0.d1 acknowledged c0.r1 seq=5",
+      "12: e3 config sync on (themes, snippets), engine restarted",
+      "13: e4 Obsidian writes config hotkeys.json (20 B)",
+      "14: e4 Obsidian deletes config hotkeys.json",
+      "15: e4 config sync off, engine restarted",
+      "900: quiesce",
+      "900: e4 acknowledged e4.x3 seq=6 base=-",
+    ]);
+    expect(counter(line, "engine commits before quiesce")).toBe(1);
+    expect(counter(line, "config changes")).toBe(4);
+    expect(counter(line, "acknowledged")).toBe(3);
+  });
+
   it("counts engine pulls that resynced, among all completed pulls (#360)", () => {
     const line = summarize([
       "12: e3 pulled up to seq 4: 2 applied, 0 deferred",
