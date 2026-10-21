@@ -119,7 +119,7 @@ export interface Journal {
   /**
    * Applies `changes` as one durable transaction: all of them or, if any
    * part fails, none (design §6.1). The parts apply in this order: cursor,
-   * documents, pending removals, seals, pending additions, deferral
+   * documents, document removals, pending removals, seals, pending additions, deferral
    * removals, deferrals, conflicts, intent removals. Rejects, changing
    * nothing:
    * - with RangeError if `cursor` moves the cursor backwards without `reset`;
@@ -138,6 +138,8 @@ export interface JournalChanges {
   cursor?: { seq: bigint; anchor?: Uint8Array; reset?: boolean };
   /** Inserts or replaces document states, as putDocument. */
   putDocuments?: readonly DocumentState[];
+  /** Ids of documents whose state to remove, after putDocuments; unknown ids are no-ops. */
+  removeDocuments?: readonly string[];
   /** Revision ids of pending operations to remove; unknown ids are no-ops. */
   removePending?: readonly string[];
   /** Revision ids of pending operations to mark `sealed` (about to be sent). */
