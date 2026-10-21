@@ -625,21 +625,7 @@ export class EngineObserver {
     }
     violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEvents));
     for (const violation of violations) this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
-    await this.shadowCheck();
     return violations;
-  }
-
-  /**
-   * The `binding-shadow` differential check of refactor step R4
-   * (docs/design/engine-path-ownership.md §9.2): where the engine's
-   * bindings disagree with the ownership it derives. Report only, never a
-   * violation: each line is triaged as an old-code bug or a model bug.
-   */
-  private async shadowCheck(): Promise<void> {
-    for (const divergence of await this.engine.bindingShadow()) {
-      const binding = divergence.binding === undefined ? "no recorded binding" : divergence.binding === null ? `no file (${String(divergence.absence)})` : divergence.binding;
-      this.context.log(`SHADOW binding-shadow: ${this.name} (${this.platform}) ${this.context.ids.label(divergence.documentId)} bound to ${binding}, derived ${divergence.derived ?? "no file"}`);
-    }
   }
 
   private createEngine(): SyncEngine {

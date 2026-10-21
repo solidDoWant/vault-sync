@@ -11,10 +11,9 @@ import { Bindings } from "./bindings";
 import { PathSpace } from "./pathspace";
 import { Crash, CrashingJournal, CrashPoints, harness, type Harness } from "./testing";
 
-// Refactor step R4 (docs/design/engine-path-ownership.md §9.2): the engine
-// maintains every document's binding (§4.1) from vault events (§4.3 E1–E5),
-// its own changes and the start-up scan (E7), in shadow mode, and
-// SyncEngine.bindingShadow compares them with the ownership it derives.
+// The engine maintains every document's binding (docs/design/engine-path-ownership.md
+// §4.1) from vault events (§4.3 E1–E5), its own changes and the start-up
+// scan (E7). Since refactor step R7 it decides by them alone.
 
 const bytes = (value: string) => new TextEncoder().encode(value);
 const hash = (value: string) => sha256Hex(bytes(value));
@@ -32,12 +31,11 @@ async function synced(platform: "posix" | "windows" = "posix"): Promise<Harness>
   return h;
 }
 
-describe("Bindings in shadow mode (refactor step R4)", () => {
+describe("Bindings", () => {
   it("binds a pulled document to the file the pull wrote", async () => {
     const h = await synced();
 
     expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("moves the binding with a user's rename before any push (E1)", async () => {
@@ -46,7 +44,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     await h.vault.rename("a.md", "b.md");
 
     expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("follows a rename chain and keeps the binding when the commit is acknowledged", async () => {
@@ -59,7 +56,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
 
     expect(h.server.liveDocuments()).toEqual(new Map([["c.md", "A"]]));
     expect((await row(h, "A"))?.binding?.spelling).toBe("c.md");
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("moves the binding with a case-only rename on Windows, where the file key decides (E1)", async () => {
@@ -68,7 +64,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     await h.vault.rename("a.md", "A.md");
 
     expect((await row(h, "A"))?.binding?.spelling).toBe("A.md");
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("leaves the document user-deleted when the user deletes its file (E3)", async () => {
@@ -77,7 +72,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     await h.vault.delete("a.md");
 
     expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("binds no document to a file created where a deleted one was (E3 then E5)", async () => {
@@ -131,7 +125,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     const path = [...h.server.liveDocuments()].find(([, id]) => id === "A")?.[0];
     expect(path).toMatch(/^b \(conflict /);
     expect((await row(h, "A"))?.binding?.spelling).toBe(path);
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("moves the binding with a remote rename the pull applies", async () => {
@@ -141,7 +134,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     await h.engine.pull();
 
     expect((await row(h, "A"))?.binding?.spelling).toBe("moved.md");
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("leaves a document whose tombstone was applied with no file it ever had here (never)", async () => {
@@ -151,7 +143,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
     await h.engine.pull();
 
     expect(await row(h, "A")).toEqual({ binding: null, absence: "never" });
-    expect(await h.engine.bindingShadow()).toEqual([]);
   });
 
   it("binds a merged document to the merge result", async () => {
@@ -203,35 +194,6 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
 
     expect(await row(h, "A")).toEqual({ binding: { spelling: "Notes/a.md", fileKey: "NOTES/A.MD", seen: hash("a1") }, absence: null });
     expect((await h.journal.documentByFileKey("NOTES/A.MD"))?.documentId).toBe("A");
-  });
-
-  it("reports a binding that disagrees with the derived ownership", async () => {
-    const h = await synced();
-    await h.vault.write("other.md", bytes("o"));
-    h.engine.dispose();
-    const state = await h.journal.getDocument("A");
-    if (state === undefined) throw new Error("no row");
-    // A binding the engine never made: another file than the document's.
-    await h.journal.putDocument({ ...state, binding: { spelling: "other.md", fileKey: "other.md", seen: hash("o") }, absence: null });
-
-    h.restart();
-
-    // Since refactor step R5a the derived ownership reads local moves from
-    // bindings: the binding moves A away from a.md, whose file the derived
-    // ownership still finds holding A's synced content, so it takes none.
-    expect(await h.engine.bindingShadow()).toEqual([{ documentId: "A", binding: "other.md", absence: null, derived: null }]);
-  });
-
-  it("reports a document the derived ownership has a file for but whose binding has none", async () => {
-    const h = await synced();
-    h.engine.dispose();
-    const state = await h.journal.getDocument("A");
-    if (state === undefined) throw new Error("no row");
-    await h.journal.putDocument({ ...state, binding: null, absence: "released" });
-
-    h.restart();
-
-    expect(await h.engine.bindingShadow()).toEqual([{ documentId: "A", binding: null, absence: "released", derived: "a.md" }]);
   });
 });
 

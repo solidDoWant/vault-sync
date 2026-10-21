@@ -39,11 +39,10 @@ type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
 
 /**
  * The owner of every document's `binding` and `absence` (design §4.1, §9.1):
- * which local file is the document on this device. Refactor step R4 runs it
- * in shadow mode: it maintains bindings from vault events (E1–E5), from the
- * engine's own changes and from the start-up scan (E7, without the content
- * match of R11), and nothing decides by them yet; SyncEngine.bindingShadow
- * compares them with the ownership the engine still derives.
+ * which local file is the document on this device. It maintains bindings
+ * from vault events (E1–E5), from the engine's own changes and from the
+ * start-up scan (E7, without the content match of R11). Since refactor step
+ * R7 the engine decides which file is a document's by them alone (PO-1).
  *
  * Every write of a document row goes through here, one at a time, and reads
  * the row's binding as it is when written: an event's transition and an
@@ -152,29 +151,6 @@ export class Bindings {
       }
       await this.journal.transact({ removePending: revisionIds, removeDocuments: [...documents] });
     });
-  }
-
-  /**
-   * The local moves not pushed yet (design §4.3 E1): each document whose
-   * file is bound at a spelling other than its synced path, or, for a
-   * create not acknowledged yet, other than the path its create reads.
-   * `from` is that path, `to` the binding's spelling.
-   */
-  async moves(): Promise<LocalMove[]> {
-    await this.idle();
-    const creates = new Map<string, string>();
-    for (const operation of await this.journal.listPending()) {
-      if (operation.baseRevisionId === "" && !operation.deleted && !creates.has(operation.documentId)) creates.set(operation.documentId, operation.path);
-    }
-    const moves: LocalMove[] = [];
-    for (const state of await this.journal.listDocuments()) {
-      const binding = state.binding;
-      if (binding === undefined || binding === null) continue;
-      // A document bound on a tombstone (a local change that won over a remote delete) holds its file as a move from the tombstone's path.
-      const from = hasBase(state) ? state.path : creates.get(state.documentId);
-      if (from !== undefined && from !== binding.spelling) moves.push({ documentId: state.documentId, from, to: binding.spelling, created: !hasBase(state) });
-    }
-    return moves;
   }
 
   /**
@@ -368,14 +344,6 @@ export class Bindings {
   private bound(spelling: string, seen: string): Binding {
     return { spelling, fileKey: this.space.filesystemKey(spelling), seen };
   }
-}
-
-/** A local move not pushed yet (Bindings.moves). `created`: the document is a create not acknowledged yet. */
-export interface LocalMove {
-  documentId: string;
-  from: string;
-  to: string;
-  created: boolean;
 }
 
 /**

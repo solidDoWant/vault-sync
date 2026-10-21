@@ -9,7 +9,7 @@ import type { VaultAdapter } from "../vault/adapter";
  *   path the vault does not hold, such as one Obsidian would store under
  *   another name);
  * - `out-of-scope`: its path is outside what this vault syncs while the
- *   document's local file is inside it, so the file stays parked.
+ *   document's local file is inside it, so the file stays where it is.
  */
 export type DeferredDocumentReason = "invalid-path" | "path-conflict" | "out-of-scope";
 
