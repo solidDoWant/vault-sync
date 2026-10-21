@@ -6,6 +6,7 @@ import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
 import { DeviceService } from "../../gen/vaultsync/v1/device_pb";
 import { ServerInfoService } from "../../gen/vaultsync/v1/server_info_pb";
 import { SyncService } from "../../gen/vaultsync/v1/sync_pb";
+import { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
 import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
 import { IdentityProviderError, SignInRequiredError } from "../auth/oidc";
 
@@ -47,6 +48,8 @@ export interface ProtocolClient {
   vaults: Client<typeof VaultService>;
   sync: Client<typeof SyncService>;
   blobs: Client<typeof BlobService>;
+  /** The caller's end-to-end encryption key pair (SPEC.md §9.3). */
+  userKeys: Client<typeof UserKeyService>;
 }
 
 export function createProtocolClient(options: ProtocolClientOptions): ProtocolClient {
@@ -62,6 +65,7 @@ export function createProtocolClient(options: ProtocolClientOptions): ProtocolCl
     vaults: createClient(VaultService, transport),
     sync: createClient(SyncService, transport),
     blobs: createClient(BlobService, transport),
+    userKeys: createClient(UserKeyService, transport),
   };
 }
 

@@ -59,7 +59,7 @@ export function isDeviceNotFound(error: unknown): boolean {
 }
 
 /** The account a device registration belongs to. */
-interface Account {
+export interface Account {
   serverUrl: string;
   issuer: string;
   subject: string;
@@ -141,7 +141,7 @@ function isRefusal(error: unknown): error is ConnectError {
   return error instanceof ConnectError && (error.code === Code.InvalidArgument || error.code === Code.AlreadyExists);
 }
 
-function sameAccount(stored: Account, account: Account): boolean {
+export function sameAccount(stored: Account, account: Account): boolean {
   return stored.serverUrl === account.serverUrl && stored.issuer === account.issuer && stored.subject === account.subject;
 }
 
@@ -161,7 +161,7 @@ function isDeviceLimit(error: unknown): error is ConnectError {
   );
 }
 
-async function currentAccount(data: PluginData, accessToken: () => Promise<string>): Promise<Account> {
+export async function currentAccount(data: PluginData, accessToken: () => Promise<string>): Promise<Account> {
   const subject = jwtSubject(await accessToken());
   if (subject === undefined) throw new Error("the access token names no user (no sub claim)");
   return {
