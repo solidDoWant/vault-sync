@@ -10,8 +10,9 @@
 // in docs/design/crypto.md; testdata/crypto/vectors.json pins them, and the
 // TypeScript implementation (plugin/src/core/e2ee) must agree with it.
 //
-// Key management (epochs, key slots, recovery) is built on top of this
-// package elsewhere.
+// The key slots and key commitments of vault key epochs are in keyslot.go;
+// the rest of key management (storing epochs and slots, rotation, recovery)
+// is built on top of this package elsewhere.
 package e2ee
 
 import (

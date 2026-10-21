@@ -582,5 +582,240 @@
       "aad": "",
       "sealed": "01ffffffff0000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb3746720121c5314e5456ccadcfca2ddab"
     }
+  ],
+  "key_slot": [
+    {
+      "name": "user, epoch 1",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "recipient_public_key": "7d4445c2b2198ae6c755c5a7d48bf60885f0afea1dda33edaee3517e24d31472",
+      "ephemeral_private_key": "68d635ed20596f76a06e55f89ef628887953eddc2619c21904570ba47faae8b8",
+      "nonce": "1f2a5afff1573a80a8dad7f74423866ab8412875ace31bfc",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "epoch_key": "483a0a358e08ceeb92060a7808d07bed747614b39439cc2f02a799fbf62883db",
+      "ad": "7661756c742d73796e632f76312f6b65792d736c6f740190d6e48c1e7a3b9d2f5e6a7b8c9d0e000000000000000101100190d6e51a2b7c3d8e4f5a6b7c8d9e0f",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "escrow, epoch 2",
+      "recipient_private_key": "51e94297bf0dda870e3dc8ae99bd8bfc9654cbcdf302f9808602c59d4a340a2e",
+      "recipient_public_key": "c5bfcf98f8d39486a0294bee6daade254fb7f58d8cb4748bc54de60dd3349e72",
+      "ephemeral_private_key": "a09953772f5a2731032f3f7e11573be889691437a71fffad31c2139043a98921",
+      "nonce": "1bc17b60ab1a71be3b49381a906ac4409f5df188affc9c66",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 2,
+      "recipient_kind": "escrow",
+      "recipient_id": "escrow-2026",
+      "epoch_key": "e3c0c4261386274294f668bf8c86d7952fec8cf2b04b2308ac09a1998ed4548b",
+      "ad": "7661756c742d73796e632f76312f6b65792d736c6f740190d6e48c1e7a3b9d2f5e6a7b8c9d0e0000000000000002020b657363726f772d32303236",
+      "sealed": "0112cbb28f9ede6f0c72fae007890e284a2ad167eb7a59f5b0948c0e5581d5bb541bc17b60ab1a71be3b49381a906ac4409f5df188affc9c6654c21c0b0ad69529a1ada0da8c5dbd790a87b62dd4e6b999aad5bbe4b2bbe5d164e762632f6395bd43fc9d06b048da01"
+    },
+    {
+      "name": "user, epoch above 32 bits",
+      "recipient_private_key": "56965a4345b62c766d0def1bdddfac0a8c6bdfb23e7487a7bf60479aae22157b",
+      "recipient_public_key": "3fc4caa36f0f9f618b42a343ca76838f56f33a4251926d7ae735b799d70da901",
+      "ephemeral_private_key": "33ef13a03a16bdadf7be9d6420a0c9e139a726fc41c90bd684098912870769e4",
+      "nonce": "4f11ec7e57636ba34919a168c8afc24f30f0722dc9b6cce6",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 4294967296,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "epoch_key": "63ddb0b572eabccb9e5c551edf520db3f14668ce10a7dc20c114b72cdfc15158",
+      "ad": "7661756c742d73796e632f76312f6b65792d736c6f740190d6e48c1e7a3b9d2f5e6a7b8c9d0e000000010000000001100190d6e51a2b7c3d8e4f5a6b7c8d9e0f",
+      "sealed": "014d6ba9333b05eb5734bb9318a1f80d5990b7eebae68f2acb0848e213469602324f11ec7e57636ba34919a168c8afc24f30f0722dc9b6cce6c1077913e5c15baae6b42805114cc2fa68e6be7758d16d4b27157b917781704eaa63bb0254658cc7e85804a40fc1e4b8"
+    }
+  ],
+  "key_commitment": [
+    {
+      "name": "epoch 1",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb1c"
+    },
+    {
+      "name": "epoch 2",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 2,
+      "commitment": "c7285244ed100e3987c4f0fe207a023b40cbcdccc4633e32112b2a0fa9c7fcd3"
+    },
+    {
+      "name": "other vault, epoch 1",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f",
+      "epoch": 1,
+      "commitment": "75d0df3d14c4529cbcfa8abce63f58dd140318286faf956dd92651abadfa7953"
+    },
+    {
+      "name": "epoch above 32 bits",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 4294967296,
+      "commitment": "51d5b22b439136a16516ebedcfa5bcc48ff70d982146a42c1c0cf9c5a831804a"
+    }
+  ],
+  "rejected_key_slots": [
+    {
+      "name": "other vault",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "other epoch",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 2,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "epoch differing above 32 bits",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 4294967297,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "other recipient id",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e10",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "other recipient kind, same id",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "escrow",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "other recipient key",
+      "recipient_private_key": "e6ba6dabb5bdf8f0b6e5b67906a8a7ea7d2e1de30d240a4386a199c611e05635",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "01bd07386949dede7a841285735453e929939a53a1f468bbb68443da27a58a33141f2a5afff1573a80a8dad7f74423866ab8412875ace31bfce12f8dd0dd7df598420bf05757fd687b9a4a1132853cc0726169b7fae2b7f600f44139fcf8977e6c23340d48fa3ffb1c"
+    },
+    {
+      "name": "escrow slot as a user slot",
+      "recipient_private_key": "51e94297bf0dda870e3dc8ae99bd8bfc9654cbcdf302f9808602c59d4a340a2e",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 2,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "0112cbb28f9ede6f0c72fae007890e284a2ad167eb7a59f5b0948c0e5581d5bb541bc17b60ab1a71be3b49381a906ac4409f5df188affc9c6654c21c0b0ad69529a1ada0da8c5dbd790a87b62dd4e6b999aad5bbe4b2bbe5d164e762632f6395bd43fc9d06b048da01"
+    },
+    {
+      "name": "escrow slot, other escrow id",
+      "recipient_private_key": "51e94297bf0dda870e3dc8ae99bd8bfc9654cbcdf302f9808602c59d4a340a2e",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 2,
+      "recipient_kind": "escrow",
+      "recipient_id": "escrow-2026x",
+      "sealed": "0112cbb28f9ede6f0c72fae007890e284a2ad167eb7a59f5b0948c0e5581d5bb541bc17b60ab1a71be3b49381a906ac4409f5df188affc9c6654c21c0b0ad69529a1ada0da8c5dbd790a87b62dd4e6b999aad5bbe4b2bbe5d164e762632f6395bd43fc9d06b048da01"
+    },
+    {
+      "name": "0-byte key",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "017add29e8b27471affb7aca3a660a3c12cee0ec240652af3dabeaa67c44ff9c3051b37b7295af982c5cbb642c09413e9f2a2eb2647211ca398289e93bc590f33b53c743b18205abc0"
+    },
+    {
+      "name": "31-byte key",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "017add29e8b27471affb7aca3a660a3c12cee0ec240652af3dabeaa67c44ff9c3051b37b7295af982c5cbb642c09413e9f2a2eb2647211ca39b2e1e7eadcd0a8678dd2e44579876e0db125b9c34c291b3854f47908e14626530c3b1374729b4103b7e51b13d1953a"
+    },
+    {
+      "name": "33-byte key",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "017add29e8b27471affb7aca3a660a3c12cee0ec240652af3dabeaa67c44ff9c3051b37b7295af982c5cbb642c09413e9f2a2eb2647211ca39b2e1e7eadcd0a8678dd2e44579876e0db125b9c34c291b3854f47908e1462653fb617da7d6648adc3a1a0e6de40ea544ad"
+    },
+    {
+      "name": "associated data without the key-slot label",
+      "recipient_private_key": "e66976790742e6a9f26fe7adb66d97ddc23617b3f05b692f70c279dc97abad81",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "recipient_kind": "user",
+      "recipient_id": "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e0f",
+      "sealed": "017add29e8b27471affb7aca3a660a3c12cee0ec240652af3dabeaa67c44ff9c3051b37b7295af982c5cbb642c09413e9f2a2eb2647211ca39de1b627969613500cd444cbadecf7029f33b77a8b1d32b6863a0184873b217bf35c6f21607ad81dcd7b06475ae494187"
+    }
+  ],
+  "rejected_key_commitments": [
+    {
+      "name": "other epoch key",
+      "epoch_key": "eecf7f70f27b0dc2a83c9c3b6055992e82d00072bdb942d2ead587fd92d3f335",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb1c"
+    },
+    {
+      "name": "other vault",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f",
+      "epoch": 1,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb1c"
+    },
+    {
+      "name": "other epoch",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 2,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb1c"
+    },
+    {
+      "name": "truncated by one byte",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb"
+    },
+    {
+      "name": "empty",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "commitment": ""
+    },
+    {
+      "name": "flipped bit",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb1d"
+    },
+    {
+      "name": "extended by one byte",
+      "epoch_key": "26f4e6af45f1086373e5e3a1d4d765e26256a1c6f6e9bb7c3777b673fe58b469",
+      "vault_id": "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e",
+      "epoch": 1,
+      "commitment": "dc15322ad09b85fc270c937a22b7bf097ae4d94fd4381b71e1df306be430cb1c00"
+    }
   ]
 }

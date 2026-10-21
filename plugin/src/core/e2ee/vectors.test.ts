@@ -2,6 +2,7 @@ import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { hmac } from "@noble/hashes/hmac.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
@@ -22,6 +23,31 @@ import {
   unwrapWithPassphrase,
   wrapWith,
 } from "./e2ee";
+import { KeyCommitmentError, keyCommitment, keySlotAd, openKeySlot, sealKeySlotWith, type KeySlot, type RecipientKind, verifyKeyCommitment } from "./keyslot";
+
+interface SlotFields {
+  vault_id: string;
+  epoch: number;
+  recipient_kind: string;
+  recipient_id: string;
+}
+
+function slotOf(vector: SlotFields): KeySlot {
+  return { vaultId: vector.vault_id, epoch: vector.epoch, recipientKind: vector.recipient_kind as RecipientKind, recipientId: vector.recipient_id };
+}
+
+const uuidHex = (value: string): string => value.replaceAll("-", "");
+const u64Hex = (value: number): string => value.toString(16).padStart(16, "0");
+const utf8Hex = (value: string): string => bytesToHex(new TextEncoder().encode(value));
+
+// The associated data of a slot built from the layout in
+// docs/design/crypto.md, not by the code under test.
+function documentedSlotAd(vector: SlotFields): string {
+  const recipientId = vector.recipient_kind === "user" ? uuidHex(vector.recipient_id) : utf8Hex(vector.recipient_id);
+  const kind = vector.recipient_kind === "user" ? "01" : "02";
+  const length = (recipientId.length / 2).toString(16).padStart(2, "0");
+  return utf8Hex("vault-sync/v1/key-slot") + uuidHex(vector.vault_id) + u64Hex(vector.epoch) + kind + length + recipientId;
+}
 
 // The same file is asserted by internal/e2ee in Go (which generates it), so
 // passing here means both languages produce and accept exactly the same
@@ -52,7 +78,7 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   });
 
   it("has vectors of every kind", () => {
-    for (const kind of [shared.subkeys, shared.aead, shared.sealed_box, shared.path_key, shared.blob_id, shared.passphrase, shared.rejected]) {
+    for (const kind of [shared.subkeys, shared.aead, shared.sealed_box, shared.path_key, shared.blob_id, shared.passphrase, shared.rejected, shared.key_slot, shared.key_commitment, shared.rejected_key_slots, shared.rejected_key_commitments]) {
       expect(kind.length).toBeGreaterThan(0);
     }
   });
@@ -137,6 +163,51 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
       expect(wrapped.get(decomposed)).toBe(wrapped.get(precomposed));
     }
   });
+
+  for (const vector of shared.key_slot) {
+    it(`seals and opens a key slot: ${vector.name}`, () => {
+      const slot = slotOf(vector);
+      expect(documentedSlotAd(vector)).toBe(vector.ad);
+      expect(bytesToHex(keySlotAd(slot))).toBe(vector.ad);
+      const sealed = sealKeySlotWith(
+        hexToBytes(vector.recipient_public_key),
+        hexToBytes(vector.ephemeral_private_key),
+        hexToBytes(vector.nonce),
+        hexToBytes(vector.epoch_key),
+        slot,
+      );
+      expect(bytesToHex(sealed)).toBe(vector.sealed);
+      const recipient = hexToBytes(vector.recipient_private_key);
+      expect(bytesToHex(openFrom(recipient, hexToBytes(vector.sealed), hexToBytes(vector.ad)))).toBe(vector.epoch_key);
+      expect(bytesToHex(openKeySlot(recipient, hexToBytes(vector.sealed), slot))).toBe(vector.epoch_key);
+    });
+  }
+
+  for (const vector of shared.key_commitment) {
+    it(`computes and verifies the key commitment: ${vector.name}`, () => {
+      const epochKey = hexToBytes(vector.epoch_key);
+      const documented = hmac(sha256, epochKey, hexToBytes(utf8Hex("vault-sync/v1/key-commitment") + uuidHex(vector.vault_id) + u64Hex(vector.epoch)));
+      expect(bytesToHex(documented)).toBe(vector.commitment);
+      expect(bytesToHex(keyCommitment(epochKey, vector.vault_id, vector.epoch))).toBe(vector.commitment);
+      expect(() => {
+        verifyKeyCommitment(epochKey, hexToBytes(vector.commitment), vector.vault_id, vector.epoch);
+      }).not.toThrow();
+    });
+  }
+
+  for (const vector of shared.rejected_key_slots) {
+    it(`refuses the key slot: ${vector.name}`, () => {
+      expect(() => openKeySlot(hexToBytes(vector.recipient_private_key), hexToBytes(vector.sealed), slotOf(vector))).toThrow(DecryptError);
+    });
+  }
+
+  for (const vector of shared.rejected_key_commitments) {
+    it(`refuses the key commitment: ${vector.name}`, () => {
+      expect(() => {
+        verifyKeyCommitment(hexToBytes(vector.epoch_key), hexToBytes(vector.commitment), vector.vault_id, vector.epoch);
+      }).toThrow(KeyCommitmentError);
+    });
+  }
 
   for (const vector of shared.rejected) {
     it(`refuses: ${vector.name}`, async () => {

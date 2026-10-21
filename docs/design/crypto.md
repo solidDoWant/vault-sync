@@ -1,6 +1,6 @@
 # E2EE cipher suite 1
 
-This document fixes the byte formats of the end-to-end encryption primitives of `SPEC.md` §9.3. They are implemented twice, in `internal/e2ee` (Go, `golang.org/x/crypto` and the standard library) and `plugin/src/core/e2ee` (TypeScript, `@noble/ciphers`, `@noble/curves`, `@noble/hashes`), and both must pass every vector in `testdata/crypto/vectors.json`. Key management (epochs, key slots, recovery, which associated data each use binds) is built on top of these primitives and is not described here.
+This document fixes the byte formats of the end-to-end encryption primitives of `SPEC.md` §9.3. They are implemented twice, in `internal/e2ee` (Go, `golang.org/x/crypto` and the standard library) and `plugin/src/core/e2ee` (TypeScript, `@noble/ciphers`, `@noble/curves`, `@noble/hashes`), and both must pass every vector in `testdata/crypto/vectors.json`. The key-slot and key-commitment formats of vault key epochs are fixed here too (Key slots and key commitments). The rest of key management (storing epochs and slots, rotation, recovery, which associated data content and paths bind) is built on top of these primitives and is not described here.
 
 ## Principles
 
@@ -38,6 +38,26 @@ sealed    = header || nonce (24) || XChaCha20-Poly1305(key, nonce, plaintext, ad
 ```
 
 The recipient computes `shared = X25519(recipient, eph_pub)`. Salting with both public keys binds the key to this pair, so a box cannot be re-addressed.
+
+## Key slots and key commitments
+
+Each vault has a 32-byte random epoch key per epoch (`SPEC.md` §9.3). A **key slot** is the epoch key wrapped with the sealed box above to one recipient: a member (`recipient_kind = user`) or the deployment's escrow key (`recipient_kind = escrow`, §9.4). The slot binds the vault, the epoch and the recipient as associated data, so a slot cannot be passed off as another vault's, another epoch's or another recipient's:
+
+```
+slot_ad    = "vault-sync/v1/key-slot" || vault_id (16) || epoch (u64) || recipient_kind (u8) || len(recipient_id) (u8) || recipient_id
+key_slot   = sealed_box(recipient_pub, plaintext = epoch_key, aad = slot_ad)
+commitment = HMAC-SHA256(key = epoch_key, "vault-sync/v1/key-commitment" || vault_id (16) || epoch (u64))
+```
+
+- The labels are ASCII, without a terminator (both have a fixed length).
+- `vault_id` is the 16 bytes of the vault's UUID, which callers give in canonical lowercase form (`0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e`). Any other spelling is refused before anything is sealed, opened or computed, so a slot has exactly one encoding.
+- `epoch` is an unsigned 64-bit integer. TypeScript accepts epochs up to `Number.MAX_SAFE_INTEGER` (2^53 − 1).
+- `recipient_kind` is `0x01` for `user` and `0x02` for `escrow`. No other value is defined.
+- `recipient_id` is the 16 bytes of the member's user id (a canonical lowercase UUID) for `user`. For `escrow` it is the UTF-8 bytes of the escrow key's id, 1 to 255 bytes. #40 defines that id. The one-byte length prefix keeps the encoding unambiguous for both.
+
+Opening a slot (`OpenKeySlot` / `openKeySlot`) opens the sealed box with the slot's associated data and fails with `ErrDecrypt` / `DecryptError` for any other vault, epoch, recipient kind or recipient id, and when the plaintext is not exactly 32 bytes.
+
+Every epoch stores its **key commitment**. A recipient that unwraps an epoch key checks it against the commitment (`VerifyKeyCommitment` / `verifyKeyCommitment`, a constant-time comparison that refuses with `ErrKeyCommitment` / `KeyCommitmentError`) before using it. The sealed box only proves that someone sealed this key to the recipient, and anyone who knows the recipient's public key can do that. The commitment ties the key to the epoch: every recipient checks against the same commitment, stored once when the epoch is created, so a slot that holds any other key (sealed by the server, or by a member who wraps a different key for a new member) is refused, and all members of an epoch end up with the same key. This check alone does not stop a server that replaces an epoch's commitment together with its slots. The commitment is an HMAC under the epoch key itself, so it reveals nothing about the key. It binds the vault and the epoch, so one epoch's commitment cannot be reused for another.
 
 ## path_key and blob_id
 
@@ -99,7 +119,8 @@ Not yet measured on a real low-end Android device (no device in the development 
 `testdata/crypto/vectors.json` holds:
 
 - `standards`: published known-answer tests for the primitives (RFC 5869 HKDF-SHA256, draft-irtf-cfrg-xchacha XChaCha20-Poly1305, RFC 7748 X25519), so both languages are pinned to the standards and not only to each other;
-- `subkeys`, `aead`, `sealed_box`, `path_key`, `blob_id`, `passphrase` (with each vector's `wrap_key` and `auth_key`): suite 1 outputs from fixed inputs (the vectors fix the nonce, ephemeral key and salt, which are random in real use); each implementation must produce exactly these bytes and open them;
-- `rejected`: ciphertexts both implementations must refuse — other suite bytes (authenticated as if the byte were valid, so only the suite check refuses them), changed `aad`, truncated or removed tags, flipped header, nonce and tag bits, a low-order ephemeral key, a wrong passphrase, a wrapped key sealed under `auth_key` instead of `wrap_key`, and Argon2id parameters outside the bounds.
+- `subkeys`, `aead`, `sealed_box`, `path_key`, `blob_id`, `passphrase` (with each vector's `wrap_key` and `auth_key`), `key_slot` (with each slot's `ad`) and `key_commitment`: suite 1 outputs from fixed inputs (the vectors fix the nonce, ephemeral key and salt, which are random in real use); each implementation must produce exactly these bytes and open them;
+- `rejected`: ciphertexts both implementations must refuse — other suite bytes (authenticated as if the byte were valid, so only the suite check refuses them), changed `aad`, truncated or removed tags, flipped header, nonce and tag bits, a low-order ephemeral key, a wrong passphrase, a wrapped key sealed under `auth_key` instead of `wrap_key`, and Argon2id parameters outside the bounds;
+- `rejected_key_slots`: key slots opened as another slot (other vault, epoch, recipient kind, recipient id or recipient key), boxes that hold a key of the wrong size, and a box of the epoch key whose associated data lacks the key-slot label; `rejected_key_commitments`: commitments checked against another key, vault or epoch, or truncated, extended or flipped. Both implementations must refuse every one.
 
 The Go test generates the file: `go test ./internal/e2ee -run TestSharedVectorsAreCurrent -update`, and fails when the committed file differs from what it generates. A format change therefore changes the vectors, and the TypeScript tests then fail until the TypeScript implementation matches.
