@@ -4,7 +4,7 @@ import { sha256Hex } from "../core/hash";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
 import { mergeUnsaved } from "../core/merge/text-merge";
 import { mergeCanvas } from "./canvas-merge";
-import { isNotFoundOsError, isUnmaterializableOsError } from "./platform-rules";
+import { isFileNotCreatedError, isNotFoundOsError, isUnmaterializableOsError } from "./platform-rules";
 import { UnsavedEditsError } from "./unsaved-edits";
 
 export { UnsavedEditsError } from "./unsaved-edits";
@@ -51,8 +51,8 @@ export const syncEditOrigin = "vault-sync";
  * - An OS error saying the platform cannot hold a name (too long, an invalid
  *   character the path rules did not catch) rejects a create or rename with
  *   "unmaterializable", so the engine tracks the document. On Windows that
- *   error is ENOENT, taken as a refused name when the parent folder (and a
- *   rename's source) exists.
+ *   error is ENOENT, on Android Capacitor's FILE_NOTCREATED; either is taken
+ *   as a refused name when the parent folder (and a rename's source) exists.
  * - Write and delete preconditions (the engine's expected content hash) are
  *   checked inside the same Vault.process call that writes, wherever the new
  *   content is text and the file's is too. On desktop, Vault.process runs in
@@ -336,13 +336,14 @@ export class ObsidianVaultAdapter implements VaultAdapter {
    * VaultError "unmaterializable" (naming `path`) for an OS error saying the
    * platform cannot hold `created`, a name the path rules missed, so the
    * engine tracks the document instead of failing the pull; any other error
-   * as it is. ENOENT counts when `created`'s parent folder and `source` (a
-   * rename's) exist: Windows reports a name it refuses as ENOENT (see
-   * isNotFoundOsError).
+   * as it is. ENOENT and Android's FILE_NOTCREATED count when `created`'s
+   * parent folder and `source` (a rename's) exist: Windows reports a name it
+   * refuses as ENOENT (see isNotFoundOsError), Android as FILE_NOTCREATED
+   * (see isFileNotCreatedError).
    */
   private async unmaterializableOr(error: unknown, path: string, created: string, source?: string): Promise<unknown> {
     if (isUnmaterializableOsError(error)) return new VaultError("unmaterializable", path);
-    if (!isNotFoundOsError(error)) return error;
+    if (!isNotFoundOsError(error) && !isFileNotCreatedError(error)) return error;
     const parent = created.includes("/") ? created.slice(0, created.lastIndexOf("/")) : "";
     if (parent !== "" && !(await this.vault.adapter.exists(parent))) return error;
     if (source !== undefined && !(await this.vault.adapter.exists(source))) return error;

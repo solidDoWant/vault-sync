@@ -27,10 +27,21 @@ function enoent(path: string): Error {
 }
 
 /**
- * A vault whose index holds `files` and `folders` and whose disk holds the
- * paths in `onDisk`, where creating or renaming a file fails with ENOENT.
+ * The error Obsidian's Android app gives (from Capacitor's filesystem) when it
+ * cannot open a file to write, as seen for a 300-byte name in spike #187: a
+ * bare message, no code.
  */
-function fakeApp(options: { files?: string[]; folders?: string[]; onDisk: string[] }): App {
+function fileNotCreated(): Error {
+  return new Error("FILE_NOTCREATED");
+}
+
+/**
+ * A vault whose index holds `files` and `folders` and whose disk holds the
+ * paths in `onDisk`, where creating or renaming a file fails with `fail`'s
+ * error (ENOENT by default).
+ */
+function fakeApp(options: { files?: string[]; folders?: string[]; onDisk: string[]; fail?: (path: string) => Error }): App {
+  const fail = options.fail ?? enoent;
   const indexed = new Map<string, unknown>();
   for (const path of options.folders ?? []) indexed.set(path, new (TFolder as unknown as new (path: string) => object)(path));
   for (const path of options.files ?? []) indexed.set(path, new (TFile as unknown as new (path: string) => object)(path));
@@ -41,8 +52,8 @@ function fakeApp(options: { files?: string[]; folders?: string[]; onDisk: string
       return file instanceof TFile ? file : null;
     },
     createFolder: () => Promise.resolve(),
-    createBinary: (path: string) => Promise.reject(enoent(path)),
-    rename: (_file: unknown, path: string) => Promise.reject(enoent(path)),
+    createBinary: (path: string) => Promise.reject(fail(path)),
+    rename: (_file: unknown, path: string) => Promise.reject(fail(path)),
     adapter: { exists: (path: string) => Promise.resolve(options.onDisk.includes(path)) },
   };
   return { vault } as unknown as App;
@@ -93,5 +104,36 @@ describe("ObsidianVaultAdapter on an ENOENT from the platform", () => {
     const error = await adapter.rename("old.md", "new.md").catch((caught: unknown) => caught);
     expect(error).not.toBeInstanceOf(VaultError);
     expect(error).toMatchObject({ code: "ENOENT" });
+  });
+});
+
+describe("ObsidianVaultAdapter on Android's FILE_NOTCREATED (#705)", () => {
+  it("takes a created file's name as refused when its parent folder exists", async () => {
+    const adapter = new ObsidianVaultAdapter(fakeApp({ folders: ["notes"], onDisk: ["notes"], fail: fileNotCreated }));
+    await expect(adapter.write("notes/name.md", bytes)).rejects.toEqual(new VaultError("unmaterializable", "notes/name.md"));
+  });
+
+  it("takes a created top-level file's name as refused", async () => {
+    const adapter = new ObsidianVaultAdapter(fakeApp({ onDisk: [], fail: fileNotCreated }));
+    await expect(adapter.write("name.md", bytes)).rejects.toEqual(new VaultError("unmaterializable", "name.md"));
+  });
+
+  it("surfaces the original error when a created file's parent folder is missing", async () => {
+    const adapter = new ObsidianVaultAdapter(fakeApp({ folders: ["notes"], onDisk: [], fail: fileNotCreated }));
+    const error = await adapter.write("notes/name.md", bytes).catch((caught: unknown) => caught);
+    expect(error).not.toBeInstanceOf(VaultError);
+    expect(error).toMatchObject({ message: "FILE_NOTCREATED" });
+  });
+
+  it("takes a rename's new name as refused when its parent folder and the source exist", async () => {
+    const adapter = new ObsidianVaultAdapter(fakeApp({ files: ["old.md"], folders: ["notes"], onDisk: ["old.md", "notes"], fail: fileNotCreated }));
+    await expect(adapter.rename("old.md", "notes/new.md")).rejects.toEqual(new VaultError("unmaterializable", "notes/new.md"));
+  });
+
+  it("surfaces the original error when a rename's source is missing", async () => {
+    const adapter = new ObsidianVaultAdapter(fakeApp({ files: ["old.md"], folders: ["notes"], onDisk: ["notes"], fail: fileNotCreated }));
+    const error = await adapter.rename("old.md", "notes/new.md").catch((caught: unknown) => caught);
+    expect(error).not.toBeInstanceOf(VaultError);
+    expect(error).toMatchObject({ message: "FILE_NOTCREATED" });
   });
 });

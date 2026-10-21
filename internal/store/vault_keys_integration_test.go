@@ -127,6 +127,55 @@ func TestNewE2EEVaultHasNoEpochAndAPendingRotation(t *testing.T) {
 	}
 }
 
+// A new E2EE vault has no key epoch yet, so it refuses every commit until
+// its first epoch exists, epoch 0 included; a plaintext vault accepts
+// epoch 0. Nothing of the refused commit is stored.
+func TestNewE2EEVaultRefusesCommitsBeforeItsFirstEpoch(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	require.NoError(t, err)
+
+	device, err := queries.RegisterDevice(t.Context(), owner, "laptop", nil, 10)
+	require.NoError(t, err)
+
+	content := sha256.Sum256([]byte("content"))
+
+	tests := []struct {
+		name          string
+		encryption    store.Encryption
+		assertErr     require.ErrorAssertionFunc
+		wantRevisions int
+	}{
+		{"an E2EE vault without an epoch", store.EncryptionE2EE, func(t require.TestingT, err error, _ ...any) {
+			require.ErrorIs(t, err, store.ErrEpochNotCurrent)
+		}, 0},
+		{"a plaintext vault", store.EncryptionNone, require.NoError, 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			vault, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: test.name, Encryption: test.encryption}, 10)
+			require.NoError(t, err)
+
+			_, err = pool.Exec(t.Context(), "INSERT INTO blobs (vault_id, blob_id, size, state) VALUES ($1, $2, 7, 'complete')", vault.ID, content[:])
+			require.NoError(t, err)
+
+			_, err = queries.InVault(vault.ID).CommitRevision(t.Context(), store.NewRevision{
+				ID: uuid.Must(uuid.NewV7()), DocumentID: uuid.Must(uuid.NewV7()), Kind: "text",
+				ContentRef: content[:], ContentSize: 7, Path: "note.md", PathKey: uuid.NewString(),
+				DeviceID: device.ID, UserID: owner, Epoch: 0,
+			})
+			test.assertErr(t, err)
+
+			var revisions int
+			require.NoError(t, pool.QueryRow(t.Context(), "SELECT count(*) FROM revisions WHERE vault_id = $1", vault.ID).Scan(&revisions))
+			assert.Equal(t, test.wantRevisions, revisions)
+		})
+	}
+}
+
 // Criterion 4: of concurrent rotations with the same expected epoch, on
 // separate connections, exactly one wins; the others get
 // ErrEpochNotCurrent and nothing of theirs is stored.
@@ -456,4 +505,58 @@ func TestListMissingSlotsPagesByEpochAndUser(t *testing.T) {
 	assert.Equal(t, int32(1), pages[1][0].Epoch)
 	assert.Equal(t, int32(2), pages[2][0].Epoch)
 	assert.NotEqual(t, pages[0][0].UserID, pages[1][0].UserID)
+}
+
+// An owner who removes themselves from an E2EE vault would create, and so
+// know, the epoch meant to exclude them: RemoveMember refuses it and the
+// vault is unchanged. LeaveVault is the way out.
+func TestRemoveMemberRefusesSelfRemovalFromAnE2EEVault(t *testing.T) {
+	fixture := newKeyFixture(t, 1)
+	other := fixture.members[0]
+
+	_, err := fixture.pool.Exec(t.Context(), `UPDATE vault_members SET role = 'owner' WHERE vault_id = $1 AND user_id = $2`, fixture.vault.VaultID(), other)
+	require.NoError(t, err)
+
+	countSlots := func() int {
+		var slots int
+		require.NoError(t, fixture.pool.QueryRow(t.Context(), `SELECT count(*) FROM key_slots WHERE vault_id = $1`, fixture.vault.VaultID()).Scan(&slots))
+
+		return slots
+	}
+
+	slotsBefore := countSlots()
+
+	for _, next := range []*store.NextEpoch{new(fixture.nextEpoch(t, 1, other)), nil} {
+		err := fixture.vault.RemoveMember(t.Context(), fixture.owner, fixture.owner, next)
+		require.ErrorIs(t, err, store.ErrSelfRemoval)
+		assert.True(t, fixture.isMember(t, fixture.owner), "the owner stays")
+		assert.Equal(t, store.KeyState{Encryption: store.EncryptionE2EE, CurrentEpoch: 1}, fixture.state(t))
+		assert.Equal(t, slotsBefore, countSlots())
+	}
+
+	require.NoError(t, fixture.vault.LeaveVault(t.Context(), fixture.owner))
+	assert.False(t, fixture.isMember(t, fixture.owner))
+}
+
+func TestRemoveMemberLetsAnOwnerRemoveThemselvesFromAPlaintextVault(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	require.NoError(t, err)
+
+	other, err := queries.UpsertUser(t.Context(), testIssuer, "other")
+	require.NoError(t, err)
+
+	created, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: "Plain", Encryption: store.EncryptionNone}, 10)
+	require.NoError(t, err)
+
+	_, err = pool.Exec(t.Context(), `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, 'owner')`, created.ID, other)
+	require.NoError(t, err)
+
+	require.NoError(t, queries.InVault(created.ID).RemoveMember(t.Context(), owner, owner, nil))
+
+	var member bool
+	require.NoError(t, pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM vault_members WHERE vault_id = $1 AND user_id = $2)`, created.ID, owner).Scan(&member))
+	assert.False(t, member)
 }

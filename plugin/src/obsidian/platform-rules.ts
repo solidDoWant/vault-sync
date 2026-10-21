@@ -58,3 +58,18 @@ export function isNotFoundOsError(error: unknown): boolean {
   if (code === "ENOENT") return true;
   return typeof message === "string" && /\bENOENT\b|no such file or directory/i.test(message);
 }
+
+/**
+ * Whether `error` is Capacitor's FILE_NOTCREATED, which Obsidian's Android app
+ * gives when it cannot open a file to write: for a name Android's storage
+ * refuses (a 300-byte name in spike #187, #705), but for any other I/O
+ * failure too, so it carries no reason. The vault adapter takes it as a
+ * refused name when everything the create depends on exists, as it does
+ * ENOENT (see isNotFoundOsError).
+ */
+export function isFileNotCreatedError(error: unknown): boolean {
+  if (typeof error !== "object" || error === null) return false;
+  const { code, message } = error as { code?: unknown; message?: unknown };
+  if (code === "FILE_NOTCREATED") return true;
+  return typeof message === "string" && /\bFILE_NOTCREATED\b/.test(message);
+}

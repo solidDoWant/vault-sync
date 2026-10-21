@@ -78,14 +78,17 @@ service MembershipService {
   // effect together, as a compare-and-set on the current epoch, so no
   // revision is accepted under an epoch the removed member holds. Without a
   // valid next epoch nothing changes and the member stays. A plaintext
-  // vault takes no next_epoch.
+  // vault takes no next_epoch. An owner cannot remove themselves from an
+  // end-to-end encrypted vault this way, because they would know the epoch
+  // meant to exclude them; they leave with LeaveVault.
   //
   // Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
   // when next_epoch is missing in an E2EE vault, given in a plaintext vault
   // or out of bounds, or when its slots are not exactly the new epoch's
   // recipients (the removed member is not one); NOT_FOUND when the user is
   // not a member; FAILED_PRECONDITION when it would remove the vault's last
-  // owner, or, with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
+  // owner, when the caller removes themselves from an E2EE vault, or,
+  // with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
   // when next_epoch.expected_epoch is not the vault's current epoch.
   rpc RemoveMember(RemoveMemberRequest) returns (RemoveMemberResponse) {}
 
