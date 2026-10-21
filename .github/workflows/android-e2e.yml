@@ -37,14 +37,15 @@ jobs:
     name: plugin-e2e (android-emulator, ${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # TEMPORARY (#704 diagnosis): Google Play services updating itself
-    # kills Obsidian (bound to its FontsProvider). Which image avoids it.
+    # TEMPORARY (#704 diagnosis): the emulator segfaults once chromedriver
+    # attaches to Obsidian's WebView. Which graphics setting avoids it.
     strategy:
       fail-fast: false
       matrix:
-        variant: [default, google_apis-nogms]
+        variant: [novulkan, guest]
     env:
-      ANDROID_IMAGE: system-images;android-34;${{ startsWith(matrix.variant, 'google_apis') && 'google_apis' || 'default' }};x86_64
+      ANDROID_IMAGE: system-images;android-34;default;x86_64
+      EMULATOR_GRAPHICS: ${{ matrix.variant == 'guest' && '-gpu guest' || '-gpu swiftshader_indirect -feature -Vulkan' }}
     defaults:
       run:
         shell: bash
@@ -76,9 +77,10 @@ jobs:
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
           # The subshell records how the emulator ended, should it end.
-          nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
-            -gpu "$0" -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
-            swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          sudo sysctl -w kernel.core_pattern=/tmp/core.%e.%p
+          nohup bash -c 'ulimit -c unlimited; "$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
+            $EMULATOR_GRAPHICS -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
+            > "$RUNNER_TEMP/emulator.log" 2>&1 &
           pid=$!
           for _ in $(seq 1 72); do
             if ! kill -0 "$pid" 2>/dev/null; then echo "::error::the emulator exited"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
@@ -86,7 +88,6 @@ jobs:
               "$adb" shell settings put global window_animation_scale 0
               "$adb" shell settings put global transition_animation_scale 0
               "$adb" shell settings put global animator_duration_scale 0
-              if [[ "${{ matrix.variant }}" == *-nogms ]]; then "$adb" shell pm disable-user --user 0 com.google.android.gms; fi
               "$adb" shell dumpsys package com.google.android.webview | grep -m1 versionName || true
               "$adb" shell dumpsys package com.android.webview | grep -m1 versionName || true
               "$adb" shell dumpsys webviewupdate | head -20 || true
@@ -142,6 +143,14 @@ jobs:
           # killed it (out of memory).
           { pgrep -a qemu || echo "no emulator process"; free -m; lscpu; sudo dmesg | tail -100; } > "$RUNNER_TEMP/e2e-logs/host.txt" 2>&1 || true
           cp -r /tmp/android-runner "$RUNNER_TEMP/e2e-logs/emulator-crash" || true
+          ls -la /tmp/core.* || true
+          for core in /tmp/core.*; do
+            [[ -e "$core" ]] || continue
+            command -v gdb > /dev/null || sudo apt-get install -y -qq gdb > /dev/null
+            exe=$(file "$core" | sed -n "s/.*execfn: '\([^']*\)'.*/\1/p")
+            sudo gdb -batch -ex 'thread apply all bt 20' "${exe:-$ANDROID_HOME/emulator/qemu/linux-x86_64/qemu-system-x86_64-headless}" "$core" > "$RUNNER_TEMP/e2e-logs/backtrace.txt" 2>&1 || true
+            grep -m1 -B2 -A25 'SIGSEGV\|received signal' "$RUNNER_TEMP/e2e-logs/backtrace.txt" || head -80 "$RUNNER_TEMP/e2e-logs/backtrace.txt"
+          done
           cp "$RUNNER_TEMP/obsidian-start.png" "$RUNNER_TEMP/e2e-logs/" || true
 
       - if: failure()
