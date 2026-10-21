@@ -291,9 +291,7 @@ describe("vault-sync on an Android device", function () {
     dontKeepActivities(false);
   });
 
-  // Skipped until #730: with the network cut, a request that gets no answer
-  // has no timeout, so the status stays "syncing" and never goes "offline".
-  it.skip("reports offline while the network is cut and pushes the edits made meanwhile once it is back (sections 4 and 9)", async function () {
+  it("reports offline while the network is cut and pushes the edits made meanwhile once it is back (sections 4 and 9)", async function () {
     await waitForIdle("sync was not idle before the network was cut");
     const edited = "Killed/One.md";
     const created = "Offline.md";
