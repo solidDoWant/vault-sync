@@ -62,6 +62,43 @@ On Windows, `wdio.conf.mts` starts Obsidian with `--disable-gpu --in-process-gpu
 
 The driver requires both PostgreSQL and the S3-compatible store and fails, rather than skips, when either is not configured. To run it against a PostgreSQL you started yourself, set `VAULT_SYNC_TEST_DATABASE_URL` (a role allowed to create databases), build the plugin, and run `./scripts/with-native-s3.sh go test -count=1 -tags e2e -run TestPluginE2E -v ./cmd/vault-sync-server/` (or set the `VAULT_SYNC_TEST_S3_*` variables for a store of your own and run `go test` directly). The version pinned in `scripts/with-native-s3.sh` must match the versitygw image in `deploy/compose/compose.test.yaml`; the script refuses to run otherwise, and `make test` (part of the required Linux checks) runs `./scripts/with-native-s3.sh --check-pin`, so a compose bump with a stale pin fails CI. Bump both, with the release checksums, together.
 
+## Real Android app on an emulator (spike, #187)
+
+The emulated-mobile job runs desktop Obsidian with the mobile UI. Spike #187 tried the suite on the real Obsidian Android app in an Android emulator on GitHub's `ubuntu-latest`, to find out whether checks in `docs/testing/android.md` could become automated tests. The experimental workflow, its WebdriverIO configuration and the driver's config override are in commit `f5b09130` of [#627](https://github.com/solidDoWant/vault-sync/pull/627). They were removed before that PR merged, so nothing in CI runs it today.
+
+**Setup that worked.**
+
+- **APK.** Every `obsidianmd/obsidian-releases` GitHub release since 1.5.8 ships `Obsidian-<version>.apk`, the same repository the desktop suite downloads from. The GitHub API reports a SHA-256 `digest` for each release asset (`gh api repos/obsidianmd/obsidian-releases/releases/tags/v1.14.4`). The workflow pinned 1.14.4, the version `wdio.conf.mts` pins, and checked the APK with `sha256sum -c` before installing it. `wdio-obsidian-service` accepts only Obsidian URLs from that repository or `releases.obsidian.md`, but does not check the APK's hash itself, so a harness must.
+- **Emulator.** KVM is available on `ubuntu-latest` once a udev rule opens `/dev/kvm`. Google's `sdkmanager` and `avdmanager` from the runner's preinstalled SDK installed the emulator and `system-images;android-34;google_apis;x86_64` (no third-party emulator action), and `emulator -no-window -gpu swiftshader_indirect` booted it. `avdmanager` on the runner writes AVDs under `~/.config/.android/avd`, so the emulator needs `ANDROID_AVD_HOME` pointing there.
+- **Driver.** `wdio-obsidian-service` 3.3.0 drives the Android app through Appium's UiAutomator2 driver (`appium` and `@wdio/appium-service`, plus `appium driver install uiautomator2`, since Appium 3 finds drivers only in `APPIUM_HOME` or `package.json`). The capability is `platformName: "Android"`, `appium:automationName: "UiAutomator2"` and `appium:app` the verified APK. The existing Go driver, real server, PostgreSQL and S3 ran unchanged. `adb reverse` mapped the server's and the fake issuer's ports, so the device reached them at the same `127.0.0.1` addresses as the host.
+
+**Time.** In two runs (run 39551115287, two parallel jobs), the job took about 7.5 minutes: SDK and system image install 46–60 s, emulator boot 31–32 s, and the e2e step 263–269 s (building the server and the plugin included; WebdriverIO's part 3 min 30 s). That is close to the emulated-mobile job.
+
+**Flakiness.** Both runs had exactly the same result: 12 of the 16 spec files that existed then passed (`config`, `conflicts`, `editor`, `history`, `journal`, `lifecycle`, `paths`, `realtime`, `signin`, `startup`, `sync`, `unsaved`), and the same tests in the same 4 failed. Two runs show the failures are deterministic, not that the passes are stable; a flake rate needs many more runs. `sync.e2e.ts` passing means the attachment transfer (more than two upload chunks and download ranges, compared by SHA-256) and the IndexedDB journal work on the Android WebView and Capacitor's filesystem.
+
+**The 4 failing spec files.** None was a timeout or an infrastructure failure.
+
+- `smoke.e2e.ts` and `platform.e2e.ts` assume a desktop app: `isDesktopApp`, a status bar rather than the ribbon icon, the host's `process.platform` and a `FileSystemAdapter` base path. These need an Android mode in the specs. In `platform.e2e.ts`, though, the Obsidian adapter reported a 300-byte file name as `Error: FILE_NOTCREATED` from Capacitor, not as `VaultError` `unmaterializable`, so the adapter does not classify that Android error. In `smoke.e2e.ts`, `requestUrl` to the server failed with an unknown WebDriver error after switching to the second vault; that was not investigated.
+- `atomicity.e2e.ts` relies on the desktop `FileSystemAdapter`'s internals by design, so it needs an Android counterpart rather than a fix.
+- `conformance.e2e.ts`: the case "rename that changes only letter case is allowed" fails with Obsidian's "Destination file already exists!". Android's shared storage is case-insensitive, which the adapter does not handle.
+
+So the emulator found two adapter behaviours that the emulated-mobile job cannot find.
+
+**Device controls.** After the suite, `adb shell` ran each control a #31 row needs, and each command was accepted: `am kill` and `am force-stop md.obsidian`, `input keyevent KEYCODE_HOME` and `am start` (background and foreground), `settings put global always_finish_activities 1` ("Don't keep activities"), `cmd connectivity airplane-mode enable`, `svc wifi`/`svc data disable`, and `dumpsys deviceidle force-idle` (Doze). The spike only checked that Android accepted them, not their effect on a sync. One catch for network tests: traffic over `adb reverse` goes through adbd, not the device's network, so airplane mode does not cut it. Offline tests must reach the server through the emulator's own network (`10.0.2.2`, the host's loopback) instead.
+
+**Which `docs/testing/android.md` checks it could automate.**
+
+| Check | Emulator |
+|---|---|
+| Process killed mid-sync (section 5) | Yes: `am force-stop` or `am kill` during a sync, then relaunch and compare with the server. |
+| Background and foreground, "Don't keep activities" (section 6) | Yes for "Don't keep activities" and a short background. A long background is Doze (`deviceidle force-idle`), which an emulator only approximates. |
+| Offline and network changes (sections 4 and 9) | Yes, with the server reached over `10.0.2.2` rather than `adb reverse`. |
+| Large first sync (section 3) | Correctness yes. Responsiveness, memory and storage speed are the emulator's, not a phone's, so that part stays manual. |
+| Attachments (section 8) | The transfer already passes (`sync.e2e.ts`). |
+| BRAT install (section 1), the Android browser and clipboard during sign-in (section 2), battery use (section 9) | No: these stay manual. |
+
+**Recommendation: adopt partially** (implementation: [#704](https://github.com/solidDoWant/vault-sync/issues/704)). Add a non-required Android emulator job (a nightly or manual run first, so its flake rate is measured before anyone considers making it required, which is a separate decision). Make the specs Android-aware, then add the kill, background and network scenarios above and move those rows of `docs/testing/android.md` to automated tests. BRAT, the browser and clipboard, battery use and the large-vault performance check stay manual on a physical device. The reasons: the job costs about as much as the emulated-mobile one, the setup uses only Google's SDK tools and Obsidian's own release, and the first two runs already found two Android-only adapter behaviours.
+
 ## Writing e2e tests
 
 - Put specs in `plugin/test/e2e/specs/` as `*.e2e.ts`. Functions passed to `browser.executeObsidian` are stringified and run inside Obsidian, so they cannot capture variables or imports. Pass inputs as extra arguments, and use the `obsidian` module from the first argument.
