@@ -179,9 +179,9 @@ async function search<T>(definition: Definition<T>, examples: T[] = []): Promise
   return details;
 }
 
-/** The property holds: fast-check finds no counterexample. */
-async function holds<T>(definition: Definition<T>): Promise<void> {
-  const details = await search(definition);
+/** The property holds: fast-check finds no counterexample, on `examples` (fixed regression cases, run first) or a generated case. */
+async function holds<T>(definition: Definition<T>, examples: T[] = []): Promise<void> {
+  const details = await search(definition, examples);
   if (details.failed) expect.fail(report(details));
 }
 
@@ -242,20 +242,22 @@ describe("engine properties (design §9.3)", () => {
     await holds(p2);
   });
 
-  // P3 exclusivity: INV-1 and INV-2 after every command.
-  // Fails today (flips in R7 #571): after a database restore the journal keeps a document the server lost live at a path key another document then claims.
-  it("P3: no two live documents or live outboxes claim one path key (known failure)", { timeout }, async () => {
-    await knownFailure(p3, {
-      example: scripted("posix", { type: "remote-create", path: 5 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }),
-      violation: /^step \d+: live documents r-1@"Straße\.md" and r-4@"STRASSE\.md" collide under K$/,
-    });
+  // P3 exclusivity: INV-1 and INV-2 after every command. Flipped in R7b (#700). Fixed cases: R7a's pin (a document the
+  // restored server lost at a path key a pulled document then claims), and a document the restored server lost, then a
+  // colliding local create, with its file kept and with it deleted (design §4.6: the push re-creates it, yielding the path).
+  it("P3: no two live documents or live outboxes claim one path key", { timeout }, async () => {
+    await holds(p3, [
+      scripted("posix", { type: "remote-create", path: 5 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }),
+      scripted("posix", { type: "user-create", path: 1 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "restore", fraction: 0 }),
+      scripted("posix", { type: "remote-create", path: 5 }, { type: "edit-during-pull", file: 0 }, { type: "user-delete", file: 0 }, { type: "restore", fraction: 0 }, { type: "user-create", path: 5 }),
+    ]);
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
-  // Fails today (flips in R8 #572; re-pinned in R5a #622, which fixed the crash-lost rename that was pinned before; this counterexample fails on master too): after a database restore, a crash at a journal write leaves a remote file in the vault that the run without the crash does not keep.
-  it("P4: a crash at any journal write reaches the state a run without it reaches (known failure)", { timeout }, async () => {
-    await knownFailure(p4, {
-      example: [
+  // Flipped in R7b (#700), which re-creates a document the restored server lost (design §4.6). Fixed case: the pin before it.
+  it("P4: a crash at any journal write reaches the state a run without it reaches", { timeout }, async () => {
+    await holds(p4, [
+      [
         "posix",
         [
           { type: "remote-create", path: 1 },
@@ -271,8 +273,7 @@ describe("engine properties (design §9.3)", () => {
         ],
         12,
       ],
-      violation: /^a crash at journal write 12 reaches \{"vault":\["a\.md=remote 6"\],"server":\[\]\}, the run without it \{"vault":\[\],"server":\[\]\}$/,
-    });
+    ]);
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
@@ -281,12 +282,10 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.
-  // Fails today (#583, blocked by R7 #571; PO-11): the engine's own file of a remote note holds the folder that note's next path needs, and the revision stays deferred (path-conflict) for good.
-  it("P6: the device converges with the server within bounded rounds (known failure)", { timeout }, async () => {
-    await knownFailure(p6, {
-      example: scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
-      violation: /^deferred revisions left: r-2 \(path-conflict\)$/,
-    });
+  // Flipped in R7b (#700; #583, PO-11). Fixed case: the pin before it (the engine's own file of a remote note held the
+  // folder that note's next path needs).
+  it("P6: the device converges with the server within bounded rounds", { timeout }, async () => {
+    await holds(p6, [scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 })]);
   });
 });
 

@@ -41,6 +41,10 @@ export interface PushPlan {
   adopted: { state: DocumentState; path: string }[];
   /** Operations that bring a tombstoned document back from an untracked file: recorded with the document bound to it (Bindings.revived). */
   revivals: Set<string>;
+  /** Documents the restored server lacks whose bound path another claim takes: each is re-created at a copy name (design §4.6, displace intent). */
+  yielding: { state: DocumentState; spelling: string }[];
+  /** Documents the restored server lacks whose file the user deleted: the journal forgets them. */
+  forgotten: string[];
 }
 
 /**
@@ -116,10 +120,31 @@ export async function planPush(
   const revivals = new Set<string>();
   const adopting = new Set<string>();
 
+  const ghosts: { state: DocumentState; spelling: string }[] = [];
+  const forgotten: string[] = [];
   for (const state of source.documents) {
     if (!hasBase(state)) continue;
     const binding = state.binding;
     const live = !state.deleted;
+    if (ghost(state)) {
+      // The restored server lacks it (design §4.6): re-created below, under
+      // its own id, from the file it is bound to. Without one there is
+      // nothing here to re-create, nor on the server to delete.
+      if (binding === null || binding === undefined) {
+        // The user deleted its file too: nothing is left of it anywhere, so
+        // the journal forgets it (no tombstone to commit on a server that
+        // never had it, and no claim on a path it holds nowhere).
+        if (state.absence === "user-deleted" && !busyDocuments.has(state.documentId)) forgotten.push(state.documentId);
+        continue;
+      }
+      if (!source.inScope(binding.spelling)) continue;
+      if (busyDocuments.has(state.documentId) || busyPaths.has(binding.spelling)) {
+        wait(binding.spelling);
+        continue;
+      }
+      ghosts.push({ state, spelling: binding.spelling });
+      continue;
+    }
     if (binding === null || binding === undefined) {
       if (
         !live ||
@@ -235,6 +260,46 @@ export async function planPush(
     });
   }
 
+  // Each ghost is re-created at its bound spelling, under its own id, unless
+  // another claim takes that path (C3): the newest server claim of a document
+  // the server has, or another outgoing operation. Then it yields, re-created
+  // at a copy name by a displace intent (`yielding`), never refused.
+  const yielding: { state: DocumentState; spelling: string }[] = [];
+  if (ghosts.length > 0) {
+    const ahead = new Map(source.deferred.map((deferred) => [deferred.revision.documentId, deferred.revision]));
+    const claims: string[] = [];
+    for (const state of source.documents) {
+      if (ghost(state) && !ahead.has(state.documentId)) continue;
+      const newest = ahead.get(state.documentId) ?? state;
+      if (hasBase(state) && !newest.deleted) claims.push(newest.path);
+    }
+    const outgoing = [...source.pending, ...removals, ...renames.map((rename) => rename.operation), ...edits, ...creates].filter((operation) => !operation.deleted).map((operation) => operation.path);
+    for (const { state, spelling } of ghosts) {
+      const taken = (path: string) => space.collides(path, spelling, "server");
+      if (claims.some(taken) || outgoing.some(taken)) {
+        yielding.push({ state, spelling });
+        continue;
+      }
+      const content = await source.read(spelling);
+      if (content === null) {
+        wait(spelling);
+        continue;
+      }
+      const create: PendingOperation = {
+        revisionId: source.newId(),
+        documentId: state.documentId,
+        baseRevisionId: "",
+        path: spelling,
+        contentHash: sha256Hex(content),
+        size: BigInt(content.length),
+        kind: state.kind,
+        deleted: false,
+      };
+      creates.push(create);
+      outgoing.push(spelling);
+    }
+  }
+
   return {
     operations: [
       ...removals,
@@ -245,7 +310,18 @@ export async function planPush(
     waiting,
     adopted,
     revivals,
+    yielding,
+    forgotten,
   };
+}
+
+/**
+ * A document the restored server lacks (design §4.6, SPEC.md §6.1): a live
+ * base this device synced, which a resync found no head of (`seq` 0). The
+ * next push re-creates it under its own id.
+ */
+export function ghost(state: DocumentState): boolean {
+  return hasBase(state) && !state.deleted && state.seq === 0n;
 }
 
 /** Documents a deferred remote revision keeps from pushing, and the server claims they hold (busyClaims). */

@@ -18,7 +18,7 @@ import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { movedBeforeDelete, ruleW } from "./decide";
 import { Intents } from "./intents";
-import { busyClaims, planPush, type Busy, type DirtyPaths } from "./push-plan";
+import { busyClaims, ghost, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
@@ -1829,6 +1829,14 @@ export class SyncEngine {
     );
     // The user deleted the document's file, and its synced content is back at its path: that file is its own again.
     for (const { state, path } of plan.adopted) await this.putDocument(state, { kind: "adopted", path });
+    if (plan.forgotten.length > 0) await this.bindings.transact(() => Promise.resolve({ removeDocuments: plan.forgotten }));
+    // A document the restored server lacks yields its path to another claim: re-created at a copy name (design §4.6).
+    for (const { state, spelling } of plan.yielding) {
+      const copy = await this.freeCopyName(spelling, { documentId: state.documentId, file: spelling, result: null });
+      if (copy === null) continue;
+      await this.intents.displace(state.documentId, spelling, copy, this.conflictRecord(state.documentId, spelling, "path-taken", copy, "", ""), true);
+      plan.waiting.add(copy);
+    }
     for (const operation of plan.operations) {
       // An earlier commit's pull may have handed this document or path to the merge path.
       busy = await this.busy();
@@ -1846,7 +1854,7 @@ export class SyncEngine {
       // to merge (#482). The next round looks again, from the new base.
       if (
         (!operation.deleted && !sameHash(await this.readOrNull(operation.path), operation.contentHash)) ||
-        ((await this.journal.getDocument(operation.documentId))?.revisionId ?? "") !== operation.baseRevisionId
+        !(await this.onBase(operation))
       ) {
         this.markDirty(operation.path);
         continue;
@@ -1861,21 +1869,34 @@ export class SyncEngine {
   }
 
   /**
-   * A create in the outbox whose file a local rename moved (E1): the
-   * create follows the document's binding, under a new revision id, as a
-   * displace intent's does (intents.ts). Otherwise its file is missing at
-   * the create's path, and the moved file would be pushed as another
-   * document (P1; a document re-created after a restore, R7b).
+   * A create in the outbox whose file the user moved (E1) or edited since
+   * it was recorded: the create follows the document's binding and its
+   * content, under a new revision id, as a displace intent's does
+   * (intents.ts). Otherwise the create no longer matches its file, is
+   * dropped as superseded, and the file is pushed as another document (P1;
+   * a document re-created after a restore, R7b). If the first create did
+   * land, the pull finds it and rebases this one on it (applyRevision).
    */
   private async createFollowsBinding(operation: PendingOperation): Promise<PendingOperation> {
     if (operation.baseRevisionId !== "" || operation.deleted) return operation;
     const spelling = (await this.journal.getDocument(operation.documentId))?.binding?.spelling;
-    if (spelling === undefined || spelling === operation.path || (await this.readOrNull(operation.path)) !== null) return operation;
+    if (spelling === undefined) return operation;
     const content = await this.readOrNull(spelling);
-    if (content === null) return operation;
+    if (content === null || (spelling === operation.path && sha256Hex(content) === operation.contentHash)) return operation;
     const moved: PendingOperation = { ...operation, revisionId: this.newId(), path: spelling, contentHash: sha256Hex(content), size: BigInt(content.length) };
     await this.journal.transact({ removePending: [operation.revisionId], addPending: [moved] });
     return moved;
+  }
+
+  /**
+   * Whether `operation` is on its document's base: the base is still the
+   * one it was derived from, or the document is one the restored server
+   * lacks (ghost), which the operation creates again.
+   */
+  private async onBase(operation: PendingOperation): Promise<boolean> {
+    const state = await this.journal.getDocument(operation.documentId);
+    if (state !== undefined && operation.baseRevisionId === "" && ghost(state)) return true;
+    return (state?.revisionId ?? "") === operation.baseRevisionId;
   }
 
   /** The documents whose deferred remote revision keeps their local changes from being pushed, and their server claims (busyClaims). */
