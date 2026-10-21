@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { InMemoryVault } from "../vault/memory";
+import { deferredDocuments } from "./deferred";
 import { PathSpace } from "./pathspace";
 import { files, harness } from "./testing";
 
@@ -198,8 +199,10 @@ describe.each(["windows", "macos", "android"] as const)("documents at ı.md and 
     expect(text(await h.vault.read("I.md"))).toBe("dotless\n");
     // The second document waits for the path, held as a deferred revision (rule W, refactor step R7, will place it).
     expect((await h.journal.listDeferred()).map((deferred) => deferred.revision.documentId)).toEqual(["capital"]);
-    // R1's stopgap: it is held as a local change of the path until rule W (R7b) places it.
-    expect((await h.journal.listDeferred()).map((deferred) => deferred.reason)).toEqual(["local-changes"]);
+    // Rule W (R7b, #544): the first document holds the path legitimately, so the second waits as a path
+    // conflict, listed for the user (#585 (a)), never as a hidden local change.
+    expect((await h.journal.listDeferred()).map((deferred) => deferred.reason)).toEqual(["path-conflict"]);
+    expect((await deferredDocuments(h.journal, h.vault)).map((document) => [document.documentId, document.reason])).toEqual([["capital", "path-conflict"]]);
   });
 });
 

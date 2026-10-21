@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { threeWayMerge } from "./merge";
-import { files, harness, syncedOnBoth, twoDevices } from "./testing";
+import { files, harness, newestServerClaims, syncedOnBoth, twoDevices } from "./testing";
 
 // Two devices rename the same note X onto the path of a note C that each
 // moved away or deleted, and both edit X (#462). Device b's push lands
@@ -71,7 +71,7 @@ describe.each(["posix", "macos", "windows"] as const)("a remote rename onto the 
     await h.engine.push();
 
     // The journal never holds two live documents at one path.
-    const live = (await h.journal.listDocuments()).filter((state) => !state.deleted).map((state) => state.path.toLowerCase());
+    const live = (await newestServerClaims(h.journal)).map(([, path]) => path.toLowerCase());
     expect(new Set(live).size).toBe(live.length);
 
     // Another device shrinks C again, so this device applies its move.

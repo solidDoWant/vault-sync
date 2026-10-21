@@ -5,7 +5,7 @@ import type {
   DocumentState,
   PendingOperation,
 } from "../journal/journal";
-import { hasBase, liveHere } from "./bindings";
+import { hasBase } from "./bindings";
 import type { PathSpace } from "./pathspace";
 
 /**
@@ -79,10 +79,12 @@ export async function planPush(
     ...blocked.paths,
     ...source.pending.map((operation) => operation.path),
   ]);
-  // A busy document's synced path waits with it: a create there would be
-  // refused while the server still has the document there (C3).
+  // A document waiting for its outbox keeps its synced path: a create
+  // there would be refused while the server still has the document there
+  // (C3). One whose revision is deferred claims the deferred revision's
+  // path instead (busyClaims), the server's newest.
   for (const state of source.documents)
-    if (busyDocuments.has(state.documentId) && hasBase(state) && !state.deleted) busyPaths.add(state.path);
+    if (busyDocuments.has(state.documentId) && !blocked.documents.has(state.documentId) && hasBase(state) && !state.deleted) busyPaths.add(state.path);
   const dirtyFiles = new Set(
     [...dirty.paths].map((path) => space.filesystemKey(path)),
   );
@@ -259,7 +261,7 @@ export interface Busy {
  * `too-large`). A commit of theirs would be refused, its base being behind
  * the server's head. Their server claims wait with them (C3): the
  * deferred revision's path, where the server has the document, and the
- * synced path of one that still holds a file here. A path is never held
+ * file the document is bound to here, wherever a local rename put it. A path is never held
  * for any other reason.
  */
 export function busyClaims(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): Busy {
@@ -269,8 +271,10 @@ export function busyClaims(documents: readonly DocumentState[], deferred: readon
     if (reason === "invalid-path" || reason === "path-conflict") continue;
     busy.documents.add(revision.documentId);
     busy.paths.add(revision.path);
-    const state = states.get(revision.documentId);
-    if (liveHere(state)) busy.paths.add(state.path);
+    // Its file waits with it where the file is: a path its file left is
+    // free for the document the server has there (PO-11).
+    const spelling = states.get(revision.documentId)?.binding?.spelling;
+    if (spelling !== undefined) busy.paths.add(spelling);
   }
   return busy;
 }
