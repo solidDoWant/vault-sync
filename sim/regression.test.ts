@@ -96,6 +96,21 @@ describe("regression cases", () => {
     expect(runs).toEqual([[endpoints, recorded, steps]]);
   });
 
+  it("replay a case recorded with several users with them (#35)", () => {
+    const options = { ...seededOptions(false), users: 3 };
+    const regression = throughDisk(recordedCase("seed-42-members", options, violations, steps));
+
+    expect(regression.users).toBe(3);
+    expect(replayOptions(regression)).toEqual(options);
+  });
+
+  it("replay a case recorded with one user, or before #35, with one user", () => {
+    const regression = throughDisk(recordedCase("seed-42", { ...seededOptions(false), users: 1 }, violations, steps));
+
+    expect(regression).not.toHaveProperty("users");
+    expect(replayOptions(regression).users ?? 1).toBe(1);
+  });
+
   it("record the minimized steps and their violations", () => {
     const regression = recordedCase("seed-42", seededOptions(false), violations, steps);
 

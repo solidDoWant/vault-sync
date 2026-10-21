@@ -58,6 +58,9 @@ const (
 	// invariantProtocol is the harness's violation of a protocol guarantee
 	// a client observed (sim/client.ts, sim/network.ts).
 	invariantProtocol = "protocol"
+	// invariantRevokedWrite is the harness's violation of a write the
+	// server accepted from a viewer or a removed member (sim/members.ts).
+	invariantRevokedWrite = "revoked-write"
 	// refusedRetryDetail is part of the protocol violation sim/network.ts
 	// reports when the server refuses a retry of a revision it applied.
 	refusedRetryDetail = "although the server already applied this revision id"
@@ -320,7 +323,7 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 	// server, database and bucket.
 	t.Parallel()
 
-	requireSeedsDetect(t, "simfault", "simfault-stale-base", brokenSchedule, invariantStaleBase, "")
+	requireSeedsDetect(t, "simfault", "simfault-stale-base", "seeds", brokenSchedule, invariantStaleBase, "")
 }
 
 // TestSimulationDetectsRefusedRetry proves that random schedules, not only
@@ -339,7 +342,7 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 func TestSimulationDetectsRefusedRetry(t *testing.T) {
 	t.Parallel()
 
-	simulation := requireSeedsDetect(t, "simfault_retry", "simfault-refused-retry", refusedRetrySchedule, invariantProtocol, refusedRetryDetail)
+	simulation := requireSeedsDetect(t, "simfault_retry", "simfault-refused-retry", "seeds", refusedRetrySchedule, invariantProtocol, refusedRetryDetail)
 
 	scenario := simulation.runSuite(t, false, []string{suitesEnv + "=scenarios"}, "-t", refusedEditScenario)
 	require.Error(t, scenario.err, "the #12 scenario passed against the simfault_retry server:\n%s", scenario.output)
@@ -347,14 +350,26 @@ func TestSimulationDetectsRefusedRetry(t *testing.T) {
 	require.Regexp(t, refusedEditPattern, scenario.output, "the #12 scenario failed without the refused retry of its edit:\n%s", scenario.output)
 }
 
+// TestSimulationDetectsViewerWrite proves that the members suite catches a
+// server that lets a demoted member write (#35): against a server built
+// with the `simfault_authz` tag, which accepts a viewer's writes, the
+// committed simfault-viewer-write case and the seeds of CI's short run
+// (brokenSchedule) with membership changes must report a revoked-write
+// violation.
+func TestSimulationDetectsViewerWrite(t *testing.T) {
+	t.Parallel()
+
+	requireSeedsDetect(t, "simfault_authz", "simfault-viewer-write", "members", brokenSchedule, invariantRevokedWrite, "")
+}
+
 // requireSeedsDetect builds the server with the broken build tag, replays
 // the committed case committedCase (sim/regressions/<committedCase>.json)
-// against it, runs schedule's seeds against it until one fails, and
-// requires a violation of invariant whose detail contains detail from
-// each. The minimized case the harness wrote must reproduce it when
+// against it, runs schedule's seeds of the seeded suite against it until
+// one fails, and requires a violation of invariant whose detail contains
+// detail from each. The minimized case the harness wrote must reproduce it when
 // replayed as a committed regression case. It returns the running
 // simulation for further checks.
-func requireSeedsDetect(t *testing.T, tag, committedCase string, schedule []string, invariant, detail string) *simulation {
+func requireSeedsDetect(t *testing.T, tag, committedCase, suite string, schedule []string, invariant, detail string) *simulation {
 	t.Helper()
 
 	simulation := startSimulation(t, t.TempDir(), tag)
@@ -382,7 +397,7 @@ func requireSeedsDetect(t *testing.T, tag, committedCase string, schedule []stri
 	}
 
 	result := simulation.runSuite(t, false, append([]string{
-		suitesEnv + "=seeds",
+		suitesEnv + "=" + suite,
 		shrinkRunsEnv + "=" + strconv.Itoa(shrinkRuns),
 	}, schedule...), "--bail", "1")
 

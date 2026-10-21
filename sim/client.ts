@@ -73,6 +73,14 @@ export interface RunContext {
   purgedRevisions: ReadonlySet<string>;
   /** The paths the clients and the engines' users choose from: pathPool, or faithfulPathPool with the faithful filesystem. */
   pathPool: readonly string[];
+  /**
+   * Whether `client`'s user can lose access to the vault during the run: a
+   * member other than the owner in a run with membership changes (#35,
+   * Members). Its client takes PERMISSION_DENIED and NOT_FOUND as the
+   * server refusing it access and gives the operation up; the runner checks
+   * each refusal against the user's role (Members.check). Unset: no client.
+   */
+  mayLoseAccess?: (client: number) => boolean;
 }
 
 /**
@@ -278,7 +286,7 @@ export class ScriptedClient {
       try {
         response = await this.api.sync.listChanges({ vaultId: this.context.vaultId, sinceSeq: this.cursor, pageSize });
       } catch (error) {
-        this.unexpectedUnless(error, "ListChanges", [Code.Unavailable]);
+        if (!this.accessRefused(error)) this.unexpectedUnless(error, "ListChanges", [Code.Unavailable]);
         this.context.log(`${this.name} pull interrupted: ${Code[errorCode(error)]}`);
         return;
       }
@@ -345,6 +353,10 @@ export class ScriptedClient {
         this.context.log(`${this.name} ${operation} ${document}: path taken, retrying as "${path}"`);
         fields = { ...fields, path };
         continue;
+      }
+      if (this.accessRefused(error)) {
+        this.context.log(`${this.name} ${operation} ${document} refused: ${Code[error.code]}`);
+        return;
       }
       this.unexpected(error, `CommitRevision for ${operation} of ${document}`);
       return;
@@ -430,6 +442,10 @@ export class ScriptedClient {
         // Another client uploading the same blob can advance or finish the
         // shared session: resume from BeginBlob.
         const retryable = step === "BeginBlob" ? [Code.Unavailable] : [Code.Unavailable, Code.FailedPrecondition, Code.NotFound];
+        if (this.accessRefused(error) && (step === "BeginBlob" || errorCode(error) === Code.PermissionDenied)) {
+          this.context.log(`${this.name} upload of ${content.name} refused at ${step}: ${Code[errorCode(error)]}`);
+          return false;
+        }
         if (!retryable.includes(errorCode(error))) {
           this.unexpected(error, `${step} of ${content.name}`);
           return false;
@@ -478,6 +494,12 @@ export class ScriptedClient {
       blobId: revision.contentRef?.blobId ?? new Uint8Array(),
       size: revision.contentRef?.size ?? 0n,
     });
+  }
+
+  /** Whether `error` is the server refusing this client access (a viewer's write, or any call once its user was removed). */
+  private accessRefused(error: unknown): boolean {
+    const code = errorCode(error);
+    return (code === Code.PermissionDenied || code === Code.NotFound) && this.context.mayLoseAccess?.(this.index) === true;
   }
 
   private unexpectedUnless(error: unknown, call: string, expected: readonly Code[]): void {
