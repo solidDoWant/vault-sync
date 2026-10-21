@@ -62,7 +62,9 @@ export function quotedVaultLabel(vault: { id: string; name: string }): string {
  * characters, line and paragraph separators and lone UTF-16 surrogates. A
  * zero-width joiner between two emoji (after an optional variation selector
  * or skin tone) is left: it joins a family or profession emoji, and reorders
- * or hides nothing.
+ * or hides nothing. Accepted limitation (#605 item 3, #615): where the font
+ * has no glyph for the joined sequence, the emoji show side by side, as they
+ * would without the joiner, so two such paths can look the same.
  */
 const hiddenCharacter = /\\|(?<!\p{Extended_Pictographic}(?:\u{FE0F}|[\u{1F3FB}-\u{1F3FF}])?)\u200d|\u200d(?!\p{Extended_Pictographic})|(?!\u200d)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|[\ud800-\udfff]/gu;
 
