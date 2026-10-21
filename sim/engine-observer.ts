@@ -34,6 +34,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
 import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
 import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } from "../plugin/src/core/engine/engine";
+import { RestoreError } from "../plugin/src/core/engine/history";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
@@ -415,6 +416,67 @@ export class EngineObserver {
         if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
       });
     return `${this.name} starts push`;
+  }
+
+  /**
+   * The user restores a version of the document at `path` from its history
+   * (SPEC.md §11), as the history view does: a deleted document (the newest
+   * the engine deleted there) or, failing that, the live document there.
+   * The version is the newest live revision before the head (the content a
+   * deleted document last held, or a live document's previous version), or
+   * the one `back` live revisions older still. With `at`, the document comes
+   * back at that path instead of its own (#420). Unless the engine is busy,
+   * it starts the restore (a push, the commit and a pull, through the
+   * network) and returns the trace entry; drain the network to finish it. A
+   * restore the engine refuses (RestoreError, say `path-taken`) commits
+   * nothing and is logged; the user sees the message.
+   *
+   * Once committed, the ledger records the restore as the user's change at
+   * the document's paths and the target, with the restored content (the
+   * resurrected-delete check), and the content as the user's write (lost-write).
+   * The paths do not count as the user's for the echo check: the engine
+   * writes the restored file itself and must not report it as a local change.
+   */
+  startRestore(path: string, options: { at?: string; back?: number } = {}): string {
+    if (this.busy) return `${this.name} busy, restore of ${path} skipped`;
+    this.busy = true;
+    const incarnation = this.context.network.incarnation(this.index);
+    const engine = this.engine;
+    const what = `${path}${options.back === undefined ? "" : ` (${String(options.back)} back)`}${options.at === undefined ? "" : ` at ${options.at}`}`;
+    const restore = async (): Promise<string> => {
+      const deleted = (await engine.deletedDocuments()).find((state) => state.path === path);
+      const document = deleted ?? (await this.journal.findDocumentByPath(path));
+      if (document === undefined) return `${this.name} user restore of ${path}: no document there`;
+      const page = await engine.history(document.documentId);
+      const entry = page.entries.filter((candidate) => !candidate.deleted && candidate.revisionId !== page.headRevisionId)[options.back ?? 0];
+      if (entry === undefined) return `${this.name} user restore of ${path}: no such version in its history`;
+      const serverSeq = this.context.serverSeq();
+      const at = `step ${String(this.context.stepNumber())}`;
+      const restored = await engine.restore(entry, undefined, options.at);
+      const target = options.at ?? restored.path;
+      this.ledger.write({ hash: entry.contentHash, path: target, at });
+      this.ledger.changed({ paths: [...new Set([path, entry.path, target])], result: { path: target, hash: entry.contentHash }, serverSeq, at });
+      return `${this.name} user restored ${this.context.ids.label(document.documentId)} ${path} to ${this.context.ids.label(entry.revisionId)} (seq ${String(entry.seq)}, ${entry.contentHash.slice(0, 8)}) at ${target}, seq ${String(restored.seq)}`;
+    };
+    void restore()
+      .then(
+        (entry) => {
+          this.context.log(entry);
+        },
+        (error: unknown) => {
+          if (error instanceof RestoreError) {
+            this.context.log(`${this.name} user restore of ${what} refused: ${error.reason} ${error.path}`);
+          } else if (interrupted(error)) {
+            this.context.log(`${this.name} engine restore interrupted: ${interruption(error)}`);
+          } else {
+            this.violation("engine", `${this.name} restore of ${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        },
+      )
+      .finally(() => {
+        if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
+      });
+    return `${this.name} user starts restore of ${what}`;
   }
 
   /**

@@ -19,12 +19,13 @@ import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
+import { historyRestores } from "./history-scenarios";
 import { restoreWindow } from "./restore-scenarios";
 import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
 import { mergedDuringPush } from "./scenarios";
 import { stalledAtFinish } from "./scenarios";
 import { StallError } from "./network";
-import { recordedCase, replayOptions } from "./regression";
+import { recordedCase, replayRegression } from "./regression";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink, type ShrinkProgress } from "./shrink";
 import { summarize } from "./summary";
@@ -146,7 +147,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
 describe.runIf(suites.has("regressions") && environment.regressions.length > 0)("committed regression cases", () => {
   it.each(environment.regressions.map((regression) => [regression.name, regression] as const))("%s keeps every invariant", async (_name, regression) => {
-    const result = await runSteps(environment, replayOptions(regression), regression.steps);
+    const result = await replayRegression(environment, regression);
     expect(result.violations, tail(result.trace)).toEqual([]);
   });
 });
@@ -596,6 +597,33 @@ describe.runIf(suites.has("scenarios"))("scripted server restore scenarios (#155
     // server lost, and the edit of the restored note, stay.
     expect(result.vault.get("notes/lost.md"), trace).toBe("only before the restore\n");
     expect([...result.vault.values()].join(""), trace).toContain("edited before the restore");
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted history restore scenarios (#651)", () => {
+  it("restores older and deleted versions, in place and at another path, keeping every document's id and every invariant", async () => {
+    const result = await historyRestores(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    // The restore at a path another document took was refused, with nothing committed, before the one at another path.
+    expect(result.trace.some((line) => line.includes("e0 user restore of notes/c.md refused: path-taken notes/c.md")), trace).toBe(true);
+    const expected = new Map([
+      ["archive/a.md", "title\ntwo\n"],
+      ["notes/b.md", "bee\n"],
+      ["notes/c (restored).md", "old sea\n"],
+      ["notes/c.md", "dee\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    // Each restore is a revision of the document it restores: a, b and c keep their ids, and d, renamed onto c's path, keeps its own.
+    const [a, b, c, d] = ["notes/a.md", "notes/b.md", "notes/c.md", "notes/d.md"].map((path) => result.before.get(path));
+    expect(new Set([a, b, c, d]).size === 4 && [a, b, c, d].every((label) => label !== undefined), trace).toBe(true);
+    expect(result.documents.get("archive/a.md"), trace).toBe(a);
+    expect(result.documents.get("notes/b.md"), trace).toBe(b);
+    expect(result.documents.get("notes/c (restored).md"), trace).toBe(c);
+    expect(result.documents.get("notes/c.md"), trace).toBe(d);
+    expect(result.documents.size, trace).toBe(4);
   });
 });
 

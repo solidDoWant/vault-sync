@@ -33,7 +33,7 @@ export type BindingChange =
   | { kind: "adopted"; path: string }
   | { kind: "kept" };
 
-type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "documentByFileKey" | "documentsByFileKey" | "transact">;
+type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "documentsByFileKey" | "transact">;
 type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
 
 /**
@@ -152,7 +152,9 @@ export class Bindings {
    * A file moved from `from` to `to`, by the user (E1, E2) or by the
    * engine. The document bound to the file keeps it at `to`. A document
    * still bound at `to` (another file) has none any more: the vault moves
-   * nothing onto an existing file, so its file was gone.
+   * nothing onto an existing file, so its file was gone. Of several
+   * documents a v2 migration bound to the file, the lowest id keeps it and
+   * the others are released.
    */
   renamed(from: string, to: string, duringScan = false): Promise<void> {
     // The scan reads the disk after events it races with: a file it found
@@ -164,10 +166,15 @@ export class Bindings {
       const key = this.space.filesystemKey(from);
       const missing = early ? this.missing.get(key) : undefined;
       this.missing.delete(key);
-      const found = await this.journal.documentByFileKey(key);
+      // Every row at the key: a v2 journal's migration may have bound several
+      // documents to the file (indexeddb.ts deriveV3Records). The first, the
+      // lowest id, keeps it; the others are released, not user-deleted, as
+      // the user deleted nothing (C1, #641).
+      const [found, ...duplicates] = await this.journal.documentsByFileKey(key);
       const lost = found === undefined && missing !== undefined ? await this.journal.getDocument(missing.documentId) : undefined;
       const moved = found ?? (lost === undefined || lost.binding !== null ? undefined : { ...lost, binding: { spelling: from, fileKey: key, seen: missing?.seen ?? lost.baseHash } });
       const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
+      changes.push(...duplicates.map((other) => ({ ...other, ...unbound("released") })));
       if (moved !== undefined) changes.push({ ...moved, binding: { spelling: to, fileKey: this.space.filesystemKey(to), seen: moved.binding?.seen ?? moved.baseHash }, absence: null });
       if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
     });

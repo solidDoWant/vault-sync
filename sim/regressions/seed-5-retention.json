@@ -4,6 +4,7 @@
   "clients": 3,
   "engines": 2,
   "commitRetryBackoff": 30,
+  "retention": true,
   "violations": [
     {
       "invariant": "engine-convergence",
