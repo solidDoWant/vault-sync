@@ -90,6 +90,15 @@ describe("the Journal conformance suite", () => {
           }
         })(),
     ],
+    [
+      "a file key lookup that returns only the first of several documents",
+      () =>
+        new (class extends InMemoryJournal {
+          override async documentsByFileKey(fileKey: string) {
+            return (await super.documentsByFileKey(fileKey)).slice(0, 1);
+          }
+        })(),
+    ],
     // Reopening gives a new, empty journal, as a store that is not durable does.
     ["writes lost on reopen", () => new InMemoryJournal(), true],
   ];

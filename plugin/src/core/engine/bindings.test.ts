@@ -389,6 +389,20 @@ describe("Bindings rules", () => {
     expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "released" });
   });
 
+  it.each([
+    ["kept", { kind: "kept" }],
+    ["applied", { kind: "applied" }],
+  ] as const)("unbinds the other document of two bound to one file when an engine write (%s) binds the one a probe finds there (C1)", async (_name, change) => {
+    const journal = new InMemoryJournal();
+    await duplicated(journal);
+    const owner = await bindings(journal);
+
+    await owner.put({ ...base("Y1", "y.md", "y1"), revisionId: "Y1-2", seq: 2n }, change);
+
+    expect((await binding(journal, "Y1")).binding).toEqual({ spelling: "y.md", fileKey: "y.md", seen: hash("y1") });
+    expect(await binding(journal, "Y2")).toEqual({ ...neither, absence: "released" });
+  });
+
   it("unbinds every document bound at a rename's target, not only the first found", async () => {
     const journal = new InMemoryJournal();
     await journal.putDocument(bound(base("A", "a.md", "a1")));
@@ -465,6 +479,50 @@ describe("Bindings rules", () => {
     } finally {
       process.off("unhandledRejection", listener);
     }
+  });
+
+  it("rejects a push after a user's delete whose transition failed, instead of pushing without it", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    const journal = new FailingJournal();
+    const h = harness({ journal });
+    h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+    await h.engine.pull();
+
+    journal.fail = true;
+    await h.vault.delete("a.md");
+    await expect(h.engine.push()).rejects.toThrow("journal write failed");
+    expect(h.server.liveDocuments()).toEqual(new Map([["a.md", "A"]]));
+  });
+
+  it("keeps rejecting pushes when a later user event follows a failed transition, whose transition the later one does not clear", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    const journal = new FailingJournal();
+    const h = harness({ journal });
+    h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+    await h.engine.pull();
+
+    journal.fail = true;
+    await h.vault.rename("a.md", "b.md");
+    await h.engine.settled();
+    // The journal works again; the later event's own transition would succeed.
+    journal.fail = false;
+    await h.vault.write("c.md", bytes("c1"));
+    await h.engine.settled();
+
+    await expect(h.engine.push()).rejects.toThrow("journal write failed");
+    expect(h.server.liveDocuments()).toEqual(new Map([["a.md", "A"]]));
   });
 
   it("rejects a push after a user's rename whose transition failed, instead of pushing without it", async () => {

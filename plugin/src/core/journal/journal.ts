@@ -98,6 +98,14 @@ export interface Journal {
   documentByFileKey(fileKey: string): Promise<DocumentState | undefined>;
 
   /**
+   * Every document whose binding names a file with file key `fileKey`, in
+   * `documentId` order: one at most, unless a v2 journal's migration bound
+   * two documents to one file (indexeddb.ts deriveV3Records). An index
+   * read, not a scan.
+   */
+  documentsByFileKey(fileKey: string): Promise<DocumentState[]>;
+
+  /**
    * Records an intent (design §4.4) before the first disk step of the change
    * it describes, and resolves with its id. The intent stays until a
    * `transact` (or removeIntent) removes it.
