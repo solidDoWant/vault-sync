@@ -137,6 +137,7 @@ export class LateEventsVault implements VaultAdapter {
  */
 export class InterleavingVault implements VaultAdapter {
   private readonly armed = new Map<string, () => Promise<void>>();
+  private readonly armedReads = new Map<string, () => Promise<void>>();
 
   constructor(readonly inner: VaultAdapter) {}
 
@@ -145,15 +146,25 @@ export class InterleavingVault implements VaultAdapter {
     this.armed.set(path, change);
   }
 
+  /** Runs `change` once, right before the next read of `path`: a user's change racing what the engine reads (#757). */
+  beforeNextRead(path: string, change: () => Promise<void>): void {
+    this.armedReads.set(path, change);
+  }
+
   /** Whether an armed change has not run yet. */
   get pending(): boolean {
-    return this.armed.size > 0;
+    return this.armed.size > 0 || this.armedReads.size > 0;
   }
 
   list(): Promise<string[]> {
     return this.inner.list();
   }
-  read(path: string): Promise<Uint8Array> {
+  async read(path: string): Promise<Uint8Array> {
+    const change = this.armedReads.get(path);
+    if (change !== undefined) {
+      this.armedReads.delete(path);
+      await change();
+    }
     return this.inner.read(path);
   }
   stat(path: string): Promise<FileStat | null> {

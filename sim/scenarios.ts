@@ -1428,6 +1428,61 @@ export async function knownDocumentAtHeldPath(endpoints: SimEndpoints, variant: 
   return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts };
 }
 
+/**
+ * A pull meets a known document's file that the user moves onto the path of
+ * an incoming revision with that revision's bytes, after the engine claimed
+ * the path and before it looks at the disk there (#757). The second engine
+ * syncs note `k`, and its user edits it to `same` without pushing. The first
+ * engine creates `p.md` with `same` too. While the second engine's pull reads
+ * `p.md`, its user renames `k.md` there. The pull must not adopt the file for
+ * the new note (design §4.5 step 3: only an untracked file is adopted,
+ * INV-3): rule W(a) moves `k` on to a `path-taken` copy under its own id
+ * (PO-4), whose push commits the rename and the edit as `k`'s, and the new
+ * note materializes at `p.md`. Nothing is tombstoned.
+ */
+export async function knownFileMovedOntoIncomingPath(endpoints: SimEndpoints): Promise<KnownHeldPathResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const push = async (engine: typeof first) => {
+    log(engine.startPush());
+    await settle();
+    await run.drain(engine.index);
+  };
+  const pull = async (engine: typeof first) => {
+    log(engine.startPull());
+    await settle();
+    await run.drain(engine.index);
+  };
+
+  log(await first.edit("k.md", encoder.encode("k\n")));
+  await push(first);
+  await pull(second);
+  log(await second.edit("k.md", encoder.encode("same\n")));
+  log(await first.edit("p.md", encoder.encode("same\n")));
+  await push(first);
+  const before = await liveDocuments(run);
+
+  log(second.moveBeforeNextEngineRead("k.md", "p.md"));
+  await pull(second);
+  await push(second);
+  await pull(first);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [first, second].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  const conflicts = (await second.conflicts()).map(({ reason, path, copyPath, documentId }) => ({ reason, path, copyPath, document: run.context.ids.label(documentId) }));
+  return { ...result, vaults, before, documents: await liveDocuments(run), tombstoned: await tombstonedDocuments(run), conflicts };
+}
+
 export interface LostRenameResult extends KnownHeldPathResult {
   /** The edited note's content, as the first engine's user wrote it. */
   edited: string;
