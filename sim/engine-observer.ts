@@ -956,15 +956,12 @@ export class EngineObserver {
         );
       },
       merge: async (request) => {
-        // The base and the remote content as the hook read them, if it did: the harness never reads them again, which would add calls to the run.
-        const read: { base?: Uint8Array | null; remote?: Uint8Array | null } =
-          {};
+        // The base content as the hook read it, if it did: the harness never reads it again, which would add calls to the run.
+        const read: { base?: Uint8Array | null } = {};
         const outcome = await (this.merge ?? threeWayMerge)({
           ...request,
           readBaseContent: async () =>
             (read.base = await request.readBaseContent()),
-          readRemoteContent: async () =>
-            (read.remote = await request.readRemoteContent()),
         });
         // What the merge path made of the local content: it survives there
         // (sim/invariants.ts), but only where the harness's own check finds the
@@ -984,17 +981,10 @@ export class EngineObserver {
             request.base === undefined || request.base.deleted
               ? null
               : (read.base ?? this.contents.get(request.base.baseHash));
-          const remote =
-            read.remote !== undefined
-              ? read.remote
-              : request.remote.deleted
-                ? null
-                : this.contents.get(request.remote.contentHash);
           const carries = carriesLocalEdit(
             request.local.content,
             outcome.content,
             base,
-            remote,
           );
           if (carries) this.ledger.merged(local, merged);
           this.context.log(

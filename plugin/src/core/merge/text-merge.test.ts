@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it, vi } from "vitest";
 
 import { applyChanges, mergeText, mergeUnsaved } from "./text-merge";
@@ -241,5 +242,40 @@ describe("mergeText", () => {
     expect(mergeText(lines("a"), lines("a", "b"), "")).toBe(lines("b"));
     // Also when the other side converted the line endings as well.
     expect(mergeText("a\r\n", "", lines("a", "b"))).toBe(lines("b"));
+  });
+
+  it("never joins the local side's unterminated last line to a remote line appended after it (#750)", () => {
+    // The local side replaced the base's line and ended without a newline; the remote side appended a line.
+    expect(mergeText("base\n", "local 1\nlocal 2", "base\nremote\n")).toBe("local 1\nlocal 2\nremote");
+    // The truncated large create of seed 100121.
+    const local = `${"e4 line 13 587226069\n".repeat(3)}e4 lin`;
+    expect(mergeText("shared content 0\n", local, "shared content 0\ne6 line 17 1290208033\n")).toBe(`${local}\ne6 line 17 1290208033`);
+  });
+
+  it("never joins the remote side's unterminated last line to a local line appended after it", () => {
+    expect(mergeText("a\nb\n", "a\nb\nlocal\n", "a\nremote")).toBe("a\nremote\nlocal");
+  });
+});
+
+describe("line merge properties", () => {
+  // Distinct lines, so a joined line ("x1" + "y2") is never a line of any version.
+  const line = fc.constantFrom("x1", "y2", "z3", "w4");
+  const version = fc.record({ lines: fc.array(line, { maxLength: 6 }), finalNewline: fc.boolean() }).map(({ lines: values, finalNewline }) => {
+    const text = values.join("\n");
+    return finalNewline && text !== "" ? `${text}\n` : text;
+  });
+  const linesOf = (text: string) => text.split("\n").filter((value) => value !== "");
+
+  it("never makes a line that is in none of the three versions (#750)", () => {
+    fc.assert(
+      fc.property(version, version, version, (base, local, remote) => {
+        const known = new Set([...linesOf(base), ...linesOf(local), ...linesOf(remote)]);
+        const merged = mergeText(base, local, remote);
+        if (merged !== null) for (const value of linesOf(merged)) expect(known).toContain(value);
+        const unsaved = mergeUnsaved(base, local, remote);
+        if (unsaved !== null) for (const value of linesOf(unsaved.merged)) expect(known).toContain(value);
+      }),
+      { numRuns: 2000, seed: 750 },
+    );
   });
 });

@@ -41,8 +41,10 @@ const maxEditDistance = 4000;
  * keystrokes and `remote` new content to apply. Works on whole lines (each
  * with its line terminator). Returns null if a remote change touches a line
  * the local side changed too, or both insert at the same place, since then
- * one side would overwrite or reorder the other. A change identical on both
- * sides is kept once.
+ * one side would overwrite or reorder the other, or if applying the remote
+ * changes would join two lines into one (a change right after a last line
+ * without a line terminator, or one ending in such a line and followed by
+ * more text). A change identical on both sides is kept once.
  */
 export function mergeUnsaved(base: string, local: string, remote: string): UnsavedMerge | null {
   const baseLines = splitLines(base);
@@ -51,6 +53,8 @@ export function mergeUnsaved(base: string, local: string, remote: string): Unsav
   const remoteHunks = diffLines(baseLines, splitLines(remote));
   const localOffsets = lineOffsets(localLines);
   const changes: TextChange[] = [];
+  // How many lines the merged text has, if no change joins two lines.
+  let lineCount = localLines.length;
   for (const hunk of remoteHunks) {
     if (localHunks.some((other) => sameChange(hunk, other))) continue;
     if (localHunks.some((other) => overlaps(hunk, other))) return null;
@@ -64,8 +68,14 @@ export function mergeUnsaved(base: string, local: string, remote: string): Unsav
     const fromLine = hunk.baseStart + shift;
     const toLine = hunk.baseEnd + shift;
     changes.push({ from: offsetAt(localOffsets, fromLine), to: offsetAt(localOffsets, toLine), insert: hunk.lines.join("") });
+    lineCount += hunk.lines.length - (toLine - fromLine);
   }
-  return { merged: applyChanges(local, changes), changes };
+  const merged = applyChanges(local, changes);
+  // A change next to a last line without a terminator (the local one, or one
+  // the change inserts) would run two lines into one, rewriting a line of
+  // either side (#750): refused like an overlap.
+  if (splitLines(merged).length !== lineCount) return null;
+  return { merged, changes };
 }
 
 /**
@@ -88,7 +98,9 @@ export function mergeText(base: string, local: string, remote: string): string |
   // Neither side converted the line endings: merged as they are, so every
   // line keeps the terminator it has (a note with mixed line endings stays
   // mixed). Falls back to comparing lines without their terminators if that
-  // finds an overlap, which a terminator-only change can cause.
+  // finds an overlap, which a terminator-only change can cause, or would join
+  // two lines because one side has no final newline (#750): there the final
+  // newline is merged as a field.
   if (!changedField(baseText.eol, localText.eol) && !changedField(baseText.eol, remoteText.eol)) {
     const exact = mergeUnsaved(base, local, remote);
     if (exact !== null) return exact.merged;
