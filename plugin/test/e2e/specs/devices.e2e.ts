@@ -275,6 +275,18 @@ describe("the settings device list", function () {
     await browser.executeObsidian(({ app }) => {
       (app as unknown as { setting: { close(): void } }).setting.close();
     });
+    // On a phone Obsidian hides the tab only after its slide-out animation;
+    // the removal is released once the tab was hidden and dropped its list.
+    await browser.waitUntil(
+      () =>
+        browser.executeObsidian(({ app }, id) => {
+          const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+          const tab = (plugin as unknown as { settingTab?: { shownDevices?: unknown } } | undefined)?.settingTab;
+          if (tab === undefined) throw new Error("vault-sync has no settings tab");
+          return tab.shownDevices === undefined;
+        }, pluginId),
+      { timeoutMsg: "the closed settings tab was never hidden" },
+    );
     const listings = await callHarness("listDevicesCalls");
     expect(await callHarness("releaseRemoveDevice")).toBe(true);
     await browser.waitUntil(async () => (await callHarness("serverDeviceIds")).length === 1, { timeoutMsg: "the server never removed the device" });
