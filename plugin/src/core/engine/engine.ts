@@ -1127,6 +1127,19 @@ export class SyncEngine {
       // gives the document a path the platform can hold.
       if (outcome.path === remote.path && !isVaultRelativePath(outcome.path)) return this.defer(remote, "invalid-path");
       const unmaterializable = unmaterializableReason(outcome.path, this.pathRules);
+      if (unmaterializable !== undefined && outcome.path !== remote.path && liveHere(state) && state.binding?.spelling === local.path && local.path === outcome.path) {
+        // The result keeps a local rename to a path this platform cannot
+        // hold (the vault took the file there, the rules forbid it): a
+        // blocker that would hold the document for good. Its file is
+        // detached where it is, a new document's (design §6.4 item 3), and
+        // the revision is merged again without it, at the server's path.
+        const record = this.conflictRecord(state.documentId, local.path, "path-taken", local.path, "", remote.revisionId);
+        if (await this.intents.detach(state.documentId, local.path, local.path, record)) {
+          this.schedulePush();
+          const detached = await this.journal.getDocument(remote.documentId);
+          return this.mergeRevision(remote, detached, await this.localFile(detached, remote));
+        }
+      }
       if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
     }
     try {

@@ -821,9 +821,9 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
           crashed++;
           points.crashAfter = 0;
           await h.engine.settled();
-          // The window between the release record and the conflict copy's write.
+          // The window between the detach intent's record and its rename (design §4.4).
           const vault = await files(h.vault);
-          if ((await h.journal.getDocument("doc"))?.deleted === true && vault.size === 1 && vault.get("plan.md") === "one\ntwo (edited)\n") released++;
+          if ((await h.journal.listIntents()).some((intent) => intent.kind === "detach") && vault.size === 1 && vault.get("plan.md") === "one\ntwo (edited)\n") released++;
           h.restart();
 
           await h.engine.push();
@@ -833,7 +833,7 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
 
           await expectConverged(h, `crash after durable change ${String(crashAfter)}`);
         }
-        // At least: the dropped operation, the release record, and the conflict copy's write.
+        // At least: the detach intent, its rename, and its final transaction.
         expect(crashed).toBeGreaterThanOrEqual(3);
         expect(released).toBeGreaterThanOrEqual(1);
       });
@@ -879,15 +879,17 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
             await h.engine.push();
           }
 
+          // A deleted file: the remote rename wins over the delete. A renamed one stays the document's own
+          // (PO-11, #690; R7b): its local rename and edit win over the remote rename.
+          const [path, content] = variant === "deleted" ? ["draft.md", "one\ntwo\n"] : ["notes.md", "one\ntwo (edited)\n"];
           const expected = new Map([
-            ["draft.md", "one\ntwo\n"],
+            [path, content],
             ["plan.md", "another note\n"],
           ]);
-          if (variant === "renamed") expected.set("notes.md", "one\ntwo (edited)\n");
           expect(await files(h.vault), label).toEqual(expected);
           expect(h.server.liveFiles(), label).toEqual(expected);
           expect(h.server.liveDocuments().get("plan.md"), label).toBe("other");
-          expect(h.server.liveDocuments().get("draft.md"), label).toBe("doc");
+          expect(h.server.liveDocuments().get(path), label).toBe("doc");
           expect(await h.journal.listPending(), label).toEqual([]);
           expect(await h.journal.listDeferred(), label).toEqual([]);
         }
@@ -899,7 +901,7 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
       // moved deeper, say) parks the document with its operation at another
       // path. Kept for it, the claim left both documents live at plan.md in
       // the journal, and the other document's edit there was never pushed.
-      it("releases a parked document's pending rename as a new document, and pushes the other document's edits at the path", async () => {
+      it("detaches a document's pending rename to a path the platform cannot hold as a new document, and pushes the other document's edits at the path", async () => {
         const pathRules = { platform: "windows", root: `C:\\${"r".repeat(150)}` } as const;
         const h = harness({ merge: "default", pathRules, vault: new InMemoryVault({ pathRules: windows }) });
         const long = `${"n".repeat(120)}.md`;
@@ -915,8 +917,12 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         };
         await h.engine.push();
         h.server.interceptor = undefined;
-        expect(await h.journal.listPending()).toEqual([expect.objectContaining({ documentId: "doc", path: long })]);
-        expect((await h.journal.listDeferred()).map(({ reason }) => reason)).toEqual(["unmaterializable"]);
+        // The merge keeps the local rename to a path this platform cannot hold, so the file is detached
+        // where it is at once (design §6.4 item 3; R7b), not parked with its operation.
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(h.server.liveDocuments().get("plan.md")).toBe("doc");
+        expect(h.server.liveDocuments().get(long)).not.toBe("doc");
 
         h.server.commit({ documentId: "doc", path: "x.md" });
         h.server.commit({ documentId: "other", path: "plan.md", content: "another note\n" });
