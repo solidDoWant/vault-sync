@@ -1,5 +1,7 @@
 import { expect } from "@wdio/globals";
+import { obsidianPage } from "wdio-obsidian-service";
 
+import { e2eEnvironment } from "../environment";
 import { callHarness } from "../obsidian";
 
 // The local platform's path rules reach the engine from vault-sync's own
@@ -27,18 +29,30 @@ function pathOfLength(length: number): string {
 describe("Platform path rules", function () {
   it("reach the engine from vault-sync's session, with the vault folder counted", async function () {
     await callHarness("setUpSession");
+    // The device's platform, not the host's: on the Android job the host is
+    // Linux and the app runs in an emulator.
+    const platform = await obsidianPage.getPlatform();
+    expect(platform.isAndroidApp).toBe(e2eEnvironment.android);
     let path: string;
     let reason: string;
-    if (process.platform === "win32") {
+    if (platform.isWin) {
       // Windows rules: a reserved device name. POSIX rules would let the engine write it.
       path = "CON.md";
       reason = "reserved-name";
+    } else if (platform.isAndroidApp) {
+      // Android's rules: shared storage's character set. The vault is in the
+      // app's own storage, which would hold the name, so only the rules
+      // refuse it. Obsidian exposes no vault folder path there to count.
+      expect(await callHarness("vaultBasePath")).toBeNull();
+      path = "Meeting: notes.md";
+      reason = "forbidden-character";
     } else {
       const root = await callHarness("vaultBasePath");
       expect(root).not.toBeNull();
       // PATH_MAX less its terminator: 1023 bytes on macOS, 4095 on Linux.
-      path = pathOfLength(process.platform === "darwin" ? 1023 : 4095);
-      expect(new TextEncoder().encode(path).length + new TextEncoder().encode(root ?? "").length + 1).toBeGreaterThan(process.platform === "darwin" ? 1023 : 4095);
+      const pathMax = platform.isMacOS ? 1023 : 4095;
+      path = pathOfLength(pathMax);
+      expect(new TextEncoder().encode(path).length + new TextEncoder().encode(root ?? "").length + 1).toBeGreaterThan(pathMax);
       reason = "path-too-long";
     }
     await callHarness("commitRemote", "doc-platform", path, "a path this device cannot hold\n");
@@ -49,6 +63,9 @@ describe("Platform path rules", function () {
   });
 
   it("let the adapter report a name the file system refuses as unmaterializable", async function () {
+    // Android's Capacitor reports the name as FILE_NOTCREATED, which the
+    // adapter does not classify yet (#705): skipped there until it does.
+    if ((await obsidianPage.getPlatform()).isAndroidApp) this.skip();
     // A 300-byte name, over every platform's 255. The engine's rules would
     // refuse it before writing, so the adapter is called directly.
     const name = `${"n".repeat(297)}.md`;

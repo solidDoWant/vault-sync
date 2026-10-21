@@ -1,0 +1,11 @@
+{
+  "name": "vault-sync-e2e-android-tools",
+  "private": true,
+  "description": "Appium and its UiAutomator2 driver for the Android emulator e2e job (plugin/wdio.android.conf.mts). Kept out of the plugin's package.json so only that job installs them.",
+  "type": "module",
+  "devDependencies": {
+    "@wdio/appium-service": "^9.32.0",
+    "appium": "^3.8.0",
+    "appium-uiautomator2-driver": "^8.7.0"
+  }
+}

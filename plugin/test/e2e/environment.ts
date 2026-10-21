@@ -14,6 +14,8 @@ export const e2eEnvironment = {
   issuerUrl: required("VAULT_SYNC_E2E_ISSUER_URL"),
   clientId: required("VAULT_SYNC_E2E_CLIENT_ID"),
   emulateMobile: process.env.VAULT_SYNC_E2E_MOBILE === "1",
+  /** The run is on the real Obsidian Android app in an emulator (wdio.android.conf.mts). */
+  android: process.env.VAULT_SYNC_E2E_ANDROID === "1",
 };
 
 /** Plugin ids, as in each plugin's manifest.json. */
