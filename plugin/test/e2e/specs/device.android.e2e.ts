@@ -48,7 +48,7 @@ const natRules = [
 ];
 
 function shell(...args: string[]): string {
-  return execFileSync(adb, ["-s", serial, "shell", ...args], { encoding: "utf8", timeout: 60_000 });
+  return execFileSync(adb, ["-s", serial, "shell", ...args], { encoding: "utf8", timeout: 60_000, maxBuffer: 64 * 1024 * 1024 });
 }
 
 function sha256(text: string): string {
@@ -162,19 +162,28 @@ function dontKeepActivities(on: boolean) {
 }
 
 /**
- * Whether Android still holds an activity of Obsidian's: one in a task's
- * history ("Hist #n: ActivityRecord{... md.obsidian/...}"). A destroyed
- * activity leaves it, while the task record still names the app.
+ * The state Android records for Obsidian's activity ("RESUMED", "STOPPED",
+ * "DESTROYED", ...), from the full activity list. "Don't keep activities"
+ * destroys the activity but keeps its record in the task's history (so it
+ * can be recreated on return), so the state, not the record, shows it.
  */
-function obsidianActivityAlive(): boolean {
+function obsidianActivityState(): string {
+  const dump = shell("dumpsys", "activity", "-a", "activities");
   // The entry may be padded ("Hist  #0:").
-  const pattern = new RegExp(`Hist\\s+#\\d+:\\s+ActivityRecord\\{[^}]*\\b${appId.replaceAll(".", "\\.")}/`);
-  return pattern.test(shell("dumpsys", "activity", "activities"));
+  const entry = new RegExp(`Hist\\s+#\\d+:\\s+ActivityRecord\\{[^}]*\\b${appId.replaceAll(".", "\\.")}/`).exec(dump);
+  if (entry === null) throw new Error(`Obsidian's activity is not in the activity list:\n${obsidianActivityLines(dump)}`);
+  // Its details run up to the next entry.
+  const rest = dump.slice(entry.index + entry[0].length);
+  const next = rest.search(/Hist\s+#\d+:/);
+  const details = next === -1 ? rest : rest.slice(0, next);
+  const state = /\bstate=([A-Z_]+)/.exec(details)?.[1];
+  if (state === undefined) throw new Error(`the activity list names no state for Obsidian's activity:\n${details.slice(0, 4000)}`);
+  return state;
 }
 
 /** The lines of the activity list that name Obsidian, for a failure message. */
-function obsidianActivityLines(): string {
-  return shell("dumpsys", "activity", "activities")
+function obsidianActivityLines(dump = shell("dumpsys", "activity", "activities")): string {
+  return dump
     .split("\n")
     .filter((line) => line.includes(`${appId}/`))
     .map((line) => line.trim())
@@ -281,16 +290,18 @@ describe("vault-sync on an Android device", function () {
     const note = "Destroyed activity.md";
     const text = "edited, then the activity was destroyed\n";
     await writeNote(note, text);
-    // The activity list is read right: Obsidian's activity is in it now.
-    if (!obsidianActivityAlive()) throw new Error(`Obsidian's activity is not in the activity list while it is in the foreground:\n${obsidianActivityLines()}`);
+    // The activity's state is read right: it is resumed in the foreground.
+    expect(obsidianActivityState()).toBe("RESUMED");
     background();
-    // The scenario really happened: Android destroyed the activity. Obsidian
-    // keeps its WebView's JavaScript across the activity's recreation (a
-    // marker set in it survived on CI), so only the activity list shows it.
+    // The scenario really happened: Android destroyed the activity (it keeps
+    // the record, to recreate the activity on return). Obsidian keeps its
+    // WebView's JavaScript across the recreation (a marker set in it
+    // survived on CI), so only the activity's state shows it.
     try {
-      await browser.waitUntil(() => Promise.resolve(!obsidianActivityAlive()), { timeout: 30_000, interval: 500 }).catch(() => {
+      let state = "";
+      await browser.waitUntil(() => Promise.resolve((state = obsidianActivityState()) === "DESTROYED"), { timeout: 30_000, interval: 500 }).catch(() => {
         const setting = shell("settings", "get", "global", "always_finish_activities").trim();
-        throw new Error(`Android never destroyed Obsidian's activity in the background (always_finish_activities=${setting}):\n${obsidianActivityLines()}`);
+        throw new Error(`Android never destroyed Obsidian's activity in the background (always_finish_activities=${setting}, state ${state})`);
       });
     } finally {
       // Back in the foreground either way, or the later tests fail too.
