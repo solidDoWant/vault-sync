@@ -150,10 +150,25 @@ With the toggle on, you choose what syncs. Every category is a separate toggle:
 | Themes | on | `themes/` and `appearance.json` (the chosen theme, enabled snippets and other appearance settings) |
 | CSS snippets | on | `snippets/` and `appearance.json` |
 | Hotkeys | on | `hotkeys.json` |
-| Enabled plugin list | off | `core-plugins.json` and `community-plugins.json` |
+| Main settings | off | `app.json` (the Editor, Files and links and other settings of Obsidian itself) and `types.json` (the property types) |
+| Enabled plugin list | off | `core-plugins.json`, `community-plugins.json` and `core-plugins-migration.json` (the older form of the core plugin list, which Obsidian still reads) |
+| Core plugin settings | off | Each core plugin's own settings file, such as `daily-notes.json`, `templates.json`, `bookmarks.json`, `canvas.json` or `page-preview.json` (the list is below) |
 | Plugin code and data | off | `plugins/<plugin>/`: each community plugin's code, manifest, styles and settings |
 
-No other file in the config folder syncs, whatever is selected. That covers `app.json` (Editor and Files and links settings), the core plugins' own settings files (`daily-notes.json`, `templates.json`, `bookmarks.json`, `types.json` and so on) and any other file in it.
+No other file in the config folder syncs, whatever is selected.
+
+Main settings and core plugin settings are off even once you turn config sync on. That way a device that turned config sync on with an older version of vault-sync does not have its Editor or daily note settings replaced by another device's after an upgrade. Turn them on on each device where you want them.
+
+### Main settings and core plugin settings
+
+Research on the pinned Obsidian (1.14.4) decided which of these files sync and whether any of their keys are device-local, as was done for the files that never sync (below). It read every place in Obsidian's code that writes `app.json` and every core plugin's save of its settings file. It also read the rules Obsidian Sync uses to choose its files: like vault-sync, Obsidian Sync syncs `app.json` and `types.json` as "main settings" and each core plugin's file as "core plugin settings".
+
+- `app.json` syncs as is. Obsidian writes it only when you change a setting: in the settings, with a command (such as toggling line numbers, spellcheck, reading view or the ribbon) or from a menu. Obsidian already keeps device-local settings out of it: vim mode on mobile and the config folder override are kept in the app's local storage. Some keys apply to only one kind of device (`nativeMenus` on desktop, `mobileToolbarCommands` and `mobilePullAction` on mobile). They are preferences, and the other kind of device ignores them. The paths in it (`attachmentFolderPath`, `newFileFolderPath`) are relative to the vault. No key needs filtering, so vault-sync syncs the whole file and never rewrites it.
+- `types.json` (the property types) syncs as is with the main settings. It changes when you pick a property's type.
+- Each core plugin's file syncs as is. Core plugins write theirs only when you change one of their settings, or for their own content: a bookmark added, moved or renamed with its note, or snap to grid in a canvas. The files are `<id>.json` for these core plugin ids: `audio-recorder`, `backlink`, `bases`, `bookmarks`, `canvas`, `command-palette`, `daily-notes`, `editor-status`, `file-explorer`, `file-recovery`, `footnotes`, `global-search`, `markdown-importer`, `note-composer`, `outgoing-link`, `outline`, `page-preview`, `properties`, `publish`, `random-note`, `slash-command`, `slides`, `switcher`, `tag-pane`, `templates`, `webviewer`, `word-count` and `zk-prefixer`. A core plugin that a later Obsidian adds stays on the device until vault-sync adds it to the list. The exceptions stay on the device: `graph.json` and `workspaces.json` are device-local (below), and `sync.json` belongs to Obsidian Sync.
+- `appearance.json` and `core-plugins.json` already sync with the themes and snippets and with the plugin list. The research found no device-local key in them either.
+
+JSON settings files are synced whole, so when two devices change the same file, one of the two versions becomes a conflict copy (below). That includes `bookmarks.json` when both devices change bookmarks.
 
 On the server, config files are always stored under `.obsidian/`. Each device reads and writes them in its own config folder, so a device whose config folder is called `.obsidian-mobile` syncs with devices that use `.obsidian`.
 

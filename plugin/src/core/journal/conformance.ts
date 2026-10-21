@@ -508,6 +508,12 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       assertEqual(await reopened.documentByFileKey("KEPT.MD"), undefined, "the file key of a replaced binding");
       assertEqual(await reopened.documentByFileKey("ELSEWHERE.MD"), sampleDocument({ documentId: "e", path: "kept.md", binding: binding("Elsewhere.md", "ELSEWHERE.MD"), absence: null }), "document by its binding's file key");
       assertEqual(await reopened.documentByFileKey("moved.md"), undefined, "file keys compare exactly");
+      assertEqual((await reopened.documentsByFileKey("MOVED.MD")).map((state) => state.documentId), ["a", "b"], "every document bound to one file key, in document id order");
+      assertEqual(await reopened.documentsByFileKey("ELSEWHERE.MD"), [sampleDocument({ documentId: "e", path: "kept.md", binding: binding("Elsewhere.md", "ELSEWHERE.MD"), absence: null })], "documents by their binding's file key");
+      assertEqual(await reopened.documentsByFileKey("KEPT.MD"), [], "no document for the file key of a replaced binding");
+      assertEqual(await reopened.documentsByFileKey("base.md"), [], "no document for a base path");
+      assertEqual(await reopened.documentsByFileKey("gone.md"), [], "no document whose binding is null");
+      assertEqual(await reopened.documentsByFileKey("moved.md"), [], "file keys compare exactly, for every document");
     },
   },
   {

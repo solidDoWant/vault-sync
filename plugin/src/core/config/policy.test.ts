@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { conflictCopyPath, conflictFolderPath } from "../merge/conflict-name";
 import { configPathSynced, configReloadMessage, defaultConfigSyncSettings, neverSynced, type ConfigCategory, type ConfigSyncSettings } from "./policy";
 
-const none: Record<ConfigCategory, boolean> = { themes: false, snippets: false, hotkeys: false, pluginList: false, plugins: false };
-const all: Record<ConfigCategory, boolean> = { themes: true, snippets: true, hotkeys: true, pluginList: true, plugins: true };
+const none: Record<ConfigCategory, boolean> = { themes: false, snippets: false, hotkeys: false, appSettings: false, pluginList: false, corePluginSettings: false, plugins: false };
+const all: Record<ConfigCategory, boolean> = { themes: true, snippets: true, hotkeys: true, appSettings: true, pluginList: true, corePluginSettings: true, plugins: true };
 
 function settings(enabled: boolean, categories: Partial<Record<ConfigCategory, boolean>>): ConfigSyncSettings {
   return { enabled, categories: { ...none, ...categories } };
@@ -19,6 +19,40 @@ const covered: { path: string; categories: ConfigCategory[] }[] = [
   { path: "hotkeys.json", categories: ["hotkeys"] },
   { path: "community-plugins.json", categories: ["pluginList"] },
   { path: "core-plugins.json", categories: ["pluginList"] },
+  { path: "core-plugins-migration.json", categories: ["pluginList"] },
+  { path: "app.json", categories: ["appSettings"] },
+  { path: "types.json", categories: ["appSettings"] },
+  // Every core plugin of Obsidian 1.14.4 that may keep a settings file (#256), but graph, workspaces and sync.
+  ...[
+    "file-explorer",
+    "global-search",
+    "switcher",
+    "backlink",
+    "canvas",
+    "outgoing-link",
+    "tag-pane",
+    "footnotes",
+    "properties",
+    "page-preview",
+    "daily-notes",
+    "templates",
+    "note-composer",
+    "command-palette",
+    "slash-command",
+    "editor-status",
+    "bookmarks",
+    "markdown-importer",
+    "zk-prefixer",
+    "random-note",
+    "outline",
+    "word-count",
+    "slides",
+    "audio-recorder",
+    "file-recovery",
+    "publish",
+    "bases",
+    "webviewer",
+  ].map((id): { path: string; categories: ConfigCategory[] } => ({ path: `${id}.json`, categories: ["corePluginSettings"] })),
   { path: "plugins/dataview/main.js", categories: ["plugins"] },
   { path: "plugins/dataview/manifest.json", categories: ["plugins"] },
   { path: "plugins/dataview/data.json", categories: ["plugins"] },
@@ -27,7 +61,20 @@ const covered: { path: string; categories: ConfigCategory[] }[] = [
 ];
 
 // Config files no category covers: they stay on the device.
-const uncovered = ["app.json", "types.json", "bookmarks.json", "daily-notes.json", "templates.json", "plugins/loose.js", "other/file.json", "themes", "snippets"];
+const uncovered = [
+  // Obsidian Sync's state, and a loose JSON file no core plugin of 1.14.4 writes (a future core plugin, or a community plugin's file).
+  "sync.json",
+  "starred-notes.json",
+  "unknown.json",
+  "daily-notes.json.bak",
+  "daily-notes",
+  "app.json/nested.json",
+  "bookmarks/x.json",
+  "plugins/loose.js",
+  "other/file.json",
+  "themes",
+  "snippets",
+];
 
 // Never synced under any setting (#28): device-local files and this plugin's own folder.
 const forbidden = [
@@ -51,6 +98,10 @@ const forbidden = [
 describe("config sync policy", () => {
   it("is off by default", () => {
     expect(defaultConfigSyncSettings.enabled).toBe(false);
+  });
+
+  it("leaves Obsidian's main settings and the core plugin settings off once turned on, like the plugin list and plugin code (#256)", () => {
+    expect(defaultConfigSyncSettings.categories).toEqual({ themes: true, snippets: true, hotkeys: true, appSettings: false, pluginList: false, corePluginSettings: false, plugins: false });
   });
 
   it("syncs nothing under the config folder while off, whatever the categories say", () => {
@@ -113,12 +164,18 @@ describe("config sync policy", () => {
     for (const path of lookalikes) expect(configPathSynced(path, { settings: settings(true, all) }), path).toBe(true);
   });
 
+  it("names the main settings and the core plugin settings in the reload notice (#256)", () => {
+    expect(configReloadMessage(["app.json"])).toContain("Obsidian's main settings");
+    expect(configReloadMessage(["types.json"])).toContain("Obsidian's main settings");
+    expect(configReloadMessage(["daily-notes.json", "hotkeys.json"])).toContain("hotkeys, core plugin settings");
+  });
+
   it("tells the user to reload after a plugin list change, and says nothing for files no category covers", () => {
     const message = configReloadMessage(["community-plugins.json"]);
     expect(message).toContain("the enabled plugin list");
     expect(message).toMatch(/Reload Obsidian/u);
     expect(configReloadMessage(["plugins/dataview/main.js", "hotkeys.json"])).toContain("hotkeys, plugins");
-    expect(configReloadMessage(["app.json", "hotkeys (conflict laptop 2026-10-18 040506).json"])).toBeUndefined();
+    expect(configReloadMessage(["unknown.json", "hotkeys (conflict laptop 2026-10-18 040506).json"])).toBeUndefined();
     expect(configReloadMessage([])).toBeUndefined();
   });
 });

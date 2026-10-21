@@ -348,6 +348,7 @@ New `Journal` methods:
 
 - `transact(changes)`: one IndexedDB transaction over several stores, `strict` durability, all or nothing. Every final step in §4.4 uses it.
 - `documentByFileKey(fk)`: an index probe. It replaces the `listDocuments()` scans of `documentAt` (#250).
+- `documentsByFileKey(fk)`: every row bound at `fk`, an index read. Bindings unbinds every other document at a file it binds (C1) by it, so a document bound by the v2 migration (§6.2) next to another at one file key is found even when the probe would return the written document itself (#631).
 - `putIntent` / `listIntents` / `removeIntent`, with the remove running inside `transact`.
 
 `Journal` conformance (`plugin/src/core/journal/conformance.ts`) gains `transact` atomicity under injected failure. That suite already runs inside real Obsidian in e2e (SPEC §13), so Android WebView IndexedDB multi-store transactions get covered the same way.

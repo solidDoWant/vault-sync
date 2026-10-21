@@ -54,6 +54,10 @@ export class InMemoryJournal implements Journal {
     return Promise.resolve(copy(this.sortedDocuments().find((state) => state.binding?.fileKey === fileKey)));
   }
 
+  documentsByFileKey(fileKey: string): Promise<DocumentState[]> {
+    return Promise.resolve(this.sortedDocuments().filter((state) => state.binding?.fileKey === fileKey).map(copy));
+  }
+
   listDocuments(): Promise<DocumentState[]> {
     return Promise.resolve(this.sortedDocuments().map(copy));
   }

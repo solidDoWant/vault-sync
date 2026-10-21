@@ -483,6 +483,9 @@ export class CrashAtWriteJournal implements Journal {
   documentByFileKey(fileKey: string): Promise<DocumentState | undefined> {
     return this.read(() => this.inner.documentByFileKey(fileKey));
   }
+  documentsByFileKey(fileKey: string): Promise<DocumentState[]> {
+    return this.read(() => this.inner.documentsByFileKey(fileKey));
+  }
   putIntent(intent: NewIntent): Promise<number> {
     return this.life.journalWrite(() => this.inner.putIntent(intent));
   }

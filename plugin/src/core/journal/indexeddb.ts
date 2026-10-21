@@ -258,6 +258,14 @@ export class IndexedDbJournal implements Journal {
     });
   }
 
+  documentsByFileKey(fileKey: string): Promise<DocumentState[]> {
+    return this.transaction(["documents"], "readonly", (transaction) => {
+      // Records with equal index keys come in primary key (documentId) order.
+      const request = transaction.objectStore("documents").index(fileKeyIndex).getAll(fileKey);
+      return () => request.result as DocumentState[];
+    });
+  }
+
   putIntent(intent: NewIntent): Promise<number> {
     return this.transaction(["intents"], "readwrite", (transaction) => {
       // The store's key generator assigns `id`, in increasing order.
