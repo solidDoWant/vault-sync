@@ -28,6 +28,10 @@ const (
 	// the specs sign the plugin in through it (signin.e2e.ts).
 	e2eIssuerURLEnv = "VAULT_SYNC_E2E_ISSUER_URL"
 	e2eClientIDEnv  = "VAULT_SYNC_E2E_CLIENT_ID"
+	// VAULT_SYNC_E2E_ANDROID=1 runs the suite on the real Obsidian Android
+	// app in a booted emulator (plugin/wdio.android.conf.mts) instead of
+	// desktop Obsidian; see docs/testing/e2e.md.
+	e2eAndroidEnv = "VAULT_SYNC_E2E_ANDROID"
 )
 
 // TestPluginE2E runs the plugin e2e suite (plugin/wdio.conf.mts): the built
@@ -126,7 +130,12 @@ func TestPluginE2E(t *testing.T) {
 		return testinfra.ServerProcess{Exited: server.Exited(), Err: server.Wait, Output: logs.String, PID: server.PID()}
 	}).API
 
-	suite := testinfra.NewChild(t, "node", wdio, "run", "wdio.conf.mts")
+	wdioConfig := "wdio.conf.mts"
+	if os.Getenv(e2eAndroidEnv) == "1" {
+		wdioConfig = "wdio.android.conf.mts"
+	}
+
+	suite := testinfra.NewChild(t, "node", wdio, "run", wdioConfig)
 	suite.Command.Dir = pluginDir
 
 	suite.Command.Env = append(os.Environ(),

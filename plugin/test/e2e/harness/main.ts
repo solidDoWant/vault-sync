@@ -1,6 +1,6 @@
 import { FileSystemAdapter, FileView, MarkdownView, normalizePath, Plugin, TextFileView, TFile, TFolder, type App } from "obsidian";
 
-import { hexToBytes } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import type { ConfigSyncSettings } from "../../../src/core/config/policy";
@@ -206,6 +206,7 @@ interface RemoveDeviceIntercept {
 }
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /** Deletes everything in the vault that Obsidian indexes (hidden config stays). */
 async function emptyVault(app: App): Promise<void> {
@@ -1118,6 +1119,77 @@ export default class VaultSyncE2EHarness extends Plugin {
   private requireRemoveDeviceIntercept() {
     if (this.removeDeviceIntercept === undefined) throw new Error("interceptRemoveDevice() first");
     return this.removeDeviceIntercept;
+  }
+
+  /**
+   * From now on, vault-sync's CommitRevision calls reach the server, but
+   * their responses never reach vault-sync: each call stays pending after
+   * the server answered (device.android.e2e.ts). A session started
+   * afterwards is thus stopped mid-push, its first commit acknowledged by
+   * the server and not by the device, until the process is killed.
+   */
+  loseCommitResponses(): void {
+    const plugin = this.vaultSync();
+    const original = plugin.protocolClient.bind(plugin);
+    const lost = { answered: 0 };
+    this.lostCommitResponses = lost;
+    plugin.protocolClient = () => {
+      const client = original();
+      const sync = client.sync;
+      return {
+        ...client,
+        sync: {
+          ...sync,
+          commitRevision: async (request, options) => {
+            await sync.commitRevision(request, options);
+            lost.answered++;
+            return await new Promise<never>(() => undefined);
+          },
+        },
+      };
+    };
+  }
+
+  /** How many commits the server answered since `loseCommitResponses`, none of which vault-sync saw. */
+  answeredCommits(): number {
+    if (this.lostCommitResponses === undefined) throw new Error("loseCommitResponses() first");
+    return this.lostCommitResponses.answered;
+  }
+
+  private lostCommitResponses: { answered: number } | undefined;
+
+  /**
+   * Every revision of vault-sync's connected server vault, in seq order:
+   * its document, path, whether it is a delete and its content's SHA-256
+   * (the blob id of an unencrypted vault). Read through vault-sync's client.
+   */
+  async serverRevisions(): Promise<{ seq: string; documentId: string; path: string; deleted: boolean; sha256: string }[]> {
+    const plugin = this.vaultSync();
+    const vaultId = plugin.connectedVault?.id;
+    if (vaultId === undefined) throw new Error("vault-sync is not connected");
+    const client = plugin.protocolClient();
+    const revisions: { seq: string; documentId: string; path: string; deleted: boolean; sha256: string }[] = [];
+    for (let sinceSeq = 0n; ; ) {
+      const page = await client.sync.listChanges({ vaultId, sinceSeq });
+      for (const revision of page.revisions) {
+        revisions.push({
+          seq: String(revision.seq),
+          documentId: revision.documentId,
+          path: decoder.decode(revision.path),
+          deleted: revision.deleted,
+          sha256: bytesToHex(revision.contentRef?.blobId ?? new Uint8Array()),
+        });
+        sinceSeq = revision.seq;
+      }
+      if (!page.hasMore) return revisions;
+    }
+  }
+
+  /** The SHA-256 of every file in the open vault (the config folder aside), by path. */
+  async vaultDigests(): Promise<Record<string, string>> {
+    const digests: Record<string, string> = {};
+    for (const file of this.app.vault.getFiles()) digests[file.path] = sha256Hex(new Uint8Array(await this.app.vault.readBinary(file)));
+    return digests;
   }
 
   private otherDeviceId: string | undefined;

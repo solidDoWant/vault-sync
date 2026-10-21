@@ -102,7 +102,7 @@ DEFAULT_CONFIG = {
     # status:in-progress/in-review) per lock. Roles listed take the lock
     # for special jobs.
     "locks": {
-        "engine.ts": {"title_regex": r"^(refactor|fix)\(engine\):"},
+        "engine.ts": {"title_regex": r"^refactor\(engine\):"},
         "release": {"roles": ["release-manager"]},
     },
     "resume_max_context_tokens": 150000,
