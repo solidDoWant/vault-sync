@@ -368,6 +368,13 @@ The migration runs inside the `versionchange` transaction, so it cannot read the
 
 The in-memory renames and deletes are lost on upgrade, as they are on any restart today. The first start's full scan (E7) applies.
 
+**Amendment (R3, #567): the v3 migration only adds.** R3 ships the migration while the engine still reads every v2 field (§9.2: "nothing reads them yet"), so the parts above that rewrite a v2 field would change today's behaviour. The R3 migration (`deriveV3Records` in `journal/indexeddb.ts`) therefore:
+
+- writes `binding`, `absence` and `sealed` as above, with two refinements: a document's last pending operation decides alone (a delete gives `absence = user-deleted`, any other operation the binding at its path with `seen` = its content hash), and **every** migrated pending operation is sealed, not only those of documents with several, since any v2 operation may have been sent;
+- leaves `deleted: true` on released rows (the base's tombstone flag is then `false`, as a release always stored `deleted: true` over a live base), keeps `DeferredRevision.merging`, and adds no `documents` row for a pending create.
+
+The rest of the list moves to the step that deletes the v2 reader, as an append-only migration of its own: clearing `deleted` on `released` rows and rows for pending creates with R5 or R7, and `merging` to a `merge` intent with R8. The file key `F` depends on the platform, which a `versionchange` transaction cannot know: `IndexedDbJournal.open` takes it as `JournalOpenOptions.fileKey` (the plugin passes `filesystemKey` for the device's platform; POSIX's identity by default). Until R4 makes the engine maintain bindings, the engine's own `putDocument` calls leave a row's `binding` as the spread of the old row or drop it, so R4 must re-derive every binding at its first start (or with a migration) rather than trust a row written between R3 and R4.
+
 ### 6.3 Protocol and server
 
 **No change is required.** Every rule above uses the existing `CommitRevision`/`ListChanges` semantics, error codes and anchors.

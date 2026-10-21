@@ -6,6 +6,7 @@ import { TokenManager, type AuthState } from "./core/auth/tokens";
 import { ConfigSyncVault } from "./core/config/config-vault";
 import type { ConfigSyncSettings } from "./core/config/policy";
 import type { PullSummary } from "./core/engine/engine";
+import { PathSpace } from "./core/engine/pathspace";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import type { PathRules } from "./core/vaultpath/platform";
 import type { VaultAdapter } from "./core/vault/adapter";
@@ -61,7 +62,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       client: () => this.protocolClient(),
       accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
       defaultDeviceName: platformName(),
-      openJournal: (key, onBlocked) => openVaultJournal(this.app, key, window.indexedDB, { onBlocked }),
+      openJournal: (key, onBlocked) => openVaultJournal(this.app, key, window.indexedDB, { onBlocked, fileKey: localFileKey(this.app) }),
       vault: () => this.syncedVault(),
       ready: () => this.layoutReady(),
       pushDebounceMs,
@@ -478,6 +479,15 @@ function platformName(): string {
  */
 function localMaxDownloadBytes(): number {
   return Platform.isMobile ? 256 * 1024 * 1024 : 1024 * 1024 * 1024;
+}
+
+/**
+ * The filesystem key (`F`, PathSpace.filesystemKey) of the device Obsidian
+ * runs on, for the journal's schema upgrades.
+ */
+function localFileKey(app: App): (path: string) => string {
+  const paths = new PathSpace(localPathRules(app));
+  return (path) => paths.filesystemKey(path);
 }
 
 /** The file-name rules of the device Obsidian runs on (pathRulesFor). */

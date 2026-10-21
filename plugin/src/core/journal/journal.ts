@@ -87,7 +87,109 @@ export interface Journal {
   putConflict(conflict: ConflictRecord): Promise<void>;
   /** The conflict log, oldest first: what the UI's conflict view reads. */
   listConflicts(): Promise<ConflictRecord[]>;
+
+  /**
+   * The document whose binding names a file with file key `fileKey` (the
+   * platform's `F` of its spelling, docs/design/engine-path-ownership.md
+   * §3.1), or undefined if none does. An index probe, not a scan. Should two
+   * bindings share a file key (the engine never leaves them so), the one
+   * with the lowest `documentId` is returned, as findDocumentByPath does.
+   */
+  documentByFileKey(fileKey: string): Promise<DocumentState | undefined>;
+
+  /**
+   * Records an intent (design §4.4) before the first disk step of the change
+   * it describes, and resolves with its id. The intent stays until a
+   * `transact` (or removeIntent) removes it.
+   */
+  putIntent(intent: NewIntent): Promise<number>;
+  /** Open intents, oldest first. */
+  listIntents(): Promise<Intent[]>;
+  /** Removes an intent: `transact({ removeIntents: [id] })`. Removing an unknown id is a no-op. */
+  removeIntent(id: number): Promise<void>;
+
+  /**
+   * Applies `changes` as one durable transaction: all of them or, if any
+   * part fails, none (design §6.1). The parts apply in this order: cursor,
+   * documents, pending removals, seals, pending additions, deferral
+   * removals, deferrals, conflicts, intent removals. Rejects, changing
+   * nothing:
+   * - with RangeError if `cursor` moves the cursor backwards without `reset`;
+   * - with Error if an added pending revision id is already pending, if a
+   *   seal names no pending operation, or if an added operation's document
+   *   still has another pending operation after this transaction's removals
+   *   (the outbox holds at most one per document; addPending, which the
+   *   engine uses until refactor step R5, does not enforce it).
+   */
+  transact(changes: JournalChanges): Promise<void>;
 }
+
+/** What one `Journal.transact` changes. Every part is optional. */
+export interface JournalChanges {
+  /** Sets the cursor, as setCursor does, or as resetCursor does with `reset`. */
+  cursor?: { seq: bigint; anchor?: Uint8Array; reset?: boolean };
+  /** Inserts or replaces document states, as putDocument. */
+  putDocuments?: readonly DocumentState[];
+  /** Revision ids of pending operations to remove; unknown ids are no-ops. */
+  removePending?: readonly string[];
+  /** Revision ids of pending operations to mark `sealed` (about to be sent). */
+  sealPending?: readonly string[];
+  /** Pending operations to add, after every one already pending. */
+  addPending?: readonly PendingOperation[];
+  /** Document ids whose deferred revision to remove; unknown ids are no-ops. */
+  removeDeferred?: readonly string[];
+  /** Deferred revisions to record, as putDeferred. */
+  putDeferred?: readonly DeferredRevision[];
+  /** Conflict records to add or replace, as putConflict. */
+  putConflicts?: readonly ConflictRecord[];
+  /** Ids of intents to remove; unknown ids are no-ops. */
+  removeIntents?: readonly number[];
+}
+
+/**
+ * The kinds of multi-step change an intent records (design §4.4). Each
+ * kind's `steps` are defined by the refactor step that first writes it.
+ */
+export type IntentKind = "apply" | "merge" | "displace" | "detach" | "commit" | "resync";
+
+/** An intent as recorded, before the journal assigned its id. */
+export interface NewIntent {
+  kind: IntentKind;
+  documentId: string;
+  /** The kind's disk steps and expected outcome: any structured-cloneable value. */
+  steps: Record<string, unknown>;
+}
+
+/** An open intent: a write-ahead record of a change that touches the disk and more than one journal row. */
+export interface Intent extends NewIntent {
+  /** Assigned by the journal, increasing in the order intents were recorded. */
+  id: number;
+}
+
+/**
+ * Which local file is a document on this device (design §4.1): the file at
+ * exactly `spelling`.
+ */
+export interface Binding {
+  /** The file's path, spelled as on disk. */
+  spelling: string;
+  /**
+   * The platform's filesystem fold (`F`, PathSpace.filesystemKey) of
+   * `spelling`: what documentByFileKey looks up. It is plain `F`, not
+   * PathSpace.fileKey (`K` of `F`), so look bindings up with
+   * PathSpace.filesystemKey.
+   */
+  fileKey: string;
+  /** Content hash the engine last read or wrote at `spelling`. */
+  seen: string;
+}
+
+/**
+ * Why a document has no binding (design §4.1): the user deleted its file,
+ * the engine released it (an unmaterializable path), or this device never
+ * had one.
+ */
+export type Absence = "user-deleted" | "released" | "never";
 
 /** What the client last synced for one document. */
 export interface DocumentState {
@@ -118,6 +220,14 @@ export interface DocumentState {
    * sends no anchors.
    */
   anchor?: Uint8Array;
+  /**
+   * The local file that is this document, or null if it has none
+   * (`absence` then says why). Undefined where not recorded: a state the
+   * engine wrote before it maintains bindings (refactor step R4).
+   */
+  binding?: Binding | null;
+  /** Why the document has no binding; null while it has one. Undefined where not recorded, as `binding`. */
+  absence?: Absence | null;
 }
 
 /** A local change not yet acknowledged by the server; mirrors CommitRevision (SPEC.md §6.2). */
@@ -134,6 +244,14 @@ export interface PendingOperation {
   size: bigint;
   kind: DocumentKindName;
   deleted: boolean;
+  /**
+   * Set before the operation is first sent: a sealed operation is never
+   * edited, only removed once it is acknowledged or definitively refused
+   * (design §4.1). Undefined on an operation written without outbox
+   * semantics (the engine until refactor step R5), which may have been sent
+   * and so counts as sealed.
+   */
+  sealed?: boolean;
 }
 
 export type DocumentKindName = "blob" | "text" | "yjs";
