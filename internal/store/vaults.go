@@ -94,8 +94,11 @@ func (store *Store) CreateVault(ctx context.Context, ownerID uuid.UUID, vault Ne
 		}
 
 		err = tx.QueryRow(ctx, `
-			INSERT INTO vaults (id, name, encryption, escrow) VALUES ($1, $2, $3, $4)
-			RETURNING head_seq, created_at`, id, vault.Name, vault.Encryption, vault.Escrow).
+			INSERT INTO vaults (id, name, encryption, escrow, rotation_pending) VALUES ($1, $2, $3, $4, $5)
+			RETURNING head_seq, created_at`, id, vault.Name, vault.Encryption, vault.Escrow,
+			// An E2EE vault has no epoch yet: an owner client creates
+			// epoch 1 with RotateEpoch (SPEC.md §9.3).
+			vault.Encryption == EncryptionE2EE).
 			Scan(&created.HeadSeq, &created.CreatedAt)
 		if err != nil {
 			return fmt.Errorf("insert vault: %w", err)

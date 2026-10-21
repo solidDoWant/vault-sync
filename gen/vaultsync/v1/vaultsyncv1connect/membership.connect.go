@@ -102,11 +102,26 @@ type MembershipServiceClient interface {
 	// RemoveMember removes a member from the vault. The revisions they
 	// committed keep their history.
 	//
-	// Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID;
-	// NOT_FOUND when the user is not a member; FAILED_PRECONDITION when it
-	// would remove the vault's last owner.
+	// In an end-to-end encrypted vault the request must carry next_epoch, the
+	// epoch that replaces the current one, wrapped for every remaining member
+	// with a user key (VaultKeyService): the removal and the new epoch take
+	// effect together, as a compare-and-set on the current epoch, so no
+	// revision is accepted under an epoch the removed member holds. Without a
+	// valid next epoch nothing changes and the member stays. A plaintext
+	// vault takes no next_epoch.
+	//
+	// Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
+	// when next_epoch is missing in an E2EE vault, given in a plaintext vault
+	// or out of bounds, or when its slots are not exactly the new epoch's
+	// recipients (the removed member is not one); NOT_FOUND when the user is
+	// not a member; FAILED_PRECONDITION when it would remove the vault's last
+	// owner, or, with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
+	// when next_epoch.expected_epoch is not the vault's current epoch.
 	RemoveMember(context.Context, *connect.Request[v1.RemoveMemberRequest]) (*connect.Response[v1.RemoveMemberResponse], error)
 	// LeaveVault removes the caller from the vault. Any member may call it.
+	// In an end-to-end encrypted vault it marks a rotation pending, for an
+	// owner client to create the next epoch (VaultKeyService.RotateEpoch);
+	// until then revisions are still accepted under the current epoch.
 	//
 	// Errors: FAILED_PRECONDITION when the caller is the vault's last owner.
 	LeaveVault(context.Context, *connect.Request[v1.LeaveVaultRequest]) (*connect.Response[v1.LeaveVaultResponse], error)
@@ -269,11 +284,26 @@ type MembershipServiceHandler interface {
 	// RemoveMember removes a member from the vault. The revisions they
 	// committed keep their history.
 	//
-	// Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID;
-	// NOT_FOUND when the user is not a member; FAILED_PRECONDITION when it
-	// would remove the vault's last owner.
+	// In an end-to-end encrypted vault the request must carry next_epoch, the
+	// epoch that replaces the current one, wrapped for every remaining member
+	// with a user key (VaultKeyService): the removal and the new epoch take
+	// effect together, as a compare-and-set on the current epoch, so no
+	// revision is accepted under an epoch the removed member holds. Without a
+	// valid next epoch nothing changes and the member stays. A plaintext
+	// vault takes no next_epoch.
+	//
+	// Errors: INVALID_ARGUMENT when user_id is not a canonical lowercase UUID,
+	// when next_epoch is missing in an E2EE vault, given in a plaintext vault
+	// or out of bounds, or when its slots are not exactly the new epoch's
+	// recipients (the removed member is not one); NOT_FOUND when the user is
+	// not a member; FAILED_PRECONDITION when it would remove the vault's last
+	// owner, or, with an ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT,
+	// when next_epoch.expected_epoch is not the vault's current epoch.
 	RemoveMember(context.Context, *connect.Request[v1.RemoveMemberRequest]) (*connect.Response[v1.RemoveMemberResponse], error)
 	// LeaveVault removes the caller from the vault. Any member may call it.
+	// In an end-to-end encrypted vault it marks a rotation pending, for an
+	// owner client to create the next epoch (VaultKeyService.RotateEpoch);
+	// until then revisions are still accepted under the current epoch.
 	//
 	// Errors: FAILED_PRECONDITION when the caller is the vault's last owner.
 	LeaveVault(context.Context, *connect.Request[v1.LeaveVaultRequest]) (*connect.Response[v1.LeaveVaultResponse], error)

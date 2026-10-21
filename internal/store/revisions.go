@@ -47,6 +47,10 @@ var (
 	// tombstone, or at another path.
 	ErrPathNotCurrent = errors.New(`a new path must not contain "\" or start with one character and ":"; ` +
 		`only a live document already at such a path may keep it (edit or delete it in place, or rename it to a path without either)`)
+	// ErrEpochNotCurrent: the revision's epoch is not the vault's current
+	// key epoch (SPEC.md §9.3). Also returned by an epoch change whose
+	// expected epoch is not the current one.
+	ErrEpochNotCurrent = errors.New("epoch is not the vault's current key epoch")
 )
 
 // HeadMovedError is returned when a commit's base is not the document's
@@ -84,6 +88,10 @@ type NewRevision struct {
 	DeviceID          uuid.UUID
 	// UserID is the committing user; DeviceID must belong to them.
 	UserID uuid.UUID
+	// Epoch is the vault key epoch the revision is encrypted under: the
+	// vault's current epoch (at least 1) in an E2EE vault, 0 in a
+	// plaintext vault. Anything else is ErrEpochNotCurrent.
+	Epoch int32
 }
 
 // livePathKeyIndex enforces path_key uniqueness among live documents.
@@ -175,7 +183,10 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	// take KEY SHARE locks on it and must not be blocked.
 	var encryption Encryption
 
-	err := tx.QueryRow(ctx, `SELECT encryption FROM vaults WHERE id = $1 FOR NO KEY UPDATE`, vault.vaultID).Scan(&encryption)
+	var currentEpoch int32
+
+	err := tx.QueryRow(ctx, `SELECT encryption, current_epoch FROM vaults WHERE id = $1 FOR NO KEY UPDATE`, vault.vaultID).
+		Scan(&encryption, &currentEpoch)
 	if err != nil {
 		return Revision{}, notFound(err, "lock vault")
 	}
@@ -213,6 +224,17 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		return existing, nil
 	case !errors.Is(err, ErrNotFound):
 		return Revision{}, err
+	}
+
+	// After the idempotency check, like the head comparison: a retry whose
+	// first attempt was applied before a rotation gets that revision back.
+	// Under the vault row lock, which every epoch change takes too, so no
+	// revision is accepted under an epoch that a committed rotation, on any
+	// replica, has replaced (SPEC.md §9.3). A pending rotation leaves the
+	// current epoch in place, so commits under it go on until the next
+	// epoch exists.
+	if revision.Epoch != currentEpoch || (encryption == EncryptionE2EE && currentEpoch == 0) {
+		return Revision{}, ErrEpochNotCurrent
 	}
 
 	document, err := vault.document(ctx, tx, revision.DocumentID, "FOR NO KEY UPDATE")
@@ -296,10 +318,10 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 	}
 
 	_, err = tx.Exec(ctx, `
-		INSERT INTO revisions (id, document_id, vault_id, seq, parent_rev_id, content_ref, path, deleted, device_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		INSERT INTO revisions (id, document_id, vault_id, seq, parent_rev_id, content_ref, path, deleted, device_id, epoch)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
 		revision.ID, revision.DocumentID, vault.vaultID, seq, revision.BaseRevID, revision.ContentRef,
-		revision.Path, revision.Deleted, revision.DeviceID)
+		revision.Path, revision.Deleted, revision.DeviceID, revision.Epoch)
 	if err != nil {
 		return Revision{}, fmt.Errorf("insert revision: %w", err)
 	}
@@ -431,7 +453,8 @@ func sameRevisionFields(existing Revision, revision NewRevision) bool {
 		bytes.Equal(existing.ContentRef, revision.ContentRef) &&
 		existing.ContentSize == revision.ContentSize &&
 		existing.Path == revision.Path &&
-		existing.Deleted == revision.Deleted
+		existing.Deleted == revision.Deleted &&
+		existing.Epoch == revision.Epoch
 }
 
 // removedDeviceOf reports whether deviceID, the device that committed a

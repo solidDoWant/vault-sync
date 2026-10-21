@@ -340,7 +340,11 @@ type CommitRevisionRequest struct {
 	// Whether this revision deletes the document (a tombstone).
 	Deleted bool `protobuf:"varint,9,opt,name=deleted,proto3" json:"deleted,omitempty"`
 	// The caller's device committing the revision (from RegisterDevice).
-	DeviceId      string `protobuf:"bytes,10,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	DeviceId string `protobuf:"bytes,10,opt,name=device_id,json=deviceId,proto3" json:"device_id,omitempty"`
+	// The vault key epoch the revision is encrypted under (SPEC.md §9.3):
+	// the vault's current epoch in an end-to-end encrypted vault, 0 in a
+	// plaintext vault.
+	Epoch         uint32 `protobuf:"varint,11,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -443,6 +447,13 @@ func (x *CommitRevisionRequest) GetDeviceId() string {
 		return x.DeviceId
 	}
 	return ""
+}
+
+func (x *CommitRevisionRequest) GetEpoch() uint32 {
+	if x != nil {
+		return x.Epoch
+	}
+	return 0
 }
 
 // CommitRevisionResponse returns the accepted revision.
@@ -720,7 +731,7 @@ const file_vaultsync_v1_sync_proto_rawDesc = "" +
 	"\vrevision_id\x18\x02 \x01(\tR\n" +
 	"revisionId\"I\n" +
 	"\x13GetRevisionResponse\x122\n" +
-	"\brevision\x18\x01 \x01(\v2\x16.vaultsync.v1.RevisionR\brevision\"\xe5\x02\n" +
+	"\brevision\x18\x01 \x01(\v2\x16.vaultsync.v1.RevisionR\brevision\"\xfb\x02\n" +
 	"\x15CommitRevisionRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1f\n" +
 	"\vdocument_id\x18\x02 \x01(\tR\n" +
@@ -735,7 +746,8 @@ const file_vaultsync_v1_sync_proto_rawDesc = "" +
 	"\bpath_key\x18\b \x01(\fR\apathKey\x12\x18\n" +
 	"\adeleted\x18\t \x01(\bR\adeleted\x12\x1b\n" +
 	"\tdevice_id\x18\n" +
-	" \x01(\tR\bdeviceId\"L\n" +
+	" \x01(\tR\bdeviceId\x12\x14\n" +
+	"\x05epoch\x18\v \x01(\rR\x05epoch\"L\n" +
 	"\x16CommitRevisionResponse\x122\n" +
 	"\brevision\x18\x01 \x01(\v2\x16.vaultsync.v1.RevisionR\brevision\"\x93\x01\n" +
 	"\x19GetDocumentHistoryRequest\x12\x19\n" +

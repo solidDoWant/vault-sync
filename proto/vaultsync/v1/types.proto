@@ -153,4 +153,7 @@ message Revision {
   // ListChangesRequest.since_anchor, and that of its own latest commit above
   // the cursor as own_commit_anchor, to detect such a restore (SPEC.md §6.1).
   bytes anchor = 13;
+  // The vault key epoch the revision is encrypted under (SPEC.md §9.3); 0
+  // in a plaintext vault.
+  uint32 epoch = 14;
 }
