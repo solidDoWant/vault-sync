@@ -133,6 +133,29 @@ export interface ViewWriteResult {
   disk: string;
 }
 
+/** Where the file is open while the adapter writes it (atomicity.e2e.ts). */
+export type OpenIn = "nothing" | "markdown" | "canvas";
+
+/** A sync write with an editor's write of the same file landing during it (atomicity.e2e.ts). */
+export interface ConcurrentWriteResult {
+  /** The sync write's outcome: "ok" or the error's name and message. */
+  outcome: string;
+  /** Whether the adapter read the file at least `read` times, so the editor's write was made. */
+  interleaved: boolean;
+  /** The editor's write's outcome. */
+  editorOutcome: string;
+  /** Every content written to the file, in order, from the sync write's start until both writes had settled. */
+  writes: string[];
+  /** The file on disk afterwards. */
+  disk: string;
+}
+
+/** The parts of Obsidian 1.14.4's desktop FileSystemAdapter (not in its typings) that every read and write of a file goes through. */
+interface FileSystemInternals {
+  fsPromises: { readFile(path: string, ...rest: unknown[]): Promise<unknown>; writeFile(path: string, data: unknown, ...rest: unknown[]): Promise<void> };
+  getFullPath(path: string): string;
+}
+
 /** What Obsidian and the adapter make of one path (paths.e2e.ts). */
 export interface PathScopeResult {
   /** normalizePath's result. */
@@ -746,6 +769,98 @@ export default class VaultSyncE2EHarness extends Plugin {
       return "ok";
     } catch (error) {
       return describeError(error);
+    }
+  }
+
+  /**
+   * Creates `path` with `content`, opens it in `openIn`, and writes `remote`
+   * through the Obsidian adapter as the engine applies a remote revision,
+   * naming the content it checked (#163). When that write reads the file
+   * for the `read`-th time, the user's editor writes `editorWrite` to it,
+   * right then (#543).
+   *
+   * The editor's write is Vault.modify, which an editor's save ends in
+   * (TextFileView.save). It is called directly: save() first waits for the
+   * file adapter's queue to drain, and a write made without that wait is the
+   * one an atomic write must still hold off. Vault.modify puts its write in
+   * the queue synchronously, so where it lands is fixed by the queue, not by
+   * timing.
+   *
+   * Only the reads the adapter under test makes are counted: it is given an
+   * App whose vault and file adapter are views of the real ones, whose file
+   * system (FileSystemAdapter.fsPromises, internal to Obsidian 1.14.4) counts
+   * reads. Obsidian's own reads (the metadata cache's) go to the real file
+   * adapter and are not counted. Every write of the file, by anyone, is
+   * recorded, through the real file adapter's file system.
+   */
+  async writeRemoteWithEditorWriteAtRead(path: string, content: string, openIn: OpenIn, remote: string, editorWrite: string, read: number): Promise<ConcurrentWriteResult> {
+    const { vault } = this.app;
+    const realAdapter = vault.adapter as unknown as Partial<FileSystemInternals>;
+    const realFs = realAdapter.fsPromises;
+    if (!(vault.adapter instanceof FileSystemAdapter) || realFs === undefined || typeof realAdapter.getFullPath !== "function") {
+      throw new Error("the vault's file adapter is not Obsidian 1.14.4's FileSystemAdapter");
+    }
+    const file = await vault.create(path, content);
+    const leaf = openIn === "nothing" ? undefined : this.app.workspace.getLeaf(true);
+    try {
+      if (leaf !== undefined) await leaf.openFile(file, { active: true, state: { mode: "source" } });
+      const opened = leaf?.view;
+      if (openIn === "markdown" && !(opened instanceof MarkdownView)) throw new Error(`${path} did not open in a Markdown editor`);
+      if (openIn === "canvas" && opened?.getViewType() !== "canvas") throw new Error(`${path} did not open in a canvas`);
+      // Nothing unsaved: the disk holds the view's own serialization (a canvas's differs from `content`).
+      if (opened instanceof TextFileView && opened.getViewData() !== content) await vault.modify(file, opened.getViewData());
+      const diskBefore = await vault.adapter.read(path);
+      if (opened instanceof TextFileView && opened.getViewData() !== diskBefore) throw new Error(`the view of ${path} does not show the disk`);
+      const fullPath = realAdapter.getFullPath(path);
+
+      const writes: string[] = [];
+      const decoder = new TextDecoder();
+      const recordingFs = Object.create(realFs, {
+        writeFile: {
+          value: (target: string, data: unknown, ...rest: unknown[]) => {
+            if (target === fullPath) writes.push(typeof data === "string" ? data : decoder.decode(data as Uint8Array));
+            return realFs.writeFile(target, data, ...rest);
+          },
+        },
+      }) as FileSystemInternals["fsPromises"];
+      let reads = 0;
+      let editorWriting: Promise<void> | undefined;
+      const countingFs = Object.create(recordingFs, {
+        readFile: {
+          value: (target: string, ...rest: unknown[]) => {
+            if (target === fullPath && ++reads === read) editorWriting = vault.modify(file, editorWrite);
+            return realFs.readFile(target, ...rest);
+          },
+        },
+      }) as FileSystemInternals["fsPromises"];
+      const adapterView: typeof vault.adapter = new Proxy(vault.adapter, {
+        get: (target, property) => (property === "fsPromises" ? countingFs : (Reflect.get(target, property, adapterView) as unknown)),
+      });
+      const vaultView: typeof vault = new Proxy(vault, {
+        get: (target, property) => (property === "adapter" ? adapterView : (Reflect.get(target, property, vaultView) as unknown)),
+      });
+      const appView = Object.create(this.app, { vault: { value: vaultView } }) as App;
+
+      realAdapter.fsPromises = recordingFs;
+      let outcome = "ok";
+      let editorOutcome = "ok";
+      try {
+        try {
+          await new ObsidianVaultAdapter(appView).write(path, encoder.encode(remote), { expectedHash: sha256Hex(encoder.encode(diskBefore)) });
+        } catch (error) {
+          outcome = describeError(error);
+        }
+        try {
+          await editorWriting;
+        } catch (error) {
+          editorOutcome = describeError(error);
+        }
+      } finally {
+        realAdapter.fsPromises = realFs;
+      }
+      return { outcome, interleaved: editorWriting !== undefined, editorOutcome, writes, disk: await vault.adapter.read(path) };
+    } finally {
+      leaf?.detach();
     }
   }
 
