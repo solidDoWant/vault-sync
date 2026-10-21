@@ -95,7 +95,7 @@ describe("journalDatabaseName", () => {
     const stale = await new Promise<IDBDatabase>((resolve) => {
       const request = origin.open(name, 1);
       request.onupgradeneeded = () => {
-        if (request.transaction !== null) journalMigrations[0]?.(request.transaction);
+        if (request.transaction !== null) journalMigrations[0]?.(request.transaction, { fileKey: (path) => path });
       };
       request.onsuccess = () => {
         resolve(request.result);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { journalConformance, JournalConformanceFailure, runJournalConformanceCase } from "./conformance";
-import type { DocumentState, PendingOperation } from "./journal";
+import type { DocumentState, JournalChanges, PendingOperation } from "./journal";
 import { InMemoryJournal } from "./memory";
 
 describe("InMemoryJournal", () => {
@@ -55,6 +55,38 @@ describe("the Journal conformance suite", () => {
           }
           override getDocument(documentId: string) {
             return Promise.resolve(this.shared.get(documentId));
+          }
+        })(),
+    ],
+    [
+      "a transaction that keeps the parts before a failing one",
+      () =>
+        new (class extends InMemoryJournal {
+          override async transact(changes: JournalChanges) {
+            const { cursor, putDocuments, removePending, sealPending, addPending, removeDeferred, putDeferred, putConflicts, removeIntents } = changes;
+            for (const part of [{ cursor }, { putDocuments }, { removePending }, { sealPending }, { addPending }, { removeDeferred }, { putDeferred }, { putConflicts }, { removeIntents }]) {
+              await super.transact(part);
+            }
+          }
+        })(),
+    ],
+    [
+      "a transaction that adds a second pending operation for a document",
+      () =>
+        new (class extends InMemoryJournal {
+          override async transact(changes: JournalChanges) {
+            const { addPending, ...rest } = changes;
+            await super.transact(rest);
+            for (const operation of addPending ?? []) await this.addPending(operation);
+          }
+        })(),
+    ],
+    [
+      "a file key lookup by path",
+      () =>
+        new (class extends InMemoryJournal {
+          override documentByFileKey(fileKey: string) {
+            return this.findDocumentByPath(fileKey);
           }
         })(),
     ],
