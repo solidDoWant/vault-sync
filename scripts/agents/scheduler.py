@@ -88,6 +88,10 @@ DEFAULT_CONFIG = {
     "required_check": "checks",
     # null = the lowest-numbered open "Phase N" milestone with open issues.
     "current_phase": None,
+    # false: start no new issue outside the current phase milestone (work
+    # already started — in-progress issues, open PRs, answered hand-backs —
+    # still runs to completion).
+    "later_phase_work": True,
     # Critical path: sub-issues of these parents, these labels, and planned
     # issues (parented to their phase epic, not follow-up/bughunt).
     "critical_parents": [552],
@@ -783,6 +787,10 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
         blockers = issue.open_blockers()
         if blockers:
             plan.skipped.append((target, f"blocked by {', '.join('#%d' % b for b in blockers)}"))
+            continue
+        if (not cfg.get("later_phase_work", True) and issue_sort(n)[0] != 0
+                and handed_back not in ("question", "blocked")):
+            plan.skipped.append((target, "outside the current phase (later_phase_work off)"))
             continue
         tier_note = ["current phase", "no/earlier milestone", "later-phase filler"][issue_sort(n)[0]]
         crit = "critical" if issue_sort(n)[1] == 0 else "other"

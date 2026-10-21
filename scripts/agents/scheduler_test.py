@@ -199,6 +199,17 @@ class PlanTest(unittest.TestCase):
         # Without a hand-back, a todo issue with an open PR is still skipped.
         self.assertEqual(keys(plan_for(sn, {"sessions": {}})), [])
 
+    def test_later_phase_work_off_starts_only_current_phase(self):
+        cfg = s.deep_merge(CFG, {"later_phase_work": False})
+        sessions = {"worker:4": {"role": "issue-worker", "issue": 4, "handoff": {"state": "question"}}}
+        sn = snap([issue(1), issue(2, milestone=MS3), issue(3, milestone=MS3, status="status:in-progress"),
+                   issue(4, milestone=MS3)])
+        plan = plan_for(sn, {"sessions": sessions}, cfg=cfg)
+        # Started later-phase work continues; a new later-phase issue does not start.
+        self.assertEqual(sorted(keys(plan)), ["worker:1", "worker:3", "worker:4"])
+        self.assertIn(("#2", "outside the current phase (later_phase_work off)"), plan.skipped)
+        self.assertIn("worker:2", keys(plan_for(sn, {"sessions": sessions})))
+
     def test_special_jobs_and_release_lock(self):
         specials = {"hunt-1": {"role": "bug-hunter", "brief": "sync under faults", "priority": 0},
                     "rel": {"role": "release-manager", "brief": "release 0.2.0", "priority": 1}}
