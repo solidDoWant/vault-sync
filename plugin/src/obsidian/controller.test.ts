@@ -289,6 +289,18 @@ describe("ensureDevice", () => {
     expect(data.device).toBeUndefined();
   });
 
+  it("names the error code when the server refuses the name without a message (#605)", async () => {
+    const server = fakeServer({
+      registerDevice: () => {
+        throw new ConnectError("", Code.InvalidArgument);
+      },
+    });
+    const failure = ensureDevice({ data: { ...settings }, save: () => Promise.resolve(), client: server.client, accessToken: () => Promise.resolve(tokenFor("alice")), defaultDeviceName: "desktop" });
+
+    await expect(failure).rejects.toBeInstanceOf(DeviceNameError);
+    await expect(failure).rejects.toThrow(/refused this device's name \(InvalidArgument\)\. Change the Device name setting/);
+  });
+
   it("registers a device of its own for another account or server", async () => {
     const server = fakeServer();
     const data = { ...settings };

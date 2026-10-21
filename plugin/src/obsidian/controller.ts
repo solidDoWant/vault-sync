@@ -117,7 +117,7 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
       // the server refuses must not stay stuck in plugin data (#428).
       delete data.pendingDevice;
       await options.save();
-      if (error.code === Code.InvalidArgument) throw new DeviceNameError(error.rawMessage);
+      if (error.code === Code.InvalidArgument) throw new DeviceNameError(errorMessage(error));
     }
     throw error;
   }

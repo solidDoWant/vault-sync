@@ -42,6 +42,15 @@ function tail(trace: readonly string[], lines = 80): string {
   return trace.slice(-lines).join("\n");
 }
 
+/**
+ * Prints a run's binding-shadow divergences (refactor step R4,
+ * docs/design/engine-path-ownership.md §9.2), report only: the nightly
+ * report lists them for triage.
+ */
+function reportShadow(run: string, trace: readonly string[]): void {
+  for (const line of trace.filter((entry) => entry.includes("SHADOW binding-shadow: "))) console.log(`${run}: ${line}`);
+}
+
 /** How often notable events occurred in a run, to show what a schedule exercised. */
 function summarize(trace: readonly string[]): string {
   const events: [string, string][] = [
@@ -64,6 +73,8 @@ function summarize(trace: readonly string[]): string {
     ["idle deliveries", ": no deliverable"],
     ["engine user changes", " user "],
     ["engine pushes completed", " pushed: "],
+    // Report only (refactor step R4): bindings that disagree with the derived ownership.
+    ["binding-shadow divergences", "SHADOW binding-shadow: "],
   ];
   return events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`).join(", ");
 }
@@ -80,6 +91,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
+    reportShadow(`seed ${String(seed)}`, result.trace);
     if (result.violations.length === 0) return;
 
     // Minimize: keep removing steps while a violation of the same kind remains.
@@ -116,6 +128,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     purged.push(...result.purged);
     console.log(`seed ${String(seed)} with retention (${options.platforms.join(", ")} path rules): ${String(result.purged.length)} revisions purged, ${summarize(result.trace)}`);
+    reportShadow(`seed ${String(seed)} with retention`, result.trace);
     if (result.violations.length === 0) return;
 
     const invariants = new Set(result.violations.map((violation) => violation.invariant));

@@ -254,6 +254,8 @@ describe("SyncEngine push", () => {
         await h.vault.write("a.md", bytes("a2"));
         await h.vault.rename("b.md", "b2.md");
         await h.vault.write("c.md", bytes("c1"));
+        // The changes' binding transitions are durable changes of their own, before the push's.
+        await h.engine.settled();
         return { h, points };
       };
       const state = async (h: Awaited<ReturnType<typeof setup>>["h"]) => ({

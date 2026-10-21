@@ -849,6 +849,8 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
           const h = await parkedWithPendingEdit(harness({ merge: "default", pathRules: windows, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) }));
           if (variant === "deleted") await h.vault.delete("plan.md");
           else await h.vault.rename("plan.md", "notes.md");
+          // The change's binding transition is a durable change of its own, before the pull's.
+          await h.engine.settled();
           points.count = 0;
           points.crashAfter = crashAfter;
           const outcome = await h.engine

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import type { HistoryEntry } from "../core/engine/history";
-import { alternativePath, changeLabel, deviceLabel, entryLabel, maxPreviewBytes, otherPathValue, previewOf, sizeLabel } from "./history-view";
+import { RestoreError, restorePathProblem, type HistoryEntry } from "../core/engine/history";
+import { posixPathRules } from "../core/vaultpath/platform";
+import { shownText } from "./display-text";
+import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";
 
 const encoder = new TextEncoder();
 
@@ -71,18 +73,18 @@ describe("history view", () => {
 
     it("says what each revision changed", () => {
       const base = entry({ contentHash: "aa" });
-      expect(changeLabel(base, undefined)).toBe("earliest kept version of plan.md (12 B)");
-      expect(changeLabel(entry({ contentHash: "bb" }), base)).toBe("edited (12 B)");
-      expect(changeLabel(entry({ path: "moved.md" }), base)).toBe("moved to moved.md");
-      expect(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base)).toBe("moved to moved.md and edited (12 B)");
-      expect(changeLabel(entry({ deleted: true }), base)).toBe("deleted plan.md");
-      expect(changeLabel(base, entry({ deleted: true }))).toBe("restored plan.md (12 B)");
+      expect(shownText(changeLabel(base, undefined))).toBe("earliest kept version of plan.md (12 B)");
+      expect(shownText(changeLabel(entry({ contentHash: "bb" }), base))).toBe("edited (12 B)");
+      expect(shownText(changeLabel(entry({ path: "moved.md" }), base))).toBe("moved to moved.md");
+      expect(shownText(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base))).toBe("moved to moved.md and edited (12 B)");
+      expect(shownText(changeLabel(entry({ deleted: true }), base))).toBe("deleted plan.md");
+      expect(shownText(changeLabel(base, entry({ deleted: true })))).toBe("restored plan.md (12 B)");
     });
 
     it("puts time, device and change on one line", () => {
       const formatTime = (date: Date) => date.toISOString();
-      expect(entryLabel(entry({ thisDevice: true }), undefined, formatTime)).toBe("2026-01-02T03:04:00.000Z · this device · earliest kept version of plan.md (12 B)");
-      expect(entryLabel(entry({ createdAt: undefined }), undefined, formatTime)).toMatch(/^unknown time · /);
+      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · this device · earliest kept version of plan.md (12 B)");
+      expect(shownText(entryLabel(entry({ createdAt: undefined }), undefined, formatTime))).toMatch(/^unknown time · /);
     });
 
     // Names registered before the server refused these characters (#548)
@@ -106,7 +108,7 @@ describe("history view", () => {
     });
 
     it("isolates another device's name, so right-to-left letters cannot reorder the label and a trailing mark stays inside (#557)", () => {
-      expect(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then")).toBe(`then · device “${iso("حاسوب 2")}” · earliest kept version of plan.md (12 B)`);
+      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · device “${iso("حاسوب 2")}” · earliest kept version of plan.md (12 B)`);
       expect(deviceLabel(entry({ deviceName: "Phone\u0301" }))).toBe(`device “${iso("Phone\u0301")}”`);
     });
 
@@ -121,11 +123,21 @@ describe("history view", () => {
       ["bidi isolates", "a\u2066b\u2069.md", "a\\u2066b\\u2069.md"],
     ])("shows %s in another member's path visibly (#555)", (_, path, shown) => {
       const base = entry({ contentHash: "aa" });
-      expect(changeLabel(entry({ path }), base)).toBe(`moved to ${shown}`);
-      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toBe(`moved to ${shown} and edited (12 B)`);
-      expect(changeLabel(entry({ path, deleted: true }), base)).toBe(`deleted ${shown}`);
-      expect(changeLabel(entry({ path }), entry({ deleted: true }))).toBe(`restored ${shown} (12 B)`);
-      expect(changeLabel(entry({ path }), undefined)).toBe(`earliest kept version of ${shown} (12 B)`);
+      expect(shownText(changeLabel(entry({ path }), base))).toBe(`moved to ${shown}`);
+      expect(shownText(changeLabel(entry({ path, contentHash: "bb" }), base))).toBe(`moved to ${shown} and edited (12 B)`);
+      expect(shownText(changeLabel(entry({ path, deleted: true }), base))).toBe(`deleted ${shown}`);
+      expect(shownText(changeLabel(entry({ path }), entry({ deleted: true })))).toBe(`restored ${shown} (12 B)`);
+      expect(shownText(changeLabel(entry({ path }), undefined))).toBe(`earliest kept version of ${shown} (12 B)`);
+    });
+
+    it("keeps each path of a label apart, for the view to lay it out on its own (#605)", () => {
+      const path = "ملاحظات/خطة.md";
+      const base = entry({ contentHash: "aa" });
+      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toEqual(["moved to ", { path }, " and edited (12 B)"]);
+      expect(changeLabel(entry({ path, deleted: true }), base)).toEqual(["deleted ", { path }]);
+      expect(entryLabel(entry({ path, deleted: true }), base, () => "then")).toEqual(["then · device 0190a5c4 · ", "deleted ", { path }]);
+      expect(historyTitle(path)).toEqual(["History of ", { path }]);
+      expect(historyTitle("a\u202e.md")).toEqual(["History of ", { path: "a\\u202E.md" }]);
     });
 
     it("names a device by id when its name is nothing but invisible characters", () => {
@@ -166,6 +178,39 @@ describe("history view", () => {
     it("suggests a free path beside the user's path when that is taken too", () => {
       const taken = new Set(["plans/plan 2 (restored).md"]);
       expect(otherPathValue({ reason: "path-taken", path: "plans/plan 2.md" }, "plans/plan 2.md", (path) => taken.has(path))).toBe("plans/plan 2 (restored 2).md");
+    });
+  });
+
+  describe("the notice after a failed restore (#605)", () => {
+    it.each([
+      ["a right-to-left override", "notes/\u202etxt.exe.md", "notes/\\u202Etxt.exe.md"],
+      ["zero-width characters", "pay\u200bpal.md", "pay\\u200Bpal.md"],
+    ])("shows %s in the path another file is at visibly, on its own", (_, path, shown) => {
+      const failure = new RestoreError("path-taken", path, `another file is at ${path} now; move it away or restore at another path`);
+      expect(restoreFailureText(failure)).toEqual(["another file is at ", { path: shown }, " now; move it away or restore at another path"]);
+    });
+
+    it("shows a path that cannot be used visibly, with why", () => {
+      const path = "a\u202e\u0007.md";
+      const failure = restorePathProblem(path, posixPathRules, () => true) ?? new RestoreError("invalid-path", path, "");
+      const text = restoreFailureText(failure);
+      expect(text).toEqual([{ path: "a\\u202E\\u0007.md" }, expect.stringMatching(/^ cannot be used \(.+\); choose another path$/)]);
+      expect(shownText(text)).not.toContain("\u202e");
+    });
+
+    it("says why a path outside what this vault syncs cannot be used", () => {
+      const failure = restorePathProblem("other/plan.md", posixPathRules, () => false);
+      expect(failure).toBeDefined();
+      expect(shownText(restoreFailureText(failure ?? new RestoreError("invalid-path", "", "")))).toBe("other/plan.md cannot be used (not synced); choose another path");
+    });
+
+    it("says an empty path cannot be used", () => {
+      const failure = restorePathProblem("", posixPathRules, () => true);
+      expect(shownText(restoreFailureText(failure ?? new RestoreError("invalid-path", "x", "")))).toBe("an empty path cannot be used (empty); choose another path");
+    });
+
+    it("says a purged version is gone", () => {
+      expect(restoreFailureText(new RestoreError("unavailable", "a\u202e.md", "this version is no longer stored on the server"))).toEqual(["this version is no longer stored on the server"]);
     });
   });
 });

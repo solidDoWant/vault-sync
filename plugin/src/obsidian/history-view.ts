@@ -1,5 +1,5 @@
 import type { HistoryEntry, RestoreError } from "../core/engine/history";
-import { quotedName, shownName, visiblePath } from "./display-text";
+import { quotedName, shownName, shownPath, type Shown } from "./display-text";
 
 // What the history views show for a revision (SPEC.md §11). No Obsidian
 // import, so it is unit-tested; history-modal.ts renders it.
@@ -88,22 +88,53 @@ export function sizeLabel(size: bigint | number): string {
 }
 
 /** One line per revision in the history list: when, by which device, and what happened. */
-export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefined, formatTime: (date: Date) => string): string {
+export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefined, formatTime: (date: Date) => string): Shown {
   const when = entry.createdAt === undefined ? "unknown time" : formatTime(entry.createdAt);
-  return `${when} · ${deviceLabel(entry)} · ${changeLabel(entry, previous)}`;
+  return [`${when} · ${deviceLabel(entry)} · `, ...changeLabel(entry, previous)];
 }
 
 /**
  * What a revision changed relative to the one before it (`previous`, the next
  * older entry). Paths are another member's text: shown as visiblePath shows
- * them (#555).
+ * them (#555), each laid out on its own (Shown, #605).
  */
-export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefined): string {
-  const path = visiblePath(entry.path);
-  if (entry.deleted) return `deleted ${path}`;
+export function changeLabel(entry: HistoryEntry, previous: HistoryEntry | undefined): Shown {
+  const path = shownPath(entry.path);
+  if (entry.deleted) return ["deleted ", path];
   // The document's first revision, or the oldest that retention kept.
-  if (previous === undefined) return `earliest kept version of ${path} (${sizeLabel(entry.size)})`;
-  if (previous.deleted) return `restored ${path} (${sizeLabel(entry.size)})`;
-  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? `moved to ${path}` : `moved to ${path} and edited (${sizeLabel(entry.size)})`;
-  return `edited (${sizeLabel(entry.size)})`;
+  if (previous === undefined) return ["earliest kept version of ", path, ` (${sizeLabel(entry.size)})`];
+  if (previous.deleted) return ["restored ", path, ` (${sizeLabel(entry.size)})`];
+  if (previous.path !== entry.path) return previous.contentHash === entry.contentHash ? ["moved to ", path] : ["moved to ", path, ` and edited (${sizeLabel(entry.size)})`];
+  return [`edited (${sizeLabel(entry.size)})`];
+}
+
+/** The history view's title for the document at `path`. */
+export function historyTitle(path: string): Shown {
+  return ["History of ", shownPath(path)];
+}
+
+/** What the engine's RestoreError says after the path when the path cannot be used: `<path> cannot be used (<problem>); choose another path`. */
+const invalidPathEnd = /^ cannot be used \(([^()]*)\); choose another path$/u;
+
+/**
+ * Why a restore failed, for the notice (#605). The engine's message holds
+ * the path as it is, and the path can be another member's, so the text is
+ * built here from the failure's reason and path, the path shown as
+ * visiblePath shows it and laid out on its own. The reason a path cannot be
+ * used is a code (pathProblem, unmaterializableReason, "not synced"), taken
+ * from the message when it has the engine's form.
+ */
+export function restoreFailureText(failure: Pick<RestoreError, "reason" | "path" | "message">): Shown {
+  switch (failure.reason) {
+    case "path-taken":
+      return ["another file is at ", shownPath(failure.path), " now; move it away or restore at another path"];
+    case "unavailable":
+      return ["this version is no longer stored on the server"];
+    case "invalid-path": {
+      const lead = failure.path === "" ? "an empty path" : failure.path;
+      const problem = failure.message.startsWith(lead) ? invalidPathEnd.exec(failure.message.slice(lead.length))?.[1] : undefined;
+      const because = problem === undefined ? "" : ` (${problem})`;
+      return [failure.path === "" ? lead : shownPath(failure.path), ` cannot be used${because}; choose another path`];
+    }
+  }
 }

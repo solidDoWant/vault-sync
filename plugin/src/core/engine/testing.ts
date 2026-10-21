@@ -211,6 +211,16 @@ export class CrashingJournal extends InMemoryJournal {
   override putConflict(conflict: ConflictRecord): Promise<void> {
     return this.points.durable(() => super.putConflict(conflict));
   }
+  /** One crash point for the whole transaction, which lands all or nothing. */
+  override transact(changes: JournalChanges): Promise<void> {
+    return this.points.durable(() => super.transact(changes));
+  }
+  override putIntent(intent: NewIntent): Promise<number> {
+    return this.points.durable(() => super.putIntent(intent));
+  }
+  override removeIntent(id: number): Promise<void> {
+    return this.points.durable(() => super.removeIntent(id));
+  }
 }
 
 export interface Harness {

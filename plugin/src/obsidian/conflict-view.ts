@@ -4,7 +4,8 @@ import type { OpenConflict } from "../core/engine/conflicts";
 import type { DeferredDocument } from "../core/engine/deferred";
 import type { RejectedOperation, TooLargeDocument, UnmaterializableDocument } from "../core/engine/engine";
 import { conflictReasonText, deferredReasonText, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText } from "./conflict-text";
-import { visiblePath } from "./display-text";
+import { shownPath, visiblePath } from "./display-text";
+import { pathClass, renderShown, shownFragment } from "./shown-dom";
 import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
@@ -133,7 +134,7 @@ export class ConflictView extends ItemView {
     if (heldByOpenView !== undefined) {
       const item = root.createDiv({ cls: "vault-sync-held" });
       this.fileLine(item, "Waiting for", heldByOpenView, "vault-sync-held-path");
-      item.createDiv({ text: openViewText(heldByOpenView), cls: "vault-sync-held-reason" });
+      renderShown(item.createDiv({ cls: "vault-sync-held-reason" }), openViewText(heldByOpenView));
     }
     if (rejected.length > 0) {
       root.createEl("p", { text: "The server does not accept these files' paths, so they stay on this device only. Rename or move a file to a valid path to sync it." });
@@ -158,7 +159,7 @@ export class ConflictView extends ItemView {
 
   private renderConflict(item: HTMLElement, { record, original, copy }: OpenConflict): void {
     item.createDiv({ text: conflictReasonText(record.reason), cls: "vault-sync-conflict-reason" });
-    item.createDiv({ text: `Path: ${visiblePath(record.path)} · ${new Date(record.at).toLocaleString()}`, cls: "vault-sync-conflict-path" });
+    renderShown(item.createDiv({ cls: "vault-sync-conflict-path" }), ["Path: ", shownPath(record.path), ` · ${new Date(record.at).toLocaleString()}`]);
     const versions = item.createDiv();
     if (copy === null) {
       this.fileLine(versions, "This device's version (not synced)", original, "vault-sync-conflict-original");
@@ -189,7 +190,8 @@ export class ConflictView extends ItemView {
       line.createSpan({ text: "no longer exists", cls });
       return;
     }
-    const link = line.createEl("a", { text: visiblePath(path), href: "#", cls });
+    // Its own element with dir="auto": the path cannot reorder the label (#605).
+    const link = line.createEl("a", { text: visiblePath(path), href: "#", cls: [cls, pathClass], attr: { dir: "auto" } });
     link.addEventListener("click", (event) => {
       event.preventDefault();
       void this.openPath(path, event.ctrlKey || event.metaKey);
@@ -220,7 +222,7 @@ export class ConflictView extends ItemView {
 
   /** A link whose file was removed since the view was drawn (#417): says so, and draws the view again. */
   private gone(path: string): void {
-    new Notice(`Vault Sync: ${visiblePath(path)} no longer exists.`);
+    new Notice(shownFragment(["Vault Sync: ", shownPath(path), " no longer exists."]));
     void this.refresh();
   }
 }
