@@ -14,12 +14,11 @@ export interface PlatformFlags {
 /**
  * The file-name rules of the device Obsidian runs on (SPEC.md §8), with the
  * vault folder's absolute path where Obsidian exposes it (desktop), so the
- * length limits count it. Android follows the POSIX rules plus its shared
- * storage's character set.
+ * length limits count it. Android gets its shared storage's rules: the POSIX
+ * limits, a narrower character set, and case-insensitive names.
  */
 export function pathRulesFor(platform: PlatformFlags, root?: string): PathRules {
-  const rules: PathRules = { platform: platform.isWin ? "windows" : platform.isMacOS || platform.isIosApp ? "macos" : "posix" };
-  if (platform.isAndroidApp) rules.sharedStorage = true;
+  const rules: PathRules = { platform: platform.isWin ? "windows" : platform.isMacOS || platform.isIosApp ? "macos" : platform.isAndroidApp ? "android" : "posix" };
   if (root !== undefined) rules.root = root;
   return rules;
 }

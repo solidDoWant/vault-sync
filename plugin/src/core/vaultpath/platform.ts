@@ -4,9 +4,12 @@
  * device: the engine tracks such a document as unmaterializable instead of
  * writing it, and never renames it on the server.
  *
- * - `posix` (Linux, Android): names of at most 255 UTF-8 bytes, absolute
- *   paths below PATH_MAX (4096 bytes), no NUL. On Android, with
- *   `sharedStorage`, no `"*:<>?\|` either.
+ * - `posix` (Linux): names of at most 255 UTF-8 bytes, absolute paths below
+ *   PATH_MAX (4096 bytes), no NUL.
+ * - `android` (Android's shared storage, `/storage/emulated`, where Obsidian
+ *   keeps a vault): the `posix` limits, and its FUSE layer also refuses
+ *   names with any of `"*:<>?\|`. The filesystem is case-insensitive, as
+ *   FAT and sdcardfs are.
  * - `macos` (macOS, iOS): names of at most 255 UTF-8 bytes, absolute paths
  *   below PATH_MAX (1024 bytes), no NUL. The filesystem is case- and
  *   normalization-insensitive.
@@ -17,16 +20,10 @@
  *   UTF-16 code units; absolute paths below MAX_PATH (260 UTF-16 code units).
  *   The filesystem is case-insensitive.
  */
-export type PathPlatform = "posix" | "windows" | "macos";
+export type PathPlatform = "posix" | "android" | "windows" | "macos";
 
 export interface PathRules {
   platform: PathPlatform;
-  /**
-   * Android's shared storage (`/storage/emulated`, where Obsidian keeps a
-   * vault): on top of the `posix` rules, its FUSE layer refuses names with
-   * any of `"*:<>?\|`. The platform stays `posix` for everything else.
-   */
-  sharedStorage?: boolean;
   /**
    * The vault folder's absolute path, if known, so the length limits count
    * it (with the separator before the vault-relative path). Without it only
@@ -53,12 +50,14 @@ export const posixPathRules: PathRules = { platform: "posix" };
  * in docs/design/engine-path-ownership.md §3.1: two spellings name one file
  * exactly when their keys are equal. The path itself on `posix`; on
  * `windows` each UTF-16 code unit by its simple upper-case mapping, as NTFS
- * compares names (never `ß` to `SS`); on `macos` that after NFD, as APFS and
- * HFS+ ignore case and Unicode normalization. It is not ordered with the
- * path key (§5): it folds neither `ß`/`SS` nor, on Windows, NFC/NFD, so two
- * spellings with one path key can be two files on the device (decision
- * #52); and it takes `ı` for `I`, which the path key keeps apart. Compare
- * paths through the engine's PathSpace, not with this directly.
+ * compares names (never `ß` to `SS`); on `android` the same, as FAT and
+ * sdcardfs fold case (decision 7, #544); on `macos` that after NFD, as APFS
+ * and HFS+ ignore case and Unicode normalization. It is not ordered with the
+ * path key (§5): it folds neither `ß`/`SS` nor, on Windows and Android,
+ * NFC/NFD, so two spellings with one path key can be two files on the
+ * device (decision #52); and it takes `ı` for `I`, which the path key keeps
+ * apart. Compare paths through the engine's PathSpace, not with this
+ * directly.
  */
 export function filesystemKey(path: string, platform: PathPlatform): string {
   if (platform === "posix") return path;
@@ -67,7 +66,7 @@ export function filesystemKey(path: string, platform: PathPlatform): string {
   for (let index = 0; index < decomposed.length; index++) {
     const unit = decomposed.charAt(index);
     const upper = unit.toUpperCase();
-    // A mapping to more than one unit (ß to SS, say) is full case folding, which neither filesystem does.
+    // A mapping to more than one unit (ß to SS, say) is full case folding, which none of these filesystems does.
     folded += upper.length === 1 ? upper : unit;
   }
   return platform === "macos" ? folded.normalize("NFD") : folded;
@@ -78,7 +77,7 @@ const utf8Length = (text: string) => encoder.encode(text).length;
 
 const maxNameLength = 255;
 /** Longest absolute path, terminator excluded, in the platform's units: UTF-16 code units on Windows, UTF-8 bytes elsewhere. */
-const maxPathLength: Record<PathPlatform, number> = { posix: 4095, macos: 1023, windows: 259 };
+const maxPathLength: Record<PathPlatform, number> = { posix: 4095, android: 4095, macos: 1023, windows: 259 };
 
 // Control characters, the characters Win32 forbids in names, and "\", which
 // Windows would take as a separator (a different file than the one named).
@@ -98,7 +97,7 @@ const windowsReserved =/^(con|prn|aux|nul|conin\$|conout\$|(com|lpt)[0-9¹²³])
 export function unmaterializableReason(path: string, rules: PathRules): UnmaterializableReason | undefined {
   const windows = rules.platform === "windows";
   const segments = path.split("/");
-  const forbidden = windows ? windowsForbidden : rules.sharedStorage === true ? sharedStorageForbidden : posixForbidden;
+  const forbidden = windows ? windowsForbidden : rules.platform === "android" ? sharedStorageForbidden : posixForbidden;
   if (segments.some((segment) => forbidden.test(segment))) return "forbidden-character";
   if (windows) {
     for (const segment of segments) {

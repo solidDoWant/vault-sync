@@ -59,6 +59,82 @@ describe("PathSpace", () => {
     }
   });
 
+  describe("on Android's shared storage (decision 7, #544)", () => {
+    const android = new PathSpace({ platform: "android" });
+
+    it("keys paths by filesystem name as FAT and sdcardfs fold it: simple upper case per UTF-16 unit, no normalization", () => {
+      expect(android.filesystemKey("Notes/a.md")).toBe("NOTES/A.MD");
+      expect(android.filesystemKey("Notes/ı.md")).toBe("NOTES/I.MD");
+      expect(android.filesystemKey("Straße.md")).toBe("STRAßE.MD");
+      expect(android.filesystemKey(nfc("Café.md"))).toBe(nfc("CAFÉ.MD"));
+      expect(android.filesystemKey(nfd("Café.md"))).toBe(nfd("CAFÉ.MD"));
+    });
+
+    it("takes every case spelling of a name for one file, and the next spelling that differs by more than case for another", () => {
+      // N spellings, one file.
+      const oneFile = ["notes/a.md", "Notes/A.md", "NOTES/a.MD", "notes/A.md"];
+      for (const spelling of oneFile) {
+        for (const other of oneFile) expect(android.oneFile(spelling, other)).toBe(true);
+        expect(android.fileKey(spelling)).toBe("notes/a.md");
+        expect(android.collides(spelling, "notes/a.md", "file")).toBe(true);
+      }
+      expect(android.oneFile("ı.md", "I.md")).toBe(true);
+      expect(android.oneFile("i.md", "I.md")).toBe(true);
+      // The N+1th spelling: another name, or one only a fold the filesystem does not do makes equal.
+      for (const other of ["notes/b.md", "notes/á.md", "notes/a.md.md", "notes/a"]) expect(android.oneFile("Notes/A.md", other)).toBe(false);
+      expect(android.oneFile("Straße.md", "STRASSE.md")).toBe(false);
+      expect(android.oneFile(nfc("Café.md"), nfd("Café.md"))).toBe(false);
+    });
+
+    it("is not the posix identity any more", () => {
+      expect(posix.oneFile("notes/a.md", "Notes/A.md")).toBe(false);
+      expect(android.oneFile("notes/a.md", "Notes/A.md")).toBe(true);
+    });
+  });
+
+  describe("U+0345 COMBINING GREEK YPOGEGRAMMENI (#585)", () => {
+    // α U+0345 U+0301 is not in canonical order (U+0345 has combining class
+    // 240, U+0301 230); α U+0301 U+0345 and ᾴ (U+1FB4) are its canonical
+    // equivalents. α ι U+0301 differs from it once case folding turns U+0345
+    // into ι: after canonical reordering it is άι, not αί.
+    const unordered = "\u03b1\u0345\u0301.md";
+    const ordered = "\u03b1\u0301\u0345.md";
+    const precomposed = "\u1fb4.md";
+    const iota = "\u03b1\u03b9\u0301.md";
+
+    for (const space of [windows, new PathSpace({ platform: "android" })]) {
+      describe(`on ${space.rules.platform}, which upper-cases without normalizing`, () => {
+        it("gives canonically equivalent spellings one path key but, where upper case pins U+0345's place, two file keys", () => {
+          expect(space.serverKey(unordered)).toBe("\u03ac\u03b9.md");
+          expect(space.serverKey(ordered)).toBe("\u03ac\u03b9.md");
+          expect(space.serverKey(precomposed)).toBe("\u03ac\u03b9.md");
+          expect(space.fileKey(unordered)).toBe("\u03b1\u03af.md");
+          expect(space.fileKey(ordered)).toBe("\u03ac\u03b9.md");
+          expect(space.fileKey(precomposed)).toBe("\u03ac\u03b9.md");
+          expect(space.oneFile(unordered, ordered)).toBe(false);
+        });
+
+        it("gives one file key to spellings with one filesystem key and two path keys", () => {
+          expect(space.filesystemKey(unordered)).toBe("\u0391\u0399\u0301.MD");
+          expect(space.filesystemKey(iota)).toBe("\u0391\u0399\u0301.MD");
+          expect(space.oneFile(unordered, iota)).toBe(true);
+          expect(space.serverKey(unordered)).not.toBe(space.serverKey(iota));
+          expect(space.fileKey(unordered)).toBe(space.fileKey(iota));
+          expect(space.collides(unordered, iota, "file")).toBe(true);
+          expect(space.collides(unordered, iota, "server")).toBe(false);
+        });
+      });
+    }
+
+    it("keeps every canonical order one file on macos, which decomposes before upper-casing", () => {
+      expect(macos.oneFile(unordered, ordered)).toBe(true);
+      expect(macos.oneFile(unordered, precomposed)).toBe(true);
+      expect(macos.fileKey(unordered)).toBe("\u03ac\u03b9.md");
+      expect(macos.fileKey(ordered)).toBe("\u03ac\u03b9.md");
+      expect(macos.oneFile(unordered, iota)).toBe(false);
+    });
+  });
+
   it("tells one file from two files with one file key", () => {
     expect(windows.oneFile("Straße.md", "STRASSE.md")).toBe(false);
     expect(windows.fileKey("Straße.md")).toBe(windows.fileKey("STRASSE.md"));
@@ -100,7 +176,7 @@ describe("PathSpace", () => {
   });
 });
 
-describe.each(["windows", "macos"] as const)("documents at ı.md and I.md on %s, one file on the device (§6.4 item 4)", (platform) => {
+describe.each(["windows", "macos", "android"] as const)("documents at ı.md and I.md on %s, one file on the device (§6.4 item 4)", (platform) => {
   it("never writes the second document over the first document's file", async () => {
     const h = harness({ merge: "default", pathRules: { platform }, vault: new InMemoryVault({ pathRules: { platform } }) });
     h.server.commit({ documentId: "dotless", path: "ı.md", content: "dotless\n" });
@@ -122,6 +198,8 @@ describe.each(["windows", "macos"] as const)("documents at ı.md and I.md on %s,
     expect(text(await h.vault.read("I.md"))).toBe("dotless\n");
     // The second document waits for the path, held as a deferred revision (rule W, refactor step R7, will place it).
     expect((await h.journal.listDeferred()).map((deferred) => deferred.revision.documentId)).toEqual(["capital"]);
+    // R1's stopgap: it is held as a local change of the path until rule W (R7b) places it.
+    expect((await h.journal.listDeferred()).map((deferred) => deferred.reason)).toEqual(["local-changes"]);
   });
 });
 

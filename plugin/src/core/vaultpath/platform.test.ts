@@ -51,7 +51,7 @@ describe("unmaterializableReason", () => {
   }
 
   describe("Android shared storage", () => {
-    const android = { platform: "posix", sharedStorage: true } as const;
+    const android = { platform: "android" } as const;
     for (const character of ['"', "*", ":", "<", ">", "?", "\\", "|"]) {
       it(`refuses ${JSON.stringify(character)} in a name or a folder, which plain posix accepts`, () => {
         expect(unmaterializableReason(`a${character}b.md`, android)).toBe("forbidden-character");
@@ -66,6 +66,13 @@ describe("unmaterializableReason", () => {
       expect(unmaterializableReason("a\u0000b.md", android)).toBe("forbidden-character");
       expect(unmaterializableReason(`notes/${repeat("a", 255)}`, android)).toBeUndefined();
       expect(unmaterializableReason(`notes/${repeat("a", 256)}`, android)).toBe("name-too-long");
+      // A path of `length` bytes in folders of 199 bytes: 4095 is the longest PATH_MAX (4096 with the terminator) allows.
+      const pathOf = (length: number) => (repeat(`${repeat("f", 199)}/`, 20) + repeat("a", 200)).slice(0, length);
+      expect(new TextEncoder().encode(pathOf(4096)).length).toBe(4096);
+      expect(unmaterializableReason(pathOf(4095), android)).toBeUndefined();
+      expect(unmaterializableReason(pathOf(4096), android)).toBe("path-too-long");
+      expect(unmaterializableReason(pathOf(4095 - "/storage/emulated/0/v/".length), { ...android, root: "/storage/emulated/0/v" })).toBeUndefined();
+      expect(unmaterializableReason(pathOf(4096 - "/storage/emulated/0/v/".length), { ...android, root: "/storage/emulated/0/v" })).toBe("path-too-long");
     });
   });
 
@@ -131,22 +138,22 @@ describe("filesystemKey", () => {
   const nfd = "Café.md";
   // Whether each platform's filesystem takes the two spellings for one file.
   const cases: { name: string; a: string; b: string; expected: Record<PathPlatform, boolean> }[] = [
-    { name: "one spelling", a: "notes/Foo.md", b: "notes/Foo.md", expected: { posix: true, macos: true, windows: true } },
-    { name: "spellings differing only by ASCII case", a: "notes/Foo.md", b: "NOTES/foo.MD", expected: { posix: false, macos: true, windows: true } },
-    { name: "spellings differing only by non-ASCII case", a: "Été.md", b: "éTÉ.md", expected: { posix: false, macos: true, windows: true } },
-    { name: "Greek final and medial sigma", a: "ΟΔΟΣ.md", b: "οδοσ.md", expected: { posix: false, macos: true, windows: true } },
-    { name: "NFC and NFD spellings", a: nfc, b: nfd, expected: { posix: false, macos: true, windows: false } },
-    { name: "NFC and NFD spellings in another case", a: nfc, b: "CAFÉ.MD", expected: { posix: false, macos: true, windows: false } },
-    { name: "ß and SS", a: "Straße.md", b: "STRASSE.md", expected: { posix: false, macos: false, windows: false } },
-    { name: "ß and ss", a: "Straße.md", b: "strasse.md", expected: { posix: false, macos: false, windows: false } },
+    { name: "one spelling", a: "notes/Foo.md", b: "notes/Foo.md", expected: { posix: true, macos: true, windows: true, android: true } },
+    { name: "spellings differing only by ASCII case", a: "notes/Foo.md", b: "NOTES/foo.MD", expected: { posix: false, macos: true, windows: true, android: true } },
+    { name: "spellings differing only by non-ASCII case", a: "Été.md", b: "éTÉ.md", expected: { posix: false, macos: true, windows: true, android: true } },
+    { name: "Greek final and medial sigma", a: "ΟΔΟΣ.md", b: "οδοσ.md", expected: { posix: false, macos: true, windows: true, android: true } },
+    { name: "NFC and NFD spellings", a: nfc, b: nfd, expected: { posix: false, macos: true, windows: false, android: false } },
+    { name: "NFC and NFD spellings in another case", a: nfc, b: "CAFÉ.MD", expected: { posix: false, macos: true, windows: false, android: false } },
+    { name: "ß and SS", a: "Straße.md", b: "STRASSE.md", expected: { posix: false, macos: false, windows: false, android: false } },
+    { name: "ß and ss", a: "Straße.md", b: "strasse.md", expected: { posix: false, macos: false, windows: false, android: false } },
     // NTFS's upcase table maps k to K, never to the Kelvin sign; on macOS the sign's canonical decomposition is K.
-    { name: "the Kelvin sign and k", a: "K.md", b: "k.md", expected: { posix: false, macos: true, windows: false } },
-    // The upper case of the dotless ı is I: NTFS and APFS take them for one name, which the path key does not (§6.4 item 4).
-    { name: "the dotless ı and I", a: "ı.md", b: "I.md", expected: { posix: false, macos: true, windows: true } },
-    { name: "different names", a: "Foo.md", b: "Bar.md", expected: { posix: false, macos: false, windows: false } },
+    { name: "the Kelvin sign and k", a: "K.md", b: "k.md", expected: { posix: false, macos: true, windows: false, android: false } },
+    // The upper case of the dotless ı is I: NTFS, APFS and Android's shared storage take them for one name, which the path key does not (§6.4 item 4).
+    { name: "the dotless ı and I", a: "ı.md", b: "I.md", expected: { posix: false, macos: true, windows: true, android: true } },
+    { name: "different names", a: "Foo.md", b: "Bar.md", expected: { posix: false, macos: false, windows: false, android: false } },
   ];
 
-  for (const platform of ["posix", "macos", "windows"] as const) {
+  for (const platform of ["posix", "macos", "windows", "android"] as const) {
     describe(`on ${platform}`, () => {
       for (const { name, a, b, expected } of cases) {
         it(`${expected[platform] ? "takes" : "does not take"} ${name} for one file`, () => {
