@@ -343,7 +343,9 @@ export class SyncEngine {
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
     this.unsubscribe = this.vault.watch((event) => {
-      this.events = this.events.then(() => this.handleEvent(event));
+      // Whether the start-up scan may have read the disk after this event (Bindings.renamed).
+      const duringScan = this.bindings.scanning;
+      this.events = this.events.then(() => this.handleEvent(event, duringScan));
       // A failed transition rejects every later push (pushOnce awaits the
       // chain); the chain itself is handled here, so it is no unhandled rejection.
       this.events.catch(() => undefined);
@@ -847,6 +849,13 @@ export class SyncEngine {
     if (remote.deleted) {
       // Nothing there: the engine already deleted it, or the user deleted it too. Both agree.
       if (basePath === undefined || baseContent === null) return { kind: "applied" };
+      // The user deleted its file, and another document's binding holds the
+      // file there now (a local rename onto the path, #267): nothing of this
+      // document is left to delete.
+      if (state !== undefined && this.userDeleted(state)) {
+        const holder = await this.journal.documentByFileKey(this.pathSpace.filesystemKey(basePath));
+        if (holder !== undefined && holder.documentId !== state.documentId) return { kind: "applied" };
+      }
       if (baseOnDisk) return { kind: "clean", source: basePath, sourceHash: baseHash };
       return { kind: "dirty", path: basePath, content: baseContent };
     }
@@ -1979,9 +1988,12 @@ export class SyncEngine {
         // waits for a later push, rather than its new path becoming a new
         // document and its old one a delete. Its binding keeps it, so the
         // push after whatever frees the document (a merge or a commit, which
-        // both queue one) sees it again.
+        // both queue one) sees it again, and its paths are looked at again
+        // then even if the commit that frees it was the rename (#167).
         handled.add(from);
         handled.add(to);
+        this.held.add(from);
+        this.held.add(to);
         continue;
       }
       // The file left the old path: a file there now is another one, which
@@ -2362,7 +2374,9 @@ export class SyncEngine {
     // bytes are that document's, whatever they are now: change detection
     // pushes them as its edit, and moving them would leave it no file, which
     // the next push would take for a delete (decision #52, amended).
-    const holder = await this.documentAt(operation.path);
+    // The document bound to the file decides; a file no binding names is
+    // that of the document synced there.
+    const holder = (await this.journal.documentByFileKey(this.pathSpace.filesystemKey(operation.path))) ?? (await this.documentAt(operation.path));
     const found = await this.readOrNull(operation.path);
     const othersFile = found !== null && holder !== undefined && holder.documentId !== operation.documentId;
     const atPath = othersFile ? null : found;
@@ -2497,7 +2511,7 @@ export class SyncEngine {
     this.pushTimer = undefined;
   }
 
-  private async handleEvent(event: VaultEvent): Promise<void> {
+  private async handleEvent(event: VaultEvent, duringScan: boolean): Promise<void> {
     let echo = false;
     try {
       echo = await this.echoes.isEcho(event, async (path) => {
@@ -2510,7 +2524,7 @@ export class SyncEngine {
     if (echo) return;
     this.recordChange(event);
     try {
-      await this.transition(event);
+      await this.transition(event, duringScan);
     } finally {
       // Reported even if its transition failed: the change is still the user's, unpushed.
       try {
@@ -2557,11 +2571,11 @@ export class SyncEngine {
   }
 
   /** Records a user's rename or delete as its binding transition (E1–E3), before the event counts as handled (PO-2). */
-  private async transition(event: VaultEvent): Promise<void> {
+  private async transition(event: VaultEvent, duringScan: boolean): Promise<void> {
     // A transition that fails stops event handling (later events wait
     // behind it and every push rejects with its error) until a restart,
     // whose scan reconciles bindings with the disk (PO-3).
-    if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path);
+    if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path, duringScan);
     else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
   }
 

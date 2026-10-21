@@ -34,7 +34,7 @@ export type BindingChange =
   | { kind: "kept" };
 
 type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "documentByFileKey" | "documentsByFileKey" | "transact">;
-type BindingsVault = Pick<VaultAdapter, "stat">;
+type BindingsVault = Pick<VaultAdapter, "stat" | "list">;
 
 /**
  * The owner of every document's `binding` and `absence` (design §4.1, §9.1):
@@ -50,6 +50,13 @@ type BindingsVault = Pick<VaultAdapter, "stat">;
  */
 export class Bindings {
   private queue: Promise<unknown> = Promise.resolve();
+  /** Whether the start-up scan has not finished: an event now may be one whose result the scan reads from the disk. */
+  get scanning(): boolean {
+    return this.scanPending;
+  }
+  private scanPending = true;
+  /** The documents the scan unbound for a file missing at their binding's file key (see renamed). */
+  private readonly missing = new Map<string, { documentId: string; seen: string }>();
 
   constructor(
     private readonly journal: BindingsJournal,
@@ -59,7 +66,11 @@ export class Bindings {
     // The start-up scan runs before any event's transition, since events
     // lost to a crash or made while the app was closed are only seen there.
     // A failed scan fails every later transition and write (serialize).
-    this.serialize(() => this.scan()).catch(() => undefined);
+    this.serialize(() => this.scan())
+      .finally(() => {
+        this.scanPending = false;
+      })
+      .catch(() => undefined);
   }
 
   /**
@@ -143,9 +154,19 @@ export class Bindings {
    * still bound at `to` (another file) has none any more: the vault moves
    * nothing onto an existing file, so its file was gone.
    */
-  renamed(from: string, to: string): Promise<void> {
+  renamed(from: string, to: string, duringScan = false): Promise<void> {
+    // The scan reads the disk after events it races with: a file it found
+    // missing may be one that a rename made while it ran (`duringScan`, as
+    // the event arrived) moved, which keeps its document's binding (the
+    // vault moves only an existing file).
+    const early = duringScan;
     return this.serialize(async () => {
-      const moved = await this.journal.documentByFileKey(this.space.filesystemKey(from));
+      const key = this.space.filesystemKey(from);
+      const missing = early ? this.missing.get(key) : undefined;
+      this.missing.delete(key);
+      const found = await this.journal.documentByFileKey(key);
+      const lost = found === undefined && missing !== undefined ? await this.journal.getDocument(missing.documentId) : undefined;
+      const moved = found ?? (lost === undefined || lost.binding !== null ? undefined : { ...lost, binding: { spelling: from, fileKey: key, seen: missing?.seen ?? lost.baseHash } });
       const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
       if (moved !== undefined) changes.push({ ...moved, binding: { spelling: to, fileKey: this.space.filesystemKey(to), seen: moved.binding?.seen ?? moved.baseHash }, absence: null });
       if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
@@ -195,6 +216,10 @@ export class Bindings {
       documents.push(row);
       changes.set(row.documentId, row);
     }
+    // A file the vault holds under another spelling than its binding's was
+    // respelled while the app was not watching: the binding takes the
+    // vault's spelling, as a rename event (E1) would have given it.
+    const listed = this.space.rules.platform === "posix" ? [] : await this.vault.list();
     for (const state of documents) {
       let binding = state.binding;
       let absence = state.absence ?? null;
@@ -203,8 +228,14 @@ export class Bindings {
         absence = state.deleted ? "never" : null;
       }
       if (binding !== null && (await this.vault.stat(binding.spelling)) === null) {
+        this.missing.set(binding.fileKey, { documentId: state.documentId, seen: binding.seen });
         binding = null;
         absence = "user-deleted";
+      }
+      if (binding !== null && !listed.includes(binding.spelling)) {
+        const key = binding.fileKey;
+        const spellings = listed.filter((path) => this.space.filesystemKey(path) === key);
+        if (spellings.length === 1 && spellings[0] !== undefined) binding = { ...binding, spelling: spellings[0] };
       }
       if (binding !== state.binding || absence !== (state.absence ?? null)) changes.set(state.documentId, { ...state, binding, absence });
     }
@@ -231,9 +262,9 @@ export class Bindings {
     const kept = current?.binding;
     switch (change.kind) {
       case "applied":
-        return state.deleted ? unbound("never") : { binding: this.bound(state.path, state.baseHash), absence: null };
+        return state.deleted ? unbound("never") : { binding: this.written(kept, state.path, state.baseHash), absence: null };
       case "merged":
-        if (change.hash !== null) return { binding: this.bound(change.path, change.hash), absence: null };
+        if (change.hash !== null) return { binding: this.written(kept, change.path, change.hash), absence: null };
         return unbound(current?.absence === "user-deleted" ? "user-deleted" : "never");
       case "acknowledged":
         if (state.deleted) return unbound("user-deleted");
@@ -261,6 +292,17 @@ export class Bindings {
     // and a probe that finds `documentId` itself would hide the other.
     const bound = await this.journal.documentsByFileKey(this.space.filesystemKey(path));
     return bound.filter((other) => other.documentId !== documentId).map((other) => ({ ...other, ...unbound(absence) }));
+  }
+
+  /**
+   * The binding of the file the engine wrote at `path` with content `seen`.
+   * A write into the file the document is bound to under another spelling
+   * of one file (a case-only rename on a case-insensitive platform) keeps
+   * the file's name, so the binding keeps its spelling.
+   */
+  private written(kept: Binding | null | undefined, path: string, seen: string): Binding {
+    const binding = this.bound(path, seen);
+    return kept !== undefined && kept !== null && kept.fileKey === binding.fileKey ? { ...binding, spelling: kept.spelling } : binding;
   }
 
   private bound(spelling: string, seen: string): Binding {

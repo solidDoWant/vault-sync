@@ -552,7 +552,9 @@ describe("SyncSession", () => {
           const value: unknown = Reflect.get(target, property, receiver);
           if (typeof value !== "function") return value;
           return async (...args: unknown[]) => {
-            if (armed && property === "addPending" && !held) {
+            // A create's operation is recorded with its row in one transact (Bindings.created).
+            const recordsPending = property === "addPending" || (property === "transact" && ((args[0] as { addPending?: unknown[] } | undefined)?.addPending?.length ?? 0) > 0);
+            if (armed && recordsPending && !held) {
               held = true;
               await new Promise<void>((resolve) => (release = resolve));
             }

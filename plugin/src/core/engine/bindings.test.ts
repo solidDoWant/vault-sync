@@ -195,7 +195,10 @@ describe("Bindings in shadow mode (refactor step R4)", () => {
 
     h.restart();
 
-    expect(await h.engine.bindingShadow()).toEqual([{ documentId: "A", binding: "other.md", absence: null, derived: "a.md" }]);
+    // Since refactor step R5a the derived ownership reads local moves from
+    // bindings: the binding moves A away from a.md, whose file the derived
+    // ownership still finds holding A's synced content, so it takes none.
+    expect(await h.engine.bindingShadow()).toEqual([{ documentId: "A", binding: "other.md", absence: null, derived: null }]);
   });
 
   it("reports a document the derived ownership has a file for but whose binding has none", async () => {

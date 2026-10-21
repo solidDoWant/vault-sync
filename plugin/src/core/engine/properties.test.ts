@@ -236,11 +236,21 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // P2 provenance: INV-5 and INV-6 (PO-6/7) on inodes.
-  // Fails today (the crash-lost-rename class of #531 and #550; flips in R5 #569): a rename held only in memory is lost to a crash, so it is committed as a delete of the document plus a new one.
+  // Fails today (pinned since R5a #622, which fixed the crash-lost-rename class of #531 and #550 that was pinned before; the same counterexample fails on master, class to be triaged, possibly #545's): a conflict copy's document, deleted remotely, is committed live again on its tombstone without a user change.
   it("P2: tombstones come from user deletes, resurrections from user changes (known failure)", { timeout }, async () => {
     await knownFailure(p2, {
-      example: scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "crash", write: 1 }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "user-create", path: 1 }),
-      violation: /^step \d+: tombstone of r-1 at "a\.md" \(seq \d+\) without the user deleting its file$/,
+      example: scripted(
+        "posix",
+        { type: "user-create", path: 0 },
+        { type: "user-create", path: 1 },
+        { type: "push" },
+        { type: "remote-delete", document: 0 },
+        { type: "user-edit", file: 3 },
+        { type: "remote-rename", document: 0, path: 0 },
+        { type: "remote-delete", document: 0 },
+        { type: "user-edit", file: 0 },
+      ),
+      violation: /^step \d+: live revision of id-\d+ at "a \(conflict laptop [0-9 -]+\)\.md" \(seq \d+\) on its tombstone without a user change since step \d+$/,
     });
   });
 
@@ -254,12 +264,9 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
-  // Fails today (flips in R8 #572; its minimal case today is the crash-lost rename of P2, R5 #569): a crash in a pull leaves another quiescent vault and server than the run without it.
-  it("P4: a crash at any journal write reaches the state a run without it reaches (known failure)", { timeout }, async () => {
-    await knownFailure(p4, {
-      example: ["posix", [{ type: "user-create", path: 4 }, { type: "user-create", path: 3 }, { type: "push" }, { type: "remote-edit", document: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }], 12],
-      violation: /^a crash at journal write 12 reaches \{"vault":\[.*"a\.md=user 1"\].*the run without it \{"vault":\[.*"a\.md=remote 4"\]/,
-    });
+  // Holds since R5a (#622): local renames and pending creates are journal rows (bindings), so a crash no longer loses them.
+  it("P4: a crash at any journal write reaches the state a run without it reaches", { timeout }, async () => {
+    await holds(p4);
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
