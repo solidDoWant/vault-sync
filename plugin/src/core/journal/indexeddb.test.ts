@@ -869,6 +869,19 @@ describe("IndexedDbJournal", () => {
       newer.close();
     });
 
+    it("refuses a journal with base-less create rows to a plugin from before refactor step R5a (schema v4)", async () => {
+      // R5a records a create not acknowledged yet as a row with no base
+      // (`revisionId: ""`, `deleted: true`), which a plugin before R5a would
+      // read as a tombstone. R5a shipped at schema v4 and R7b added v5, so
+      // such a plugin refuses every journal this one writes (#671).
+      const factory = new FakeIDBFactory();
+      const current = await IndexedDbJournal.open(factory, name);
+      await current.putDocument(sampleDocument({ documentId: "created", path: "n.md", revisionId: "", seq: 0n, baseHash: "", size: 0n, deleted: true }));
+      current.close();
+
+      await expect(IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 4))).rejects.toThrow(JournalVersionError);
+    });
+
     it("lets a newer connection upgrade the schema, and fails the outdated one's later calls", async () => {
       const factory = new FakeIDBFactory();
       const outdated = await IndexedDbJournal.open(factory, name);

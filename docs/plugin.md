@@ -107,6 +107,8 @@ The server limits how many requests one account may have in progress at once (`V
 
 Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.
 
+Downgrading Vault Sync is not supported. The sync journal records the schema version that wrote it, and an older Vault Sync refuses to open a journal written by a newer one (sync does not start) rather than misread it. For example, a create that has not reached the server yet is recorded in a form that a version before the path-ownership refactor would take for a deleted note.
+
 ### Realtime channel
 
 The realtime channel only makes changes arrive sooner; sync never depends on it (SPEC.md §6.4). Every time the plugin (re)subscribes, it pulls from where it left off, so a change made while it was disconnected is never missed.
