@@ -4,7 +4,7 @@ import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import { pathPool } from "./client";
 import { EngineUser } from "./engine-user";
-import { checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type EngineChanges, type FeedRevision, type UserChange } from "./invariants";
 
 const at = "step 1";
 
@@ -26,7 +26,32 @@ describe("checkLostWrites", () => {
 
   it("accepts a write the user replaced or deleted themselves", () => {
     const ledger = ledgerWith("aa");
-    ledger.replace("aa");
+    ledger.replace("aa", "aa.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  it("reports a lost write of content X although the user later overwrote another file holding X", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.write({ hash: "xx", path: "b.md", at });
+    ledger.replace("xx", "b.md");
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("e1's user wrote xx to a.md") as unknown as string]);
+    expect(ledger.owed()).toEqual(new Set(["xx"]));
+  });
+
+  it("does not excuse a write by a replacement that came before it, as of the same content at the same path", () => {
+    const ledger = new UserLedger();
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.replace("xx", "a.md");
+    ledger.write({ hash: "xx", path: "a.md", at: "step 2" });
+    expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("at step 2") as unknown as string]);
+  });
+
+  it("follows a write's file through the user's renames: overwriting it at its new path replaces it", () => {
+    const ledger = new UserLedger("macos");
+    ledger.write({ hash: "xx", path: "a.md", at });
+    ledger.renamed("a.md", "b.md", new Set(), "xx");
+    ledger.replace("xx", "B.md");
     expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
   });
 
@@ -38,7 +63,7 @@ describe("checkLostWrites", () => {
     // The merge result was replaced by the user: the write is no longer owed.
     const replaced = ledgerWith("aa");
     replaced.merged("aa", "merged");
-    replaced.replace("merged");
+    replaced.replace("merged", "aa.md");
     expect(checkLostWrites("e1", replaced, new Set())).toEqual([]);
   });
 
@@ -51,7 +76,7 @@ describe("checkLostWrites", () => {
 
   it("owes the unreplaced writes and their merge results", () => {
     const ledger = ledgerWith("aa", "bb");
-    ledger.replace("bb");
+    ledger.replace("bb", "bb.md");
     ledger.merged("aa", "cc");
     expect(ledger.owed()).toEqual(new Set(["aa", "cc"]));
   });
@@ -347,5 +372,34 @@ describe("checkEngineEchoes", () => {
     const userWrite = { type: "modify", path: "a.md" } as const;
     const echo = { type: "modify", path: "a.md" } as const;
     expect(checkEngineEchoes("e1", [userWrite, echo], new Set([userWrite])).map((violation) => violation.detail)).toEqual(["e1 reported its own modify of a.md as a local change"]);
+  });
+});
+
+describe("carriesLocalEdit", () => {
+  const text = (value: string) => new TextEncoder().encode(value);
+
+  it("accepts the local content itself, also binary", () => {
+    expect(carriesLocalEdit(new Uint8Array([0xff, 0]), new Uint8Array([0xff, 0]), null)).toBe(true);
+  });
+
+  it("accepts a merged result that holds every line the local edit added over the base, whatever its line endings", () => {
+    expect(carriesLocalEdit(text("a\nlocal\nb\n"), text("remote\r\na\r\nlocal\r\nb\r\n"), text("a\nb\n"))).toBe(true);
+    // A local edit that only removed a line has nothing to carry.
+    expect(carriesLocalEdit(text("a\n"), text("a\nb\nremote\n"), text("a\nb\n"))).toBe(true);
+  });
+
+  it("rejects a result that dropped a line the local edit added: the remote content reported as merged", () => {
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\nremote\n"), text("a\n"))).toBe(false);
+    // A line added a second time counts: the base holds it once.
+    expect(carriesLocalEdit(text("a\na\n"), text("b\n"), text("a\n"))).toBe(false);
+  });
+
+  it("without a base, needs every local line in the result", () => {
+    expect(carriesLocalEdit(text("a\nlocal\n"), text("a\n"), null)).toBe(false);
+    expect(carriesLocalEdit(text("a\n"), text("remote\na\n"), null)).toBe(true);
+  });
+
+  it("rejects any other result for binary local content", () => {
+    expect(carriesLocalEdit(new Uint8Array([0xff]), new Uint8Array([0xff, 1]), null)).toBe(false);
   });
 });

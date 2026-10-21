@@ -85,6 +85,22 @@ describe("generateSchedule", () => {
     expect(JSON.parse(JSON.stringify(schedule))).toEqual(schedule);
   });
 
+  it("changes the engines' config sync between the steps of the seed's plain schedule when the run has config sync (#422)", () => {
+    const options = { seed: 99, steps: 3000, clients: 3, engines: 2 };
+    const plain = generateSchedule(options);
+    const schedule = generateSchedule({ ...options, configSync: true });
+    const config = schedule.flatMap((step) => (step.kind === "engine-config" ? [step] : []));
+    // About one in forty steps, of every action, on both engines.
+    expect(config.length).toBeGreaterThanOrEqual(40);
+    expect(config.length).toBeLessThanOrEqual(120);
+    expect([...new Set(config.map((step) => step.action))].sort()).toEqual(["category", "delete", "edit", "toggle"]);
+    expect(new Set(config.map((step) => step.engine))).toEqual(new Set([0, 1]));
+    expect(schedule.filter((step) => step.kind !== "engine-config")).toEqual(plain);
+    // Without engines there is no config to change.
+    expect(generateSchedule({ ...options, engines: 0, configSync: true })).toEqual(generateSchedule({ ...options, engines: 0 }));
+    expect(JSON.parse(JSON.stringify(schedule))).toEqual(schedule);
+  });
+
   it("has every engine's user make every kind of change when the run has engines", () => {
     const schedule = generateSchedule({ seed: 99, steps: 3000, clients: 3, engines: 2 });
     const engineSteps = schedule.flatMap((step) => (step.kind === "engine-operation" ? [step] : []));

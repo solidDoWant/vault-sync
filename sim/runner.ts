@@ -482,6 +482,11 @@ export class SimRun {
         if (observer === undefined) return "engine-operation: no engine";
         return observer.userOperation(step.operation, step.arg);
       }
+      case "engine-config": {
+        const observer = this.observers[step.engine % this.observers.length];
+        if (observer === undefined) return "engine-config: no engine";
+        return observer.configStep(step.action, step.arg);
+      }
     }
   }
 
@@ -502,7 +507,8 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
 /** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
   // Without `engines` the engine has no user, as before #22.
-  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention });
+  // Engines with users also change their config sync (#422).
+  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention, configSync: (options.engines ?? 0) > 0 });
   return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 

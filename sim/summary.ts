@@ -38,5 +38,14 @@ const events: readonly (readonly [string, string])[] = [
 
 /** How often notable events occurred in a run's trace, as one line. */
 export function summarize(trace: readonly string[]): string {
-  return events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`).join(", ");
+  const counts = events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`);
+  // Config sync changes of seeded runs (#422 item 8): an engine restarted with config sync on or off, Obsidian's writes and deletes in the config folder.
+  const config = trace.filter((line) => / config sync (on|off)\b| Obsidian (writes|deletes) config /.test(line)).length;
+  return [...counts, `engine commits before quiesce ${String(engineCommitsBeforeQuiesce(trace))}`, `config changes ${String(config)}`].join(", ");
+}
+
+/** The revisions the engines got acknowledged during the schedule, before the faults heal (#422 item 3). */
+export function engineCommitsBeforeQuiesce(trace: readonly string[]): number {
+  const quiesce = trace.findIndex((line) => line.endsWith(": quiesce"));
+  return trace.slice(0, quiesce === -1 ? trace.length : quiesce).filter((line) => /^\d+: e\d+ acknowledged /.test(line)).length;
 }

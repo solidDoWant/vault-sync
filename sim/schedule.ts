@@ -18,6 +18,14 @@ export type Operation = (typeof operations)[number];
 export const engineOperations = ["create", "edit", "rename", "delete", "push"] as const;
 export type EngineOperation = (typeof engineOperations)[number];
 
+/**
+ * What an engine's device does to its config sync (#422 item 8): turn it on
+ * or off, flip one category (both restart the engine, as the plugin does),
+ * or Obsidian writes or deletes a file in the config folder.
+ */
+export const configActions = ["toggle", "category", "edit", "delete"] as const;
+export type ConfigAction = (typeof configActions)[number];
+
 export type Step =
   /** `client` starts `operation` (if it is idle); `arg` seeds its choices (document, path, content). */
   | { kind: "operation"; client: number; operation: Operation; arg: number }
@@ -51,7 +59,14 @@ export type Step =
    * retention (#229), so every other schedule, and every regression case
    * recorded before it, is unchanged.
    */
-  | { kind: "retention"; pick: number };
+  | { kind: "retention"; pick: number }
+  /**
+   * Engine `engine`'s device changes its config sync or its config folder
+   * (ConfigAction); `arg` seeds the choices. Inserted only into schedules
+   * with config sync (ScheduleOptions.configSync, #422), so every other
+   * schedule, and every regression case recorded before it, is unchanged.
+   */
+  | { kind: "engine-config"; engine: number; action: ConfigAction; arg: number };
 
 export type StepKind = Step["kind"];
 
@@ -63,6 +78,8 @@ export interface ScheduleOptions {
   engines?: number;
   /** Whether the retention job runs between steps (#229); without it (the default) no retention step is generated. */
   retention?: boolean;
+  /** Whether the engines' devices change their config sync between steps (#422); needs engines. Without it (the default) no engine-config step is generated. */
+  configSync?: boolean;
 }
 
 /** Relative frequency of each step kind in a generated schedule. */
@@ -87,6 +104,8 @@ export const stepWeights: Readonly<Record<StepKind, number>> = {
   // Never drawn: withRetention inserts retention steps into a schedule
   // (#229). With weight 0 it never changes another kind's draw.
   retention: 0,
+  // Never drawn either: withConfigSync inserts them (#422).
+  "engine-config": 0,
   // Last, and drawn only when the run has engines: with weight 0 every other
   // kind's draws, and so every engine-less schedule, are exactly as before #22.
   "engine-operation": 10,
@@ -126,7 +145,34 @@ export function generateSchedule(options: ScheduleOptions): Step[] {
   for (let index = 0; index < options.steps; index++) {
     steps.push(generateStep(random, weights, options.clients, engines));
   }
-  return options.retention === true ? withRetention(options.seed, steps) : steps;
+  const configured = options.configSync === true && engines > 0 ? withConfigSync(options.seed, steps, engines) : steps;
+  return options.retention === true ? withRetention(options.seed, configured) : configured;
+}
+
+/** On average, a schedule with config sync changes an engine's config once in this many steps (#422). */
+export const configSyncInterval = 40;
+
+/** Relative frequency of each config action. */
+export const configActionWeights: Readonly<Record<ConfigAction, number>> = {
+  toggle: 20,
+  category: 20,
+  edit: 45,
+  delete: 15,
+};
+
+/**
+ * `steps` with config sync changes between them (#422), as withRetention
+ * inserts its steps: from the seed's own stream, so every other step is the
+ * seed's plain schedule, in its order.
+ */
+function withConfigSync(seed: number, steps: readonly Step[], engines: number): Step[] {
+  const random = Random.derive(seed, "config-sync");
+  const result: Step[] = [];
+  for (const step of steps) {
+    result.push(step);
+    if (random.int(configSyncInterval) === 0) result.push({ kind: "engine-config", engine: random.int(engines), action: random.weighted(configActionWeights), arg: random.uint32() });
+  }
+  return result;
 }
 
 /** On average, a schedule with retention runs the retention job once in this many steps (#229). */
@@ -170,5 +216,7 @@ function generateStep(random: Random, weights: Readonly<Record<StepKind, number>
       return { kind, client: random.int(clients) };
     case "engine-operation":
       return { kind, engine: random.int(engines), operation: random.weighted(engineOperationWeights), arg: random.uint32() };
+    case "engine-config":
+      return { kind, engine: random.int(engines), action: random.weighted(configActionWeights), arg: random.uint32() };
   }
 }

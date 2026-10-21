@@ -33,7 +33,7 @@ import { Code } from "@connectrpc/connect";
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { ConfigSyncVault } from "../plugin/src/core/config/config-vault";
-import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
+import { configCategories, defaultConfigSyncSettings, type ConfigSyncSettings } from "../plugin/src/core/config/policy";
 import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } from "../plugin/src/core/engine/engine";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
@@ -46,10 +46,30 @@ import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory"
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
-import { checkEngineEchoes, UserLedger } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, UserLedger } from "./invariants";
 import { errorCode, settle, StallError } from "./network";
 import { Random } from "./random";
-import type { EngineOperation } from "./schedule";
+import type { ConfigAction, EngineOperation } from "./schedule";
+
+/**
+ * The config folder files a seeded schedule writes (#422), relative to it:
+ * one or more of each category, and files that never sync.
+ */
+const seededConfigFiles: readonly string[] = [
+  "hotkeys.json",
+  "snippets/wide.css",
+  "themes/Minimal/theme.css",
+  "app.json",
+  "appearance.json",
+  "daily-notes.json",
+  "community-plugins.json",
+  "plugins/dataview/data.json",
+  "plugins/dataview/main.js",
+  "workspace.json",
+  "graph.json",
+];
+
+const encoder = new TextEncoder();
 
 /** Revisions per ListChanges page; small, so pulls page. */
 const pageSize = 7;
@@ -345,11 +365,49 @@ export class EngineObserver {
    */
   async setConfigSync(settings: ConfigSyncSettings): Promise<string> {
     await this.settled();
+    this.configSettings = settings;
     this.engine.dispose();
     // The engine changes the config folder through its own handle, so the tap tells its changes from Obsidian's.
     this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config.handle("engine"), settings, ownFolders: ["plugins/vault-sync"] });
     this.engine = this.createEngine();
     return `${this.name} config sync ${settings.enabled ? `on (${Object.entries(settings.categories).filter(([, on]) => on).map(([category]) => category).join(", ")})` : "off"}, engine restarted`;
+  }
+
+  /** The config sync settings the engine runs with (setConfigSync); off, as every device starts. */
+  private configSettings: ConfigSyncSettings = { enabled: defaultConfigSyncSettings.enabled, categories: { ...defaultConfigSyncSettings.categories } };
+
+  /**
+   * A seeded schedule's change of config sync (#422 item 8), seeded with
+   * `arg`; returns the trace entry. A toggle or a category flip restarts the
+   * engine, so it is skipped while the engine is busy. Obsidian's writes and
+   * deletes in the config folder happen at any moment and, like the user's
+   * changes, never wait for the engine.
+   */
+  async configStep(action: ConfigAction, arg: number): Promise<string> {
+    const random = new Random(arg);
+    switch (action) {
+      case "toggle":
+      case "category": {
+        if (this.busy) return `${this.name} busy, config ${action} skipped`;
+        const categories = { ...this.configSettings.categories };
+        const category = random.pick(configCategories);
+        if (action === "category") categories[category] = !categories[category];
+        return this.setConfigSync({ enabled: action === "toggle" ? !this.configSettings.enabled : this.configSettings.enabled, categories });
+      }
+      case "edit": {
+        const relative = random.pick(seededConfigFiles);
+        const content = encoder.encode(`${this.name} config ${String(random.uint32())}\n`);
+        await this.config.write(relative, content);
+        return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
+      }
+      case "delete": {
+        const files = (await this.config.list()).sort();
+        if (files.length === 0) return `${this.name} Obsidian deletes config: no file`;
+        const relative = random.pick(files);
+        await this.config.delete(relative);
+        return `${this.name} Obsidian deletes config ${relative}`;
+      }
+    }
   }
 
   /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
@@ -556,12 +614,18 @@ export class EngineObserver {
         this.context.log(`${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`);
       },
       merge: async (request) => {
-        const outcome = await (this.merge ?? threeWayMerge)(request);
-        // What the merge path made of the local content: it survives there (sim/invariants.ts).
-        if (outcome.status === "merged" && request.local.content !== null) {
-          const local = sha256Hex(request.local.content);
-          if (outcome.content !== null) this.ledger.merged(local, sha256Hex(outcome.content));
-          if (outcome.conflict !== undefined) this.ledger.merged(local, sha256Hex(outcome.conflict.content));
+        // The base as the hook read it, if it did: the harness never reads it again, which would add calls to the run.
+        let base: Uint8Array | null = null;
+        const outcome = await (this.merge ?? threeWayMerge)({
+          ...request,
+          readBaseContent: async () => (base = await request.readBaseContent()),
+        });
+        // What the merge path made of the local content: it survives there
+        // (sim/invariants.ts), but only where the harness's own check finds the
+        // edit (#301), not because the hook says so. A conflict copy is the
+        // local content itself, which then survives by being found.
+        if (outcome.status === "merged" && request.local.content !== null && outcome.content !== null && carriesLocalEdit(request.local.content, outcome.content, base)) {
+          this.ledger.merged(sha256Hex(request.local.content), sha256Hex(outcome.content));
         }
         return outcome;
       },

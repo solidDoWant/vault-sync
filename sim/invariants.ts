@@ -4,10 +4,13 @@
 // the final vaults and the server's history:
 //
 // - `lost-write`: every write of a user (a create or edit) survives, unless
-//   that user replaced it themselves (wrote over it or deleted the file
-//   holding it). It survives if its content is in a final vault, in history
-//   (downloaded and verified), or in what the merge path made of it: the
-//   merged result or the conflict copy, which must survive in turn. This
+//   that user replaced it themselves: wrote over or deleted, after it, the
+//   file holding it, at a path that write's file had (keyed by content and
+//   path, so replacing one file excuses no other write of the same content).
+//   It survives if its content is in a final vault, in history (downloaded
+//   and verified), or in a merged result the harness checked carries it
+//   (carriesLocalEdit), which must survive in turn. A conflict copy is the
+//   local content itself, so it survives only by being found. This
 //   covers every acknowledged edit and also the ones a buggy engine never
 //   pushed.
 // - `phantom-delete`: every tombstone in the change feed was committed by a
@@ -92,8 +95,14 @@ export interface EngineCrash {
 /** What one engine's user did to its vault, and what the merge path made of local content. */
 export class UserLedger {
   readonly writes: UserWrite[] = [];
-  /** Contents the user overwrote or deleted themselves: no longer owed. */
-  readonly replaced = new Set<string>();
+  /**
+   * Contents the user overwrote or deleted themselves, by `hash path-key` of
+   * where, to how many writes there had been then: those writes of it are no
+   * longer owed, if their file had that path.
+   */
+  private readonly replaced = new Map<string, number>();
+  /** For each write (by index), every path its file had since (by path key) and where it is now, until the user deleted it. */
+  private readonly tracks: { paths: Set<string>; current: string | undefined }[] = [];
   /** Local content handed to the merge hook, to the contents it became (the merged result and the conflict copy). */
   readonly mergedInto = new Map<string, Set<string>>();
   /** Documents whose file the user deleted. */
@@ -109,7 +118,9 @@ export class UserLedger {
   constructor(readonly platform: PathPlatform = "posix") {}
 
   write(write: UserWrite): void {
+    const key = pathMatcher(this.platform)(write.path);
     this.writes.push(write);
+    this.tracks.push({ paths: new Set([key]), current: key });
     for (const rename of this.at(write.path)) rename.hashes.add(write.hash);
   }
 
@@ -120,6 +131,7 @@ export class UserLedger {
   /** The user renamed the file at `from`, which the engine could take for `documents`, to `to`, where it holds `hash`. */
   renamed(from: string, to: string, documents: ReadonlySet<string>, hash: string): void {
     const key = pathMatcher(this.platform)(to);
+    this.follow(from, key);
     for (const rename of this.at(from)) {
       rename.current = key;
       rename.paths.add(key);
@@ -135,14 +147,27 @@ export class UserLedger {
    */
   movedByEngine(from: string, to: string): void {
     const key = pathMatcher(this.platform)(to);
+    this.follow(from, key);
     for (const rename of this.at(from)) {
       rename.current = key;
       rename.paths.add(key);
     }
   }
 
+  /** The writes whose file is at `from` are at `to` (a path key) now. */
+  private follow(from: string, to: string): void {
+    const key = pathMatcher(this.platform)(from);
+    for (const track of this.tracks) {
+      if (track.current !== key) continue;
+      track.current = to;
+      track.paths.add(to);
+    }
+  }
+
   /** The user deleted the file at `path`. */
   deleted(path: string): void {
+    const key = pathMatcher(this.platform)(path);
+    for (const track of this.tracks) if (track.current === key) track.current = undefined;
     for (const rename of this.at(path)) rename.current = undefined;
   }
 
@@ -156,8 +181,15 @@ export class UserLedger {
     this.crashes.push({ serverSeq, renames: this.renames.length });
   }
 
-  replace(hash: string): void {
-    this.replaced.add(hash);
+  /** The user overwrote or deleted the file at `path`, which held `hash`. */
+  replace(hash: string, path: string): void {
+    this.replaced.set(`${hash} ${pathMatcher(this.platform)(path)}`, this.writes.length);
+  }
+
+  /** Whether the user replaced `hash` after write number `index`, at a path that write's file had. */
+  replacedAfter(hash: string, index: number): boolean {
+    const paths = this.tracks[index]?.paths ?? new Set<string>();
+    return [...paths].some((path) => (this.replaced.get(`${hash} ${path}`) ?? 0) > index);
   }
 
   merged(local: string, result: string): void {
@@ -177,14 +209,56 @@ export class UserLedger {
    */
   owed(): Set<string> {
     const owed = new Set<string>();
-    const visit = (hash: string): void => {
-      if (owed.has(hash) || this.replaced.has(hash)) return;
-      owed.add(hash);
-      for (const result of this.mergedInto.get(hash) ?? []) visit(result);
-    };
-    for (const write of this.writes) visit(write.hash);
+    this.writes.forEach((write, index) => {
+      const seen = new Set<string>();
+      const visit = (hash: string): void => {
+        if (seen.has(hash) || this.replacedAfter(hash, index)) return;
+        seen.add(hash);
+        owed.add(hash);
+        for (const result of this.mergedInto.get(hash) ?? []) visit(result);
+      };
+      visit(write.hash);
+    });
     return owed;
   }
+}
+
+const strictDecoder = new TextDecoder("utf-8", { fatal: true });
+
+/** The lines of UTF-8 `content`, without line endings, or undefined if it is not UTF-8. */
+function textLines(content: Uint8Array): string[] | undefined {
+  try {
+    return strictDecoder.decode(content).split("\n").map((line) => line.replace(/\r$/u, ""));
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Whether the merged `result` carries the local edit of `local` over `base`
+ * (null if unknown or none): the harness's own check, independent of the
+ * merge code, of what a merge hook reports as merged (#301). It does if it
+ * is the local content, or if both are text and every non-empty line local
+ * added over the base is in the result. A local edit that only removed
+ * lines passes. A binary local content passes only if the result is it.
+ */
+export function carriesLocalEdit(local: Uint8Array, result: Uint8Array, base: Uint8Array | null): boolean {
+  if (local.length === result.length && local.every((byte, index) => byte === result[index])) return true;
+  const localLines = textLines(local);
+  const resultLines = textLines(result);
+  if (localLines === undefined || resultLines === undefined) return false;
+  const remaining = new Map<string, number>();
+  for (const line of (base === null ? undefined : textLines(base)) ?? []) remaining.set(line, (remaining.get(line) ?? 0) + 1);
+  const inResult = new Set(resultLines);
+  for (const line of localLines) {
+    const count = remaining.get(line) ?? 0;
+    if (count > 0) {
+      remaining.set(line, count - 1);
+      continue;
+    }
+    if (line !== "" && !inResult.has(line)) return false;
+  }
+  return true;
 }
 
 /**
@@ -193,16 +267,16 @@ export class UserLedger {
  * verified by the harness).
  */
 export function checkLostWrites(engine: string, ledger: UserLedger, present: ReadonlySet<string>): Violation[] {
-  const survives = (hash: string, seen: Set<string>): boolean => {
-    if (ledger.replaced.has(hash) || present.has(hash)) return true;
+  const survives = (hash: string, index: number, seen: Set<string>): boolean => {
+    if (ledger.replacedAfter(hash, index) || present.has(hash)) return true;
     if (seen.has(hash)) return false;
     seen.add(hash);
-    for (const result of ledger.mergedInto.get(hash) ?? []) if (survives(result, seen)) return true;
+    for (const result of ledger.mergedInto.get(hash) ?? []) if (survives(result, index, seen)) return true;
     return false;
   };
   const violations: Violation[] = [];
-  for (const write of ledger.writes) {
-    if (survives(write.hash, new Set())) continue;
+  for (const [index, write] of ledger.writes.entries()) {
+    if (survives(write.hash, index, new Set())) continue;
     violations.push({
       invariant: "lost-write",
       detail: `${engine}'s user wrote ${write.hash.slice(0, 8)} to ${write.path} at ${write.at}; it is in no vault, not in history and in no merge result or conflict copy`,
