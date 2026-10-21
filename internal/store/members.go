@@ -175,12 +175,12 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 	err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
 		var invitationID uuid.UUID
 
-		// The row lock makes concurrent redemptions of one code wait for
-		// each other; the second finds the row deleted.
-		err := tx.QueryRow(ctx, `
-			SELECT id, vault_id, role FROM vault_invitations
-			WHERE code_hash = $1 AND expires_at > now()
-			FOR UPDATE`, codeHash).Scan(&invitationID, &joined.ID, &joined.Role)
+		// Lock the vault before the invitation, the order CreateInvitation
+		// (which prunes the vault's expired invitations under the vault
+		// lock) and every other vault-wide change use, so the two cannot
+		// deadlock. The first lookup only finds the vault to lock.
+		err := tx.QueryRow(ctx, `SELECT vault_id FROM vault_invitations WHERE code_hash = $1 AND expires_at > now()`,
+			codeHash).Scan(&joined.ID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ErrInvitationNotFound
 		}
@@ -190,7 +190,26 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 		}
 
 		if _, err := lockVault(ctx, tx, joined.ID); err != nil {
+			if errors.Is(err, ErrVaultNotFound) {
+				return ErrInvitationNotFound
+			}
+
 			return err
+		}
+
+		// Re-read the invitation under the vault lock: it may have been
+		// redeemed, revoked or pruned meanwhile. The row lock keeps a
+		// concurrent revocation out until this transaction ends.
+		err = tx.QueryRow(ctx, `
+			SELECT id, role FROM vault_invitations
+			WHERE code_hash = $1 AND vault_id = $2 AND expires_at > now()
+			FOR UPDATE`, codeHash, joined.ID).Scan(&invitationID, &joined.Role)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrInvitationNotFound
+		}
+
+		if err != nil {
+			return fmt.Errorf("lock invitation: %w", err)
 		}
 
 		var members int
