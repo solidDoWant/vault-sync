@@ -34,9 +34,15 @@ env:
 
 jobs:
   android:
-    name: plugin-e2e (android-emulator)
+    name: plugin-e2e (android-emulator, ${{ matrix.gpu }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    # TEMPORARY (#704 diagnosis): which GPU mode keeps the emulator alive
+    # once Obsidian's WebView renders. Reduced to one mode before review.
+    strategy:
+      fail-fast: false
+      matrix:
+        gpu: [swiftshader_indirect, swangle_indirect]
     defaults:
       run:
         shell: bash
@@ -67,8 +73,10 @@ jobs:
       - name: Boot the emulator
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
-          nohup "$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
-            -gpu swiftshader_indirect -no-snapshot -memory 4096 -cores 2 > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          # The subshell records how the emulator ended, should it end.
+          nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
+            -gpu "$0" -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
+            "${{ matrix.gpu }}" > "$RUNNER_TEMP/emulator.log" 2>&1 &
           pid=$!
           for _ in $(seq 1 72); do
             if ! kill -0 "$pid" 2>/dev/null; then echo "::error::the emulator exited"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
@@ -83,6 +91,22 @@ jobs:
           echo "::error::the emulator did not boot in 6 minutes"
           tail -100 "$RUNNER_TEMP/emulator.log"
           exit 1
+
+      # TEMPORARY (#704 diagnosis): Obsidian started with adb alone, without
+      # Appium, to tell whether rendering it ends the emulator.
+      - name: Start Obsidian without Appium
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          apk="$RUNNER_TEMP/obsidian.apk"
+          curl -fsSL --proto '=https' -o "$apk" https://github.com/obsidianmd/obsidian-releases/releases/download/v1.14.4/Obsidian-1.14.4.apk
+          echo "b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3  $apk" | sha256sum -c -
+          "$adb" install "$apk"
+          "$adb" shell am start -W -n md.obsidian/.MainActivity
+          sleep 60
+          "$adb" shell pidof md.obsidian
+          "$adb" exec-out screencap -p > "$RUNNER_TEMP/obsidian-start.png"
+          "$adb" shell am force-stop md.obsidian
+          "$adb" uninstall md.obsidian
 
       - uses: ./.github/actions/nix-dev-shell
 
@@ -110,11 +134,13 @@ jobs:
           cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/e2e-logs/" || true
           # Whether the emulator is still running, and whether the kernel
           # killed it (out of memory).
-          { pgrep -a qemu || echo "no emulator process"; free -m; sudo dmesg | tail -100; } > "$RUNNER_TEMP/e2e-logs/host.txt" 2>&1 || true
+          { pgrep -a qemu || echo "no emulator process"; free -m; lscpu; sudo dmesg | tail -100; } > "$RUNNER_TEMP/e2e-logs/host.txt" 2>&1 || true
+          cp -r /tmp/android-runner "$RUNNER_TEMP/e2e-logs/emulator-crash" || true
+          cp "$RUNNER_TEMP/obsidian-start.png" "$RUNNER_TEMP/e2e-logs/" || true
 
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-e2e-logs
+          name: android-e2e-logs-${{ matrix.gpu }}
           path: ${{ runner.temp }}/e2e-logs
           if-no-files-found: ignore
