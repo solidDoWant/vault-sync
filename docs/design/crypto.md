@@ -54,7 +54,7 @@ key     = Argon2id(password = UTF-8(NFC(passphrase)), salt, t = iterations, m = 
 wrapped = header || nonce (24) || XChaCha20-Poly1305(key, nonce, secret, ad = header || aad)
 ```
 
-The parameters travel with the ciphertext so that they can be raised later without a new suite. The passphrase is NFC-normalized so that the same characters typed on any device derive the same key. An empty passphrase is refused.
+The parameters travel with the ciphertext so that they can be raised later without a new suite. The passphrase is NFC-normalized with the pinned Unicode 17.0.0 tables of the `path_key` normalization (`pathkey.NFC` in Go, `nfc` in `plugin/src/core/pathkey/normalize.ts`), never the runtime's, so that the same characters typed on any device derive the same key whatever Unicode version the device has. The `passphrase` vectors include a pair that differs only by a Unicode 17 combining mark's effect on composition. An empty passphrase is refused.
 
 Parameters are bounded on wrap and on unwrap; unwrap refuses out-of-bounds parameters **before** deriving, so a hostile stored value cannot make a device allocate or compute without limit, and a downgrade below the minimum is refused:
 

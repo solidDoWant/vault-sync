@@ -22,6 +22,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
+import { nfc } from "../pathkey/normalize";
 import { pathKey as normalizePath } from "../pathkey/pathkey";
 
 /** The suite version byte of every suite 1 ciphertext. */
@@ -281,7 +282,7 @@ function validParams(params: Argon2Params): boolean {
 }
 
 function passphraseKey(passphrase: string, params: Argon2Params, salt: Uint8Array): Uint8Array {
-  return argon2id(encoder.encode(passphrase.normalize("NFC")), salt, {
+  return argon2id(encoder.encode(nfc(passphrase)), salt, {
     m: params.memory,
     t: params.iterations,
     p: params.parallelism,
@@ -294,8 +295,8 @@ function passphraseKey(passphrase: string, params: Argon2Params, salt: Uint8Arra
  * `passphrase` with Argon2id and binds `aad`: SUITE_V1 || memory (u32 BE) ||
  * iterations (u32 BE) || parallelism (u8) || salt (16) || nonce || ciphertext,
  * the associated data being the header || aad. The passphrase is
- * NFC-normalized first, so every device derives the same key from the same
- * characters. Synchronous: it blocks for the whole derivation.
+ * NFC-normalized first with the pinned Unicode tables of ../pathkey (not the
+ * runtime's), so every device derives the same key from the same characters. Synchronous: it blocks for the whole derivation.
  */
 export function wrapWithPassphrase(
   passphrase: string,

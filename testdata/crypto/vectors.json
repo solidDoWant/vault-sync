@@ -275,6 +275,30 @@
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
       "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe33f2ac5e8783c97a9299880e7fc10b0828333300f060e2b8125ae1aa74a774630fc1dc22df8240f1ca834bfec9509380"
+    },
+    {
+      "name": "Unicode 17 mark, precomposed passphrase",
+      "passphrase": "é᫝ pass",
+      "memory": 19456,
+      "iterations": 2,
+      "parallelism": 1,
+      "salt": "f448e4e0b71aad83818ceeaa09affed0",
+      "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
+      "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
+      "aad": "",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe9b044d79eb9d4ba220d30d807966f4cab30737b3aac75fac490745166bba937ec15f7e949ef99df0c97b07816ebb9d3a"
+    },
+    {
+      "name": "Unicode 17 mark, decomposed passphrase",
+      "passphrase": "e᫝́ pass",
+      "memory": 19456,
+      "iterations": 2,
+      "parallelism": 1,
+      "salt": "f448e4e0b71aad83818ceeaa09affed0",
+      "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
+      "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
+      "aad": "",
+      "wrapped": "0100004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe9b044d79eb9d4ba220d30d807966f4cab30737b3aac75fac490745166bba937ec15f7e949ef99df0c97b07816ebb9d3a"
     }
   ],
   "rejected": [

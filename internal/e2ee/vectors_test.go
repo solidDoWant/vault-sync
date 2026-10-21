@@ -342,6 +342,10 @@ func generate(t *testing.T) vectorFile {
 		{"two lanes", "correct horse battery staple", Argon2Params{Memory: MinArgon2Memory, Iterations: 2, Parallelism: 2}, nil},
 		{"precomposed passphrase", "Café über alles", minimum, nil},
 		{"decomposed passphrase", "Café über alles", minimum, nil},
+		// U+1ADD (Unicode 17) does not block the acute accent from composing
+		// with the e, which runtimes with older Unicode tables get wrong.
+		{"Unicode 17 mark, precomposed passphrase", "\u00e9\u1add pass", minimum, nil},
+		{"Unicode 17 mark, decomposed passphrase", "e\u1add\u0301 pass", minimum, nil},
 	}
 	for _, testCase := range passphraseCases {
 		// The two normalization forms share the salt and nonce, so equal
@@ -621,6 +625,24 @@ func TestSharedVectors(t *testing.T) {
 				secret := must(UnwrapWithPassphrase(vector.Passphrase, unhex(t, vector.Wrapped), aad))
 				assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
 			})
+		}
+	})
+
+	// The pairs share their salt and nonce, so equal wrapped values show that
+	// both normalization forms of a passphrase derive the same key.
+	t.Run("passphrase normalization pairs", func(t *testing.T) {
+		wrapped := map[string]string{}
+		for _, vector := range file.Passphrase {
+			wrapped[vector.Name] = vector.Wrapped
+		}
+
+		for _, pair := range [][2]string{
+			{"precomposed passphrase", "decomposed passphrase"},
+			{"Unicode 17 mark, precomposed passphrase", "Unicode 17 mark, decomposed passphrase"},
+		} {
+			require.Contains(t, wrapped, pair[0])
+			require.Contains(t, wrapped, pair[1])
+			assert.Equal(t, wrapped[pair[0]], wrapped[pair[1]], pair[1])
 		}
 	})
 

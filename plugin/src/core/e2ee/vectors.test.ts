@@ -110,6 +110,19 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
     });
   }
 
+  // The pairs share their salt and nonce, so equal wrapped values show that
+  // both normalization forms of a passphrase derive the same key.
+  it("wraps both normalization forms of a passphrase identically", () => {
+    const wrapped = new Map(shared.passphrase.map((vector) => [vector.name, vector.wrapped]));
+    for (const [precomposed, decomposed] of [
+      ["precomposed passphrase", "decomposed passphrase"],
+      ["Unicode 17 mark, precomposed passphrase", "Unicode 17 mark, decomposed passphrase"],
+    ] as const) {
+      expect(wrapped.get(precomposed)).toBeDefined();
+      expect(wrapped.get(decomposed)).toBe(wrapped.get(precomposed));
+    }
+  });
+
   for (const vector of shared.rejected) {
     it(`refuses: ${vector.name}`, () => {
       const sealed = hexToBytes(vector.sealed);

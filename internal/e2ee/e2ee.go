@@ -27,7 +27,6 @@ import (
 
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/chacha20poly1305"
-	"golang.org/x/text/unicode/norm"
 
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
 )
@@ -323,8 +322,9 @@ func (params Argon2Params) valid() bool {
 // key derived from passphrase with Argon2id and binds aad:
 // SuiteV1 || memory (u32 BE) || iterations (u32 BE) || parallelism (u8) ||
 // salt (16) || nonce || ciphertext, the associated data being the header ||
-// aad. The passphrase is NFC-normalized first, so every device derives the
-// same key from the same characters.
+// aad. The passphrase is NFC-normalized first with the pinned Unicode tables
+// of internal/pathkey (not the runtime's), so every device derives the same
+// key from the same characters.
 func WrapWithPassphrase(passphrase string, secret, aad []byte) ([]byte, error) {
 	return WrapWithPassphraseParams(passphrase, DefaultArgon2Params, secret, aad)
 }
@@ -392,7 +392,7 @@ func UnwrapWithPassphrase(passphrase string, wrapped, aad []byte) ([]byte, error
 }
 
 func passphraseKey(passphrase string, params Argon2Params, salt []byte) []byte {
-	return argon2.IDKey([]byte(norm.NFC.String(passphrase)), salt, params.Iterations, params.Memory, params.Parallelism, KeySize)
+	return argon2.IDKey([]byte(pathkey.NFC(passphrase)), salt, params.Iterations, params.Memory, params.Parallelism, KeySize)
 }
 
 func randomBytes(size int) ([]byte, error) {
