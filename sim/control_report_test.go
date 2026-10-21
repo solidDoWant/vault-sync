@@ -17,8 +17,9 @@ import (
 
 // TestReportKeepsTheFaithfulFilesystem: the case the driver writes for a
 // failing seed keeps whether the run used the faithful filesystem, so the
-// regressions suite replays it with the same setting (#598). A folded case
-// is written without the field, as every case before it was.
+// regressions suite replays it with the same setting (#598); likewise
+// whether it ran with retention purges (#646). A folded case without
+// retention is written without the fields, as every case before them was.
 func TestReportKeepsTheFaithfulFilesystem(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -34,6 +35,11 @@ func TestReportKeepsTheFaithfulFilesystem(t *testing.T) {
 			name:     "case with notification-gated pulls",
 			body:     `{"name":"seed-7","seed":7,"clients":3,"engines":2,"commitRetryBackoff":30,"notificationPulls":true,"violations":[],"steps":[]}`,
 			expected: map[string]any{"name": "seed-7", "seed": 7.0, "clients": 3.0, "engines": 2.0, "commitRetryBackoff": 30.0, "notificationPulls": true, "violations": []any{}, "steps": []any{}},
+		},
+		{
+			name:     "case recorded with retention purges",
+			body:     `{"name":"seed-7-retention","seed":7,"clients":3,"engines":2,"commitRetryBackoff":30,"retention":true,"violations":[],"steps":[]}`,
+			expected: map[string]any{"name": "seed-7-retention", "seed": 7.0, "clients": 3.0, "engines": 2.0, "commitRetryBackoff": 30.0, "retention": true, "violations": []any{}, "steps": []any{}},
 		},
 		{
 			name:     "folded case",

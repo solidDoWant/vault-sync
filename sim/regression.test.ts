@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import type { RegressionCase } from "./control";
-import { recordedCase, replayOptions } from "./regression";
-import { seededCommitRetryBackoff, seededPlatforms, type RunOptions } from "./runner";
+import { recordedCase, replayOptions, replayRegression } from "./regression";
+import { seededCommitRetryBackoff, seededPlatforms, type RunOptions, type RunResult, type SimEndpoints } from "./runner";
 import type { Step } from "./schedule";
 
 const steps: Step[] = [{ kind: "operation", client: 0, operation: "create", arg: 7 }, { kind: "deliver-request" }];
@@ -13,8 +13,8 @@ function throughDisk(regression: RegressionCase): RegressionCase {
   return JSON.parse(JSON.stringify(regression)) as RegressionCase;
 }
 
-function seededOptions(faithfulFilesystem: boolean, notificationPulls = true): RunOptions {
-  return { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem, notificationPulls };
+function seededOptions(faithfulFilesystem: boolean, notificationPulls = true, retention = false): RunOptions {
+  return { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem, notificationPulls, retention };
 }
 
 describe("regression cases", () => {
@@ -56,7 +56,44 @@ describe("regression cases", () => {
   it("replay a case from before #22 and #110 with one engine and no commit retry backoff", () => {
     const legacy = throughDisk({ name: "seed-3", seed: 3, clients: 2, violations, steps });
 
-    expect(replayOptions(legacy)).toEqual({ seed: 3, clients: 2, engines: 1, platforms: seededPlatforms(3, 1), commitRetryBackoff: undefined, faithfulFilesystem: false, notificationPulls: false });
+    expect(replayOptions(legacy)).toEqual({ seed: 3, clients: 2, engines: 1, platforms: seededPlatforms(3, 1), commitRetryBackoff: undefined, faithfulFilesystem: false, notificationPulls: false, retention: false });
+  });
+
+  it("replay a case recorded with retention purges with them (#646)", () => {
+    const options = seededOptions(false, true, true);
+    const regression = throughDisk(recordedCase("seed-42-retention", options, violations, steps));
+
+    expect(regression.retention).toBe(true);
+    expect(replayOptions(regression)).toEqual(options);
+  });
+
+  it("replay a case recorded without retention purges without them (#646)", () => {
+    const regression = throughDisk(recordedCase("seed-42", seededOptions(false), violations, steps));
+
+    expect(regression).not.toHaveProperty("retention");
+    expect(replayOptions(regression).retention).toBe(false);
+  });
+
+  it("replay a case recorded before retention was recorded without it (#646)", () => {
+    const legacy = throughDisk({ name: "seed-16", seed: 16, clients: 3, engines: 2, commitRetryBackoff: 30, violations, steps });
+
+    expect(replayOptions(legacy).retention).toBe(false);
+  });
+
+  it("run a committed case's steps with the options it recorded (#646)", async () => {
+    const recorded: RunOptions = { seed: 42, clients: 3, engines: 2, platforms: seededPlatforms(42, 2), commitRetryBackoff: seededCommitRetryBackoff, retention: true, faithfulFilesystem: true, notificationPulls: true };
+    const regression = throughDisk(recordedCase("seed-42-retention-faithful-fs", recorded, violations, steps));
+    const endpoints = { serverUrl: "http://server.invalid", controlUrl: "http://control.invalid" } as unknown as SimEndpoints;
+    const result = { violations } as unknown as RunResult;
+    const runs: [SimEndpoints, RunOptions, readonly Step[]][] = [];
+
+    const replayed = await replayRegression(endpoints, regression, (...run) => {
+      runs.push(run);
+      return Promise.resolve(result);
+    });
+
+    expect(replayed).toBe(result);
+    expect(runs).toEqual([[endpoints, recorded, steps]]);
   });
 
   it("record the minimized steps and their violations", () => {

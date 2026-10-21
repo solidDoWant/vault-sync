@@ -24,7 +24,7 @@ import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenario
 import { mergedDuringPush } from "./scenarios";
 import { stalledAtFinish } from "./scenarios";
 import { StallError } from "./network";
-import { recordedCase, replayOptions } from "./regression";
+import { recordedCase, replayRegression } from "./regression";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink, type ShrinkProgress } from "./shrink";
 import { summarize } from "./summary";
@@ -146,7 +146,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
 describe.runIf(suites.has("regressions") && environment.regressions.length > 0)("committed regression cases", () => {
   it.each(environment.regressions.map((regression) => [regression.name, regression] as const))("%s keeps every invariant", async (_name, regression) => {
-    const result = await runSteps(environment, replayOptions(regression), regression.steps);
+    const result = await replayRegression(environment, regression);
     expect(result.violations, tail(result.trace)).toEqual([]);
   });
 });
