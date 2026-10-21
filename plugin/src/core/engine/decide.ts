@@ -72,3 +72,26 @@ export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined
   if (ahead.reason === "path-conflict") return "keep";
   return ahead.reason === "local-changes" ? "resolve" : "detach";
 }
+
+/**
+ * The path merge of design §4.7 (PO-9; decision 6): where the merge path's
+ * result for `remote` goes, given the document's journal row `state` (the
+ * merge base) and the path of its local version (`localPath`, the bound
+ * spelling for a document with a file of its own). The merge hook merges
+ * content only (merge.ts); this decides the path.
+ *
+ * - A remote delete: the local version's path. An edit wins over the delete
+ *   there, and D is re-created on top of the tombstone at the bound spelling.
+ * - A live document this device synced whose local version is at another
+ *   path than its synced one (a local rename, a case-only or respelled one
+ *   included): the local path. The local rename survives a remote edit and
+ *   wins over a concurrent remote rename.
+ * - Otherwise (no local rename, a local delete, a tombstone or a document
+ *   this device never synced): the remote revision's path, the remote rename
+ *   applied.
+ */
+export function mergePath(state: DocumentState | undefined, localPath: string, remote: RemoteRevision): string {
+  if (remote.deleted) return localPath;
+  const ownFile = state !== undefined && !state.deleted;
+  return ownFile && localPath !== state.path ? localPath : remote.path;
+}
