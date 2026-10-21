@@ -8,14 +8,15 @@ import { harness, type Harness } from "./testing";
 // design docs/design/engine-path-ownership.md §3.1). The device can hold only
 // one: the document whose binding holds the file keeps it, and the other is
 // unmaterializable here (`alias`), a non-disk blocker that claims no path,
-// until the server moves the holder away (decision #52, #736).
+// until the server moves or deletes the holder (decision #52, #736).
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-function faithful(platform: "macos" | "windows"): Harness {
+/** With `recordMerges`, the harness's merge hook, which defers every merge, instead of the engine's default. */
+function faithful(platform: "macos" | "windows", recordMerges = false): Harness {
   const pathRules = { platform };
-  return harness({ merge: "default", pathRules, vault: new InMemoryVault({ pathRules, filesystem: "faithful" }) });
+  return harness({ ...(recordMerges ? {} : { merge: "default" as const }), pathRules, vault: new InMemoryVault({ pathRules, filesystem: "faithful" }) });
 }
 
 async function rounds(h: Harness): Promise<void> {
@@ -77,5 +78,46 @@ describe.each(["windows", "macos"] as const)("two live documents ı.md and I.md 
     expect(decoder.decode((await h.vault.read("ı.md")))).toBe("dotless\n");
     expect(await h.journal.listDeferred()).toEqual([]);
     expect(await h.engine.unmaterializable()).toEqual([]);
+  });
+
+  it("materializes the second document once the server deletes the holder (#749)", async () => {
+    const h = faithful(platform);
+    h.server.commit({ documentId: "upper", path: "I.md", content: "upper\n" });
+    await rounds(h);
+    h.server.commit({ documentId: "dotless", path: "ı.md", content: "dotless\n" });
+    await rounds(h);
+    h.server.commit({ documentId: "upper", path: "I.md", deleted: true });
+    await rounds(h);
+
+    expect(await h.vault.list()).toEqual(["ı.md"]);
+    expect(decoder.decode((await h.vault.read("ı.md")))).toBe("dotless\n");
+    expect(await h.journal.listDeferred()).toEqual([]);
+    expect(await h.engine.unmaterializable()).toEqual([]);
+    expect(h.server.liveFiles()).toEqual(new Map([["ı.md", "dotless\n"]]));
+  });
+
+  it("materializes the second document once the holder's file is gone, while the holder's server delete is still deferred (#749)", async () => {
+    const h = faithful(platform, true);
+    h.server.commit({ documentId: "upper", path: "I.md", content: "upper\n" });
+    await rounds(h);
+    h.server.commit({ documentId: "dotless", path: "ı.md", content: "dotless\n" });
+    await rounds(h);
+    // An unpushed edit meets the server's delete: the merge hook defers it,
+    // so the holder's newest server claim is a deferred tombstone.
+    await h.vault.write("I.md", encoder.encode("edited\n"));
+    h.server.commit({ documentId: "upper", path: "I.md", deleted: true });
+    await h.engine.pull();
+    await h.engine.settled();
+    expect((await h.journal.listDeferred()).map((entry) => [entry.revision.documentId, entry.revision.deleted, entry.reason])).toEqual(
+      expect.arrayContaining([["upper", true, "local-changes"]]),
+    );
+    // The user deletes the file too: nothing on the device holds the one file any more.
+    await h.vault.delete("I.md");
+    await rounds(h);
+
+    expect(await h.vault.list()).toEqual(["ı.md"]);
+    expect(decoder.decode((await h.vault.read("ı.md")))).toBe("dotless\n");
+    expect(await h.engine.unmaterializable()).toEqual([]);
+    expect((await h.journal.listDeferred()).map((entry) => [entry.revision.documentId, entry.revision.deleted, entry.reason])).toEqual([["upper", true, "local-changes"]]);
   });
 });
