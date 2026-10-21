@@ -2731,13 +2731,11 @@ export class SyncEngine {
 
   /** Records a user's rename or delete as its binding transition (E1–E3), before the event counts as handled (PO-2). */
   private async transition(event: VaultEvent): Promise<void> {
-    try {
-      if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path);
-      else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
-    } catch {
-      // Shadow mode (refactor step R4): nothing decides by bindings yet, so a
-      // failed transition only shows in bindingShadow.
-    }
+    // A transition that fails stops event handling (later events wait
+    // behind it and every push rejects with its error) until a restart,
+    // whose scan reconciles bindings with the disk (PO-3).
+    if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path);
+    else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
   }
 
   /**

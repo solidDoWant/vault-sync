@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { DocumentState } from "../journal/journal";
+import type { DocumentState, JournalChanges } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import { InMemoryVault } from "../vault/memory";
 import { Bindings } from "./bindings";
@@ -333,5 +333,59 @@ describe("Bindings rules", () => {
     await owner.put({ ...a, revisionId: "A2", seq: 2n, baseHash: hash("a2") }, { kind: "acknowledged", hash: hash("a2") });
 
     expect(await binding(journal, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("writes every row of a transition in one journal transaction, one crash point (§4.3)", async () => {
+    const points = new CrashPoints();
+    const journal = new CrashingJournal(points);
+    await journal.putDocument(bound(base("Y", "y.md", "y1")));
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    await journal.putDocument(bound(base("Z", "b.md", "z1")));
+    const owner = await bindings(journal);
+
+    points.count = 0;
+    await owner.put(base("X", "y.md", "x1"), { kind: "applied" });
+    expect(points.count).toBe(1);
+    await owner.renamed("a.md", "b.md");
+    expect(points.count).toBe(2);
+  });
+
+  it("fails every later transition once one failed to reach the journal, rather than deciding by a binding short of it", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    const journal = new FailingJournal();
+    await journal.putDocument(bound(base("A", "a.md", "a1")));
+    const owner = await bindings(journal);
+
+    journal.fail = true;
+    await expect(owner.renamed("a.md", "b.md")).rejects.toThrow("journal write failed");
+    journal.fail = false;
+
+    await expect(owner.put(base("A", "a.md", "a1"), { kind: "kept" })).rejects.toThrow("journal write failed");
+    expect((await binding(journal, "A")).binding?.spelling).toBe("a.md");
+  });
+
+  it("rejects a push after a user's rename whose transition failed, instead of pushing without it", async () => {
+    class FailingJournal extends InMemoryJournal {
+      fail = false;
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (this.fail) throw new Error("journal write failed");
+        await super.transact(changes);
+      }
+    }
+    const journal = new FailingJournal();
+    const h = harness({ journal });
+    h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+    await h.engine.pull();
+
+    journal.fail = true;
+    await h.vault.rename("a.md", "b.md");
+    await expect(h.engine.push()).rejects.toThrow("journal write failed");
+    expect(h.server.liveDocuments()).toEqual(new Map([["a.md", "A"]]));
   });
 });

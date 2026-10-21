@@ -29,7 +29,7 @@ export type BindingChange =
   | { kind: "moved" }
   | { kind: "kept" };
 
-type BindingsJournal = Pick<Journal, "getDocument" | "putDocument" | "listDocuments" | "documentByFileKey">;
+type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "documentByFileKey" | "transact">;
 type BindingsVault = Pick<VaultAdapter, "stat">;
 
 /**
@@ -54,10 +54,14 @@ export class Bindings {
   ) {
     // The start-up scan runs before any event's transition, since events
     // lost to a crash or made while the app was closed are only seen there.
-    void this.serialize(() => this.scan()).catch(() => undefined);
+    // A failed scan fails every later transition and write (serialize).
+    this.serialize(() => this.scan()).catch(() => undefined);
   }
 
-  /** Resolves once every transition and write queued so far is in the journal. */
+  /**
+   * Resolves once every transition and write queued so far has finished.
+   * A failed one rejected to its caller, and fails every later one.
+   */
   async idle(): Promise<void> {
     await this.queue.catch(() => undefined);
   }
@@ -67,8 +71,8 @@ export class Bindings {
     return this.serialize(async () => {
       const current = await this.journal.getDocument(state.documentId);
       const next = { ...state, ...this.bindingAfter(state, current, change) };
-      if (next.binding !== null) await this.unbindOthers(next.documentId, next.binding.spelling, "released");
-      await this.journal.putDocument(next);
+      const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
+      await this.journal.transact({ putDocuments: [...others, next] });
     });
   }
 
@@ -80,10 +84,10 @@ export class Bindings {
    */
   renamed(from: string, to: string): Promise<void> {
     return this.serialize(async () => {
-      const moved = await this.probe(this.space.filesystemKey(from));
-      if (!this.space.oneFile(from, to)) await this.unbindOthers(moved?.documentId, to, "user-deleted");
-      if (moved === undefined) return;
-      await this.journal.putDocument({ ...moved, binding: { spelling: to, fileKey: this.space.filesystemKey(to), seen: moved.binding?.seen ?? moved.baseHash }, absence: null });
+      const moved = await this.journal.documentByFileKey(this.space.filesystemKey(from));
+      const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
+      if (moved !== undefined) changes.push({ ...moved, binding: { spelling: to, fileKey: this.space.filesystemKey(to), seen: moved.binding?.seen ?? moved.baseHash }, absence: null });
+      if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
     });
   }
 
@@ -93,12 +97,20 @@ export class Bindings {
    * (`released`) unless the write that follows says otherwise.
    */
   deleted(path: string, by: "user" | "engine"): Promise<void> {
-    return this.serialize(() => this.unbindOthers(undefined, path, by === "user" ? "user-deleted" : "released"));
+    return this.serialize(async () => {
+      const changes = await this.unbindOthers(undefined, path, by === "user" ? "user-deleted" : "released");
+      if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
+    });
   }
 
-  /** Runs `task` after every transition and write queued before it. */
+  /**
+   * Runs `task` after every transition and write queued before it. A task
+   * that failed leaves the journal's bindings short of a transition, so
+   * every later one fails with its error: nothing may decide by bindings
+   * until a restart's scan (E7) has reconciled them with the disk (PO-3).
+   */
   private serialize<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.queue.catch(() => undefined).then(task);
+    const run = this.queue.then(task);
     this.queue = run;
     return run;
   }
@@ -110,6 +122,7 @@ export class Bindings {
    * base, as the v3 migration derives it (indexeddb.ts deriveV3Records).
    */
   private async scan(): Promise<void> {
+    const changes: DocumentState[] = [];
     for (const state of await this.journal.listDocuments()) {
       let binding = state.binding;
       let absence = state.absence ?? null;
@@ -121,8 +134,9 @@ export class Bindings {
         binding = null;
         absence = "user-deleted";
       }
-      if (binding !== state.binding || absence !== (state.absence ?? null)) await this.journal.putDocument({ ...state, binding, absence });
+      if (binding !== state.binding || absence !== (state.absence ?? null)) changes.push({ ...state, binding, absence });
     }
+    if (changes.length > 0) await this.journal.transact({ putDocuments: changes });
   }
 
   private bindingAfter(state: DocumentState, current: DocumentState | undefined, change: BindingChange): { binding: Binding | null; absence: Absence | null } {
@@ -150,31 +164,16 @@ export class Bindings {
     }
   }
 
-  /** Every document other than `documentId` bound to the file at `path` has none any more, for `absence`. */
-  private async unbindOthers(documentId: string | undefined, path: string, absence: Absence): Promise<void> {
+  /** The rows that leave every document other than `documentId` bound to the file at `path` with none, for `absence`. */
+  private async unbindOthers(documentId: string | undefined, path: string, absence: Absence): Promise<DocumentState[]> {
     // Writes through here never leave two bindings at one file key, so a
-    // probe that finds `documentId` itself hides no other.
+    // probe that finds `documentId` itself, or none, hides no other.
     const key = this.space.filesystemKey(path);
-    for (;;) {
-      const state = await this.probe(key);
-      if (state === undefined || state.documentId === documentId) return;
-      await this.journal.putDocument({ ...state, ...unbound(absence) });
-    }
-  }
-
-  /**
-   * The document bound to file key `key`, or undefined, also if the probe
-   * fails. Shadow mode (refactor step R4): nothing decides by bindings yet,
-   * so the engine's own write goes ahead and a binding left stale shows in
-   * bindingShadow. A journal opened at a schema older than v3 has no index
-   * to probe (only tests run an engine over one).
-   */
-  private async probe(key: string): Promise<DocumentState | undefined> {
-    try {
-      return await this.journal.documentByFileKey(key);
-    } catch {
-      return undefined;
-    }
+    const state = await this.journal.documentByFileKey(key);
+    if (state === undefined || state.documentId === documentId) return [];
+    // A v2 journal's migration may have bound two documents to one file key (indexeddb.ts deriveV3Records).
+    const all = await this.journal.listDocuments();
+    return all.filter((other) => other.documentId !== documentId && other.binding?.fileKey === key).map((other) => ({ ...other, ...unbound(absence) }));
   }
 
   private bound(spelling: string, seen: string): Binding {
