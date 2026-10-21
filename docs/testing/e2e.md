@@ -78,9 +78,9 @@ The emulated-mobile job runs desktop Obsidian with the mobile UI. Spike #187 tri
 
 **The 4 failing spec files.** None was a timeout or an infrastructure failure.
 
-- `smoke.e2e.ts` and `platform.e2e.ts` assume a desktop app: `isDesktopApp`, a status bar rather than the ribbon icon, the host's `process.platform` and a `FileSystemAdapter` base path. These need an Android mode in the specs. In `platform.e2e.ts`, though, the Obsidian adapter reported a 300-byte file name as `Error: FILE_NOTCREATED` from Capacitor, not as `VaultError` `unmaterializable`, so the adapter does not classify that Android error. In `smoke.e2e.ts`, `requestUrl` to the server failed with an unknown WebDriver error after switching to the second vault; that was not investigated.
+- `smoke.e2e.ts` and `platform.e2e.ts` assume a desktop app: `isDesktopApp`, a status bar rather than the ribbon icon, the host's `process.platform` and a `FileSystemAdapter` base path. These need an Android mode in the specs. In `platform.e2e.ts`, Capacitor reported a 300-byte file name as `Error: FILE_NOTCREATED`; the Obsidian adapter now takes that as `VaultError` `unmaterializable` when the parent folder exists ([#705](https://github.com/solidDoWant/vault-sync/issues/705)), covered by an adapter unit test, not yet rerun on the emulator. In `smoke.e2e.ts`, `requestUrl` to the server failed with an unknown WebDriver error after switching to the second vault; that was not investigated.
 - `atomicity.e2e.ts` relies on the desktop `FileSystemAdapter`'s internals by design, so it needs an Android counterpart rather than a fix.
-- `conformance.e2e.ts`: the case "rename that changes only letter case is allowed" fails with Obsidian's "Destination file already exists!". Android's shared storage is case-insensitive, which the adapter does not handle.
+- `conformance.e2e.ts`: the case "rename that changes only letter case is allowed" fails with Obsidian's "Destination file already exists!". Android's shared storage is case-insensitive, which the adapter does not handle (tracked by [#544](https://github.com/solidDoWant/vault-sync/issues/544)).
 
 So the emulator found two adapter behaviours that the emulated-mobile job cannot find.
 
