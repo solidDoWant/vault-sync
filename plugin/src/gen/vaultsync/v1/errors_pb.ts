@@ -4,13 +4,15 @@
 
 import type { GenEnum, GenFile, GenMessage } from "@bufbuild/protobuf/codegenv2";
 import { enumDesc, fileDesc, messageDesc } from "@bufbuild/protobuf/codegenv2";
+import type { Timestamp } from "@bufbuild/protobuf/wkt";
+import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { Message } from "@bufbuild/protobuf";
 
 /**
  * Describes the file vaultsync/v1/errors.proto.
  */
 export const file_vaultsync_v1_errors: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiOAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uKpwBCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKu8BCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAVCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
 
 /**
  * ErrorDetail is attached to an error (as a Connect error detail) to give
@@ -26,6 +28,13 @@ export type ErrorDetail = Message<"vaultsync.v1.ErrorDetail"> & {
    * @generated from field: vaultsync.v1.ErrorReason reason = 1;
    */
   reason: ErrorReason;
+
+  /**
+   * When to retry: set only with ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED.
+   *
+   * @generated from field: google.protobuf.Timestamp retry_time = 2;
+   */
+  retryTime?: Timestamp | undefined;
 };
 
 /**
@@ -76,6 +85,24 @@ export enum ErrorReason {
    * @generated from enum value: ERROR_REASON_DEVICE_NOT_FOUND = 3;
    */
   DEVICE_NOT_FOUND = 3,
+
+  /**
+   * PERMISSION_DENIED from UnlockUserKey or ChangePassphrase: auth_key is
+   * not the one derived from the user's passphrase. It counts as a failed
+   * attempt.
+   *
+   * @generated from enum value: ERROR_REASON_WRONG_PASSPHRASE = 4;
+   */
+  WRONG_PASSPHRASE = 4,
+
+  /**
+   * RESOURCE_EXHAUSTED from UnlockUserKey or ChangePassphrase: too many
+   * attempts with a wrong auth_key failed recently. It passes at
+   * ErrorDetail.retry_time, whatever auth_key is presented before then.
+   *
+   * @generated from enum value: ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED = 5;
+   */
+  PASSPHRASE_ATTEMPTS_EXHAUSTED = 5,
 }
 
 /**

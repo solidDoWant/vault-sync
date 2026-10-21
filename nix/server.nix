@@ -41,8 +41,12 @@ buildGoModule {
 
   env.CGO_ENABLED = 0;
 
+  # No "-s": the symbol table must stay so that govulncheck -mode=binary
+  # (make build-images) can tell which symbols are linked. A stripped binary
+  # makes it match whole modules, so it flags any advisory in a linked
+  # module, such as golang.org/x/crypto/openpgp (GO-2026-5932), even when
+  # the vulnerable package is never imported.
   ldflags = [
-    "-s"
     "-w"
   ]
   ++ lib.optionals (version != "") [

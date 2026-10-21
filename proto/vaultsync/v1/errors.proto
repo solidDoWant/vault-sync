@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package vaultsync.v1;
 
+import "google/protobuf/timestamp.proto";
+
 option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
 
 // ErrorReason tells apart refusals that share a status code, so clients
@@ -22,6 +24,14 @@ enum ErrorReason {
   // never registered for the caller. It persists: the installation must
   // register again (RegisterDevice) and commit under the new device id.
   ERROR_REASON_DEVICE_NOT_FOUND = 3;
+  // PERMISSION_DENIED from UnlockUserKey or ChangePassphrase: auth_key is
+  // not the one derived from the user's passphrase. It counts as a failed
+  // attempt.
+  ERROR_REASON_WRONG_PASSPHRASE = 4;
+  // RESOURCE_EXHAUSTED from UnlockUserKey or ChangePassphrase: too many
+  // attempts with a wrong auth_key failed recently. It passes at
+  // ErrorDetail.retry_time, whatever auth_key is presented before then.
+  ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED = 5;
 }
 
 // ErrorDetail is attached to an error (as a Connect error detail) to give
@@ -30,4 +40,6 @@ enum ErrorReason {
 message ErrorDetail {
   // Why the call was refused.
   ErrorReason reason = 1;
+  // When to retry: set only with ERROR_REASON_PASSPHRASE_ATTEMPTS_EXHAUSTED.
+  google.protobuf.Timestamp retry_time = 2;
 }
