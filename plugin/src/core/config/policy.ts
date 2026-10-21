@@ -6,9 +6,9 @@ import { pathKey } from "../pathkey/pathkey";
 // whatever the folder is called on this device.
 
 /** The groups of config files a device may opt into, each off unless the user turns it on. */
-export type ConfigCategory = "themes" | "snippets" | "hotkeys" | "pluginList" | "plugins";
+export type ConfigCategory = "themes" | "snippets" | "hotkeys" | "appSettings" | "pluginList" | "corePluginSettings" | "plugins";
 
-export const configCategories: readonly ConfigCategory[] = ["themes", "snippets", "hotkeys", "pluginList", "plugins"];
+export const configCategories: readonly ConfigCategory[] = ["themes", "snippets", "hotkeys", "appSettings", "pluginList", "corePluginSettings", "plugins"];
 
 /**
  * This device's config sync settings for one local vault. They are kept on
@@ -24,12 +24,55 @@ export interface ConfigSyncSettings {
 /**
  * Off. Turning it on syncs themes, snippets and hotkeys; the plugin list and
  * plugin code and data, which decide what code runs on this device, stay off
- * until turned on as well.
+ * until turned on as well. So do Obsidian's main settings and the core
+ * plugin settings (#256): a device that turned config sync on before they
+ * existed keeps its own editor and daily note settings until the user opts
+ * in, rather than having them replaced by another device's on an upgrade.
  */
 export const defaultConfigSyncSettings: Readonly<ConfigSyncSettings> = Object.freeze({
   enabled: false,
-  categories: Object.freeze({ themes: true, snippets: true, hotkeys: true, pluginList: false, plugins: false }),
+  categories: Object.freeze({ themes: true, snippets: true, hotkeys: true, appSettings: false, pluginList: false, corePluginSettings: false, plugins: false }),
 });
+
+/**
+ * The core plugins of the pinned Obsidian (1.14.4) whose settings file,
+ * `<id>.json` in the config folder, syncs with the core plugin settings
+ * (#256; docs/plugin.md has the research). Missing: graph and workspaces,
+ * whose files are device-local, and sync (Obsidian Sync's own state). A core
+ * plugin a later Obsidian adds stays on the device until it is added here.
+ */
+export const corePluginSettingsIds: readonly string[] = [
+  "audio-recorder",
+  "backlink",
+  "bases",
+  "bookmarks",
+  "canvas",
+  "command-palette",
+  "daily-notes",
+  "editor-status",
+  "file-explorer",
+  "file-recovery",
+  "footnotes",
+  "global-search",
+  "markdown-importer",
+  "note-composer",
+  "outgoing-link",
+  "outline",
+  "page-preview",
+  "properties",
+  "publish",
+  "random-note",
+  "slash-command",
+  "slides",
+  "switcher",
+  "tag-pane",
+  "templates",
+  "webviewer",
+  "word-count",
+  "zk-prefixer",
+];
+
+const corePluginSettingsFiles: ReadonlySet<string> = new Set(corePluginSettingsIds.map((id) => `${id}.json`));
 
 /**
  * Files Obsidian writes in the config folder for state that belongs to one
@@ -99,7 +142,10 @@ export function configCategoriesOf(relative: string): ConfigCategory[] {
   if (segments.length === 1) {
     if (first === "appearance.json") return ["themes", "snippets"];
     if (first === "hotkeys.json") return ["hotkeys"];
-    if (first === "community-plugins.json" || first === "core-plugins.json") return ["pluginList"];
+    // types.json holds the vault's property types, which Obsidian groups with its main settings.
+    if (first === "app.json" || first === "types.json") return ["appSettings"];
+    if (first === "community-plugins.json" || first === "core-plugins.json" || first === "core-plugins-migration.json") return ["pluginList"];
+    if (corePluginSettingsFiles.has(relative)) return ["corePluginSettings"];
     return [];
   }
   if (first === "themes") return ["themes"];
@@ -124,7 +170,9 @@ const categoryNames: Record<ConfigCategory, string> = {
   themes: "themes",
   snippets: "CSS snippets",
   hotkeys: "hotkeys",
+  appSettings: "Obsidian's main settings",
   pluginList: "the enabled plugin list",
+  corePluginSettings: "core plugin settings",
   plugins: "plugins",
 };
 

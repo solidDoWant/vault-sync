@@ -9,7 +9,7 @@ import { callHarness } from "../obsidian";
 // in the mobile UI) on every pane switch and layout change; none of it may
 // ever be uploaded.
 
-const everything = { enabled: true, categories: { themes: true, snippets: true, hotkeys: true, pluginList: true, plugins: true } };
+const everything = { enabled: true, categories: { themes: true, snippets: true, hotkeys: true, appSettings: true, pluginList: true, corePluginSettings: true, plugins: true } };
 
 /** The layout file Obsidian keeps in this UI mode. */
 async function layoutFile(): Promise<string> {
@@ -92,7 +92,9 @@ describe("Config folder sync", function () {
       { name: "Themes", on: true },
       { name: "CSS snippets", on: true },
       { name: "Hotkeys", on: true },
+      { name: "Main settings", on: false },
       { name: "Enabled plugin list", on: false },
+      { name: "Core plugin settings", on: false },
       { name: "Plugin code and data", on: false },
     ]);
     const stored = await browser.executeObsidian(async ({ app }, id) => {
@@ -129,9 +131,10 @@ describe("Config folder sync", function () {
     await callHarness("startSession");
     const before = await callHarness("serverState");
     const filesBefore = await callHarness("serverFiles");
-    // The config folder synced: the enabled plugin list at least, never the layout or vault-sync's own folder.
+    // The config folder synced: the enabled plugin list and the main settings at least, never the layout or vault-sync's own folder.
     const configDir = await browser.executeObsidian(({ app }) => app.vault.configDir);
     expect(before.paths).toContain(`${configDir}/community-plugins.json`);
+    expect(before.paths).toContain(`${configDir}/app.json`);
     expect(before.paths.filter((path) => /workspace|graph\.json|plugins\/vault-sync\//u.test(path))).toEqual([]);
 
     const file = await layoutFile();

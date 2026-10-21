@@ -983,7 +983,7 @@ export interface ConfigSyncResult extends RunResult {
   liveAtEnd: string[];
 }
 
-const allConfigCategories = { themes: true, snippets: true, hotkeys: true, pluginList: true, plugins: true };
+const allConfigCategories = { themes: true, snippets: true, hotkeys: true, appSettings: true, pluginList: true, corePluginSettings: true, plugins: true };
 
 /**
  * Config folder sync between two real engines (#28, SPEC.md §8). The first
@@ -991,7 +991,7 @@ const allConfigCategories = { themes: true, snippets: true, hotkeys: true, plugi
  * off, as every device starts.
  *
  * 1. The first pushes its config folder and a note. Only the selected config
- *    files reach the server: never workspace*.json, graph.json or
+ *    files reach the server: never workspace*.json, graph.json, sync.json or
  *    vault-sync's own folder.
  * 2. The second pulls, losing one response on the way: it gets the note and
  *    writes nothing into its config folder.
@@ -1026,6 +1026,8 @@ export async function configFolderSync(endpoints: SimEndpoints): Promise<ConfigS
     ["graph.json", '{"scale":1}'],
     ["plugins/vault-sync/data.json", '{"refreshToken":"secret"}'],
     ["app.json", '{"vimMode":true}'],
+    ["daily-notes.json", '{"folder":"Daily"}'],
+    ["sync.json", "{}"],
   ];
   for (const [relative, content] of config) log(await first.editConfig(relative, encoder.encode(content)));
   log(await first.edit("note.md", encoder.encode("a note\n")));

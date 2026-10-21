@@ -16,8 +16,8 @@ import { configReloadMessage, type ConfigCategory, type ConfigSyncSettings } fro
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value);
 
-const none: Record<ConfigCategory, boolean> = { themes: false, snippets: false, hotkeys: false, pluginList: false, plugins: false };
-const all: Record<ConfigCategory, boolean> = { themes: true, snippets: true, hotkeys: true, pluginList: true, plugins: true };
+const none: Record<ConfigCategory, boolean> = { themes: false, snippets: false, hotkeys: false, appSettings: false, pluginList: false, corePluginSettings: false, plugins: false };
+const all: Record<ConfigCategory, boolean> = { themes: true, snippets: true, hotkeys: true, appSettings: true, pluginList: true, corePluginSettings: true, plugins: true };
 
 interface Device extends Harness {
   config: InMemoryVault;
@@ -63,6 +63,8 @@ async function typicalConfig(config: InMemoryVault): Promise<void> {
     "hotkeys.json": '{"editor:toggle-bold":[]}',
     "community-plugins.json": '["dataview","vault-sync"]',
     "core-plugins.json": '{"graph":true}',
+    "daily-notes.json": '{"folder":"Daily"}',
+    "sync.json": "{}",
     "workspace.json": '{"main":{}}',
     "workspace-mobile.json": '{"main":{}}',
     "workspaces.json": '{"workspaces":{}}',
@@ -161,9 +163,11 @@ describe("config folder sync (SPEC.md §8)", () => {
       await a.engine.push();
 
       expect(serverConfig(server)).toEqual([
+        ".obsidian/app.json",
         ".obsidian/appearance.json",
         ".obsidian/community-plugins.json",
         ".obsidian/core-plugins.json",
+        ".obsidian/daily-notes.json",
         ".obsidian/hotkeys.json",
         ".obsidian/plugins/dataview/data.json",
         ".obsidian/plugins/dataview/main.js",
