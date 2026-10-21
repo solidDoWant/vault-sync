@@ -14,7 +14,7 @@ import type { ConflictRecord, DeferredRevision, DocumentKindName, DocumentState,
 import { InMemoryJournal } from "../journal/memory";
 import { isVaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
-import { unmaterializableReason, type PathPlatform, type PathRules } from "../vaultpath/platform";
+import { filesystemKey, unmaterializableReason, type PathPlatform, type PathRules } from "../vaultpath/platform";
 import { SyncEngine, type PushSummary, type UnmaterializableDocument } from "./engine";
 import type { MergeHook, MergeRequest } from "./merge";
 import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
@@ -726,15 +726,32 @@ export class PropertyWorld {
   readonly violations: Violation[] = [];
   /** Crashes that happened. */
   crashes = 0;
+  /** Every change the engine reported as a local one (`onLocalChange`), in order. */
+  readonly localChanges: VaultEvent[] = [];
+  /** The vault events a user change emitted (the vault emits synchronously within the change). */
+  private readonly userEvents = new WeakSet<VaultEvent>();
+  /** The actor of the change the vault is emitting, from its inode tap, which runs before the watchers. */
+  private emitting: "user" | "engine" | undefined;
   private scanned = 0n;
   private ids = 0;
   private readonly api: ReturnType<typeof createProtocolClient>;
 
-  constructor(platform: PathPlatform = "posix") {
+  /**
+   * `filesystem` is the in-memory vault's (`folded` by default): on the
+   * `faithful` one, `F` decides the file, so `Straße.md` and `STRASSE.md` are
+   * two files on every platform and NFC and NFD `Café.md` two on `windows`.
+   */
+  constructor(platform: PathPlatform = "posix", filesystem: "folded" | "faithful" = "folded") {
     this.pathRules = { platform };
     this.server = new InMemoryServer({ maxPageSize: 3, maxDownloadBytes: 64, now: () => testDate });
-    this.vault = new InMemoryVault({ pathRules: this.pathRules, now: () => testDate.getTime() });
-    this.inodes = new Inodes(platform === "posix" ? (path) => path : pathKey);
+    this.vault = new InMemoryVault({ pathRules: this.pathRules, now: () => testDate.getTime(), filesystem });
+    this.inodes = new Inodes(platform === "posix" ? (path) => path : filesystem === "faithful" ? (path) => filesystemKey(path, platform) : pathKey);
+    this.vault.tapInodes((event) => {
+      this.emitting = event.actor;
+    });
+    this.vault.watch((event) => {
+      if (this.emitting === "user") this.userEvents.add(event);
+    });
     this.api = createProtocolClient({ transport: this.server.transport });
     this.engine = this.createEngine();
   }
@@ -746,9 +763,10 @@ export class PropertyWorld {
       deviceName: testDeviceName,
       now: () => testDate,
       api: createProtocolClient({ transport: this.server.transport }),
-      vault: new ObservedVault(this.vault, this.life, (change) => {
+      vault: new ObservedVault(this.vault.handle("engine"), this.life, (change) => {
         this.engineChanged(change);
       }),
+      onLocalChange: (event) => this.localChanges.push(event),
       journal: new CrashAtWriteJournal(this.journal, this.life),
       pageSize: 3,
       pushDebounceMs: null,
@@ -869,6 +887,15 @@ export class PropertyWorld {
     const cursor = await this.journal.getCursor();
     if (cursor !== this.server.currentHeadSeq) problems.push(`cursor ${String(cursor)} is not the server's head ${String(this.server.currentHeadSeq)}`);
     return problems;
+  }
+
+  /**
+   * P7 (INV-10): the local changes the engine reported that no user change
+   * emitted, i.e. its own writes, renames and deletes it took for the
+   * user's, as the simulation's `engine-echo` check finds them.
+   */
+  ownChangesReported(): string[] {
+    return this.localChanges.filter((event) => !this.userEvents.has(event)).map((event) => `the engine reported its own ${event.type} of ${JSON.stringify(event.path)} as a local change`);
   }
 
   /** P5: the contents the user wrote and did not discard that are neither in the vault nor were ever on the server. */
