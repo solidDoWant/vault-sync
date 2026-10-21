@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import type { PushSummary } from "./engine";
 import { threeWayMerge, type MergeHook } from "./merge";
-import { files, harness, type Harness } from "./testing";
+import { files, harness, newestServerClaims, type Harness } from "./testing";
 
 // Another document arrives at the synced path of a note whose own remote move
 // the merge path holds, after the user deleted the note's file (#379, from
@@ -43,7 +43,7 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
     h.server.commit({ documentId: "C", path: "x.md", content: "c\n" });
     await h.engine.pull();
     // The journal never holds two live documents at one path.
-    const live = (await h.journal.listDocuments()).filter((state) => !state.deleted).map((state) => state.path.toLowerCase());
+    const live = (await newestServerClaims(h.journal)).map(([, path]) => path.toLowerCase());
     expect(new Set(live).size).toBe(live.length);
 
     // The merge path lets A go, and another device moves C on.
@@ -84,7 +84,7 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
   }
 
   async function expectOneDocumentPerPath(h: Harness): Promise<void> {
-    const live = (await h.journal.listDocuments()).filter((state) => !state.deleted).map((state) => state.path.toLowerCase());
+    const live = (await newestServerClaims(h.journal)).map(([, path]) => path.toLowerCase());
     expect(new Set(live).size).toBe(live.length);
   }
 
@@ -185,7 +185,7 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
     expect(await files(h.vault)).toEqual(new Map([["w.md", "a\n"], ["x.md", "c\n"]]));
     expect((await h.journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.reason])).toEqual([["A", "out-of-scope"]]);
     expect(await h.journal.listPending()).toEqual([]);
-    expect((await h.journal.getDocument("A"))?.path).toBe("w.md");
+    expect((await h.journal.getDocument("A"))?.binding?.spelling).toBe("w.md");
     await expectOneDocumentPerPath(h);
 
     // Config sync is turned on: A's move applies to its file at w.md.
@@ -243,7 +243,7 @@ describe.each(["posix", "macos", "windows"] as const)("SyncEngine with a new doc
     expect(await files(h.vault)).toEqual(new Map([["w.md", "a\n"], ["x.md", "c\n"]]));
     expect((await h.journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.reason])).toEqual([["A", "too-large"]]);
     expect(await h.journal.listPending()).toEqual([]);
-    expect((await h.journal.getDocument("A"))?.path).toBe("w.md");
+    expect((await h.journal.getDocument("A"))?.binding?.spelling).toBe("w.md");
     await expectOneDocumentPerPath(h);
 
     // The file at x.md is C's own, which no local rename moved: the user's edit of it is C's, and pushed.
