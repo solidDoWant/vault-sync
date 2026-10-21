@@ -243,7 +243,7 @@ From now on, every engine fix, review and simulation checker exception cites one
 | PO-11 | **Blockers never hold disk claims.** A deferral that is not `local-changes` does not keep another document off a path; PO-4(b) applies. | §4.5 step 2 |
 | PO-12 | **History events.** A purge never changes a claim. A restore re-derives the server view through `decideRemote`, with known documents forced dirty. Bindings change only through PO-4. | §4.6 |
 | PO-13 | **Tombstone re-creation.** An untracked file at a pulled tombstone's `K` becomes that document's revision (decision #17), unless the user deleted it locally since the tombstone was pulled. An edit committed after a delete is committed first, so it survives as a new document (SPEC §6.3, #545). | §4.8 |
-| PO-14 | **Copy names.** `freeCopyName(p, exempt)` is the only namer. It checks `K` and `F` against every claim, folders included (outermost colliding folder gets the suffix, #359), and exempts only the claims the operation itself vacates. | §4.2, §4.5 |
+| PO-14 | **Copy names.** `freeCopyName(p, exempt)` is the only namer. It checks every claim under `K` and disk claims under `F` as well (§4.2). Disk, server-known and server-newer claims hold their folders; outgoing and reserved claims are checked as names only. The outermost folder of `p` that a claim holding folders blocks, under `K` or (for a disk claim) `F`, gets the suffix (#359, #596). It exempts only the claims the operation itself vacates. | §4.2, §4.5 |
 
 ## 5. Invariants
 
