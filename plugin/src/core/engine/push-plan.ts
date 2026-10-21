@@ -204,9 +204,12 @@ export async function planPush(
   }
 
   // The tombstone at each path, the newest of its documents (decision #17).
+  // The row of a create not acknowledged yet (no base) may be among them;
+  // it always has its outbox (Bindings.dropped removes the row with its
+  // last operation), so it is busy and never revived below.
   const tombstones = new Map<string, DocumentState>();
   for (const state of source.documents) {
-    if (!hasBase(state) || !state.deleted || state.binding) continue;
+    if (!state.deleted || state.binding) continue;
     const known = tombstones.get(state.path);
     if (known === undefined || known.seq < state.seq)
       tombstones.set(state.path, state);
