@@ -6,7 +6,7 @@ import { MAX_FAILED_ATTEMPTS, MemoryUserKeyServer } from "../core/keys/memory-us
 import { WrongPassphraseError } from "../core/keys/user-key";
 import { createProtocolClient } from "../core/protocol/client";
 import { parsePluginData, type PluginData } from "./data";
-import { enableOnDevice, encryptionState, passphraseErrorMessage, unlockOnDevice, type EncryptionOptions } from "./encryption";
+import { enableOnDevice, encryptionState, forgetEncryptionKeys, passphraseErrorMessage, pluginDataEpochKeyStore, unlockOnDevice, type EncryptionOptions } from "./encryption";
 
 const cheap: Argon2Params = {
   memory: 19 * 1024,
@@ -154,5 +154,58 @@ describe("end-to-end encryption on a device", () => {
 
     expect(passphraseErrorMessage(error, formatTime)).toBe("Too many wrong passphrases. Try again after at 2026-10-21T13:00:00.000Z.");
     expect(other.data.userKey).toBeUndefined();
+  });
+});
+
+describe("vault epoch keys on a device", () => {
+  const account = { serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice" };
+  const vaultId = "0190a5b4-0000-7000-8000-000000000001";
+  const key = (byte: number) => new Uint8Array(32).fill(byte);
+
+  it("keeps epoch keys only in the device's plugin data, for its account and vault, across a restart", async () => {
+    const { data, saved } = device(new MemoryUserKeyServer());
+    const save = () => {
+      saved.push(JSON.stringify(data));
+      return Promise.resolve();
+    };
+    await pluginDataEpochKeyStore(data, save, account, vaultId).save(
+      new Map([
+        [1, key(1)],
+        [2, key(2)],
+      ]),
+    );
+
+    const restarted = parsePluginData(JSON.parse(saved.at(-1) ?? "{}"));
+    const keys = await pluginDataEpochKeyStore(restarted, save, account, vaultId).load();
+
+    expect([...keys]).toEqual([
+      [1, key(1)],
+      [2, key(2)],
+    ]);
+    expect((await pluginDataEpochKeyStore(restarted, save, { ...account, subject: "bob" }, vaultId).load()).size).toBe(0);
+    expect((await pluginDataEpochKeyStore(restarted, save, account, "0190a5b4-0000-7000-8000-000000000002").load()).size).toBe(0);
+  });
+
+  it("drops malformed cached epoch keys when reading plugin data", () => {
+    const parsed = parsePluginData({ vaultKeys: { ...account, vaultId, epochs: { "1": bytesToHex(key(1)), "0": bytesToHex(key(2)), "2": "zz", x: bytesToHex(key(3)) } } });
+
+    expect(parsed.vaultKeys?.epochs).toEqual({ "1": bytesToHex(key(1)) });
+    expect(parsePluginData({ vaultKeys: { epochs: {} } }).vaultKeys).toBeUndefined();
+  });
+
+  it("drops the epoch keys on sign-out together with the user key", async () => {
+    const server = new MemoryUserKeyServer();
+    const { data, options } = device(server);
+    await enableOnDevice(options, passphrase);
+    await pluginDataEpochKeyStore(data, options.save, account, vaultId).save(new Map([[1, key(7)]]));
+    expect(data.vaultKeys).toBeDefined();
+
+    expect(forgetEncryptionKeys(data)).toBe(true);
+
+    const written = JSON.stringify(data);
+    expect(written).not.toContain(bytesToHex(key(7)));
+    expect(data.userKey).toBeUndefined();
+    expect(data.vaultKeys).toBeUndefined();
+    expect(forgetEncryptionKeys(data)).toBe(false);
   });
 });

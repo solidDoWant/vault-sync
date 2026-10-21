@@ -42,6 +42,25 @@ export interface PluginData {
    * never synced, logged or shown; dropped on sign-out.
    */
   userKey?: CachedUserKey;
+  /**
+   * Secret: the epoch keys of the connected end-to-end encrypted vault
+   * (SPEC.md §9.3), unwrapped from the user's key slots and checked against
+   * their key commitments, for the account and vault they belong to. Kept
+   * only here, never synced, logged or shown; dropped on sign-out with
+   * `userKey`.
+   */
+  vaultKeys?: CachedVaultKeys;
+}
+
+/** A vault's epoch keys as cached on the device, hex-encoded by epoch, with the account and vault they belong to. */
+export interface CachedVaultKeys {
+  /** The server and account, as in RegisteredDevice. */
+  serverUrl: string;
+  issuer: string;
+  subject: string;
+  vaultId: string;
+  /** Epoch number (decimal) to the epoch key in lowercase hex. */
+  epochs: Record<string, string>;
 }
 
 /** The user's key pair as cached on the device, hex-encoded, with the account it belongs to. */
@@ -130,11 +149,30 @@ export function parsePluginData(raw: unknown): PluginData {
   if (configSync !== undefined) data.configSync = configSync;
   const userKey = record(stored.userKey, ["publicKey", "privateKey", "serverUrl", "issuer", "subject"]);
   if (userKey !== undefined && hexKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey)) data.userKey = userKey;
+  const vaultKeys = parseVaultKeys(stored.vaultKeys);
+  if (vaultKeys !== undefined) data.vaultKeys = vaultKeys;
   return data;
 }
 
 /** A 32-byte key in lowercase hex. */
 const hexKey = /^[0-9a-f]{64}$/;
+
+/** A positive epoch number in decimal, without leading zeros. */
+const epochNumber = /^[1-9][0-9]{0,9}$/;
+
+/** Stored epoch keys; a malformed entry is dropped (the device unwraps that epoch's slot again). */
+function parseVaultKeys(raw: unknown): CachedVaultKeys | undefined {
+  const owner = record(raw, ["serverUrl", "issuer", "subject", "vaultId"]);
+  if (owner === undefined) return undefined;
+  const stored = (raw as Record<string, unknown>).epochs;
+  const epochs: Record<string, string> = {};
+  if (typeof stored === "object" && stored !== null) {
+    for (const [epoch, key] of Object.entries(stored as Record<string, unknown>)) {
+      if (epochNumber.test(epoch) && typeof key === "string" && hexKey.test(key)) epochs[epoch] = key;
+    }
+  }
+  return { ...owner, epochs };
+}
 
 /** This device's config sync settings: the stored ones, or the defaults (off). */
 export function configSyncSettings(data: PluginData): ConfigSyncSettings {

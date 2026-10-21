@@ -1,8 +1,9 @@
-import { bytesToHex } from "@noble/hashes/utils.js";
+import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Argon2Params } from "../core/e2ee/e2ee";
 import { enableEncryption, PassphraseAttemptsExhaustedError, storedPublicKey, unlockUserKey, WrongPassphraseError, type UserKeyClient, type UserKeyPair } from "../core/keys/user-key";
-import { currentAccount, sameAccount } from "./controller";
+import type { EpochKeyStore } from "../core/keys/vault-keys";
+import { currentAccount, sameAccount, type Account } from "./controller";
 import type { PluginData } from "./data";
 
 /**
@@ -65,6 +66,42 @@ async function cache(options: EncryptionOptions, account: Awaited<ReturnType<typ
     ...account,
   };
   await options.save();
+}
+
+/**
+ * Forgets the device's end-to-end encryption keys on sign-out: the unlocked
+ * user key pair and every cached epoch key. Resolves whether anything was
+ * dropped (and so the plugin data needs saving).
+ */
+export function forgetEncryptionKeys(data: PluginData): boolean {
+  const had = data.userKey !== undefined || data.vaultKeys !== undefined;
+  delete data.userKey;
+  delete data.vaultKeys;
+  return had;
+}
+
+/**
+ * The epoch key store of `vaultId` for `account`, in the device's plugin
+ * data (data.json, never synced). Keys cached for another account or vault
+ * are not read, and are replaced by the first save.
+ */
+export function pluginDataEpochKeyStore(data: PluginData, save: () => Promise<void>, account: Account, vaultId: string): EpochKeyStore {
+  return {
+    load: () => {
+      const cached = data.vaultKeys;
+      const keys = new Map<number, Uint8Array>();
+      if (cached !== undefined && sameAccount(cached, account) && cached.vaultId === vaultId) {
+        for (const [epoch, key] of Object.entries(cached.epochs)) keys.set(Number(epoch), hexToBytes(key));
+      }
+      return Promise.resolve(keys);
+    },
+    save: async (keys) => {
+      const epochs: Record<string, string> = {};
+      for (const [epoch, key] of keys) epochs[String(epoch)] = bytesToHex(key);
+      data.vaultKeys = { serverUrl: account.serverUrl, issuer: account.issuer, subject: account.subject, vaultId, epochs };
+      await save();
+    },
+  };
 }
 
 /**

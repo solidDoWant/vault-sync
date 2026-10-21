@@ -17,7 +17,7 @@ import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVau
 import { configSyncSettings, oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
-import { enableOnDevice, encryptionState, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
+import { enableOnDevice, encryptionState, forgetEncryptionKeys, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
@@ -251,17 +251,14 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   }
 
   /**
-   * Stops sync and forgets the device's tokens and its unlocked encryption
-   * key. The connected vault and the device registration are kept for the
-   * next sign-in.
+   * Stops sync and forgets the device's tokens, its unlocked encryption
+   * key and its vault epoch keys. The connected vault and the device
+   * registration are kept for the next sign-in.
    */
   async signOut(): Promise<void> {
     await this.controller?.stop();
     await this.stopSync();
-    if (this.data.userKey !== undefined) {
-      delete this.data.userKey;
-      await this.saveSettings();
-    }
+    if (forgetEncryptionKeys(this.data)) await this.saveSettings();
     await this.tokens?.signOut();
     await this.controller?.update();
     this.settingTab?.render();
