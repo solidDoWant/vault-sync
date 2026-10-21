@@ -12,12 +12,14 @@
  * and the Go implementation (internal/e2ee) must agree with it.
  *
  * Pure JavaScript (@noble/*), so it behaves the same on Electron and Android
- * WebView. Random bytes come from `crypto.getRandomValues`.
+ * WebView. Random bytes come from `crypto.getRandomValues`. The Argon2id
+ * derivation is asynchronous and yields to the event loop every few
+ * milliseconds, so a passphrase unlock does not freeze the UI.
  */
 import { xchacha20poly1305 } from "@noble/ciphers/chacha.js";
 import { randomBytes } from "@noble/ciphers/utils.js";
 import { x25519 } from "@noble/curves/ed25519.js";
-import { argon2id } from "@noble/hashes/argon2.js";
+import { argon2idAsync } from "@noble/hashes/argon2.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -41,6 +43,14 @@ const PASSPHRASE_HEADER_SIZE = 1 + 4 + 4 + 1 + SALT_SIZE;
 
 const SUBKEY_INFO_PREFIX = "vault-sync/v1/subkey/";
 const SEALED_BOX_INFO = "vault-sync/v1/sealed-box";
+const PASSPHRASE_WRAP_INFO = "vault-sync/v1/passphrase/wrap";
+const PASSPHRASE_AUTH_INFO = "vault-sync/v1/passphrase/auth";
+
+/**
+ * How long (ms) the Argon2id derivation computes before it yields to the
+ * event loop.
+ */
+const ARGON2_ASYNC_TICK_MS = 10;
 
 const encoder = new TextEncoder();
 
@@ -281,44 +291,31 @@ function validParams(params: Argon2Params): boolean {
   );
 }
 
-function passphraseKey(passphrase: string, params: Argon2Params, salt: Uint8Array): Uint8Array {
-  return argon2id(encoder.encode(nfc(passphrase)), salt, {
-    m: params.memory,
-    t: params.iterations,
-    p: params.parallelism,
-    dkLen: KEY_SIZE,
-  });
+/**
+ * The two keys derived from a passphrase (SPEC.md §9.3). `wrapKey` encrypts
+ * the wrapped secret and never leaves the device; `authKey` is the verifier
+ * the device presents to the server to have the wrapped secret released. Both
+ * are HKDF-SHA256 expansions of the same Argon2id output under different info
+ * labels, so neither can be computed from the other: the server, which learns
+ * `authKey`, cannot unwrap the secret with it.
+ */
+export interface PassphraseKeys {
+  wrapKey: Uint8Array;
+  authKey: Uint8Array;
 }
 
 /**
- * Encrypts `secret` (a user's X25519 private key) under a key derived from
- * `passphrase` with Argon2id and binds `aad`: SUITE_V1 || memory (u32 BE) ||
- * iterations (u32 BE) || parallelism (u8) || salt (16) || nonce || ciphertext,
- * the associated data being the header || aad. The passphrase is
- * NFC-normalized first with the pinned Unicode tables of ../pathkey (not the
- * runtime's), so every device derives the same key from the same characters. Synchronous: it blocks for the whole derivation.
+ * Derives the wrap and auth keys of `passphrase`: stretched =
+ * Argon2id(UTF-8(NFC(passphrase)), salt, params, 32), then
+ * HKDF-SHA256(stretched, empty salt, info) with the info
+ * "vault-sync/v1/passphrase/wrap" and "vault-sync/v1/passphrase/auth". The
+ * passphrase is NFC-normalized with the pinned Unicode tables of ../pathkey
+ * (not the runtime's), so every device derives the same keys from the same
+ * characters. Rejects an empty passphrase, a salt of the wrong size and
+ * parameters outside the bounds before deriving. The derivation yields to the
+ * event loop as it runs.
  */
-export function wrapWithPassphrase(
-  passphrase: string,
-  secret: Uint8Array,
-  aad: Uint8Array,
-  params: Argon2Params = DEFAULT_ARGON2_PARAMS,
-): Uint8Array {
-  return wrapWith(passphrase, params, randomBytes(SALT_SIZE), randomBytes(NONCE_SIZE), secret, aad);
-}
-
-/**
- * {@link wrapWithPassphrase} with a given salt and nonce. Only for the shared
- * test vectors.
- */
-export function wrapWith(
-  passphrase: string,
-  params: Argon2Params,
-  salt: Uint8Array,
-  nonce: Uint8Array,
-  secret: Uint8Array,
-  aad: Uint8Array,
-): Uint8Array {
+export async function derivePassphraseKeys(passphrase: string, params: Argon2Params, salt: Uint8Array): Promise<PassphraseKeys> {
   if (passphrase === "") {
     throw new Error("e2ee: passphrase is empty");
   }
@@ -326,6 +323,50 @@ export function wrapWith(
     throw new Error(`e2ee: Argon2id parameters out of bounds: ${JSON.stringify(params)}`);
   }
   requireLength("salt", salt, SALT_SIZE);
+  const stretched = await argon2idAsync(encoder.encode(nfc(passphrase)), salt, {
+    m: params.memory,
+    t: params.iterations,
+    p: params.parallelism,
+    dkLen: KEY_SIZE,
+    asyncTick: ARGON2_ASYNC_TICK_MS,
+  });
+  const empty = new Uint8Array(0);
+  return {
+    wrapKey: hkdf(sha256, stretched, empty, encoder.encode(PASSPHRASE_WRAP_INFO), KEY_SIZE),
+    authKey: hkdf(sha256, stretched, empty, encoder.encode(PASSPHRASE_AUTH_INFO), KEY_SIZE),
+  };
+}
+
+/**
+ * Encrypts `secret` (a user's X25519 private key) under the wrap key of
+ * `passphrase` ({@link derivePassphraseKeys}) with a fresh salt and binds
+ * `aad`: SUITE_V1 || memory (u32 BE) || iterations (u32 BE) || parallelism
+ * (u8) || salt (16) || nonce || ciphertext, the associated data being the
+ * header || aad. Also returns the auth key, for the server's verifier.
+ */
+export async function wrapWithPassphrase(
+  passphrase: string,
+  secret: Uint8Array,
+  aad: Uint8Array,
+  params: Argon2Params = DEFAULT_ARGON2_PARAMS,
+): Promise<{ wrapped: Uint8Array; authKey: Uint8Array }> {
+  const { wrapped, keys } = await wrapWith(passphrase, params, randomBytes(SALT_SIZE), randomBytes(NONCE_SIZE), secret, aad);
+  return { wrapped, authKey: keys.authKey };
+}
+
+/**
+ * {@link wrapWithPassphrase} with a given salt and nonce, also returning both
+ * keys. Only for the shared test vectors.
+ */
+export async function wrapWith(
+  passphrase: string,
+  params: Argon2Params,
+  salt: Uint8Array,
+  nonce: Uint8Array,
+  secret: Uint8Array,
+  aad: Uint8Array,
+): Promise<{ wrapped: Uint8Array; keys: PassphraseKeys }> {
+  const keys = await derivePassphraseKeys(passphrase, params, salt);
   const header = new Uint8Array(PASSPHRASE_HEADER_SIZE);
   const view = new DataView(header.buffer);
   header[0] = SUITE_V1;
@@ -333,17 +374,18 @@ export function wrapWith(
   view.setUint32(5, params.iterations);
   header[9] = params.parallelism;
   header.set(salt, 10);
-  return sealAfterHeader(header, passphraseKey(passphrase, params, salt), nonce, secret, aad);
+  return { wrapped: sealAfterHeader(header, keys.wrapKey, nonce, secret, aad), keys };
 }
 
 /**
- * Reverses {@link wrapWithPassphrase}. Throws {@link DecryptError} for a wrong
- * passphrase, a different `aad`, an unknown suite, a changed header, or
- * Argon2id parameters outside the bounds, which it refuses before deriving.
+ * Returns the Argon2id parameters and salt from the header of a
+ * passphrase-wrapped secret (at least its first 26 bytes), so a device can
+ * derive its keys before it holds the wrapped secret. Throws
+ * {@link DecryptError} for an unknown suite, a short header or parameters
+ * outside the bounds.
  */
-export function unwrapWithPassphrase(passphrase: string, wrapped: Uint8Array, aad: Uint8Array): Uint8Array {
-  // Refuse what cannot open before paying for the derivation.
-  if (wrapped.length < PASSPHRASE_HEADER_SIZE + NONCE_SIZE + TAG_SIZE || wrapped[0] !== SUITE_V1) {
+export function parsePassphraseHeader(wrapped: Uint8Array): { params: Argon2Params; salt: Uint8Array } {
+  if (wrapped.length < PASSPHRASE_HEADER_SIZE || wrapped[0] !== SUITE_V1) {
     throw new DecryptError();
   }
   const view = new DataView(wrapped.buffer, wrapped.byteOffset, wrapped.byteLength);
@@ -355,10 +397,39 @@ export function unwrapWithPassphrase(passphrase: string, wrapped: Uint8Array, aa
   if (!validParams(params)) {
     throw new DecryptError();
   }
-  const salt = wrapped.subarray(10, PASSPHRASE_HEADER_SIZE);
+  return { params, salt: wrapped.slice(10, PASSPHRASE_HEADER_SIZE) };
+}
+
+/**
+ * Reverses {@link wrapWithPassphrase}. Rejects with {@link DecryptError} for a
+ * wrong passphrase, a different `aad`, an unknown suite, a changed header, or
+ * Argon2id parameters outside the bounds, which it refuses before deriving.
+ */
+export async function unwrapWithPassphrase(passphrase: string, wrapped: Uint8Array, aad: Uint8Array): Promise<Uint8Array> {
+  // Refuse what cannot open before paying for the derivation.
+  if (wrapped.length < PASSPHRASE_HEADER_SIZE + NONCE_SIZE + TAG_SIZE) {
+    throw new DecryptError();
+  }
+  const { params, salt } = parsePassphraseHeader(wrapped);
+  let keys: PassphraseKeys;
+  try {
+    keys = await derivePassphraseKeys(passphrase, params, salt);
+  } catch {
+    throw new DecryptError();
+  }
+  return unwrapWithKey(keys.wrapKey, wrapped, aad);
+}
+
+/**
+ * Opens a passphrase-wrapped secret with a wrap key already derived by
+ * {@link derivePassphraseKeys} from its header's parameters and salt. Throws
+ * {@link DecryptError} as {@link unwrapWithPassphrase} does.
+ */
+export function unwrapWithKey(wrapKey: Uint8Array, wrapped: Uint8Array, aad: Uint8Array): Uint8Array {
+  parsePassphraseHeader(wrapped);
   return openAfterHeader(
     wrapped.subarray(0, PASSPHRASE_HEADER_SIZE),
-    passphraseKey(passphrase, params, salt),
+    wrapKey,
     wrapped.subarray(PASSPHRASE_HEADER_SIZE),
     aad,
   );

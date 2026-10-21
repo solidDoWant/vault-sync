@@ -318,44 +318,92 @@ func (params Argon2Params) valid() bool {
 		params.Parallelism >= MinArgon2Parallelism && params.Parallelism <= MaxArgon2Parallelism
 }
 
-// WrapWithPassphrase encrypts secret (a user's X25519 private key) under a
-// key derived from passphrase with Argon2id and binds aad:
-// SuiteV1 || memory (u32 BE) || iterations (u32 BE) || parallelism (u8) ||
-// salt (16) || nonce || ciphertext, the associated data being the header ||
-// aad. The passphrase is NFC-normalized first with the pinned Unicode tables
-// of internal/pathkey (not the runtime's), so every device derives the same
-// key from the same characters.
-func WrapWithPassphrase(passphrase string, secret, aad []byte) ([]byte, error) {
+// PassphraseKeys are the two keys derived from a passphrase (SPEC.md §9.3).
+// WrapKey encrypts the wrapped secret and never leaves the device; AuthKey is
+// the verifier the device presents to the server to have the wrapped secret
+// released. Both are HKDF-SHA256 expansions of the same Argon2id output under
+// different info labels, so neither can be computed from the other: the
+// server, which learns AuthKey, cannot unwrap the secret with it.
+type PassphraseKeys struct {
+	WrapKey []byte
+	AuthKey []byte
+}
+
+const (
+	passphraseWrapInfo = "vault-sync/v1/passphrase/wrap"
+	passphraseAuthInfo = "vault-sync/v1/passphrase/auth"
+)
+
+// DerivePassphraseKeys derives the wrap and auth keys of passphrase:
+// stretched = Argon2id(UTF-8(NFC(passphrase)), salt, params, 32), then
+// HKDF-SHA256(stretched, empty salt, info) with the info
+// "vault-sync/v1/passphrase/wrap" and "vault-sync/v1/passphrase/auth". The
+// passphrase is NFC-normalized with the pinned Unicode tables of
+// internal/pathkey (not the runtime's), so every device derives the same keys
+// from the same characters. It refuses an empty passphrase, a salt of the
+// wrong size and parameters outside the bounds before deriving.
+func DerivePassphraseKeys(passphrase string, params Argon2Params, salt []byte) (PassphraseKeys, error) {
+	if passphrase == "" {
+		return PassphraseKeys{}, errors.New("e2ee: passphrase is empty")
+	}
+
+	if !params.valid() {
+		return PassphraseKeys{}, fmt.Errorf("e2ee: Argon2id parameters out of bounds: %+v", params)
+	}
+
+	if len(salt) != SaltSize {
+		return PassphraseKeys{}, fmt.Errorf("e2ee: salt must be %d bytes, got %d", SaltSize, len(salt))
+	}
+
+	stretched := argon2.IDKey([]byte(pathkey.NFC(passphrase)), salt, params.Iterations, params.Memory, params.Parallelism, KeySize)
+
+	wrapKey, err := hkdf.Key(sha256.New, stretched, nil, passphraseWrapInfo, KeySize)
+	if err != nil {
+		return PassphraseKeys{}, fmt.Errorf("e2ee: %w", err)
+	}
+
+	authKey, err := hkdf.Key(sha256.New, stretched, nil, passphraseAuthInfo, KeySize)
+	if err != nil {
+		return PassphraseKeys{}, fmt.Errorf("e2ee: %w", err)
+	}
+
+	return PassphraseKeys{WrapKey: wrapKey, AuthKey: authKey}, nil
+}
+
+// WrapWithPassphrase encrypts secret (a user's X25519 private key) under the
+// wrap key of passphrase (DerivePassphraseKeys) with a fresh salt and binds
+// aad: SuiteV1 || memory (u32 BE) || iterations (u32 BE) || parallelism (u8)
+// || salt (16) || nonce || ciphertext, the associated data being the header
+// || aad. It also returns the auth key, for the server's verifier.
+func WrapWithPassphrase(passphrase string, secret, aad []byte) (wrapped, authKey []byte, err error) {
 	return WrapWithPassphraseParams(passphrase, DefaultArgon2Params, secret, aad)
 }
 
 // WrapWithPassphraseParams is WrapWithPassphrase with explicit Argon2id
 // parameters, which must lie within the bounds.
-func WrapWithPassphraseParams(passphrase string, params Argon2Params, secret, aad []byte) ([]byte, error) {
+func WrapWithPassphraseParams(passphrase string, params Argon2Params, secret, aad []byte) (wrapped, authKey []byte, err error) {
 	salt, err := randomBytes(SaltSize)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	nonce, err := randomBytes(NonceSize)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	return wrapWith(passphrase, params, salt, nonce, secret, aad)
+	wrapped, keys, err := wrapWith(passphrase, params, salt, nonce, secret, aad)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return wrapped, keys.AuthKey, nil
 }
 
-func wrapWith(passphrase string, params Argon2Params, salt, nonce, secret, aad []byte) ([]byte, error) {
-	if passphrase == "" {
-		return nil, errors.New("e2ee: passphrase is empty")
-	}
-
-	if !params.valid() {
-		return nil, fmt.Errorf("e2ee: Argon2id parameters out of bounds: %+v", params)
-	}
-
-	if len(salt) != SaltSize {
-		return nil, fmt.Errorf("e2ee: salt must be %d bytes, got %d", SaltSize, len(salt))
+func wrapWith(passphrase string, params Argon2Params, salt, nonce, secret, aad []byte) ([]byte, PassphraseKeys, error) {
+	keys, err := DerivePassphraseKeys(passphrase, params, salt)
+	if err != nil {
+		return nil, PassphraseKeys{}, err
 	}
 
 	header := make([]byte, 0, passphraseHeaderSize)
@@ -365,16 +413,22 @@ func wrapWith(passphrase string, params Argon2Params, salt, nonce, secret, aad [
 	header = append(header, params.Parallelism)
 	header = append(header, salt...)
 
-	return sealAfterHeader(header, passphraseKey(passphrase, params, salt), nonce, secret, aad)
+	wrapped, err := sealAfterHeader(header, keys.WrapKey, nonce, secret, aad)
+	if err != nil {
+		return nil, PassphraseKeys{}, err
+	}
+
+	return wrapped, keys, nil
 }
 
-// UnwrapWithPassphrase reverses WrapWithPassphrase. It returns ErrDecrypt for
-// a wrong passphrase, a different aad, an unknown suite, a changed header or
-// Argon2id parameters outside the bounds, which it refuses before deriving.
-func UnwrapWithPassphrase(passphrase string, wrapped, aad []byte) ([]byte, error) {
-	// Refuse what cannot open before paying for the derivation.
-	if len(wrapped) < passphraseHeaderSize+NonceSize+TagSize || wrapped[0] != SuiteV1 {
-		return nil, ErrDecrypt
+// ParsePassphraseHeader returns the Argon2id parameters and salt from the
+// header of a passphrase-wrapped secret (at least its first 26 bytes), so a
+// device can derive its keys before it holds the wrapped secret. It returns
+// ErrDecrypt for an unknown suite, a short header or parameters outside the
+// bounds.
+func ParsePassphraseHeader(wrapped []byte) (Argon2Params, []byte, error) {
+	if len(wrapped) < passphraseHeaderSize || wrapped[0] != SuiteV1 {
+		return Argon2Params{}, nil, ErrDecrypt
 	}
 
 	params := Argon2Params{
@@ -383,16 +437,43 @@ func UnwrapWithPassphrase(passphrase string, wrapped, aad []byte) ([]byte, error
 		Parallelism: wrapped[9],
 	}
 	if !params.valid() {
+		return Argon2Params{}, nil, ErrDecrypt
+	}
+
+	return params, slices.Clone(wrapped[10:passphraseHeaderSize]), nil
+}
+
+// UnwrapWithPassphrase reverses WrapWithPassphrase. It returns ErrDecrypt for
+// a wrong passphrase, a different aad, an unknown suite, a changed header or
+// Argon2id parameters outside the bounds, which it refuses before deriving.
+func UnwrapWithPassphrase(passphrase string, wrapped, aad []byte) ([]byte, error) {
+	// Refuse what cannot open before paying for the derivation.
+	if len(wrapped) < passphraseHeaderSize+NonceSize+TagSize {
 		return nil, ErrDecrypt
 	}
 
-	salt := wrapped[10:passphraseHeaderSize]
+	params, salt, err := ParsePassphraseHeader(wrapped)
+	if err != nil {
+		return nil, err
+	}
 
-	return openAfterHeader(wrapped[:passphraseHeaderSize], passphraseKey(passphrase, params, salt), wrapped[passphraseHeaderSize:], aad)
+	keys, err := DerivePassphraseKeys(passphrase, params, salt)
+	if err != nil {
+		return nil, ErrDecrypt
+	}
+
+	return UnwrapWithKey(keys.WrapKey, wrapped, aad)
 }
 
-func passphraseKey(passphrase string, params Argon2Params, salt []byte) []byte {
-	return argon2.IDKey([]byte(pathkey.NFC(passphrase)), salt, params.Iterations, params.Memory, params.Parallelism, KeySize)
+// UnwrapWithKey opens a passphrase-wrapped secret with a wrap key already
+// derived by DerivePassphraseKeys from its header's parameters and salt. It
+// returns ErrDecrypt as UnwrapWithPassphrase does.
+func UnwrapWithKey(wrapKey, wrapped, aad []byte) ([]byte, error) {
+	if _, _, err := ParsePassphraseHeader(wrapped); err != nil {
+		return nil, err
+	}
+
+	return openAfterHeader(wrapped[:passphraseHeaderSize], wrapKey, wrapped[passphraseHeaderSize:], aad)
 }
 
 func randomBytes(size int) ([]byte, error) {

@@ -98,7 +98,7 @@ func constructions(t *testing.T) []construction {
 
 				// The minimum parameters keep the many derivations below cheap.
 				params := e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory, Iterations: e2ee.MinArgon2Iterations, Parallelism: 1}
-				sealed, err := e2ee.WrapWithPassphraseParams(passphrase, params, plaintext, aad)
+				sealed, _, err := e2ee.WrapWithPassphraseParams(passphrase, params, plaintext, aad)
 				require.NoError(t, err)
 
 				return sealed
@@ -207,18 +207,97 @@ func TestSealToRefusesALowOrderRecipient(t *testing.T) {
 }
 
 func TestWrapWithPassphraseUsesTheDefaultParametersAndAFreshSalt(t *testing.T) {
-	first, err := e2ee.WrapWithPassphrase("passphrase", []byte("secret"), nil)
+	first, firstAuthKey, err := e2ee.WrapWithPassphrase("passphrase", []byte("secret"), nil)
 	require.NoError(t, err)
 
-	second, err := e2ee.WrapWithPassphrase("passphrase", []byte("secret"), nil)
+	second, secondAuthKey, err := e2ee.WrapWithPassphrase("passphrase", []byte("secret"), nil)
 	require.NoError(t, err)
 
 	// memory 65536 KiB, 3 iterations, 1 lane.
 	assert.Equal(t, []byte{e2ee.SuiteV1, 0, 1, 0, 0, 0, 0, 0, 3, 1}, first[:10])
 	assert.NotEqual(t, first[10:10+e2ee.SaltSize], second[10:10+e2ee.SaltSize])
+	assert.NotEqual(t, firstAuthKey, secondAuthKey, "a fresh salt gives a fresh verifier")
 
-	_, err = e2ee.WrapWithPassphrase("", []byte("secret"), nil)
+	_, _, err = e2ee.WrapWithPassphrase("", []byte("secret"), nil)
 	require.Error(t, err)
+}
+
+// An unlock derives once: it reads the parameters and salt, derives both
+// keys, presents the auth key to the server and opens the wrapped secret with
+// the wrap key. The auth key, which the server sees, opens nothing.
+func TestPassphraseAuthKeyDoesNotOpenTheWrappedSecret(t *testing.T) {
+	params := e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory, Iterations: e2ee.MinArgon2Iterations, Parallelism: 1}
+	secret := []byte("user private key")
+	aad := []byte("user 1")
+
+	wrapped, authKey, err := e2ee.WrapWithPassphraseParams("passphrase", params, secret, aad)
+	require.NoError(t, err)
+	require.Len(t, authKey, e2ee.KeySize)
+
+	parsedParams, salt, err := e2ee.ParsePassphraseHeader(wrapped[:1+4+4+1+e2ee.SaltSize])
+	require.NoError(t, err)
+	assert.Equal(t, params, parsedParams)
+
+	keys, err := e2ee.DerivePassphraseKeys("passphrase", parsedParams, salt)
+	require.NoError(t, err)
+	assert.Equal(t, authKey, keys.AuthKey)
+	assert.NotEqual(t, keys.WrapKey, keys.AuthKey)
+
+	opened, err := e2ee.UnwrapWithKey(keys.WrapKey, wrapped, aad)
+	require.NoError(t, err)
+	assert.Equal(t, secret, opened)
+
+	_, err = e2ee.UnwrapWithKey(keys.AuthKey, wrapped, aad)
+	require.ErrorIs(t, err, e2ee.ErrDecrypt)
+
+	assert.NotContains(t, string(wrapped), string(authKey))
+}
+
+func TestDerivePassphraseKeysRefusesBadInput(t *testing.T) {
+	params := e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory, Iterations: e2ee.MinArgon2Iterations, Parallelism: 1}
+	salt := bytes.Repeat([]byte{1}, e2ee.SaltSize)
+
+	tests := []struct {
+		name       string
+		passphrase string
+		params     e2ee.Argon2Params
+		salt       []byte
+	}{
+		{name: "empty passphrase", passphrase: "", params: params, salt: salt},
+		{name: "short salt", passphrase: "passphrase", params: params, salt: salt[1:]},
+		{name: "memory below minimum", passphrase: "passphrase", params: e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory - 1, Iterations: 2, Parallelism: 1}, salt: salt},
+		{name: "iterations above maximum", passphrase: "passphrase", params: e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory, Iterations: e2ee.MaxArgon2Iterations + 1, Parallelism: 1}, salt: salt},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := e2ee.DerivePassphraseKeys(test.passphrase, test.params, test.salt)
+			require.Error(t, err)
+		})
+	}
+}
+
+func TestParsePassphraseHeaderRefusesBadHeaders(t *testing.T) {
+	wrapped, _, err := e2ee.WrapWithPassphraseParams("passphrase",
+		e2ee.Argon2Params{Memory: e2ee.MinArgon2Memory, Iterations: e2ee.MinArgon2Iterations, Parallelism: 1}, []byte("secret"), nil)
+	require.NoError(t, err)
+
+	header := wrapped[:1+4+4+1+e2ee.SaltSize]
+
+	otherSuite := slices.Clone(header)
+	otherSuite[0] = 0x02
+
+	zeroLanes := slices.Clone(header)
+	zeroLanes[9] = 0
+
+	for name, input := range map[string][]byte{"short": header[:len(header)-1], "other suite": otherSuite, "zero lanes": zeroLanes} {
+		t.Run(name, func(t *testing.T) {
+			_, _, err := e2ee.ParsePassphraseHeader(input)
+			require.ErrorIs(t, err, e2ee.ErrDecrypt)
+
+			_, err = e2ee.UnwrapWithKey(bytes.Repeat([]byte{1}, e2ee.KeySize), slices.Concat(input, wrapped[len(header):]), nil)
+			require.ErrorIs(t, err, e2ee.ErrDecrypt)
+		})
+	}
 }
 
 func TestDeriveSubkey(t *testing.T) {
