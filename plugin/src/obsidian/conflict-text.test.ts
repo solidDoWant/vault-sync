@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
-import { conflictReasonText, deferredReasonText, formatBytes, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText, visiblePath } from "./conflict-text";
+import { conflictReasonText, deferredReasonText, formatBytes, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText } from "./conflict-text";
+import { visiblePath } from "./display-text";
 
 describe("conflict view wording", () => {
   it.each<[ConflictReason, RegExp]>([

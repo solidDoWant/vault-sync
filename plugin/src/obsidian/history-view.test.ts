@@ -5,6 +5,9 @@ import { alternativePath, changeLabel, deviceLabel, entryLabel, maxPreviewBytes,
 
 const encoder = new TextEncoder();
 
+/** `text` between FSI (U+2068) and PDI (U+2069), as the labels isolate it. */
+const iso = (text: string) => `\u2068${text}\u2069`;
+
 function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
   return {
     revisionId: "r",
@@ -53,9 +56,9 @@ describe("history view", () => {
     });
 
     it("names another device by the name the server reports, falling back to its id", () => {
-      expect(deviceLabel(entry({ deviceName: "Phone" }))).toBe("device “Phone”");
+      expect(deviceLabel(entry({ deviceName: "Phone" }))).toBe(`device “${iso("Phone")}”`);
       // A name is another user's text: it cannot pass for this device.
-      expect(deviceLabel(entry({ deviceName: "this device" }))).toBe("device “this device”");
+      expect(deviceLabel(entry({ deviceName: "this device" }))).toBe(`device “${iso("this device")}”`);
       expect(deviceLabel(entry({ deviceName: "  " }))).toBe("device 0190a5c4");
       expect(deviceLabel(entry({ thisDevice: true, deviceName: "Laptop" }))).toBe("this device");
     });
@@ -68,38 +71,61 @@ describe("history view", () => {
 
     it("says what each revision changed", () => {
       const base = entry({ contentHash: "aa" });
-      expect(changeLabel(base, undefined)).toBe("earliest kept version of plan.md (12 B)");
+      expect(changeLabel(base, undefined)).toBe(`earliest kept version of ${iso("plan.md")} (12 B)`);
       expect(changeLabel(entry({ contentHash: "bb" }), base)).toBe("edited (12 B)");
-      expect(changeLabel(entry({ path: "moved.md" }), base)).toBe("moved to moved.md");
-      expect(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base)).toBe("moved to moved.md and edited (12 B)");
-      expect(changeLabel(entry({ deleted: true }), base)).toBe("deleted plan.md");
-      expect(changeLabel(base, entry({ deleted: true }))).toBe("restored plan.md (12 B)");
+      expect(changeLabel(entry({ path: "moved.md" }), base)).toBe(`moved to ${iso("moved.md")}`);
+      expect(changeLabel(entry({ path: "moved.md", contentHash: "bb" }), base)).toBe(`moved to ${iso("moved.md")} and edited (12 B)`);
+      expect(changeLabel(entry({ deleted: true }), base)).toBe(`deleted ${iso("plan.md")}`);
+      expect(changeLabel(base, entry({ deleted: true }))).toBe(`restored ${iso("plan.md")} (12 B)`);
     });
 
     it("puts time, device and change on one line", () => {
       const formatTime = (date: Date) => date.toISOString();
-      expect(entryLabel(entry({ thisDevice: true }), undefined, formatTime)).toBe("2026-01-02T03:04:00.000Z · this device · earliest kept version of plan.md (12 B)");
+      expect(entryLabel(entry({ thisDevice: true }), undefined, formatTime)).toBe(`2026-01-02T03:04:00.000Z · this device · earliest kept version of ${iso("plan.md")} (12 B)`);
       expect(entryLabel(entry({ createdAt: undefined }), undefined, formatTime)).toMatch(/^unknown time · /);
     });
 
     // Names registered before the server refused these characters (#548)
     // still reach the history list.
     it.each([
-      ["a right-to-left override", "Laptop\u202e ecived siht", "device “Laptop ecived siht”"],
-      ["bidi embeddings and isolates", "\u202aA\u202b\u202c\u202dB\u2066C\u2067D\u2068E\u2069", "device “ABCDE”"],
-      ["a right-to-left mark", "Phone\u200f", "device “Phone”"],
-      ["zero-width characters and a byte order mark", "\ufeffPh\u200bo\u200cn\u200de\u2060", "device “Phone”"],
-      ["a line separator", "Phone\u2028this device", "device “Phonethis device”"],
-      ["a control character", "Phone\u0085", "device “Phone”"],
-      ["quotes that would close the label early", "x” · this device · “y", "device “x' · this device · 'y”"],
-      ["straight, low and angle double quotes", "\"a\" „b‟ «c» ＂d＂ 〝e〞〟", "device “'a' 'b' 'c' 'd' 'e''”"],
+      ["a right-to-left override", "Laptop\u202e ecived siht", `device “${iso("Laptop ecived siht")}”`],
+      ["bidi embeddings and isolates", "\u202aA\u202b\u202c\u202dB\u2066C\u2067D\u2068E\u2069", `device “${iso("ABCDE")}”`],
+      ["a right-to-left mark", "Phone\u200f", `device “${iso("Phone")}”`],
+      ["zero-width characters and a byte order mark", "\ufeffPh\u200bo\u200cn\u200de\u2060", `device “${iso("Phone")}”`],
+      ["a line separator", "Phone\u2028this device", `device “${iso("Phonethis device")}”`],
+      ["a control character", "Phone\u0085", `device “${iso("Phone")}”`],
+      ["quotes that would close the label early", "x” · this device · “y", `device “${iso("x' · this device · 'y")}”`],
+      ["straight, low and angle double quotes", "\"a\" „b‟ «c» ＂d＂ 〝e〞〟", `device “${iso("'a' 'b' 'c' 'd' 'e''")}”`],
     ])("removes %s from another device's name", (_, deviceName, label) => {
       expect(deviceLabel(entry({ deviceName }))).toBe(label);
     });
 
     it("keeps apostrophes and letters of every script in another device's name", () => {
-      expect(deviceLabel(entry({ deviceName: "Fred’s iPhone" }))).toBe("device “Fred’s iPhone”");
-      expect(deviceLabel(entry({ deviceName: "Zoë's 日本 حاسوب 😀" }))).toBe("device “Zoë's 日本 حاسوب 😀”");
+      expect(deviceLabel(entry({ deviceName: "Fred’s iPhone" }))).toBe(`device “${iso("Fred’s iPhone")}”`);
+      expect(deviceLabel(entry({ deviceName: "Zoë's 日本 حاسوب 😀" }))).toBe(`device “${iso("Zoë's 日本 حاسوب 😀")}”`);
+    });
+
+    it("isolates another device's name, so right-to-left letters cannot reorder the label and a trailing mark stays inside (#557)", () => {
+      expect(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then")).toBe(`then · device “${iso("حاسوب 2")}” · earliest kept version of ${iso("plan.md")} (12 B)`);
+      expect(deviceLabel(entry({ deviceName: "Phone\u0301" }))).toBe(`device “${iso("Phone\u0301")}”`);
+    });
+
+    it("shows at most 64 characters of another device's name (#557)", () => {
+      expect(deviceLabel(entry({ deviceName: "n".repeat(64) }))).toBe(`device “${iso("n".repeat(64))}”`);
+      expect(deviceLabel(entry({ deviceName: "n".repeat(65) }))).toBe(`device “${iso(`${"n".repeat(64)}…`)}”`);
+    });
+
+    it.each([
+      ["a right-to-left override", "notes/\u202etxt.exe.md", "notes/\\u202Etxt.exe.md"],
+      ["zero-width characters", "pay\u200bpal\u200d.md", "pay\\u200Bpal\\u200D.md"],
+      ["bidi isolates", "a\u2066b\u2069.md", "a\\u2066b\\u2069.md"],
+    ])("shows %s in another member's path visibly and isolated (#555)", (_, path, shown) => {
+      const base = entry({ contentHash: "aa" });
+      expect(changeLabel(entry({ path }), base)).toBe(`moved to ${iso(shown)}`);
+      expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toBe(`moved to ${iso(shown)} and edited (12 B)`);
+      expect(changeLabel(entry({ path, deleted: true }), base)).toBe(`deleted ${iso(shown)}`);
+      expect(changeLabel(entry({ path }), entry({ deleted: true }))).toBe(`restored ${iso(shown)} (12 B)`);
+      expect(changeLabel(entry({ path }), undefined)).toBe(`earliest kept version of ${iso(shown)} (12 B)`);
     });
 
     it("names a device by id when its name is nothing but invisible characters", () => {
