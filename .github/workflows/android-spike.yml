@@ -25,8 +25,8 @@ env:
   ANDROID_API: "34"
   ANDROID_IMAGE: "system-images;android-34;google_apis;x86_64"
   # avdmanager on the runner writes to ~/.config/.android/avd, the emulator
-  # looks in ~/.android/avd: point both at one place.
-  ANDROID_AVD_HOME: /home/runner/.android/avd
+  # looks in ~/.android/avd: point the emulator at avdmanager's.
+  ANDROID_AVD_HOME: /home/runner/.config/.android/avd
 
 jobs:
   android:
