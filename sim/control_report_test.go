@@ -31,6 +31,11 @@ func TestReportKeepsTheFaithfulFilesystem(t *testing.T) {
 			expected: map[string]any{"name": "seed-7-faithful-fs", "seed": 7.0, "clients": 3.0, "engines": 2.0, "commitRetryBackoff": 30.0, "faithfulFilesystem": true, "violations": []any{}, "steps": []any{}},
 		},
 		{
+			name:     "case with notification-gated pulls",
+			body:     `{"name":"seed-7","seed":7,"clients":3,"engines":2,"commitRetryBackoff":30,"notificationPulls":true,"violations":[],"steps":[]}`,
+			expected: map[string]any{"name": "seed-7", "seed": 7.0, "clients": 3.0, "engines": 2.0, "commitRetryBackoff": 30.0, "notificationPulls": true, "violations": []any{}, "steps": []any{}},
+		},
+		{
 			name:     "folded case",
 			body:     `{"name":"seed-7","seed":7,"clients":3,"engines":2,"commitRetryBackoff":30,"violations":[],"steps":[]}`,
 			expected: map[string]any{"name": "seed-7", "seed": 7.0, "clients": 3.0, "engines": 2.0, "commitRetryBackoff": 30.0, "violations": []any{}, "steps": []any{}},

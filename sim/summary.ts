@@ -21,6 +21,9 @@ const events: readonly (readonly [string, string])[] = [
   ["engine pulls completed", " deferred"],
   // A pull that found the server's history diverged from its cursor and resynced (#155, #360).
   ["engine resyncs", " deferred, resynced"],
+  // Pulls the schedule gated on an announced seq (pullIfBehind, #277), and those the engine skipped as its cursor was there.
+  ["notification-gated pulls", " starts pull if behind seq "],
+  ["notification-gated pulls not needed", " pull not needed: cursor at or past seq "],
   ["engine pulls interrupted", "engine pull interrupted"],
   ["engine crashes", "restarted with its vault and journal"],
   ["tracked as unmaterializable", " as unmaterializable ("],

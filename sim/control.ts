@@ -29,6 +29,12 @@ export interface RegressionCase {
    * replay on the folded vault.
    */
   faithfulFilesystem?: boolean;
+  /**
+   * Whether the run gated engine pulls on announced seqs
+   * (RunOptions.notificationPulls, #277). Absent in cases recorded before
+   * #277, which replay with plain pulls.
+   */
+  notificationPulls?: boolean;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];

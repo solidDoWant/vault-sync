@@ -27,6 +27,18 @@ describe("summarize", () => {
     expect(counter(line, "retries after the head moved")).toBe(1);
   });
 
+  it("counts notification-gated engine pulls and those the engine found not needed (#277)", () => {
+    const line = summarize([
+      "12: c1 starts pull; e3 starts pull if behind seq 9; e4 busy, pull skipped",
+      "13: e3 pull not needed: cursor at or past seq 9",
+      "20: c0 starts pull; e3 starts pull if behind seq 7; e4 starts pull",
+      "21: e3 pulled up to seq 11: 2 applied, 0 deferred",
+    ]);
+    expect(counter(line, "notification-gated pulls")).toBe(2);
+    expect(counter(line, "notification-gated pulls not needed")).toBe(1);
+    expect(counter(line, "operations skipped (busy)")).toBe(1);
+  });
+
   it("reports zero for events the trace does not show", () => {
     const line = summarize([]);
     expect(counter(line, "engine resyncs")).toBe(0);
