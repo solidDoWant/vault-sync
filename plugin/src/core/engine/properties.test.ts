@@ -127,6 +127,17 @@ const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
 
 const platform = fc.constantFrom<PathPlatform>("posix", "windows", "macos");
 
+/**
+ * The alphabet of #757's class (design §4.5 step 3, INV-3, PO-4(a)): a known
+ * document's file the user moves onto the path of a revision with its bytes
+ * while the pull reads it (`move-onto-incoming`), among the steady commands
+ * without restores and purges.
+ */
+const movedOntoIncomingCommands: fc.Arbitrary<WorldCommand>[] = [
+  ...steadyCommands.filter((command) => command !== restore).slice(0, 11),
+  fc.tuple(index, index).map(([file, path]) => ({ type: "move-onto-incoming", file, path })),
+];
+
 function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
   return fc.commands(
     alphabet.map((command) => command.map((data) => new Step(data))),
@@ -300,6 +311,13 @@ const p6Folders: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prop
     return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence()), ...world.ownChangesReported()];
   },
 };
+/**
+ * #757: P1, P2, P3 and P5 over movedOntoIncomingCommands, with no harness
+ * errors. Not P6: on macOS, a document deferred as an `F`-alias keeps its
+ * file, which the convergence check does not excuse yet, a gap of the check
+ * this alphabet meets without the new command.
+ */
+const movedOntoIncoming = overWorld("P1", async (world) => [...violations(world, "P1"), ...violations(world, "P2"), ...violations(world, "P3"), ...(await world.lostWrites()), ...world.errors.map((error) => `error: ${String(error)}`)], movedOntoIncomingCommands);
 const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
 
 describe("engine properties (design §9.3)", () => {
@@ -380,6 +398,12 @@ describe("engine properties (design §9.3)", () => {
   // P5 no lost write: INV-4 plus principle 1, against server history.
   it("P5: every user write is in the vault or was accepted by the server", { timeout }, async () => {
     await holds(p5);
+  });
+
+  // #757 (INV-3, PO-1, PO-4(a)): a pull never adopts or merges a known document's file that the user moved onto the
+  // path of a revision while the pull ran. Rule W displaces it under its own id, and the revision materializes.
+  it("P1–P3, P5: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
+    await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 })]);
   });
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.
