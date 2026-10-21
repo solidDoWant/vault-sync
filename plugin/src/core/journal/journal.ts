@@ -217,9 +217,9 @@ export interface DocumentState {
   /** The document's kind; every revision of a document has the same one. */
   kind: DocumentKindName;
   /**
-   * The last synced revision is a tombstone, or this device holds no file of
-   * the document: an unmaterializable document whose file was released
-   * (SPEC.md §8), so `path` names no file of it any more.
+   * The last synced revision is a tombstone. Only that: a document whose
+   * file the engine released (SPEC.md §8) keeps its live base, and has
+   * `absence = "released"` (design §6.2, refactor step R7b; journal v5).
    */
   deleted: boolean;
   /**
@@ -356,4 +356,19 @@ export interface ConflictRecord {
   remoteRevisionId: string;
   /** When the conflict was recorded, in milliseconds since the epoch. */
   at: number;
+}
+
+/**
+ * The rows of `documents` that an engine before refactor step R7b wrote with
+ * `deleted` doubling as "released" (design §6.2 as amended, journal v5), in
+ * the shape that ends it: `deleted` back to the base's own flag, which a
+ * release always stored over a live base. Such a row has a base, no
+ * binding, `absence = "released"` and a deferred revision: every release
+ * gave up the file of a document whose remote revision waits (an
+ * unmaterializable path, or one out of scope, over the download cap or
+ * invalid). Every other row is left as it is, and none is dropped.
+ */
+export function releasedRows(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): DocumentState[] {
+  const waiting = new Set(deferred.map((entry) => entry.revision.documentId));
+  return documents.filter((state) => state.deleted && state.revisionId !== "" && state.binding === null && state.absence === "released" && waiting.has(state.documentId)).map((state) => ({ ...state, deleted: false }));
 }

@@ -13,11 +13,12 @@ import { EchoSuppressor } from "./echo";
 import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
-import { Bindings, hasBase, type BindingChange, type LocalMove } from "./bindings";
-import { PathClaims, type Exempt } from "./claims";
+import { Bindings, hasBase, liveHere, type BindingChange, type LocalMove } from "./bindings";
+import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
-import { movedBeforeDelete } from "./decide";
-import { planPush, type DirtyPaths } from "./push-plan";
+import { movedBeforeDelete, ruleW } from "./decide";
+import { Intents } from "./intents";
+import { busyClaims, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
@@ -216,13 +217,18 @@ type Inspection =
   /** Applying would overwrite or lose local content. */
   | { kind: "dirty"; path: string; content: Uint8Array | null };
 
-type ApplyOutcome = "applied" | "deferred" | "merged" | "skipped";
-
-/** Documents and paths the merge path owns: the engine pushes none of their changes. */
-interface Parked {
-  documents: Set<string>;
-  paths: Set<string>;
+/**
+ * The document's local version for the merge path: its own file (design
+ * §4.5 step 4), or, with `absent`, none because the user deleted it, so
+ * the file at `path` (if any) is not the document's.
+ */
+interface LocalVersion {
+  path: string;
+  content: Uint8Array | null;
+  absent?: boolean;
 }
+
+type ApplyOutcome = "applied" | "deferred" | "merged" | "skipped";
 
 const defaultPageSize = 500;
 const defaultPushDebounceMs = 2000;
@@ -277,8 +283,10 @@ export class SyncEngine {
   private readonly echoes = new EchoSuppressor();
   /** Revisions deferred for a refused path that retryRefusedPaths already tried again. */
   private readonly retried = new Set<string>();
-  /** Documents being merged right now, so resolving one first never loops back to another. */
+  /** Documents being merged right now, so rule W's resolving a holder first (W(b)) never loops back to another. */
   private readonly resolving = new Set<string>();
+  /** The displace and detach intents of rule W (design §4.4). */
+  private readonly intents: Intents;
   private readonly unsubscribe: () => void;
   private events: Promise<void> = Promise.resolve();
   /** Pulls and pushes, one at a time. */
@@ -332,6 +340,17 @@ export class SyncEngine {
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.pathSpace = new PathSpace(this.pathRules);
     this.bindings = new Bindings(this.journal, this.vault, this.pathSpace);
+    this.intents = new Intents({
+      journal: this.journal,
+      bindings: this.bindings,
+      space: this.pathSpace,
+      read: (path) => this.readOrNull(path),
+      rename: async (from, to) => this.echoed(this.echoes.expectRename(await this.heldSpelling(from), to), () => this.vault.rename(from, to)),
+      newId: this.newId,
+      markDirty: (path) => {
+        this.markDirty(path);
+      },
+    });
     this.rateLimitBackoff = options.rateLimitBackoff ?? defaultRateLimitBackoff;
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
@@ -419,8 +438,7 @@ export class SyncEngine {
     const documents: TooLargeDocument[] = [];
     for (const { revision, reason } of await this.journal.listDeferred()) {
       if (reason !== "too-large") continue;
-      const state = await this.journal.getDocument(revision.documentId);
-      const localPath = state !== undefined && !state.deleted && (await this.vault.stat(state.path)) !== null ? state.path : undefined;
+      const localPath = await this.keptFile(await this.journal.getDocument(revision.documentId));
       documents.push({ documentId: revision.documentId, path: revision.path, size: revision.size, revision, localPath });
     }
     return documents;
@@ -463,32 +481,38 @@ export class SyncEngine {
   /**
    * The documents deleted on the server that this device knows of, most
    * recently deleted first: what the user can find and restore (SPEC.md
-   * §11). A document this device only released because the platform cannot
-   * hold its path (§8) is not deleted, and one being brought back by a local
-   * change still to be pushed is not listed either.
+   * §11). One being brought back by a local change still to be pushed is not
+   * listed. A document whose file this device released (§8) is live, not
+   * deleted (design §6.4 item 5).
    */
   async deletedDocuments(): Promise<DocumentState[]> {
-    const released = new Set((await this.journal.listDeferred()).filter((deferred) => deferred.reason === "unmaterializable").map((deferred) => deferred.revision.documentId));
     const pending = new Set((await this.journal.listPending()).map((operation) => operation.documentId));
     return (await this.journal.listDocuments())
-      .filter((state) => state.deleted && hasBase(state) && !released.has(state.documentId) && !pending.has(state.documentId))
+      .filter((state) => state.deleted && hasBase(state) && !pending.has(state.documentId))
       .sort((left, right) => (left.seq > right.seq ? -1 : left.seq < right.seq ? 1 : 0));
   }
 
   private async unmaterializableDocument(revision: RemoteRevision, reason: UnmaterializableCause): Promise<UnmaterializableDocument> {
-    const state = await this.journal.getDocument(revision.documentId);
-    const localPath = state !== undefined && !state.deleted && (await this.vault.stat(state.path)) !== null ? state.path : undefined;
+    const localPath = await this.keptFile(await this.journal.getDocument(revision.documentId));
     return { documentId: revision.documentId, path: revision.path, reason, revision, localPath };
+  }
+
+  /** The file a document keeps on this device while its remote revision waits: its bound file, if the vault has it. */
+  private async keptFile(state: DocumentState | undefined): Promise<string | undefined> {
+    const spelling = state?.binding?.spelling;
+    if (state === undefined || state.deleted || spelling === undefined || !this.inScope(spelling)) return undefined;
+    return (await this.vault.stat(spelling)) !== null ? spelling : undefined;
   }
 
   /**
    * Tracks `remote` as unmaterializable: deferred, with nothing written, and
-   * reported. Recorded before the document's file is released (see
-   * releaseFile), so the deferral, which parks the document, is there first.
+   * reported. Recorded before the document's file is looked at
+   * (leaveBlockedFile), so the deferral, which blocks the document, is there
+   * first.
    */
   private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause): Promise<"deferred"> {
     await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason });
-    await this.releaseFile(remote.documentId);
+    await this.leaveBlockedFile(remote.documentId);
     const document = await this.unmaterializableDocument(remote, reason);
     try {
       this.onUnmaterializable(document);
@@ -501,37 +525,28 @@ export class SyncEngine {
   }
 
   /**
-   * Releases the file of an unmaterializable document: the server no longer
-   * has the document at that path, so the path is freed for whatever the
-   * server or the user puts there. The file is removed if it still holds the
-   * synced content (which the server has) and no local operation of the
-   * document is pending; a file with local changes stays, with them, until
-   * the document materializes and the merge path takes it. So does a file
-   * saved after the check: the delete expects the synced content, and the
-   * vault refuses it with "changed" otherwise (#163).
-   *
-   * The release is recorded in the journal by storing the document's state
-   * as `deleted` (no file of its own on this device; SPEC.md §8), so nothing
-   * at the old path is afterwards taken for the document's file: another
-   * document's, or a new local file, of any content. The record comes after
-   * the delete, and a release interrupted in between is finished by the next
-   * call (the interrupted pull's replay of the revision, or each start's
-   * push): the file is then gone, or another document holds the path (one
-   * the server put there meanwhile), and either way the document has no
-   * file there any more. Another document's file is never removed.
+   * The local file of a document whose remote revision is unmaterializable
+   * (design §4.5 step 2, PO-11). A blocker never claims a path on disk, and
+   * the document keeps its file, with its local changes, as long as no
+   * server claim needs the path (rule W detaches it once one does). Only an
+   * unchanged file at its synced path, with no outbox, goes: the server has
+   * its content, and the document's newest server claim is elsewhere
+   * (SPEC.md §8). The delete expects the synced content, so a file saved
+   * since stays (#163). Removed, or already gone, the file is given up
+   * (`absence = released`): the document materializes later as a new
+   * document would. A document whose file the user moved keeps it (#690).
    */
-  private async releaseFile(documentId: string): Promise<void> {
+  private async leaveBlockedFile(documentId: string): Promise<void> {
     const state = await this.journal.getDocument(documentId);
-    if (state === undefined || state.deleted) return;
-    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return;
-    const key = this.pathSpace.fileKey(state.path);
-    const taken = (await this.journal.listDocuments()).some((other) => other.documentId !== documentId && !other.deleted && this.pathSpace.fileKey(other.path) === key);
-    if (!taken) {
-      const content = await this.readOrNull(state.path);
+    if (!liveHere(state) || (await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return;
+    const binding = state.binding;
+    if (binding !== null && binding !== undefined) {
+      if (binding.spelling !== state.path) return;
+      const content = await this.readOrNull(binding.spelling);
       if (content !== null) {
         if (sha256Hex(content) !== state.baseHash) return;
         try {
-          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(state.path)), () => this.deleteFile(state.path, { expectedHash: state.baseHash }));
+          await this.echoed(this.echoes.expectDelete(await this.heldSpelling(binding.spelling)), () => this.vault.delete(binding.spelling, { expectedHash: state.baseHash }));
         } catch (error) {
           // Saved locally since the check (#163): a local edit, so the file stays, as above.
           if (isVaultError(error, "changed")) return;
@@ -539,7 +554,7 @@ export class SyncEngine {
         }
       }
     }
-    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
+    await this.putDocument(state, { kind: "released" });
   }
 
   private serialize<T>(task: () => Promise<T>): Promise<T> {
@@ -601,6 +616,8 @@ export class SyncEngine {
   }
 
   private async pullOnce(): Promise<PullSummary> {
+    // Rule W's moves a crash interrupted are finished first (design §4.4).
+    await this.intents.recover();
     const summary: PullSummary = { cursor: await this.journal.getCursor(), applied: 0, deferred: 0, merged: 0, resynced: false };
     let anchor = summary.cursor > 0n ? await this.journal.getCursorAnchor() : undefined;
     const own = await this.ownCommitAbove(summary.cursor);
@@ -733,70 +750,24 @@ export class SyncEngine {
     if (state !== undefined && remote.seq <= state.seq) return "skipped";
     // A resync found the server had lost this document (seq 0): the content
     // here may exist nowhere else, so a new revision is merged, not applied.
-    if (state !== undefined && state.seq === 0n && !state.deleted) return this.handToMerge(remote, state, await this.localFile(state, remote));
+    if (state !== undefined && state.seq === 0n && liveHere(state)) return this.handToMerge(remote, state, await this.localFile(state, remote));
     if (!remote.deleted && !incoming.pathAllowed) return this.defer(remote, "invalid-path");
     const unmaterializable = remote.deleted ? undefined : unmaterializableReason(remote.path, this.pathRules);
     if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
 
-    // An unmaterializable document whose file was released has no file of
-    // its own here any more: its state is `deleted` (see releaseFile), so it
-    // comes back as a new document would.
+    // The path claim (design §4.5 step 3): another document's file in the
+    // way of the revision's path moves by rule W, or the revision waits for
+    // it, listed. Not for a document whose file a local move put elsewhere:
+    // its local rename wins, so the merge path decides where its result
+    // lands, and claims that path (applyMerge, #473).
+    if (!remote.deleted && !movedLocally(state) && (await this.claimPath(remote.path, remote.documentId))) return this.defer(remote, "path-conflict");
 
     // Download before looking at the disk, so the check-then-write window is short.
-    const needsContent = !remote.deleted && (state === undefined || state.deleted || state.baseHash !== remote.contentHash);
+    const needsContent = !remote.deleted && (!liveHere(state) || state.baseHash !== remote.contentHash);
     const content = needsContent ? await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size) : undefined;
 
     const inspection = await this.inspect(state, remote);
     if (inspection.kind === "dirty") return this.handToMerge(remote, state, inspection);
-    if (inspection.kind === "applied" && !remote.deleted) {
-      // The file at the path already holds the revision's content. If a
-      // local move of another known document put it there, it is still that
-      // document's: the merge path moves it to a conflict-copy path under its
-      // own id, as for any other content (#242). That holds for a known
-      // document's own revision too (one whose file was deleted locally,
-      // say): taken here, the other document's next push would find its file
-      // gone and tombstone it (#267). A file the journal has as another live
-      // document's (one whose remote rename away from it is deferred, say) is
-      // that document's too: taken here, the journal would hold two
-      // documents at one path, and the other's move would later tombstone
-      // this one (#264). The merge path lets the other document's merge go
-      // first (#172).
-      const holder = await this.documentAt(remote.path);
-      if ((holder !== undefined && holder.documentId !== remote.documentId) || (await this.localMoveAt(remote.path, remote.documentId)) !== undefined) {
-        return this.handToMerge(remote, state, { path: remote.path, content: await this.readOrNull(remote.path) });
-      }
-    }
-    if (inspection.kind === "clean" && !remote.deleted) {
-      // No file at the path, but the journal has it as another live
-      // document's: one whose own remote move the merge path holds, after
-      // the user deleted its file, say. Written here, the journal would hold
-      // two documents at one path: the other's merge would take this file
-      // as its local version, and this document's next move would find its
-      // file another's for good (#379). The merge path lets the other
-      // document's merge go first. One the platform cannot hold is handled
-      // as its kept file is (releaseKeptFile, #391), here with no file to
-      // keep: its edit still pending at the path, after the user deleted the
-      // file, would otherwise count as a local move of it there, and its
-      // later merge would take this document's file for its own (#398). One
-      // whose revision waits for a reason no pull or push retries gives the
-      // path up there too (resolveFirst, releaseIdleClaim), so this revision
-      // is written.
-      const holder = await this.documentAt(remote.path);
-      if (holder !== undefined && holder.documentId !== remote.documentId) {
-        if ((await this.journal.getDeferred(holder.documentId))?.reason === "unmaterializable") await this.releaseParkedPath(holder.documentId);
-        else {
-          const path = inspection.source ?? remote.path;
-          return this.handToMerge(remote, state, { path, content: await this.readOrNull(path) });
-        }
-      }
-    }
-    if (inspection.kind === "clean" && inspection.source !== undefined && (await this.localMoveAt(inspection.source, remote.documentId)) !== undefined) {
-      // The file at the document's synced path holds its synced content, but
-      // a local rename of another document put it there after this one moved
-      // away: it is that document's file, never this revision's to replace
-      // or delete. The merge path finds this document's own file.
-      return this.handToMerge(remote, state, { path: inspection.source, content: await this.readOrNull(inspection.source) });
-    }
     try {
       if (inspection.kind === "clean") await this.writeToDisk(remote, inspection, content);
       else if (!remote.deleted) await this.matchSpelling(remote.path, remote.documentId);
@@ -832,9 +803,125 @@ export class SyncEngine {
     return "applied";
   }
 
+  /**
+   * The path claim of design §4.5 step 3, for `path`, which the server gives
+   * `documentId`: rule W (decide.ts, ruleW; PO-4) for every other known
+   * document whose file is in the way (PathClaims.fileHolders: one file
+   * key, folders included), and for every document the server lost whose
+   * synced path collides with it under the server's key. A document moved
+   * aside keeps its bytes, under its own id (displace) or as an untracked
+   * copy (detach); no file is ever deleted to free a path. Returns true if
+   * the path stays another document's (W(c)), or no copy name fits: the
+   * revision then waits, listed as `path-conflict`.
+   *
+   * A create not acknowledged yet holds its file as an untracked file does:
+   * the merge path keeps it as a conflict copy, or takes it if its content
+   * is the revision's (dropCreatesAt).
+   */
+  private async claimPath(path: string, documentId: string): Promise<boolean> {
+    const resolved = new Set<string>();
+    // Each turn moves one holder away, or resolves one once.
+    for (let turn = 0; turn < 16; turn++) {
+      const holder = await this.nextHolder(path, documentId);
+      if (holder === undefined) return false;
+      const { state, spelling } = holder;
+      const ahead = await this.journal.getDeferred(state.documentId);
+      const outbox = (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId);
+      const move = ruleW(state, ahead, outbox, path, this.pathSpace);
+      if (move === "keep") return true;
+      if (move === "resolve") {
+        // W(b): the holder's own remote revision first, which may move its
+        // file away. If the merge path cannot finish it now (the hook
+        // deferred, or it is being merged further up), the holder keeps the
+        // path and this revision waits, listed: the merge is retried on
+        // every push, and detaching would cut the holder's local edit off
+        // its history (design §4.5, as amended in R7b).
+        if (ahead === undefined || resolved.has(state.documentId) || this.resolving.has(state.documentId)) return true;
+        resolved.add(state.documentId);
+        await this.handToMerge(ahead.revision, state, await this.localFile(state, ahead.revision));
+        continue;
+      }
+      if (spelling === undefined) {
+        // The server lost it and this device holds no file of it: nothing is left of it.
+        await this.bindings.transact(async () => ({
+          removeDocuments: [state.documentId],
+          removeDeferred: [state.documentId],
+          removePending: (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId).map((operation) => operation.revisionId),
+        }));
+        continue;
+      }
+      // A document the server lost keeps its file where it is if that is not in the way.
+      const inTheWay = move !== "recreate" || this.pathSpace.collides(spelling, path, "server") || this.pathSpace.collides(spelling, path, "file");
+      const keeps = move === "displace" || move === "recreate";
+      let copy: string | null = spelling;
+      if (inTheWay) {
+        // The copy name stays clear of the path too, which the journal does not hold yet.
+        const claims = (await PathClaims.load(this.pathSpace, this.journal, this.vault)).with([{ kind: "server-newer", path, documentId }]);
+        copy = await claims.freeCopyName(spelling, this.copyNaming(), { documentId: keeps ? state.documentId : "", file: spelling, result: null });
+      }
+      if (copy === null) return true;
+      const record = this.conflictRecord(state.documentId, spelling, "path-taken", copy, "", "");
+      const moved = keeps ? await this.intents.displace(state.documentId, spelling, copy, record, move === "recreate") : await this.intents.detach(state.documentId, spelling, copy, record);
+      if (!moved) return true;
+      this.schedulePush();
+    }
+    return true;
+  }
+
+  /**
+   * The next document rule W looks at for `path` (design §4.2, fileHolder):
+   * a document other than `documentId` bound to a file in the way (one
+   * file key, folders included), with the spelling it is bound at; or
+   * a document the server lost (seq 0 after a resync) whose synced path
+   * collides with `path` under the server's key, with its file if it has
+   * one.
+   */
+  private async nextHolder(path: string, documentId: string): Promise<{ state: DocumentState; spelling: string | undefined } | undefined> {
+    const documents = await this.journal.listDocuments();
+    // A create not acknowledged yet holds its file as an untracked file does
+    // (the merge path keeps it as a conflict copy, or takes it if its
+    // content is the revision's, dropCreatesAt), unless a local rename moved
+    // it: that is a local move of a document, as a known one's is (#286).
+    const created = new Map<string, string>();
+    for (const operation of await this.journal.listPending()) if (operation.baseRevisionId === "" && !operation.deleted) created.set(operation.documentId, operation.path);
+    for (const state of documents) {
+      const binding = state.binding;
+      if (state.documentId === documentId || binding === undefined || binding === null || !this.pathSpace.collides(binding.spelling, path, "file")) continue;
+      if (!hasBase(state) && created.get(state.documentId) === binding.spelling) continue;
+      if ((await this.vault.stat(binding.spelling)) === null) continue;
+      return { state, spelling: binding.spelling };
+    }
+    for (const state of documents) {
+      if (state.documentId === documentId || !hasBase(state) || state.deleted || state.seq !== 0n || !this.pathSpace.collides(state.path, path, "server")) continue;
+      const spelling = state.binding?.spelling;
+      return { state, spelling: spelling !== undefined && (await this.vault.stat(spelling)) !== null ? spelling : undefined };
+    }
+    return undefined;
+  }
+
   /** Classifies the disk by content hash against the base (`state`) and the remote revision. */
   private async inspect(state: DocumentState | undefined, remote: RemoteRevision): Promise<Inspection> {
-    const basePath = state !== undefined && !state.deleted ? state.path : undefined;
+    const inspection = await this.inspectPaths(state, remote);
+    // The file the revision would replace, move or delete is the document's
+    // own: the one its binding names, or, for a document whose file the user
+    // deleted, an untracked one (a crash may have hidden the engine's own
+    // move of it, which the disk shows). A file another document's binding
+    // names (one a local rename brought to this document's synced path after
+    // its file moved away) is never this revision's to replace or delete;
+    // the merge path takes the document's own file (localVersion).
+    if (inspection.kind === "clean" && inspection.source !== undefined && liveHere(state)) {
+      const binding = state.binding;
+      const owner = await this.journal.documentByFileKey(this.pathSpace.filesystemKey(inspection.source));
+      const another = owner !== undefined && owner.documentId !== state.documentId;
+      const elsewhere = binding !== undefined && binding !== null && this.pathSpace.fileKey(binding.spelling) !== this.pathSpace.fileKey(inspection.source);
+      if (another || elsewhere) return { kind: "dirty", path: inspection.source, content: await this.readOrNull(inspection.source) };
+    }
+    return inspection;
+  }
+
+  /** inspect's classification by the paths the base and the revision name. */
+  private async inspectPaths(state: DocumentState | undefined, remote: RemoteRevision): Promise<Inspection> {
+    const basePath = liveHere(state) ? state.path : undefined;
     const baseContent = basePath === undefined ? null : await this.readOrNull(basePath);
     const baseHash = state?.baseHash;
     const baseOnDisk = baseContent !== null && sha256Hex(baseContent) === baseHash;
@@ -995,38 +1082,7 @@ export class SyncEngine {
         found = await this.localFile(state, remote);
       }
     }
-    if (!remote.deleted) {
-      // Another document the journal has at the path, whose own merge is
-      // pending (the server has already moved it away), goes first. One the
-      // platform cannot hold gives up its kept file (#390).
-      const holder = await this.documentAt(remote.path);
-      if (holder !== undefined && holder.documentId !== remote.documentId && (await this.resolveFirst(holder.documentId)) && found.path === remote.path) {
-        found = { path: found.path, content: await this.readOrNull(found.path) };
-      }
-    }
-    let elsewhere: { path: string; content: Uint8Array | null } | undefined;
-    if (found.content !== null) {
-      // `found` is what occupies the document's synced path, or for a
-      // document this device has no file of its own for, the remote path. A
-      // known document a local rename put there (after this document moved
-      // away from it, if it has a synced path there) is not this document's
-      // local version. If this document's own file is where a local rename
-      // moved it, that file is its local version: the local rename wins
-      // (SPEC.md §7), so the result never lands here and the other document
-      // keeps its place, whatever its content (review of #278; followRename
-      // would take a file holding the synced content for this one). Otherwise the
-      // result needs the path, and the other document moves on to a
-      // conflict-copy path under its own id, as a refused create would
-      // (#267). A known document's remote delete never needs the path, so
-      // the other document keeps its place.
-      const mover = await this.localMoveAt(found.path, remote.documentId);
-      if (mover !== undefined) {
-        const own = state !== undefined && !state.deleted && found.path === state.path ? await this.followRename(state, { path: found.path, content: null }) : undefined;
-        if (own !== undefined && own.content !== null) elsewhere = own;
-        else if ((state === undefined || state.deleted || !remote.deleted) && (await this.moveAside(mover.documentId, mover.path))) found = { path: found.path, content: await this.readOrNull(found.path) };
-      }
-    }
-    const local = elsewhere ?? (await this.followRename(state, found));
+    const local = await this.localVersion(state, found);
     // A merge of this revision that was interrupted after its result reached
     // the disk is finished as it was, without asking the hook again.
     if (deferred?.revision.revisionId === remote.revisionId && deferred.merging !== undefined && (await this.resumeMerge(remote, state, deferred.merging))) return "merged";
@@ -1035,10 +1091,11 @@ export class SyncEngine {
       base: state,
       local: { path: local.path, content: local.content },
       readRemoteContent: () => (remote.deleted ? Promise.resolve(null) : downloadContent(this.api, this.vaultId, remote.contentHash, remote.size)),
-      // A tombstone has no content of its own to merge against, and a base
-      // retention purged has none any more (SPEC.md §11): never a reason to
-      // stop the pull.
-      readBaseContent: () => (state === undefined || state.deleted ? Promise.resolve(null) : baseContent(this.api, this.vaultId, state.revisionId)),
+      // A tombstone has no content of its own to merge against, nor has a
+      // document whose file this device released, and a base retention
+      // purged has none any more (SPEC.md §11): never a reason to stop the
+      // pull.
+      readBaseContent: () => (!liveHere(state) ? Promise.resolve(null) : baseContent(this.api, this.vaultId, state.revisionId)),
     });
     if (outcome.status === "merged" && outcome.content !== null) {
       // The result cannot be written here: the remote path never touches the
@@ -1049,7 +1106,10 @@ export class SyncEngine {
       if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
     }
     try {
-      if (outcome.status === "merged" && (await this.applyMerge(remote, state, local, outcome))) return "merged";
+      const applied = outcome.status === "merged" ? await this.applyMerge(remote, state, local, outcome) : false;
+      // Rule W left the result's path another document's (W(c)): the revision waits, listed.
+      if (applied === "held") return await this.defer(remote, "path-conflict");
+      if (applied) return "merged";
     } catch (error) {
       if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
       throw error;
@@ -1062,80 +1122,34 @@ export class SyncEngine {
     const there = await this.readOrNull(merging.path);
     if ((there === null ? null : sha256Hex(there)) !== merging.contentHash) return false;
     const resumed = { path: merging.path, content: there };
-    return this.applyMerge(remote, state, resumed, { status: "merged", ...resumed });
+    return (await this.applyMerge(remote, state, resumed, { status: "merged", ...resumed })) === true;
   }
 
   /**
-   * Hands a document whose remote revision the merge path holds to it again,
-   * unless it is already being merged further up. Returns whether that
-   * resolved it.
+   * The document's local version for the merge path (design §4.5 step 4):
+   * its own file, the one its binding names (a local rename moved it there,
+   * the user's spelling included), or none if the user deleted it. A
+   * document with no file of its own here (a new one, a tombstone, one whose
+   * file the engine released) has the file `found` at the remote path, if
+   * any: an untracked file, since rule W moved every other document's away.
    */
-  private async resolveFirst(documentId: string): Promise<boolean> {
-    if (this.resolving.has(documentId)) return false;
-    const deferred = await this.journal.getDeferred(documentId);
-    if (deferred?.reason === "unmaterializable") return this.releaseKeptFile(documentId);
-    if (deferred?.reason !== "local-changes") return this.releaseIdleClaim(documentId);
-    const state = await this.journal.getDocument(documentId);
-    return (await this.handToMerge(deferred.revision, state, await this.localFile(state, deferred.revision))) === "merged";
-  }
-
-  /**
-   * Gives up an unmaterializable document's claim on the file with local
-   * changes it kept at its old path, once the server puts another document
-   * there (#390): the file is then no document's, so the merge path keeps it
-   * as a `concurrent-create` conflict copy, which the next push sends as a
-   * new document, and the other document takes the path. Kept, the file
-   * would hold the other document off for good. An edit of the document
-   * still pending at that path is dropped first (#391): its content is the
-   * file's, which the copy keeps. The claim is then recorded as releaseFile
-   * records it (the state `deleted`), so the document materializes as a new
-   * one would. Interrupted before the copy is written, the file is untracked
-   * at the path, and the push's refused create keeps it as a copy (#267). A
-   * document with another operation pending (a delete, or one at another
-   * path) keeps its file. Returns whether the claim was given up.
-   */
-  private async releaseKeptFile(documentId: string): Promise<boolean> {
-    const state = await this.journal.getDocument(documentId);
-    if (state === undefined || state.deleted) return false;
-    const key = this.pathSpace.fileKey(state.path);
-    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId);
-    if (pending.some((operation) => operation.deleted || this.pathSpace.fileKey(operation.path) !== key)) return false;
-    for (const operation of pending) await this.removeOperation(operation.revisionId);
-    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
-    return true;
-  }
-
-  /**
-   * Gives up an unmaterializable document's claim on its old path once its
-   * file there is gone (the user deleted it while the document was parked)
-   * and the server puts another document there (#398). Its operations still
-   * pending at that path stop counting as a claim on it: an edit is dropped,
-   * as the user's delete superseded its content, and a delete stays pending,
-   * so it meets the document's next revision as any local delete does. The
-   * state is recorded `deleted`, as releaseFile records a release, so the
-   * document materializes as a new one would and never takes the other
-   * document's file for its own.
-   *
-   * A local move of the file away from the path (a pending operation at
-   * another path, or a local rename not yet pushed) releases the moved file
-   * with the path, as releaseKeptFile releases a file left there (#459).
-   * Kept for the move, the claim would leave the journal with both
-   * documents live at the path, so the other document's own changes there
-   * would be held behind the parked one, and an unpushed rename is held in
-   * memory only: a restart would forget it and let the stale edit take the
-   * other document's file. The move is dropped, never to be taken for the
-   * other document's, and the file it moved is pushed as a new document.
-   */
-  private async releaseParkedPath(documentId: string): Promise<void> {
-    const state = await this.journal.getDocument(documentId);
-    if (state === undefined || state.deleted) return;
-    const key = this.pathSpace.fileKey(state.path);
-    const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === documentId && !operation.deleted);
-    for (const operation of pending) await this.removeOperation(operation.revisionId);
-    const before = await this.journal.getDocument(documentId);
-    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
-    for (const operation of pending) if (this.pathSpace.fileKey(operation.path) !== key) this.markDirty(operation.path);
-    this.forgetRenamesFrom(before);
+  private async localVersion(state: DocumentState | undefined, found: { path: string; content: Uint8Array | null }): Promise<LocalVersion> {
+    if (!liveHere(state)) return found;
+    const binding = state.binding;
+    if (binding === undefined) return this.followRename(state, found);
+    if (binding === null) {
+      // The user deleted its file, or a crash hid the engine's own move of
+      // it (a merge result recorded on its deferral, found where the record
+      // says). A file another document's binding names is that document's
+      // (a local rename brought it there, #473); an untracked one is taken
+      // as the document's local version (R7c decides it from the binding
+      // alone, R8 from the merge intent).
+      const followed = await this.followRename(state, found);
+      const owner = followed.content === null ? undefined : await this.journal.documentByFileKey(this.pathSpace.filesystemKey(followed.path));
+      if (followed.content === null || (owner !== undefined && owner.documentId !== state.documentId)) return { path: state.path, content: null, absent: true };
+      return followed;
+    }
+    return { path: binding.spelling, content: await this.readOrNull(binding.spelling) };
   }
 
   /**
@@ -1152,73 +1166,6 @@ export class SyncEngine {
     const spelling = before?.binding?.spelling;
     if (before === undefined || spelling === undefined || spelling === before.path) return;
     this.markDirty(spelling);
-  }
-
-  /**
-   * Gives up, as releaseKeptFile does, the claim of each unmaterializable
-   * document whose kept file is in the way of `path` as a file against a
-   * folder, by the platform's file key: `path` is one of the file's folders
-   * (`NOTES` for a kept `Notes/c.md`), or the file is one of `path`'s (a
-   * kept `notes` for `NOTES/d.md`). #390 covers the same path (#452). The vault
-   * refuses `path` while the file is there, and the document, parked, never
-   * moves it. Released, the file is an untracked one, which the next push
-   * sends as a create: the server refuses it for the deferred document's
-   * path, so it is kept as a conflict copy (the outermost folder in the way
-   * taking the conflict name, #359) and the deferred revision is written.
-   */
-  private async releaseKeptFilesAround(path: string, documentId: string): Promise<void> {
-    const key = this.pathSpace.fileKey(path);
-    const folders = new Set(this.pathSpace.ancestors(key));
-    for (const deferred of await this.journal.listDeferred()) {
-      if (deferred.reason !== "unmaterializable" || deferred.revision.documentId === documentId) continue;
-      const state = await this.journal.getDocument(deferred.revision.documentId);
-      if (state === undefined || state.deleted) continue;
-      const kept = this.pathSpace.fileKey(state.path);
-      if (!folders.has(kept) && !kept.startsWith(`${key}/`)) continue;
-      if (await this.releaseKeptFile(state.documentId)) this.markDirty(state.path);
-    }
-  }
-
-  /**
-   * Gives up the claim on its synced path of a document whose file is not
-   * there any more and whose remote revision waits for a reason no pull or
-   * push retries (`out-of-scope`, `too-large`, `invalid-path`), once the
-   * server puts another document at that path (#379 review): kept, the claim
-   * would hold the other document off for good. A document with an operation
-   * pending or a merge result recorded keeps its claim: those are retried.
-   *
-   * If a local rename not yet pushed moved the document's file (the rename
-   * waits with the document, SPEC.md §8), the document follows its file, as
-   * on-device identity follows the filesystem (#52): its journal state moves
-   * to the rename's new path and the rename is dropped, so the path it left
-   * is free and no record of the rename points there once the other document
-   * is written. Its revision, still deferred for its own reason, then applies
-   * to the file where it is. If the file is not there, the new path is out of
-   * scope or another live document holds it, the document gives its claim up
-   * instead, as when the user deleted its file: like releaseKeptFile, the
-   * state is recorded `deleted`, so the revision applies as a new document's
-   * would once its own retry rules let it (never taking the other document's
-   * file as its local version), and a file at the new path is pushed as a new
-   * document. Returns whether the claim was given up.
-   */
-  private async releaseIdleClaim(documentId: string): Promise<boolean> {
-    const deferred = await this.journal.getDeferred(documentId);
-    if (deferred === undefined || deferred.merging !== undefined || (deferred.reason !== "out-of-scope" && deferred.reason !== "too-large" && deferred.reason !== "invalid-path")) return false;
-    const state = await this.journal.getDocument(documentId);
-    if (state === undefined || state.deleted || (await this.vault.stat(state.path)) !== null) return false;
-    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId)) return false;
-    const key = this.pathSpace.fileKey(state.path);
-    const follow = (await this.localRenames()).find((move) => move.documentId === documentId && this.pathSpace.fileKey(move.to) !== key)?.to;
-    if (follow !== undefined && this.inScope(follow) && (await this.vault.stat(follow)) !== null) {
-      const holder = await this.documentAt(follow);
-      if (holder === undefined || holder.documentId === documentId) {
-        await this.putDocument({ ...state, path: follow }, { kind: "moved" });
-        return true;
-      }
-    }
-    if (follow !== undefined) this.markDirty(follow);
-    await this.putDocument({ ...state, deleted: true }, { kind: "released" });
-    return true;
   }
 
   /**
@@ -1345,63 +1292,6 @@ export class SyncEngine {
   }
 
   /**
-   * Moves the file a local move of `documentId` put at `path` on to a
-   * conflict-copy path, as the document's own (SPEC.md §6.3): its pending
-   * operations and unpushed rename follow it, so it is committed there under
-   * its id. Logged as `path-taken` first, so an interrupted move resumes under
-   * the same name. Returns false, moving nothing, if no name fits.
-   */
-  private async moveAside(documentId: string, path: string): Promise<boolean> {
-    const content = await this.readOrNull(path);
-    if (content === null) return true;
-    const hash = sha256Hex(content);
-    // A logged name is reused only while it is free or already holds the
-    // file: a file created there since (after a crash) is not this one.
-    let copyPath: string | null = null;
-    for (const record of await this.journal.listConflicts()) {
-      if (record.reason !== "path-taken" || record.documentId !== documentId || record.path !== path || record.copyHash !== hash || record.copyPath === null) continue;
-      const there = await this.readOrNull(record.copyPath);
-      if (there === null || sha256Hex(there) === hash) {
-        copyPath = record.copyPath;
-        break;
-      }
-    }
-    if (copyPath === null) {
-      copyPath = await this.freeCopyName(path);
-      if (copyPath === null) return false;
-      await this.journal.putConflict(this.conflictRecord(documentId, path, "path-taken", copyPath, hash, ""));
-    }
-    const target = copyPath;
-    if ((await this.vault.stat(target)) === null) await this.echoed(this.echoes.expectRename(await this.heldSpelling(path), target), () => this.renameFile(path, target));
-    for (const operation of await this.journal.listPending()) {
-      if (operation.documentId !== documentId || operation.path !== path || operation.deleted) continue;
-      await this.journal.addPending({ ...operation, revisionId: this.newId(), path: target });
-      await this.removeOperation(operation.revisionId);
-    }
-    // The file's binding moved with it (renameFile), so a known document's
-    // rename is from its synced path to the copy's. A pending create a local
-    // rename moved is committed at the copy's path, never at the path its
-    // file left (#286). Should the create have landed after all (its
-    // response lost), the pull rebases this one onto it (applyRevision).
-    if (!(await this.known(documentId))) {
-      for (const create of await this.journal.listPending()) {
-        if (create.documentId !== documentId || create.baseRevisionId !== "" || create.deleted || create.path === target) continue;
-        const copied = await this.readOrNull(target);
-        await this.journal.addPending({
-          ...create,
-          revisionId: this.newId(),
-          path: target,
-          ...(copied === null ? {} : { contentHash: sha256Hex(copied), size: BigInt(copied.length) }),
-        });
-        await this.removeOperation(create.revisionId);
-      }
-    }
-    this.markDirty(target);
-    this.schedulePush();
-    return true;
-  }
-
-  /**
    * Makes the disk show a merge result and rebases the document onto the
    * remote revision, so that the next push commits the result with the remote
    * revision as its base (SPEC.md §6.2 step 3). Returns false, writing
@@ -1428,22 +1318,13 @@ export class SyncEngine {
    * result is an ordinary local edit on top of the remote revision, and a
    * conflict copy an ordinary new file, and both are pushed as such.
    */
-  private async applyMerge(
-    remote: RemoteRevision,
-    state: DocumentState | undefined,
-    local: { path: string; content: Uint8Array | null },
-    outcome: Extract<MergeOutcome, { status: "merged" }>,
-  ): Promise<boolean> {
+  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, outcome: Extract<MergeOutcome, { status: "merged" }>): Promise<boolean | "held"> {
     if (outcome.content !== null && !isVaultRelativePath(outcome.path)) throw new Error(`the merge hook returned a path that is not vault-relative: ${outcome.path}`);
-    const current = await this.readOrNull(local.path);
+    // The document's own file, as the merge hook was given it. A document
+    // whose file the user deleted has none: a file at `local.path` now is
+    // another one, never this merge's to replace or move.
+    const current = local.absent === true ? null : await this.readOrNull(local.path);
     if (!sameContent(current, local.content)) return false;
-    // Another document's file is not this merge's to replace, unless a
-    // local rename brought this document's own file there after that
-    // document moved away or the user deleted its file (#451): the local
-    // rename wins (SPEC.md §7), and the journal keeps this document at the
-    // remote path, so it never holds two documents at one path.
-    const holder = await this.documentAt(local.path);
-    if (holder !== undefined && holder.documentId !== remote.documentId && !(await this.renamedOntoVacated(remote, local.path, holder))) return false;
     const copyPaths: string[] = [];
     // A result path that is the document's own file under another spelling
     // (a remote case-only rename on a case-insensitive platform) is no file
@@ -1451,7 +1332,7 @@ export class SyncEngine {
     // rename below respells (#343). Only if the vault holds the two as one:
     // on NTFS or APFS a file at `STRASSE/b.md` is another one than
     // `straße/b.md`, so it is in the way (#447).
-    const respelled = outcome.content !== null && outcome.path !== local.path && (await this.heldAsOne(outcome.path, local.path));
+    const respelled = outcome.content !== null && current !== null && outcome.path !== local.path && (await this.heldAsOne(outcome.path, local.path));
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).
@@ -1461,27 +1342,21 @@ export class SyncEngine {
       result: outcome.content === null ? null : outcome.path,
     };
     try {
-      // A file in the way at the result's new path. If it is no document's, it
-      // was created here concurrently with the remote document's move there:
-      // the remote document takes the path and the file is kept as a conflict
-      // copy. Cleared before the merge is recorded, so a file at the recorded
-      // path is always this document's (see followRename).
-      if (outcome.content !== null && outcome.path !== local.path && !respelled) {
+      if (outcome.content !== null && !respelled) {
+        // The path claim where the result lands (design §4.5 step 3, PO-4):
+        // another document's file in the way moves by rule W, or the result
+        // waits. Never at a path the result leaves (#473).
+        if (await this.claimPath(outcome.path, remote.documentId)) return "held";
+      }
+      // A file in the way at the result's new path is no document's now: it
+      // was created here concurrently with the remote document's move there,
+      // so the remote document takes the path and the file is kept as a
+      // conflict copy. Cleared before the merge is recorded, so a file at the
+      // recorded path is always this document's.
+      if (outcome.content !== null && (current === null || outcome.path !== local.path) && !respelled) {
         const occupant = await this.readOrNull(outcome.path);
-        // A known document a local move put there moves on to a
-        // conflict-copy path under its own id, as a refused create would.
-        const mover = occupant === null || sameContent(occupant, outcome.content) ? undefined : await this.localMoveAt(outcome.path, remote.documentId);
-        if (mover !== undefined && !(await this.moveAside(mover.documentId, mover.path))) return false;
-        const remaining = mover === undefined ? occupant : await this.readOrNull(outcome.path);
-        // A file the journal has as another live document's is that
-        // document's, also if its content is the result's (#264, #267).
-        const owner = remaining === null ? undefined : await this.documentAt(outcome.path);
-        if (owner !== undefined && owner.documentId !== remote.documentId) return false;
-        if (remaining !== null && !sameContent(remaining, outcome.content)) {
-          // The file is a document's, the merged one's included: the journal
-          // has it there, or a local move put it there.
-          if (owner !== undefined || (await this.localMoveAt(outcome.path, "")) !== undefined) return false;
-          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: remaining }, merged);
+        if (occupant !== null && !sameContent(occupant, outcome.content)) {
+          const copyPath = await this.writeConflictCopy(remote, outcome.path, { reason: "concurrent-create", content: occupant }, merged);
           if (copyPath === null) return false;
           copyPaths.push(copyPath);
           this.markDirty(copyPath);
@@ -1491,8 +1366,8 @@ export class SyncEngine {
           // before the file does, so none is ever left pointing at the merged
           // document's file.
           await this.dropOperationsAt(outcome.path, remote.documentId);
-          if (!sameContent(await this.readOrNull(outcome.path), remaining)) return false;
-          const expectedHash = sha256Hex(remaining);
+          if (!sameContent(await this.readOrNull(outcome.path), occupant)) return false;
+          const expectedHash = sha256Hex(occupant);
           await this.echoed(this.echoes.expectDelete(await this.heldSpelling(outcome.path)), () => this.deleteFile(outcome.path, { expectedHash }));
         }
       }
@@ -1507,7 +1382,7 @@ export class SyncEngine {
         copyPaths.push(copyPath);
         // A local file at the remote path that is no document's own (this
         // device has no live state for the merged document) moves to the copy.
-        if (state === undefined || state.deleted) await this.renameFollowsCopy(local.path, copyPath);
+        if (!liveHere(state)) await this.renameFollowsCopy(local.path, copyPath);
       }
       if (outcome.content === null) {
         if (current !== null) {
@@ -1515,7 +1390,7 @@ export class SyncEngine {
           await this.echoed(this.echoes.expectDelete(await this.heldSpelling(local.path)), () => this.deleteFile(local.path, { expectedHash }));
         }
       } else {
-        let there = outcome.path === local.path ? current : await this.readOrNull(outcome.path);
+        let there = outcome.path === local.path && current !== null ? current : await this.readOrNull(outcome.path);
         if (outcome.path !== local.path && current !== null) {
           if (there !== null && !respelled) return false;
           await this.echoed(this.echoes.expectRename(await this.heldSpelling(local.path), outcome.path), () => this.renameFile(local.path, outcome.path));
@@ -1543,7 +1418,7 @@ export class SyncEngine {
     // content the result or the copy now holds. They go before the rebase, so
     // a document never has the remote revision as its base while an operation
     // based on an older head is still pending.
-    const ownFile = state !== undefined && !state.deleted;
+    const ownFile = liveHere(state);
     for (const operation of await this.journal.listPending()) {
       if (operation.documentId === remote.documentId) await this.removeOperation(operation.revisionId);
     }
@@ -1580,22 +1455,6 @@ export class SyncEngine {
       // The copy holds the file's content now: the document it is keeps it there.
       if (this.pathSpace.fileKey(move.to) === key) await this.bindings.renamed(move.to, copyPath);
     }
-  }
-
-  /**
-   * Whether `path`, which the journal has as `holder`'s, holds the merged
-   * document's own file because a local rename of it followed there
-   * (followRename) after `holder` moved away or its file was deleted, and
-   * the remote revision does not put the document there. A merged document
-   * this device has no live state for has no file of its own to follow, so
-   * its merge always looks at the remote path, and a document's synced path
-   * that the journal has as another document's would be two live documents
-   * at one path, which the journal never holds (#264, #379): a path the
-   * remote revision does not put the document at is one a local rename
-   * brought its file to (#462).
-   */
-  private async renamedOntoVacated(remote: RemoteRevision, path: string, holder: DocumentState): Promise<boolean> {
-    return this.pathSpace.fileKey(remote.path) !== this.pathSpace.fileKey(path) && (await this.movedAway(holder));
   }
 
   /**
@@ -1685,7 +1544,12 @@ export class SyncEngine {
   /** The first free conflict-copy name for `path` (PathClaims.freeCopyName, PO-14). */
   private async freeCopyName(path: string, exempt?: Exempt): Promise<string | null> {
     const claims = await PathClaims.load(this.pathSpace, this.journal, this.vault);
-    return claims.freeCopyName(path, { deviceName: this.deviceName, date: this.now(), rules: this.pathRules, maxAttempts: maxConflictNameAttempts }, exempt);
+    return claims.freeCopyName(path, this.copyNaming(), exempt);
+  }
+
+  /** How this engine names conflict copies (SPEC.md §7). */
+  private copyNaming(): CopyNaming {
+    return { deviceName: this.deviceName, date: this.now(), rules: this.pathRules, maxAttempts: maxConflictNameAttempts };
   }
 
   /** Whether `remote` has content larger than the download cap. */
@@ -1777,6 +1641,14 @@ export class SyncEngine {
       if (!response.hasMore) break;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
     }
+    // A document the restored server lacks keeps the old server's seq, under
+    // which the restored server's own revisions of it would look applied:
+    // seq 0 is no revision of this server (see applyRevision). Marked before
+    // the heads are applied: the server has no claim of its own for such a
+    // document, so a head at its path takes the path (claimPath).
+    for (const state of await this.journal.listDocuments()) {
+      if (!heads.has(state.documentId) && state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
+    }
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
@@ -1795,12 +1667,6 @@ export class SyncEngine {
         this.count(summary, await this.handToMerge(remote, state, local));
       }
     }
-    // A document the restored server lacks keeps the old server's seq, under
-    // which the restored server's own revisions of it would look applied:
-    // seq 0 is no revision of this server (see applyRevision).
-    for (const state of await this.journal.listDocuments()) {
-      if (!heads.has(state.documentId) && state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
-    }
     await this.journal.resetCursor(seq, anchor);
     summary.cursor = seq;
   }
@@ -1809,6 +1675,7 @@ export class SyncEngine {
     // Classify every vault event so far, so the push sees the latest changes.
     await this.events;
     const summary: PushSummary = { committed: 0, conflicts: 0, pending: 0, rejected: [] };
+    await this.intents.recover();
     await this.finishConflictMoves();
     await this.pullOnce();
     await this.retryMerges();
@@ -1846,9 +1713,9 @@ export class SyncEngine {
     const pending = await this.journal.listPending();
     if (pending.length === 0) return;
     const conflicts = await this.journal.listConflicts();
-    const parked = await this.parked();
+    const busy = await this.busy();
     for (const operation of pending) {
-      if (operation.deleted || parked.documents.has(operation.documentId)) continue;
+      if (operation.deleted || busy.documents.has(operation.documentId)) continue;
       const record = conflicts.find(
         (candidate) =>
           candidate.reason === "path-taken" &&
@@ -1896,14 +1763,14 @@ export class SyncEngine {
    * paths left for a later push.
    */
   private async pushRound(dirty: DirtyPaths, summary: PushSummary, resume: boolean): Promise<Set<string>> {
-    let parked = await this.parked();
+    let busy = await this.busy();
     if (resume) {
       for (const operation of await this.journal.listPending()) {
-        if (parked.documents.has(operation.documentId) || parked.paths.has(operation.path)) continue;
+        if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) continue;
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
         await this.commitOperation(operation, summary);
-        parked = await this.parked();
+        busy = await this.busy();
       }
     }
     await this.bindings.idle();
@@ -1912,7 +1779,7 @@ export class SyncEngine {
         space: this.pathSpace,
         documents: await this.journal.listDocuments(),
         pending: await this.journal.listPending(),
-        parked,
+        deferred: await this.journal.listDeferred(),
         listed: await this.vault.list(),
         read: (path) => this.readOrNull(path),
         inScope: (path) => this.inScope(path),
@@ -1925,8 +1792,8 @@ export class SyncEngine {
     for (const { state, path } of plan.adopted) await this.putDocument(state, { kind: "adopted", path });
     for (const operation of plan.operations) {
       // An earlier commit's pull may have handed this document or path to the merge path.
-      parked = await this.parked();
-      if (parked.documents.has(operation.documentId) || parked.paths.has(operation.path)) {
+      busy = await this.busy();
+      if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) {
         plan.waiting.add(operation.path);
         continue;
       }
@@ -1954,20 +1821,9 @@ export class SyncEngine {
     return plan.waiting;
   }
 
-  /** Documents and paths the merge path owns, and documents and paths with an operation still pending. */
-  private async parked(): Promise<Parked> {
-    const parked: Parked = { documents: new Set(), paths: new Set() };
-    for (const deferred of await this.journal.listDeferred()) {
-      // An unmaterializable document waits too: its local changes are not pushed, and the server never hears of its file.
-      // So does one whose remote revision is out of scope, or too large to download.
-      if (deferred.reason !== "local-changes" && deferred.reason !== "unmaterializable" && deferred.reason !== "out-of-scope" && deferred.reason !== "too-large") continue;
-      const { revision } = deferred;
-      parked.documents.add(revision.documentId);
-      parked.paths.add(revision.path);
-      const state = await this.journal.getDocument(revision.documentId);
-      if (state !== undefined && !state.deleted) parked.paths.add(state.path);
-    }
-    return parked;
+  /** The documents whose deferred remote revision keeps their local changes from being pushed, and their server claims (busyClaims). */
+  private async busy(): Promise<Busy> {
+    return busyClaims(await this.journal.listDocuments(), await this.journal.listDeferred());
   }
 
   /** The file the vault holds at `path`, under the spelling it has (on a case-insensitive platform, possibly another one), if any. */
@@ -2146,16 +2002,16 @@ export class SyncEngine {
   private async moveToConflictPath(operation: PendingOperation, error: ConnectError, summary: PushSummary): Promise<void> {
     const pending = await this.journal.listPending();
     if (operation.deleted) return;
-    const parked = await this.parked();
+    const busy = await this.busy();
     if (!pending.some((candidate) => candidate.revisionId === operation.revisionId)) {
       // The pull resolved it. If it moved the document aside for the other
       // document (a local rename onto that one's path), the document's
       // operation now stands at the conflict-copy path: committed there.
       const moved = pending.find((candidate) => candidate.documentId === operation.documentId && !candidate.deleted);
-      if (moved !== undefined && !parked.documents.has(moved.documentId) && !parked.paths.has(moved.path)) await this.commitOperation(moved, summary);
+      if (moved !== undefined && !busy.documents.has(moved.documentId) && !busy.paths.has(moved.path)) await this.commitOperation(moved, summary);
       return;
     }
-    if (parked.documents.has(operation.documentId) || parked.paths.has(operation.path)) return;
+    if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) return;
     const conflicts = await this.journal.listConflicts();
     const movedHere = (path: string) => conflicts.find((record) => record.reason === "path-taken" && record.documentId === operation.documentId && record.copyPath === path);
     // What the server refuses a path for (SPEC.md §5, §6.3): a document other
@@ -2267,12 +2123,11 @@ export class SyncEngine {
         (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)) ||
         (deferred.reason === "too-large" && !this.retried.has(deferred.revision.revisionId) && !this.overCap(deferred.revision)),
     );
-    for (const deferred of await this.journal.listDeferred()) {
-      if (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId)) await this.releaseFile(deferred.revision.documentId);
-      if (deferred.reason === "path-conflict" && !deferred.revision.deleted) await this.releaseKeptFilesAround(deferred.revision.path, deferred.revision.documentId);
-    }
     if (deferrals.length === 0) return;
-    const files = new Set(await this.vault.list());
+    // Only an untracked file in the way keeps a revision waiting here: a
+    // document's file is rule W's to move when the revision is applied.
+    const bound = new Set((await this.journal.listDocuments()).flatMap((state) => (state.binding && hasBase(state) ? [state.binding.fileKey] : [])));
+    const files = new Set((await this.vault.list()).filter((file) => !bound.has(this.pathSpace.filesystemKey(file))));
     const folders = new Set([...files].flatMap((file) => this.pathSpace.ancestors(file)));
     for (const deferred of deferrals) {
       const { path } = deferred.revision;
@@ -2467,6 +2322,15 @@ const anchorBytes = 16;
  */
 function cursorAnchor(revision: Revision): Uint8Array | undefined {
   return revision.anchor.length === anchorBytes ? revision.anchor : undefined;
+}
+
+/**
+ * Whether a local move put the document's file elsewhere than its synced
+ * path (design §4.3 E1): its binding names another spelling.
+ */
+function movedLocally(state: DocumentState | undefined): boolean {
+  const binding = state?.binding;
+  return state !== undefined && binding !== undefined && binding !== null && binding.spelling !== state.path;
 }
 
 function syncedState(remote: RemoteRevision): DocumentState {

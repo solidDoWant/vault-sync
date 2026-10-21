@@ -1,10 +1,11 @@
 import { sha256Hex } from "../hash";
 import type {
+  DeferredRevision,
   DocumentKindName,
   DocumentState,
   PendingOperation,
 } from "../journal/journal";
-import { hasBase } from "./bindings";
+import { hasBase, liveHere } from "./bindings";
 import type { PathSpace } from "./pathspace";
 
 /**
@@ -16,8 +17,8 @@ export interface PushPlanSource {
   documents: readonly DocumentState[];
   /** Every pending operation: a document with one has its outbox already, and waits for it. */
   pending: readonly PendingOperation[];
-  /** Documents and paths the merge path owns or a blocker keeps (parked). */
-  parked: { documents: ReadonlySet<string>; paths: ReadonlySet<string> };
+  /** Every deferred remote revision (`ahead`, design §4.1): a document whose revision the merge path or a blocker holds waits (busyClaims). */
+  deferred: readonly DeferredRevision[];
   listed: readonly string[];
   read: (path: string) => Promise<Uint8Array | null>;
   inScope: (path: string) => boolean;
@@ -60,20 +61,22 @@ export interface PushPlan {
  *   at its path unless the user deleted that document's file since the
  *   tombstone was pulled or the document has an outbox (PO-13).
  *
- * A document with an outbox or parked by the merge path or a blocker waits,
- * and so do its paths: one outbox per document (§4.1).
+ * A document with an outbox, or whose remote revision the merge path or a
+ * blocker holds, waits, and so do its paths: one outbox per document
+ * (§4.1).
  */
 export async function planPush(
   source: PushPlanSource,
   dirty: DirtyPaths,
 ): Promise<PushPlan> {
-  const { space, parked } = source;
+  const { space } = source;
+  const blocked = busyClaims(source.documents, source.deferred);
   const busyDocuments = new Set([
-    ...parked.documents,
+    ...blocked.documents,
     ...source.pending.map((operation) => operation.documentId),
   ]);
   const busyPaths = new Set([
-    ...parked.paths,
+    ...blocked.paths,
     ...source.pending.map((operation) => operation.path),
   ]);
   // A busy document's synced path waits with it: a create there would be
@@ -241,6 +244,35 @@ export async function planPush(
     adopted,
     revivals,
   };
+}
+
+/** Documents a deferred remote revision keeps from pushing, and the server claims they hold (busyClaims). */
+export interface Busy {
+  documents: Set<string>;
+  paths: Set<string>;
+}
+
+/**
+ * The documents whose local changes wait because their newest server
+ * revision is deferred (design §4.5 step 2, §4.8): the merge path holds it
+ * (`local-changes`), or a blocker does (`unmaterializable`, `out-of-scope`,
+ * `too-large`). A commit of theirs would be refused, its base being behind
+ * the server's head. Their server claims wait with them (C3): the
+ * deferred revision's path, where the server has the document, and the
+ * synced path of one that still holds a file here. A path is never held
+ * for any other reason.
+ */
+export function busyClaims(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): Busy {
+  const busy: Busy = { documents: new Set(), paths: new Set() };
+  const states = new Map(documents.map((state) => [state.documentId, state]));
+  for (const { revision, reason } of deferred) {
+    if (reason === "invalid-path" || reason === "path-conflict") continue;
+    busy.documents.add(revision.documentId);
+    busy.paths.add(revision.path);
+    const state = states.get(revision.documentId);
+    if (liveHere(state)) busy.paths.add(state.path);
+  }
+  return busy;
 }
 
 /** A new revision of a known document: `content` at `path`, or a tombstone (null). */

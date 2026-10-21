@@ -2,7 +2,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { ConflictRecord, DeferredRevision, DocumentState, JournalChanges } from "../journal/journal";
+import type { ConflictRecord, DeferredRevision, DocumentState, JournalChanges, NewIntent } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import type { WritePrecondition } from "../vault/adapter";
 import { threeWayMerge, type MergeHook } from "./merge";
@@ -891,15 +891,17 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
   describe("given a move aside interrupted after its name was logged", () => {
     it("does not reuse the logged name for a file created there since", async () => {
       // d's rename to c.md is pending when b's rename to c.md arrives; the
-      // engine logs d's conflict-copy name, then stops before moving the file.
+      // engine records d's displacement to a conflict-copy name (its intent,
+      // design §4.4), then stops before moving the file.
       let crash = true;
       class StopAfterLogging extends InMemoryJournal {
-        override async putConflict(conflict: ConflictRecord): Promise<void> {
-          await super.putConflict(conflict);
-          if (crash && conflict.reason === "path-taken") {
+        override async putIntent(intent: NewIntent): Promise<number> {
+          const id = await super.putIntent(intent);
+          if (crash && intent.kind === "displace") {
             crash = false;
-            throw new Crash("stopped after logging the move aside");
+            throw new Crash("stopped after recording the move aside");
           }
+          return id;
         }
       }
       const h = harness({ merge: "default", journal: new StopAfterLogging() });
@@ -909,7 +911,7 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
       await h.vault.rename("d.md", "c.md");
       moveHeadBeforeCommit(h, () => h.server.commit({ documentId: "b", path: "c.md" }));
       await expect(h.engine.push()).rejects.toThrow(Crash);
-      expect(await h.journal.listConflicts()).toMatchObject([{ documentId: "d", reason: "path-taken", copyPath: copyOf("c", ".md") }]);
+      expect(await h.journal.listIntents()).toMatchObject([{ documentId: "d", kind: "displace", steps: { from: "c.md", to: copyOf("c", ".md") } }]);
       // The user creates a file at exactly that name before the engine restarts.
       await h.vault.write(copyOf("c", ".md"), bytes(lines("the user's own note")));
 
