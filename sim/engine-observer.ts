@@ -617,8 +617,9 @@ export class EngineObserver {
   }
 
   /**
-   * Kills the app just before the journal next removes a deferred revision:
-   * after a merge has rebased the document onto it, say (#453). crash() then
+   * Kills the app just before the journal next removes a deferred revision,
+   * or finishes an apply or merge intent, which removes the document's
+   * deferral with its rebase (#453; design §4.4). crash() then
    * restarts it. Returns a check of whether the kill happened.
    */
   haltOnDeferralRemoval(): () => boolean {
@@ -800,7 +801,7 @@ class HaltingJournal extends InMemoryJournal {
 
   override async transact(changes: JournalChanges): Promise<void> {
     if (changes.cursor !== undefined) changes = { ...changes, cursor: { ...changes.cursor, anchor: this.mangled(changes.cursor.anchor) } };
-    await this.haltBeforeDeferralRemoval(changes.removeDeferred ?? []);
+    await this.haltBeforeDeferralRemoval(changes.removeDeferred ?? [], (changes.removeIntents ?? []).length > 0);
     const halt = this.takePendingHalt(changes.addPending ?? []);
     if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);
     await super.transact(changes);
@@ -816,10 +817,12 @@ class HaltingJournal extends InMemoryJournal {
     return { when: halt.when, path: operation.path };
   }
 
-  private async haltBeforeDeferralRemoval(documentIds: readonly string[]): Promise<void> {
+  private async haltBeforeDeferralRemoval(documentIds: readonly string[], finishesIntent = false): Promise<void> {
     if (!this.haltOnDeferralRemoval) return;
     for (const documentId of documentIds) {
-      if ((await this.getDeferred(documentId)) !== undefined) {
+      // Since R8 a merge's rebase and its deferral's removal are one
+      // transaction, the intent's final one, also when no deferral was recorded.
+      if (finishesIntent || (await this.getDeferred(documentId)) !== undefined) {
         this.haltOnDeferralRemoval = false;
         throw new AppKilled("app killed before removing a deferred revision");
       }

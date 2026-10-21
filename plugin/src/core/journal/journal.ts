@@ -322,13 +322,6 @@ export type DeferReason = "local-changes" | "invalid-path" | "path-conflict" | "
 export interface DeferredRevision {
   revision: RemoteRevision;
   reason: DeferReason;
-  /**
-   * Set while the engine writes a merge result for `revision`: recorded
-   * before the disk changes, so a merge interrupted after them is recognized
-   * (the file at `path` hashes to `contentHash`, null for a deleted result)
-   * and finished without asking the merge hook again.
-   */
-  merging?: { path: string; contentHash: string | null };
   /** For `unmaterializable`: why the platform cannot hold the path. */
   unmaterializable?: UnmaterializableCause;
 }

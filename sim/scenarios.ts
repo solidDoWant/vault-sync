@@ -3283,8 +3283,9 @@ export interface RecreatedNoteMergeCrashResult extends RunResult {
 /**
  * A pull that brings a deleted note's tombstone and a new document at its
  * path, onto a device whose user edited the deleted note, killed after the
- * merge of the tombstone rebased the document and before it removed the
- * deferral (#453). The first engine creates and pushes `Notes/C.md`, then
+ * merge of the tombstone reached the disk and before its final transaction,
+ * which rebases the document and removes its deferral (#453; since R8 one
+ * transaction, so the merge intent's recovery finishes it). The first engine creates and pushes `Notes/C.md`, then
  * its user deletes it; the second engine pulls the note and its user edits
  * it; the first engine's user writes a new `Notes/C.md`, and its push sends
  * the tombstone and the new document. The second engine's pull is killed

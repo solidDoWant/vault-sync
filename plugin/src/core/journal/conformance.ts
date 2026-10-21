@@ -377,28 +377,6 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     },
   },
   {
-    name: "keeps the merge-in-progress marker with the deferred revision, copied",
-    run: async (journal, reopen) => {
-      const entry = sampleDeferred("doc-1", "r2", { merging: { path: "note.md", contentHash: "dd" } });
-      await journal.putDeferred(entry);
-      await journal.putDeferred(sampleDeferred("doc-2", "r3", { merging: { path: "gone.md", contentHash: null } }));
-      if (entry.merging !== undefined) entry.merging.path = "mutated.md";
-
-      const reopened = await reopen();
-      const read = await reopened.getDeferred("doc-1");
-      assertEqual(read?.merging, { path: "note.md", contentHash: "dd" }, "marker by id");
-      if (read?.merging !== undefined) read.merging.contentHash = "mutated";
-      assertEqual(
-        (await reopened.listDeferred()).map((deferred) => deferred.merging).sort((a, b) => (a?.path ?? "").localeCompare(b?.path ?? "")),
-        [
-          { path: "gone.md", contentHash: null },
-          { path: "note.md", contentHash: "dd" },
-        ],
-        "listed markers, a deleted result's null hash included",
-      );
-    },
-  },
-  {
     name: "keeps why a deferred revision is unmaterializable, and drops it when the deferral is replaced",
     run: async (journal, reopen) => {
       await journal.putDeferred(sampleDeferred("doc-1", "r2", { reason: "unmaterializable", unmaterializable: "reserved-name" }));
@@ -407,16 +385,6 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       assertEqual((await reopened.listDeferred()).map((deferred) => deferred.unmaterializable), ["reserved-name"], "listed reason");
       await reopened.putDeferred(sampleDeferred("doc-1", "r4"));
       assertEqual((await (await reopen()).getDeferred("doc-1"))?.unmaterializable, undefined, "reason of the replaced deferral");
-    },
-  },
-  {
-    name: "drops the merge-in-progress marker when the deferral is replaced without one",
-    run: async (journal, reopen) => {
-      await journal.putDeferred(sampleDeferred("doc-1", "r2", { merging: { path: "note.md", contentHash: "dd" } }));
-      await journal.putDeferred(sampleDeferred("doc-1", "r4"));
-      const read = await (await reopen()).getDeferred("doc-1");
-      assertEqual(read?.revision.revisionId, "r4", "replaced deferral");
-      assertEqual(read?.merging, undefined, "marker of the replaced deferral");
     },
   },
   {

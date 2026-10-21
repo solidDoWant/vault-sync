@@ -503,7 +503,7 @@ describe("SyncSession", () => {
       server.commit({ documentId: "b", path: "b.md", content: "second" });
       const vault = new InMemoryVault();
       const inner = new InMemoryJournal();
-      // Holds the first document write (a transaction), the step between applying a.md's disk change and moving the cursor.
+      // Holds the first document write (a transaction): the final step of a.md's apply, which moves the cursor with it (design §4.4).
       let release: () => void = () => undefined;
       let held = false;
       const steps: string[] = [];
@@ -535,9 +535,9 @@ describe("SyncSession", () => {
       release();
       await stopping;
 
-      // The held write finished; nothing after it ran: no cursor move, no b.md.
+      // The held write finished; nothing after it ran: the cursor is a.md's, and no b.md.
       expect(steps).toHaveLength(stepsAtStop);
-      expect(await inner.getCursor()).toBe(0n);
+      expect(await inner.getCursor()).toBe(1n);
       expect(await files(vault)).toEqual(new Map([["a.md", "first"]]));
     });
 
