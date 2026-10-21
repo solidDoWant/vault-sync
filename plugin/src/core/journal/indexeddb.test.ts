@@ -36,6 +36,17 @@ const v1Migrations = journalMigrations.slice(0, 1);
 const v2Migrations = journalMigrations.slice(0, 2);
 
 /**
+ * A journal opened at a schema without the file-key index (before v3), for
+ * an engine of this version standing in for an older one: its bindings'
+ * probe scans the documents instead, as that schema has nothing to probe.
+ */
+function overOlderSchema(journal: IndexedDbJournal): Journal {
+  const older = Object.create(journal) as Journal;
+  older.documentByFileKey = async (fileKey) => (await journal.listDocuments()).find((state) => state.binding?.fileKey === fileKey);
+  return older;
+}
+
+/**
  * Everything a journal holds, in comparable form. `conflicts: false` for a
  * v1 journal, which has no conflict log; `v2Fields: true` leaves out the
  * fields journal v3 added, to compare an upgraded journal with its v1 or v2
@@ -597,7 +608,7 @@ describe("IndexedDbJournal", () => {
           new SyncEngine({ vaultId: server.vaultId, deviceId: "device-1", api: createProtocolClient({ transport: server.transport }), vault, journal, merge: deferAllMerges, pushDebounceMs: null });
         server.commit({ documentId: "a", path: "a.md", content: "a1" });
         const v2 = await IndexedDbJournal.open(factory, name, v2Migrations);
-        const first = engineOver(v2);
+        const first = engineOver(overOlderSchema(v2));
         await first.pull();
         await vault.write("b.md", new TextEncoder().encode("b1"));
         await first.push();
@@ -636,7 +647,7 @@ describe("IndexedDbJournal", () => {
         // result reached the disk, before the engine recorded the merge.
         const v2 = await IndexedDbJournal.open(factory, name, v2Migrations);
         let crashAfterMerging = false;
-        const crashing: Journal = Object.create(v2) as Journal;
+        const crashing: Journal = Object.create(overOlderSchema(v2)) as Journal;
         crashing.putDeferred = async (deferred) => {
           await v2.putDeferred(deferred);
           if (!crashAfterMerging || deferred.merging === undefined) return;
@@ -752,7 +763,7 @@ describe("IndexedDbJournal", () => {
       server.commit({ documentId: "a", path: "a.md", content: "a1" });
       server.commit({ documentId: "b", path: "b.md", content: "b1" });
       const v1 = await IndexedDbJournal.open(factory, name, v1Migrations);
-      const first = engineOver(v1);
+      const first = engineOver(overOlderSchema(v1));
       await first.pull();
       first.dispose();
       v1.close();

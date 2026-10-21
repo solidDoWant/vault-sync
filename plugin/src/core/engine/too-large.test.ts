@@ -2,7 +2,7 @@ import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
-import type { DocumentState } from "../journal/journal";
+import type { DocumentState, JournalChanges } from "../journal/journal";
 import { InMemoryJournal } from "../journal/memory";
 import { threeWayMerge, type MergeHook } from "./merge";
 import { Crash, files, harness, type Harness } from "./testing";
@@ -160,6 +160,14 @@ describe("SyncEngine with remote revisions over its download cap (#316)", () => 
           throw new Crash("before the rebase");
         }
         await super.putDocument(state);
+      }
+      // Bindings writes a document row in one transaction.
+      override async transact(changes: JournalChanges): Promise<void> {
+        if (changes.putDocuments?.some((state) => state.revisionId === this.crashBefore) === true) {
+          this.crashBefore = undefined;
+          throw new Crash("before the rebase");
+        }
+        await super.transact(changes);
       }
     }
     const journal = new CrashBeforeRebase();

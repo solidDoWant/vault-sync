@@ -358,6 +358,9 @@ export class SyncEngine {
     this.random = options.random ?? Math.random;
     this.unsubscribe = this.vault.watch((event) => {
       this.events = this.events.then(() => this.handleEvent(event));
+      // A failed transition rejects every later push (pushOnce awaits the
+      // chain); the chain itself is handled here, so it is no unhandled rejection.
+      this.events.catch(() => undefined);
     });
   }
 
@@ -375,7 +378,8 @@ export class SyncEngine {
    * has finished.
    */
   async settled(): Promise<void> {
-    await this.events;
+    // After a failed transition the chain stays rejected; settling only waits for it.
+    await this.events.catch(() => undefined);
     await this.work;
     await this.bindings.idle();
   }
@@ -2691,14 +2695,18 @@ export class SyncEngine {
       this.recordChange(event, undefined, own, own ? await this.syncedSpelling(event.oldPath) : undefined);
     }
     else this.recordChange(event, event.type === "delete" ? await this.deletedFile(event.path) : undefined);
-    await this.transition(event);
     try {
-      this.onLocalChange(event);
-    } catch (error) {
-      // Keep classifying later events; surface the listener's error without swallowing it.
-      setTimeout(() => {
-        throw error;
-      });
+      await this.transition(event);
+    } finally {
+      // Reported even if its transition failed: the change is still the user's, unpushed.
+      try {
+        this.onLocalChange(event);
+      } catch (error) {
+        // Keep classifying later events; surface the listener's error without swallowing it.
+        setTimeout(() => {
+          throw error;
+        });
+      }
     }
   }
 
@@ -2731,13 +2739,11 @@ export class SyncEngine {
 
   /** Records a user's rename or delete as its binding transition (E1–E3), before the event counts as handled (PO-2). */
   private async transition(event: VaultEvent): Promise<void> {
-    try {
-      if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path);
-      else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
-    } catch {
-      // Shadow mode (refactor step R4): nothing decides by bindings yet, so a
-      // failed transition only shows in bindingShadow.
-    }
+    // A transition that fails stops event handling (later events wait
+    // behind it and every push rejects with its error) until a restart,
+    // whose scan reconciles bindings with the disk (PO-3).
+    if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path);
+    else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
   }
 
   /**

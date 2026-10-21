@@ -464,7 +464,7 @@ describe("SyncSession", () => {
       server.commit({ documentId: "b", path: "b.md", content: "second" });
       const vault = new InMemoryVault();
       const inner = new InMemoryJournal();
-      // Holds the first document write, the step between applying a.md's disk change and moving the cursor.
+      // Holds the first document write (a transaction), the step between applying a.md's disk change and moving the cursor.
       let release: () => void = () => undefined;
       let held = false;
       const steps: string[] = [];
@@ -474,7 +474,7 @@ describe("SyncSession", () => {
           if (typeof value !== "function") return value;
           return async (...args: unknown[]) => {
             steps.push(String(property));
-            if (property === "putDocument" && !held) {
+            if (property === "transact" && !held) {
               held = true;
               await new Promise<void>((resolve) => (release = resolve));
             }
@@ -642,6 +642,39 @@ describe("SyncSession", () => {
       expect(await files(vault)).toEqual(server.liveFiles());
     });
 
+    it("resolves after a user's rename failed to reach the journal, and a new session over the same journal pushes the rename", async () => {
+      // A failed binding transition stops the engine; a restart's scan (E7) reconciles bindings with the disk.
+      class FailingJournal extends InMemoryJournal {
+        fail = false;
+        override async transact(changes: Parameters<Journal["transact"]>[0]): Promise<void> {
+          if (this.fail) throw new Error("journal write failed");
+          await super.transact(changes);
+        }
+      }
+      const server = new InMemoryServer();
+      server.commit({ documentId: "a", path: "a.md", content: "the note" });
+      const vault = new InMemoryVault();
+      const journal = new FailingJournal();
+      const statuses: SessionStatus[] = [];
+      const failed = session({ server, vault, journal, statuses });
+      await failed.start();
+
+      journal.fail = true;
+      await vault.rename("a.md", "b.md");
+      await failed.syncNow();
+      // The rename that was not pushed still counts as pending.
+      await vi.waitFor(() => {
+        expect(statuses.at(-1)).toMatchObject({ state: "error", pending: 1, message: "journal write failed" });
+      });
+      await expect(failed.stop()).resolves.toBeUndefined();
+      journal.fail = false;
+
+      await session({ server, vault, journal }).start();
+
+      expect(server.liveFiles()).toEqual(new Map([["b.md", "the note"]]));
+      expect(await files(vault)).toEqual(server.liveFiles());
+    });
+
     it("stops before ready without ever starting", async () => {
       const server = new InMemoryServer();
       const calls: string[] = [];
@@ -727,7 +760,7 @@ describe("SyncSession", () => {
         await vault.write("local.md", bytes("typed before the reload"));
         const journal = new InMemoryJournal();
         // The step between applying a.md's disk change and recording it.
-        const unloading = holding(journal, "putDocument");
+        const unloading = holding(journal, "transact");
         const unloaded = session({ server, vault, journal: unloading.proxy });
         void unloaded.start();
         await vi.waitFor(() => {
