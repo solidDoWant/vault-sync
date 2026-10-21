@@ -919,6 +919,16 @@ def fresh_prompt(job: Job, wt: Path, branch_note: str, sess: dict | None, why: s
     return "\n".join(lines)
 
 
+def time_box_note(job: Job, now: dt.datetime) -> str:
+    """An absolute deadline for this run. Resumed sessions see their earlier
+    runs' turns and otherwise count that time against the time box."""
+    minutes = 90 if "engine.ts" in job.locks else 45
+    end = now + dt.timedelta(minutes=minutes)
+    return (f"Time box: this run started at {now:%H:%M} UTC and its ~{minutes}-minute time box ends at "
+            f"{end:%H:%M} UTC (check with `date -u`). Time spent in earlier runs does not count; hand back "
+            "`incomplete` only after that time.")
+
+
 def resume_prompt(job: Job, sess: dict) -> str:
     lines = [f"New trigger from the scheduler: {job.trigger}"]
     if sess.get("interrupted"):
@@ -1396,6 +1406,8 @@ class Scheduler:
         marker = f"sched-{job_id}"
         prompt = resume_prompt(job, sess) if mode == "resume" else (
             job.trigger if job.role == "planner" else fresh_prompt(job, wt, note, sess, why))
+        if job.role == "issue-worker":
+            prompt += "\n\n" + time_box_note(job, now)
         session_id = sess["session_id"] if mode == "resume" else str(uuid.uuid4())
         cmd = [self.claude, "-p", prompt, "--dangerously-skip-permissions", "--output-format", "stream-json",
                "--verbose", "--model", self.cfg["model"], "--name", marker]

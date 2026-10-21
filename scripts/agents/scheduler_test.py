@@ -210,6 +210,13 @@ class PlanTest(unittest.TestCase):
         self.assertIn(("#2", "outside the current phase (later_phase_work off)"), plan.skipped)
         self.assertIn("worker:2", keys(plan_for(sn, {"sessions": sessions})))
 
+    def test_time_box_note_gives_an_absolute_deadline(self):
+        now = dt.datetime(2026, 10, 21, 18, 0, tzinfo=dt.timezone.utc)
+        job = s.Job("worker:1", "issue-worker", 5, (0,), "r", "t", 1, None, ("issue:1",), ("engine.ts",))
+        self.assertIn("ends at 19:30 UTC", s.time_box_note(job, now))
+        job = s.Job("worker:2", "issue-worker", 5, (0,), "r", "t", 2, None, ("issue:2",), ())
+        self.assertIn("ends at 18:45 UTC", s.time_box_note(job, now))
+
     def test_special_jobs_and_release_lock(self):
         specials = {"hunt-1": {"role": "bug-hunter", "brief": "sync under faults", "priority": 0},
                     "rel": {"role": "release-manager", "brief": "release 0.2.0", "priority": 1}}
