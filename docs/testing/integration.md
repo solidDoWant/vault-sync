@@ -23,10 +23,12 @@ Without Docker the script prints a notice and still runs the tests; every test t
 
 | Service | Image | Notes |
 |---|---|---|
-| `postgres` | `postgres:18.6-alpine`, pinned by digest | Data on tmpfs, `fsync` off. |
-| `s3` | `versity/versitygw:v1.9.0`, pinned by digest | S3 gateway over a POSIX directory on tmpfs. MinIO no longer publishes images. |
+| `postgres` | `mirror.gcr.io/library/postgres:18.6-alpine`, pinned by digest | Data on tmpfs, `fsync` off. |
+| `s3` | `mirror.gcr.io/versity/versitygw:v1.9.0`, pinned by digest | S3 gateway over a POSIX directory on tmpfs. MinIO no longer publishes images. |
 
 Host ports are ephemeral and bound to `127.0.0.1`, so several runs can proceed in parallel. Renovate keeps the tags and digests current.
+
+No image comes from Docker Hub (`docker.io`), whose outages and rate limits used to fail CI: both come from Google's Docker Hub mirror, `mirror.gcr.io` (PostgreSQL's official image as `mirror.gcr.io/library/postgres`). The mirror serves Docker Hub's exact content, so a tag has the same digest on either registry. ECR Public's copy of the official images (`public.ecr.aws/docker/library`) is not used: GitHub's shared runner IPs exhaust its anonymous data limit. `scripts/with-test-stack.sh` pulls the images before starting them and retries a failed pull up to three times with backoff (5, 15 and 45 seconds). `mirror.gcr.io` lists only the tags someone has pulled through it, so Renovate (which looks the tags up there) may offer a new release a little later than Docker Hub does; when bumping versitygw, also update `scripts/with-native-s3.sh`, whose version must match the image tag.
 
 ## PostgreSQL 14, the minimum supported version
 
@@ -38,7 +40,7 @@ make test-integration-postgres14
 
 This runs `scripts/test-integration-postgres14.sh`, which starts the stack with `VAULT_SYNC_TEST_POSTGRES_VERSION=14` and runs every test in `./internal/store/` (the migrations and all store queries) plus `TestRollingUpgrade` in `./cmd/vault-sync-server/` (the previous release's migrations, then this one's, on one database). The rest of the suite runs only on the default image, to keep CI time down. Unlike `make test-integration`, it fails without Docker. CI runs it as the `integration-postgres14` job, which the required `checks` job covers.
 
-`VAULT_SYNC_TEST_POSTGRES_VERSION` works with any script built on `scripts/with-test-stack.sh`, for example `VAULT_SYNC_TEST_POSTGRES_VERSION=14 ./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`. It applies the compose override `deploy/compose/compose.test-postgres<version>.yaml` (only `compose.test-postgres14.yaml` exists; it pins `postgres:14.24-alpine` by digest and changes nothing but the image), and the script fails if no such override exists or the running server reports a different major version. Renovate updates the override's minor version and digest but never proposes a new major version for it.
+`VAULT_SYNC_TEST_POSTGRES_VERSION` works with any script built on `scripts/with-test-stack.sh`, for example `VAULT_SYNC_TEST_POSTGRES_VERSION=14 ./scripts/test-integration.sh -run TestMigrate -v ./internal/store/`. It applies the compose override `deploy/compose/compose.test-postgres<version>.yaml` (only `compose.test-postgres14.yaml` exists; it pins `mirror.gcr.io/library/postgres:14.24-alpine` by digest and changes nothing but the image), and the script fails if no such override exists or the running server reports a different major version. Renovate updates the override's minor version and digest but never proposes a new major version for it.
 
 ## Environment
 
