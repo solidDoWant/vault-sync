@@ -24,6 +24,9 @@ env:
   OBSIDIAN_APK_SHA256: b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3
   ANDROID_API: "34"
   ANDROID_IMAGE: "system-images;android-34;google_apis;x86_64"
+  # avdmanager on the runner writes to ~/.config/.android/avd, the emulator
+  # looks in ~/.android/avd: point both at one place.
+  ANDROID_AVD_HOME: /home/runner/.android/avd
 
 jobs:
   android:
@@ -33,7 +36,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        attempt: [1]
+        attempt: [1, 2]
     defaults:
       run:
         shell: bash
@@ -124,7 +127,7 @@ jobs:
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
           mkdir -p "$RUNNER_TEMP/e2e-logs"
-          probe() { if "$adb" shell "$@" > /dev/null 2>&1; then echo "::notice::probe ok: $*"; else echo "::warning::probe FAILED: $*"; fi; }
+          probe() { if timeout 60 "$adb" shell "$@" > /dev/null 2>&1; then echo "::notice::probe ok: $*"; else echo "::warning::probe FAILED: $*"; fi; }
           probe am start -n md.obsidian/.MainActivity
           probe input keyevent KEYCODE_HOME
           probe am start -n md.obsidian/.MainActivity
@@ -146,9 +149,9 @@ jobs:
           probe dumpsys battery reset
           probe dumpsys batterystats --charged md.obsidian
           probe am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/DCIM/x.jpg
-          "$adb" shell dumpsys activity activities | grep -i 'md.obsidian' | head -5 || true
-          "$adb" exec-out screencap -p > "$RUNNER_TEMP/e2e-logs/final-screen.png" || true
-          "$adb" logcat -d > "$RUNNER_TEMP/e2e-logs/logcat.txt" || true
+          timeout 60 "$adb" shell dumpsys activity activities | grep -i 'md.obsidian' | head -5 || true
+          timeout 60 "$adb" exec-out screencap -p > "$RUNNER_TEMP/e2e-logs/final-screen.png" || true
+          timeout 60 "$adb" logcat -d > "$RUNNER_TEMP/e2e-logs/logcat.txt" || true
           cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/e2e-logs/" || true
 
       - if: always()
