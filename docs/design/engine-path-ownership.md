@@ -708,6 +708,7 @@ The reference model is a tiny pure state machine over files with inodes, server 
 | P4 crash equivalence | INV-7: for every prefix, crashing at every journal write and restarting reaches the same quiescent server and vault state as no crash (modulo copy names and times) |
 | P5 no lost write | INV-4 plus principle 1, against server history |
 | P6 convergence and progress | INV-8 and INV-9 after quiescence, with bounded push rounds |
+| P7 echo independence | INV-10 with PO-10 on the faithful filesystem: the engine never reports its own write, rename or delete as a local change, over spellings whose `K` and `F` disagree (`Straße.md`/`STRASSE.md`, NFC/NFD `Café.md`; added for #738) |
 
 Shrinking gives minimal command sequences. Each `it.fails` carries the issue it reproduces, so the suite doubles as the regression list for the classes in §7.
 
