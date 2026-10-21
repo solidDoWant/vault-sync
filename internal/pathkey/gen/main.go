@@ -1,7 +1,10 @@
-// Command gen generates the full case-folding tables used by path_key
-// derivation in Go (internal/pathkey) and TypeScript (plugin/src/core/pathkey)
-// from the vendored Unicode CaseFolding.txt, so both languages fold
-// identically. Run it via `go generate ./internal/pathkey`.
+// Command gen generates the tables used by path_key derivation in Go
+// (internal/pathkey) and TypeScript (plugin/src/core/pathkey): full case
+// folding from the vendored Unicode CaseFolding.txt, and canonical
+// normalization (NFD/NFC) data from the vendored UnicodeData.txt and
+// CompositionExclusions.txt, so both languages fold and normalize identically
+// whatever Unicode version their runtime has. Run it via
+// `go generate ./internal/pathkey`.
 package main
 
 import (
@@ -39,12 +42,38 @@ func main() {
 	license := flag.String("license", LicenseFile, "path to the Unicode license notice embedded in the TypeScript table")
 	goOut := flag.String("go-out", "", "output path for the Go table")
 	tsOut := flag.String("ts-out", "", "output path for the TypeScript table")
+	unicodeData := flag.String("unicode-data", UnicodeDataFile, "path to the gzipped UnicodeData.txt")
+	exclusions := flag.String("exclusions", ExclusionsFile, "path to CompositionExclusions.txt")
+	goNormOut := flag.String("go-norm-out", "", "output path for the Go normalization tables")
+	tsNormOut := flag.String("ts-norm-out", "", "output path for the TypeScript normalization tables")
 
 	flag.Parse()
 
 	if err := run(*source, *license, *goOut, *tsOut); err != nil {
 		log.Fatal(err)
 	}
+
+	if err := runNormalization(*unicodeData, *exclusions, *goNormOut, *tsNormOut); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runNormalization(unicodeData, exclusions, goOut, tsOut string) error {
+	normalization, err := LoadNormalization(unicodeData, exclusions)
+	if err != nil {
+		return err
+	}
+
+	goTables, err := RenderGoNormalization(normalization)
+	if err != nil {
+		return err
+	}
+
+	if err := os.WriteFile(goOut, goTables, 0o644); err != nil {
+		return err
+	}
+
+	return os.WriteFile(tsOut, RenderTypeScriptNormalization(normalization), 0o644)
 }
 
 func run(source, license, goOut, tsOut string) error {
