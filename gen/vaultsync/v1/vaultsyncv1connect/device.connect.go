@@ -36,6 +36,12 @@ const (
 	// DeviceServiceRegisterDeviceProcedure is the fully-qualified name of the DeviceService's
 	// RegisterDevice RPC.
 	DeviceServiceRegisterDeviceProcedure = "/vaultsync.v1.DeviceService/RegisterDevice"
+	// DeviceServiceListDevicesProcedure is the fully-qualified name of the DeviceService's ListDevices
+	// RPC.
+	DeviceServiceListDevicesProcedure = "/vaultsync.v1.DeviceService/ListDevices"
+	// DeviceServiceRemoveDeviceProcedure is the fully-qualified name of the DeviceService's
+	// RemoveDevice RPC.
+	DeviceServiceRemoveDeviceProcedure = "/vaultsync.v1.DeviceService/RemoveDevice"
 )
 
 // DeviceServiceClient is a client for the vaultsync.v1.DeviceService service.
@@ -46,7 +52,29 @@ type DeviceServiceClient interface {
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
 	// a control character (such as U+0000), or a public key
 	// that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+	//
+	// The limit counts the caller's devices that have not been removed
+	// (RemoveDevice), so removing a device frees a place for a new one.
 	RegisterDevice(context.Context, *connect.Request[v1.RegisterDeviceRequest]) (*connect.Response[v1.RegisterDeviceResponse], error)
+	// ListDevices returns the caller's devices that have not been removed,
+	// oldest first. It returns no other user's devices and nothing secret
+	// (no public key). The list is not paginated: it is bounded by the
+	// server's device limit.
+	ListDevices(context.Context, *connect.Request[v1.ListDevicesRequest]) (*connect.Response[v1.ListDevicesResponse], error)
+	// RemoveDevice removes one of the caller's devices. A removed device no
+	// longer counts toward the device limit and can no longer commit
+	// (CommitRevision returns NOT_FOUND for it, as for an unknown device);
+	// the revisions it committed keep their history and attribution, and its
+	// name is still shown with them (GetDocumentHistoryResponse.device_names). The
+	// removal takes effect on every server replica once the call returns: a
+	// commit from the device that is in flight finishes first, and no later
+	// commit is accepted. Removal cannot be undone; the installation
+	// registers again to sync.
+	//
+	// Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+	// UUID; NOT_FOUND when the caller has no such device, including a device
+	// of another user and one that is already removed.
+	RemoveDevice(context.Context, *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error)
 }
 
 // NewDeviceServiceClient constructs a client for the vaultsync.v1.DeviceService service. By
@@ -66,17 +94,41 @@ func NewDeviceServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(deviceServiceMethods.ByName("RegisterDevice")),
 			connect.WithClientOptions(opts...),
 		),
+		listDevices: connect.NewClient[v1.ListDevicesRequest, v1.ListDevicesResponse](
+			httpClient,
+			baseURL+DeviceServiceListDevicesProcedure,
+			connect.WithSchema(deviceServiceMethods.ByName("ListDevices")),
+			connect.WithClientOptions(opts...),
+		),
+		removeDevice: connect.NewClient[v1.RemoveDeviceRequest, v1.RemoveDeviceResponse](
+			httpClient,
+			baseURL+DeviceServiceRemoveDeviceProcedure,
+			connect.WithSchema(deviceServiceMethods.ByName("RemoveDevice")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // deviceServiceClient implements DeviceServiceClient.
 type deviceServiceClient struct {
 	registerDevice *connect.Client[v1.RegisterDeviceRequest, v1.RegisterDeviceResponse]
+	listDevices    *connect.Client[v1.ListDevicesRequest, v1.ListDevicesResponse]
+	removeDevice   *connect.Client[v1.RemoveDeviceRequest, v1.RemoveDeviceResponse]
 }
 
 // RegisterDevice calls vaultsync.v1.DeviceService.RegisterDevice.
 func (c *deviceServiceClient) RegisterDevice(ctx context.Context, req *connect.Request[v1.RegisterDeviceRequest]) (*connect.Response[v1.RegisterDeviceResponse], error) {
 	return c.registerDevice.CallUnary(ctx, req)
+}
+
+// ListDevices calls vaultsync.v1.DeviceService.ListDevices.
+func (c *deviceServiceClient) ListDevices(ctx context.Context, req *connect.Request[v1.ListDevicesRequest]) (*connect.Response[v1.ListDevicesResponse], error) {
+	return c.listDevices.CallUnary(ctx, req)
+}
+
+// RemoveDevice calls vaultsync.v1.DeviceService.RemoveDevice.
+func (c *deviceServiceClient) RemoveDevice(ctx context.Context, req *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error) {
+	return c.removeDevice.CallUnary(ctx, req)
 }
 
 // DeviceServiceHandler is an implementation of the vaultsync.v1.DeviceService service.
@@ -87,7 +139,29 @@ type DeviceServiceHandler interface {
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
 	// a control character (such as U+0000), or a public key
 	// that is neither empty nor 32 bytes; RESOURCE_EXHAUSTED when the caller has reached the server's device limit.
+	//
+	// The limit counts the caller's devices that have not been removed
+	// (RemoveDevice), so removing a device frees a place for a new one.
 	RegisterDevice(context.Context, *connect.Request[v1.RegisterDeviceRequest]) (*connect.Response[v1.RegisterDeviceResponse], error)
+	// ListDevices returns the caller's devices that have not been removed,
+	// oldest first. It returns no other user's devices and nothing secret
+	// (no public key). The list is not paginated: it is bounded by the
+	// server's device limit.
+	ListDevices(context.Context, *connect.Request[v1.ListDevicesRequest]) (*connect.Response[v1.ListDevicesResponse], error)
+	// RemoveDevice removes one of the caller's devices. A removed device no
+	// longer counts toward the device limit and can no longer commit
+	// (CommitRevision returns NOT_FOUND for it, as for an unknown device);
+	// the revisions it committed keep their history and attribution, and its
+	// name is still shown with them (GetDocumentHistoryResponse.device_names). The
+	// removal takes effect on every server replica once the call returns: a
+	// commit from the device that is in flight finishes first, and no later
+	// commit is accepted. Removal cannot be undone; the installation
+	// registers again to sync.
+	//
+	// Errors: INVALID_ARGUMENT when device_id is not a canonical lowercase
+	// UUID; NOT_FOUND when the caller has no such device, including a device
+	// of another user and one that is already removed.
+	RemoveDevice(context.Context, *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error)
 }
 
 // NewDeviceServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -103,10 +177,26 @@ func NewDeviceServiceHandler(svc DeviceServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(deviceServiceMethods.ByName("RegisterDevice")),
 		connect.WithHandlerOptions(opts...),
 	)
+	deviceServiceListDevicesHandler := connect.NewUnaryHandler(
+		DeviceServiceListDevicesProcedure,
+		svc.ListDevices,
+		connect.WithSchema(deviceServiceMethods.ByName("ListDevices")),
+		connect.WithHandlerOptions(opts...),
+	)
+	deviceServiceRemoveDeviceHandler := connect.NewUnaryHandler(
+		DeviceServiceRemoveDeviceProcedure,
+		svc.RemoveDevice,
+		connect.WithSchema(deviceServiceMethods.ByName("RemoveDevice")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.DeviceService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case DeviceServiceRegisterDeviceProcedure:
 			deviceServiceRegisterDeviceHandler.ServeHTTP(w, r)
+		case DeviceServiceListDevicesProcedure:
+			deviceServiceListDevicesHandler.ServeHTTP(w, r)
+		case DeviceServiceRemoveDeviceProcedure:
+			deviceServiceRemoveDeviceHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -118,4 +208,12 @@ type UnimplementedDeviceServiceHandler struct{}
 
 func (UnimplementedDeviceServiceHandler) RegisterDevice(context.Context, *connect.Request[v1.RegisterDeviceRequest]) (*connect.Response[v1.RegisterDeviceResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.DeviceService.RegisterDevice is not implemented"))
+}
+
+func (UnimplementedDeviceServiceHandler) ListDevices(context.Context, *connect.Request[v1.ListDevicesRequest]) (*connect.Response[v1.ListDevicesResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.DeviceService.ListDevices is not implemented"))
+}
+
+func (UnimplementedDeviceServiceHandler) RemoveDevice(context.Context, *connect.Request[v1.RemoveDeviceRequest]) (*connect.Response[v1.RemoveDeviceResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.DeviceService.RemoveDevice is not implemented"))
 }

@@ -53,7 +53,7 @@ If both this vault and the remote vault already have files, the plugin asks befo
 
 Before its first sync, each installation of the plugin (each local vault, on each device) registers itself with the server as a device, under the **Device name** setting. It registers once and keeps the device id in `data.json`, so restarts and new sign-ins with the same account reuse it. Signing in with another account, or to another server, registers a new device for that account. Every commit records the device it came from.
 
-The server limits how many devices one user may register (100). The limit counts every registration ever made, and the server cannot list or remove devices yet ([#205](https://github.com/solidDoWant/vault-sync/issues/205)). When the limit is reached, the status shows **error** with the message that the account has reached the server's device limit, and sync does not start on this device. Local files are untouched. The limit is fixed, and there is no supported remedy yet (see `docs/configuration.md`), so this needs the server's operator.
+The server limits how many devices one user may have registered (100). Every installation, and every reinstall, registers a new device; the server can list and remove devices, and a removed device frees its place, but the plugin has no settings for that yet, so removing devices needs the server's API (see `docs/configuration.md`). When the limit is reached, the status shows **error** with the message that the account has reached the server's device limit, and sync does not start on this device. Local files are untouched.
 
 ## Sync
 
