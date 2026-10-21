@@ -65,6 +65,30 @@ function clickRow(index: number) {
   }, index);
 }
 
+/**
+ * The paths rendered in `selector` (the first match inside the history view):
+ * each element of class vault-sync-path, with its tag, text, dir attribute and
+ * computed unicode-bidi, so a test sees whether a path is isolated (#605,
+ * #615) and not only the label's text, which is the same either way.
+ */
+function renderedPaths(selector: string) {
+  return browser.executeObsidian((_, target) => {
+    const element = document.querySelector(`.vault-sync-history ${target}`);
+    if (element === null) throw new Error(`no ${target} in the history view`);
+    return [...element.querySelectorAll<HTMLElement>(".vault-sync-path")].map((path) => ({
+      tag: path.tagName.toLowerCase(),
+      text: path.textContent,
+      dir: path.getAttribute("dir"),
+      unicodeBidi: getComputedStyle(path).unicodeBidi,
+    }));
+  }, selector);
+}
+
+/** What renderedPaths returns for a label that holds `path` once, isolated. */
+function isolated(path: string) {
+  return [{ tag: "span", text: path, dir: "auto", unicodeBidi: "isolate" }];
+}
+
 function previewText() {
   return browser.executeObsidian(() => document.querySelector(".vault-sync-history-text")?.textContent ?? null);
 }
@@ -153,6 +177,9 @@ describe("history and restore", function () {
     await browser.keys("Enter");
     await browser.waitUntil(async () => (await historyRows()).length === 4, { timeoutMsg: "the deleted note's history was never listed" });
     expect((await historyRows())[0]).toContain("deleted History.md");
+    // The path in the title and in the row is laid out on its own (#605).
+    expect(await renderedPaths(".modal-title")).toEqual(isolated(note));
+    expect(await renderedPaths(".vault-sync-history-entry")).toEqual(isolated(note));
 
     await clickRow(0);
     await browser.waitUntil(async () => (await previewText()) === firstVersion, { timeoutMsg: "the preview never showed the content at the delete" });
