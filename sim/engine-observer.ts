@@ -32,23 +32,52 @@ import { Code } from "@connectrpc/connect";
 
 import { bytesToHex } from "@noble/hashes/utils.js";
 
-import { configPrefix, ConfigSyncVault } from "../plugin/src/core/config/config-vault";
+import {
+  configPrefix,
+  ConfigSyncVault,
+} from "../plugin/src/core/config/config-vault";
 import type { ConfigSyncSettings } from "../plugin/src/core/config/policy";
-import { EngineDisposedError, SyncEngine, type PullSummary, type PushSummary } from "../plugin/src/core/engine/engine";
+import {
+  EngineDisposedError,
+  SyncEngine,
+  type PullSummary,
+  type PushSummary,
+} from "../plugin/src/core/engine/engine";
 import { RestoreError } from "../plugin/src/core/engine/history";
 import { threeWayMerge, type MergeHook } from "../plugin/src/core/engine/merge";
 import { InterleavingVault } from "../plugin/src/core/engine/testing";
 import { sha256Hex } from "../plugin/src/core/hash";
-import type { ConflictRecord, JournalChanges, PendingOperation } from "../plugin/src/core/journal/journal";
+import type {
+  ConflictRecord,
+  JournalChanges,
+  PendingOperation,
+} from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
-import type { DeletePrecondition, VaultAdapter, VaultEvent, VaultListener, WritePrecondition } from "../plugin/src/core/vault/adapter";
-import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory";
-import { filesystemKey, type PathPlatform } from "../plugin/src/core/vaultpath/platform";
+import type {
+  DeletePrecondition,
+  VaultAdapter,
+  VaultEvent,
+  VaultListener,
+  WritePrecondition,
+} from "../plugin/src/core/vault/adapter";
+import {
+  InMemoryVault,
+  type InodeEvent,
+} from "../plugin/src/core/vault/memory";
+import {
+  filesystemKey,
+  type PathPlatform,
+} from "../plugin/src/core/vaultpath/platform";
 import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
-import { carriesLocalEdit, checkEngineEchoes, KnownContents, UserLedger } from "./invariants";
+import {
+  carriesLocalEdit,
+  checkEngineEchoes,
+  KnownContents,
+  UserLedger,
+} from "./invariants";
 import { errorCode, settle, StallError } from "./network";
 import { Random } from "./random";
 import type { EngineOperation } from "./schedule";
@@ -70,9 +99,20 @@ export interface ServerHeads {
  * trailing dots and spaces and reserved names, enough for the paths the sim uses. Other platforms can hold
  * all of them.
  */
-export function harnessUnmaterializable(path: string, platform: PathPlatform): boolean {
+export function harnessUnmaterializable(
+  path: string,
+  platform: PathPlatform,
+): boolean {
   if (platform !== "windows") return false;
-  return path.split("/").some((segment) => /[<>:"|?*]/.test(segment) || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
+  return path
+    .split("/")
+    .some(
+      (segment) =>
+        /[<>:"|?*]/.test(segment) ||
+        segment.endsWith(".") ||
+        segment.endsWith(" ") ||
+        /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment),
+    );
 }
 
 /**
@@ -83,14 +123,32 @@ export function harnessUnmaterializable(path: string, platform: PathPlatform): b
  * macOS). The device holds one of such a group; the others are
  * unmaterializable there (`alias`, X-15).
  */
-export function harnessAliases(path: string, live: Iterable<string>, platform: PathPlatform): string[] {
+export function harnessAliases(
+  path: string,
+  live: Iterable<string>,
+  platform: PathPlatform,
+): string[] {
   if (platform === "posix") return [];
-  const file = (candidate: string) => pathKey(filesystemKey(candidate, platform));
-  const collide = (key: (candidate: string) => string, a: string, b: string) => {
+  const file = (candidate: string) =>
+    pathKey(filesystemKey(candidate, platform));
+  const collide = (
+    key: (candidate: string) => string,
+    a: string,
+    b: string,
+  ) => {
     const [left, right] = [key(a), key(b)];
-    return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+    return (
+      left === right ||
+      left.startsWith(`${right}/`) ||
+      right.startsWith(`${left}/`)
+    );
   };
-  return [...live].filter((other) => other !== path && collide(file, other, path) && !collide(pathKey, other, path));
+  return [...live].filter(
+    (other) =>
+      other !== path &&
+      collide(file, other, path) &&
+      !collide(pathKey, other, path),
+  );
 }
 
 /**
@@ -123,18 +181,41 @@ export function checkLiveDocuments(device: {
     // Of live documents one file here under two path keys, the device holds
     // the one that arrived first; the others are unmaterializable (alias).
     const aliases = harnessAliases(path, heads.keys(), platform);
-    if (aliases.length > 0 && local !== hash && !aliases.some((alias) => files.get(alias) === heads.get(alias))) {
-      violations.push({ invariant: "engine-convergence", detail: `${name} holds none of the live documents ${[path, ...aliases].join(", ")}, which are one file here` });
+    if (
+      aliases.length > 0 &&
+      local !== hash &&
+      !aliases.some((alias) => files.get(alias) === heads.get(alias))
+    ) {
+      violations.push({
+        invariant: "engine-convergence",
+        detail: `${name} holds none of the live documents ${[path, ...aliases].join(", ")}, which are one file here`,
+      });
     }
-    const expectedMissing = harnessUnmaterializable(path, platform) || (aliases.length > 0 && local !== hash);
+    const expectedMissing =
+      harnessUnmaterializable(path, platform) ||
+      (aliases.length > 0 && local !== hash);
     if (expectedMissing && !unmaterializable.has(path)) {
-      violations.push({ invariant: "engine-unmaterializable", detail: `${name} (${platform}) does not report ${path}, which the platform cannot hold` });
+      violations.push({
+        invariant: "engine-unmaterializable",
+        detail: `${name} (${platform}) does not report ${path}, which the platform cannot hold`,
+      });
     } else if (!expectedMissing && unmaterializable.has(path)) {
-      violations.push({ invariant: "engine-unmaterializable", detail: `${name} (${platform}) reports ${path} as unmaterializable (${String(unmaterializable.get(path))})` });
+      violations.push({
+        invariant: "engine-unmaterializable",
+        detail: `${name} (${platform}) reports ${path} as unmaterializable (${String(unmaterializable.get(path))})`,
+      });
     }
     if (expectedMissing) continue;
-    if (local === undefined) violations.push({ invariant: "engine-convergence", detail: `${name} is missing ${path}` });
-    else if (local !== hash) violations.push({ invariant: "engine-convergence", detail: `${name} holds other content at ${path}` });
+    if (local === undefined)
+      violations.push({
+        invariant: "engine-convergence",
+        detail: `${name} is missing ${path}`,
+      });
+    else if (local !== hash)
+      violations.push({
+        invariant: "engine-convergence",
+        detail: `${name} holds other content at ${path}`,
+      });
   }
   return violations;
 }
@@ -208,7 +289,11 @@ export class EngineObserver {
     filesystem: "folded" | "faithful" = "folded",
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
-    this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
+    this.vault = new InMemoryVault({
+      now: () => 0,
+      pathRules: { platform },
+      filesystem,
+    });
     this.vault.tapInodes((event) => {
       this.emitting = event.actor;
       this.record(this.vault, event);
@@ -219,7 +304,11 @@ export class EngineObserver {
       (from, to, rename) => this.user.engineRenamed(from, to, rename),
       (path, write) => this.user.engineWrote(path, write),
     );
-    this.config = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
+    this.config = new InMemoryVault({
+      now: () => 0,
+      pathRules: { platform },
+      filesystem,
+    });
     this.config.tapInodes((event) => {
       this.emitting = event.actor;
       this.record(this.config, event);
@@ -263,8 +352,13 @@ export class EngineObserver {
   }
 
   /** The user changes the vault (seeded with `arg`), or the engine starts a push; returns the trace entry. Never waits for the engine. */
-  async userOperation(operation: EngineOperation, arg: number): Promise<string> {
-    return operation === "push" ? this.startPush() : this.user.perform(operation, new Random(arg));
+  async userOperation(
+    operation: EngineOperation,
+    arg: number,
+  ): Promise<string> {
+    return operation === "push"
+      ? this.startPush()
+      : this.user.perform(operation, new Random(arg));
   }
 
   get name(): string {
@@ -273,7 +367,12 @@ export class EngineObserver {
 
   /** The documents the engine reports as unmaterializable: server path to reason. */
   async unmaterializable(): Promise<Map<string, string>> {
-    return new Map((await this.engine.unmaterializable()).map((document) => [document.path, document.reason]));
+    return new Map(
+      (await this.engine.unmaterializable()).map((document) => [
+        document.path,
+        document.reason,
+      ]),
+    );
   }
 
   get idle(): boolean {
@@ -290,29 +389,46 @@ export class EngineObserver {
     if (this.busy) return `${this.name} busy, pull skipped`;
     this.busy = true;
     const incarnation = this.context.network.incarnation(this.index);
-    void (ifBehind === undefined ? this.engine.pull() : this.engine.pullIfBehind(ifBehind))
+    void (
+      ifBehind === undefined
+        ? this.engine.pull()
+        : this.engine.pullIfBehind(ifBehind)
+    )
       .then(
         (summary) => {
           if (summary === undefined) {
-            this.context.log(`${this.name} pull not needed: cursor at or past seq ${String(ifBehind)}`);
+            this.context.log(
+              `${this.name} pull not needed: cursor at or past seq ${String(ifBehind)}`,
+            );
             return;
           }
           this.lastPull = summary;
-          if (summary.resynced) this.resyncs.push(`step ${String(this.context.stepNumber())}`);
-          this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred${summary.resynced ? ", resynced" : ""}`);
+          if (summary.resynced)
+            this.resyncs.push(`step ${String(this.context.stepNumber())}`);
+          this.context.log(
+            `${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred${summary.resynced ? ", resynced" : ""}`,
+          );
         },
         (error: unknown) => {
           if (interrupted(error)) {
-            this.context.log(`${this.name} engine pull interrupted: ${interruption(error)}`);
+            this.context.log(
+              `${this.name} engine pull interrupted: ${interruption(error)}`,
+            );
           } else {
-            this.violation("engine", `${this.name} pull failed: ${error instanceof Error ? error.message : String(error)}`);
+            this.violation(
+              "engine",
+              `${this.name} pull failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         },
       )
       .finally(() => {
-        if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
+        if (this.context.network.incarnation(this.index) === incarnation)
+          this.busy = false;
       });
-    return ifBehind === undefined ? `${this.name} starts pull` : `${this.name} starts pull if behind seq ${String(ifBehind)}`;
+    return ifBehind === undefined
+      ? `${this.name} starts pull`
+      : `${this.name} starts pull if behind seq ${String(ifBehind)}`;
   }
 
   /**
@@ -321,7 +437,11 @@ export class EngineObserver {
    * unless `whileBusy` (a change made while the engine waits on the
    * network): then only until the engine has seen the change.
    */
-  async edit(path: string, content: Uint8Array, options: { whileBusy?: boolean } = {}): Promise<string> {
+  async edit(
+    path: string,
+    content: Uint8Array,
+    options: { whileBusy?: boolean } = {},
+  ): Promise<string> {
     const entry = await this.user.write(path, content);
     await this.afterChange(options);
     return entry;
@@ -339,7 +459,9 @@ export class EngineObserver {
    */
   saveBeforeNextEngineChange(path: string, content: Uint8Array): string {
     this.engineVault.beforeNextChange(path, async () => {
-      this.context.log(`${this.name} user saves ${path} (${String(content.length)} B) just before the engine changes it`);
+      this.context.log(
+        `${this.name} user saves ${path} (${String(content.length)} B) just before the engine changes it`,
+      );
       // As the user: the ledger records the save, which replaces what the user had written there.
       await this.user.write(path, content);
     });
@@ -352,7 +474,10 @@ export class EngineObserver {
    * that never finishes either, with nothing on the network: a stall (#310).
    */
   hangBeforeNextEngineChange(path: string): string {
-    this.engineVault.beforeNextChange(path, () => new Promise<void>(() => undefined));
+    this.engineVault.beforeNextChange(
+      path,
+      () => new Promise<void>(() => undefined),
+    );
     return `${this.name}'s next change of ${path} will never finish`;
   }
 
@@ -362,7 +487,11 @@ export class EngineObserver {
   }
 
   /** Renames `from` to `to` in the observer's vault as its user would; `whileBusy` as for edit. */
-  async move(from: string, to: string, options: { whileBusy?: boolean } = {}): Promise<string> {
+  async move(
+    from: string,
+    to: string,
+    options: { whileBusy?: boolean } = {},
+  ): Promise<string> {
     const entry = await this.user.rename(from, to);
     await this.afterChange(options);
     return entry;
@@ -379,7 +508,13 @@ export class EngineObserver {
     await this.vault.renameFolder(from, to);
     const serverSeq = this.context.serverSeq();
     const at = `step ${String(this.context.stepNumber())}`;
-    for (const [path, moved] of moves) this.ledger.changed({ paths: [path, moved], result: { path: moved, hash: sha256Hex(await this.vault.read(moved)) }, serverSeq, at });
+    for (const [path, moved] of moves)
+      this.ledger.changed({
+        paths: [path, moved],
+        result: { path: moved, hash: sha256Hex(await this.vault.read(moved)) },
+        serverSeq,
+        at,
+      });
     await this.settled();
     return `${this.name} user renames folder ${from} to ${to}`;
   }
@@ -396,7 +531,10 @@ export class EngineObserver {
    * overwrites `path` behind the user's back, as an engine that loses a user
    * write would. The user never sees it, so it replaces nothing in the ledger.
    */
-  async overwriteBehindUser(path: string, content: Uint8Array): Promise<string> {
+  async overwriteBehindUser(
+    path: string,
+    content: Uint8Array,
+  ): Promise<string> {
     await this.vault.handle("engine").write(path, content);
     await this.settled();
     return `${this.name} MUTATION: ${path} overwritten behind the user's back`;
@@ -418,11 +556,17 @@ export class EngineObserver {
   private async settled(): Promise<void> {
     const stallTraceLines = 80;
     try {
-      await this.context.network.untilSettled(this.engine.settled(), () => `run stalled at step ${String(this.context.stepNumber())}: ${this.name}'s engine work never finished, and nothing delivers its calls while the harness waits for it`);
+      await this.context.network.untilSettled(
+        this.engine.settled(),
+        () =>
+          `run stalled at step ${String(this.context.stepNumber())}: ${this.name}'s engine work never finished, and nothing delivers its calls while the harness waits for it`,
+      );
     } catch (error) {
       if (!(error instanceof StallError)) throw error;
       this.context.log(`STALLED: ${error.message}`);
-      throw new StallError(`${error.message}\nTrace (last lines):\n${this.context.trace.slice(-stallTraceLines).join("\n")}`);
+      throw new StallError(
+        `${error.message}\nTrace (last lines):\n${this.context.trace.slice(-stallTraceLines).join("\n")}`,
+      );
     }
   }
 
@@ -434,9 +578,21 @@ export class EngineObserver {
     await this.settled();
     this.engine.dispose();
     // The engine changes the config folder through its own handle, so the tap tells its changes from Obsidian's.
-    this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config.handle("engine"), settings, ownFolders: ["plugins/vault-sync"] });
+    this.synced = new ConfigSyncVault({
+      notes: this.engineVault,
+      config: this.config.handle("engine"),
+      settings,
+      ownFolders: ["plugins/vault-sync"],
+    });
     this.engine = this.createEngine();
-    return `${this.name} config sync ${settings.enabled ? `on (${Object.entries(settings.categories).filter(([, on]) => on).map(([category]) => category).join(", ")})` : "off"}, engine restarted`;
+    return `${this.name} config sync ${
+      settings.enabled
+        ? `on (${Object.entries(settings.categories)
+            .filter(([, on]) => on)
+            .map(([category]) => category)
+            .join(", ")})`
+        : "off"
+    }, engine restarted`;
   }
 
   /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
@@ -458,7 +614,12 @@ export class EngineObserver {
   /** Records Obsidian's write of the config file at `relative` as a change on the device, for the resurrected-delete check: it may bring a deleted config document back. */
   private recordConfigWrite(relative: string, content: Uint8Array): void {
     const path = `${configPrefix}/${relative}`;
-    this.ledger.changed({ paths: [path], result: { path, hash: sha256Hex(content) }, serverSeq: this.context.serverSeq(), at: `step ${String(this.context.stepNumber())}` });
+    this.ledger.changed({
+      paths: [path],
+      result: { path, hash: sha256Hex(content) },
+      serverSeq: this.context.serverSeq(),
+      at: `step ${String(this.context.stepNumber())}`,
+    });
   }
 
   /**
@@ -470,8 +631,11 @@ export class EngineObserver {
   private async recordConfigDelete(relative: string): Promise<void> {
     const path = `${configPrefix}/${relative}`;
     const synced = await this.journal.findDocumentByPath(path);
-    if (synced !== undefined) this.ledger.deletedDocuments.add(synced.documentId);
-    for (const operation of await this.journal.listPending()) if (operation.path === path) this.ledger.deletedDocuments.add(operation.documentId);
+    if (synced !== undefined)
+      this.ledger.deletedDocuments.add(synced.documentId);
+    for (const operation of await this.journal.listPending())
+      if (operation.path === path)
+        this.ledger.deletedDocuments.add(operation.documentId);
   }
 
   /** The config folder's files, sorted (whether or not they sync). */
@@ -481,7 +645,9 @@ export class EngineObserver {
 
   /** The config folder's content at `relative`, or undefined. */
   async readConfig(relative: string): Promise<Uint8Array | undefined> {
-    return (await this.config.stat(relative)) === null ? undefined : this.config.read(relative);
+    return (await this.config.stat(relative)) === null
+      ? undefined
+      : this.config.read(relative);
   }
 
   /**
@@ -517,7 +683,9 @@ export class EngineObserver {
 
   /** The vault's content at `path`, or undefined. */
   async read(path: string): Promise<Uint8Array | undefined> {
-    return (await this.vault.list()).includes(path) ? this.vault.read(path) : undefined;
+    return (await this.vault.list()).includes(path)
+      ? this.vault.read(path)
+      : undefined;
   }
 
   /** Starts a push unless the engine is busy; returns the trace entry. */
@@ -530,18 +698,26 @@ export class EngineObserver {
       .then(
         (summary: PushSummary) => {
           this.lastPush = summary;
-          this.context.log(`${this.name} pushed: ${String(summary.committed)} committed, ${String(summary.conflicts)} conflicts, ${String(summary.pending)} pending`);
+          this.context.log(
+            `${this.name} pushed: ${String(summary.committed)} committed, ${String(summary.conflicts)} conflicts, ${String(summary.pending)} pending`,
+          );
         },
         (error: unknown) => {
           if (interrupted(error)) {
-            this.context.log(`${this.name} engine push interrupted: ${interruption(error)}`);
+            this.context.log(
+              `${this.name} engine push interrupted: ${interruption(error)}`,
+            );
           } else {
-            this.violation("engine", `${this.name} push failed: ${error instanceof Error ? error.message : String(error)}`);
+            this.violation(
+              "engine",
+              `${this.name} push failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         },
       )
       .finally(() => {
-        if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
+        if (this.context.network.incarnation(this.index) === incarnation)
+          this.busy = false;
       });
     return `${this.name} starts push`;
   }
@@ -565,25 +741,40 @@ export class EngineObserver {
    * The paths do not count as the user's for the echo check: the engine
    * writes the restored file itself and must not report it as a local change.
    */
-  startRestore(path: string, options: { at?: string; back?: number } = {}): string {
+  startRestore(
+    path: string,
+    options: { at?: string; back?: number } = {},
+  ): string {
     if (this.busy) return `${this.name} busy, restore of ${path} skipped`;
     this.busy = true;
     const incarnation = this.context.network.incarnation(this.index);
     const engine = this.engine;
     const what = `${path}${options.back === undefined ? "" : ` (${String(options.back)} back)`}${options.at === undefined ? "" : ` at ${options.at}`}`;
     const restore = async (): Promise<string> => {
-      const deleted = (await engine.deletedDocuments()).find((state) => state.path === path);
+      const deleted = (await engine.deletedDocuments()).find(
+        (state) => state.path === path,
+      );
       const document = deleted ?? (await this.journal.findDocumentByPath(path));
-      if (document === undefined) return `${this.name} user restore of ${path}: no document there`;
+      if (document === undefined)
+        return `${this.name} user restore of ${path}: no document there`;
       const page = await engine.history(document.documentId);
-      const entry = page.entries.filter((candidate) => !candidate.deleted && candidate.revisionId !== page.headRevisionId)[options.back ?? 0];
-      if (entry === undefined) return `${this.name} user restore of ${path}: no such version in its history`;
+      const entry = page.entries.filter(
+        (candidate) =>
+          !candidate.deleted && candidate.revisionId !== page.headRevisionId,
+      )[options.back ?? 0];
+      if (entry === undefined)
+        return `${this.name} user restore of ${path}: no such version in its history`;
       const serverSeq = this.context.serverSeq();
       const at = `step ${String(this.context.stepNumber())}`;
       const restored = await engine.restore(entry, undefined, options.at);
       const target = options.at ?? restored.path;
       this.ledger.write({ hash: entry.contentHash, path: target, at });
-      this.ledger.changed({ paths: [...new Set([path, entry.path, target])], result: { path: target, hash: entry.contentHash }, serverSeq, at });
+      this.ledger.changed({
+        paths: [...new Set([path, entry.path, target])],
+        result: { path: target, hash: entry.contentHash },
+        serverSeq,
+        at,
+      });
       return `${this.name} user restored ${this.context.ids.label(document.documentId)} ${path} to ${this.context.ids.label(entry.revisionId)} (seq ${String(entry.seq)}, ${entry.contentHash.slice(0, 8)}) at ${target}, seq ${String(restored.seq)}`;
     };
     void restore()
@@ -593,16 +784,24 @@ export class EngineObserver {
         },
         (error: unknown) => {
           if (error instanceof RestoreError) {
-            this.context.log(`${this.name} user restore of ${what} refused: ${error.reason} ${error.path}`);
+            this.context.log(
+              `${this.name} user restore of ${what} refused: ${error.reason} ${error.path}`,
+            );
           } else if (interrupted(error)) {
-            this.context.log(`${this.name} engine restore interrupted: ${interruption(error)}`);
+            this.context.log(
+              `${this.name} engine restore interrupted: ${interruption(error)}`,
+            );
           } else {
-            this.violation("engine", `${this.name} restore of ${what} failed: ${error instanceof Error ? error.message : String(error)}`);
+            this.violation(
+              "engine",
+              `${this.name} restore of ${what} failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
           }
         },
       )
       .finally(() => {
-        if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
+        if (this.context.network.incarnation(this.index) === incarnation)
+          this.busy = false;
       });
     return `${this.name} user starts restore of ${what}`;
   }
@@ -612,14 +811,17 @@ export class EngineObserver {
    * `matches`: just `before` the write or just `after` it. The engine's work
    * stops there (reported as interrupted); crash() then restarts it.
    */
-  haltOnPending(when: "before" | "after", matches: (operation: PendingOperation) => boolean): void {
+  haltOnPending(
+    when: "before" | "after",
+    matches: (operation: PendingOperation) => boolean,
+  ): void {
     this.journal.halt = { when, matches };
   }
 
   /**
-   * Kills the app just before the journal next removes a deferred revision,
-   * or finishes an apply or merge intent, which removes the document's
-   * deferral with its rebase (#453; design §4.4). crash() then
+   * Kills the app just before the journal next finishes a `merge` intent,
+   * whose final transaction removes the document's deferral with its rebase
+   * (#453; design §4.4). Not an `apply` intent's (#756). crash() then
    * restarts it. Returns a check of whether the kill happened.
    */
   haltOnDeferralRemoval(): () => boolean {
@@ -645,9 +847,17 @@ export class EngineObserver {
    * crash after the changes, as for one the app was killed before it
    * recorded.
    */
-  async crashWhileChanging(changes: (user: { move: (from: string, to: string) => Promise<string>; remove: (path: string) => Promise<string> }) => Promise<string[]>): Promise<string[]> {
+  async crashWhileChanging(
+    changes: (user: {
+      move: (from: string, to: string) => Promise<string>;
+      remove: (path: string) => Promise<string>;
+    }) => Promise<string[]>,
+  ): Promise<string[]> {
     this.engine.dispose();
-    const entries = await changes({ move: (from, to) => this.user.rename(from, to), remove: (path) => this.user.remove(path) });
+    const entries = await changes({
+      move: (from, to) => this.user.rename(from, to),
+      remove: (path) => this.user.remove(path),
+    });
     return [...entries, this.crash()];
   }
 
@@ -656,29 +866,66 @@ export class EngineObserver {
     await this.settled();
     const violations: Violation[] = [];
     const files = new Map<string, string>();
-    for (const path of await this.synced.list()) files.set(path, sha256Hex(await this.synced.read(path)));
+    for (const path of await this.synced.list())
+      files.set(path, sha256Hex(await this.synced.read(path)));
     const unmaterializable = await this.unmaterializable();
     const outOfScope = new Set<string>();
     // Where the engine keeps an unmaterializable document's edited file (SPEC.md §8): not a live path, and not to be removed.
-    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath === undefined ? [] : [document.localPath])));
-    violations.push(...checkLiveDocuments({ name: this.name, platform: this.platform, heads: heads.files, files, unmaterializable, outOfScope, isSynced: (path) => this.synced.isSynced?.(path) !== false }));
+    const kept = new Set(
+      (await this.engine.unmaterializable()).flatMap((document) =>
+        document.localPath === undefined ? [] : [document.localPath],
+      ),
+    );
+    violations.push(
+      ...checkLiveDocuments({
+        name: this.name,
+        platform: this.platform,
+        heads: heads.files,
+        files,
+        unmaterializable,
+        outOfScope,
+        isSynced: (path) => this.synced.isSynced?.(path) !== false,
+      }),
+    );
     for (const path of unmaterializable.keys()) {
-      if (!heads.files.has(path)) violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} reports ${path}, which is not a live document's path` });
+      if (!heads.files.has(path))
+        violations.push({
+          invariant: "engine-unmaterializable",
+          detail: `${this.name} reports ${path}, which is not a live document's path`,
+        });
     }
     for (const path of files.keys()) {
-      if (!heads.files.has(path) && !kept.has(path)) violations.push({ invariant: "engine-convergence", detail: `${this.name} holds ${path}, which is not a live document` });
+      if (!heads.files.has(path) && !kept.has(path))
+        violations.push({
+          invariant: "engine-convergence",
+          detail: `${this.name} holds ${path}, which is not a live document`,
+        });
     }
     const cursor = await this.journal.getCursor();
-    if (cursor !== heads.lastSeq) violations.push({ invariant: "engine-convergence", detail: `${this.name} cursor is ${String(cursor)}, the feed ends at ${String(heads.lastSeq)}` });
+    if (cursor !== heads.lastSeq)
+      violations.push({
+        invariant: "engine-convergence",
+        detail: `${this.name} cursor is ${String(cursor)}, the feed ends at ${String(heads.lastSeq)}`,
+      });
     for (const deferred of await this.journal.listDeferred()) {
       // Checked above: tracked exactly for the live documents the platform cannot hold.
       if (deferred.reason === "unmaterializable") continue;
       // Waiting for config sync to cover it again: fine for a live document out of scope, and for a tombstone.
-      if (deferred.reason === "out-of-scope" && (outOfScope.has(deferred.revision.path) || deferred.revision.deleted)) continue;
-      violations.push({ invariant: "engine-deferred", detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes` });
+      if (
+        deferred.reason === "out-of-scope" &&
+        (outOfScope.has(deferred.revision.path) || deferred.revision.deleted)
+      )
+        continue;
+      violations.push({
+        invariant: "engine-deferred",
+        detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes`,
+      });
     }
-    violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEvents));
-    for (const violation of violations) this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
+    violations.push(
+      ...checkEngineEchoes(this.name, this.localChanges, this.userEvents),
+    );
+    for (const violation of violations)
+      this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
     return violations;
   }
 
@@ -704,26 +951,45 @@ export class EngineObserver {
           blobId: revision.contentHash,
           size: String(revision.size),
         });
-        this.context.log(`${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`);
+        this.context.log(
+          `${this.name} acknowledged ${this.context.ids.label(revision.revisionId)} seq=${String(revision.seq)} base=${this.context.ids.label(revision.parentRevisionId)}`,
+        );
       },
       merge: async (request) => {
         // The base content as the hook read it, if it did: the harness never reads it again, which would add calls to the run.
         const read: { base?: Uint8Array | null } = {};
         const outcome = await (this.merge ?? threeWayMerge)({
           ...request,
-          readBaseContent: async () => (read.base = await request.readBaseContent()),
+          readBaseContent: async () =>
+            (read.base = await request.readBaseContent()),
         });
         // What the merge path made of the local content: it survives there
         // (sim/invariants.ts), but only where the harness's own check finds the
         // edit (#301), not because the hook says so. A conflict copy is the
         // local content itself, which then survives by being found.
-        if (outcome.status === "merged" && request.local.content !== null && outcome.content !== null) {
-          const [local, merged] = [sha256Hex(request.local.content), sha256Hex(outcome.content)];
+        if (
+          outcome.status === "merged" &&
+          request.local.content !== null &&
+          outcome.content !== null
+        ) {
+          const [local, merged] = [
+            sha256Hex(request.local.content),
+            sha256Hex(outcome.content),
+          ];
           // Where the hook did not read the base (or the server purged it), the device's vaults held it (KnownContents).
-          const base = request.base === undefined || request.base.deleted ? null : (read.base ?? this.contents.get(request.base.baseHash));
-          const carries = carriesLocalEdit(request.local.content, outcome.content, base);
+          const base =
+            request.base === undefined || request.base.deleted
+              ? null
+              : (read.base ?? this.contents.get(request.base.baseHash));
+          const carries = carriesLocalEdit(
+            request.local.content,
+            outcome.content,
+            base,
+          );
           if (carries) this.ledger.merged(local, merged);
-          this.context.log(`${this.name} merge at ${outcome.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`);
+          this.context.log(
+            `${this.name} merge at ${outcome.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`,
+          );
         }
         return outcome;
       },
@@ -738,7 +1004,9 @@ export class EngineObserver {
       timers: this.context.network.timers(this.index),
       random: this.backoffJitter.float.bind(this.backoffJitter),
       onUnmaterializable: (document) => {
-        this.context.log(`${this.name} tracks ${document.path} as unmaterializable (${document.reason})`);
+        this.context.log(
+          `${this.name} tracks ${document.path} as unmaterializable (${document.reason})`,
+        );
       },
     });
   }
@@ -756,19 +1024,27 @@ class AppKilled extends Error {
 
 /**
  * The device's journal: an InMemoryJournal that can kill the app at one
- * chosen recording of a pending operation (haltOnPending), or at the next
- * removal of a deferral (haltOnDeferralRemoval), whether the engine makes it
- * on its own (addPending, removeDeferred) or within a `transact`, which then
- * either commits whole before the kill ("after") or not at all ("before").
+ * chosen recording of a pending operation (haltOnPending), whether the
+ * engine makes it on its own (addPending) or within a `transact`, which then
+ * either commits whole before the kill ("after") or not at all ("before"),
+ * or before the next `merge` intent's final transaction, which removes the
+ * document's deferral (haltOnDeferralRemoval).
  */
 class HaltingJournal extends InMemoryJournal {
-  halt: { when: "before" | "after"; matches: (operation: PendingOperation) => boolean } | undefined;
+  halt:
+    | {
+        when: "before" | "after";
+        matches: (operation: PendingOperation) => boolean;
+      }
+    | undefined;
 
   override async addPending(operation: PendingOperation): Promise<void> {
     const halt = this.takePendingHalt([operation]);
-    if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);
+    if (halt?.when === "before")
+      throw new AppKilled(`app killed before recording ${halt.path}`);
     await super.addPending(operation);
-    if (halt?.when === "after") throw new AppKilled(`app killed after recording ${halt.path}`);
+    if (halt?.when === "after")
+      throw new AppKilled(`app killed after recording ${halt.path}`);
   }
 
   /** Set by haltOnDeferralRemoval; cleared when it kills the app. */
@@ -786,45 +1062,69 @@ class HaltingJournal extends InMemoryJournal {
   }
 
   private mangled(anchor: Uint8Array | undefined): Uint8Array | undefined {
-    if (!this.mangleAnchors || anchor === undefined || anchor.length === 0) return anchor;
+    if (!this.mangleAnchors || anchor === undefined || anchor.length === 0)
+      return anchor;
     const copy = anchor.slice();
     copy[0] = (copy[0] ?? 0) ^ 0xff;
     return copy;
   }
 
-  override async removeDeferred(documentId: string): Promise<void> {
-    await this.haltBeforeDeferralRemoval([documentId]);
-    await super.removeDeferred(documentId);
-  }
-
   override async transact(changes: JournalChanges): Promise<void> {
-    if (changes.cursor !== undefined) changes = { ...changes, cursor: { ...changes.cursor, anchor: this.mangled(changes.cursor.anchor) } };
-    await this.haltBeforeDeferralRemoval(changes.removeDeferred ?? [], (changes.removeIntents ?? []).length > 0);
+    if (changes.cursor !== undefined)
+      changes = {
+        ...changes,
+        cursor: {
+          ...changes.cursor,
+          anchor: this.mangled(changes.cursor.anchor),
+        },
+      };
+    await this.haltBeforeMergeFinish(changes);
     const halt = this.takePendingHalt(changes.addPending ?? []);
-    if (halt?.when === "before") throw new AppKilled(`app killed before recording ${halt.path}`);
+    if (halt?.when === "before")
+      throw new AppKilled(`app killed before recording ${halt.path}`);
     await super.transact(changes);
-    if (halt?.when === "after") throw new AppKilled(`app killed after recording ${halt.path}`);
+    if (halt?.when === "after")
+      throw new AppKilled(`app killed after recording ${halt.path}`);
   }
 
   /** The armed pending halt, disarmed, if one of `operations` matches it. */
-  private takePendingHalt(operations: readonly PendingOperation[]): { when: "before" | "after"; path: string } | undefined {
+  private takePendingHalt(
+    operations: readonly PendingOperation[],
+  ): { when: "before" | "after"; path: string } | undefined {
     const halt = this.halt;
-    const operation = halt === undefined ? undefined : operations.find((candidate) => halt.matches(candidate));
+    const operation =
+      halt === undefined
+        ? undefined
+        : operations.find((candidate) => halt.matches(candidate));
     if (halt === undefined || operation === undefined) return undefined;
     this.halt = undefined;
     return { when: halt.when, path: operation.path };
   }
 
-  private async haltBeforeDeferralRemoval(documentIds: readonly string[], finishesIntent = false): Promise<void> {
+  /**
+   * Kills the app before a `merge` intent's final transaction (engine.ts,
+   * finishMerge), the one that rebases the document and removes its
+   * deferral (since R8, also when no deferral was recorded). Nothing else
+   * halts: an `apply` intent's final transaction also lists its document in
+   * `removeDeferred` (#756 item 3), and a deferral removed on its own is no
+   * merge's.
+   */
+  private async haltBeforeMergeFinish(changes: JournalChanges): Promise<void> {
     if (!this.haltOnDeferralRemoval) return;
-    for (const documentId of documentIds) {
-      // Since R8 a merge's rebase and its deferral's removal are one
-      // transaction, the intent's final one, also when no deferral was recorded.
-      if (finishesIntent || (await this.getDeferred(documentId)) !== undefined) {
-        this.haltOnDeferralRemoval = false;
-        throw new AppKilled("app killed before removing a deferred revision");
-      }
-    }
+    const removed = new Set(changes.removeDeferred ?? []);
+    const finished = new Set(changes.removeIntents ?? []);
+    if (removed.size === 0 || finished.size === 0) return;
+    const merges = (await this.listIntents()).filter(
+      (intent) =>
+        intent.kind === "merge" &&
+        finished.has(intent.id) &&
+        removed.has(intent.documentId),
+    );
+    if (merges.length === 0) return;
+    this.haltOnDeferralRemoval = false;
+    throw new AppKilled(
+      "app killed before a merge's final transaction removed its deferral",
+    );
   }
 }
 
@@ -834,13 +1134,24 @@ class MutableVault extends InterleavingVault {
 
   constructor(
     inner: VaultAdapter,
-    private readonly renamed: (from: string, to: string, rename: () => Promise<void>) => Promise<void>,
-    private readonly wrote: (path: string, write: () => Promise<void>) => Promise<void>,
+    private readonly renamed: (
+      from: string,
+      to: string,
+      rename: () => Promise<void>,
+    ) => Promise<void>,
+    private readonly wrote: (
+      path: string,
+      write: () => Promise<void>,
+    ) => Promise<void>,
   ) {
     super(inner);
   }
 
-  override write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+  override write(
+    path: string,
+    data: Uint8Array,
+    precondition?: WritePrecondition,
+  ): Promise<void> {
     return this.wrote(path, () => super.write(path, data, precondition));
   }
 
@@ -852,7 +1163,10 @@ class MutableVault extends InterleavingVault {
     this.keep.add(path);
   }
 
-  override async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+  override async delete(
+    path: string,
+    precondition?: DeletePrecondition,
+  ): Promise<void> {
     if (this.keep.delete(path)) return;
     await super.delete(path, precondition);
   }
@@ -874,7 +1188,11 @@ class AttributedVault implements VaultAdapter {
   read(path: string): Promise<Uint8Array> {
     return this.inner.read(path);
   }
-  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+  write(
+    path: string,
+    data: Uint8Array,
+    precondition?: WritePrecondition,
+  ): Promise<void> {
     return this.inner.write(path, data, precondition);
   }
   rename(from: string, to: string): Promise<void> {
@@ -898,11 +1216,21 @@ class AttributedVault implements VaultAdapter {
 }
 
 /** The server's live heads, read without faults straight from the change feed: the harness's own fold, independent of the engine. */
-export async function serverHeads(api: ProtocolClient, vaultId: string): Promise<ServerHeads> {
-  const heads = new Map<string, { path: string; hash: string; deleted: boolean }>();
+export async function serverHeads(
+  api: ProtocolClient,
+  vaultId: string,
+): Promise<ServerHeads> {
+  const heads = new Map<
+    string,
+    { path: string; hash: string; deleted: boolean }
+  >();
   let lastSeq = 0n;
   for (;;) {
-    const response = await api.sync.listChanges({ vaultId, sinceSeq: lastSeq, pageSize: 1000 });
+    const response = await api.sync.listChanges({
+      vaultId,
+      sinceSeq: lastSeq,
+      pageSize: 1000,
+    });
     for (const revision of response.revisions) {
       heads.set(revision.documentId, {
         path: new TextDecoder().decode(revision.path),
@@ -914,7 +1242,8 @@ export async function serverHeads(api: ProtocolClient, vaultId: string): Promise
     if (!response.hasMore) break;
   }
   const files = new Map<string, string>();
-  for (const head of heads.values()) if (!head.deleted) files.set(head.path, head.hash);
+  for (const head of heads.values())
+    if (!head.deleted) files.set(head.path, head.hash);
   return { files, lastSeq };
 }
 
@@ -924,10 +1253,17 @@ export async function serverHeads(api: ProtocolClient, vaultId: string): Promise
  * engine backs off, #146), or a wait for that backoff cut short by a crash.
  */
 function interrupted(error: unknown): boolean {
-  return error instanceof EngineDisposedError || error instanceof AppKilled || errorCode(error) === Code.Unavailable || errorCode(error) === Code.ResourceExhausted;
+  return (
+    error instanceof EngineDisposedError ||
+    error instanceof AppKilled ||
+    errorCode(error) === Code.Unavailable ||
+    errorCode(error) === Code.ResourceExhausted
+  );
 }
 
 function interruption(error: unknown): string {
   if (error instanceof AppKilled) return error.message;
-  return error instanceof EngineDisposedError ? "engine disposed" : Code[errorCode(error)];
+  return error instanceof EngineDisposedError
+    ? "engine disposed"
+    : Code[errorCode(error)];
 }
