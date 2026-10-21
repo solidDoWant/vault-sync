@@ -29,7 +29,7 @@ export type BindingChange =
   | { kind: "moved" }
   | { kind: "kept" };
 
-type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "documentByFileKey" | "transact">;
+type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "documentByFileKey" | "documentsByFileKey" | "transact">;
 type BindingsVault = Pick<VaultAdapter, "stat">;
 
 /**
@@ -166,14 +166,11 @@ export class Bindings {
 
   /** The rows that leave every document other than `documentId` bound to the file at `path` with none, for `absence`. */
   private async unbindOthers(documentId: string | undefined, path: string, absence: Absence): Promise<DocumentState[]> {
-    // Writes through here never leave two bindings at one file key, so a
-    // probe that finds `documentId` itself, or none, hides no other.
-    const key = this.space.filesystemKey(path);
-    const state = await this.journal.documentByFileKey(key);
-    if (state === undefined || state.documentId === documentId) return [];
-    // A v2 journal's migration may have bound two documents to one file key (indexeddb.ts deriveV3Records).
-    const all = await this.journal.listDocuments();
-    return all.filter((other) => other.documentId !== documentId && other.binding?.fileKey === key).map((other) => ({ ...other, ...unbound(absence) }));
+    // Every row at the key, not one probe: a v2 journal's migration may have
+    // bound two documents to one file key (indexeddb.ts deriveV3Records),
+    // and a probe that finds `documentId` itself would hide the other.
+    const bound = await this.journal.documentsByFileKey(this.space.filesystemKey(path));
+    return bound.filter((other) => other.documentId !== documentId).map((other) => ({ ...other, ...unbound(absence) }));
   }
 
   private bound(spelling: string, seen: string): Binding {

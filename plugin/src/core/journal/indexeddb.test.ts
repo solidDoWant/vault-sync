@@ -43,6 +43,7 @@ const v2Migrations = journalMigrations.slice(0, 2);
 function overOlderSchema(journal: IndexedDbJournal): Journal {
   const older = Object.create(journal) as Journal;
   older.documentByFileKey = async (fileKey) => (await journal.listDocuments()).find((state) => state.binding?.fileKey === fileKey);
+  older.documentsByFileKey = async (fileKey) => (await journal.listDocuments()).filter((state) => state.binding?.fileKey === fileKey);
   return older;
 }
 
@@ -289,6 +290,7 @@ describe("IndexedDbJournal", () => {
       putConflict = (conflict: ConflictRecord) => this.points.durable(() => this.inner.putConflict(conflict));
       listConflicts = () => this.inner.listConflicts();
       documentByFileKey = (fileKey: string) => this.inner.documentByFileKey(fileKey);
+      documentsByFileKey = (fileKey: string) => this.inner.documentsByFileKey(fileKey);
       putIntent = (intent: NewIntent) => this.points.durable(() => this.inner.putIntent(intent));
       listIntents = () => this.inner.listIntents();
       removeIntent = (id: number) => this.points.durable(() => this.inner.removeIntent(id));
