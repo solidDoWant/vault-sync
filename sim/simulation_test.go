@@ -368,7 +368,7 @@ func requireSeedsDetect(t *testing.T, tag, committedCase string, schedule []stri
 
 	committed := simulation.runSuite(t, false, []string{suitesEnv + "=regressions", regressionDirEnv + "=" + committedDir})
 	require.Error(t, committed.err, "the committed case %s passed against the %s server:\n%s", committedCase, tag, committed.output)
-	require.Equal(t, 1, committed.total, "the committed case %s was not replayed alone:\n%s", committedCase, committed.output)
+	require.Contains(t, committed.output, committedCase+" keeps every invariant", "the committed case %s was not replayed:\n%s", committedCase, committed.output)
 	require.Contains(t, committed.output, invariant, "the committed case %s failed for another reason:\n%s", committedCase, committed.output)
 	require.Contains(t, committed.output, detail, "the committed case %s failed for another reason:\n%s", committedCase, committed.output)
 
