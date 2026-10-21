@@ -1,0 +1,28 @@
+syntax = "proto3";
+
+package vaultsync.v1;
+
+option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1";
+
+// ErrorReason tells apart refusals that share a status code, so clients
+// match on it rather than on the error message, which may change.
+enum ErrorReason {
+  // No reason given. Clients must treat an unknown reason like this one.
+  ERROR_REASON_UNSPECIFIED = 0;
+  // RESOURCE_EXHAUSTED from RegisterDevice: the caller has as many devices
+  // that are not removed as the server allows. It persists until the caller
+  // removes a device (RemoveDevice).
+  ERROR_REASON_DEVICE_LIMIT = 1;
+  // RESOURCE_EXHAUSTED from any authenticated RPC: the caller already has
+  // the maximum number of calls in flight on the server replica. It passes
+  // once earlier calls complete; the client backs off and retries.
+  ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS = 2;
+}
+
+// ErrorDetail is attached to an error (as a Connect error detail) to give
+// its machine-readable reason. Errors without it have no reason beyond
+// their status code.
+message ErrorDetail {
+  // Why the call was refused.
+  ErrorReason reason = 1;
+}

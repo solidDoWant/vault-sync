@@ -1,11 +1,13 @@
 import { Code, ConnectError } from "@connectrpc/connect";
 
+import { ErrorDetailSchema, ErrorReason } from "../gen/vaultsync/v1/errors_pb";
 import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import { jwtSubject } from "../core/auth/oidc";
 import type { AuthState } from "../core/auth/tokens";
 import type { Journal } from "../core/journal/journal";
 import type { ProtocolClient } from "../core/protocol/client";
 import type { VaultAdapter } from "../core/vault/adapter";
+import { uuidv7 } from "../core/uuid";
 import type { PathRules } from "../core/vaultpath/platform";
 import { oidcConfig, serverBaseUrl, type ConnectedVault, type PluginData } from "./data";
 import { DeviceNameError, deviceNameOf } from "./device-name";
@@ -48,19 +50,31 @@ export interface DeviceRegistrationOptions {
  * This install's device id for the signed-in account, registering the device
  * the first time (SPEC.md §6.2: one device per plugin install). The id is
  * stored in plugin data before it is used, and reused on every later start,
- * so restarts and sign-ins never register again: the server's device limit
- * counts every registration. A different account (or server) gets a device
- * of its own, because the server refuses commits with another user's device.
+ * so restarts and sign-ins never register again: every registration takes a
+ * place under the server's device limit. A different account (or server) gets
+ * a device of its own, because the server refuses commits with another user's
+ * device.
+ *
+ * Before calling RegisterDevice it saves a registration id (with the name to
+ * register), and every retry sends the same one, so a crash or a lost
+ * response between the server registering the device and the plugin saving
+ * it does not use a second place (#428): the server returns the device the
+ * first call registered.
  */
 export async function ensureDevice(options: DeviceRegistrationOptions): Promise<string> {
   const { data } = options;
   const account = await currentAccount(data, options.accessToken);
   const stored = data.device;
-  if (stored !== undefined && stored.serverUrl === account.serverUrl && stored.issuer === account.issuer && stored.subject === account.subject) return stored.id;
-  const name = deviceNameOf(data.deviceName, options.defaultDeviceName);
+  if (stored !== undefined && sameAccount(stored, account)) return stored.id;
+  let pending = data.pendingDevice;
+  if (pending === undefined || !sameAccount(pending, account)) {
+    pending = { registrationId: uuidv7(), name: deviceNameOf(data.deviceName, options.defaultDeviceName), ...account };
+    data.pendingDevice = pending;
+    await options.save();
+  }
   let id: string | undefined;
   try {
-    id = (await options.client.devices.registerDevice({ name })).device?.id;
+    id = (await options.client.devices.registerDevice({ name: pending.name, registrationId: pending.registrationId })).device?.id;
   } catch (error) {
     if (isDeviceLimit(error)) throw new DeviceLimitError(errorMessage(error));
     if (error instanceof ConnectError && error.code === Code.InvalidArgument) throw new DeviceNameError(error.rawMessage);
@@ -68,17 +82,29 @@ export async function ensureDevice(options: DeviceRegistrationOptions): Promise<
   }
   if (id === undefined || id === "") throw new Error("the server registered the device but returned no id");
   data.device = { id, ...account };
+  delete data.pendingDevice;
   await options.save();
   return id;
 }
 
+function sameAccount(stored: Account, account: Account): boolean {
+  return stored.serverUrl === account.serverUrl && stored.issuer === account.issuer && stored.subject === account.subject;
+}
+
 /**
- * RESOURCE_EXHAUSTED from RegisterDevice is the per-user device limit, except
- * when it comes from the server's per-user limit on concurrent requests, which
- * passes once earlier requests finish.
+ * RESOURCE_EXHAUSTED from RegisterDevice is the per-user device limit only
+ * when the server says so with its machine-readable reason (#428). Without it
+ * (the per-user limit on concurrent requests, which passes once earlier
+ * requests finish, a request over the size limit, or a server too old to send
+ * reasons) the error is treated as transient. The message text is never
+ * matched: the server may reword it.
  */
 function isDeviceLimit(error: unknown): error is ConnectError {
-  return error instanceof ConnectError && error.code === Code.ResourceExhausted && !/concurrent/i.test(error.rawMessage);
+  return (
+    error instanceof ConnectError &&
+    error.code === Code.ResourceExhausted &&
+    error.findDetails(ErrorDetailSchema).some((detail) => detail.reason === ErrorReason.DEVICE_LIMIT)
+  );
 }
 
 async function currentAccount(data: PluginData, accessToken: () => Promise<string>): Promise<Account> {

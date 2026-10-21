@@ -163,6 +163,9 @@ func requireResourceExhausted(t *testing.T, err error) {
 
 	require.Error(t, err)
 	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err), "error: %v", err)
+	// Issue #428: the refusal names its reason, so a client can tell it
+	// apart from the device limit without reading the message.
+	require.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS, api.ErrorReasonOf(err), "error: %v", err)
 }
 
 // metricValue returns the value of the unlabeled (or fully matched) sample

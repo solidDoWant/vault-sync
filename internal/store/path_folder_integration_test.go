@@ -251,3 +251,93 @@ func TestPathFolderCheckSkipsEndToEndEncryptedVaults(t *testing.T) {
 		require.NoError(t, err)
 	}
 }
+
+// Issue #428 item 4: the file/folder check is scoped to the committing
+// vault. A live "notes" in one vault does not block "notes/c.md" (or, the
+// other way round, "notes" under a live "notes/c.md") in another.
+func TestPathFolderCheckIsPerVault(t *testing.T) {
+	tests := []struct {
+		name          string
+		first, second string
+	}{
+		{name: "a folder of the key is live in another vault", first: "notes", second: "notes/c.md"},
+		{name: "the key is a folder of a live key in another vault", first: "notes/c.md", second: "notes"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCommitFixture(t)
+			queries := store.New(fixture.pool)
+
+			other, err := queries.CreateVault(t.Context(), fixture.user, store.NewVault{Name: "Other", Encryption: store.EncryptionNone}, 10)
+			require.NoError(t, err)
+
+			_, err = fixture.pool.Exec(t.Context(), "INSERT INTO blobs (vault_id, blob_id, size, state) VALUES ($1, $2, 7, 'complete')", other.ID, fixture.content)
+			require.NoError(t, err)
+
+			_, err = fixture.vault.CommitRevision(t.Context(), fixture.create(test.first, test.first))
+			require.NoError(t, err)
+
+			_, err = queries.InVault(other.ID).CommitRevision(t.Context(), fixture.create(test.second, test.second))
+			require.NoError(t, err, "a document in another vault is no collision")
+
+			_, err = fixture.vault.CommitRevision(t.Context(), fixture.create(test.second, test.second))
+			requireFolderTaken(t, err, "the same pair in one vault still collides")
+		})
+	}
+}
+
+// Issue #428 item 6: both probes find candidates by digest, then compare
+// the candidates' real path keys, so a digest collision never refuses a
+// commit. SHA-256 collisions cannot be produced, so each case replaces one
+// digest function, in its own fresh database and before any row exists,
+// with one under which every two keys of equal length collide. The unique
+// live path_key index still sees distinct digests for the keys used,
+// because their lengths differ.
+func TestPathFolderCheckIgnoresDigestCollisions(t *testing.T) {
+	tests := []struct {
+		name string
+		// collide redefines one digest function.
+		collide string
+		// existing is committed first; colliding has a digest match with
+		// it but no real collision; real does collide with it.
+		existing, colliding, real string
+	}{
+		{
+			name: "a folder of the key matches a live key's digest",
+			collide: `CREATE OR REPLACE FUNCTION documents_path_key_digest(path_key text) RETURNS bytea
+				LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+				RETURN sha256(convert_to(length(path_key)::text, 'UTF8'))`,
+			existing:  "xy",
+			colliding: "ab/c.md",
+			real:      "xy/cd.md",
+		},
+		{
+			name: "the key matches a folder digest of a live key",
+			collide: `CREATE OR REPLACE FUNCTION documents_folder_digest(vault_id uuid, folder text) RETURNS bytea
+				LANGUAGE sql IMMUTABLE STRICT PARALLEL SAFE
+				RETURN sha256(uuid_send(vault_id) || convert_to(length(folder)::text, 'UTF8'))`,
+			existing:  "xy/c.md",
+			colliding: "ab",
+			real:      "xy",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newCommitFixture(t)
+
+			_, err := fixture.pool.Exec(t.Context(), test.collide)
+			require.NoError(t, err)
+
+			_, err = fixture.vault.CommitRevision(t.Context(), fixture.create(test.existing, test.existing))
+			require.NoError(t, err)
+
+			_, err = fixture.vault.CommitRevision(t.Context(), fixture.create(test.colliding, test.colliding))
+			require.NoError(t, err, "a digest match whose real key differs is no collision")
+
+			_, err = fixture.vault.CommitRevision(t.Context(), fixture.create(test.real, test.real))
+			requireFolderTaken(t, err, "a real collision is still refused")
+		})
+	}
+}

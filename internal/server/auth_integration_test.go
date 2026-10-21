@@ -147,4 +147,7 @@ func TestRegisterDeviceLimit(t *testing.T) {
 	_, err := fixture.registerDevice(t, token, &vaultsyncv1.RegisterDeviceRequest{Name: "One too many"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	// Issue #428: the refusal names its reason, so a client can tell it
+	// apart from the per-user concurrency limit without reading the message.
+	assert.Equal(t, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_LIMIT, api.ErrorReasonOf(err))
 }
