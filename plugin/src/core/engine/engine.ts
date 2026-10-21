@@ -823,7 +823,10 @@ export class SyncEngine {
     // Each turn moves one holder away, or resolves one once.
     for (let turn = 0; turn < 16; turn++) {
       const holder = await this.nextHolder(path, documentId);
-      if (holder === undefined) return false;
+      if (holder === undefined) {
+        await this.dropStaleOutboxes(path, documentId);
+        return false;
+      }
       const { state, spelling } = holder;
       const ahead = await this.journal.getDeferred(state.documentId);
       const outbox = (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId);
@@ -866,6 +869,27 @@ export class SyncEngine {
       this.schedulePush();
     }
     return true;
+  }
+
+  /**
+   * C3 once no file holds `path`: another known document's live outbox at
+   * `path` (under the server's key) would be refused for sure, the server
+   * having given the path to `documentId`. Its file is gone or elsewhere
+   * (rule W moved every file holder away), so the outbox is stale: a commit
+   * the server refused before the user deleted or moved the file (#398). It
+   * goes, and the push derives the document's next operation from its
+   * binding (design §4.1, R5b).
+   */
+  private async dropStaleOutboxes(path: string, documentId: string): Promise<void> {
+    const key = this.pathSpace.fileKey(path);
+    await this.bindings.transact(async () => {
+      const stale = (await this.journal.listPending()).filter((operation) => operation.documentId !== documentId && operation.baseRevisionId !== "" && !operation.deleted && this.pathSpace.fileKey(operation.path) === key);
+      for (const operation of stale) {
+        const binding = (await this.journal.getDocument(operation.documentId))?.binding;
+        if (binding !== undefined && binding !== null) this.markDirty(binding.spelling);
+      }
+      return stale.length === 0 ? undefined : { removePending: stale.map((operation) => operation.revisionId) };
+    });
   }
 
   /**
