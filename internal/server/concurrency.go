@@ -10,6 +10,8 @@ import (
 	"github.com/google/uuid"
 	"github.com/prometheus/client_golang/prometheus"
 
+	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
+	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 )
 
@@ -131,7 +133,8 @@ func holdRPCSlots(next http.Handler) http.Handler {
 
 // interceptor returns a Connect interceptor, installed after
 // authentication, that takes a slot for every authenticated RPC and
-// rejects the call with RESOURCE_EXHAUSTED, before its handler runs, when
+// rejects the call with RESOURCE_EXHAUSTED (reason
+// ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS), before its handler runs, when
 // the caller has none left. Unauthenticated (public) procedures are not
 // counted.
 func (limiter *userLimiter) interceptor() connect.Interceptor {
@@ -158,7 +161,8 @@ func (interceptor limitInterceptor) admit(ctx context.Context, procedure string)
 	if !interceptor.limiter.acquire(user.ID) {
 		interceptor.limiter.metrics.rejections.WithLabelValues(procedure).Inc()
 
-		return nil, connect.NewError(connect.CodeResourceExhausted, errTooManyConcurrentRPCs)
+		return nil, api.ReasonError(connect.CodeResourceExhausted,
+			vaultsyncv1.ErrorReason_ERROR_REASON_TOO_MANY_CONCURRENT_REQUESTS, errTooManyConcurrentRPCs)
 	}
 
 	if !ok {
