@@ -285,7 +285,7 @@ describe("checkPhantomDeletes", () => {
       const vault = new InMemoryVault();
       const journal = new InMemoryJournal();
       const ledger = new UserLedger();
-      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, touched: () => undefined, serverSeq: () => 1n, pathPool });
+      const user = new EngineUser({ name: "e1", vault, journal, ledger, now: () => at, serverSeq: () => 1n, pathPool });
       await vault.write("a.md", encode("aa"));
       await journal.putDocument({ documentId: "d1", path: "a.md", revisionId: "r1", seq: 1n, baseHash: "aa", size: 2n, kind: "text", deleted: false });
       await user.rename("a.md", "b.md");
@@ -330,35 +330,22 @@ describe("checkPhantomDeletes", () => {
 });
 
 describe("checkEngineEchoes", () => {
-  const echoes = (...args: Parameters<typeof checkEngineEchoes>) => checkEngineEchoes(...args).map((violation) => violation.detail);
-
-  it("accepts changes at paths the user changed and reports every other one as the engine's own", () => {
-    const events = [
+  it("accepts exactly the events a change of the user's emitted and reports every other one as the engine's own", () => {
+    const user = [
       { type: "modify", path: "a.md" },
-      { type: "create", path: "b.md" },
       { type: "rename", path: "c.md", oldPath: "a.md" },
+    ] as const;
+    const engine = [
+      { type: "create", path: "b.md" },
       { type: "delete", path: "d.md" },
     ] as const;
-    expect(echoes("e1", events, new Set(["a.md", "c.md"]), "posix")).toEqual(["e1 reported its own create of b.md as a local change", "e1 reported its own delete of d.md as a local change"]);
+    const reported = checkEngineEchoes("e1", [user[0], engine[0], user[1], engine[1]], new Set(user)).map((violation) => violation.detail);
+    expect(reported).toEqual(["e1 reported its own create of b.md as a local change", "e1 reported its own delete of d.md as a local change"]);
   });
 
-  // A case-insensitive vault keeps the spelling a file has: the user's write
-  // of STRASSE.md over straße.md is reported as a modify of straße.md (#247).
-  it.each([
-    ["macos", "STRASSE.md", "straße.md"],
-    ["windows", "A.md", "a.md"],
-    ["macos", "notes/Cafe\u0301.md", "NOTES/café.md"],
-    ["windows", "Notes/A.md", "notes/a.md"],
-  ] as const)("under %s rules, attributes a change the vault reports at another spelling of the user's path %s to the user", (platform, touched, reported) => {
-    expect(echoes("e1", [{ type: "modify", path: reported }], new Set([touched]), platform)).toEqual([]);
-  });
-
-  it.each(["macos", "windows"] as const)("under %s rules, still reports the engine's own change at a path the user never changed under any spelling", (platform) => {
-    expect(echoes("e1", [{ type: "modify", path: "straße.md" }], new Set(["STRASS.md", "strasse.md.md", "a.md"]), platform)).toEqual(["e1 reported its own modify of straße.md as a local change"]);
-  });
-
-  it("under posix rules, where a.md and A.md are two files, reports the engine's own change at a case variant of the user's path", () => {
-    expect(echoes("e1", [{ type: "modify", path: "a.md" }], new Set(["A.md"]), "posix")).toEqual(["e1 reported its own modify of a.md as a local change"]);
-    expect(echoes("e1", [{ type: "modify", path: "straße.md" }], new Set(["STRASSE.md"]), "posix")).toEqual(["e1 reported its own modify of straße.md as a local change"]);
+  it("reports an engine echo at a path the user changed earlier in the run: no path excuses another event", () => {
+    const userWrite = { type: "modify", path: "a.md" } as const;
+    const echo = { type: "modify", path: "a.md" } as const;
+    expect(checkEngineEchoes("e1", [userWrite, echo], new Set([userWrite])).map((violation) => violation.detail)).toEqual(["e1 reported its own modify of a.md as a local change"]);
   });
 });

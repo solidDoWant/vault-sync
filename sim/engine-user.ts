@@ -29,8 +29,6 @@ export interface EngineUserOptions {
   ledger: UserLedger;
   /** Where the user is, for the ledger: e.g. `step 120`. */
   now: () => string;
-  /** Called with every path the user changes, so the engine's events there count as local changes. */
-  touched: (path: string) => void;
   /** The server's head seq, recorded with each write and rename for the resurrected-delete check. */
   serverSeq: () => bigint;
   /** The paths the user creates files at and renames them to (RunContext.pathPool). */
@@ -76,7 +74,6 @@ export class EngineUser {
   async write(path: string, source: Random | Uint8Array, verb = "writes"): Promise<string> {
     const current = await this.current(path);
     const content = source instanceof Uint8Array ? source : this.content(source, current);
-    this.options.touched(path);
     await this.options.vault.write(path, content);
     // Only once the vault took it: what was there is replaced, and the new content is owed.
     if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
@@ -88,8 +85,6 @@ export class EngineUser {
 
   async rename(from: string, to: string): Promise<string> {
     const documents = await this.documentsAt(from);
-    this.options.touched(from);
-    this.options.touched(to);
     await this.options.vault.rename(from, to);
     const serverSeq = this.options.serverSeq();
     this.recordRename(from, to);
@@ -103,7 +98,6 @@ export class EngineUser {
   async remove(path: string): Promise<string> {
     const current = await this.current(path);
     const documents = await this.documentsAt(path);
-    this.options.touched(path);
     await this.options.vault.delete(path);
     if (current !== undefined) this.options.ledger.replace(sha256Hex(current));
     for (const document of documents) this.options.ledger.deletedDocuments.add(document);

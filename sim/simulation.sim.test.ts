@@ -588,6 +588,8 @@ describe.runIf(suites.has("scenarios"))("scripted server restore scenarios (#155
     const result = await restoredServer(environment);
     const trace = tail(result.trace, 200);
 
+    // Before the restore the server had not diverged from any cursor: no pull resynced (#155 criterion 2, end to end).
+    expect(result.beforeRestore, trace).toEqual({ resynced: false, resyncs: [] });
     expect(result.resynced, trace).toBe(true);
     expect(result.serverFiles, trace).toEqual(["notes/after-1.md", "notes/after-2.md", "notes/after-3.md", "notes/kept.md"]);
     // Every post-restore revision reached the device.

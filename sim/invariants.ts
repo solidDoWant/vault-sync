@@ -27,8 +27,9 @@
 //   only through a concurrent edit (SPEC.md §4) or the user's re-creation of
 //   the file (§8), never because an engine failed to apply a delete.
 // - `engine-echo`: every change an engine reported as local (its
-//   onLocalChange events) is at a path its user changed. The engine's own
-//   writes, renames and deletes must never be reported (echo suppression).
+//   onLocalChange events) was emitted by a change its user made. The
+//   engine's own writes, renames and deletes must never be reported (echo
+//   suppression), not even at a path the user changed before.
 //
 // The checks are pure functions over recorded data, unit tested in
 // invariants.test.ts.
@@ -379,21 +380,19 @@ function explained(engine: EngineChanges, revisions: readonly FeedRevision[]): b
 }
 
 /**
- * `engine-echo`: the local changes `engine` reported at a path its user never
- * changed, i.e. its own writes, renames and deletes it took for the user's.
- * `touched` holds the paths the user changed, as the user spelled them. On a
- * case-insensitive platform (windows, macos) the vault resolves another
- * spelling to the same file and reports the change under the file's own
- * spelling (#247): the user's write of `STRASSE.md` over `straße.md` is a
- * modify of `straße.md`. So paths match as the engine's vault matches them:
- * by path key there (SPEC.md §5), exactly under posix.
+ * `engine-echo`: the local changes `engine` reported that no change of its
+ * user's emitted, i.e. its own writes, renames and deletes it took for the
+ * user's. `userEvents` holds the events the engine received while a change of
+ * the user's was being applied (the vaults emit synchronously within the
+ * change), so an event is excused only by the very user operation it fired
+ * in: an engine write at a path the user changed earlier is still reported.
+ * On a case-insensitive platform the vault reports a change under the file's
+ * own spelling (#247), which needs no path matching here.
  */
-export function checkEngineEchoes(engine: string, events: readonly VaultEvent[], touched: ReadonlySet<string>, platform: PathPlatform): Violation[] {
-  const key = pathMatcher(platform);
-  const touchedKeys = new Set([...touched].map(key));
+export function checkEngineEchoes(engine: string, events: readonly VaultEvent[], userEvents: { has(event: VaultEvent): boolean }): Violation[] {
   const violations: Violation[] = [];
   for (const event of events) {
-    if (touchedKeys.has(key(event.path))) continue;
+    if (userEvents.has(event)) continue;
     violations.push({ invariant: "engine-echo", detail: `${engine} reported its own ${event.type} of ${event.path} as a local change` });
   }
   return violations;

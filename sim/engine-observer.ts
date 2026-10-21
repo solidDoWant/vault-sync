@@ -19,8 +19,9 @@
 // and the harness's own check agrees that the platform cannot hold its path.
 //
 // The user and the engine change the vault through their own handles, so the
-// harness's inode tap (§5.4) records who made each change; nothing checks
-// that record yet, and the engine never sees it.
+// harness's inode tap (§5.4) records who made each change; the engine never
+// sees that record. The engine-echo check uses it: an event the engine
+// reports as a local change must be one that a change of the user's emitted.
 //
 // A scenario may turn on config folder sync (#28, SPEC.md §8): the engine then
 // syncs a ConfigSyncVault over the vault and a config folder of its own, and
@@ -40,7 +41,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import type { ConflictRecord, JournalChanges, PendingOperation } from "../plugin/src/core/journal/journal";
 import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
-import type { DeletePrecondition, VaultAdapter, VaultEvent } from "../plugin/src/core/vault/adapter";
+import type { DeletePrecondition, VaultAdapter, VaultEvent, VaultListener, WritePrecondition } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory";
 import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { RunContext, Violation } from "./client";
@@ -104,8 +105,15 @@ export class EngineObserver {
   private engine: SyncEngine;
   private busy = false;
   private readonly localChanges: VaultEvent[] = [];
-  /** Paths the scenario edited as the user: their events are expected local changes. */
-  private readonly userEdited = new Set<string>();
+  /**
+   * The events the engine received while a change of the user's was emitted:
+   * the only ones it may report as local changes (engine-echo). The vaults
+   * emit synchronously within the change, after the inode tap, so each is
+   * tied to the user operation it fired in, with no path matching.
+   */
+  private readonly userEvents = new WeakSet<VaultEvent>();
+  /** The actor of the change the vaults are emitting, from their inode taps. */
+  private emitting: InodeEvent["actor"] | undefined;
   /** What the user did, for the lost-write and phantom-delete checks (sim/invariants.ts). */
   readonly ledger: UserLedger;
   private readonly user: EngineUser;
@@ -113,6 +121,8 @@ export class EngineObserver {
   lastPush: PushSummary | undefined;
   /** The last pull that completed. */
   lastPull: PullSummary | undefined;
+  /** Where each of the engine's pulls that resynced (PullSummary.resynced) completed, e.g. `step 120`. */
+  readonly resyncs: string[] = [];
   /** The merge hook of the engine (and of the engines after a crash); the default is the engine's, threeWayMerge. */
   merge: MergeHook | undefined;
   /** The jitter of the engines' backoff, the same in every replay. */
@@ -131,9 +141,13 @@ export class EngineObserver {
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
     this.vault = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
-    this.vault.tapInodes((event) => this.inodeEvents.push({ ...event, step: context.stepNumber() }));
+    this.vault.tapInodes((event) => {
+      this.emitting = event.actor;
+      this.inodeEvents.push({ ...event, step: context.stepNumber() });
+    });
     this.engineVault = new MutableVault(this.vault.handle("engine"), (from, to, rename) => this.user.engineRenamed(from, to, rename));
     this.config = new InMemoryVault({ now: () => 0, pathRules: { platform }, filesystem });
+    this.config.tapInodes((event) => (this.emitting = event.actor));
     this.synced = this.engineVault;
     this.engine = this.createEngine();
     this.ledger = new UserLedger(platform);
@@ -143,7 +157,6 @@ export class EngineObserver {
       journal: this.journal,
       ledger: this.ledger,
       now: () => `step ${String(context.stepNumber())}`,
-      touched: (path) => this.userEdited.add(path),
       serverSeq: () => context.serverSeq(),
       pathPool: context.pathPool,
     });
@@ -198,6 +211,7 @@ export class EngineObserver {
             return;
           }
           this.lastPull = summary;
+          if (summary.resynced) this.resyncs.push(`step ${String(this.context.stepNumber())}`);
           this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred${summary.resynced ? ", resynced" : ""}`);
         },
         (error: unknown) => {
@@ -237,7 +251,6 @@ export class EngineObserver {
    * disk: what Obsidian's autosave can do (#163).
    */
   saveBeforeNextEngineChange(path: string, content: Uint8Array): string {
-    this.userEdited.add(path);
     this.engineVault.beforeNextChange(path, async () => {
       this.context.log(`${this.name} user saves ${path} (${String(content.length)} B) just before the engine changes it`);
       // As the user: the ledger records the save, which replaces what the user had written there.
@@ -274,8 +287,6 @@ export class EngineObserver {
     for (const path of await this.vault.list()) {
       if (!path.startsWith(`${from}/`)) continue;
       const moved = `${to}/${path.slice(from.length + 1)}`;
-      this.userEdited.add(path);
-      this.userEdited.add(moved);
       moves.push([path, moved]);
     }
     await this.vault.renameFolder(from, to);
@@ -335,14 +346,14 @@ export class EngineObserver {
   async setConfigSync(settings: ConfigSyncSettings): Promise<string> {
     await this.settled();
     this.engine.dispose();
-    this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config, settings, ownFolders: ["plugins/vault-sync"] });
+    // The engine changes the config folder through its own handle, so the tap tells its changes from Obsidian's.
+    this.synced = new ConfigSyncVault({ notes: this.engineVault, config: this.config.handle("engine"), settings, ownFolders: ["plugins/vault-sync"] });
     this.engine = this.createEngine();
     return `${this.name} config sync ${settings.enabled ? `on (${Object.entries(settings.categories).filter(([, on]) => on).map(([category]) => category).join(", ")})` : "off"}, engine restarted`;
   }
 
   /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
   async editConfig(relative: string, content: Uint8Array): Promise<string> {
-    this.userEdited.add(`.obsidian/${relative}`);
     await this.config.write(relative, content);
     await this.settled();
     return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
@@ -350,7 +361,6 @@ export class EngineObserver {
 
   /** Deletes `relative` from the config folder as Obsidian would. */
   async removeConfig(relative: string): Promise<string> {
-    this.userEdited.add(`.obsidian/${relative}`);
     await this.config.delete(relative);
     await this.settled();
     return `${this.name} Obsidian deletes config ${relative}`;
@@ -502,7 +512,7 @@ export class EngineObserver {
       if (deferred.reason === "out-of-scope" && (outOfScope.has(deferred.revision.path) || deferred.revision.deleted)) continue;
       violations.push({ invariant: "engine-deferred", detail: `${this.name} deferred ${this.context.ids.label(deferred.revision.revisionId)} (${deferred.reason}) without local changes` });
     }
-    violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEdited, this.platform));
+    violations.push(...checkEngineEchoes(this.name, this.localChanges, this.userEvents));
     for (const violation of violations) this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
     await this.shadowCheck();
     return violations;
@@ -526,7 +536,9 @@ export class EngineObserver {
       vaultId: this.context.vaultId,
       deviceId: this.deviceId,
       api: this.api,
-      vault: this.synced,
+      vault: new AttributedVault(this.synced, (event) => {
+        if (this.emitting === "user") this.userEvents.add(event);
+      }),
       journal: this.journal,
       onLocalChange: (event) => this.localChanges.push(event),
       onAcknowledged: (revision) => {
@@ -655,6 +667,45 @@ class MutableVault extends InterleavingVault {
   override async delete(path: string, precondition?: DeletePrecondition): Promise<void> {
     if (this.keep.delete(path)) return;
     await super.delete(path, precondition);
+  }
+}
+
+/**
+ * The engine's vault, passing every event it receives to `received` first,
+ * synchronously, while the change that emitted it is still being applied.
+ */
+class AttributedVault implements VaultAdapter {
+  constructor(
+    private readonly inner: VaultAdapter,
+    private readonly received: (event: VaultEvent) => void,
+  ) {}
+
+  list(): Promise<string[]> {
+    return this.inner.list();
+  }
+  read(path: string): Promise<Uint8Array> {
+    return this.inner.read(path);
+  }
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    return this.inner.write(path, data, precondition);
+  }
+  rename(from: string, to: string): Promise<void> {
+    return this.inner.rename(from, to);
+  }
+  delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    return this.inner.delete(path, precondition);
+  }
+  stat(path: string): ReturnType<VaultAdapter["stat"]> {
+    return this.inner.stat(path);
+  }
+  watch(listener: VaultListener): () => void {
+    return this.inner.watch((event) => {
+      this.received(event);
+      listener(event);
+    });
+  }
+  isSynced(path: string): boolean {
+    return this.inner.isSynced?.(path) ?? true;
   }
 }
 
