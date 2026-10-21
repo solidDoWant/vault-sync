@@ -34,15 +34,17 @@ env:
 
 jobs:
   android:
-    name: plugin-e2e (android-emulator, ${{ matrix.gpu }})
+    name: plugin-e2e (android-emulator, ${{ matrix.variant }})
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # TEMPORARY (#704 diagnosis): which GPU mode keeps the emulator alive
-    # once Obsidian's WebView renders. Reduced to one mode before review.
+    # TEMPORARY (#704 diagnosis): Google Play services updating itself
+    # kills Obsidian (bound to its FontsProvider). Which image avoids it.
     strategy:
       fail-fast: false
       matrix:
-        gpu: [swiftshader_indirect, swangle_indirect]
+        variant: [default, google_apis-nogms]
+    env:
+      ANDROID_IMAGE: system-images;android-34;${{ startsWith(matrix.variant, 'google_apis') && 'google_apis' || 'default' }};x86_64
     defaults:
       run:
         shell: bash
@@ -76,7 +78,7 @@ jobs:
           # The subshell records how the emulator ended, should it end.
           nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
             -gpu "$0" -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
-            "${{ matrix.gpu }}" > "$RUNNER_TEMP/emulator.log" 2>&1 &
+            swiftshader_indirect > "$RUNNER_TEMP/emulator.log" 2>&1 &
           pid=$!
           for _ in $(seq 1 72); do
             if ! kill -0 "$pid" 2>/dev/null; then echo "::error::the emulator exited"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
@@ -84,6 +86,10 @@ jobs:
               "$adb" shell settings put global window_animation_scale 0
               "$adb" shell settings put global transition_animation_scale 0
               "$adb" shell settings put global animator_duration_scale 0
+              if [[ "${{ matrix.variant }}" == *-nogms ]]; then "$adb" shell pm disable-user --user 0 com.google.android.gms; fi
+              "$adb" shell dumpsys package com.google.android.webview | grep -m1 versionName || true
+              "$adb" shell dumpsys package com.android.webview | grep -m1 versionName || true
+              "$adb" shell dumpsys webviewupdate | head -20 || true
               exit 0
             fi
             sleep 5
@@ -102,7 +108,7 @@ jobs:
           echo "b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3  $apk" | sha256sum -c -
           "$adb" install "$apk"
           "$adb" shell am start -W -n md.obsidian/.MainActivity
-          sleep 60
+          sleep 120
           "$adb" shell pidof md.obsidian
           "$adb" exec-out screencap -p > "$RUNNER_TEMP/obsidian-start.png"
           "$adb" shell am force-stop md.obsidian
@@ -141,6 +147,6 @@ jobs:
       - if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: android-e2e-logs-${{ matrix.gpu }}
+          name: android-e2e-logs-${{ matrix.variant }}
           path: ${{ runner.temp }}/e2e-logs
           if-no-files-found: ignore
