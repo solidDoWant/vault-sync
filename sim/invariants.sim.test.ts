@@ -378,7 +378,7 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
 
   // #422 item 4: lost-write checks what the merge result holds, not the hook's record of having merged.
   it("catches a merge that drops the local edit but reports it as merged (lost-write)", async () => {
-    const dropLocal: MergeHook = async (request) => ({ status: "merged", path: request.remote.path, content: await request.readRemoteContent() });
+    const dropLocal: MergeHook = async (request) => ({ status: "merged", content: await request.readRemoteContent() });
     const { result } = await concurrentEdits(environment, dropLocal);
     const trace = tail(result.trace);
     expect(invariants(result), trace).toEqual(["lost-write"]);
@@ -386,7 +386,7 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
   });
 
   it("catches a merge that drops a one-word local addition the remote content holds within a line, but reports it as merged (#717)", async () => {
-    const dropLocal: MergeHook = async (request) => ({ status: "merged", path: request.remote.path, content: await request.readRemoteContent() });
+    const dropLocal: MergeHook = async (request) => ({ status: "merged", content: await request.readRemoteContent() });
     const { result } = await concurrentEdits(environment, dropLocal, { base: "a\n", first: "a\nfrom the first engine's user\n", second: "a\nfirst\n" });
     const trace = tail(result.trace);
     expect(invariants(result), trace).toEqual(["lost-write"]);
@@ -395,7 +395,7 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
 
   it("passes a correct merge, by a hook that never reads the base, of a remote delete of a line the local edit kept (#717)", async () => {
     // The line merge of the two edits, which this hook knows without reading the base.
-    const known: MergeHook = (request) => Promise.resolve({ status: "merged", path: request.remote.path, content: encoder.encode("a\nlocal\n") });
+    const known: MergeHook = () => Promise.resolve({ status: "merged", content: encoder.encode("a\nlocal\n") });
     const { result, run } = await concurrentEdits(environment, known, { base: "a\nb\n", first: "a\n", second: "a\nb\nlocal\n" });
     const trace = tail(result.trace);
     expect(result.violations, trace).toEqual([]);

@@ -130,7 +130,7 @@ describe("SyncEngine, given a local save between its check of the disk and its c
     const requests: MergeRequest[] = [];
     const acceptDelete: MergeHook = (request) => {
       requests.push(request);
-      return Promise.resolve({ status: "merged", path: request.local.path, content: null });
+      return Promise.resolve({ status: "merged", content: null });
     };
     let vault: InterleavingVault | undefined;
     const h = harness({

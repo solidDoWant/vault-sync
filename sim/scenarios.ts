@@ -113,7 +113,7 @@ export async function enginePushUnderFaults(endpoints: SimEndpoints): Promise<En
   observer.merge = async (request) => {
     const remote = decoder.decode((await request.readRemoteContent()) ?? new Uint8Array());
     const local = decoder.decode(request.local.content ?? new Uint8Array());
-    return { status: "merged", path: request.remote.path, content: encoder.encode(`${remote}${local}`) };
+    return { status: "merged", content: encoder.encode(`${remote}${local}`) };
   };
   const operation = async (client: number, kind: "create" | "edit" | "pull", arg = 1) => {
     await run.step({ kind: "operation", client, operation: kind, arg });

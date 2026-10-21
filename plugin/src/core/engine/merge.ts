@@ -41,15 +41,19 @@ export interface MergeRequest {
  *   remote revision of it goes to the hook too, and the engine pushes none of
  *   its local changes) until a later call resolves it. The hook is asked again
  *   on every push while the deferral stands.
- * - `merged`: the document's merged state. The engine makes the disk show it
- *   at `path` (`content: null` for a deleted document), provided the local
- *   file still holds the content the hook was given, rebases the document onto
+ * - `merged`: the document's merged content (`content: null` for a deleted
+ *   document). The hook merges content only: the engine decides the result's
+ *   path itself (design §4.7, PO-9; decision 6), where a local rename
+ *   survives a remote edit and wins over a concurrent remote rename. The
+ *   engine makes the disk show the result there, provided the local file
+ *   still holds the content the hook was given, rebases the document onto
  *   the remote revision and drops the unacknowledged local operations it
  *   replaces. It then pushes the result as a new revision based on the remote
  *   one (SPEC.md §6.2 step 3). If the local file changed in the meantime, the
  *   engine defers instead and asks again later. A file that is no document's
- *   in the way at a new `path` is kept as a `concurrent-create` conflict copy
- *   and removed first; if it is another document's, the engine defers.
+ *   in the way at a new path is kept as a `concurrent-create` conflict copy
+ *   and removed first; if it is another document's, rule W decides (design
+ *   §4.5).
  *
  *   The result must contain the local changes, or `conflict` must: then the
  *   engine first writes `conflict.content` (the local version) as a conflict
@@ -59,7 +63,7 @@ export interface MergeRequest {
  */
 export type MergeOutcome =
   | { status: "deferred" }
-  | { status: "merged"; path: string; content: Uint8Array | null; conflict?: { reason: ConflictReason; content: Uint8Array } };
+  | { status: "merged"; content: Uint8Array | null; conflict?: { reason: ConflictReason; content: Uint8Array } };
 
 /**
  * The engine's hand-off to the merge path. It may be called again for the
@@ -88,33 +92,32 @@ const encoder = new TextEncoder();
  *   when two devices created a file at the same path) the remote version
  *   stays in place and the local version becomes a conflict copy. Conflict
  *   markers are never written into a note.
- * - The path merges independently of the content: a local rename survives a
- *   remote edit, and wins over a concurrent remote rename.
+ *
+ * Content only: the engine merges the path (design §4.7, mergePath).
  *
  * Deterministic, so a repeated call for the same request returns the same outcome.
  */
 export const threeWayMerge: MergeHook = async (request) => {
   const { base, local, remote: revision } = request;
   const remote = await request.readRemoteContent();
-  if (remote === null) return { status: "merged", path: local.path, content: local.content };
+  if (remote === null) return { status: "merged", content: local.content };
   const ownFile = base !== undefined && !base.deleted;
-  const path = ownFile && local.path !== base.path ? local.path : revision.path;
-  if (local.content === null) return { status: "merged", path, content: remote };
-  if (sameBytes(local.content, remote)) return { status: "merged", path, content: remote };
-  const keepBoth = (reason: ConflictReason): MergeOutcome => ({ status: "merged", path, content: remote, conflict: { reason, content: local.content ?? new Uint8Array() } });
+  if (local.content === null) return { status: "merged", content: remote };
+  if (sameBytes(local.content, remote)) return { status: "merged", content: remote };
+  const keepBoth = (reason: ConflictReason): MergeOutcome => ({ status: "merged", content: remote, conflict: { reason, content: local.content ?? new Uint8Array() } });
   if (!ownFile) return keepBoth("concurrent-create");
   const baseContent = await request.readBaseContent();
   // The device synced a base, but the server no longer has it (purged by retention).
   if (baseContent === null) return keepBoth("base-purged");
-  if (sameBytes(local.content, baseContent)) return { status: "merged", path, content: remote };
-  if (sameBytes(remote, baseContent)) return { status: "merged", path, content: local.content };
+  if (sameBytes(local.content, baseContent)) return { status: "merged", content: remote };
+  if (sameBytes(remote, baseContent)) return { status: "merged", content: local.content };
   if (revision.kind !== "text" || base.kind !== "text") return keepBoth("binary");
   const texts = [baseContent, local.content, remote].map(decodeText);
   const [baseText, localText, remoteText] = texts;
   if (baseText === undefined || localText === undefined || remoteText === undefined) return keepBoth("binary");
   const merged = mergeText(baseText, localText, remoteText);
   if (merged === null) return keepBoth("overlapping-edits");
-  return { status: "merged", path, content: encoder.encode(merged) };
+  return { status: "merged", content: encoder.encode(merged) };
 };
 
 function decodeText(content: Uint8Array): string | undefined {

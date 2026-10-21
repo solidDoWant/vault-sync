@@ -725,7 +725,7 @@ export class EngineObserver {
           const remote = read.remote !== undefined ? read.remote : request.remote.deleted ? null : this.contents.get(request.remote.contentHash);
           const carries = carriesLocalEdit(request.local.content, outcome.content, base, remote);
           if (carries) this.ledger.merged(local, merged);
-          this.context.log(`${this.name} merge at ${outcome.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`);
+          this.context.log(`${this.name} merge at ${request.local.path}: local ${local.slice(0, 8)} into ${merged.slice(0, 8)}${outcome.conflict === undefined ? "" : `, conflict copy ${sha256Hex(outcome.conflict.content).slice(0, 8)}`}${carries ? "" : ", which does not carry the local edit"}`);
         }
         return outcome;
       },

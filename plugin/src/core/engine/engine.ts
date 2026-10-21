@@ -16,11 +16,14 @@ import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, type BindingChange } from "./bindings";
 import { oneFileOnDisk, PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
-import { movedBeforeDelete, ruleW } from "./decide";
+import { mergePath, movedBeforeDelete, ruleW } from "./decide";
 import { Intents } from "./intents";
 import { busyClaims, ghost, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
+
+/** A merge hook's merged content at the result path the engine's path merge chose (mergePath). */
+type MergeResult = Extract<MergeOutcome, { status: "merged" }> & { path: string };
 
 export interface SyncEngineOptions {
   /** The vault to sync. Plaintext vaults only until end-to-end encryption exists (SPEC.md §9.3). */
@@ -1185,7 +1188,7 @@ export class SyncEngine {
     // or push (Intents.recover, recoverMerge), so the document's state is
     // its own again.
     const local = await this.localVersion(state, remote);
-    const outcome = await this.merge({
+    const merged = await this.merge({
       remote,
       base: state,
       local: { path: local.path, content: local.content },
@@ -1196,6 +1199,8 @@ export class SyncEngine {
       // pull.
       readBaseContent: () => (!liveHere(state) ? Promise.resolve(null) : baseContent(this.api, this.vaultId, state.revisionId)),
     });
+    // The hook merged the content; the path merge is the engine's (design §4.7, PO-9).
+    const outcome: MergeResult | { status: "deferred" } = merged.status === "merged" ? { ...merged, path: mergePath(state, local.path, remote) } : merged;
     if (outcome.status === "merged" && outcome.content !== null) {
       // The result cannot be written here: the remote path never touches the
       // disk, and the local changes stay as they are until a later revision
@@ -1320,8 +1325,8 @@ export class SyncEngine {
    * redoes the steps from the record, or drops the intent if the user
    * changed the file meanwhile, so the merge runs again.
    */
-  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, outcome: Extract<MergeOutcome, { status: "merged" }>): Promise<boolean | "held" | "alias"> {
-    if (outcome.content !== null && !isVaultRelativePath(outcome.path)) throw new Error(`the merge hook returned a path that is not vault-relative: ${outcome.path}`);
+  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, outcome: MergeResult): Promise<boolean | "held" | "alias"> {
+    if (outcome.content !== null && !isVaultRelativePath(outcome.path)) throw new Error(`the merge result's path is not vault-relative: ${outcome.path}`);
     // The document's own file, as the merge hook was given it. A document
     // whose file the user deleted has none: a file at `local.path` now is
     // another one, never this merge's to replace or move.

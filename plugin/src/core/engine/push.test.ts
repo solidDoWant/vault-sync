@@ -30,7 +30,7 @@ function record<T>(server: InMemoryServer, method: string): T[] {
 const concatenate: MergeHook = async (request: MergeRequest) => {
   const remote = (await request.readRemoteContent()) ?? new Uint8Array();
   const local = request.local.content ?? new Uint8Array();
-  return { status: "merged", path: request.remote.path, content: bytes(`${decoder.decode(remote)}+${decoder.decode(local)}`) };
+  return { status: "merged", content: bytes(`${decoder.decode(remote)}+${decoder.decode(local)}`) };
 };
 
 afterEach(() => {
@@ -373,7 +373,7 @@ describe("SyncEngine push", () => {
         const remote = decoder.decode((await request.readRemoteContent()) ?? new Uint8Array());
         const local = decoder.decode(request.local.content ?? new Uint8Array());
         const content = local.startsWith(`${remote}+`) ? local : `${remote}+${local}`;
-        return { status: "merged", path: request.remote.path, content: bytes(content) };
+        return { status: "merged", content: bytes(content) };
       };
       const setup = async (points: CrashPoints | undefined) => {
         const h = points === undefined ? harness({ merge }) : harness({ merge, journal: new CrashingJournal(points), wrapVault: (vault) => new CrashingVault(vault, points) });
