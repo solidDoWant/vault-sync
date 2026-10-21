@@ -43,7 +43,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { VaultEvent } from "../plugin/src/core/vault/adapter";
-import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
+import { filesystemKey, type PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import type { Violation } from "./client";
 
 /** A user's write: content they created or edited, which they may expect to find again. */
@@ -121,10 +121,17 @@ export class UserLedger {
   readonly crashes: EngineCrash[] = [];
 
   /** `platform`'s path matching, to follow a renamed file as its vault does. */
-  constructor(readonly platform: PathPlatform = "posix") {}
+  readonly match: (path: string) => string;
+
+  constructor(
+    readonly platform: PathPlatform = "posix",
+    filesystem: "folded" | "faithful" = "folded",
+  ) {
+    this.match = pathMatcher(platform, filesystem);
+  }
 
   write(write: UserWrite): void {
-    const key = pathMatcher(this.platform)(write.path);
+    const key = this.match(write.path);
     this.writes.push(write);
     this.tracks.push({ write: this.writes.length - 1, paths: new Set([key]), current: key });
     for (const rename of this.at(write.path)) rename.hashes.add(write.hash);
@@ -136,7 +143,7 @@ export class UserLedger {
 
   /** The user renamed the file at `from`, which the engine could take for `documents`, to `to`, where it holds `hash`. */
   renamed(from: string, to: string, documents: ReadonlySet<string>, hash: string): void {
-    const key = pathMatcher(this.platform)(to);
+    const key = this.match(to);
     this.follow(from, key);
     for (const rename of this.at(from)) {
       rename.current = key;
@@ -152,7 +159,7 @@ export class UserLedger {
    * user's, with the content it already had.
    */
   movedByEngine(from: string, to: string): void {
-    const key = pathMatcher(this.platform)(to);
+    const key = this.match(to);
     this.follow(from, key);
     for (const rename of this.at(from)) {
       rename.current = key;
@@ -167,19 +174,19 @@ export class UserLedger {
    * `to` as well, where the user may overwrite or delete them.
    */
   forkCopy(original: string, to: string): void {
-    const match = pathMatcher(this.platform);
+    const match = this.match;
     const [key, target] = [match(original), match(to)];
     for (const track of [...this.tracks]) if (track.current === key) this.tracks.push({ write: track.write, paths: new Set([target]), current: target });
   }
 
   /** The engine moved the file at `from` to `to` (applying a remote rename): the writes it holds are followed there, for the lost-write check only. */
   fileMoved(from: string, to: string): void {
-    this.follow(from, pathMatcher(this.platform)(to));
+    this.follow(from, this.match(to));
   }
 
   /** The writes whose file is at `from` are at `to` (a path key) now. */
   private follow(from: string, to: string): void {
-    const key = pathMatcher(this.platform)(from);
+    const key = this.match(from);
     for (const track of this.tracks) {
       if (track.current !== key) continue;
       track.current = to;
@@ -189,14 +196,14 @@ export class UserLedger {
 
   /** The user deleted the file at `path`. */
   deleted(path: string): void {
-    const key = pathMatcher(this.platform)(path);
+    const key = this.match(path);
     for (const track of this.tracks) if (track.current === key) track.current = undefined;
     for (const rename of this.at(path)) rename.current = undefined;
   }
 
   /** The renames whose file is at `path` now. */
   private at(path: string): UserRename[] {
-    const key = pathMatcher(this.platform)(path);
+    const key = this.match(path);
     return this.renames.filter((rename) => rename.current === key);
   }
 
@@ -206,7 +213,7 @@ export class UserLedger {
 
   /** The user overwrote or deleted the file at `path`, which held `hash`. */
   replace(hash: string, path: string): void {
-    this.replaced.set(`${hash} ${pathMatcher(this.platform)(path)}`, this.writes.length);
+    this.replaced.set(`${hash} ${this.match(path)}`, this.writes.length);
   }
 
   /** Whether the user replaced `hash` after write number `index`, at a path that write's file had. */
@@ -457,9 +464,19 @@ export interface EngineChanges {
   changes: readonly UserChange[];
 }
 
-/** How `platform` matches paths: by path key where it ignores case and Unicode form (windows, macos), exactly under posix. */
-export function pathMatcher(platform: PathPlatform): (path: string) => string {
-  return platform === "posix" ? (path: string) => path : pathKey;
+/**
+ * How `platform`'s vault matches paths: exactly under posix; where it
+ * ignores case and Unicode form (windows, macos) by the filesystem's name
+ * with the faithful filesystem, and by the path key of that name with the
+ * folded one, as InMemoryVault looks files up. The vault decides which
+ * file a write lands in: a write to `ı.md` on Windows is a write to the file
+ * `I.md`, and with the faithful filesystem `Straße.md` and `STRASSE.md` are
+ * two files (design §3.1, PO-10, decision #52), so a write is judged by its
+ * file, not by its spelling or path key (#736).
+ */
+export function pathMatcher(platform: PathPlatform, filesystem: "folded" | "faithful" = "folded"): (path: string) => string {
+  if (platform === "posix") return (path: string) => path;
+  return filesystem === "faithful" ? (path: string) => filesystemKey(path, platform) : (path: string) => pathKey(filesystemKey(path, platform));
 }
 
 /**

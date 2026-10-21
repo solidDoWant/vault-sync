@@ -15,6 +15,7 @@ import { InMemoryJournal } from "../journal/memory";
 import { isVaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
 import { filesystemKey, unmaterializableReason, type PathPlatform, type PathRules } from "../vaultpath/platform";
+import { PathSpace } from "./pathspace";
 import { SyncEngine, type PushSummary, type UnmaterializableDocument } from "./engine";
 import type { MergeHook, MergeRequest } from "./merge";
 import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
@@ -665,9 +666,11 @@ export type WorldCommand =
  * dot): on `windows` a remote create or rename onto one makes the document
  * unmaterializable there, and the user cannot create one (#587). The colon is
  * not second: `a:b.md` is a drive prefix the server refuses on every platform
- * (SPEC.md §6).
+ * (SPEC.md §6). `ı.md` and `I.md` have two path keys but are one file on
+ * `windows` and `macos` (an `F`-alias, design §3.1): the device holds only
+ * one of two such live documents (#736).
  */
-export const worldPaths: readonly string[] = ["a.md", "A.md", "b.md", "Café.md", "Café.md", "Straße.md", "STRASSE.md", "x", "x/a.md", "X/b.md", "y/x.md", "no:te.md", "b.md."];
+export const worldPaths: readonly string[] = ["a.md", "A.md", "b.md", "Café.md", "Café.md", "Straße.md", "STRASSE.md", "x", "x/a.md", "X/b.md", "y/x.md", "no:te.md", "b.md.", "ı.md", "I.md"];
 
 /** The remote device's id: its commits are not device A's. */
 export const remoteDeviceId = "device-remote";
@@ -745,7 +748,8 @@ export class PropertyWorld {
     this.pathRules = { platform };
     this.server = new InMemoryServer({ maxPageSize: 3, maxDownloadBytes: 64, now: () => testDate });
     this.vault = new InMemoryVault({ pathRules: this.pathRules, now: () => testDate.getTime(), filesystem });
-    this.inodes = new Inodes(platform === "posix" ? (path) => path : filesystem === "faithful" ? (path) => filesystemKey(path, platform) : pathKey);
+    // Keyed as the vault looks files up: by `F` on the faithful vault; on the folded one by the file key, so `ı.md` and `I.md` are one file on `windows` and `macos`.
+    this.inodes = new Inodes(filesystem === "faithful" ? (path) => filesystemKey(path, platform) : new PathSpace(this.pathRules).fileKey);
     this.vault.tapInodes((event) => {
       this.emitting = event.actor;
     });
@@ -874,12 +878,24 @@ export class PropertyWorld {
     // cannot hold has no file here, and the earlier version of one, where the
     // device kept it, is no copy of the server's.
     const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && unmaterializableReason(document.path, this.pathRules) !== undefined ? [document.localPath] : [])));
-    const vault = [...(await files(this.vault))].filter(([path]) => !kept.has(path)).map(([path, content]) => `${path}=${content}`).sort(byText);
-    const server = [...this.server.liveFiles()]
-      .filter(([path]) => unmaterializableReason(path, this.pathRules) === undefined)
-      .map(([path, content]) => `${path}=${content}`)
-      .sort(byText);
+    const space = new PathSpace(this.pathRules);
+    const live = [...this.server.liveFiles()].filter(([path]) => unmaterializableReason(path, this.pathRules) === undefined);
+    // Modulo `F`-aliases (decision #52, #736): of live documents whose paths
+    // differ under the server's key but are one file here, the device holds
+    // exactly one, whichever arrived first; the others are unmaterializable.
+    const aliases = (path: string) => live.some(([other]) => other !== path && space.collides(other, path, "file") && !space.collides(other, path, "server"));
+    const aliased = live.filter(([path]) => aliases(path));
+    const held = [...(await files(this.vault))].filter(([path]) => !kept.has(path));
+    const vault = held.filter(([path]) => !aliases(path)).map(([path, content]) => `${path}=${content}`).sort(byText);
+    const server = live.filter(([path]) => !aliases(path)).map(([path, content]) => `${path}=${content}`).sort(byText);
     if (vault.join("\n") !== server.join("\n")) problems.push(`vault ${JSON.stringify(vault)} differs from the server's live documents ${JSON.stringify(server)}`);
+    for (const [path] of aliased) {
+      const group = aliased.filter(([other]) => space.oneFile(other, path));
+      const copies = held.filter(([file]) => space.oneFile(file, path));
+      if (copies.length !== 1 || !group.some(([other, content]) => other === copies[0]?.[0] && content === copies[0][1])) {
+        problems.push(`the vault holds ${JSON.stringify(copies)} for the aliased live documents ${JSON.stringify(group)}, not exactly one of them`);
+      }
+    }
     const pending = await this.journal.listPending();
     if (pending.length > 0) problems.push(`pending operations left: ${pending.map((operation) => `${operation.documentId}@${operation.path}`).join(", ")}`);
     const deferred = (await this.journal.listDeferred()).filter((entry) => entry.reason !== "unmaterializable" && entry.reason !== "out-of-scope");

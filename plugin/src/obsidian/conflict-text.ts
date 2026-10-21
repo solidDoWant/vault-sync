@@ -38,6 +38,8 @@ export function unmaterializableReasonText(reason: UnmaterializableCause): strin
       return "The path is too long for this device's platform.";
     case "refused-by-vault":
       return "This device refused to create a file at this path.";
+    case "alias":
+      return "Another note's file already has this name on this device, which does not tell the two names apart.";
   }
 }
 

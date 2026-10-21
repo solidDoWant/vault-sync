@@ -197,12 +197,12 @@ describe.each(["windows", "macos", "android"] as const)("documents at ı.md and 
     // The device's one file at that name is still the first document's.
     expect(await files(h.vault)).toEqual(new Map([["ı.md", "dotless\n"]]));
     expect(text(await h.vault.read("I.md"))).toBe("dotless\n");
-    // The second document waits for the path, held as a deferred revision (rule W, refactor step R7, will place it).
-    expect((await h.journal.listDeferred()).map((deferred) => deferred.revision.documentId)).toEqual(["capital"]);
-    // Rule W (R7b, #544): the first document holds the path legitimately, so the second waits as a path
-    // conflict, listed for the user (#585 (a)), never as a hidden local change.
-    expect((await h.journal.listDeferred()).map((deferred) => deferred.reason)).toEqual(["path-conflict"]);
-    expect((await deferredDocuments(h.journal, h.vault)).map((document) => [document.documentId, document.reason])).toEqual([["capital", "path-conflict"]]);
+    // The device can hold only one of the two (decision #52, #736): the second is unmaterializable
+    // here (`alias`), a non-disk blocker listed for the user (#585 item 2), never a path conflict
+    // that waits for good or a hidden local change.
+    expect((await h.journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.reason, deferred.unmaterializable])).toEqual([["capital", "unmaterializable", "alias"]]);
+    expect((await h.engine.unmaterializable()).map((document) => [document.documentId, document.reason])).toEqual([["capital", "alias"]]);
+    expect(await deferredDocuments(h.journal, h.vault)).toEqual([]);
   });
 });
 
