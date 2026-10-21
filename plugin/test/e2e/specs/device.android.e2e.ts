@@ -287,12 +287,15 @@ describe("vault-sync on an Android device", function () {
     // The scenario really happened: Android destroyed the activity. Obsidian
     // keeps its WebView's JavaScript across the activity's recreation (a
     // marker set in it survived on CI), so only the activity list shows it.
-    await browser.waitUntil(() => Promise.resolve(!obsidianActivityAlive()), {
-      timeout: 30_000,
-      interval: 500,
-      timeoutMsg: "Android never destroyed Obsidian's activity in the background",
-    });
-    await foregroundObsidian();
+    try {
+      await browser.waitUntil(() => Promise.resolve(!obsidianActivityAlive()), { timeout: 30_000, interval: 500 }).catch(() => {
+        const setting = shell("settings", "get", "global", "always_finish_activities").trim();
+        throw new Error(`Android never destroyed Obsidian's activity in the background (always_finish_activities=${setting}):\n${obsidianActivityLines()}`);
+      });
+    } finally {
+      // Back in the foreground either way, or the later tests fail too.
+      await foregroundObsidian();
+    }
 
     await browser.waitUntil(async () => liveServerFiles(await serverRevisions())[note] === sha256(text), {
       timeout: 60_000,
