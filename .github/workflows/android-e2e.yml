@@ -1,0 +1,136 @@
+name: android-e2e
+
+# The plugin e2e suite on the real Obsidian Android app in an Android
+# emulator (docs/testing/e2e.md, "Android emulator job"): every e2e spec and
+# the device checks of docs/testing/android.md (process kill, background,
+# airplane mode). Nightly on master and on manual dispatch, and on pull
+# requests that change this job's own files. It is not a required check:
+# its flake rate is measured first (#704).
+
+on:
+  schedule:
+    - cron: "41 4 * * *"
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/android-e2e.yml
+      - plugin/wdio.android.conf.mts
+      - plugin/test/e2e/android/**
+      - plugin/test/e2e/specs/*.android.e2e.ts
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The AOSP image, without Google Play services: on google_apis, Play
+  # services updates itself a minute or two after boot, and Android kills
+  # Obsidian, which is bound to its font provider (#704).
+  ANDROID_IMAGE: "system-images;android-34;default;x86_64"
+  # avdmanager on the runner writes to ~/.config/.android/avd, the emulator
+  # looks in ~/.android/avd: point the emulator at avdmanager's.
+  ANDROID_AVD_HOME: /home/runner/.config/.android/avd
+  ANDROID_SERIAL: emulator-5554
+
+jobs:
+  android:
+    name: plugin-e2e (android-emulator)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+          ls -l /dev/kvm
+
+      # The APK wdio.android.conf.mts downloads; it checks the SHA-256 that
+      # wdio.conf.mts pins on every run, cached or not.
+      - uses: actions/cache@v4
+        with:
+          path: plugin/.wdio-obsidian-cache
+          key: obsidian-android-${{ hashFiles('plugin/wdio.conf.mts') }}
+
+      - name: Install the emulator and system image (Google's sdkmanager)
+        run: |
+          sdk="$ANDROID_HOME/cmdline-tools/latest/bin"
+          yes | "$sdk/sdkmanager" --licenses > /dev/null || true
+          "$sdk/sdkmanager" --install emulator platform-tools "$ANDROID_IMAGE" > /dev/null
+          echo no | "$sdk/avdmanager" create avd -n obsidian_test -k "$ANDROID_IMAGE" -d pixel_6 --force
+          grep Pkg.Revision "$ANDROID_HOME/emulator/source.properties"
+
+      - name: Boot the emulator
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          # Vulkan off: with it, the emulator's SwiftShader renderer
+          # segfaulted (in its JIT-compiled code) as soon as chromedriver
+          # attached to Obsidian's WebView, on the runners' AMD EPYC hosts.
+          # It still does in about one run in four, older emulator builds
+          # too (docs/testing/e2e.md, "Emulator").
+          # The subshell records how the emulator ended, should it end.
+          nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
+            -gpu swiftshader_indirect -feature -Vulkan -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
+            > "$RUNNER_TEMP/emulator.log" 2>&1 &
+          pid=$!
+          for _ in $(seq 1 72); do
+            if ! kill -0 "$pid" 2>/dev/null; then echo "::error::the emulator exited"; cat "$RUNNER_TEMP/emulator.log"; exit 1; fi
+            if [[ "$(timeout 10 "$adb" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" == 1 ]]; then
+              "$adb" shell settings put global window_animation_scale 0
+              "$adb" shell settings put global transition_animation_scale 0
+              "$adb" shell settings put global animator_duration_scale 0
+              # A root shell, for the device checks' firewall rules
+              # (device.android.e2e.ts).
+              "$adb" root
+              "$adb" wait-for-device
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "::error::the emulator did not boot in 6 minutes"
+          tail -100 "$RUNNER_TEMP/emulator.log"
+          exit 1
+
+      - uses: ./.github/actions/nix-dev-shell
+
+      - name: Build the plugin and install the Android tools
+        run: |
+          nix develop -c make plugin-build
+          nix develop -c npm ci --prefix plugin/test/e2e/android
+
+      - name: Plugin e2e on Android
+        env:
+          VAULT_SYNC_E2E_ANDROID: "1"
+          VAULT_SYNC_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+          E2E_TIMEOUT: 40m
+        run: |
+          mkdir -p "$VAULT_SYNC_E2E_LOG_DIR"
+          nix develop -c ./scripts/test-e2e.sh
+
+      - name: Collect device logs
+        if: failure()
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          mkdir -p "$RUNNER_TEMP/e2e-logs"
+          timeout 60 "$adb" exec-out screencap -p > "$RUNNER_TEMP/e2e-logs/screen.png" || true
+          timeout 60 "$adb" logcat -d > "$RUNNER_TEMP/e2e-logs/logcat.txt" || true
+          cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/e2e-logs/" || true
+          # Whether the emulator is still running, and whether the kernel
+          # killed it (out of memory).
+          { pgrep -a qemu || echo "no emulator process"; free -m; lscpu; sudo dmesg | tail -100; } > "$RUNNER_TEMP/e2e-logs/host.txt" 2>&1 || true
+          cp -r /tmp/android-runner "$RUNNER_TEMP/e2e-logs/emulator-crash" || true
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-e2e-logs
+          path: ${{ runner.temp }}/e2e-logs
+          if-no-files-found: ignore

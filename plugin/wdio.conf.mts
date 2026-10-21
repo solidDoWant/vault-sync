@@ -14,6 +14,15 @@ import esbuild from "esbuild";
 // the earliest one compatible with it, so this one line pins both.
 // renovate: datasource=github-releases depName=obsidianmd/obsidian-releases
 const obsidianVersion = "1.14.4";
+export { obsidianVersion };
+
+// The SHA-256 of that version's Android app (Obsidian-<version>.apk in the
+// obsidianmd/obsidian-releases release), as GitHub reports it for the asset
+// (`gh api repos/obsidianmd/obsidian-releases/releases/tags/v<version>`,
+// `digest`). The Android job (wdio.android.conf.mts) installs the APK only
+// if it matches, so a bump of obsidianVersion must update this too; until it
+// does, that job fails and the desktop jobs are unaffected.
+export const obsidianApkSha256 = "b3e5bfa107bb01c4c121d810622ff2de03fd298f55fcf6268b9db50186f192a3";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
 
@@ -67,6 +76,9 @@ export const config: WebdriverIO.Config = {
   runner: "local",
   framework: "mocha",
   specs: ["./test/e2e/specs/**/*.e2e.ts"],
+  // Device checks (process kill, background, airplane mode) need a real
+  // Android device; only wdio.android.conf.mts runs them.
+  exclude: ["./test/e2e/specs/**/*.android.e2e.ts"],
   // One Obsidian at a time: the VM and CI runners are shared (CLAUDE.md).
   maxInstances: 1,
   capabilities: [

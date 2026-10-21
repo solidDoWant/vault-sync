@@ -1,4 +1,5 @@
 import { expect } from "@wdio/globals";
+import { obsidianPage } from "wdio-obsidian-service";
 
 import type { OpenIn } from "../harness/main";
 import { callHarness } from "../obsidian";
@@ -34,6 +35,15 @@ const routes: { openIn: OpenIn; extension: string; base: string; remote: string;
 ];
 
 describe("A sync write with the editor writing the same file during it", function () {
+  before(async function () {
+    // Not on Android: the harness counts the adapter's reads through
+    // desktop's FileSystemAdapter (its internal fsPromises), and the order
+    // it relies on is that adapter's single read/write queue. The Android
+    // app's Capacitor adapter has neither, so this spec cannot interleave
+    // the editor's write there; it needs an Android counterpart of its own.
+    if ((await obsidianPage.getPlatform()).isAndroidApp) this.skip();
+  });
+
   for (const route of routes) {
     it(`applies both in order and loses neither, with the file open in ${route.openIn} (#543)`, async function () {
       const outcomes: string[] = [];
