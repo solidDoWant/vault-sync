@@ -2,7 +2,7 @@ import type { DescMethod } from "@bufbuild/protobuf";
 import { Code, ConnectError, createClient, type Client, type Transport } from "@connectrpc/connect";
 import { createConnectTransport } from "@connectrpc/connect-web";
 
-import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
+import { BlobService, type DownloadBlobRequest, type PutBlobChunkRequest } from "../../gen/vaultsync/v1/blob_pb";
 import { DeviceService } from "../../gen/vaultsync/v1/device_pb";
 import { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { ServerInfoService } from "../../gen/vaultsync/v1/server_info_pb";
@@ -78,15 +78,80 @@ export function createProtocolClient(options: ProtocolClientOptions): ProtocolCl
 
 /**
  * The production transport: the Connect protocol over fetch with binary
- * protobuf. `fetch` can be overridden for platforms whose global fetch is
- * unsuitable.
+ * protobuf, every call bounded by requestTimeoutMs (withRequestTimeout).
+ * `fetch` can be overridden for platforms whose global fetch is unsuitable.
  */
 export function createHttpTransport(baseUrl: string, options: { fetch?: typeof globalThis.fetch } = {}): Transport {
-  return createConnectTransport({
-    baseUrl,
-    useBinaryFormat: true,
-    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-  });
+  return withRequestTimeout(
+    createConnectTransport({
+      baseUrl,
+      useBinaryFormat: true,
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    }),
+  );
+}
+
+/** How long any call may go unanswered (SPEC.md §4, docs/plugin.md). */
+export const baseRequestTimeoutMs = 30_000;
+/** The slowest link a blob chunk is given time for: 8 KiB (64 kbit/s) a second on top of the base bound. */
+export const blobBytesPerSecond = 8 * 1024;
+/** A DownloadBlob of length 0 asks for the server's maximum range; it is given time for this many bytes. */
+export const defaultDownloadLength = 1024 * 1024;
+/** CommitBlob composes the whole blob on the server (SPEC.md §6.2) and sends nothing until it is done. */
+export const commitBlobTimeoutMs = 10 * 60_000;
+
+/**
+ * How long `method` may go unanswered before it fails as UNAVAILABLE: the
+ * base bound, plus time for the blob bytes it carries or asks for at
+ * blobBytesPerSecond, so a chunk that crosses a slow link is not cut off.
+ */
+export function requestTimeoutMs(method: DescMethod, input: unknown): number {
+  if (method === BlobService.method.commitBlob) return commitBlobTimeoutMs;
+  let bytes = 0;
+  if (method === BlobService.method.putBlobChunk) bytes = (input as PutBlobChunkRequest).data.byteLength;
+  if (method === BlobService.method.downloadBlob) bytes = (input as DownloadBlobRequest).length || defaultDownloadLength;
+  return baseRequestTimeoutMs + Math.ceil((bytes * 1000) / blobBytesPerSecond);
+}
+
+/**
+ * Wraps `transport` so a unary call the caller gave no timeout of its own
+ * fails as UNAVAILABLE once it has gone unanswered for requestTimeoutMs. A
+ * request whose packets are silently dropped (a vanished network, a
+ * black-holing proxy) would otherwise wait for as long as the platform's HTTP
+ * stack does, maybe forever, and the session would stay `syncing` instead of
+ * reporting offline and retrying (#730). The call's signal is aborted and its
+ * late answer dropped, even when the inner transport ignores the abort, as
+ * Obsidian's requestUrl does.
+ */
+export function withRequestTimeout(transport: Transport, timeoutFor: (method: DescMethod, input: unknown) => number = requestTimeoutMs): Transport {
+  return {
+    unary: async (method, signal, timeoutMs, header, input, contextValues) => {
+      if (timeoutMs !== undefined && timeoutMs > 0) return transport.unary(method, signal, timeoutMs, header, input, contextValues);
+      const bound = timeoutFor(method, input);
+      const controller = new AbortController();
+      const onAbort = () => {
+        controller.abort(signal?.reason);
+      };
+      if (signal?.aborted === true) onAbort();
+      else signal?.addEventListener("abort", onAbort, { once: true });
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const expired = new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new ConnectError(`no answer from the server for ${String(bound / 1000)} s`, Code.Unavailable);
+          // Rejected first, so the call fails with this error rather than the abort's.
+          reject(error);
+          controller.abort(error);
+        }, bound);
+      });
+      try {
+        return await Promise.race([transport.unary(method, controller.signal, undefined, header, input, contextValues), expired]);
+      } finally {
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+      }
+    },
+    stream: (method, signal, timeoutMs, header, input, contextValues) => transport.stream(method, signal, timeoutMs, header, input, contextValues),
+  };
 }
 
 /**

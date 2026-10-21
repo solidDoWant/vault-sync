@@ -360,14 +360,30 @@ async function postForm(http: HttpClient, url: string, form: Record<string, stri
   });
 }
 
+/**
+ * How long a request to the identity provider may go unanswered before it
+ * counts as unreachable (SPEC.md §4, #730): a black-holed connection would
+ * otherwise hold a token refresh, and every RPC waiting on it, for as long as
+ * the platform's HTTP stack waits.
+ */
+export const identityProviderTimeoutMs = 30_000;
+
 async function send(http: HttpClient, request: HttpRequest): Promise<HttpResponse> {
   let response: HttpResponse;
+  let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    response = await http(request);
+    const expired = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(`no answer for ${String(identityProviderTimeoutMs / 1000)} s`));
+      }, identityProviderTimeoutMs);
+    });
+    response = await Promise.race([http(request), expired]);
   } catch (error) {
     throw new IdentityProviderError(`could not reach the identity provider at ${new URL(request.url).origin}: ${error instanceof Error ? error.message : String(error)}`, {
       unreachable: true,
     });
+  } finally {
+    clearTimeout(timer);
   }
   if (utf8Length(response.text) > maxResponseBytes) throw new IdentityProviderError(`the identity provider's response is larger than ${String(maxResponseBytes)} bytes`);
   return response;
