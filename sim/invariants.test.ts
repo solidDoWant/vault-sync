@@ -48,6 +48,22 @@ describe("checkLostWrites", () => {
     expect(checkLostWrites("e1", ledger, new Set()).map((violation) => violation.detail)).toEqual([expect.stringContaining("at step 2") as unknown as string]);
   });
 
+  it("judges a write through an alias spelling by its file: overwriting I.md replaces a write to ı.md on Windows (#736)", () => {
+    const ledger = new UserLedger("windows", "faithful");
+    ledger.write({ hash: "xx", path: "ı.md", at });
+    ledger.replace("xx", "I.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
+  it("keeps following a write in Straße.md when the user deletes the separate file STRASSE.md on the faithful filesystem (#736)", () => {
+    const ledger = new UserLedger("windows", "faithful");
+    ledger.write({ hash: "xx", path: "Straße.md", at });
+    ledger.deleted("STRASSE.md");
+    ledger.renamed("Straße.md", "notes/f.md", new Set(), "xx");
+    ledger.replace("xx", "notes/f.md");
+    expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
+  });
+
   it("follows a write's file where the engine moved it, so overwriting it there replaces it", () => {
     const ledger = new UserLedger();
     ledger.write({ hash: "xx", path: "d.md", at });

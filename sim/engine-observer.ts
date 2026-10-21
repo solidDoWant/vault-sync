@@ -44,7 +44,8 @@ import { InMemoryJournal } from "../plugin/src/core/journal/memory";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { DeletePrecondition, VaultAdapter, VaultEvent, VaultListener, WritePrecondition } from "../plugin/src/core/vault/adapter";
 import { InMemoryVault, type InodeEvent } from "../plugin/src/core/vault/memory";
-import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
+import { filesystemKey, type PathPlatform } from "../plugin/src/core/vaultpath/platform";
+import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
 import { carriesLocalEdit, checkEngineEchoes, KnownContents, UserLedger } from "./invariants";
@@ -72,6 +73,24 @@ export interface ServerHeads {
 export function harnessUnmaterializable(path: string, platform: PathPlatform): boolean {
   if (platform !== "windows") return false;
   return path.split("/").some((segment) => /[<>:"|?*]/.test(segment) || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
+}
+
+/**
+ * The harness's own check of `F`-aliases (design §3.1, decision #52): the
+ * live paths in `live` other than `path` that the platform's filesystem
+ * takes for one file with `path`, or for a folder of it, although the
+ * server's path key keeps them apart (`ı.md` and `I.md` on Windows and
+ * macOS). The device holds one of such a group; the others are
+ * unmaterializable there (`alias`, X-15).
+ */
+export function harnessAliases(path: string, live: Iterable<string>, platform: PathPlatform): string[] {
+  if (platform === "posix") return [];
+  const file = (candidate: string) => pathKey(filesystemKey(candidate, platform));
+  const collide = (key: (candidate: string) => string, a: string, b: string) => {
+    const [left, right] = [key(a), key(b)];
+    return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+  };
+  return [...live].filter((other) => other !== path && collide(file, other, path) && !collide(pathKey, other, path));
 }
 
 /**
@@ -157,7 +176,7 @@ export class EngineObserver {
     });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
-    this.ledger = new UserLedger(platform);
+    this.ledger = new UserLedger(platform, filesystem);
     this.user = new EngineUser({
       name: this.name,
       vault: this.vault.handle("user"),
@@ -598,7 +617,13 @@ export class EngineObserver {
         continue;
       }
       const local = files.get(path);
-      const expectedMissing = harnessUnmaterializable(path, this.platform);
+      // Of live documents one file here under two path keys, the device holds
+      // the one that arrived first; the others are unmaterializable (alias).
+      const aliases = harnessAliases(path, heads.files.keys(), this.platform);
+      if (aliases.length > 0 && local !== hash && !aliases.some((alias) => files.get(alias) === heads.files.get(alias))) {
+        violations.push({ invariant: "engine-convergence", detail: `${this.name} holds none of the live documents ${[path, ...aliases].join(", ")}, which are one file here` });
+      }
+      const expectedMissing = harnessUnmaterializable(path, this.platform) || (aliases.length > 0 && local !== hash);
       if (expectedMissing && !unmaterializable.has(path)) {
         violations.push({ invariant: "engine-unmaterializable", detail: `${this.name} (${this.platform}) does not report ${path}, which the platform cannot hold` });
       } else if (!expectedMissing && unmaterializable.has(path)) {
