@@ -2,7 +2,7 @@
 
 Android is a required client (`SPEC.md` §2). Before each release, a person runs the **manual** checks on this page on a physical Android device. Everything our automated suites can check is an automated test instead, and this page links to it rather than asking for a manual step. Those tests run in CI on every change, so they need no action at release time.
 
-Why some checks stay manual: the emulated-mobile e2e (`VAULT_SYNC_E2E_MOBILE=1`, `docs/testing/e2e.md`) runs desktop Obsidian, on Electron, with the mobile UI. It never exercises the Android WebView, Capacitor's filesystem, BRAT on Android, Android pausing or killing the app, real network changes, or battery use. Running the real Android app on an emulator in CI is being researched in [#187](https://github.com/solidDoWant/vault-sync/issues/187). If it is adopted, more items here move to automated tests.
+Why some checks stay manual: the emulated-mobile e2e (`VAULT_SYNC_E2E_MOBILE=1`, `docs/testing/e2e.md`) runs desktop Obsidian, on Electron, with the mobile UI. It never exercises the Android WebView, Capacitor's filesystem, BRAT on Android, Android pausing or killing the app, real network changes, or battery use. Spike [#187](https://github.com/solidDoWant/vault-sync/issues/187) ran the real Android app on an emulator in CI and recommends adopting it partially: the process-kill, background and network checks below can become emulator tests, while BRAT, the browser and clipboard, battery use and large-vault performance stay manual (`docs/testing/e2e.md`, "Real Android app on an emulator"). Until that job exists, these checks stay manual.
 
 ## Before you start
 
