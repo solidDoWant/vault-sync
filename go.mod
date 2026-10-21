@@ -18,8 +18,9 @@ require (
 	github.com/prometheus/client_golang v1.25.0
 	github.com/rs/cors v1.11.1
 	github.com/stretchr/testify v1.12.1
+	golang.org/x/crypto v0.58.0
 	golang.org/x/sync v0.24.0
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	golang.org/x/text v0.43.0
 	google.golang.org/protobuf v1.36.12
 )

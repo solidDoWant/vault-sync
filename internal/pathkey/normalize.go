@@ -28,6 +28,14 @@ func nfd(text string) string {
 	return string(decompose(text))
 }
 
+// NFC returns the canonical composition (NFC) of text under the pinned
+// Unicode version, identical to nfc in plugin/src/core/pathkey/normalize.ts.
+// Invalid UTF-8 bytes become U+FFFD. Other packages that need the same
+// normalization on every platform (internal/e2ee for passphrases) use it.
+func NFC(text string) string {
+	return nfc(text)
+}
+
 // nfc returns the canonical composition (NFC) of text. Invalid UTF-8 bytes
 // become U+FFFD.
 func nfc(text string) string {

@@ -1,0 +1,673 @@
+package e2ee
+
+import (
+	"bytes"
+	"crypto/ecdh"
+	"crypto/hkdf"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
+	"encoding/json"
+	"flag"
+	"os"
+	"path/filepath"
+	"slices"
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"golang.org/x/crypto/chacha20poly1305"
+)
+
+// Regenerate testdata/crypto/vectors.json with
+//
+//	go test ./internal/e2ee -run TestSharedVectors -update
+//
+// The TypeScript implementation (plugin/src/core/e2ee) asserts the same file.
+var update = flag.Bool("update", false, "rewrite testdata/crypto/vectors.json")
+
+var vectorsPath = filepath.Join("..", "..", "testdata", "crypto", "vectors.json")
+
+type hkdfVector struct {
+	Name   string `json:"name"`
+	IKM    string `json:"ikm"`
+	Salt   string `json:"salt"`
+	Info   string `json:"info"`
+	Length int    `json:"length"`
+	OKM    string `json:"okm"`
+}
+
+type xchachaVector struct {
+	Name       string `json:"name"`
+	Key        string `json:"key"`
+	Nonce      string `json:"nonce"`
+	Plaintext  string `json:"plaintext"`
+	AAD        string `json:"aad"`
+	Ciphertext string `json:"ciphertext"`
+}
+
+type x25519Vector struct {
+	Name          string `json:"name"`
+	PrivateKey    string `json:"private_key"`
+	PublicKey     string `json:"public_key"`
+	PeerPublicKey string `json:"peer_public_key"`
+	SharedSecret  string `json:"shared_secret"`
+}
+
+type standardVectors struct {
+	Description       string          `json:"description"`
+	HKDFSHA256        []hkdfVector    `json:"hkdf_sha256"`
+	XChaCha20Poly1305 []xchachaVector `json:"xchacha20poly1305"`
+	X25519            []x25519Vector  `json:"x25519"`
+}
+
+type subkeyVector struct {
+	Name     string `json:"name"`
+	EpochKey string `json:"epoch_key"`
+	Label    string `json:"label"`
+	Subkey   string `json:"subkey"`
+}
+
+type aeadVector struct {
+	Name      string `json:"name"`
+	Key       string `json:"key"`
+	Nonce     string `json:"nonce"`
+	Plaintext string `json:"plaintext"`
+	AAD       string `json:"aad"`
+	Sealed    string `json:"sealed"`
+}
+
+type sealedBoxVector struct {
+	Name                string `json:"name"`
+	RecipientPrivateKey string `json:"recipient_private_key"`
+	RecipientPublicKey  string `json:"recipient_public_key"`
+	EphemeralPrivateKey string `json:"ephemeral_private_key"`
+	Nonce               string `json:"nonce"`
+	Plaintext           string `json:"plaintext"`
+	AAD                 string `json:"aad"`
+	Sealed              string `json:"sealed"`
+}
+
+type pathKeyVector struct {
+	Name    string `json:"name"`
+	Secret  string `json:"secret"`
+	Path    string `json:"path"`
+	PathKey string `json:"path_key"`
+}
+
+type blobIDVector struct {
+	Name      string `json:"name"`
+	Secret    string `json:"secret"`
+	Plaintext string `json:"plaintext"`
+	BlobID    string `json:"blob_id"`
+}
+
+type passphraseVector struct {
+	Name        string `json:"name"`
+	Passphrase  string `json:"passphrase"`
+	Memory      uint32 `json:"memory"`
+	Iterations  uint32 `json:"iterations"`
+	Parallelism uint8  `json:"parallelism"`
+	Salt        string `json:"salt"`
+	Nonce       string `json:"nonce"`
+	Secret      string `json:"secret"`
+	AAD         string `json:"aad"`
+	Wrapped     string `json:"wrapped"`
+}
+
+// rejectedVector is a ciphertext that must not open. Key is the symmetric key
+// (kind "aead") or the recipient's private key (kind "sealed_box"); a
+// "passphrase" vector uses Passphrase instead.
+type rejectedVector struct {
+	Name       string `json:"name"`
+	Kind       string `json:"kind"`
+	Key        string `json:"key,omitempty"`
+	Passphrase string `json:"passphrase,omitempty"`
+	AAD        string `json:"aad"`
+	Sealed     string `json:"sealed"`
+}
+
+type vectorFile struct {
+	Description string             `json:"description"`
+	Standards   standardVectors    `json:"standards"`
+	Subkeys     []subkeyVector     `json:"subkeys"`
+	AEAD        []aeadVector       `json:"aead"`
+	SealedBox   []sealedBoxVector  `json:"sealed_box"`
+	PathKey     []pathKeyVector    `json:"path_key"`
+	BlobID      []blobIDVector     `json:"blob_id"`
+	Passphrase  []passphraseVector `json:"passphrase"`
+	Rejected    []rejectedVector   `json:"rejected"`
+}
+
+// fixed returns n deterministic bytes for a test input named by label.
+func fixed(label string, n int) []byte {
+	var out []byte
+	for counter := byte(0); len(out) < n; counter++ {
+		sum := sha256.Sum256(append([]byte("vault-sync test vector "+label), counter))
+		out = append(out, sum[:]...)
+	}
+
+	return out[:n]
+}
+
+// must panics on err; the test using it then fails with the panic.
+func must[T any](value T, err error) T {
+	if err != nil {
+		panic(err)
+	}
+
+	return value
+}
+
+func unhex(t *testing.T, value string) []byte {
+	t.Helper()
+
+	decoded, err := hex.DecodeString(value)
+	require.NoError(t, err)
+
+	return decoded
+}
+
+// standards holds published known-answer tests for the primitives the suite
+// is built from, so that both languages are pinned to the standards and not
+// only to each other.
+func standards() standardVectors {
+	ikm := bytes.Repeat([]byte{0x0b}, 22)
+
+	xchachaKey := make([]byte, 32)
+	for index := range xchachaKey {
+		xchachaKey[index] = byte(0x80 + index)
+	}
+
+	return standardVectors{
+		Description: "Published known-answer tests for the underlying primitives: RFC 5869 appendix A.1 (HKDF-SHA256), draft-irtf-cfrg-xchacha-03 appendix A.3.1 (XChaCha20-Poly1305; ciphertext includes the tag), RFC 7748 section 6.1 (X25519).",
+		HKDFSHA256: []hkdfVector{{
+			Name:   "RFC 5869 A.1",
+			IKM:    hex.EncodeToString(ikm),
+			Salt:   "000102030405060708090a0b0c",
+			Info:   "f0f1f2f3f4f5f6f7f8f9",
+			Length: 42,
+			OKM:    "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865",
+		}},
+		XChaCha20Poly1305: []xchachaVector{{
+			Name:       "draft-irtf-cfrg-xchacha-03 A.3.1",
+			Key:        hex.EncodeToString(xchachaKey),
+			Nonce:      "404142434445464748494a4b4c4d4e4f5051525354555657",
+			Plaintext:  hex.EncodeToString([]byte("Ladies and Gentlemen of the class of '99: If I could offer you only one tip for the future, sunscreen would be it.")),
+			AAD:        "50515253c0c1c2c3c4c5c6c7",
+			Ciphertext: "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b4522f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff921f9664c97637da9768812f615c68b13b52ec0875924c1c7987947deafd8780acf49",
+		}},
+		X25519: []x25519Vector{
+			{
+				Name:          "RFC 7748 6.1 Alice",
+				PrivateKey:    "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+				PublicKey:     "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+				PeerPublicKey: "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+				SharedSecret:  "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+			},
+			{
+				Name:          "RFC 7748 6.1 Bob",
+				PrivateKey:    "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+				PublicKey:     "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+				PeerPublicKey: "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+				SharedSecret:  "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742",
+			},
+		},
+	}
+}
+
+// generate builds the vector file from fixed inputs with this package.
+//
+//nolint:funlen,maintidx // One flat list of vectors reads best in one place.
+func generate(t *testing.T) vectorFile {
+	t.Helper()
+
+	file := vectorFile{
+		Description: "Cross-language vectors for E2EE cipher suite 1 (SPEC.md section 9.3, docs/design/crypto.md). Binary values are lowercase hex; path and passphrase are strings. Generated by `go test ./internal/e2ee -run TestSharedVectors -update` and asserted by internal/e2ee (Go) and plugin/src/core/e2ee (TypeScript). Seal-type vectors fix the random inputs (nonce, ephemeral key, salt): an implementation must produce exactly the given output from them and open it. Every rejected vector must fail to open.",
+		Standards:   standards(),
+	}
+
+	// Sub-keys.
+	for _, epoch := range []string{"epoch key 1", "epoch key 2"} {
+		epochKey := fixed(epoch, KeySize)
+		for _, label := range []Label{LabelContent, LabelPath, LabelPathKeySecret, LabelBlobIDSecret} {
+			file.Subkeys = append(file.Subkeys, subkeyVector{
+				Name:     epoch + " " + string(label),
+				EpochKey: hex.EncodeToString(epochKey),
+				Label:    string(label),
+				Subkey:   hex.EncodeToString(must(DeriveSubkey(epochKey, label))),
+			})
+		}
+	}
+
+	// AEAD.
+	aeadCases := []struct {
+		name      string
+		plaintext []byte
+		aad       []byte
+	}{
+		{"empty plaintext, empty aad", nil, nil},
+		{"short note, document id and epoch aad", []byte("# Hello\n\nA note.\n"), []byte("0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e\x00\x00\x00\x01")},
+		{"one block plus one byte", fixed("aead block", 65), []byte("aad")},
+		{"4 KiB binary", fixed("aead 4k", 4096), fixed("aead 4k aad", 40)},
+	}
+	for _, testCase := range aeadCases {
+		key := fixed("aead key "+testCase.name, KeySize)
+		nonce := fixed("aead nonce "+testCase.name, NonceSize)
+		file.AEAD = append(file.AEAD, aeadVector{
+			Name:      testCase.name,
+			Key:       hex.EncodeToString(key),
+			Nonce:     hex.EncodeToString(nonce),
+			Plaintext: hex.EncodeToString(testCase.plaintext),
+			AAD:       hex.EncodeToString(testCase.aad),
+			Sealed:    hex.EncodeToString(must(sealWithNonce(key, nonce, testCase.plaintext, testCase.aad))),
+		})
+	}
+
+	// Sealed boxes.
+	sealedCases := []struct {
+		name      string
+		plaintext []byte
+		aad       []byte
+	}{
+		{"epoch key to a user, vault and epoch aad", fixed("sealed epoch key", KeySize), []byte("0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e\x00\x00\x00\x02")},
+		{"empty plaintext, empty aad", nil, nil},
+	}
+	for _, testCase := range sealedCases {
+		recipient := fixed("sealed recipient "+testCase.name, KeySize)
+		ephemeral := fixed("sealed ephemeral "+testCase.name, KeySize)
+		nonce := fixed("sealed nonce "+testCase.name, NonceSize)
+		recipientPublicKey := must(PublicKey(recipient))
+		file.SealedBox = append(file.SealedBox, sealedBoxVector{
+			Name:                testCase.name,
+			RecipientPrivateKey: hex.EncodeToString(recipient),
+			RecipientPublicKey:  hex.EncodeToString(recipientPublicKey),
+			EphemeralPrivateKey: hex.EncodeToString(ephemeral),
+			Nonce:               hex.EncodeToString(nonce),
+			Plaintext:           hex.EncodeToString(testCase.plaintext),
+			AAD:                 hex.EncodeToString(testCase.aad),
+			Sealed:              hex.EncodeToString(must(sealToWith(recipientPublicKey, ephemeral, nonce, testCase.plaintext, testCase.aad))),
+		})
+	}
+
+	// path_key: case and normalization variants share a key.
+	pathKeySecret := fixed("path_key_secret", KeySize)
+	for _, testCase := range []struct{ name, path string }{
+		{"ascii", "Notes/Daily/2026-10-21.md"},
+		{"ascii, other case", "notes/daily/2026-10-21.MD"},
+		{"sharp s", "Straße/plan.md"},
+		{"sharp s folded", "STRASSE/plan.md"},
+		{"precomposed e acute", "Café.md"},
+		{"decomposed e acute", "Café.md"},
+		{"emoji", "ideas/\U0001F4A1.md"},
+		{"empty", ""},
+	} {
+		file.PathKey = append(file.PathKey, pathKeyVector{
+			Name:    testCase.name,
+			Secret:  hex.EncodeToString(pathKeySecret),
+			Path:    testCase.path,
+			PathKey: hex.EncodeToString(must(PathKey(pathKeySecret, testCase.path))),
+		})
+	}
+
+	// blob_id.
+	blobIDSecret := fixed("blob_id_secret", KeySize)
+	for _, testCase := range []struct {
+		name      string
+		plaintext []byte
+	}{
+		{"empty", nil},
+		{"text", []byte("# Hello\n")},
+		{"1 KiB binary", fixed("blob 1k", 1024)},
+	} {
+		file.BlobID = append(file.BlobID, blobIDVector{
+			Name:      testCase.name,
+			Secret:    hex.EncodeToString(blobIDSecret),
+			Plaintext: hex.EncodeToString(testCase.plaintext),
+			BlobID:    hex.EncodeToString(must(BlobID(blobIDSecret, testCase.plaintext))),
+		})
+	}
+
+	// Passphrase wrapping.
+	minimum := Argon2Params{Memory: MinArgon2Memory, Iterations: MinArgon2Iterations, Parallelism: 1}
+
+	passphraseCases := []struct {
+		name       string
+		passphrase string
+		params     Argon2Params
+		aad        []byte
+	}{
+		{"default parameters", "correct horse battery staple", DefaultArgon2Params, []byte("user 0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e")},
+		{"minimum parameters, empty aad", "correct horse battery staple", minimum, nil},
+		{"two lanes", "correct horse battery staple", Argon2Params{Memory: MinArgon2Memory, Iterations: 2, Parallelism: 2}, nil},
+		{"precomposed passphrase", "Café über alles", minimum, nil},
+		{"decomposed passphrase", "Café über alles", minimum, nil},
+		// U+1ADD (Unicode 17) does not block the acute accent from composing
+		// with the e, which runtimes with older Unicode tables get wrong.
+		{"Unicode 17 mark, precomposed passphrase", "\u00e9\u1add pass", minimum, nil},
+		{"Unicode 17 mark, decomposed passphrase", "e\u1add\u0301 pass", minimum, nil},
+	}
+	for _, testCase := range passphraseCases {
+		// The two normalization forms share the salt and nonce, so equal
+		// wrapped values show they derive the same key.
+		salt := fixed("passphrase salt "+testCase.params.String(), SaltSize)
+		nonce := fixed("passphrase nonce "+testCase.params.String(), NonceSize)
+		secret := fixed("passphrase secret", KeySize)
+		file.Passphrase = append(file.Passphrase, passphraseVector{
+			Name:        testCase.name,
+			Passphrase:  testCase.passphrase,
+			Memory:      testCase.params.Memory,
+			Iterations:  testCase.params.Iterations,
+			Parallelism: testCase.params.Parallelism,
+			Salt:        hex.EncodeToString(salt),
+			Nonce:       hex.EncodeToString(nonce),
+			Secret:      hex.EncodeToString(secret),
+			AAD:         hex.EncodeToString(testCase.aad),
+			Wrapped:     hex.EncodeToString(must(wrapWith(testCase.passphrase, testCase.params, salt, nonce, secret, testCase.aad))),
+		})
+	}
+
+	file.Rejected = rejected(t, file)
+
+	return file
+}
+
+func (params Argon2Params) String() string {
+	return hex.EncodeToString(binary.BigEndian.AppendUint32(binary.BigEndian.AppendUint32([]byte{params.Parallelism}, params.Memory), params.Iterations))
+}
+
+// rejected derives ciphertexts that must not open from valid vectors. The
+// "other suite" vectors are authenticated as if their version byte were
+// valid, so only the suite check can refuse them; likewise the out-of-bounds
+// Argon2id vectors authenticate under their own parameters.
+//
+//nolint:funlen // One flat list of vectors reads best in one place.
+func rejected(t *testing.T, file vectorFile) []rejectedVector {
+	t.Helper()
+
+	var out []rejectedVector
+
+	add := func(name, kind, key, passphrase string, aad, sealed []byte) {
+		out = append(out, rejectedVector{Name: name, Kind: kind, Key: key, Passphrase: passphrase, AAD: hex.EncodeToString(aad), Sealed: hex.EncodeToString(sealed)})
+	}
+
+	// AEAD, from the document vector.
+	aeadVec := file.AEAD[1]
+	key, nonce := unhex(t, aeadVec.Key), unhex(t, aeadVec.Nonce)
+	plaintext, aad, sealed := unhex(t, aeadVec.Plaintext), unhex(t, aeadVec.AAD), unhex(t, aeadVec.Sealed)
+
+	for _, version := range []byte{0x00, 0x02, 0xff} {
+		add("aead: suite "+hex.EncodeToString([]byte{version}), "aead", aeadVec.Key, "", aad,
+			must(sealAfterHeader([]byte{version}, key, nonce, plaintext, aad)))
+	}
+
+	add("aead: modified aad", "aead", aeadVec.Key, "", append(slices.Clone(aad[:len(aad)-1]), aad[len(aad)-1]^0x01), sealed)
+	add("aead: aad dropped", "aead", aeadVec.Key, "", nil, sealed)
+	add("aead: tag truncated by one byte", "aead", aeadVec.Key, "", aad, sealed[:len(sealed)-1])
+	add("aead: tag removed", "aead", aeadVec.Key, "", aad, sealed[:len(sealed)-TagSize])
+	add("aead: version byte only", "aead", aeadVec.Key, "", aad, sealed[:1])
+	add("aead: empty", "aead", aeadVec.Key, "", aad, nil)
+	add("aead: flipped ciphertext bit", "aead", aeadVec.Key, "", aad, flip(sealed, 1+NonceSize))
+	add("aead: flipped nonce bit", "aead", aeadVec.Key, "", aad, flip(sealed, 1))
+	add("aead: flipped tag bit", "aead", aeadVec.Key, "", aad, flip(sealed, len(sealed)-1))
+	add("aead: wrong key", "aead", hex.EncodeToString(fixed("wrong key", KeySize)), "", aad, sealed)
+
+	// Sealed box, from the epoch key vector.
+	boxVec := file.SealedBox[0]
+	recipient, ephemeral := unhex(t, boxVec.RecipientPrivateKey), unhex(t, boxVec.EphemeralPrivateKey)
+	boxNonce, boxPlaintext := unhex(t, boxVec.Nonce), unhex(t, boxVec.Plaintext)
+	boxAAD, box := unhex(t, boxVec.AAD), unhex(t, boxVec.Sealed)
+
+	for _, version := range []byte{0x00, 0x02} {
+		ephemeralKey := must(ecdh.X25519().NewPrivateKey(ephemeral))
+		recipientKey := must(ecdh.X25519().NewPrivateKey(recipient))
+		ephemeralPublicKey := ephemeralKey.PublicKey().Bytes()
+		boxKey := must(sealedBoxKey(ephemeralKey, recipientKey.PublicKey(), ephemeralPublicKey, recipientKey.PublicKey().Bytes()))
+		add("sealed box: suite "+hex.EncodeToString([]byte{version}), "sealed_box", boxVec.RecipientPrivateKey, "", boxAAD,
+			must(sealAfterHeader(slices.Concat([]byte{version}, ephemeralPublicKey), boxKey, boxNonce, boxPlaintext, boxAAD)))
+	}
+
+	add("sealed box: modified aad", "sealed_box", boxVec.RecipientPrivateKey, "", append(slices.Clone(boxAAD), 0x00), box)
+	add("sealed box: tag truncated by one byte", "sealed_box", boxVec.RecipientPrivateKey, "", boxAAD, box[:len(box)-1])
+	add("sealed box: tag removed", "sealed_box", boxVec.RecipientPrivateKey, "", boxAAD, box[:len(box)-TagSize])
+	add("sealed box: header only", "sealed_box", boxVec.RecipientPrivateKey, "", boxAAD, box[:sealedHeaderSize])
+	add("sealed box: flipped ephemeral key bit", "sealed_box", boxVec.RecipientPrivateKey, "", boxAAD, flip(box, 1))
+	add("sealed box: all-zero (low-order) ephemeral key", "sealed_box", boxVec.RecipientPrivateKey, "", boxAAD,
+		slices.Concat([]byte{SuiteV1}, make([]byte, KeySize), box[sealedHeaderSize:]))
+	add("sealed box: other recipient", "sealed_box", hex.EncodeToString(fixed("other recipient", KeySize)), "", boxAAD, box)
+
+	// Passphrase, from the minimum-parameter vector.
+	passVec := file.Passphrase[1]
+	salt, passNonce := unhex(t, passVec.Salt), unhex(t, passVec.Nonce)
+	secret, wrapped := unhex(t, passVec.Secret), unhex(t, passVec.Wrapped)
+
+	wrapHeader := func(version byte, params Argon2Params) []byte {
+		header := []byte{version}
+		header = binary.BigEndian.AppendUint32(header, params.Memory)
+		header = binary.BigEndian.AppendUint32(header, params.Iterations)
+		header = append(header, params.Parallelism)
+
+		return append(header, salt...)
+	}
+	wrapAs := func(version byte, params Argon2Params) []byte {
+		return must(sealAfterHeader(wrapHeader(version, params), passphraseKey(passVec.Passphrase, params, salt), passNonce, secret, nil))
+	}
+	params := Argon2Params{Memory: passVec.Memory, Iterations: passVec.Iterations, Parallelism: passVec.Parallelism}
+
+	add("passphrase: suite 02", "passphrase", "", passVec.Passphrase, nil, wrapAs(0x02, params))
+	add("passphrase: wrong passphrase", "passphrase", "", passVec.Passphrase+" ", nil, wrapped)
+	add("passphrase: aad added", "passphrase", "", passVec.Passphrase, []byte("user"), wrapped)
+	add("passphrase: tag truncated by one byte", "passphrase", "", passVec.Passphrase, nil, wrapped[:len(wrapped)-1])
+	add("passphrase: tag removed", "passphrase", "", passVec.Passphrase, nil, wrapped[:len(wrapped)-TagSize])
+	add("passphrase: header only", "passphrase", "", passVec.Passphrase, nil, wrapped[:passphraseHeaderSize])
+	add("passphrase: flipped salt bit", "passphrase", "", passVec.Passphrase, nil, flip(wrapped, 10))
+	add("passphrase: iterations changed in header", "passphrase", "", passVec.Passphrase, nil,
+		slices.Concat(wrapHeader(SuiteV1, Argon2Params{Memory: params.Memory, Iterations: params.Iterations + 1, Parallelism: params.Parallelism}), wrapped[passphraseHeaderSize:]))
+	add("passphrase: memory below minimum", "passphrase", "", passVec.Passphrase, nil,
+		wrapAs(SuiteV1, Argon2Params{Memory: MinArgon2Memory - 1, Iterations: 2, Parallelism: 1}))
+	add("passphrase: iterations below minimum", "passphrase", "", passVec.Passphrase, nil,
+		wrapAs(SuiteV1, Argon2Params{Memory: MinArgon2Memory, Iterations: MinArgon2Iterations - 1, Parallelism: 1}))
+	add("passphrase: parallelism above maximum", "passphrase", "", passVec.Passphrase, nil,
+		wrapAs(SuiteV1, Argon2Params{Memory: MinArgon2Memory, Iterations: 2, Parallelism: MaxArgon2Parallelism + 1}))
+	// Deriving these would cost the bounds they exceed, so their tags are
+	// arbitrary: an implementation must refuse them before deriving.
+	add("passphrase: memory above maximum", "passphrase", "", passVec.Passphrase, nil,
+		slices.Concat(wrapHeader(SuiteV1, Argon2Params{Memory: MaxArgon2Memory + 1, Iterations: 2, Parallelism: 1}), wrapped[passphraseHeaderSize:]))
+	add("passphrase: iterations above maximum", "passphrase", "", passVec.Passphrase, nil,
+		slices.Concat(wrapHeader(SuiteV1, Argon2Params{Memory: MinArgon2Memory, Iterations: MaxArgon2Iterations + 1, Parallelism: 1}), wrapped[passphraseHeaderSize:]))
+	add("passphrase: parallelism zero", "passphrase", "", passVec.Passphrase, nil,
+		slices.Concat(wrapHeader(SuiteV1, Argon2Params{Memory: MinArgon2Memory, Iterations: 2, Parallelism: 0}), wrapped[passphraseHeaderSize:]))
+	add("passphrase: memory 4 GiB", "passphrase", "", passVec.Passphrase, nil,
+		slices.Concat(wrapHeader(SuiteV1, Argon2Params{Memory: 0xffffffff, Iterations: 2, Parallelism: 1}), wrapped[passphraseHeaderSize:]))
+
+	return out
+}
+
+func flip(data []byte, index int) []byte {
+	out := slices.Clone(data)
+	out[index] ^= 0x01
+
+	return out
+}
+
+func loadVectorFile(t *testing.T) vectorFile {
+	t.Helper()
+
+	data, err := os.ReadFile(vectorsPath)
+	require.NoError(t, err)
+
+	var file vectorFile
+	require.NoError(t, json.Unmarshal(data, &file))
+
+	return file
+}
+
+// TestSharedVectorsAreCurrent fails when the committed file differs from what
+// the generator produces, so a format change cannot ship with stale vectors.
+func TestSharedVectorsAreCurrent(t *testing.T) {
+	generated := generate(t)
+
+	if *update {
+		data, err := json.MarshalIndent(generated, "", "  ")
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(vectorsPath), 0o755))
+		require.NoError(t, os.WriteFile(vectorsPath, append(data, '\n'), 0o644)) //nolint:gosec // A committed test fixture.
+	}
+
+	assert.Equal(t, generated, loadVectorFile(t))
+}
+
+func TestSharedVectors(t *testing.T) {
+	file := loadVectorFile(t)
+
+	t.Run("standards", func(t *testing.T) {
+		for _, vector := range file.Standards.HKDFSHA256 {
+			t.Run(vector.Name, func(t *testing.T) {
+				okm, err := hkdf.Key(sha256.New, unhex(t, vector.IKM), unhex(t, vector.Salt), string(unhex(t, vector.Info)), vector.Length)
+				require.NoError(t, err)
+				assert.Equal(t, vector.OKM, hex.EncodeToString(okm))
+			})
+		}
+
+		for _, vector := range file.Standards.XChaCha20Poly1305 {
+			t.Run(vector.Name, func(t *testing.T) {
+				aead, err := chacha20poly1305.NewX(unhex(t, vector.Key))
+				require.NoError(t, err)
+				assert.Equal(t, vector.Ciphertext, hex.EncodeToString(aead.Seal(nil, unhex(t, vector.Nonce), unhex(t, vector.Plaintext), unhex(t, vector.AAD))))
+			})
+		}
+
+		for _, vector := range file.Standards.X25519 {
+			t.Run(vector.Name, func(t *testing.T) {
+				assert.Equal(t, vector.PublicKey, hex.EncodeToString(must(PublicKey(unhex(t, vector.PrivateKey)))))
+
+				private := must(ecdh.X25519().NewPrivateKey(unhex(t, vector.PrivateKey)))
+				peer := must(ecdh.X25519().NewPublicKey(unhex(t, vector.PeerPublicKey)))
+				assert.Equal(t, vector.SharedSecret, hex.EncodeToString(must(private.ECDH(peer))))
+			})
+		}
+	})
+
+	t.Run("subkeys", func(t *testing.T) {
+		require.NotEmpty(t, file.Subkeys)
+
+		for _, vector := range file.Subkeys {
+			t.Run(vector.Name, func(t *testing.T) {
+				subkey, err := DeriveSubkey(unhex(t, vector.EpochKey), Label(vector.Label))
+				require.NoError(t, err)
+				assert.Equal(t, vector.Subkey, hex.EncodeToString(subkey))
+			})
+		}
+	})
+
+	t.Run("aead", func(t *testing.T) {
+		require.NotEmpty(t, file.AEAD)
+
+		for _, vector := range file.AEAD {
+			t.Run(vector.Name, func(t *testing.T) {
+				key, aad := unhex(t, vector.Key), unhex(t, vector.AAD)
+				sealed := must(sealWithNonce(key, unhex(t, vector.Nonce), unhex(t, vector.Plaintext), aad))
+				assert.Equal(t, vector.Sealed, hex.EncodeToString(sealed))
+
+				plaintext := must(Open(key, unhex(t, vector.Sealed), aad))
+				assert.Equal(t, vector.Plaintext, hex.EncodeToString(plaintext))
+			})
+		}
+	})
+
+	t.Run("sealed box", func(t *testing.T) {
+		require.NotEmpty(t, file.SealedBox)
+
+		for _, vector := range file.SealedBox {
+			t.Run(vector.Name, func(t *testing.T) {
+				recipient, aad := unhex(t, vector.RecipientPrivateKey), unhex(t, vector.AAD)
+				assert.Equal(t, vector.RecipientPublicKey, hex.EncodeToString(must(PublicKey(recipient))))
+
+				sealed := must(sealToWith(unhex(t, vector.RecipientPublicKey), unhex(t, vector.EphemeralPrivateKey), unhex(t, vector.Nonce), unhex(t, vector.Plaintext), aad))
+				assert.Equal(t, vector.Sealed, hex.EncodeToString(sealed))
+
+				plaintext := must(OpenFrom(recipient, unhex(t, vector.Sealed), aad))
+				assert.Equal(t, vector.Plaintext, hex.EncodeToString(plaintext))
+			})
+		}
+	})
+
+	t.Run("path_key", func(t *testing.T) {
+		require.NotEmpty(t, file.PathKey)
+
+		for _, vector := range file.PathKey {
+			t.Run(vector.Name, func(t *testing.T) {
+				assert.Equal(t, vector.PathKey, hex.EncodeToString(must(PathKey(unhex(t, vector.Secret), vector.Path))))
+			})
+		}
+	})
+
+	t.Run("blob_id", func(t *testing.T) {
+		require.NotEmpty(t, file.BlobID)
+
+		for _, vector := range file.BlobID {
+			t.Run(vector.Name, func(t *testing.T) {
+				assert.Equal(t, vector.BlobID, hex.EncodeToString(must(BlobID(unhex(t, vector.Secret), unhex(t, vector.Plaintext)))))
+			})
+		}
+	})
+
+	t.Run("passphrase", func(t *testing.T) {
+		require.NotEmpty(t, file.Passphrase)
+
+		for _, vector := range file.Passphrase {
+			t.Run(vector.Name, func(t *testing.T) {
+				params := Argon2Params{Memory: vector.Memory, Iterations: vector.Iterations, Parallelism: vector.Parallelism}
+				aad := unhex(t, vector.AAD)
+				wrapped := must(wrapWith(vector.Passphrase, params, unhex(t, vector.Salt), unhex(t, vector.Nonce), unhex(t, vector.Secret), aad))
+				assert.Equal(t, vector.Wrapped, hex.EncodeToString(wrapped))
+
+				secret := must(UnwrapWithPassphrase(vector.Passphrase, unhex(t, vector.Wrapped), aad))
+				assert.Equal(t, vector.Secret, hex.EncodeToString(secret))
+			})
+		}
+	})
+
+	// The pairs share their salt and nonce, so equal wrapped values show that
+	// both normalization forms of a passphrase derive the same key.
+	t.Run("passphrase normalization pairs", func(t *testing.T) {
+		wrapped := map[string]string{}
+		for _, vector := range file.Passphrase {
+			wrapped[vector.Name] = vector.Wrapped
+		}
+
+		for _, pair := range [][2]string{
+			{"precomposed passphrase", "decomposed passphrase"},
+			{"Unicode 17 mark, precomposed passphrase", "Unicode 17 mark, decomposed passphrase"},
+		} {
+			require.Contains(t, wrapped, pair[0])
+			require.Contains(t, wrapped, pair[1])
+			assert.Equal(t, wrapped[pair[0]], wrapped[pair[1]], pair[1])
+		}
+	})
+
+	t.Run("rejected", func(t *testing.T) {
+		require.NotEmpty(t, file.Rejected)
+
+		for _, vector := range file.Rejected {
+			t.Run(vector.Name, func(t *testing.T) {
+				sealed, aad := unhex(t, vector.Sealed), unhex(t, vector.AAD)
+
+				var err error
+
+				switch vector.Kind {
+				case "aead":
+					_, err = Open(unhex(t, vector.Key), sealed, aad)
+				case "sealed_box":
+					_, err = OpenFrom(unhex(t, vector.Key), sealed, aad)
+				case "passphrase":
+					_, err = UnwrapWithPassphrase(vector.Passphrase, sealed, aad)
+				default:
+					require.Failf(t, "unknown kind", "%q", vector.Kind)
+				}
+
+				require.ErrorIs(t, err, ErrDecrypt)
+			})
+		}
+	})
+}
