@@ -263,6 +263,24 @@ describe("SimNetwork", () => {
       expect(await network.deliverRequest()).toContain("CommitRevision(a) -> ok");
     });
 
+    it("lets draining deliver a retry enqueued after heal, though the step counter no longer moves (#273)", async () => {
+      const { network, received, commit } = setup(30);
+      network.now = 3000;
+      commit(0, "a");
+      await settle();
+      network.dropRequest(0);
+      await settle();
+      // Quiescing: heal, then the client resends the revision id with the step counter at its final value.
+      network.heal();
+      commit(0, "a");
+      await settle();
+      expect(await network.deliverRequest()).toBeUndefined();
+
+      expect(network.passTime()).toBe("#1 c0 CommitRevision(a) retry backoff elapsed");
+      expect(await network.deliverRequest()).toContain("c0 CommitRevision(a) -> ok");
+      expect(received).toEqual(["a"]);
+    });
+
     it("lets draining pass the time a retry's backoff waits for, but not a fault's delay (#302)", async () => {
       const { network, received, commit } = setup(30);
       network.now = 1000;
