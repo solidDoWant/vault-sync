@@ -104,6 +104,7 @@ func newSyncFixture(t *testing.T, limits api.SyncLimits) *syncFixture {
 			Vaults:          queries,
 			Memberships:     queries,
 			Membership:      &api.MembershipService{Store: queries},
+			UserKeys:        &api.UserKeyService{Store: queries},
 			Sync:            &api.SyncService{Store: queries, Limits: limits},
 			Blobs:           &api.BlobService{Store: queries, Objects: objects, Limits: defaultBlobLimits},
 			Realtime:        hub,

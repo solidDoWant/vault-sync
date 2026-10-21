@@ -35,6 +35,14 @@ export interface RegressionCase {
    * #277, which replay with plain pulls.
    */
   notificationPulls?: boolean;
+  /**
+   * Whether the run was a seeded schedule with retention purges
+   * (RunOptions.retention, the retention suite, #229): its steps carry the
+   * retention steps, and the regressions suite replays it with the setting
+   * (#646). Absent in cases without retention and in every case recorded
+   * before #646.
+   */
+  retention?: boolean;
   /** Why it was recorded: the violations the minimized schedule produced. */
   violations: Violation[];
   steps: Step[];
