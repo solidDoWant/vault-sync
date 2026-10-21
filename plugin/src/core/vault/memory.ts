@@ -12,10 +12,7 @@ export interface InMemoryVaultOptions {
    * "unmaterializable". Under `windows` and `macos` rules, paths are matched
    * as those platforms' filesystems match them, ignoring case and Unicode
    * form (see `filesystem`), and a file keeps the spelling it was created
-   * with. A folder, too, has one spelling, as on those filesystems: a file
-   * written or moved into another spelling of an existing folder lands in
-   * it, under the spelling it already has. Defaults to `posix`, which is
-   * case-sensitive.
+   * with. Defaults to `posix`, which is case-sensitive.
    */
   pathRules?: PathRules;
   /**
@@ -29,7 +26,12 @@ export interface InMemoryVaultOptions {
    * - `faithful`: those the platform's filesystem takes for one
    *   (PathSpace.filesystemKey, `F`), as NTFS and APFS do: `Straße.md` and
    *   `STRASSE.md` are two files, so are NFC and NFD `Café.md` under
-   *   `windows`, while `ı.md` and `I.md` are one.
+   *   `windows`, while `ı.md` and `I.md` are one. A folder, too, has one
+   *   spelling, as on those filesystems: a file written or moved into
+   *   another spelling of an existing folder lands in it, under the
+   *   spelling it already has (#377). (The folded vault lets each file keep
+   *   its own spelling of a folder, which no real filesystem does; the
+   *   engine tests written against it rely on that, #423.)
    */
   filesystem?: "folded" | "faithful";
 }
@@ -75,6 +77,8 @@ export class InMemoryVault implements VaultAdapter {
   private readonly now: () => number;
   private readonly pathRules: PathRules;
   private readonly key: (path: string) => string;
+  /** Whether a folder has one spelling, as on a real filesystem (the faithful filesystem only). */
+  private readonly oneFolderSpelling: boolean;
 
   /**
    * Called when a listener throws. The change itself has already been applied
@@ -92,6 +96,7 @@ export class InMemoryVault implements VaultAdapter {
     this.pathRules = options.pathRules ?? posixPathRules;
     const space = new PathSpace(this.pathRules);
     this.key = options.filesystem === "faithful" ? (path) => space.filesystemKey(path) : space.fileKey;
+    this.oneFolderSpelling = options.filesystem === "faithful";
   }
 
   /**
@@ -251,9 +256,11 @@ export class InMemoryVault implements VaultAdapter {
    * `path` with its first `folders` segments, each a folder, spelled as the
    * folder of that name already is (under the vault's matching), so a
    * folder has one spelling as on a case-insensitive filesystem. Files whose
-   * key `skip` accepts do not count. Under posix rules this is `path`.
+   * key `skip` accepts do not count. Under posix rules, and on the folded
+   * filesystem, this is `path`.
    */
   private spelled(path: string, folders: number, skip: (key: string) => boolean = () => false): string {
+    if (!this.oneFolderSpelling) return path;
     const segments = path.split("/");
     for (let depth = 1; depth <= Math.min(folders, segments.length); depth++) {
       const folder = `${this.key(segments.slice(0, depth).join("/"))}/`;
