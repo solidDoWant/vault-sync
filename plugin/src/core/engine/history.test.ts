@@ -553,7 +553,8 @@ describe("SyncEngine deleted files (SPEC.md §11)", () => {
     h.server.commit({ documentId: "doc", path: "plan?.md" });
     await h.engine.pull();
 
-    expect((await h.journal.getDocument("doc"))?.deleted).toBe(true);
+    // Released, not deleted: its base stays live (design §6.4 item 5).
+    expect(await h.journal.getDocument("doc")).toMatchObject({ deleted: false, binding: null, absence: "released" });
     expect(await h.engine.deletedDocuments()).toEqual([]);
   });
 
