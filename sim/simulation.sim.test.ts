@@ -22,10 +22,12 @@ import { purgedCursor } from "./scenarios";
 import { restoreWindow } from "./restore-scenarios";
 import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
 import { mergedDuringPush } from "./scenarios";
+import { stalledAtFinish } from "./scenarios";
 import { StallError } from "./network";
 import { recordedCase, replayOptions } from "./regression";
 import { generateSchedule, type Step } from "./schedule";
-import { shrink } from "./shrink";
+import { shrink, type ShrinkProgress } from "./shrink";
+import { summarize } from "./summary";
 
 const environment = simEnvironment();
 const suites = new Set(environment.suites);
@@ -51,32 +53,15 @@ function reportShadow(run: string, trace: readonly string[]): void {
   for (const line of trace.filter((entry) => entry.includes("SHADOW binding-shadow: "))) console.log(`${run}: ${line}`);
 }
 
-/** How often notable events occurred in a run, to show what a schedule exercised. */
-function summarize(trace: readonly string[]): string {
-  const events: [string, string][] = [
-    ["acknowledged", " acknowledged "],
-    ["head moved", "head moved"],
-    ["path taken", "path taken"],
-    ["retried after network failure", "retries "],
-    ["requests lost", "request lost"],
-    ["responses lost", "response lost after"],
-    ["delayed", " held for "],
-    ["reordered", "out of order"],
-    ["partitions", " partitioned for "],
-    ["crashes", " crashed and restarted"],
-    ["engine pulls completed", " deferred"],
-    ["engine pulls interrupted", "engine pull interrupted"],
-    ["engine crashes", "restarted with its vault and journal"],
-    ["tracked as unmaterializable", " as unmaterializable ("],
-    // Steps that did nothing: an operation for a busy client, a delivery with nothing to deliver.
-    ["operations skipped (busy)", " skipped"],
-    ["idle deliveries", ": no deliverable"],
-    ["engine user changes", " user "],
-    ["engine pushes completed", " pushed: "],
-    // Report only (refactor step R4): bindings that disagree with the derived ownership.
-    ["binding-shadow divergences", "SHADOW binding-shadow: "],
-  ];
-  return events.map(([name, needle]) => `${name} ${String(trace.filter((line) => line.includes(needle)).length)}`).join(", ");
+/**
+ * Prints a line after every candidate run of a shrink, so a long shrink of a
+ * failing seed never looks hung (#381): one line per re-run of the seed's
+ * schedule, which takes no longer than the seed's own run.
+ */
+function shrinkProgress(run: string): (state: ShrinkProgress) => void {
+  return (state) => {
+    console.log(`${run} shrinking: run ${String(state.runs)}/${String(state.maxRuns)}, candidate ${state.removed ? "still fails" : "passes"}, ${String(state.length)} steps left`);
+  };
 }
 
 function describeViolations(result: RunResult): string {
@@ -88,7 +73,7 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     // Without engine users (SIM_ENGINES=0) `engines` stays unset: one engine
     // only pulls, and a recorded case replays the same way.
     const engines = environment.engines === 0 ? undefined : environment.engines;
-    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem };
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
     reportShadow(`seed ${String(seed)}`, result.trace);
@@ -97,7 +82,8 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     // Minimize: keep removing steps while a violation of the same kind remains.
     const invariants = new Set(result.violations.map((violation) => violation.invariant));
     const stillFails = async (steps: Step[]) => (await runSteps(environment, options, steps)).violations.some((violation) => invariants.has(violation.invariant));
-    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
+    console.log(`seed ${String(seed)} failed; shrinking its ${String(result.steps.length)} steps in up to ${String(environment.shrinkRuns)} runs`);
+    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns, shrinkProgress(`seed ${String(seed)}`));
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
     const written = await new Control(environment.controlUrl).report(recordedCase(`seed-${String(seed)}${faithfulSuffix}`, options, final.violations, steps));
@@ -124,7 +110,7 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
   it.each(environment.seeds)("seed %i keeps every invariant while retention purges", async (seed) => {
     const engines = environment.engines === 0 ? undefined : environment.engines;
-    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true, faithfulFilesystem: environment.faithfulFilesystem };
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, retention: true, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     purged.push(...result.purged);
     console.log(`seed ${String(seed)} with retention (${options.platforms.join(", ")} path rules): ${String(result.purged.length)} revisions purged, ${summarize(result.trace)}`);
@@ -133,7 +119,8 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
 
     const invariants = new Set(result.violations.map((violation) => violation.invariant));
     const stillFails = async (steps: Step[]) => (await runSteps(environment, options, steps)).violations.some((violation) => invariants.has(violation.invariant));
-    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns);
+    console.log(`seed ${String(seed)} with retention failed; shrinking its ${String(result.steps.length)} steps in up to ${String(environment.shrinkRuns)} runs`);
+    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns, shrinkProgress(`seed ${String(seed)} with retention`));
     const replay = await runSteps(environment, options, minimized.items);
     const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
     const written = await new Control(environment.controlUrl).report(recordedCase(`seed-${String(seed)}-retention${faithfulSuffix}`, options, final.violations, steps));
@@ -1209,6 +1196,16 @@ describe.runIf(suites.has("scenarios"))("scripted liveness scenarios (#302)", ()
     expect(result.trace.some((line) => line.startsWith("1: STALLED: run stalled at step 1")), trace).toBe(true);
     // Once something delivers the engine's calls again, the run goes on and ends cleanly.
     expect(result.violations, trace).toEqual([]);
+  });
+
+  it("reports an engine still stalled when the run ends as a liveness violation, and returns (#310)", async () => {
+    const result = await stalledAtFinish(environment);
+    const trace = tail(result.trace);
+
+    // The final check's stall, recorded by SimRun.finish: it names the step and the engine.
+    const stalls = result.violations.filter((violation) => violation.invariant === "liveness" && violation.detail.includes("engine work never finished"));
+    expect(stalls.map((violation) => violation.detail), trace).toEqual([expect.stringMatching(/^run stalled at step \d+: e1's engine work never finished/)]);
+    expect(result.trace.some((line) => line.includes("STALLED: run stalled at step")), trace).toBe(true);
   });
 });
 

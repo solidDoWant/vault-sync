@@ -13,7 +13,7 @@ import type { PathPlatform } from "../plugin/src/core/vaultpath/platform";
 import { VaultEncryption } from "../plugin/src/gen/vaultsync/v1/types_pb";
 import { faithfulPathPool, pathPool, ScriptedClient, type Acknowledgement, type RunContext, type Violation } from "./client";
 import { Control } from "./control";
-import { EngineObserver, serverHeads } from "./engine-observer";
+import { EngineObserver, notificationSeq, serverHeads } from "./engine-observer";
 import { Ids } from "./ids";
 import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed, type FeedRevision } from "./invariants";
 import { settle, SimNetwork, StallError, type Outcome } from "./network";
@@ -70,6 +70,15 @@ export interface RunOptions {
    * schedule's steps pick, so a run replays only with the same setting.
    */
   faithfulFilesystem?: boolean;
+  /**
+   * Whether the engines' pulls on a schedule's pull step are sometimes gated
+   * on a seq the server announced, as the realtime session's are (#277,
+   * EngineObserver.startPull): the step's `arg` chooses a plain pull, a pull
+   * if behind the head, or one if behind an earlier head. Seeded suites turn
+   * it on; scripted scenarios and regression cases recorded before #277 pull
+   * plainly, so they replay unchanged.
+   */
+  notificationPulls?: boolean;
 }
 
 /**
@@ -121,6 +130,8 @@ export class SimRun {
     readonly direct: ProtocolClient,
     readonly trace: string[],
     private readonly purges: { seqs: Set<bigint>; revisions: Set<string> },
+    /** RunOptions.notificationPulls. */
+    private readonly notificationPulls: boolean,
   ) {}
 
   /** Creates a vault for a new user and registers one device per client. */
@@ -181,7 +192,7 @@ export class SimRun {
       const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
       observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform, options.faithfulFilesystem === true ? "faithful" : "folded"));
     }
-    const simRun = new SimRun(context, clients, observers, control, setup, trace, purges);
+    const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true);
     run.stepNumber = () => simRun.stepNumber;
     return simRun;
   }
@@ -405,8 +416,11 @@ export class SimRun {
     switch (step.kind) {
       case "operation": {
         const entry = this.client(step.client).start(step.operation, step.arg);
-        // The engines pull whenever the schedule asks any client to pull.
-        return step.operation === "pull" ? [entry, ...this.observers.map((observer) => observer.startPull())].join("; ") : entry;
+        // The engines pull whenever the schedule asks any client to pull; with
+        // notificationPulls, sometimes only if behind a seq the server announced.
+        if (step.operation !== "pull") return entry;
+        const seq = this.notificationPulls ? notificationSeq(step.arg, this.context.serverSeq()) : undefined;
+        return [entry, ...this.observers.map((observer) => observer.startPull(seq))].join("; ");
       }
       case "deliver-request":
         return nothing("deliverable request")(await network.deliverRequest(step.client));

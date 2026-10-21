@@ -1994,6 +1994,33 @@ export async function stalledEngineReported(endpoints: SimEndpoints): Promise<St
   return { ...(await run.finish()), error };
 }
 
+/**
+ * An engine stalled when the run ends (#310). Two POSIX engines sync a note,
+ * the first edits it, and the second engine's next change of the note never
+ * finishes, so its pull of the edit hangs off the network. The run's own
+ * drains and pushes cannot finish it, and the final check of that engine
+ * stalls. SimRun.finish must record that as a liveness violation naming the
+ * step and the engine, and return normally, so a seed that stalls is
+ * minimized and reported rather than thrown.
+ */
+export async function stalledAtFinish(endpoints: SimEndpoints): Promise<RunResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const sync = async (engine: typeof first, start: () => string) => {
+    run.context.log(start());
+    await settle();
+    await run.drain(engine.index);
+  };
+  run.context.log(await first.edit("note.md", encoder.encode("one\n")));
+  await sync(first, () => first.startPush());
+  await sync(second, () => second.startPull());
+  run.context.log(await first.edit("note.md", encoder.encode("one\ntwo\n")));
+  await sync(first, () => first.startPush());
+  run.context.log(second.hangBeforeNextEngineChange("note.md"));
+  return run.finish();
+}
+
 export interface ScriptedChangesOfBinaryResult extends RunResult {
   /** Id of the engine's blob document. */
   documentId: string;

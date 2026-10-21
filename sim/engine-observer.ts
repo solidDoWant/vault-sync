@@ -72,6 +72,26 @@ export function harnessUnmaterializable(path: string, platform: PathPlatform): b
   return path.split("/").some((segment) => /[<>:"|?*]/.test(segment) || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
 }
 
+/**
+ * The seq a schedule's pull step with `arg` gates the engines' pulls on, as a
+ * realtime notification would (#277), when the server's head is `head`:
+ * undefined for a plain pull, the head itself (a `vault_changed` for the
+ * latest commit), or an earlier head (a stale or coalesced notification,
+ * which the engine's cursor may already be past).
+ */
+export function notificationSeq(arg: number, head: bigint): bigint | undefined {
+  switch (arg % 3) {
+    case 0:
+      return undefined;
+    case 1:
+      return head;
+    default: {
+      const back = BigInt(1 + (Math.floor(arg / 3) % 4));
+      return head > back ? head - back : 0n;
+    }
+  }
+}
+
 export class EngineObserver {
   private readonly vault: InMemoryVault;
   /** What the engine sees: the vault, with a scenario's saves landing just before an engine write (#163). */
@@ -160,15 +180,23 @@ export class EngineObserver {
     return !this.busy;
   }
 
-  /** Starts a pull unless one is running; returns the trace entry. */
-  startPull(): string {
+  /**
+   * Starts a pull unless one is running; returns the trace entry. With
+   * `ifBehind`, the pull is the one a realtime notification announcing that
+   * seq starts (SyncEngine.pullIfBehind): the engine skips it when its cursor
+   * is already there.
+   */
+  startPull(ifBehind?: bigint): string {
     if (this.busy) return `${this.name} busy, pull skipped`;
     this.busy = true;
     const incarnation = this.context.network.incarnation(this.index);
-    void this.engine
-      .pull()
+    void (ifBehind === undefined ? this.engine.pull() : this.engine.pullIfBehind(ifBehind))
       .then(
         (summary) => {
+          if (summary === undefined) {
+            this.context.log(`${this.name} pull not needed: cursor at or past seq ${String(ifBehind)}`);
+            return;
+          }
           this.lastPull = summary;
           this.context.log(`${this.name} pulled up to seq ${String(summary.cursor)}: ${String(summary.applied)} applied, ${String(summary.deferred)} deferred${summary.resynced ? ", resynced" : ""}`);
         },
@@ -183,7 +211,7 @@ export class EngineObserver {
       .finally(() => {
         if (this.context.network.incarnation(this.index) === incarnation) this.busy = false;
       });
-    return `${this.name} starts pull`;
+    return ifBehind === undefined ? `${this.name} starts pull` : `${this.name} starts pull if behind seq ${String(ifBehind)}`;
   }
 
   /**
@@ -216,6 +244,16 @@ export class EngineObserver {
       await this.user.write(path, content);
     });
     return `${this.name} user will save ${path} just before the engine's next change of it`;
+  }
+
+  /**
+   * Makes the engine's next write, delete or rename of `path` never finish, as
+   * a disk that stops answering would. Engine work the harness waits for after
+   * that never finishes either, with nothing on the network: a stall (#310).
+   */
+  hangBeforeNextEngineChange(path: string): string {
+    this.engineVault.beforeNextChange(path, () => new Promise<void>(() => undefined));
+    return `${this.name}'s next change of ${path} will never finish`;
   }
 
   /** Whether a save armed by saveBeforeNextEngineChange has not landed yet. */

@@ -100,6 +100,26 @@ export function errorCode(error: unknown): Code {
 }
 
 
+/** A CommitRevision the server applied: its document and the seq it got. */
+interface AppliedCommit {
+  documentId: string;
+  seq: bigint;
+}
+
+/**
+ * Marks the trace entry of a retry of a commit the server already applied,
+ * delivered after another commit moved its document's head: the interleaving
+ * of #12, which the refused-retry check needs (#284).
+ */
+export const retryAfterHeadMovedMarker = "(retry of an applied commit after its document's head moved)";
+
+/** The document and seq of a successful CommitRevision reply (the transport's UnaryResponse). */
+function appliedCommitOf(value: unknown): AppliedCommit | undefined {
+  const revision = (value as { message?: { revision?: { documentId?: unknown; seq?: unknown } } } | undefined)?.message?.revision;
+  if (typeof revision?.documentId !== "string" || typeof revision.seq !== "bigint") return undefined;
+  return { documentId: revision.documentId, seq: revision.seq };
+}
+
 function revisionIdOf(input: unknown): string | undefined {
   const revisionId = (input as { revisionId?: unknown } | undefined)?.revisionId;
   return typeof revisionId === "string" && revisionId !== "" ? revisionId : undefined;
@@ -126,7 +146,9 @@ export class SimNetwork {
    * whether or not the answer then reached the client. A retry of one must
    * get the revision back, however far the head moved since (§6.2).
    */
-  private readonly appliedRevisions = new Set<string>();
+  private readonly appliedRevisions = new Map<string, AppliedCommit>();
+  /** The seq of each document's latest commit the server applied, by document id: whether a retry comes after its head moved. */
+  private readonly documentSeqs = new Map<string, bigint>();
   /** Revision ids of every CommitRevision request sent so far (for the retry backoff). */
   private readonly sentRevisions = new Set<string>();
   /** The clients' timers (SimNetwork.timers), on a clock that follows `now` and that draining moves on. */
@@ -419,7 +441,9 @@ export class SimNetwork {
    * The step before which a CommitRevision request cannot be delivered: a
    * retry of a revision id already sent waits out the backoff, as a real
    * client's retry would, so other clients' commits can move the head
-   * meanwhile (#110). A first attempt is not held.
+   * meanwhile (#110). A first attempt is not held. The backoff runs from the
+   * timers' clock, so a retry sent while draining is ordered against the
+   * backoff timers on the same clock.
    */
   private backoff(revisionId: string | undefined): number {
     const steps = this.options.commitRetryBackoff ?? 0;
@@ -428,7 +452,8 @@ export class SimNetwork {
       this.sentRevisions.add(revisionId);
       return 0;
     }
-    return this.now + steps;
+    // Measured on the timers' clock, which draining moves on while the step counter stands still (#310).
+    return this.timerClock() + steps;
   }
 
   private deliverableRequests(): Message[] {
@@ -437,6 +462,7 @@ export class SimNetwork {
 
   private async send(message: Message): Promise<string> {
     this.activity++;
+    const marker = this.retriedAfterHeadMoved(message) ? ` ${retryAfterHeadMovedMarker}` : "";
     message.outcome = await message.send().then(
       (value): Outcome => ({ ok: true, value }),
       (error: unknown): Outcome => ({ ok: false, error }),
@@ -444,7 +470,15 @@ export class SimNetwork {
     message.phase = "response";
     this.options.observeOutcome?.(message.method, message.outcome);
     this.checkRetry(message, message.outcome);
-    return `${this.label(message)} -> ${this.options.describeOutcome(message.method, message.outcome)}`;
+    return `${this.label(message)} -> ${this.options.describeOutcome(message.method, message.outcome)}${marker}`;
+  }
+
+  /** Whether `message` retries a commit the server applied, after a later commit of the same document. */
+  private retriedAfterHeadMoved(message: Message): boolean {
+    if (message.method !== "CommitRevision" || message.revisionId === undefined) return false;
+    const applied = this.appliedRevisions.get(message.revisionId);
+    if (applied === undefined) return false;
+    return (this.documentSeqs.get(applied.documentId) ?? 0n) > applied.seq;
   }
 
   /**
@@ -457,7 +491,10 @@ export class SimNetwork {
   private checkRetry(message: Message, outcome: Outcome): void {
     if (message.method !== "CommitRevision" || message.revisionId === undefined) return;
     if (outcome.ok) {
-      this.appliedRevisions.add(message.revisionId);
+      // A reply without a revision is the client's protocol violation to report; it still counts as applied.
+      const applied = appliedCommitOf(outcome.value) ?? { documentId: "", seq: 0n };
+      if (!this.appliedRevisions.has(message.revisionId)) this.appliedRevisions.set(message.revisionId, applied);
+      if (applied.seq > (this.documentSeqs.get(applied.documentId) ?? 0n)) this.documentSeqs.set(applied.documentId, applied.seq);
       return;
     }
     const code = errorCode(outcome.error);
