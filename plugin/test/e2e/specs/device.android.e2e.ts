@@ -156,7 +156,14 @@ async function foregroundObsidian() {
  */
 function dontKeepActivities(on: boolean) {
   shell("settings", "put", "global", "always_finish_activities", on ? "1" : "0");
-  shell("service", "call", "activity", "43", "i32", on ? "1" : "0");
+  const reply = shell("service", "call", "activity", "43", "i32", on ? "1" : "0");
+  // A void call that succeeded answers with a status of 0.
+  if (!reply.includes("Parcel(00000000")) throw new Error(`setAlwaysFinish failed: ${reply.trim()}`);
+}
+
+/** Whether Android still holds an activity of Obsidian's (destroyed activities are gone from the list). */
+function obsidianActivityAlive(): boolean {
+  return shell("dumpsys", "activity", "activities").includes(`${appId}/`);
 }
 
 /** Sends Obsidian to the background with the home button. */
@@ -254,6 +261,11 @@ describe("vault-sync on an Android device", function () {
     await markWebView();
     await writeNote(note, text);
     background();
+    await browser.waitUntil(() => Promise.resolve(!obsidianActivityAlive()), {
+      timeout: 30_000,
+      interval: 500,
+      timeoutMsg: "Android never destroyed Obsidian's activity in the background",
+    });
     await foregroundObsidian();
     // The activity, and with it the WebView, was destroyed and Obsidian
     // started again: the scenario really happened.
@@ -278,11 +290,12 @@ describe("vault-sync on an Android device", function () {
     shell("cmd", "connectivity", "airplane-mode", "enable");
     await writeNote(edited, editedText);
     await writeNote(created, createdText);
-    await browser.waitUntil(async () => (await syncStatus()).state === "offline", {
-      timeout: 120_000,
-      interval: 500,
-      timeoutMsg: "the status never went offline with the network cut",
-    });
+    let last: Awaited<ReturnType<typeof syncStatus>> | undefined;
+    await browser
+      .waitUntil(async () => (last = await syncStatus()).state === "offline", { timeout: 120_000, interval: 500 })
+      .catch(() => {
+        throw new Error(`the status never went offline with the network cut; last status: ${JSON.stringify(last)}`);
+      });
     const offline = await syncStatus();
     expect(offline.pending).toBeGreaterThan(0);
     const local = await callHarness("vaultDigests");
