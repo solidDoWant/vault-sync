@@ -69,6 +69,8 @@ async function confirmRemove(): Promise<void> {
     if (button === undefined) throw new Error("the confirmation has no Remove device button");
     button.click();
   });
+  // The confirmation closes; in mobile mode Obsidian removes it only after an animation.
+  await browser.waitUntil(async () => (await confirmModals()).length === 0, { timeoutMsg: "the confirmation never closed" });
 }
 
 /**
@@ -174,7 +176,6 @@ describe("the settings device list", function () {
     });
     expect(await callHarness("removeDeviceCalls")).toEqual([{ deviceId: otherDevice, forwarded: false }]);
     expect((await otherRow())?.button).toEqual({ text: "Remove", disabled: false });
-    expect(await confirmModals()).toEqual([]);
 
     // A retry held at the harness: its button is disabled, also in a list
     // rendered again meanwhile, and a click there sends nothing. When it
