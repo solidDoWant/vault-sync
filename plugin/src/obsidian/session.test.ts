@@ -464,7 +464,7 @@ describe("SyncSession", () => {
       server.commit({ documentId: "b", path: "b.md", content: "second" });
       const vault = new InMemoryVault();
       const inner = new InMemoryJournal();
-      // Holds the first document write, the step between applying a.md's disk change and moving the cursor.
+      // Holds the first document write (a transaction), the step between applying a.md's disk change and moving the cursor.
       let release: () => void = () => undefined;
       let held = false;
       const steps: string[] = [];
@@ -474,7 +474,7 @@ describe("SyncSession", () => {
           if (typeof value !== "function") return value;
           return async (...args: unknown[]) => {
             steps.push(String(property));
-            if (property === "putDocument" && !held) {
+            if (property === "transact" && !held) {
               held = true;
               await new Promise<void>((resolve) => (release = resolve));
             }
@@ -727,7 +727,7 @@ describe("SyncSession", () => {
         await vault.write("local.md", bytes("typed before the reload"));
         const journal = new InMemoryJournal();
         // The step between applying a.md's disk change and recording it.
-        const unloading = holding(journal, "putDocument");
+        const unloading = holding(journal, "transact");
         const unloaded = session({ server, vault, journal: unloading.proxy });
         void unloaded.start();
         await vi.waitFor(() => {
