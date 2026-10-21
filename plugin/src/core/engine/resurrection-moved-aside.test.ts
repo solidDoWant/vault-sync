@@ -59,7 +59,7 @@ describe("a deleted note brought back on another device at a path Windows cannot
     expect(unmaterializable.map((document) => [document.documentId, document.path])).toEqual([[documentId, "ab:c.md"]]);
     const kept = unmaterializable[0]?.localPath;
     expect(kept).toBeDefined();
-    expect(new TextDecoder().decode((await h.vault.read(kept ?? "")) ?? new Uint8Array())).toBe("s\nlocal\n");
+    expect(new TextDecoder().decode(await h.vault.read(kept ?? ""))).toBe("s\nlocal\n");
     // Every other file is a live document's.
     const local = await files(h.vault);
     local.delete(kept ?? "");
