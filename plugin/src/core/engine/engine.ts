@@ -438,9 +438,9 @@ export class SyncEngine {
     return documentHistory(this.api, this.vaultId, this.deviceId, documentId, pageToken);
   }
 
-  /** A history entry's content, for a preview. */
-  readRevision(entry: HistoryEntry): Promise<Uint8Array> {
-    return readRevision(this.api, this.vaultId, entry);
+  /** A history entry's content, for a preview; with `limit`, at most its first `limit` bytes, unverified when cut (#656). */
+  readRevision(entry: HistoryEntry, limit?: number): Promise<Uint8Array> {
+    return readRevision(this.api, this.vaultId, entry, limit);
   }
 
   /**

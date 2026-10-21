@@ -15,9 +15,13 @@ export type Preview =
   /** Content that is not text (not UTF-8, or containing NUL), shown by size only. */
   | { kind: "binary"; size: number };
 
-/** How a revision's content is previewed. */
-export function previewOf(content: Uint8Array): Preview {
-  const truncated = content.length > maxPreviewBytes;
+/**
+ * How a revision's content is previewed. `content` may be only the start of
+ * a revision of `size` bytes (#656); the preview needs no more than
+ * maxPreviewBytes of it.
+ */
+export function previewOf(content: Uint8Array, size = content.length): Preview {
+  const truncated = size > maxPreviewBytes;
   let shown = truncated ? content.subarray(0, maxPreviewBytes) : content;
   // A cut through a multi-byte character is not a reason to call text binary.
   for (let trim = 0; trim < 4; trim++) {
@@ -30,7 +34,7 @@ export function previewOf(content: Uint8Array): Preview {
       shown = shown.subarray(0, shown.length - 1);
     }
   }
-  return { kind: "binary", size: content.length };
+  return { kind: "binary", size };
 }
 
 /**

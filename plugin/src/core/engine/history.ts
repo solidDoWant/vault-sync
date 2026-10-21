@@ -8,7 +8,7 @@ import type { DocumentKindName, RemoteRevision } from "../journal/journal";
 import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { pathProblem } from "../vaultpath/vaultpath";
 import { blobMissing, errorCode, headMoved } from "./errors";
-import { downloadContent, RemoteContentError, toIncoming, type PullApi } from "./remote";
+import { downloadContent, downloadStart, RemoteContentError, toIncoming, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
 /** One retained revision of a document, as the history view shows it (SPEC.md §11). */
@@ -98,8 +98,14 @@ function historyEntry(revision: Revision, deviceId: string, deviceName: string |
   };
 }
 
-/** Downloads a history entry's content, verified against its hash. */
-export function readRevision(api: PullApi, vaultId: string, entry: HistoryEntry): Promise<Uint8Array> {
+/**
+ * Downloads a history entry's content, verified against its hash. With
+ * `limit`, an entry larger than that is read only as far as its first
+ * `limit` bytes (#656), for a preview: that start is not verified, and a
+ * result shorter than `entry.size` is never the content to restore.
+ */
+export function readRevision(api: PullApi, vaultId: string, entry: HistoryEntry, limit?: number): Promise<Uint8Array> {
+  if (limit !== undefined && entry.size > BigInt(limit)) return downloadStart(api, vaultId, entry.contentHash, entry.size, limit);
   return downloadContent(api, vaultId, entry.contentHash, entry.size);
 }
 
