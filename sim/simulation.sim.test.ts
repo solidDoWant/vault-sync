@@ -46,15 +46,6 @@ function tail(trace: readonly string[], lines = 80): string {
 }
 
 /**
- * Prints a run's binding-shadow divergences (refactor step R4,
- * docs/design/engine-path-ownership.md §9.2), report only: the nightly
- * report lists them for triage.
- */
-function reportShadow(run: string, trace: readonly string[]): void {
-  for (const line of trace.filter((entry) => entry.includes("SHADOW binding-shadow: "))) console.log(`${run}: ${line}`);
-}
-
-/**
  * Prints a line after every candidate run of a shrink, so a long shrink of a
  * failing seed never looks hung (#381): one line per re-run of the seed's
  * schedule, which takes no longer than the seed's own run.
@@ -77,7 +68,6 @@ describe.runIf(suites.has("seeds"))("seeded schedules", () => {
     const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     console.log(`seed ${String(seed)} (${options.platforms.join(", ")} path rules): ${summarize(result.trace)}`);
-    reportShadow(`seed ${String(seed)}`, result.trace);
     if (result.violations.length === 0) return;
 
     // Minimize: keep removing steps while a violation of the same kind remains.
@@ -115,7 +105,6 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
     const result = await runSeed(environment, { ...options, steps: environment.steps });
     purged.push(...result.purged);
     console.log(`seed ${String(seed)} with retention (${options.platforms.join(", ")} path rules): ${String(result.purged.length)} revisions purged, ${summarize(result.trace)}`);
-    reportShadow(`seed ${String(seed)} with retention`, result.trace);
     if (result.violations.length === 0) return;
 
     const invariants = new Set(result.violations.map((violation) => violation.invariant));

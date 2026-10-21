@@ -196,3 +196,20 @@ function holder(files: Set<string>, openFolders: string[], ancestors: (key: stri
     takes: (key: string) => files.has(key) || folders.has(key) || ancestors(key).some(blocks),
   };
 }
+
+/**
+ * Whether the vault holds `a` and `b` as one file (design §4.2, the disk
+ * claims): the filesystem's equivalence `F` says so (PO-10). A vault that
+ * folds names more than `F` does (the folded `InMemoryVault`, X-18, the
+ * simulation's default until refactor step R7d) is asked: the two spellings
+ * share a file key, the vault lists one of them, and it finds a file at the
+ * other. On NTFS or APFS `straße/b.md` and `STRASSE/b.md` are two files,
+ * which `F` alone tells (decision #52, #447).
+ */
+export async function oneFileOnDisk(space: PathSpace, vault: Pick<VaultAdapter, "list" | "stat">, a: string, b: string): Promise<boolean> {
+  if (space.oneFile(a, b)) return true;
+  if (space.fileKey(a) !== space.fileKey(b)) return false;
+  const listed = new Set(await vault.list());
+  if (listed.has(a) === listed.has(b)) return false;
+  return (await vault.stat(listed.has(a) ? b : a)) !== null;
+}

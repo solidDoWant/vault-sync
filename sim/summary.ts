@@ -36,8 +36,6 @@ const events: readonly (readonly [string, string, "each"?])[] = [
   ["idle deliveries", ": no deliverable"],
   ["engine user changes", " user "],
   ["engine pushes completed", " pushed: "],
-  // Report only (refactor step R4): bindings that disagree with the derived ownership.
-  ["binding-shadow divergences", "SHADOW binding-shadow: "],
 ];
 
 /** How often notable events occurred in a run's trace, as one line. */

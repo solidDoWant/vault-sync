@@ -42,7 +42,6 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest 
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
 	./scripts/sim-nightly-report_test.sh
-	./scripts/sim-shadow-report_test.sh
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
 	./scripts/release_test.sh
