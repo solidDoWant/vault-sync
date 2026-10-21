@@ -179,6 +179,9 @@ class PlanTest(unittest.TestCase):
         plan = plan_for(sn, {"sessions": sessions})
         self.assertEqual(keys(plan), ["worker:1", "worker:2", "worker:3"])
         self.assertIn("PR #77", plan.jobs[2].trigger)
+        # Each continuation run gets its own time box.
+        self.assertIn("time box starts now", plan.jobs[0].trigger)
+        self.assertIn("time box starts now", plan.jobs[1].trigger)
 
     def test_question_answered_resumes_with_note(self):
         sessions = {"worker:1": {"role": "issue-worker", "issue": 1, "handoff": {"state": "question"}}}

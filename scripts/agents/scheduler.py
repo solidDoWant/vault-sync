@@ -723,7 +723,8 @@ def build_plan(snap: Snapshot, state: dict, cfg: dict, holds: dict, now: dt.date
                     "Continue where you stopped: your previous run " +
                     ("was interrupted (usage limit or crash)." if sess.get("interrupted")
                      else "handed back as incomplete (time box).") +
-                    (f" Its trigger was: {sess['last_trigger']}" if sess.get("last_trigger") else ""),
+                    (f" Its trigger was: {sess['last_trigger']}" if sess.get("last_trigger") else "") +
+                    " Your ~45-minute time box starts now: time spent in earlier runs does not count.",
                     issue, sess.get("pr"), tuple(x for x in (f"issue:{issue}" if issue else None,
                                                              f"pr:{sess['pr']}" if sess.get("pr") else None) if x)))
         elif state_ == "wait-pr" and handoff.get("pr") and handoff["pr"] not in snap.prs:

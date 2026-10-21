@@ -246,8 +246,16 @@ func TestPathFolderCheckSkipsEndToEndEncryptedVaults(t *testing.T) {
 
 	encrypted := queries.InVault(vault.ID)
 
+	// Commits to an E2EE vault need its current key epoch; the owner has
+	// no user key, so the epoch has no recipients.
+	_, err = encrypted.RotateEpoch(t.Context(), fixture.user, store.NextEpoch{Commitment: make([]byte, 32)})
+	require.NoError(t, err)
+
 	for _, pathKey := range []string{"k", "k/l"} {
-		_, err := encrypted.CommitRevision(t.Context(), fixture.create("ciphertext-"+pathKey, pathKey))
+		revision := fixture.create("ciphertext-"+pathKey, pathKey)
+		revision.Epoch = 1
+
+		_, err := encrypted.CommitRevision(t.Context(), revision)
 		require.NoError(t, err)
 	}
 }

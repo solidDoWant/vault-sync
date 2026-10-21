@@ -86,12 +86,17 @@ type SyncServiceClient interface {
 	//     with its current head_rev_id, as a Document error detail. Also when
 	//     base_rev_id is set but the document does not exist in the vault, when
 	//     content_ref names a blob that is not complete in this vault, and for
-	//     end-to-end encrypted vaults until they are supported.
+	//     end-to-end encrypted vaults until they are supported. Also, with an
+	//     ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT, when epoch is
+	//     not the vault's current key epoch (a rotation replaced it: fetch the
+	//     new epoch, re-encrypt and retry). A rotation that is only pending
+	//     does not replace it.
 	//   - ALREADY_EXISTS: path_key collides with another live document in the
 	//     vault, or the path names the folder of another live document's path,
 	//     or lies under a folder another live document's path names as a file
 	//     (SPEC.md §5, §6.3).
-	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
+	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields (including a
+	//     nonzero epoch in a plaintext vault, or epoch 0 in an E2EE vault), kind mismatch,
 	//     content_ref.size differing from the stored blob's size, document_id or
 	//     revision_id already in use outside this vault, or revision_id reused
 	//     with different fields.
@@ -220,12 +225,17 @@ type SyncServiceHandler interface {
 	//     with its current head_rev_id, as a Document error detail. Also when
 	//     base_rev_id is set but the document does not exist in the vault, when
 	//     content_ref names a blob that is not complete in this vault, and for
-	//     end-to-end encrypted vaults until they are supported.
+	//     end-to-end encrypted vaults until they are supported. Also, with an
+	//     ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT, when epoch is
+	//     not the vault's current key epoch (a rotation replaced it: fetch the
+	//     new epoch, re-encrypt and retry). A rotation that is only pending
+	//     does not replace it.
 	//   - ALREADY_EXISTS: path_key collides with another live document in the
 	//     vault, or the path names the folder of another live document's path,
 	//     or lies under a folder another live document's path names as a file
 	//     (SPEC.md §5, §6.3).
-	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields, kind mismatch,
+	//   - INVALID_ARGUMENT: malformed or out-of-bounds fields (including a
+	//     nonzero epoch in a plaintext vault, or epoch 0 in an E2EE vault), kind mismatch,
 	//     content_ref.size differing from the stored blob's size, document_id or
 	//     revision_id already in use outside this vault, or revision_id reused
 	//     with different fields.
