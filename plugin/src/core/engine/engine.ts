@@ -1134,15 +1134,24 @@ export class SyncEngine {
   /**
    * The spelling the vault holds the file at `path` under, for an echo
    * expectation of a change the engine is about to make there (SPEC.md §8):
-   * `path` itself if the vault lists it, otherwise the one listed spelling
-   * the vault takes as the same file, otherwise `path`. The expectation then
-   * matches events exactly, so a user's change of another file whose spelling
-   * merely has the same path key is never taken for the engine's (#380).
+   * `path` itself if the vault lists it, otherwise the listed spelling the
+   * filesystem takes for the same file (`F`, PO-10), otherwise `path`. The
+   * expectation then matches events exactly, so a user's change of another
+   * file whose spelling merely has the same path key is never taken for the
+   * engine's (#380), and the engine's change of `Straße.md` beside
+   * `STRASSE.md`, or of NFC `Café.md` beside NFD `Café.md` on Windows, two
+   * files with one file key, is expected at its own spelling (#738). A vault
+   * that folds more than `F` (the folded `InMemoryVault`, X-18) is asked
+   * whether it holds `path` at all: if so, under the one listed spelling with
+   * its file key.
    */
   private async heldSpelling(path: string): Promise<string> {
     if (this.pathRules.platform === "posix") return path;
     const listed = await this.vault.list();
     if (listed.includes(path)) return path;
+    const oneFile = listed.filter((candidate) => this.pathSpace.oneFile(candidate, path));
+    if (oneFile.length > 0) return oneFile.length === 1 ? (oneFile[0] ?? path) : path;
+    if ((await this.vault.stat(path)) === null) return path;
     const key = this.pathSpace.fileKey(path);
     const candidates = listed.filter((candidate) => this.pathSpace.fileKey(candidate) === key);
     return candidates.length === 1 ? (candidates[0] ?? path) : path;

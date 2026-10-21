@@ -116,8 +116,8 @@ function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
 }
 
 /** Runs the commands on a fresh world and brings it to quiescence. */
-async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>): Promise<{ world: PropertyWorld; quiet: boolean }> {
-  const world = new PropertyWorld(on);
+async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, filesystem: "folded" | "faithful" = "folded"): Promise<{ world: PropertyWorld; quiet: boolean }> {
+  const world = new PropertyWorld(on, filesystem);
   await fc.asyncModelRun(() => ({ model: {}, real: world }), steps);
   const quiet = await world.quiesce();
   return { world, quiet };
@@ -127,7 +127,7 @@ function violations(world: PropertyWorld, property: PropertyId): string[] {
   return world.violations.filter((violation) => violation.property === property).map((violation) => `step ${String(violation.step)}: ${violation.message}`);
 }
 
-type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6";
+type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7";
 
 /** The only error a property run may fail with: the property found what it checks for. */
 class PropertyViolation extends Error {
@@ -245,6 +245,33 @@ const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
   },
 };
 const p5 = overWorld("P5", (world) => world.lostWrites());
+/**
+ * P7's alphabet: the steady one over the paths of `worldPaths` whose `K` and
+ * `F` disagree (`Café.md` NFC and NFD, `Straße.md`, `STRASSE.md`) and a case
+ * pair, so the engine writes, renames and deletes one spelling while the
+ * vault holds another (#738). Crashes are left out: a restart's scan reports
+ * what changed while the engine was down, which is no echo of a live change.
+ */
+const spelling = fc.constantFrom(0, 1, 3, 4, 5, 6);
+const echoCommands: fc.Arbitrary<WorldCommand>[] = [
+  spelling.map((path) => ({ type: "user-create", path })),
+  index.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(index, renameMode, spelling).map(([file, mode, target]) => ({ type: "user-rename", file, mode, target })),
+  index.map((file) => ({ type: "user-delete", file })),
+  spelling.map((path) => ({ type: "remote-create", path })),
+  index.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(index, spelling).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  index.map((document) => ({ type: "remote-delete", document })),
+  fc.constant({ type: "pull" }),
+  index.map((file) => ({ type: "edit-during-pull", file })),
+  fc.constant({ type: "push" }),
+];
+/** P7 runs on the faithful filesystem, where `F` decides the file (design §3.1, PO-10). */
+const p7: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P7",
+  cases: fc.tuple(platform, commands(echoCommands)),
+  check: async ([on, steps]) => (await play(on, steps, "faithful")).world.ownChangesReported(),
+};
 const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
 
 describe("engine properties (design §9.3)", () => {
@@ -358,6 +385,20 @@ async function commitAsDevice(world: PropertyWorld, documentId: string, path: st
 // only for a user write into an inode bound to the document whose content no
 // server revision of the document carried (PO-7). These pin that it still
 // flags a resurrection without such a write.
+describe("engine echo property (design §9.3, INV-10)", () => {
+  // P7 echo independence: INV-10 with PO-10. The engine never reports its own vault change as the user's, on the faithful
+  // filesystem, where two files can share a file key (#738). Fixed cases: the engine's create of a remote `Straße.md` beside
+  // the user's `STRASSE.md`, and of NFC `Café.md` beside the user's NFD `Café.md` on Windows, and the reverse of each.
+  it("P7: the engine never reports its own change as a local one", { timeout }, async () => {
+    await holds(p7, [
+      scripted("windows", { type: "user-create", path: 6 }, { type: "remote-create", path: 5 }, { type: "pull" }),
+      scripted("macos", { type: "user-create", path: 5 }, { type: "remote-create", path: 6 }, { type: "pull" }),
+      scripted("windows", { type: "user-create", path: 4 }, { type: "remote-create", path: 3 }, { type: "pull" }),
+      scripted("windows", { type: "user-create", path: 3 }, { type: "remote-create", path: 4 }, { type: "pull" }),
+    ]);
+  });
+});
+
 describe("P2 oracle (design §5.4)", () => {
   it("flags a resurrection of synced content without a user change", async () => {
     const world = new PropertyWorld("posix");

@@ -122,6 +122,24 @@ describe("PathClaims.freeCopyName", () => {
       expect(await table.freeCopyName("a/b/c.md", naming)).toBe(`a (conflict ${stamp})/b/c.md`);
     });
 
+    // PO-14 under F (#596): ı and the folder I are one name on NTFS and APFS, though their path keys differ.
+    for (const platform of ["windows", "macos"] as const) {
+      it(`names a folder a listed file holds only under the filesystem's equivalence (${platform}, ı and I/)`, async () => {
+        const { claims: table, naming } = await claims({ rules: { platform }, files: ["ı"] });
+        expect(await table.freeCopyName("I/c.md", naming)).toBe(`I (conflict ${stamp})/c.md`);
+      });
+
+      it(`names the outermost folder when a listed file holds it under F and a document an inner one under K (${platform})`, async () => {
+        const { claims: table, naming } = await claims({ rules: { platform }, files: ["ı"], documents: [documentState("b", "I/B")] });
+        expect(await table.freeCopyName("I/b/c.md", naming)).toBe(`I (conflict ${stamp})/b/c.md`);
+      });
+    }
+
+    it("keeps the path's folders where no equivalence joins them to a listed file (posix, ı and I/)", async () => {
+      const { claims: table, naming } = await claims({ files: ["ı"] });
+      expect(await table.freeCopyName("I/c.md", naming)).toBe(`I/c (conflict ${stamp}).md`);
+    });
+
     it("does not let a pending operation's path hold a folder", async () => {
       const { claims: table, naming } = await claims({ pending: [operation("a", "notes", true)] });
       expect(await table.freeCopyName("notes/c.md", naming)).toBe(`notes/c (conflict ${stamp}).md`);
