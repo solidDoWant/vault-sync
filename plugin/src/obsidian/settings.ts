@@ -312,8 +312,12 @@ export class VaultSyncSettingTab extends PluginSettingTab {
       (state) => {
         if (state === "unlocked") {
           setting.setDesc("Enabled for your account and unlocked on this device. The key is kept only in this device's Vault Sync data, which never syncs.");
-        } else if (state === "locked") {
-          setting.setDesc("Enabled for your account on another device. Unlock it on this device with your recovery passphrase.");
+        } else if (state === "locked" || state === "key-changed") {
+          setting.setDesc(
+            state === "locked"
+              ? "Enabled for your account on another device. Unlock it on this device with your recovery passphrase."
+              : "Locked: your account's encryption key on the server is not the one this device unlocked, so this device no longer uses its copy. Unlock the server's key with its recovery passphrase.",
+          );
           setting.addButton((button) =>
             button
               .setButtonText("Unlock")
