@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { quotedVaultLabel, shownName, vaultLabel, visiblePath } from "./display-text";
 
@@ -57,5 +57,44 @@ describe("display text", () => {
     it("leaves letters of every script, accents and emoji as they are", () => {
       expect(visiblePath("zoë/日本/ملاحظات/\u{1f600} e\u0301.md")).toBe("zoë/日本/ملاحظات/\u{1f600} e\u0301.md");
     });
+
+    it.each([
+      ["a family emoji", "\u{1f468}\u200d\u{1f469}\u200d\u{1f467}.md"],
+      ["a profession emoji with a skin tone", "\u{1f469}\u{1f3fd}\u200d\u{1f4bb}.md"],
+      ["a flag joined after a variation selector", "\u{1f3f3}\ufe0f\u200d\u{1f308}/a.md"],
+    ])("leaves the zero-width joiners of %s as they are (#605)", (_, path) => {
+      expect(visiblePath(path)).toBe(path);
+    });
+
+    it.each([
+      ["between letters", "pay\u200dpal.md", "pay\\u200Dpal.md"],
+      ["after an emoji only", "\u{1f600}\u200dx.md", "\u{1f600}\\u200Dx.md"],
+      ["before an emoji only", "x\u200d\u{1f600}.md", "x\\u200D\u{1f600}.md"],
+      ["doubled between emoji", "\u{1f468}\u200d\u200d\u{1f469}.md", "\u{1f468}\\u200D\\u200D\u{1f469}.md"],
+      ["between an emoji and a bidi override", "\u{1f468}\u200d\u202e.md", "\u{1f468}\\u200D\\u202E.md"],
+    ])("shows a zero-width joiner %s visibly (#605)", (_, path, shown) => {
+      expect(visiblePath(path)).toBe(shown);
+    });
+
+    it("writes a backslash doubled, so a literal escape cannot pass for an escaped character (#605)", () => {
+      expect(visiblePath("a\\u202Eb.md")).toBe("a\\\\u202Eb.md");
+      expect(visiblePath("a\u202eb.md")).toBe("a\\u202Eb.md");
+      expect(visiblePath("a\\u202Eb.md")).not.toBe(visiblePath("a\u202eb.md"));
+    });
+  });
+
+  it("loads and shortens names on a WebView without Intl.Segmenter (#605)", async () => {
+    const intl = Intl as { Segmenter?: unknown };
+    const saved = intl.Segmenter;
+    delete intl.Segmenter;
+    let shown: string;
+    try {
+      vi.resetModules();
+      shown = (await import("./display-text")).shownName(`${"n".repeat(63)}e\u0301\u{1f468}\u200d\u{1f469}`);
+    } finally {
+      intl.Segmenter = saved;
+      vi.resetModules();
+    }
+    expect(shown).toBe(`${"n".repeat(63)}e\u0301…`);
   });
 });

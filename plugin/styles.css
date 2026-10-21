@@ -26,6 +26,15 @@
   color: var(--text-warning);
 }
 
+/*
+ * Another member's path inside a label (#605): laid out on its own, so
+ * right-to-left letters in it cannot reorder the text around it. The span
+ * also carries dir="auto"; isolation leaves the label's text unchanged.
+ */
+.vault-sync-path {
+  unicode-bidi: isolate;
+}
+
 /* The history view (SPEC.md §11): the revision list, then the preview. */
 .vault-sync-history-list {
   max-height: 40vh;

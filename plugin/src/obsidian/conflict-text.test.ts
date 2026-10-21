@@ -4,7 +4,7 @@ import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
 import { conflictReasonText, deferredReasonText, formatBytes, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText } from "./conflict-text";
-import { visiblePath } from "./display-text";
+import { shownText, visiblePath } from "./display-text";
 
 describe("conflict view wording", () => {
   it.each<[ConflictReason, RegExp]>([
@@ -103,6 +103,7 @@ describe("deferred remote revisions wording (#417)", () => {
   });
 
   it("names the file an open view holds back, readably", () => {
-    expect(openViewText("a\u0007.canvas")).toMatch(/^"a\\u0007\.canvas" is open in a view/);
+    expect(shownText(openViewText("a\u0007.canvas"))).toMatch(/^"a\\u0007\.canvas" is open in a view/);
+    expect(openViewText("ملاحظات.canvas").slice(0, 3)).toEqual(['"', { path: "ملاحظات.canvas" }, expect.stringMatching(/^" is open in a view/)]);
   });
 });

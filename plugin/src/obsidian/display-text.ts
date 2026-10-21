@@ -1,3 +1,4 @@
+import { graphemes } from "../core/graphemes";
 import { withoutInvisibleCharacters } from "./device-name";
 
 // How names and paths that other members chose are shown (#548, #557). In a
@@ -16,8 +17,6 @@ export const maxShownNameCharacters = 64;
 /** Double quotation marks, which could close a label's quotes early. */
 const doubleQuotes = /["«»“”„‟″‶〝〞〟＂]/gu;
 
-const segmenter = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
 /**
  * `text` laid out on its own (Unicode bidi isolate), so right-to-left letters
  * in it cannot reorder the label around it and a combining mark at its end
@@ -35,7 +34,7 @@ export function isolated(text: string): string {
  */
 export function shownName(name: string): string {
   const cleaned = withoutInvisibleCharacters(name).replace(doubleQuotes, "'").trim();
-  const characters = Array.from(segmenter.segment(cleaned), (segment) => segment.segment);
+  const characters = graphemes(cleaned);
   if (characters.length <= maxShownNameCharacters) return cleaned;
   return `${characters.slice(0, maxShownNameCharacters).join("").trimEnd()}…`;
 }
@@ -58,13 +57,48 @@ export function quotedVaultLabel(vault: { id: string; name: string }): string {
 }
 
 /**
+ * The characters visiblePath writes out: a backslash (so a literal `\u202e`
+ * in a name cannot pass for an escaped one), and control and format
+ * characters, line and paragraph separators and lone UTF-16 surrogates. A
+ * zero-width joiner between two emoji (after an optional variation selector
+ * or skin tone) is left: it joins a family or profession emoji, and reorders
+ * or hides nothing.
+ */
+const hiddenCharacter = /\\|(?<!\p{Extended_Pictographic}(?:\u{FE0F}|[\u{1F3FB}-\u{1F3FF}])?)\u200d|\u200d(?!\p{Extended_Pictographic})|(?!\u200d)[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|[\ud800-\udfff]/gu;
+
+/**
  * `path` as it is shown: every character that would not show (control and
  * format characters such as bidi controls and zero-width characters, line and
  * paragraph separators, and UTF-16 surrogates without their pair) written as
  * `\uXXXX`, so the user can see which name to fix and another member cannot
- * make a path read as another one (#555). Only for display: the vault and the
- * server keep the path as it is.
+ * make a path read as another one (#555), and a backslash written as `\\`, so
+ * the notation is unambiguous (#605). The zero-width joiners of an emoji
+ * sequence stay, so the emoji shows (#605). Only for display: the vault and
+ * the server keep the path as it is.
  */
 export function visiblePath(path: string): string {
-  return path.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|[\ud800-\udfff]/gu, (character) => `\\u${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`);
+  return path.replace(hiddenCharacter, (character) => (character === "\\" ? "\\\\" : `\\u${(character.codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, "0")}`));
+}
+
+/** Another member's path inside a label, as visiblePath shows it; the view lays it out on its own (#605). */
+export interface ShownPath {
+  readonly path: string;
+}
+
+/**
+ * A label that holds paths, in parts: text, and paths a view renders each in
+ * its own element with `dir="auto"` (renderShown in shown-dom.ts). Isolated
+ * that way, right-to-left letters in a path cannot reorder the label around
+ * it, and the label's text stays exactly shownText (#605).
+ */
+export type Shown = readonly (string | ShownPath)[];
+
+/** `path` as a part of a Shown label: visiblePath of it. */
+export function shownPath(path: string): ShownPath {
+  return { path: visiblePath(path) };
+}
+
+/** A Shown label as plain text: what the rendered label's text reads. */
+export function shownText(parts: Shown): string {
+  return parts.map((part) => (typeof part === "string" ? part : part.path)).join("");
 }

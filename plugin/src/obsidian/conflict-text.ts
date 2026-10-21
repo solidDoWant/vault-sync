@@ -2,7 +2,7 @@ import type { DeferredDocumentReason } from "../core/engine/deferred";
 import type { RejectedReason } from "../core/engine/engine";
 import type { ConflictReason } from "../core/journal/journal";
 import type { UnmaterializableCause } from "../core/vaultpath/platform";
-import { visiblePath } from "./display-text";
+import { shownPath, type Shown } from "./display-text";
 
 // The conflict view's wording (docs/plugin.md, "Conflicts"). No Obsidian
 // import, so it is unit-tested directly.
@@ -118,6 +118,6 @@ export function deferredReasonText(reason: DeferredDocumentReason, cause: PathCo
 }
 
 /** Why a pull could not write a file open in a view (#417), in the user's words. */
-export function openViewText(path: string): string {
-  return `"${visiblePath(path)}" is open in a view that cannot take the incoming change: an editor whose unsaved edits overlap it, a canvas or another plugin's view with unsaved changes, or content that is not text. Sync waits at this change; save or close the file to let it continue.`;
+export function openViewText(path: string): Shown {
+  return ['"', shownPath(path), '" is open in a view that cannot take the incoming change: an editor whose unsaved edits overlap it, a canvas or another plugin\'s view with unsaved changes, or content that is not text. Sync waits at this change; save or close the file to let it continue.'];
 }
