@@ -642,7 +642,7 @@ func TestBlobProceduresEnforceRoles(t *testing.T) {
 				switch {
 				case role == "non-member":
 					assert.True(t, response.deniedAsNonMember(), "%s as %s: %s", procedure, role, response.body)
-				case role == store.RoleViewer && access == authz.Write:
+				case deniedByRole(role, access):
 					assert.Equal(t, "permission_denied", response.code, "%s as %s", procedure, role)
 				default:
 					assert.NotEqual(t, "permission_denied", response.code, "%s as %s: %s", procedure, role, response.body)

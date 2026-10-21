@@ -215,14 +215,36 @@ func vaultMessage(vault store.Vault) *vaultsyncv1.Vault {
 		message.Encryption = vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE
 	}
 
-	switch vault.Role {
-	case store.RoleOwner:
-		message.Role = vaultsyncv1.VaultRole_VAULT_ROLE_OWNER
-	case store.RoleEditor:
-		message.Role = vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR
-	case store.RoleViewer:
-		message.Role = vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER
-	}
+	message.Role = roleMessage(vault.Role)
 
 	return message
+}
+
+// roleMessage converts a stored role to its API enum.
+func roleMessage(role store.Role) vaultsyncv1.VaultRole {
+	switch role {
+	case store.RoleOwner:
+		return vaultsyncv1.VaultRole_VAULT_ROLE_OWNER
+	case store.RoleEditor:
+		return vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR
+	case store.RoleViewer:
+		return vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER
+	default:
+		return vaultsyncv1.VaultRole_VAULT_ROLE_UNSPECIFIED
+	}
+}
+
+// roleFromMessage converts an API role to a stored role; ok is false for an
+// unspecified or unknown role.
+func roleFromMessage(role vaultsyncv1.VaultRole) (store.Role, bool) {
+	switch role {
+	case vaultsyncv1.VaultRole_VAULT_ROLE_OWNER:
+		return store.RoleOwner, true
+	case vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR:
+		return store.RoleEditor, true
+	case vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER:
+		return store.RoleViewer, true
+	default:
+		return "", false
+	}
 }

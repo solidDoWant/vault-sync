@@ -24,6 +24,7 @@ import (
 const (
 	readProcedure         = "/test.v1.Test/Read"
 	writeProcedure        = "/test.v1.Test/Write"
+	manageProcedure       = "/test.v1.Test/Manage"
 	unclassifiedProcedure = "/test.v1.Test/Unclassified"
 	unscopedProcedure     = "/test.v1.Test/Unscoped"
 	streamProcedure       = "/test.v1.Test/Stream"
@@ -34,6 +35,7 @@ const (
 var procedures = map[string]authz.Access{
 	readProcedure:   authz.Read,
 	writeProcedure:  authz.Write,
+	manageProcedure: authz.Manage,
 	streamProcedure: authz.Read,
 }
 
@@ -104,7 +106,7 @@ func newFixture(t *testing.T, members authz.MembershipStore) *fixture {
 	}
 
 	mux := http.NewServeMux()
-	for _, procedure := range []string{readProcedure, writeProcedure, unclassifiedProcedure} {
+	for _, procedure := range []string{readProcedure, writeProcedure, manageProcedure, unclassifiedProcedure} {
 		mux.Handle(procedure, connect.NewUnaryHandler(procedure, handle, options))
 	}
 
@@ -168,6 +170,10 @@ func TestInterceptorAuthorizesByRole(t *testing.T) {
 		{name: "viewer writes", user: viewer, procedure: writeProcedure, wantCode: connect.CodePermissionDenied},
 		{name: "non-member reads", user: outsider, procedure: readProcedure, wantCode: connect.CodeNotFound},
 		{name: "non-member writes", user: outsider, procedure: writeProcedure, wantCode: connect.CodeNotFound},
+		{name: "owner manages", user: owner, procedure: manageProcedure, wantRole: "owner"},
+		{name: "editor manages", user: editor, procedure: manageProcedure, wantCode: connect.CodePermissionDenied},
+		{name: "viewer manages", user: viewer, procedure: manageProcedure, wantCode: connect.CodePermissionDenied},
+		{name: "non-member manages", user: outsider, procedure: manageProcedure, wantCode: connect.CodeNotFound},
 	}
 
 	for _, test := range tests {

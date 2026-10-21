@@ -290,6 +290,29 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.BlobService/BeginBlob":          authz.Write,
 	"/vaultsync.v1.BlobService/PutBlobChunk":       authz.Write,
 	"/vaultsync.v1.BlobService/CommitBlob":         authz.Write,
+	// Membership management is owner-only (#33).
+	"/vaultsync.v1.MembershipService/CreateInvitation": authz.Manage,
+	"/vaultsync.v1.MembershipService/ListInvitations":  authz.Manage,
+	"/vaultsync.v1.MembershipService/RevokeInvitation": authz.Manage,
+	"/vaultsync.v1.MembershipService/ListMembers":      authz.Manage,
+	"/vaultsync.v1.MembershipService/UpdateMemberRole": authz.Manage,
+	"/vaultsync.v1.MembershipService/RemoveMember":     authz.Manage,
+	// Any member may leave a vault.
+	"/vaultsync.v1.MembershipService/LeaveVault": authz.Read,
+}
+
+// deniedByRole reports whether a member with role must get
+// PERMISSION_DENIED from a procedure classified as access: viewers cannot
+// write, and only owners may manage.
+func deniedByRole(role store.Role, access authz.Access) bool {
+	switch access {
+	case authz.Write:
+		return role == store.RoleViewer
+	case authz.Manage:
+		return role == store.RoleEditor || role == store.RoleViewer
+	default:
+		return false
+	}
 }
 
 // expectedAccessOf returns the independent expected classification of
@@ -316,7 +339,7 @@ func TestEveryVaultScopedProcedureIsClassified(t *testing.T) {
 	for _, procedure := range scoped {
 		access, ok := server.VaultProcedures[procedure]
 		if assert.True(t, ok, "%s carries vault_id and must be classified in server.VaultProcedures", procedure) {
-			assert.Contains(t, []authz.Access{authz.Read, authz.Write}, access, procedure)
+			assert.Contains(t, []authz.Access{authz.Read, authz.Write, authz.Manage}, access, procedure)
 		}
 	}
 
@@ -361,7 +384,7 @@ func TestVaultScopedProceduresEnforceRoles(t *testing.T) {
 				case role == "non-member":
 					assert.Equal(t, "not_found", response.code)
 					assert.True(t, response.deniedAsNonMember(), "%s", response.body)
-				case role == store.RoleViewer && access == authz.Write:
+				case deniedByRole(role, access):
 					assert.Equal(t, "permission_denied", response.code)
 				default:
 					// Authorized: the call reached the handler (whatever

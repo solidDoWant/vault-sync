@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
-	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -56,14 +55,20 @@ func TestVaultAuthorizationAgainstPostgres(t *testing.T) {
 		body := map[string]string{"vault_id": created.GetId()}
 
 		t.Run(procedure, func(t *testing.T) {
-			for _, subject := range []string{"alice", "bob"} {
-				response := fixture.callJSON(t, procedure, tokens[subject], body)
-				assert.NotEqual(t, "permission_denied", response.code, subject)
-				assert.False(t, response.deniedAsNonMember(), subject)
+			owner := fixture.callJSON(t, procedure, tokens["alice"], body)
+			assert.NotEqual(t, "permission_denied", owner.code)
+			assert.False(t, owner.deniedAsNonMember())
+
+			editor := fixture.callJSON(t, procedure, tokens["bob"], body)
+			if deniedByRole(store.RoleEditor, access) {
+				assert.Equal(t, "permission_denied", editor.code)
+			} else {
+				assert.NotEqual(t, "permission_denied", editor.code)
+				assert.False(t, editor.deniedAsNonMember())
 			}
 
 			viewer := fixture.callJSON(t, procedure, tokens["carol"], body)
-			if access == authz.Write {
+			if deniedByRole(store.RoleViewer, access) {
 				assert.Equal(t, "permission_denied", viewer.code)
 			} else {
 				assert.NotEqual(t, "permission_denied", viewer.code)

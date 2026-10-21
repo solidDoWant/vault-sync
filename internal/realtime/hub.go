@@ -342,8 +342,11 @@ func (hub *Hub) publish(change store.VaultChange) {
 		return
 	}
 
+	// A membership removal is announced at the vault's head_seq, which is
+	// zero for a vault without revisions; it must still be queued, so its
+	// subscribers' membership is checked.
 	hub.pendingMu.Lock()
-	if change.Seq > hub.pending[change.VaultID] {
+	if pending, queued := hub.pending[change.VaultID]; !queued || change.Seq > pending {
 		hub.pending[change.VaultID] = change.Seq
 	}
 	hub.pendingMu.Unlock()
