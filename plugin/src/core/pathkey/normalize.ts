@@ -94,7 +94,9 @@ function decompose(text: string): number[] {
     while (end < codePoints.length && classOf(codePoints[end] ?? 0) !== 0) end++;
     // Array.prototype.sort is stable (ES2019).
     const run = codePoints.slice(start, end).sort((left, right) => classOf(left) - classOf(right));
-    codePoints.splice(start, run.length, ...run);
+    // Write back with a loop: spreading the run into splice passes it on the
+    // stack and overflows on a long run of combining marks.
+    for (let index = 0; index < run.length; index++) codePoints[start + index] = run[index] ?? 0;
     start = end;
   }
   return codePoints;

@@ -107,3 +107,19 @@ func TestNormalizationOfInvalidUTF8(t *testing.T) {
 	assert.Equal(t, "a�b", nfc("a\xffb"))
 	assert.Equal(t, "a�b", nfd("a\xffb"))
 }
+
+func TestNormalizationOfLongCombiningRun(t *testing.T) {
+	// U+0316 (class 220) and U+0301 (class 230) alternate in one run of 300,000 non-starters.
+	const marks = 150_000
+
+	text := "a" + strings.Repeat("\u0316\u0301", marks)
+	assert.Equal(t, "a"+strings.Repeat("\u0316", marks)+strings.Repeat("\u0301", marks), nfd(text))
+	// The first U+0301 is not blocked by the lower-class U+0316 marks, so it composes with "a".
+	assert.Equal(t, "\u00e1"+strings.Repeat("\u0316", marks)+strings.Repeat("\u0301", marks-1), nfc(text))
+}
+
+func TestHangulLVPlusTrailingJamoBoundary(t *testing.T) {
+	// U+11A7 is the trailing-jamo base itself, one below the first trailing consonant.
+	assert.Equal(t, "\uac00\u11a7", nfc("\uac00\u11a7"))
+	assert.Equal(t, "\uac01", nfc("\uac00\u11a8"))
+}

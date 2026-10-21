@@ -64,4 +64,19 @@ describe("canonical normalization", () => {
   it("normalizes a path longer than the argument limit of String.fromCodePoint", () => {
     expect(nfc("é".repeat(200_000))).toBe("é".repeat(200_000));
   });
+
+  it("canonically orders a run of combining marks longer than the call argument limit", () => {
+    // U+0316 (class 220) and U+0301 (class 230) alternate in one run of 300,000 non-starters.
+    const marks = 150_000;
+    const text = "a" + "\u0316\u0301".repeat(marks);
+    expect(nfd(text)).toBe("a" + "\u0316".repeat(marks) + "\u0301".repeat(marks));
+    // The first U+0301 is not blocked by the lower-class U+0316 marks, so it composes with "a".
+    expect(nfc(text)).toBe("\u00e1" + "\u0316".repeat(marks) + "\u0301".repeat(marks - 1));
+  });
+
+  it("composes a Hangul LV syllable with a trailing jamo only from U+11A8", () => {
+    // U+11A7 is T_BASE itself, one below the first trailing consonant: it must not compose.
+    expect(nfc("\uac00\u11a7")).toBe("\uac00\u11a7");
+    expect(nfc("\uac00\u11a8")).toBe("\uac01");
+  });
 });
