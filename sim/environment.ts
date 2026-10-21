@@ -22,8 +22,9 @@ export interface SimEnvironment extends SimEndpoints {
   engines: number;
   /**
    * Whether the seeded suites run with the faithful filesystem
-   * (SIM_FAITHFUL_FS=1, RunOptions.faithfulFilesystem). The regression cases
-   * and scripted scenarios never do: they were recorded without it.
+   * (SIM_FAITHFUL_FS=1, RunOptions.faithfulFilesystem). The scripted
+   * scenarios never do, and each regression case replays with the setting it
+   * recorded (RegressionCase.faithfulFilesystem), whatever this is.
    */
   faithfulFilesystem: boolean;
   /** Most runs spent minimizing one failing seed (SIM_SHRINK_RUNS). */

@@ -33,7 +33,10 @@ type regressionCase struct {
 	Clients int    `json:"clients"`
 	Engines int    `json:"engines,omitempty"`
 	// CommitRetryBackoff is absent in cases recorded before #110.
-	CommitRetryBackoff *int            `json:"commitRetryBackoff,omitempty"`
+	CommitRetryBackoff *int `json:"commitRetryBackoff,omitempty"`
+	// FaithfulFilesystem is set when the run used the faithful filesystem
+	// (SIM_FAITHFUL_FS=1); the regressions suite replays the case with it.
+	FaithfulFilesystem bool            `json:"faithfulFilesystem,omitempty"`
 	Violations         []violation     `json:"violations"`
 	Steps              json.RawMessage `json:"steps"`
 }
