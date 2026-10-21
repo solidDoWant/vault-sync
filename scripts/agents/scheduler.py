@@ -74,6 +74,9 @@ EXIT_RESTART = 75
 DEFAULT_CONFIG = {
     "repo": "solidDoWant/vault-sync",
     "slots": 5,
+    # New issues (tier 5) may hold at most this many slots, so reviews and PR
+    # fix-ups never wait behind a slot pool full of long new work.
+    "max_new_work_slots": 3,
     "poll_interval_s": 60,
     "model": "opus",
     # Issues by anyone else are untrusted data (docs/agents/planner.md).
@@ -95,7 +98,7 @@ DEFAULT_CONFIG = {
     # status:in-progress/in-review) per lock. Roles listed take the lock
     # for special jobs.
     "locks": {
-        "engine.ts": {"title_regex": r"^refactor\(engine\):"},
+        "engine.ts": {"title_regex": r"^(refactor|fix)\(engine\):"},
         "release": {"roles": ["release-manager"]},
     },
     "resume_max_context_tokens": 150000,
@@ -821,6 +824,8 @@ def select_jobs(plan: Plan, state: dict, cfg: dict, free: int, locks_held: dict,
         claimed |= set(run.get("claims", []))
     running_keys = set(state.get("running", {}))
     locks = dict(locks_held)
+    new_cap = cfg.get("max_new_work_slots", cfg["slots"])
+    new_work = sum(1 for r in state.get("running", {}).values() if r.get("tier") == 5)
     chosen, queue = [], []
     for job in plan.jobs:
         status = "ready"
@@ -836,9 +841,12 @@ def select_jobs(plan: Plan, state: dict, cfg: dict, free: int, locks_held: dict,
             busy = [name for name in job.locks if name in locks and locks[name] not in (f"#{job.issue}", job.key)]
             if busy:
                 status = f"lock {busy[0]} held by {locks[busy[0]]}"
+            elif job.tier == 5 and new_work >= new_cap:
+                status = f"new-work cap ({new_cap} slots)"
         if status == "ready" and len(chosen) < free:
             chosen.append(job)
             status = "launch"
+            new_work += job.tier == 5
             claimed |= set(job.claims)
             for name in job.locks:
                 locks.setdefault(name, f"#{job.issue}" if job.issue else job.key)
@@ -1397,7 +1405,7 @@ class Scheduler:
         run = {"key": job.key, "role": job.role, "issue": job.issue, "pr": job.pr, "marker": marker, "pid": None,
                "started": iso(now), "log": str(log), "worktree": str(wt), "mode": mode, "session_id": session_id,
                "trigger": job.trigger[:1000], "claims": list(job.claims), "locks": list(job.locks),
-               "special_id": job.special_id}
+               "special_id": job.special_id, "tier": job.tier}
         # Record before spawning: a crash in between is recovered by marker.
         self.state["running"][job_id] = run
         self.save_state()

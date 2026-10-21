@@ -248,6 +248,20 @@ class SelectTest(unittest.TestCase):
         # The holder's own PR is reviewed; the next engine step waits.
         self.assertEqual([j.key for j in chosen], ["reviewer:pr-10"])
 
+    def test_new_work_cap_keeps_slots_for_reviews(self):
+        sn = snap([issue(n) for n in range(1, 6)], [])
+        state = {"running": {"a": {"key": "worker:9", "claims": [], "locks": [], "tier": 5},
+                             "b": {"key": "reviewer:pr-8", "claims": [], "locks": [], "tier": 2}}}
+        chosen, queue = s.select_jobs(plan_for(sn), state, CFG, 3, {}, NOW)
+        status = dict((j.key, st) for j, st in queue)
+        # One new-work job is running, so only two more fit under the cap of 3.
+        self.assertEqual([j.key for j in chosen], ["worker:1", "worker:2"])
+        self.assertEqual(status["worker:3"], "new-work cap (3 slots)")
+
+    def test_fix_engine_titles_share_the_engine_lock(self):
+        sn = snap([issue(1, "fix(engine): a", status="status:in-progress"), issue(2, "refactor(engine): R7")], [])
+        self.assertEqual(s.in_flight_locks(sn, {"running": {}}, CFG), {"engine.ts": "#1"})
+
     def test_claims_backoff_and_free_slots(self):
         sn = snap([issue(1), issue(2), issue(3), issue(4, status="status:in-review")], [pr(10, 4)])
         state = {"running": {"j": {"key": "worker:9", "claims": ["issue:4", "pr:10"], "locks": []}},
@@ -660,6 +674,7 @@ class SchedulerTest(unittest.TestCase):
         self.assertEqual(self.sched.state["specials"], {})
 
     def test_planner_runs_on_triggers_in_reserved_slot(self):
+        self.sched.cfg["max_new_work_slots"] = 5  # fill every slot with new work
         self.gh.snap = snap([issue(n) for n in range(1, 8)] + [issue(50, status="status:triage")])
         self.sched.poll()
         self.wait_idle()
