@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -60,7 +61,16 @@ const (
 	// refusedRetryDetail is part of the protocol violation sim/network.ts
 	// reports when the server refuses a retry of a revision it applied.
 	refusedRetryDetail = "although the server already applied this revision id"
+
+	// refusedEditScenario names the scripted #12 scenario in
+	// sim/simulation.sim.test.ts: a commit of an edit whose response was
+	// lost, retried after another client's commit moved the head.
+	refusedEditScenario = "returns the committed revision when a commit whose response was lost is retried after the head moved"
 )
+
+// refusedEditPattern matches the network's refused-retry violation for a
+// commit with a base revision (an edit or rename; a create's base is "-").
+var refusedEditPattern = regexp.MustCompile(`CommitRevision\(\S+ \S+ base=[^-\s]\S* [^)]*\) was refused with FailedPrecondition, ` + refusedRetryDetail)
 
 // brokenSchedule is the schedule the broken-server check always runs: the
 // short run CI does on every pull request (SIM_SEEDS=5, SIM_STEPS=1000, the
@@ -310,7 +320,7 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 	// server, database and bucket.
 	t.Parallel()
 
-	requireSeedsDetect(t, "simfault", brokenSchedule, invariantStaleBase, "")
+	requireSeedsDetect(t, "simfault", "simfault-stale-base", brokenSchedule, invariantStaleBase, "")
 }
 
 // TestSimulationDetectsRefusedRetry proves that random schedules, not only
@@ -321,21 +331,46 @@ func TestSimulationDetectsBrokenServer(t *testing.T) {
 // violation. The server-side
 // invariants all hold in that run; only the network sees the duplicate
 // coming.
+//
+// The seeded case shows a refused create, which the scripted client flags
+// on its own too. The #12 interleaving proper is a retried edit or rename
+// whose document's head moved, which only the network's check sees: the
+// scripted #12 scenario (an edit) must report it too (#273 item 2).
 func TestSimulationDetectsRefusedRetry(t *testing.T) {
 	t.Parallel()
 
-	requireSeedsDetect(t, "simfault_retry", refusedRetrySchedule, invariantProtocol, refusedRetryDetail)
+	simulation := requireSeedsDetect(t, "simfault_retry", "simfault-refused-retry", refusedRetrySchedule, invariantProtocol, refusedRetryDetail)
+
+	scenario := simulation.runSuite(t, false, []string{suitesEnv + "=scenarios"}, "-t", refusedEditScenario)
+	require.Error(t, scenario.err, "the #12 scenario passed against the simfault_retry server:\n%s", scenario.output)
+	require.Positive(t, scenario.total, "the #12 scenario did not run:\n%s", scenario.output)
+	require.Regexp(t, refusedEditPattern, scenario.output, "the #12 scenario failed without the refused retry of its edit:\n%s", scenario.output)
 }
 
-// requireSeedsDetect builds the server with the broken build tag, runs
-// schedule's seeds against it until one fails, and requires a
-// violation of invariant whose detail contains detail. The minimized case
-// the harness wrote must reproduce it when replayed as a committed
-// regression case.
-func requireSeedsDetect(t *testing.T, tag string, schedule []string, invariant, detail string) {
+// requireSeedsDetect builds the server with the broken build tag, replays
+// the committed case committedCase (sim/regressions/<committedCase>.json)
+// against it, runs schedule's seeds against it until one fails, and
+// requires a violation of invariant whose detail contains detail from
+// each. The minimized case the harness wrote must reproduce it when
+// replayed as a committed regression case. It returns the running
+// simulation for further checks.
+func requireSeedsDetect(t *testing.T, tag, committedCase string, schedule []string, invariant, detail string) *simulation {
 	t.Helper()
 
 	simulation := startSimulation(t, t.TempDir(), tag)
+
+	// The committed case must still reproduce against its broken build, or a
+	// later harness change could have made it pass trivially (#273 item 3).
+	committedDir := t.TempDir()
+	raw, err := os.ReadFile(filepath.Join("regressions", committedCase+".json"))
+	require.NoError(t, err, "the committed case of the %s server", tag)
+	require.NoError(t, os.WriteFile(filepath.Join(committedDir, committedCase+".json"), raw, 0o600))
+
+	committed := simulation.runSuite(t, false, []string{suitesEnv + "=regressions", regressionDirEnv + "=" + committedDir})
+	require.Error(t, committed.err, "the committed case %s passed against the %s server:\n%s", committedCase, tag, committed.output)
+	require.Contains(t, committed.output, committedCase+" keeps every invariant", "the committed case %s was not replayed:\n%s", committedCase, committed.output)
+	require.Contains(t, committed.output, invariant, "the committed case %s failed for another reason:\n%s", committedCase, committed.output)
+	require.Contains(t, committed.output, detail, "the committed case %s failed for another reason:\n%s", committedCase, committed.output)
 
 	shrinkRuns := brokenShrinkRuns
 
@@ -377,6 +412,8 @@ func requireSeedsDetect(t *testing.T, tag string, schedule []string, invariant, 
 	require.Contains(t, replay.output, invariant, "the regression case failed for another reason:\n%s", replay.output)
 	require.Contains(t, replay.output, detail, "the regression case failed for another reason:\n%s", replay.output)
 	require.Positive(t, replay.total, "no regression case was replayed:\n%s", replay.output)
+
+	return simulation
 }
 
 func invariantsOf(violations []violation) []string {

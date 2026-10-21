@@ -26,7 +26,12 @@ export interface InMemoryVaultOptions {
    * - `faithful`: those the platform's filesystem takes for one
    *   (PathSpace.filesystemKey, `F`), as NTFS and APFS do: `Straße.md` and
    *   `STRASSE.md` are two files, so are NFC and NFD `Café.md` under
-   *   `windows`, while `ı.md` and `I.md` are one.
+   *   `windows`, while `ı.md` and `I.md` are one. A folder, too, has one
+   *   spelling, as on those filesystems: a file written or moved into
+   *   another spelling of an existing folder lands in it, under the
+   *   spelling it already has (#377). (The folded vault lets each file keep
+   *   its own spelling of a folder, which no real filesystem does; the
+   *   engine tests written against it rely on that, #423.)
    */
   filesystem?: "folded" | "faithful";
 }
@@ -72,6 +77,8 @@ export class InMemoryVault implements VaultAdapter {
   private readonly now: () => number;
   private readonly pathRules: PathRules;
   private readonly key: (path: string) => string;
+  /** Whether a folder has one spelling, as on a real filesystem (the faithful filesystem only). */
+  private readonly oneFolderSpelling: boolean;
 
   /**
    * Called when a listener throws. The change itself has already been applied
@@ -89,6 +96,7 @@ export class InMemoryVault implements VaultAdapter {
     this.pathRules = options.pathRules ?? posixPathRules;
     const space = new PathSpace(this.pathRules);
     this.key = options.filesystem === "faithful" ? (path) => space.filesystemKey(path) : space.fileKey;
+    this.oneFolderSpelling = options.filesystem === "faithful";
   }
 
   /**
@@ -160,17 +168,20 @@ export class InMemoryVault implements VaultAdapter {
       if (unmaterializableReason(path, this.pathRules) !== undefined) return Promise.reject(new VaultError("unmaterializable", path));
       if (this.conflicts(path)) return Promise.reject(new VaultError("path-conflict", path));
     }
-    // An existing file keeps its name, as a case-insensitive filesystem keeps it.
-    const stored = existing?.path ?? path;
+    // An existing file keeps its name, as a case-insensitive filesystem
+    // keeps it; a new one goes into its folders as they are spelled.
+    const stored = existing?.path ?? this.spelled(path, folderCount(path));
     const inode = existing?.inode ?? ++this.lastInode;
     this.files.set(this.key(path), { path: stored, data: data.slice(), mtime: this.now(), inode });
     this.emit(existing === undefined ? { type: "create", path: stored } : { type: "modify", path: stored }, inode);
     return Promise.resolve();
   }
 
-  rename(from: string, to: string): Promise<void> {
+  rename(from: string, requested: string): Promise<void> {
     const file = this.files.get(this.key(from));
     if (file === undefined) return Promise.reject(new VaultError("not-found", from));
+    // The target's folders as they are spelled, the moving file's own among them: they stay when it leaves.
+    const to = this.spelled(requested, folderCount(requested));
     if (file.path === to) return Promise.resolve();
     if (this.key(from) !== this.key(to) && this.files.has(this.key(to))) return Promise.reject(new VaultError("already-exists", to));
     if (unmaterializableReason(to, this.pathRules) !== undefined) return Promise.reject(new VaultError("unmaterializable", to));
@@ -194,17 +205,22 @@ export class InMemoryVault implements VaultAdapter {
   renameFolder(from: string, to: string): Promise<void> {
     const prefix = `${this.key(from)}/`;
     const depth = from.split("/").length;
+    const moving = new Set([...this.files.keys()].filter((key) => key.startsWith(prefix)));
+    // The new parent's folders as they are spelled (the moving folder's
+    // parents stay when it leaves), and the folder itself if another file
+    // than the moving ones is in it already. A case-only rename respells it.
+    const parents = folderCount(to);
+    const target = this.spelled(this.spelled(to, parents), parents + 1, (key) => moving.has(key));
     const moves = [...this.files.entries()]
-      .filter(([key]) => key.startsWith(prefix))
-      .map(([key, file]) => [key, file, [to, ...file.path.split("/").slice(depth)].join("/")] as const);
+      .filter(([key]) => moving.has(key))
+      .map(([key, file]) => [key, file, [target, ...file.path.split("/").slice(depth)].join("/")] as const);
     if (moves.length === 0) return Promise.reject(new VaultError("not-found", from));
-    const moving = new Set(moves.map(([key]) => key));
     const clash = moves.find(([, , target]) => this.files.has(this.key(target)) && !moving.has(this.key(target)));
     if (clash !== undefined) return Promise.reject(new VaultError("already-exists", clash[2]));
     const illegal = moves.find(([, , target]) => unmaterializableReason(target, this.pathRules) !== undefined);
     if (illegal !== undefined) return Promise.reject(new VaultError("unmaterializable", illegal[2]));
-    const toKey = this.key(to);
-    if ([...this.files.keys()].some((key) => !moving.has(key) && (key === toKey || toKey.startsWith(`${key}/`)))) return Promise.reject(new VaultError("path-conflict", to));
+    const toKey = this.key(target);
+    if ([...this.files.keys()].some((key) => !moving.has(key) && (key === toKey || toKey.startsWith(`${key}/`)))) return Promise.reject(new VaultError("path-conflict", target));
     for (const [key] of moves) this.files.delete(key);
     for (const [, file, target] of moves) this.files.set(this.key(target), { ...file, path: target });
     for (const [, file, target] of moves) this.emit({ type: "rename", path: target, oldPath: file.path }, file.inode);
@@ -236,6 +252,26 @@ export class InMemoryVault implements VaultAdapter {
     };
   }
 
+  /**
+   * `path` with its first `folders` segments, each a folder, spelled as the
+   * folder of that name already is (under the vault's matching), so a
+   * folder has one spelling as on a case-insensitive filesystem. Files whose
+   * key `skip` accepts do not count. Under posix rules, and on the folded
+   * filesystem, this is `path`.
+   */
+  private spelled(path: string, folders: number, skip: (key: string) => boolean = () => false): string {
+    if (!this.oneFolderSpelling) return path;
+    const segments = path.split("/");
+    for (let depth = 1; depth <= Math.min(folders, segments.length); depth++) {
+      const folder = `${this.key(segments.slice(0, depth).join("/"))}/`;
+      const inside = [...this.files.entries()].find(([key]) => !skip(key) && key.startsWith(folder))?.[1];
+      // A folder that does not exist has no folders in it either.
+      if (inside === undefined) break;
+      segments.splice(0, depth, ...inside.path.split("/").slice(0, depth));
+    }
+    return segments.join("/");
+  }
+
   /** Whether a new file at `path` would collide with a folder or sit under a file (other than the one at `ignored`, a key). */
   private conflicts(path: string, ignored?: string): boolean {
     const key = this.key(path);
@@ -257,6 +293,11 @@ export class InMemoryVault implements VaultAdapter {
       }
     }
   }
+}
+
+/** How many folders a file at `path` is in (or a folder at `path`'s parents): its segments but the last. */
+function folderCount(path: string): number {
+  return path.split("/").length - 1;
 }
 
 /** Whether `file` is what a precondition expects: absent for null, else content with that hash. */

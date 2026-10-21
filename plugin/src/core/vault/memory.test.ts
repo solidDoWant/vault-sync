@@ -172,6 +172,98 @@ describe("InMemoryVault", () => {
     }
   });
 
+  // A real case-insensitive filesystem holds one spelling per folder: a file
+  // written or moved into another spelling of an existing folder lands in
+  // that folder, under the spelling on disk (#377). The faithful filesystem
+  // models it; the folded one keeps each file's own spelling (#423). The
+  // expected paths are written out per case.
+  describe("one spelling per folder on the faithful filesystem", () => {
+    for (const platform of ["windows", "macos"] as const) {
+      const vault = () => new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" });
+      describe(`under ${platform} rules`, () => {
+        it("writes a new file into the existing folder's spelling, and reports it there", async () => {
+          const notes = vault();
+          await notes.write("Notes/Sub/a.md", new Uint8Array([1]));
+          const events: VaultEvent[] = [];
+          notes.watch((event) => events.push(event));
+          await notes.write("NOTES/x.md", new Uint8Array([2]));
+          await notes.write("notes/SUB/new/y.md", new Uint8Array([3]));
+          expect((await notes.list()).sort()).toEqual(["Notes/Sub/a.md", "Notes/Sub/new/y.md", "Notes/x.md"]);
+          expect(await notes.read("NOTES/X.md")).toEqual(new Uint8Array([2]));
+          expect(events).toEqual([
+            { type: "create", path: "Notes/x.md" },
+            { type: "create", path: "Notes/Sub/new/y.md" },
+          ]);
+        });
+
+        it("keeps the folder's spelling after the file that created it is gone", async () => {
+          const notes = vault();
+          await notes.write("Notes/a.md", new Uint8Array([1]));
+          await notes.write("NOTES/b.md", new Uint8Array([2]));
+          await notes.delete("Notes/a.md");
+          await notes.write("nOtEs/c.md", new Uint8Array([3]));
+          expect((await notes.list()).sort()).toEqual(["Notes/b.md", "Notes/c.md"]);
+        });
+
+        it("renames a file into the existing folder's spelling, and reports it there", async () => {
+          const notes = vault();
+          await notes.write("Notes/a.md", new Uint8Array([1]));
+          await notes.write("b.md", new Uint8Array([2]));
+          const events: VaultEvent[] = [];
+          notes.watch((event) => events.push(event));
+          await notes.rename("b.md", "NOTES/b.md");
+          // Within its own folder, a rename to another folder spelling changes nothing.
+          await notes.rename("Notes/a.md", "NOTES/a.md");
+          expect((await notes.list()).sort()).toEqual(["Notes/a.md", "Notes/b.md"]);
+          expect(events).toEqual([{ type: "rename", path: "Notes/b.md", oldPath: "b.md" }]);
+        });
+
+        it("moves a folder into the existing spelling of its new parent", async () => {
+          const notes = vault();
+          await notes.write("Notes/a.md", new Uint8Array([1]));
+          await notes.write("Other/c.md", new Uint8Array([2]));
+          const events: VaultEvent[] = [];
+          notes.watch((event) => events.push(event));
+          await notes.renameFolder("Other", "NOTES/Other");
+          expect((await notes.list()).sort()).toEqual(["Notes/Other/c.md", "Notes/a.md"]);
+          expect(events).toEqual([{ type: "rename", path: "Notes/Other/c.md", oldPath: "Other/c.md" }]);
+        });
+
+        it("respells a whole folder by a case-only folder rename", async () => {
+          const notes = vault();
+          await notes.write("Notes/a.md", new Uint8Array([1]));
+          await notes.write("Notes/Sub/b.md", new Uint8Array([2]));
+          await notes.renameFolder("notes", "NOTES");
+          await notes.write("notes/c.md", new Uint8Array([3]));
+          expect((await notes.list()).sort()).toEqual(["NOTES/Sub/b.md", "NOTES/a.md", "NOTES/c.md"]);
+        });
+      });
+    }
+
+    it("keeps folders of different case apart under posix rules", async () => {
+      const notes = new InMemoryVault({ filesystem: "faithful" });
+      await notes.write("Notes/a.md", new Uint8Array([1]));
+      await notes.write("NOTES/x.md", new Uint8Array([2]));
+      await notes.rename("Notes/a.md", "notes/a.md");
+      expect((await notes.list()).sort()).toEqual(["NOTES/x.md", "notes/a.md"]);
+    });
+
+    it("keeps folders apart that only the path key folds together, on the faithful filesystem", async () => {
+      const notes = new InMemoryVault({ pathRules: { platform: "windows" }, filesystem: "faithful" });
+      await notes.write("Straße/a.md", new Uint8Array([1]));
+      await notes.write("STRASSE/b.md", new Uint8Array([2]));
+      await notes.write("strasse/c.md", new Uint8Array([3]));
+      expect((await notes.list()).sort()).toEqual(["STRASSE/b.md", "STRASSE/c.md", "Straße/a.md"]);
+    });
+
+    it("lets each file keep its own spelling of a folder on the folded filesystem", async () => {
+      const notes = new InMemoryVault({ pathRules: { platform: "windows" } });
+      await notes.write("Notes/a.md", new Uint8Array([1]));
+      await notes.write("NOTES/x.md", new Uint8Array([2]));
+      expect((await notes.list()).sort()).toEqual(["NOTES/x.md", "Notes/a.md"]);
+    });
+  });
+
   // Faithful filesystem (docs/design/engine-path-ownership.md §3.1, step R2):
   // the platform's own name equivalence F decides which spellings are one
   // file, not the server's path key. The expectations are written out per
