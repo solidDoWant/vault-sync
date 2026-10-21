@@ -354,7 +354,7 @@ describe("SyncEngine structural operations (SPEC.md §6.3)", () => {
       const h = harness({
         merge: async (request) => {
           if (!ready) return { status: "deferred" };
-          return { status: "merged", path: request.local.path, content: (await request.readRemoteContent()) ?? new Uint8Array() };
+          return { status: "merged", content: (await request.readRemoteContent()) ?? new Uint8Array() };
         },
       });
       h.server.commit({ documentId: "a", path: "a.md", content: lines("one") });
@@ -378,7 +378,7 @@ describe("SyncEngine structural operations (SPEC.md §6.3)", () => {
       const h = harness({
         merge: async (request) => {
           if (!ready) return { status: "deferred" };
-          return { status: "merged", path: request.remote.path, content: (await request.readRemoteContent()) ?? new Uint8Array() };
+          return { status: "merged", content: (await request.readRemoteContent()) ?? new Uint8Array() };
         },
       });
       h.server.commit({ documentId: "d", path: "a.md", content: lines("one") });

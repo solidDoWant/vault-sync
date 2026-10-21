@@ -747,7 +747,7 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
       const merge: MergeHook = async (request) => {
         if (!ready) return { status: "deferred" };
         const remote = text(await request.readRemoteContent()) ?? "";
-        return { status: "merged", path: request.remote.path, content: bytes(`${remote}+${text(request.local.content) ?? ""}`) };
+        return { status: "merged", content: bytes(`${remote}+${text(request.local.content) ?? ""}`) };
       };
       const h = harness({ merge });
       h.server.commit({ documentId: "a", path: "a.md", content: "base" });
@@ -1243,7 +1243,7 @@ describe("SyncEngine merge (SPEC.md §7)", () => {
         if (!ready) return { status: "deferred" };
         const remote = text(await request.readRemoteContent()) ?? "";
         const local = text(request.local.content) ?? "";
-        return { status: "merged", path: request.remote.path, content: bytes(local.startsWith(`${remote}+`) ? local : `${remote}+${local}`) };
+        return { status: "merged", content: bytes(local.startsWith(`${remote}+`) ? local : `${remote}+${local}`) };
       };
       const setup = async (points: CrashPoints | undefined) => {
         ready = false;
