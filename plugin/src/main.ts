@@ -1,6 +1,6 @@
 import { FileSystemAdapter, normalizePath, Notice, Platform, Plugin, setIcon, TFile, type App } from "obsidian";
 
-import { VaultEncryption, type Vault } from "./gen/vaultsync/v1/types_pb";
+import { VaultEncryption, type Vault, type VaultRole } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
 import { TokenManager, type AuthState } from "./core/auth/tokens";
 import { ConfigSyncVault } from "./core/config/config-vault";
@@ -24,6 +24,7 @@ import { pathRulesFor } from "./obsidian/platform-rules";
 import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
+import { createInvitation, joinVault, leaveVault, loadSharing, removeMember, revokeInvitation, setMemberRole, type CreatedInvitation, type Sharing } from "./obsidian/sharing";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
@@ -37,6 +38,9 @@ const pushDebounceMs = 2000;
  * pending operations that no edit would trigger.
  */
 const syncIntervalMs = 30_000;
+
+/** A time as the settings show it, in the user's locale. */
+const formatDate = (date: Date) => date.toLocaleString();
 
 export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   data: PluginData = parsePluginData(undefined);
@@ -327,6 +331,46 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     await this.controller?.update();
     this.settingTab?.render();
     return "connected";
+  }
+
+  /** The connected vault's Sharing section (#34): its members and invitations for an owner, the user's role otherwise. */
+  loadSharing(): Promise<Sharing> {
+    return loadSharing(this.protocolClient(), this.sharedVaultId(), formatDate);
+  }
+
+  /** Creates an invitation to the connected vault; its code is shown once and never stored. */
+  createInvitation(role: VaultRole, days: number | undefined): Promise<CreatedInvitation> {
+    return createInvitation(this.protocolClient(), this.sharedVaultId(), role, days, formatDate);
+  }
+
+  revokeInvitation(invitationId: string): Promise<void> {
+    return revokeInvitation(this.protocolClient(), this.sharedVaultId(), invitationId);
+  }
+
+  setMemberRole(userId: string, role: VaultRole): Promise<void> {
+    return setMemberRole(this.protocolClient(), this.sharedVaultId(), userId, role);
+  }
+
+  removeMember(userId: string): Promise<void> {
+    return removeMember(this.protocolClient(), this.sharedVaultId(), userId);
+  }
+
+  /** Leaves the connected vault on the server and disconnects this vault from it; the local files stay. */
+  async leaveVault(): Promise<void> {
+    await leaveVault(this.protocolClient(), this.sharedVaultId());
+    await this.disconnectVault();
+  }
+
+  /** Redeems an invite code; resolves with the vault joined, which the caller then connects. */
+  joinVault(code: string): Promise<Vault> {
+    return joinVault(this.protocolClient(), code);
+  }
+
+  /** The connected vault's id, for the Sharing section, which is shown only while one is connected. */
+  private sharedVaultId(): string {
+    const vault = connectedVault(this.data);
+    if (vault === undefined) throw new Error("no vault is connected");
+    return vault.id;
   }
 
   /** Stops syncing this vault. Its journal stays, so connecting the same vault again resumes where it left off. */
