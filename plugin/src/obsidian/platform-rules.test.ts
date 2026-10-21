@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { isNotFoundOsError, isUnmaterializableOsError, pathRulesFor } from "./platform-rules";
+import { isFileNotCreatedError, isNotFoundOsError, isUnmaterializableOsError, pathRulesFor } from "./platform-rules";
 
 const desktop = { isWin: false, isMacOS: false, isIosApp: false, isAndroidApp: false };
 
@@ -53,6 +53,24 @@ describe("isNotFoundOsError", () => {
   for (const { name, error, expected } of cases) {
     it(`${expected ? "recognizes" : "does not take"} ${name}`, () => {
       expect(isNotFoundOsError(error)).toBe(expected);
+    });
+  }
+});
+
+describe("isFileNotCreatedError", () => {
+  const cases: { name: string; error: unknown; expected: boolean }[] = [
+    { name: "Capacitor's bare message (Android, #705)", error: new Error("FILE_NOTCREATED"), expected: true },
+    { name: "Capacitor's code", error: Object.assign(new Error("Unable to write"), { code: "FILE_NOTCREATED" }), expected: true },
+    { name: "the message after a prefix", error: new Error("Error: FILE_NOTCREATED"), expected: true },
+    { name: "a longer code containing it", error: new Error("FILE_NOTCREATED_LATER"), expected: false },
+    { name: "a missing file", error: Object.assign(new Error("ENOENT: no such file or directory"), { code: "ENOENT" }), expected: false },
+    { name: "a file that already exists", error: new Error("File already exists."), expected: false },
+    { name: "a string", error: "FILE_NOTCREATED", expected: false },
+    { name: "null", error: null, expected: false },
+  ];
+  for (const { name, error, expected } of cases) {
+    it(`${expected ? "recognizes" : "does not take"} ${name}`, () => {
+      expect(isFileNotCreatedError(error)).toBe(expected);
     });
   }
 });
