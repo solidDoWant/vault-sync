@@ -27,8 +27,8 @@ on:
         description: Engine property suite seed (empty for the run-number rotation)
         default: ""
 
-# Least privilege: the default token only reads; the job adds issues: write
-# for filing the failure.
+# Least privilege: the default token only reads; the jobs that file a
+# failure add issues: write.
 permissions:
   contents: read
 
@@ -48,7 +48,6 @@ jobs:
     timeout-minutes: 330
     permissions:
       contents: read
-      issues: write
     strategy:
       fail-fast: false
       matrix:
@@ -85,6 +84,8 @@ jobs:
           # uploaded below; the checkout stays clean.
           mkdir -p build/sim-regressions
           cp sim/regressions/*.json build/sim-regressions/
+          # The first sentence of this leg's part of the issue (file-issue).
+          echo "The nightly simulation ($CLIENTS scripted clients, $ENGINES engine users) failed" > build/sim-heading.txt
           nix develop -c make test-sim \
             SIM_FIRST_SEED="$FIRST_SEED" SIM_SEEDS="$SEEDS" SIM_STEPS="$STEPS" \
             SIM_CLIENTS="$CLIENTS" SIM_ENGINES="$ENGINES" SIM_SHRINK_RUNS=10 SIM_TIMEOUT=300m \
@@ -103,18 +104,56 @@ jobs:
           path: |
             build/sim-regressions/
             build/sim-output.txt
+            build/sim-heading.txt
           retention-days: 30
+
+  # Files the gating legs' failures as one issue (#661): each leg uploads its
+  # output only when it fails, and this job, after both, reports every failed
+  # leg in one body. Filing from each leg raced: two legs failing at once
+  # could both find no open issue and both create one.
+  file-issue:
+    needs: simulation
+    if: always() && needs.simulation.result == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Download the failed legs' output
+        uses: actions/download-artifact@v4
+        with:
+          pattern: sim-regressions*
+          path: build/artifacts
       - name: File an issue
-        if: failure()
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
-          touch build/sim-output.txt
-          ./scripts/sim-nightly-report.sh build/sim-output.txt "$RUN_URL" "$ARTIFACT" \
-            "The nightly simulation ($CLIENTS scripted clients, $ENGINES engine users) failed" > build/sim-issue.md
+          mkdir -p build/artifacts
+          : > build/sim-issue.md
+          : > build/sim-output.txt
+          # One section per failed leg, under the heading the leg recorded.
+          legs=0
+          for dir in build/artifacts/*/; do
+            [[ -d $dir ]] || continue
+            artifact=$(basename "$dir")
+            legs=$(( legs + 1 ))
+            touch "$dir/sim-output.txt"
+            cat "$dir/sim-output.txt" >> build/sim-output.txt
+            heading="The nightly simulation ($artifact) failed"
+            if [[ -s $dir/sim-heading.txt ]]; then heading=$(head -n 1 "$dir/sim-heading.txt"); fi
+            if [[ -s build/sim-issue.md ]]; then printf '\n---\n\n' >> build/sim-issue.md; fi
+            ./scripts/sim-nightly-report.sh "$dir/sim-output.txt" "$RUN_URL" "$artifact" "$heading" >> build/sim-issue.md
+          done
+          if [[ $legs -eq 0 ]]; then
+            echo "The nightly simulation failed before any leg uploaded its output ([run]($RUN_URL))." > build/sim-issue.md
+          fi
           seeds=$(grep -oE 'SIM FAILURE: seed [0-9]+' build/sim-output.txt | grep -oE '[0-9]+$' | sort -nu | head -10 | paste -sd, - | sed 's/,/, /g' || true)
           title="sim: nightly simulation failed${seeds:+ (seeds $seeds)}"
           # One open issue at a time: later failures are added to it as comments.

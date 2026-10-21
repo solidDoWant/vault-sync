@@ -48,6 +48,15 @@ async function allEntries(h: Harness, documentId: string): Promise<HistoryEntry[
   throw new Error("history did not end");
 }
 
+/** Records each DownloadBlob range the server returns to `h`'s engine. */
+function recordDownloads(h: Harness): { ranges: { offset: bigint; length: number }[]; bytes: () => number } {
+  const ranges: { offset: bigint; length: number }[] = [];
+  h.server.responseInterceptor = (method, request, response) => {
+    if (method === "DownloadBlob") ranges.push({ offset: (request as { offset: bigint }).offset, length: (response as { data: Uint8Array }).data.length });
+  };
+  return { ranges, bytes: () => ranges.reduce((total, range) => total + range.length, 0) };
+}
+
 function entryAt(entries: HistoryEntry[], index: number): HistoryEntry {
   const entry = entries[index];
   if (entry === undefined) throw new Error(`no history entry ${String(index)}`);
@@ -139,6 +148,39 @@ describe("SyncEngine history (SPEC.md §11)", () => {
     expect(decoder.decode(await h.engine.readRevision(entryAt(entries, 1)))).toBe("the first version, long enough for several ranges\n");
     expect(decoder.decode(await h.engine.readRevision(entryAt(entries, 0)))).toBe("second\n");
   });
+
+  it("previews only the first bytes up to a limit of a revision larger than it, in ranges (#656)", async () => {
+    const h = harness({ server: clockedServer().server });
+    const content = "0123456789abcdefghij\n";
+    const documentId = await pushVersions(h, "plan.md", content);
+    const entry = entryAt(await allEntries(h, documentId), 0);
+    const received = recordDownloads(h);
+
+    // One byte under the revision's size: only that many bytes are downloaded.
+    const limit = content.length - 1;
+    const preview = await h.engine.readRevision(entry, limit);
+
+    expect(decoder.decode(preview)).toBe(content.slice(0, limit));
+    expect(received.ranges.length).toBeGreaterThan(1);
+    expect(received.bytes()).toBe(limit);
+    expect(received.ranges.every((range) => range.length <= limit)).toBe(true);
+  });
+
+  it("downloads and verifies the whole revision when it is no larger than the limit (#656)", async () => {
+    const h = harness({ server: clockedServer().server });
+    const content = "0123456789abcdefghij\n";
+    const documentId = await pushVersions(h, "plan.md", content);
+    const entry = entryAt(await allEntries(h, documentId), 0);
+    const received = recordDownloads(h);
+
+    expect(decoder.decode(await h.engine.readRevision(entry, content.length))).toBe(content);
+    expect(received.bytes()).toBe(content.length);
+    // Complete content is checked against its hash, as without a limit.
+    const head = h.server.head(documentId);
+    if (head === undefined) throw new Error("no head");
+    h.server.corruptBlob(head, bytes(content.toUpperCase()));
+    await expect(h.engine.readRevision(entry, content.length)).rejects.toThrow(/does not match its content hash/);
+  });
 });
 
 describe("SyncEngine restore (SPEC.md §11)", () => {
@@ -223,6 +265,35 @@ describe("SyncEngine restore (SPEC.md §11)", () => {
     expect(h.server.hasBlob(oldest.contentHash)).toBe(true);
     expect(h.server.liveFiles()).toEqual(new Map([["plan.md", "one\n"]]));
     expect(await files(h.vault)).toEqual(new Map([["plan.md", "one\n"]]));
+  });
+
+  it("restores a revision previewed only in part from its whole content, downloaded on demand (#656)", async () => {
+    const h = harness({ server: clockedServer().server });
+    const content = "the first version, long enough for several ranges\n";
+    const documentId = await pushVersions(h, "plan.md", content, "two\n");
+    const oldest = entryAt(await allEntries(h, documentId), 1);
+    const preview = await h.engine.readRevision(oldest, 8);
+    // The first commit races a collection of the blob, so the restore needs the content.
+    let refused = false;
+    const received = recordDownloads(h);
+    let beforeCommit: number | undefined;
+    h.server.interceptor = (method) => {
+      if (method !== "CommitRevision") return;
+      if (refused) {
+        // The pull after the restore downloads the content again; only the restore's own reads count.
+        beforeCommit ??= received.bytes();
+        return;
+      }
+      refused = true;
+      throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
+    };
+
+    await h.engine.restore(oldest, preview);
+
+    expect(refused).toBe(true);
+    expect(beforeCommit).toBeGreaterThanOrEqual(content.length);
+    expect(h.server.liveFiles()).toEqual(new Map([["plan.md", content]]));
+    expect(await files(h.vault)).toEqual(new Map([["plan.md", content]]));
   });
 
   it("downloads the content and uploads it again when the commit finds the blob not complete", async () => {

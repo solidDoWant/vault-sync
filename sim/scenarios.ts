@@ -750,7 +750,7 @@ async function liveFiles(run: SimRun): Promise<string[]> {
 }
 
 /** The server's live documents, read without faults from the change feed: path to document label. */
-async function liveDocuments(run: SimRun): Promise<Map<string, string>> {
+export async function liveDocuments(run: SimRun): Promise<Map<string, string>> {
   const heads = new Map<string, { path: string; deleted: boolean }>();
   let since = 0n;
   for (;;) {

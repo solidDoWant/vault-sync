@@ -121,6 +121,28 @@ export async function downloadContent(api: PullApi, vaultId: string, contentHash
   return content;
 }
 
+/**
+ * The first `limit` bytes of a blob of `size` bytes, in ranges, for a
+ * preview only: a part of the content cannot be checked against its hash,
+ * so it must never be written or uploaded.
+ */
+export async function downloadStart(api: PullApi, vaultId: string, contentHash: string, size: bigint, limit: number): Promise<Uint8Array> {
+  const total = Math.min(limit, Number(size));
+  const content = new Uint8Array(total);
+  const blobId = hexToBytes(contentHash);
+  let offset = 0;
+  while (offset < total) {
+    const response = await api.blobs.downloadBlob({ vaultId, blobId, offset: BigInt(offset), length: total - offset });
+    if (response.size !== size) throw new RemoteContentError(`blob ${contentHash} has size ${String(response.size)}, expected ${String(size)}`);
+    if (response.data.length === 0 || offset + response.data.length > total) {
+      throw new RemoteContentError(`blob ${contentHash} returned ${String(response.data.length)} bytes at offset ${String(offset)} of ${String(total)}`);
+    }
+    content.set(response.data, offset);
+    offset += response.data.length;
+  }
+  return content;
+}
+
 /** Fetches a revision's content by revision id (the merge base, SPEC.md §8). */
 export async function revisionContent(api: PullApi, vaultId: string, revisionId: string): Promise<Uint8Array> {
   const revision = (await api.sync.getRevision({ vaultId, revisionId })).revision;

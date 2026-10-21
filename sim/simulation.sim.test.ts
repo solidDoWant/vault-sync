@@ -19,6 +19,7 @@ import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
+import { historyRestores } from "./history-scenarios";
 import { restoreWindow } from "./restore-scenarios";
 import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
 import { mergedDuringPush } from "./scenarios";
@@ -152,6 +153,28 @@ describe.runIf(suites.has("regressions") && environment.regressions.length > 0)(
 });
 
 describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
+  it("gates the engines' pulls on an announced seq only with notificationPulls, one gated pull per engine (#661)", async () => {
+    // Pull steps whose arg chooses each kind (notificationSeq): plain, if behind the head, if behind an earlier head.
+    const pulls: Step[] = [0, 1, 2].map((arg) => ({ kind: "operation", client: 0, operation: "pull", arg }));
+    const steps: Step[] = pulls.flatMap((pull) => [pull, ...Array.from({ length: 12 }, (): Step => ({ kind: "deliver-request" })), ...Array.from({ length: 12 }, (): Step => ({ kind: "deliver-response" }))]);
+    const options = { seed: 661, clients: 1, engines: 2, platforms: seededPlatforms(661, 2) };
+    const gated = " starts pull if behind seq ";
+
+    const on = await runSteps(environment, { ...options, notificationPulls: true }, steps);
+    expect(on.violations, tail(on.trace)).toEqual([]);
+    const gatedLines = on.trace.filter((line) => line.includes(gated));
+    const gatedPulls = gatedLines.reduce((count, line) => count + line.split(gated).length - 1, 0);
+    // Two of the three pull steps gate both engines' pulls, and the summary counts each engine's.
+    expect(gatedLines, tail(on.trace)).toHaveLength(2);
+    expect(gatedPulls, tail(on.trace)).toBe(4);
+    expect(summarize(on.trace), tail(on.trace)).toContain("notification-gated pulls 4,");
+
+    const off = await runSteps(environment, { ...options, notificationPulls: false }, steps);
+    expect(off.violations, tail(off.trace)).toEqual([]);
+    expect(off.trace.filter((line) => line.includes(gated)), tail(off.trace)).toEqual([]);
+    expect(summarize(off.trace), tail(off.trace)).toContain("notification-gated pulls 0,");
+  });
+
   it("returns the committed revision when a commit whose response was lost is retried after the head moved", async () => {
     const result = await lostResponseAfterHeadMoved(environment);
     const trace = tail(result.trace);
@@ -596,6 +619,33 @@ describe.runIf(suites.has("scenarios"))("scripted server restore scenarios (#155
     // server lost, and the edit of the restored note, stay.
     expect(result.vault.get("notes/lost.md"), trace).toBe("only before the restore\n");
     expect([...result.vault.values()].join(""), trace).toContain("edited before the restore");
+  });
+});
+
+describe.runIf(suites.has("scenarios"))("scripted history restore scenarios (#651)", () => {
+  it("restores older and deleted versions, in place and at another path, keeping every document's id and every invariant", async () => {
+    const result = await historyRestores(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    // The restore at a path another document took was refused, with nothing committed, before the one at another path.
+    expect(result.trace.some((line) => line.includes("e0 user restore of notes/c.md refused: path-taken notes/c.md")), trace).toBe(true);
+    const expected = new Map([
+      ["archive/a.md", "title\ntwo\n"],
+      ["notes/b.md", "bee\n"],
+      ["notes/c (restored).md", "old sea\n"],
+      ["notes/c.md", "dee\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    // Each restore is a revision of the document it restores: a, b and c keep their ids, and d, renamed onto c's path, keeps its own.
+    const [a, b, c, d] = ["notes/a.md", "notes/b.md", "notes/c.md", "notes/d.md"].map((path) => result.before.get(path));
+    expect(new Set([a, b, c, d]).size === 4 && [a, b, c, d].every((label) => label !== undefined), trace).toBe(true);
+    expect(result.documents.get("archive/a.md"), trace).toBe(a);
+    expect(result.documents.get("notes/b.md"), trace).toBe(b);
+    expect(result.documents.get("notes/c (restored).md"), trace).toBe(c);
+    expect(result.documents.get("notes/c.md"), trace).toBe(d);
+    expect(result.documents.size, trace).toBe(4);
   });
 });
 
