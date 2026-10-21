@@ -330,6 +330,31 @@ describe("RealtimeClient", () => {
       expect(timers.delays).toEqual([1000, 2000, 1000]);
     });
 
+    it("grows the delay again, up to the bound, when the reconnects after a stable subscription are all refused (#577)", async () => {
+      const server = new InMemoryRealtimeServer();
+      let now = 0;
+      const { client, timers, pulls } = setup({ server, options: { random: () => 1, backoff: { initialMs: 1000, maxMs: 10_000 }, stableAfterMs: 30_000, now: () => now } });
+      client.start();
+      await flush();
+      expect(pulls()).toBe(1);
+      // Up for the whole stable period: its close starts the backoff over.
+      now += 30_000;
+      server.refuseWith = 503;
+      server.closeAll(1001);
+      await flush();
+      expect(timers.delays).toEqual([1000]);
+
+      // Every later attempt is refused before subscribed: that subscription's
+      // timestamp must not make them count as stable too.
+      for (let attempt = 0; attempt < 5; attempt++) {
+        timers.fire();
+        await flush();
+      }
+      expect(pulls()).toBe(1);
+      expect(server.connections).toHaveLength(6);
+      expect(timers.delays).toEqual([1000, 2000, 4000, 8000, 10_000, 10_000]);
+    });
+
     it("keeps growing the delay, up to the bound, when the server closes every connection right after subscribed (#413)", async () => {
       const server = new InMemoryRealtimeServer();
       let now = 0;
