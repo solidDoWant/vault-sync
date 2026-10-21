@@ -13,7 +13,12 @@ import { describe, expect, it } from "vitest";
 const pluginDir = fileURLToPath(new URL("..", import.meta.url));
 const probePath = "../sim/ids.ts";
 const probeFile = resolve(pluginDir, probePath);
-const eslint = new ESLint({ cwd: pluginDir });
+// typescript-eslint switches to single-run mode when CI=true and then types
+// only the files on disk, which would ignore the probe text; keep it off.
+const eslint = new ESLint({
+  cwd: pluginDir,
+  overrideConfig: { languageOptions: { parserOptions: { disallowAutomaticSingleRunInference: true } } },
+});
 
 async function lint(source: string): Promise<ESLint.LintResult> {
   const [result] = await eslint.lintText(source, { filePath: probePath });
