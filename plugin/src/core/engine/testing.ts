@@ -2,7 +2,7 @@
 // in-memory server, vault and journal, plus fault-injecting wrappers that
 // "crash" the engine after a chosen number of durable changes.
 
-import { ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
@@ -530,7 +530,7 @@ export class CrashAtWriteJournal implements Journal {
 }
 
 /** A change the engine made to the vault, as the harness's oracle records it. */
-export type EngineChange = { type: "write"; path: string; hash: string } | { type: "rename"; from: string; to: string } | { type: "delete"; path: string };
+export type EngineChange = { type: "write"; path: string; hash: string; size: bigint } | { type: "rename"; from: string; to: string } | { type: "delete"; path: string };
 
 /** The vault the engine sees: calls fail once its Lifeline is dead, and every change that landed is reported. */
 export class ObservedVault implements VaultAdapter {
@@ -561,7 +561,7 @@ export class ObservedVault implements VaultAdapter {
   async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
     this.life.check();
     await this.inner.write(path, data, precondition);
-    this.observe({ type: "write", path, hash: sha256Hex(data) });
+    this.observe({ type: "write", path, hash: sha256Hex(data), size: BigInt(data.length) });
   }
   async rename(from: string, to: string): Promise<void> {
     this.life.check();
@@ -645,7 +645,7 @@ export interface UserOperation {
 }
 
 /** The properties of §9.3 a violation counts against. */
-export type PropertyId = "P1" | "P2" | "P3";
+export type PropertyId = "P1" | "P2" | "P3" | "P8";
 
 export interface Violation {
   property: PropertyId;
@@ -670,6 +670,7 @@ export type WorldCommand =
   | { type: "edit-during-pull"; file: number }
   | { type: "move-onto-incoming"; file: number; path: number }
   | { type: "push" }
+  | { type: "offline-push" }
   | { type: "crash"; write: number }
   | { type: "restore"; fraction: number }
   | { type: "purge"; revision: number };
@@ -726,6 +727,10 @@ export class PropertyWorld {
   step = 0;
   readonly origins = new Map<string, ContentOrigin>();
   readonly revisions: ObservedRevision[] = [];
+  /** The size of every content the user, the remote device or the engine wrote, by hash (P8). */
+  readonly sizes = new Map<string, bigint>();
+  /** Whether CommitRevision is unreachable (the `offline-push` command). */
+  private offline = false;
   /** Every content hash any revision ever carried on the server, purged or rolled back since or not. */
   readonly everOnServer = new Set<string>();
   /** The document each inode is bound to, as far as the oracle can tell. */
@@ -778,6 +783,10 @@ export class PropertyWorld {
       if (this.emitting === "user") this.userEvents.add(event);
     });
     this.api = createProtocolClient({ transport: this.server.transport });
+    this.server.interceptor = (method, request) => {
+      this.checkBlobRequest(method, request);
+      if (method === "CommitRevision" && this.offline) throw new ConnectError("offline", Code.Unavailable);
+    };
     this.engine = this.createEngine();
   }
 
@@ -882,6 +891,15 @@ export class PropertyWorld {
       case "push":
         await this.run(() => this.engine.push());
         break;
+      case "offline-push":
+        // A push whose commits never reach the server: its operations stay in the outbox.
+        this.offline = true;
+        try {
+          await this.run(() => this.engine.push());
+        } finally {
+          this.offline = false;
+        }
+        break;
       case "crash":
         this.armCrash(command.write);
         break;
@@ -900,6 +918,7 @@ export class PropertyWorld {
     }
     await this.settle();
     await this.checkExclusivity();
+    await this.checkOutboxContent();
   }
 
   /**
@@ -915,6 +934,7 @@ export class PropertyWorld {
       await this.run(() => this.engine.push());
       await this.run(() => this.engine.pull());
       await this.checkExclusivity();
+      await this.checkOutboxContent();
       const after = await this.fingerprint();
       if (after === before) return true;
       before = after;
@@ -996,6 +1016,7 @@ export class PropertyWorld {
 
   private remoteContent(documentId: string): Uint8Array {
     const content = worldEncoder.encode(`remote ${String(this.step)}`);
+    this.sizes.set(sha256Hex(content), BigInt(content.length));
     this.origins.set(sha256Hex(content), { kind: "remote", documentId, step: this.step });
     return content;
   }
@@ -1056,6 +1077,7 @@ export class PropertyWorld {
       throw error;
     }
     const hash = sha256Hex(content);
+    this.sizes.set(hash, BigInt(content.length));
     const file = this.inodes.wrote(path, hash);
     this.origins.set(hash, { kind: "user", inode: file.inode, step: this.step });
     this.userWrites.add(hash);
@@ -1126,6 +1148,7 @@ export class PropertyWorld {
       this.inodes.deleted(change.path);
       return;
     }
+    this.sizes.set(change.hash, change.size);
     const file = this.inodes.wrote(change.path, change.hash);
     // The engine materialized a revision of a document at that document's path: the file is that document's.
     const key = this.inodes.key(change.path);
@@ -1323,6 +1346,32 @@ export class PropertyWorld {
       "live outboxes",
       [...outbox.values()].filter((operation) => !operation.deleted).map((operation) => [operation.documentId, operation.path]),
     );
+  }
+
+  /**
+   * P8 (INV-8, PO-8): a content reference names a content by its hash and
+   * that content's size (SPEC.md §6.2). No outbox operation pairs a hash
+   * with another content's size, or its upload and commit would ask the
+   * server for a blob at a size it does not have, on every push (#775).
+   */
+  private async checkOutboxContent(): Promise<void> {
+    for (const operation of await this.journal.listPending()) {
+      const size = this.sizes.get(operation.contentHash);
+      if (size !== undefined && size !== operation.size) this.violation("P8", `outbox ${operation.revisionId} of ${operation.documentId} names content ${operation.contentHash.slice(0, 8)} of ${String(size)} bytes at ${String(operation.size)} bytes`);
+    }
+  }
+
+  /** P8 on the wire: BeginBlob and CommitRevision name a blob at its content's size, and DownloadBlob never asks beyond it. */
+  private checkBlobRequest(method: string, request: unknown): void {
+    const blob = request as { blobId?: Uint8Array; size?: bigint; offset?: bigint; contentRef?: { blobId: Uint8Array; size: bigint } };
+    let named: { hash: string; size: bigint; beyond: boolean } | undefined;
+    if (method === "CommitRevision" && blob.contentRef !== undefined && blob.contentRef.blobId.length > 0) named = { hash: bytesToHex(blob.contentRef.blobId), size: blob.contentRef.size, beyond: false };
+    if (method === "BeginBlob" && blob.blobId !== undefined && blob.size !== undefined) named = { hash: bytesToHex(blob.blobId), size: blob.size, beyond: false };
+    if (method === "DownloadBlob" && blob.blobId !== undefined && blob.offset !== undefined) named = { hash: bytesToHex(blob.blobId), size: blob.offset, beyond: true };
+    if (named === undefined) return;
+    const size = this.sizes.get(named.hash);
+    if (size === undefined || (named.beyond ? named.size <= size : named.size === size)) return;
+    this.violation("P8", `${method} names content ${named.hash.slice(0, 8)} of ${String(size)} bytes at ${named.beyond ? "offset " : ""}${String(named.size)}${named.beyond ? "" : " bytes"}`);
   }
 
   private collisions(what: string, claims: [string, string][]): void {
