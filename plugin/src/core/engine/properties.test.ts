@@ -138,6 +138,27 @@ const movedOntoIncomingCommands: fc.Arbitrary<WorldCommand>[] = [
   fc.tuple(index, index).map(([file, path]) => ({ type: "move-onto-incoming", file, path })),
 ];
 
+/**
+ * The alphabet of #768's class (INV-2, PO-12): a document's revision deferred
+ * because this device cannot hold it (a path Windows refuses, an `F`-alias of
+ * another file on macOS), a restore that loses it, and a later revision of
+ * another document at that path. Few paths and documents, so the deferral,
+ * the restore and the collision meet.
+ */
+const ghostPaths: readonly string[] = ["a.md", "no:te.md", "ı.md", "I.md", "b.md"];
+const ghost = fc.nat({ max: 4 });
+const ghostCommands: fc.Arbitrary<WorldCommand>[] = [
+  ghost.map((path) => ({ type: "user-create", path })),
+  fc.tuple(ghost, ghost).map(([file, target]) => ({ type: "user-rename", file, mode: "pool", target })),
+  ghost.map((path) => ({ type: "remote-create", path })),
+  ghost.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(ghost, ghost).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc.constant({ type: "pull" }),
+  ghost.map((file) => ({ type: "edit-during-pull", file })),
+  fc.constant({ type: "push" }),
+  restore,
+];
+
 function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
   return fc.commands(
     alphabet.map((command) => command.map((data) => new Step(data))),
@@ -238,6 +259,12 @@ function scripted(on: PathPlatform, ...list: WorldCommand[]): [PathPlatform, Ite
 const p1 = overWorld("P1", (world) => violations(world, "P1"));
 const p2 = overWorld("P2", (world) => violations(world, "P2"));
 const p3 = overWorld("P3", (world) => violations(world, "P3"));
+/** P3 over ghostCommands, on the platforms that defer a revision they cannot hold (#768). */
+const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P3",
+  cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(ghostCommands)),
+  check: async ([on, steps]) => violations((await play(on, steps, "folded", ghostPaths)).world, "P3"),
+};
 const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
   property: "P4",
   cases: fc.tuple(platform, fc.array(fc.oneof(...steadyCommands), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
@@ -354,6 +381,17 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "user-create", path: 1 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "restore", fraction: 0 }),
       scripted("posix", { type: "remote-create", path: 5 }, { type: "edit-during-pull", file: 0 }, { type: "user-delete", file: 0 }, { type: "restore", fraction: 0 }, { type: "user-create", path: 5 }),
     ]);
+  });
+
+  // #768 (INV-2, PO-12): a restore re-derives the server view, so a deferred revision the restored server lost claims
+  // no path any more. Fixed cases: #768's counterexamples, a rename deferred as unmaterializable on Windows and one
+  // deferred as an `F`-alias on macOS, each lost by a restore before another document takes its path.
+  it("P3: a deferred revision a restore lost claims no path", { timeout }, async () => {
+    await holds(p3Ghosts, [
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 2 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" }, { type: "restore", fraction: 0 }),
+      scripted("macos", { type: "remote-create", path: 2 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 3 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+    ]);
+    expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
