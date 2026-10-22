@@ -912,6 +912,9 @@ describe("engine properties (design §9.3)", () => {
       // #910 (seed 566): a closed-app delete and re-save at the synced path, a remote rename, a closed-app rename of the
       // re-saved file, then a remote delete: the document stays deleted.
       scripted("posix", { type: "user-create", path: 1 }, { type: "closed", changes: [{ file: 0, delete: true, target: 0 }, { file: 0, delete: false, target: 0 }] }, { type: "user-create", path: 1 }, { type: "remote-rename", document: 0, path: 0 }, { type: "closed", changes: [{ file: 0, delete: false, target: 8 }] }, { type: "remote-delete", document: 0 }),
+      // #921 (seed 566): a synced file and a pulled file swapped through a temporary name while the app was closed,
+      // then a remote edit of the pulled one: each file keeps its own document.
+      scripted("posix", { type: "user-create", path: 0 }, { type: "remote-create", path: 4 }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }, { file: 0, delete: false, target: 4 }, { file: 3, delete: false, target: 0 }] }, { type: "remote-edit", document: 0 }),
     ]);
   });
 

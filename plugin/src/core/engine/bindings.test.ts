@@ -820,6 +820,12 @@ describe("the start-up scan of a journal written before R7b", () => {
 // rename the engine never saw (made while the app was not running, or lost
 // to a kill before its event was persisted) by a unique content match.
 describe("the start-up content match (E7, decision 4)", () => {
+  /** Each live document's content on the server, by id. */
+  function contentByDocument(h: Harness): Map<string, string> {
+    const files = h.server.liveFiles();
+    return new Map([...h.server.liveDocuments()].map(([path, documentId]) => [documentId, files.get(path) ?? ""]));
+  }
+
   /** A harness whose server and device sync `files` (path, content) as documents named by `ids`. */
   async function syncedFiles(files: [string, string, string][], vault?: InMemoryVault): Promise<Harness> {
     const h = harness({ merge: "default", ...(vault === undefined ? {} : { vault }) });
@@ -992,6 +998,137 @@ describe("the start-up content match (E7, decision 4)", () => {
       ]),
     );
     expect(h.server.deletedDocuments()).toEqual([]);
+  });
+
+  it("follows a swap of two files through a temporary name made while the app was not running (E7c, #921)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "bee2"],
+    ]);
+
+    await h.vault.rename("b.md", "t.md");
+    await h.vault.rename("a.md", "b.md");
+    await h.vault.rename("t.md", "a.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("bee2") }, absence: null });
+    // The server cannot swap two paths in one commit (SPEC.md §6.3), so a refused rename may keep a conflict-copy
+    // name; what the swap must keep is each document's own content.
+    await h.engine.push();
+    expect(contentByDocument(h)).toEqual(
+      new Map([
+        ["A", "a1"],
+        ["B", "bee2"],
+      ]),
+    );
+    expect(h.server.deletedDocuments()).toEqual([]);
+  });
+
+  it("follows a swap of two files of the same size (E7c, #921)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+    ]);
+
+    await h.vault.rename("a.md", "t.md");
+    await h.vault.rename("b.md", "a.md");
+    await h.vault.rename("t.md", "b.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("b1") }, absence: null });
+  });
+
+  it("follows a rotation of three files made while the app was not running (E7c, #921)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "bb22"],
+      ["C", "c.md", "ccc333"],
+      ["D", "d.md", "d1"],
+    ]);
+
+    // a.md → b.md → c.md → a.md, through a temporary name; d.md is untouched.
+    await h.vault.rename("c.md", "t.md");
+    await h.vault.rename("b.md", "c.md");
+    await h.vault.rename("a.md", "b.md");
+    await h.vault.rename("t.md", "a.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "c.md", fileKey: "c.md", seen: hash("bb22") }, absence: null });
+    expect(await row(h, "C")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("ccc333") }, absence: null });
+    expect(await row(h, "D")).toEqual({ binding: { spelling: "d.md", fileKey: "d.md", seen: hash("d1") }, absence: null });
+    await h.engine.push();
+    expect(contentByDocument(h)).toEqual(
+      new Map([
+        ["A", "a1"],
+        ["B", "bb22"],
+        ["C", "ccc333"],
+        ["D", "d1"],
+      ]),
+    );
+    expect(h.server.deletedDocuments()).toEqual([]);
+  });
+
+  it("keeps the bindings when only one of two files holds the other's content (an edit, not a swap)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+    ]);
+
+    await h.vault.write("a.md", bytes("b1"));
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("b1") }, absence: null });
+  });
+
+  it("keeps the bindings when one file holds another's content and that one holds new content (a chain, not a cycle)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+    ]);
+
+    await h.vault.write("a.md", bytes("b1"));
+    await h.vault.write("b.md", bytes("b2"));
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("b1") }, absence: null });
+  });
+
+  it("keeps the bindings of a swap when another document last held one of the swapped contents (not one-to-one)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+      ["C", "c.md", "b1"],
+    ]);
+
+    await h.vault.rename("a.md", "t.md");
+    await h.vault.rename("b.md", "a.md");
+    await h.vault.rename("t.md", "b.md");
+    await h.vault.write("c.md", bytes("c2"));
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("b1") }, absence: null });
+  });
+
+  it("keeps the bindings of a swap when an untracked file also holds one of the swapped contents (not one-to-one)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+    ]);
+
+    await h.vault.rename("a.md", "t.md");
+    await h.vault.rename("b.md", "a.md");
+    await h.vault.rename("t.md", "b.md");
+    await h.vault.write("c.md", bytes("a1"));
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("b1") }, absence: null });
   });
 });
 

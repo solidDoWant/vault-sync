@@ -375,6 +375,7 @@ export class Bindings {
       scanned.push({ ...state, binding, absence });
     }
     const transferred = lost.size === 0 ? new Map<string, Binding | null>() : await this.contentMatch(scanned, lost);
+    for (const [documentId, binding] of await this.cycleMatch(scanned, transferred)) transferred.set(documentId, binding);
     const read = new Map(documents.map((state) => [state.documentId, state]));
     for (const state of scanned) {
       const before = read.get(state.documentId);
@@ -485,6 +486,97 @@ export class Bindings {
         bindings.delete(candidate.owner);
         result.set(candidate.owner, null);
         if (taken !== undefined) missing.set(candidate.owner, taken);
+      }
+    }
+    return result;
+  }
+
+  /**
+   * E7c, rename cycles (design §4.3, #921): files the user swapped or
+   * rotated while the app was not running, through a temporary name. No
+   * bound file is missing then, so E7 and E7b never start: each file is
+   * still at a binding's path, holding another document's `seen`. Each
+   * document of a cycle takes the file that holds its `seen` when the match
+   * is one-to-one: the document's file holds another document's `seen` and
+   * not its own, no other file read holds that content, and no other
+   * document of its kind has it as `seen`; and following those files closes
+   * a cycle. Cross-overwrites that leave exactly these bytes are taken the
+   * same way, as E7b takes an in-place overwrite (#827): no bytes are lost.
+   * Only a document whose `seen` size is known (its live base's) is in a
+   * cycle, and only a file whose `stat` size is another such document's of
+   * its kind is read (#826).
+   */
+  private async cycleMatch(scanned: readonly DocumentState[], transferred: ReadonlyMap<string, Binding | null>): Promise<Map<string, Binding>> {
+    const result = new Map<string, Binding>();
+    const bindings = new Map(scanned.flatMap((state) => {
+      const binding = transferred.has(state.documentId) ? transferred.get(state.documentId) : state.binding;
+      return binding == null ? [] : [[state.documentId, binding] as const];
+    }));
+    // The documents that may be in a cycle: bound, not matched already, with their `seen` content's size known.
+    const members = new Map(scanned.flatMap((state) => {
+      const binding = bindings.get(state.documentId);
+      if (binding === undefined || transferred.has(state.documentId) || state.deleted || state.baseHash === "" || binding.seen !== state.baseHash) return [];
+      return [[state.documentId, { binding, kind: state.kind, size: Number(state.size) }] as const];
+    }));
+    if (members.size < 2) return result;
+    // How many members of each kind have each size: a file can hold another member's `seen` only at a size some other member has.
+    const sizes = new Map<DocumentKindName, Map<number, number>>();
+    for (const member of members.values()) {
+      const counts = sizes.get(member.kind) ?? new Map<number, number>();
+      counts.set(member.size, (counts.get(member.size) ?? 0) + 1);
+      sizes.set(member.kind, counts);
+    }
+    const owners = new Map([...bindings].map(([documentId, binding]) => [binding.fileKey, documentId]));
+    // Every file read that may hold a member's `seen`: bound to a document, or untracked.
+    const holders = new Map<string, { kind: DocumentKindName; path: string }[]>();
+    const held = new Map<string, string>();
+    for (const path of (await this.vault.list()).filter((listed) => this.vault.isSynced?.(listed) ?? true)) {
+      const kind = this.classify(path);
+      const counts = sizes.get(kind);
+      if (counts === undefined) continue;
+      const owner = owners.get(this.space.filesystemKey(path));
+      const ownerBinding = owner === undefined ? undefined : bindings.get(owner);
+      // A bound file listed at another spelling than its binding's is not read: the respelling above already took the vault's.
+      if (ownerBinding !== undefined && ownerBinding.spelling !== path) continue;
+      // A transferred document's file is E7's already.
+      if (owner !== undefined && transferred.has(owner)) continue;
+      const size = (await this.vault.stat(path))?.size;
+      if (size === undefined) continue;
+      const others = (counts.get(size) ?? 0) - (owner !== undefined && members.get(owner)?.size === size && members.get(owner)?.kind === kind ? 1 : 0);
+      if (others < 1) continue;
+      const hash = await this.hashAt(path);
+      if (hash === null) continue;
+      holders.set(hash, [...(holders.get(hash) ?? []), { kind, path }]);
+      if (owner !== undefined) held.set(owner, hash);
+    }
+    // next(D): the member that takes D's file, the one whose `seen` D's file holds, one-to-one.
+    const next = new Map<string, string>();
+    for (const [documentId, member] of members) {
+      const hash = held.get(documentId);
+      if (hash === undefined || hash === member.binding.seen) continue;
+      const files = (holders.get(hash) ?? []).filter((holder) => holder.kind === member.kind);
+      const takers = scanned.filter((state) => state.kind === member.kind && (bindings.get(state.documentId) ?? state.binding)?.seen === hash);
+      const [taker] = takers;
+      if (files.length !== 1 || takers.length !== 1 || taker === undefined || !members.has(taker.documentId)) continue;
+      next.set(documentId, taker.documentId);
+    }
+    const visited = new Set<string>();
+    for (const start of next.keys()) {
+      if (visited.has(start)) continue;
+      const cycle: string[] = [];
+      let at: string | undefined = start;
+      while (at !== undefined && !visited.has(at) && !cycle.includes(at)) {
+        cycle.push(at);
+        at = next.get(at);
+      }
+      for (const documentId of cycle) visited.add(documentId);
+      if (at !== start) continue;
+      for (const documentId of cycle) {
+        const taker = next.get(documentId);
+        const file = members.get(documentId)?.binding;
+        const seen = taker === undefined ? undefined : members.get(taker)?.binding.seen;
+        if (taker === undefined || file === undefined || seen === undefined) continue;
+        result.set(taker, { spelling: file.spelling, fileKey: file.fileKey, seen });
       }
     }
     return result;
