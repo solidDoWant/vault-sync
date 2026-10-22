@@ -71,9 +71,11 @@ import {
 import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
+import type { EngineLineage, LineageEntry } from "./lineage";
 import {
   carriesLocalEdit,
   checkEngineEchoes,
+  copiedFrom,
   KnownContents,
   UserLedger,
 } from "./invariants";
@@ -316,8 +318,7 @@ export class EngineObserver {
     });
     this.vault.tapInodes((event) => {
       this.emitting = event.actor;
-      this.record(this.vault, event);
-      this.inodeEvents.push({ ...event, step: context.stepNumber() });
+      this.record(this.vault, event, "v", "");
     });
     this.engineVault = new MutableVault(
       this.vault.handle("engine"),
@@ -330,7 +331,7 @@ export class EngineObserver {
     });
     this.config.tapInodes((event) => {
       this.emitting = event.actor;
-      this.record(this.config, event);
+      this.record(this.config, event, "c", `${configPrefix}/`);
     });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
@@ -338,36 +339,57 @@ export class EngineObserver {
     this.user = new EngineUser({
       name: this.name,
       vault: this.vault.handle("user"),
-      journal: this.journal,
       ledger: this.ledger,
       now: () => `step ${String(context.stepNumber())}`,
-      serverSeq: () => context.serverSeq(),
       pathPool: context.pathPool,
     });
   }
 
-  /** Records in `contents` what a create or modify left in `vault`: the in-memory vault reads it synchronously, within the change. */
-  private record(vault: InMemoryVault, event: InodeEvent): void {
+  /**
+   * Records `event` in the timeline (the harness inode oracle, sim/lineage.ts)
+   * with the inode namespaced by `space` and the path as the feed spells it
+   * (`prefix`), and in `contents` what a create or modify left in `vault`:
+   * the in-memory vault reads it synchronously, within the change.
+   */
+  private record(vault: InMemoryVault, event: InodeEvent, space: string, prefix: string): void {
+    const entry: LineageEntry = {
+      kind: "change",
+      type: event.type,
+      path: `${prefix}${event.path}`,
+      ...(event.type === "rename" ? { oldPath: `${prefix}${event.oldPath}` } : {}),
+      inode: `${space}${String(event.inode)}`,
+      actor: event.actor,
+      serverSeq: this.context.serverSeq(),
+      step: this.context.stepNumber(),
+    };
+    this.timeline.push(entry);
     if (event.type !== "create" && event.type !== "modify") return;
     void vault.read(event.path).then(
       (content) => {
         this.contents.add(content);
+        entry.hash = sha256Hex(content);
       },
       () => undefined,
     );
   }
 
   /**
-   * Every change to the vault, with its harness inode, who made it (the
-   * user, or the engine through its own handle) and the step
+   * Every change to the vaults, with its harness inode and who made it (the
+   * user, or the engine through its own handle), every crash and every
+   * settled point, at the server's head seq then
    * (docs/design/engine-path-ownership.md §5.4). The harness's record, which
    * the engine never sees; it survives crashes, as the disk does.
    */
-  readonly inodeEvents: (InodeEvent & { step: number })[] = [];
+  readonly timeline: LineageEntry[] = [];
 
-  /** The harness inode of the file at `path` in the vault, or undefined. */
-  inodeOf(path: string): number | undefined {
-    return this.vault.inodeOf(path);
+  /** The engine's device and timeline, for the inode oracle (sim/lineage.ts). */
+  lineage(): EngineLineage {
+    return { name: this.name, deviceId: this.deviceId, timeline: this.timeline, match: this.ledger.match, copyOf: (path) => copiedFrom(path, this.name) };
+  }
+
+  /** Marks a settled point in the timeline: the engine has handled every event up to timeline entry `since`. */
+  private markSettled(since: number): void {
+    this.timeline.push({ kind: "settled", since, serverSeq: this.context.serverSeq(), step: this.context.stepNumber() });
   }
 
   /** The user changes the vault (seeded with `arg`), or the engine starts a push; returns the trace entry. Never waits for the engine. */
@@ -408,6 +430,7 @@ export class EngineObserver {
     if (this.busy) return `${this.name} busy, pull skipped`;
     this.busy = true;
     const incarnation = this.context.network.incarnation(this.index);
+    const since = this.timeline.length;
     void (
       ifBehind === undefined
         ? this.engine.pull()
@@ -422,6 +445,7 @@ export class EngineObserver {
             return;
           }
           this.lastPull = summary;
+          this.markSettled(since);
           if (summary.resynced)
             this.resyncs.push(`step ${String(this.context.stepNumber())}`);
           this.context.log(
@@ -538,15 +562,7 @@ export class EngineObserver {
       moves.push([path, moved]);
     }
     await this.vault.renameFolder(from, to);
-    const serverSeq = this.context.serverSeq();
-    const at = `step ${String(this.context.stepNumber())}`;
-    for (const [path, moved] of moves)
-      this.ledger.changed({
-        paths: [path, moved],
-        result: { path: moved, hash: sha256Hex(await this.vault.read(moved)) },
-        serverSeq,
-        at,
-      });
+    for (const [path, moved] of moves) this.ledger.renamed(path, moved);
     await this.settled();
     return `${this.name} user renames folder ${from} to ${to}`;
   }
@@ -572,6 +588,41 @@ export class EngineObserver {
     return `${this.name} MUTATION: ${path} overwritten behind the user's back`;
   }
 
+  /**
+   * Mutation for the harness's own tests: swaps the bindings of the
+   * documents whose files are at `a` and `b` in the journal and restarts the
+   * engine over it, as an engine that takes one document's file for another's
+   * would (PO-1). The vault is untouched.
+   */
+  async swapBindingsBehindEngine(a: string, b: string): Promise<string> {
+    await this.settled();
+    const states = await this.journal.listDocuments();
+    const first = states.find((state) => state.binding?.spelling === a);
+    const second = states.find((state) => state.binding?.spelling === b);
+    if (first === undefined || second === undefined) throw new Error(`no bindings at ${a} and ${b}`);
+    await this.journal.putDocument({ ...first, binding: second.binding ?? null });
+    await this.journal.putDocument({ ...second, binding: first.binding ?? null });
+    this.engine.dispose();
+    this.engine = this.createEngine();
+    return `${this.name} MUTATION: the bindings of ${a} and ${b} swapped behind the engine`;
+  }
+
+  /**
+   * Mutation for the harness's own tests: binds the document whose file is
+   * at `from` to the file at `onto` as well, in the journal, as an engine
+   * that lets two documents hold one file would (INV-1). The engine is not
+   * restarted: the collision is in the journal only.
+   */
+  async bindTwiceBehindEngine(from: string, onto: string): Promise<string> {
+    await this.settled();
+    const states = await this.journal.listDocuments();
+    const moved = states.find((state) => state.binding?.spelling === from);
+    const holder = states.find((state) => state.binding?.spelling === onto);
+    if (moved === undefined || holder?.binding === undefined || holder.binding === null) throw new Error(`no bindings at ${from} and ${onto}`);
+    await this.journal.putDocument({ ...moved, binding: { ...holder.binding } });
+    return `${this.name} MUTATION: ${from}'s document bound to ${onto} as well`;
+  }
+
   /** Mutation for the harness's own tests: deletes `path` behind the user's back, as an engine that drops a file would. */
   async deleteBehindUser(path: string): Promise<string> {
     await this.vault.handle("engine").delete(path);
@@ -587,12 +638,14 @@ export class EngineObserver {
    */
   private async settled(): Promise<void> {
     const stallTraceLines = 80;
+    const since = this.timeline.length;
     try {
       await this.context.network.untilSettled(
         this.engine.settled(),
         () =>
           `run stalled at step ${String(this.context.stepNumber())}: ${this.name}'s engine work never finished, and nothing delivers its calls while the harness waits for it`,
       );
+      this.markSettled(since);
     } catch (error) {
       if (!(error instanceof StallError)) throw error;
       this.context.log(`STALLED: ${error.message}`);
@@ -630,44 +683,15 @@ export class EngineObserver {
   /** Writes `content` to the config folder (`relative` to it) as Obsidian would. */
   async editConfig(relative: string, content: Uint8Array): Promise<string> {
     await this.config.write(relative, content);
-    this.recordConfigWrite(relative, content);
     await this.settled();
     return `${this.name} Obsidian writes config ${relative} (${String(content.length)} B)`;
   }
 
   /** Deletes `relative` from the config folder as Obsidian would. */
   async removeConfig(relative: string): Promise<string> {
-    await this.recordConfigDelete(relative);
     await this.config.delete(relative);
     await this.settled();
     return `${this.name} Obsidian deletes config ${relative}`;
-  }
-
-  /** Records Obsidian's write of the config file at `relative` as a change on the device, for the resurrected-delete check: it may bring a deleted config document back. */
-  private recordConfigWrite(relative: string, content: Uint8Array): void {
-    const path = `${configPrefix}/${relative}`;
-    this.ledger.changed({
-      paths: [path],
-      result: { path, hash: sha256Hex(content) },
-      serverSeq: this.context.serverSeq(),
-      at: `step ${String(this.context.stepNumber())}`,
-    });
-  }
-
-  /**
-   * Records Obsidian's delete of the config file at `relative` as the user's
-   * delete of the documents the engine knows there, synced or pending, for
-   * the phantom-delete check: deleting a config file is a change on the
-   * device, as a note's delete is.
-   */
-  private async recordConfigDelete(relative: string): Promise<void> {
-    const path = `${configPrefix}/${relative}`;
-    const synced = await this.journal.findDocumentByPath(path);
-    if (synced !== undefined)
-      this.ledger.deletedDocuments.add(synced.documentId);
-    for (const operation of await this.journal.listPending())
-      if (operation.path === path)
-        this.ledger.deletedDocuments.add(operation.documentId);
   }
 
   /** The config folder's files, sorted (whether or not they sync). */
@@ -725,11 +749,14 @@ export class EngineObserver {
     if (this.busy) return `${this.name} busy, push skipped`;
     this.busy = true;
     const incarnation = this.context.network.incarnation(this.index);
+    // A push drains the event queue first (PO-2): every change before it is handled once it completes.
+    const since = this.timeline.length;
     void this.engine
       .push()
       .then(
         (summary: PushSummary) => {
           this.lastPush = summary;
+          this.markSettled(since);
           this.context.log(
             `${this.name} pushed: ${String(summary.committed)} committed, ${String(summary.conflicts)} conflicts, ${String(summary.pending)} pending`,
           );
@@ -798,15 +825,10 @@ export class EngineObserver {
         return `${this.name} user restore of ${path}: no such version in its history`;
       const serverSeq = this.context.serverSeq();
       const at = `step ${String(this.context.stepNumber())}`;
+      this.timeline.push({ kind: "restore", documentId: document.documentId, serverSeq, step: this.context.stepNumber() });
       const restored = await engine.restore(entry, undefined, options.at);
       const target = options.at ?? restored.path;
       this.ledger.write({ hash: entry.contentHash, path: target, at });
-      this.ledger.changed({
-        paths: [...new Set([path, entry.path, target])],
-        result: { path: target, hash: entry.contentHash },
-        serverSeq,
-        at,
-      });
       return `${this.name} user restored ${this.context.ids.label(document.documentId)} ${path} to ${this.context.ids.label(entry.revisionId)} (seq ${String(entry.seq)}, ${entry.contentHash.slice(0, 8)}) at ${target}, seq ${String(restored.seq)}`;
     };
     void restore()
@@ -864,7 +886,7 @@ export class EngineObserver {
   /** The app is killed: the engine and its in-flight calls are gone; the vault and journal remain. */
   crash(): string {
     this.context.network.crash(this.index);
-    this.ledger.crashed(this.context.serverSeq());
+    this.timeline.push({ kind: "crash", serverSeq: this.context.serverSeq(), step: this.context.stepNumber() });
     this.engine.dispose();
     this.engine = this.createEngine();
     this.busy = false;
@@ -896,6 +918,7 @@ export class EngineObserver {
   /** The engine-level invariants, checked once the run has quiesced. */
   async check(heads: ServerHeads): Promise<Violation[]> {
     await this.settled();
+    await this.checkJournalHolder();
     const violations: Violation[] = [];
     const files = new Map<string, string>();
     for (const path of await this.synced.list())
@@ -905,12 +928,27 @@ export class EngineObserver {
     );
     const unmaterializable = await this.unmaterializable();
     const outOfScope = new Set<string>();
-    // Where the engine keeps an unmaterializable document's edited file (SPEC.md §8): not a live path, and not to be removed.
-    const kept = new Set(
+    // Where the engine keeps an unmaterializable document's edited file
+    // (SPEC.md §8): not a live path, and not to be removed. Narrowed (§5.5
+    // X-14): the engine's report counts only under the vault's own path
+    // matching (`F`), and only for a file the user wrote, so a kept file the
+    // engine should have detached, or one it wrote itself, is still flagged.
+    const reportedKept = new Set(
       (await this.engine.unmaterializable()).flatMap((document) =>
-        document.localPath === undefined ? [] : [document.localPath],
+        document.localPath === undefined ? [] : [this.ledger.match(document.localPath)],
       ),
     );
+    const userWritten = new Set(
+      this.timeline.flatMap((entry) =>
+        entry.kind === "change" && entry.actor === "user" && (entry.type === "create" || entry.type === "modify") ? [entry.inode] : [],
+      ),
+    );
+    const kept = {
+      has: (path: string) => {
+        const inode = this.vault.inodeOf(path);
+        return reportedKept.has(this.ledger.match(path)) && inode !== undefined && userWritten.has(`v${String(inode)}`);
+      },
+    };
     violations.push(
       ...checkLiveDocuments({
         name: this.name,
@@ -1048,6 +1086,56 @@ export class EngineObserver {
         );
       },
     });
+  }
+
+  /** The journal-holder violations already reported: a collision that lasts is reported once. */
+  private readonly holderReported = new Set<string>();
+
+  /**
+   * `journal-holder` (INV-1, INV-2; design §5.2), checked after every step,
+   * at whatever durable point the journal is in: no two documents' bindings
+   * name one file under the vault's own path matching (`F`, PO-10), no two
+   * documents' newest server claims (a deferred revision, else the synced
+   * one) are live at one path key (`K`), and no two live outboxes are at one
+   * path key. Reads the journal only; it changes nothing the engine sees.
+   */
+  async checkJournalHolder(): Promise<void> {
+    const states = await this.journal.listDocuments();
+    const ahead = new Map((await this.journal.listDeferred()).map((deferred) => [deferred.revision.documentId, deferred.revision]));
+    const outbox = new Map<string, PendingOperation>();
+    for (const operation of await this.journal.listPending()) outbox.set(operation.documentId, operation);
+    const collide = (what: string, key: (path: string) => string, claims: [string, string][]) => {
+      const holders = new Map<string, [string, string]>();
+      for (const [documentId, path] of claims) {
+        const other = holders.get(key(path));
+        if (other === undefined) {
+          holders.set(key(path), [documentId, path]);
+          continue;
+        }
+        const detail = `${this.name}'s ${what} ${this.context.ids.label(other[0])} at ${other[1]} and ${this.context.ids.label(documentId)} at ${path} collide`;
+        if (this.holderReported.has(detail)) continue;
+        this.holderReported.add(detail);
+        this.violation("journal-holder", `${detail} at step ${String(this.context.stepNumber())}`);
+      }
+    };
+    collide(
+      "bindings",
+      this.ledger.match,
+      states.flatMap((state) => (state.binding === undefined || state.binding === null ? [] : [[state.documentId, state.binding.spelling] as [string, string]])),
+    );
+    collide(
+      "newest server claims",
+      pathKey,
+      states.flatMap((state) => {
+        const newest = ahead.get(state.documentId) ?? state;
+        return newest.deleted ? [] : [[state.documentId, newest.path] as [string, string]];
+      }),
+    );
+    collide(
+      "live outboxes",
+      pathKey,
+      [...outbox.values()].filter((operation) => !operation.deleted).map((operation) => [operation.documentId, operation.path]),
+    );
   }
 
   private violation(invariant: string, detail: string): void {

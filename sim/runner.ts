@@ -17,6 +17,7 @@ import { EngineObserver, notificationSeq, serverHeads } from "./engine-observer"
 import { Members } from "./members";
 import { Ids } from "./ids";
 import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed, type FeedRevision } from "./invariants";
+import { checkLineage } from "./lineage";
 import { settle, SimNetwork, StallError, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 
@@ -249,6 +250,8 @@ export class SimRun {
     const entry = await this.execute(step);
     this.context.log(entry);
     await settle();
+    // INV-1, INV-2 hold at every durable point, not only at quiescence (design §5.2).
+    for (const observer of this.observers) await observer.checkJournalHolder();
     this.stepNumber++;
   }
 
@@ -462,14 +465,14 @@ export class SimRun {
     }
     const violations = this.observers.flatMap((observer) => checkLostWrites(observer.name, observer.ledger, present));
     const scripted = new Set(this.clients.map((client) => client.deviceId));
-    const engines = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, deletedDocuments: observer.ledger.deletedDocuments, platform: observer.platform, renames: observer.ledger.renames, crashes: observer.ledger.crashes }));
     // The whole history: the feed and the revisions retention purged from it,
     // so a purge never hides a tombstone, nor the revision that brought a
     // deleted document back, from these checks.
     const history = [...feed, ...this.purged.values()].sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
-    violations.push(...checkPhantomDeletes(history, scripted, engines, (id) => this.context.ids.label(id)));
-    const changes = this.observers.map((observer) => ({ name: observer.name, deviceId: observer.deviceId, platform: observer.platform, changes: observer.ledger.changes }));
-    violations.push(...checkResurrections(history, scripted, changes, (id) => this.context.ids.label(id)));
+    const label = (id: string) => this.context.ids.label(id);
+    violations.push(...checkPhantomDeletes(history, scripted, new Set(this.observers.map((observer) => observer.deviceId)), label));
+    violations.push(...checkLineage(history, this.observers.map((observer) => observer.lineage()), label));
+    violations.push(...checkResurrections(history, scripted, new Set(this.observers.map((observer) => observer.deviceId)), label));
     return violations;
   }
 
