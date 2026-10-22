@@ -918,6 +918,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #872 (seed 566): X/b.md, held in x/, is moved to a path Windows refuses and keeps its edited file; the oracle matches it under `F`.
       scripted("windows", { type: "remote-create", path: 8 }, { type: "remote-create", path: 9 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 3 }, { type: "push" }),
+      // #887 (seed 566): an edited file respelled onto the path of an `F`-alias deferred as unmaterializable; the edit and the rename are not held off the server for good.
+      scripted("macos", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-rename", document: 0, path: 14 }, { type: "move-onto-incoming", file: 0, path: 13 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 13 }),
     ];
     for (const example of fixed) expect(await p6.check(example), JSON.stringify(example)).toEqual([]);
     await holds(p6, fixed);
