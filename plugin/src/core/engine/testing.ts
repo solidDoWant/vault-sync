@@ -660,6 +660,8 @@ export interface UserOperation {
   hash: string;
   /** A rename's new path. */
   path?: string;
+  /** The path a create wrote. */
+  created?: string;
 }
 
 /** The properties of §9.3 a violation counts against. */
@@ -1236,7 +1238,7 @@ export class PropertyWorld {
     this.userWrites.add(hash);
     this.heldHere.add(hash);
     if (previous !== undefined) this.discarded.add(previous.hash);
-    this.userOperations.push({ type, inode: file.inode, step: this.step, hash });
+    this.userOperations.push({ type, inode: file.inode, step: this.step, hash, ...(type === "create" ? { created: path } : {}) });
   }
 
   private async userRename(index: number, mode: RenameMode, target: number): Promise<void> {
@@ -1523,6 +1525,23 @@ export class PropertyWorld {
     if (foreign) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}`);
     const owner = origin.kind === "user" ? this.bound.get(origin.inode) : undefined;
     if (owner !== undefined && owner !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}, an inode bound to ${owner}`);
+    if (origin.kind === "user" && owner === undefined && this.savedAgain(origin.inode, revision.documentId)) this.bind(origin.inode, revision.documentId);
+  }
+
+  /**
+   * Whether `inode` is a file the user saved at document D's synced path
+   * after deleting D's file there (an editor saving through a delete and a
+   * create, #380): D's local version (design §6.2 R5b), which the engine's
+   * edit of D carrying its bytes binds to D (§5.5 X-25, #910).
+   */
+  private savedAgain(inode: number, documentId: string): boolean {
+    const deleted = this.userOperations.filter((operation) => operation.type === "delete" && this.everBound.get(operation.inode)?.has(documentId) === true);
+    return this.userOperations.some((operation) => {
+      if (operation.type !== "create" || operation.inode !== inode || operation.created === undefined) return false;
+      const created = operation.created;
+      const synced = lastRevision(this.revisions, (candidate) => candidate.documentId === documentId && candidate.step <= operation.step);
+      return synced !== undefined && !synced.deleted && this.inodes.key(synced.path) === this.inodes.key(created) && deleted.some((deletion) => deletion.step <= operation.step);
+    });
   }
 
   /** P3 (INV-1, INV-2) at a durable point: no two documents' newest server claims, and no two live outboxes, collide under the path key. */
