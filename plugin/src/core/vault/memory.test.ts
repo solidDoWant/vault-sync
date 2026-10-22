@@ -1,6 +1,4 @@
 import { describe, expect, it } from "vitest";
-
-import shared from "../../../../testdata/paths/vectors.json";
 import { sha256Hex } from "../hash";
 import { isVaultError, type VaultAdapter, type VaultEvent, type VaultListener } from "./adapter";
 import { ConformanceFailure, runConformanceCase, vaultAdapterConformance, type ConformanceCase } from "./conformance";
@@ -89,19 +87,19 @@ describe("InMemoryVault", () => {
 
     for (const platform of ["windows", "macos"] as const) {
       describe(`under ${platform} rules`, () => {
-        it("finds a file by any spelling with the same path key, and keeps the name it was created with", async () => {
+        it("finds a file by any spelling of another case, and keeps the name it was created with", async () => {
           const vault = new InMemoryVault({ pathRules: { platform } });
           const events: VaultEvent[] = [];
           vault.watch((event) => events.push(event));
-          await vault.write("Notes/Straße.md", new Uint8Array([1]));
+          await vault.write("Notes/Strasse.md", new Uint8Array([1]));
           expect(await vault.read("notes/STRASSE.md")).toEqual(new Uint8Array([1]));
           expect(await vault.stat("NOTES/strasse.md")).toEqual({ size: 1, mtime: expect.any(Number) as number });
           await vault.write("notes/strasse.md", new Uint8Array([2]));
-          expect(await vault.list()).toEqual(["Notes/Straße.md"]);
-          expect(await vault.read("Notes/Straße.md")).toEqual(new Uint8Array([2]));
+          expect(await vault.list()).toEqual(["Notes/Strasse.md"]);
+          expect(await vault.read("Notes/Strasse.md")).toEqual(new Uint8Array([2]));
           expect(events).toEqual([
-            { type: "create", path: "Notes/Straße.md" },
-            { type: "modify", path: "Notes/Straße.md" },
+            { type: "create", path: "Notes/Strasse.md" },
+            { type: "modify", path: "Notes/Strasse.md" },
           ]);
         });
 
@@ -139,48 +137,17 @@ describe("InMemoryVault", () => {
           expect(await vault.list()).toEqual(["notes/b.md"]);
         });
 
-        // The server refuses two live documents whose path keys collide
-        // (SPEC.md §5), and testdata/paths/vectors.json is the conformance
-        // suite of its normalization, which internal/pathkey (Go) passes too.
-        // A file found under another spelling is therefore exactly a file the
-        // server keeps apart from no other.
-        it("names one file by two of the shared vectors' paths exactly when the server gives them one path key", async () => {
-          const paths = shared.vectors.map((vector) => vector.path).filter((path) => path !== "" && !path.endsWith("/") && path.split("/").every((segment) => segment !== ""));
-          const keyOf = new Map(shared.vectors.map((vector) => [vector.path, vector.path_key]));
-          let matched = 0;
-          for (const first of paths) {
-            for (const second of paths) {
-              if (first.startsWith(`${second}/`) || second.startsWith(`${first}/`)) continue;
-              const vault = new InMemoryVault({ pathRules: { platform } });
-              // A vector the platform cannot hold at all says nothing about matching.
-              const written = await vault.write(first, new Uint8Array([1])).then(
-                () => true,
-                (error: unknown) => {
-                  if (isVaultError(error, "unmaterializable")) return false;
-                  throw error;
-                },
-              );
-              if (!written) continue;
-              const found = (await vault.stat(second)) !== null;
-              expect(found, `${JSON.stringify(first)} and ${JSON.stringify(second)}`).toBe(keyOf.get(first) === keyOf.get(second));
-              if (found && first !== second) matched++;
-            }
-          }
-          // The vectors must hold pairs that differ only by case or Unicode form, or this proves nothing.
-          expect(matched).toBeGreaterThan(0);
-        });
       });
     }
   });
 
   // A real case-insensitive filesystem holds one spelling per folder: a file
   // written or moved into another spelling of an existing folder lands in
-  // that folder, under the spelling on disk (#377). The faithful filesystem
-  // models it; the folded one keeps each file's own spelling (#423). The
+  // that folder, under the spelling on disk (#377). The vault models it. The
   // expected paths are written out per case.
   describe("one spelling per folder on the faithful filesystem", () => {
     for (const platform of ["windows", "macos"] as const) {
-      const vault = () => new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" });
+      const vault = () => new InMemoryVault({ pathRules: { platform } });
       describe(`under ${platform} rules`, () => {
         it("writes a new file into the existing folder's spelling, and reports it there", async () => {
           const notes = vault();
@@ -252,7 +219,7 @@ describe("InMemoryVault", () => {
     }
 
     it("keeps folders of different case apart under posix rules", async () => {
-      const notes = new InMemoryVault({ filesystem: "faithful" });
+      const notes = new InMemoryVault();
       await notes.write("Notes/a.md", new Uint8Array([1]));
       await notes.write("NOTES/x.md", new Uint8Array([2]));
       await notes.rename("Notes/a.md", "notes/a.md");
@@ -260,34 +227,13 @@ describe("InMemoryVault", () => {
     });
 
     it("keeps folders apart that only the path key folds together, on the faithful filesystem", async () => {
-      const notes = new InMemoryVault({ pathRules: { platform: "windows" }, filesystem: "faithful" });
+      const notes = new InMemoryVault({ pathRules: { platform: "windows" } });
       await notes.write("Straße/a.md", new Uint8Array([1]));
       await notes.write("STRASSE/b.md", new Uint8Array([2]));
       await notes.write("strasse/c.md", new Uint8Array([3]));
       expect((await notes.list()).sort()).toEqual(["STRASSE/b.md", "STRASSE/c.md", "Straße/a.md"]);
     });
 
-    // A real disk holds one spelling per folder, so the folded vault does too
-    // (#659): it never holds `Notes/C.md` next to `notes/c.md`.
-    for (const platform of ["windows", "macos"] as const) {
-      it(`holds one spelling per folder on the folded filesystem too (${platform})`, async () => {
-        const notes = new InMemoryVault({ pathRules: { platform } });
-        await notes.write("Notes/a.md", new Uint8Array([1]));
-        await notes.write("NOTES/x.md", new Uint8Array([2]));
-        await notes.write("other.md", new Uint8Array([3]));
-        await notes.rename("other.md", "notes/y.md");
-        expect((await notes.list()).sort()).toEqual(["Notes/a.md", "Notes/x.md", "Notes/y.md"]);
-      });
-
-      // NTFS and APFS keep `Straße/` and `STRASSE/` apart, though the path
-      // key folds them, so the folded vault's folders do too.
-      it(`keeps folders apart that only the path key folds together, on the folded filesystem (${platform})`, async () => {
-        const notes = new InMemoryVault({ pathRules: { platform } });
-        await notes.write("Straße/a.md", new Uint8Array([1]));
-        await notes.write("STRASSE/b.md", new Uint8Array([2]));
-        expect((await notes.list()).sort()).toEqual(["STRASSE/b.md", "Straße/a.md"]);
-      });
-    }
   });
 
   // Faithful filesystem (docs/design/engine-path-ownership.md §3.1, step R2):
@@ -295,7 +241,7 @@ describe("InMemoryVault", () => {
   // file, not the server's path key. The expectations are written out per
   // case from what NTFS and APFS do, not derived from the vault's key.
   describe("faithful filesystem", () => {
-    const faithful = (platform: "posix" | "windows" | "macos") => new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" });
+    const faithful = (platform: "posix" | "windows" | "macos") => new InMemoryVault({ pathRules: { platform } });
     const nfc = "Café.md";
     const nfd = "Café.md";
 
@@ -368,13 +314,6 @@ describe("InMemoryVault", () => {
       expect((await vault.list()).sort()).toEqual(["STRASSE", "STRASSE2/b.md", "moved/a.md"]);
     });
 
-    it("keeps the folded behaviour by default", async () => {
-      const vault = new InMemoryVault({ pathRules: { platform: "windows" } });
-      await vault.write("Straße.md", new Uint8Array([1]));
-      await vault.write(nfc, new Uint8Array([1]));
-      expect((await vault.stat("STRASSE.md")) !== null).toBe(true);
-      expect((await vault.stat(nfd)) !== null).toBe(true);
-    });
   });
 
   // Harness inodes (docs/design/engine-path-ownership.md §5.4): a create
@@ -424,7 +363,7 @@ describe("InMemoryVault", () => {
     });
 
     it("taps every change with its inode and the actor whose handle made it", async () => {
-      const vault = new InMemoryVault({ pathRules: { platform: "macos" }, filesystem: "faithful" });
+      const vault = new InMemoryVault({ pathRules: { platform: "macos" } });
       const user = vault.handle("user");
       const engine = vault.handle("engine");
       const tapped: InodeEvent[] = [];

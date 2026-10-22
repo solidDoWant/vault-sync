@@ -387,8 +387,8 @@ export class Bindings {
    * the document was bound to at another spelling that the vault takes for
    * the same file: it lists the bound spelling, not the written one, and
    * finds a file at the written one. The vault keeps the file's name, so
-   * the binding keeps its spelling (a vault that folds names more than the
-   * platform's file key does, design §3.1, X-18).
+   * the binding keeps its spelling (as NTFS and APFS keep the name of a
+   * file written under another spelling `F` takes for it, design §3.1).
    */
   private async keptName(kept: Binding | null | undefined, written: Binding | null): Promise<Binding | null> {
     if (written === null || kept === undefined || kept === null || kept.spelling === written.spelling) return written;

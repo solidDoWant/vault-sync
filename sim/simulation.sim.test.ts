@@ -37,7 +37,7 @@ const environment = simEnvironment();
 const suites = new Set(environment.suites);
 /**
  * Marks a seed's case recorded with the faithful filesystem, so it does not
- * overwrite the folded case of the same seed. The case itself records the
+ * overwrite the pathPool case of the same seed. The case itself records the
  * setting (RegressionCase.faithfulFilesystem), and the regressions suite
  * replays it with it.
  */

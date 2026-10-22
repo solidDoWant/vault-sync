@@ -25,8 +25,8 @@ export interface RegressionCase {
   /**
    * Whether the run used the faithful filesystem (RunOptions.faithfulFilesystem,
    * the seeded default unless SIM_FAITHFUL_FS=0): the regressions suite replays the case with it.
-   * Absent in folded cases and in every case recorded before #598, which
-   * replay on the folded vault.
+   * Absent in pathPool cases and in every case recorded before #598, which
+   * replay with pathPool (on the faithful vault since #797).
    */
   faithfulFilesystem?: boolean;
   /**

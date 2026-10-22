@@ -12,9 +12,8 @@
 // Each engine follows a platform's path rules (posix, windows or macos), with
 // an in-memory vault that refuses the names that platform cannot hold and,
 // for windows and macos, matches paths ignoring case and Unicode form
-// (SPEC.md §8): by default by the engine's file key, or, with the faithful
-// filesystem (the seeded default; SIM_FAITHFUL_FS=0 opts out), as NTFS and APFS match them
-// (docs/design/engine-path-ownership.md §3.1). A live document may then be
+// (SPEC.md §8) as NTFS and APFS match them (`F`,
+// docs/design/engine-path-ownership.md §3.1). A live document may then be
 // missing from its vault only if the engine reports it as unmaterializable
 // and the harness's own check agrees that the platform cannot hold its path.
 //
@@ -184,9 +183,10 @@ export function checkLiveDocuments(device: {
 }): Violation[] {
   const { name, platform, heads, files, unmaterializable } = device;
   const violations: Violation[] = [];
-  // One listed file per key: a folder has one spelling on the faithful
-  // filesystem, so two files share a key only on the folded vault (X-18),
-  // whose last one wins here; an exact match is looked up first anyway.
+  // One listed file per key: a folder has one spelling on disk, so two
+  // listed files share a key only if they are two files under `F` that the
+  // convergence key folds together; the last one wins here, and an exact
+  // match is looked up first anyway.
   const held = new Map<string, string>();
   for (const path of files.keys())
     held.set(convergenceKey(path, platform), path);
@@ -308,14 +308,11 @@ export class EngineObserver {
     private readonly context: RunContext,
     /** The platform whose path rules the engine and its vault follow. */
     readonly platform: PathPlatform = "posix",
-    /** Which spellings the vault takes for one file (InMemoryVaultOptions.filesystem). */
-    filesystem: "folded" | "faithful" = "folded",
   ) {
     this.backoffJitter = Random.derive(index, "backoff");
     this.vault = new InMemoryVault({
       now: () => 0,
       pathRules: { platform },
-      filesystem,
     });
     this.vault.tapInodes((event) => {
       this.emitting = event.actor;
@@ -330,7 +327,6 @@ export class EngineObserver {
     this.config = new InMemoryVault({
       now: () => 0,
       pathRules: { platform },
-      filesystem,
     });
     this.config.tapInodes((event) => {
       this.emitting = event.actor;
@@ -338,7 +334,7 @@ export class EngineObserver {
     });
     this.synced = this.engineVault;
     this.engine = this.createEngine();
-    this.ledger = new UserLedger(platform, filesystem);
+    this.ledger = new UserLedger(platform);
     this.user = new EngineUser({
       name: this.name,
       vault: this.vault.handle("user"),

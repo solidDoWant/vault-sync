@@ -17,7 +17,8 @@ const quiet = { committed: 0, conflicts: 0, pending: 0, rejected: [] };
 describe.each(["windows", "macos"] as const)("a note's file respelled behind the engine's back on %s (#481)", (platform) => {
   it.each([
     ["by case", "a.md", "A.md"],
-    ["by ß/SS", "straße.md", "STRASSE.md"],
+    // Not by ß/SS: NTFS and APFS keep `straße.md` and `STRASSE.md` as two files (#797).
+    ["by the case of an accented letter", "café.md", "CAFÉ.md"],
   ])("commits a rename %s lost to a restart under the vault's spelling", async (_how, synced, respelled) => {
     const h = harness({ merge: "default", pathRules: { platform } });
     h.server.commit({ documentId: "note", path: synced, content: "note\n" });
@@ -34,7 +35,8 @@ describe.each(["windows", "macos"] as const)("a note's file respelled behind the
 
   it.each([
     ["by case", "a.md", "A.md"],
-    ["by ß/SS", "straße.md", "STRASSE.md"],
+    // Not by ß/SS: NTFS and APFS keep `straße.md` and `STRASSE.md` as two files (#797).
+    ["by the case of an accented letter", "café.md", "CAFÉ.md"],
   ])("commits an edit of a file renamed %s before a restart under the vault's spelling", async (_how, synced, respelled) => {
     const h = harness({ merge: "default", pathRules: { platform } });
     h.server.commit({ documentId: "note", path: synced, content: "note\n" });

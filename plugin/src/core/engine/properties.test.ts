@@ -213,8 +213,8 @@ function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
 }
 
 /** Runs the commands on a fresh world and brings it to quiescence. */
-async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, filesystem: "folded" | "faithful" = "folded", paths?: readonly string[]): Promise<{ world: PropertyWorld; quiet: boolean }> {
-  const world = new PropertyWorld(on, filesystem, paths);
+async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, paths?: readonly string[]): Promise<{ world: PropertyWorld; quiet: boolean }> {
+  const world = new PropertyWorld(on, paths);
   await fc.asyncModelRun(() => ({ model: {}, real: world }), steps);
   const quiet = await world.quiesce();
   return { world, quiet };
@@ -309,7 +309,7 @@ const p3 = overWorld("P3", (world) => violations(world, "P3"));
 const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
   property: "P3",
   cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(ghostCommands)),
-  check: async ([on, steps]) => violations((await play(on, steps, "folded", ghostPaths)).world, "P3"),
+  check: async ([on, steps]) => violations((await play(on, steps, ghostPaths)).world, "P3"),
 };
 const p8 = overWorld("P8", (world) => violations(world, "P8"), outboxCommands);
 const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateCommands);
@@ -317,15 +317,15 @@ const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateC
  * P4 over `alphabet` on `platforms`: crashing at journal write N and
  * restarting reaches the quiescent state the run without the crash reaches.
  */
-function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[], paths?: readonly string[], filesystem: "folded" | "faithful" = "folded"): Definition<[PathPlatform, WorldCommand[], number]> {
+function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[], paths?: readonly string[]): Definition<[PathPlatform, WorldCommand[], number]> {
   return {
     property: "P4",
     cases: fc.tuple(platforms, fc.array(fc.oneof(...alphabet), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
     check: async ([on, list, write]) => {
-      const baseline = new PropertyWorld(on, filesystem, paths);
+      const baseline = new PropertyWorld(on, paths);
       for (const command of list) await baseline.apply(command);
       await baseline.quiesce();
-      const crashed = new PropertyWorld(on, filesystem, paths);
+      const crashed = new PropertyWorld(on, paths);
       crashed.armCrash(write);
       for (const command of list) await crashed.apply(command);
       await crashed.quiesce();
@@ -352,8 +352,6 @@ const restoredGhostYields: WorldCommand[] = [
   { type: "remote-edit", document: 0 },
   { type: "move-onto-incoming", file: 0, path: 0 },
 ];
-/** P4 on the faithful vault, for fixed cases (#801). */
-const p4Faithful = crashEquivalence(platform, steadyCommands, undefined, "faithful");
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
@@ -382,14 +380,14 @@ const echoCommands: fc.Arbitrary<WorldCommand>[] = [
 const p7: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
   property: "P7",
   cases: fc.tuple(platform, commands(echoCommands)),
-  check: async ([on, steps]) => (await play(on, steps, "faithful")).world.ownChangesReported(),
+  check: async ([on, steps]) => (await play(on, steps)).world.ownChangesReported(),
 };
 /** P6 where a folder has one spelling on disk (#737): INV-9 with folders compared under `F`, and INV-10 (P7's oracle), no own write reported as the user's. */
 const p6Folders: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
   property: "P6",
   cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(folderCommands)),
   check: async ([on, steps]) => {
-    const { world, quiet } = await play(on, steps, "faithful", folderPaths);
+    const { world, quiet } = await play(on, steps, folderPaths);
     return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence()), ...world.ownChangesReported()];
   },
 };
@@ -582,13 +580,13 @@ describe("engine properties (design §9.3)", () => {
 
   // #801 (INV-7, PO-8): a push that displaces a ghost the restore lost to a copy name commits its re-create in the
   // same push, as the push a crash restarts does when it recovers the intent and resumes the outbox. Otherwise a
-  // remote edit in between reaches a different copy. Fixed cases: on the faithful vault on every platform, crashed at
+  // remote edit in between reaches a different copy. Fixed cases: on every platform, crashed at
   // each journal write of that push.
   it("P4: a push that re-creates a ghost at a copy name reaches the state a crash in it reaches", { timeout }, async () => {
     for (const on of ["posix", "macos", "windows"] as const) {
-      for (let write = 13; write <= 24; write++) expect(await p4Faithful.check([on, restoredGhostYields, write]), `${on}, crash at write ${String(write)}`).toEqual([]);
+      for (let write = 13; write <= 24; write++) expect(await p4.check([on, restoredGhostYields, write]), `${on}, crash at write ${String(write)}`).toEqual([]);
     }
-    const world = new PropertyWorld("posix", "faithful");
+    const world = new PropertyWorld("posix");
     for (const command of restoredGhostYields.slice(0, 7)) await world.apply(command);
     expect(await world.journal.listPending()).toEqual([]);
     expect([...world.server.liveFiles()].map(([path]) => path).sort()).toEqual(["STRASSE (conflict laptop 2026-10-18 040506 2).md", "STRASSE (conflict laptop 2026-10-18 040506).md", "Straße.md", "x (conflict laptop 2026-10-18 040506)"]);

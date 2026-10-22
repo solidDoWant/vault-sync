@@ -33,9 +33,10 @@ export function recordedCase(name: string, options: RunOptions, violations: Viol
 
 /**
  * The run options that replay `regression`. A case without
- * `faithfulFilesystem` (every case recorded before #598, and every folded
- * one) replays on the folded vault with pathPool; a faithful one on the
- * faithful vault with faithfulPathPool, as it was recorded. Likewise a case
+ * `faithfulFilesystem` (every case recorded before #598, and every one
+ * recorded with SIM_FAITHFUL_FS=0) replays with pathPool; a faithful one
+ * with faithfulPathPool, as it was recorded. Both replay on the faithful
+ * vault: the folded one is gone (#797). Likewise a case
  * recorded by the retention suite replays with `retention` (#646); its
  * steps carry the retention steps that purge.
  */

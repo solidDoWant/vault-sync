@@ -797,18 +797,18 @@ export class PropertyWorld {
   private raceRead: { path: string; change: () => Promise<void> } | undefined;
 
   /**
-   * `filesystem` is the in-memory vault's (`folded` by default): on the
-   * `faithful` one, `F` decides the file, so `Straße.md` and `STRASSE.md` are
-   * two files on every platform and NFC and NFD `Café.md` two on `windows`.
-   * `paths` are the paths commands pick from (`worldPaths` by default).
+   * The in-memory vault takes two spellings for one file as `F` does, so
+   * `Straße.md` and `STRASSE.md` are two files on every platform and NFC
+   * and NFD `Café.md` two on `windows`. `paths` are the paths commands pick
+   * from (`worldPaths` by default).
    */
-  constructor(platform: PathPlatform = "posix", filesystem: "folded" | "faithful" = "folded", paths: readonly string[] = worldPaths) {
+  constructor(platform: PathPlatform = "posix", paths: readonly string[] = worldPaths) {
     this.pathRules = { platform };
     this.paths = paths;
     this.server = new InMemoryServer({ maxPageSize: 3, maxDownloadBytes: 64, now: () => testDate });
-    this.vault = new InMemoryVault({ pathRules: this.pathRules, now: () => testDate.getTime(), filesystem });
-    // Keyed as the vault looks files up: by `F` on the faithful vault; on the folded one by the file key, so `ı.md` and `I.md` are one file on `windows` and `macos`.
-    this.inodes = new Inodes(filesystem === "faithful" ? (path) => filesystemKey(path, platform) : new PathSpace(this.pathRules).fileKey);
+    this.vault = new InMemoryVault({ pathRules: this.pathRules, now: () => testDate.getTime() });
+    // Keyed as the vault looks files up: by `F`.
+    this.inodes = new Inodes((path) => filesystemKey(path, platform));
     this.vault.tapInodes((event) => {
       this.emitting = event.actor;
     });

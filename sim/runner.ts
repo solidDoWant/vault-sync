@@ -63,15 +63,14 @@ export interface RunOptions {
    */
   retention?: boolean;
   /**
-   * The faithful filesystem (refactor step R2 of
-   * docs/design/engine-path-ownership.md): the engines' vaults take two
-   * spellings for one file as the platform's filesystem does, not by the
-   * engine's file key, and the clients and users choose from
-   * faithfulPathPool. The seeded suites set it unless SIM_FAITHFUL_FS=0 (the
-   * default since step R7); unset here, as in scripted scenarios and in
-   * regression cases recorded without it, the run uses the folded vault. It
-   * changes which paths a schedule's steps pick, so a run replays only with
-   * the same setting.
+   * Whether the clients and users choose from faithfulPathPool rather than
+   * pathPool (refactor step R2 of docs/design/engine-path-ownership.md). The
+   * engines' vaults always take two spellings for one file as the
+   * platform's filesystem does (`F`); the folded vault this once also chose
+   * is gone (#797). The seeded suites set it unless SIM_FAITHFUL_FS=0 (the
+   * default since step R7); scripted scenarios and regression cases
+   * recorded without it leave it unset. It changes which paths a schedule's
+   * steps pick, so a run replays only with the same setting.
    */
   faithfulFilesystem?: boolean;
   /**
@@ -229,7 +228,7 @@ export class SimRun {
       const observerDevice = (await setup.devices.registerDevice({ name: `sim engine ${String(engine)}` })).device;
       if (observerDevice === undefined) throw new Error("RegisterDevice returned no device");
       const platform = options.platforms?.[engine] ?? platformForSeed(options.seed);
-      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform, options.faithfulFilesystem === true ? "faithful" : "folded"));
+      observers.push(new EngineObserver(observerIndex, createProtocolClient({ transport: network.transport(observerIndex, http), token: () => token }), observerDevice.id, context, platform));
     }
     const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true, members);
     run.stepNumber = () => simRun.stepNumber;

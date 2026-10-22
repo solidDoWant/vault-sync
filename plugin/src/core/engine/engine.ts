@@ -14,7 +14,7 @@ import { blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
-import { oneFileOnDisk, PathClaims, type CopyNaming, type Exempt } from "./claims";
+import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { boundLocalChange, mergePath, ruleW } from "./decide";
 import { Intents } from "./intents";
@@ -1132,11 +1132,11 @@ export class SyncEngine {
       return { kind: "dirty", path: target, content: targetContent };
     }
     // The same file, also when only its spelling changes on a case-insensitive
-    // platform, but only if the vault holds the two spellings as one file
-    // (oneFileOnDisk): on NTFS or APFS `straße/` and `STRASSE/` are two
+    // platform, but only if the filesystem takes the two spellings for one
+    // file (`F`, PathSpace.oneFile): on NTFS or APFS `straße/` and `STRASSE/` are two
     // folders, so that is a rename, and an edit at the synced path is the
     // note's (#447).
-    if (await oneFileOnDisk(this.pathSpace, this.vault, basePath, target)) {
+    if (this.pathSpace.oneFile(basePath, target)) {
       // The server respelled the file, and the user did not (its binding is
       // at the synced spelling): the apply renames it (design §4.4 `apply`).
       // A spelling the user gave it stays, as the local rename wins (#304).
@@ -1214,21 +1214,14 @@ export class SyncEngine {
    * file whose spelling merely has the same path key is never taken for the
    * engine's (#380), and the engine's change of `Straße.md` beside
    * `STRASSE.md`, or of NFC `Café.md` beside NFD `Café.md` on Windows, two
-   * files with one file key, is expected at its own spelling (#738). A vault
-   * that folds more than `F` (the folded `InMemoryVault`, X-18) is asked
-   * whether it holds `path` at all: if so, under the one listed spelling with
-   * its file key.
+   * files with one file key, is expected at its own spelling (#738).
    */
   private async heldSpelling(path: string): Promise<string> {
     if (this.pathRules.platform === "posix") return path;
     const listed = await this.vault.list();
     if (listed.includes(path)) return path;
     const oneFile = listed.filter((candidate) => this.pathSpace.oneFile(candidate, path));
-    if (oneFile.length > 0) return oneFile.length === 1 ? (oneFile[0] ?? path) : path;
-    if ((await this.vault.stat(path)) === null) return path;
-    const key = this.pathSpace.fileKey(path);
-    const candidates = listed.filter((candidate) => this.pathSpace.fileKey(candidate) === key);
-    return candidates.length === 1 ? (candidates[0] ?? path) : path;
+    return oneFile.length === 1 ? (oneFile[0] ?? path) : path;
   }
 
   private async echoed(cancel: () => void, change: () => Promise<void>): Promise<void> {
@@ -1380,12 +1373,10 @@ export class SyncEngine {
 
   /**
    * The document bound to the file the vault holds at `path` (design §4.2,
-   * fileHolder), found under the spelling the vault holds it at: a vault
-   * that folds names more than the file key `F` does (X-18) reads another
-   * spelling's file there.
+   * fileHolder): bindings are keyed by `F`, as the vault holds files.
    */
   private async boundAt(path: string): Promise<DocumentState | undefined> {
-    return (await this.journal.documentByFileKey(this.pathSpace.filesystemKey(path))) ?? (await this.journal.documentByFileKey(this.pathSpace.filesystemKey(await this.heldSpelling(path))));
+    return this.journal.documentByFileKey(this.pathSpace.filesystemKey(path));
   }
 
   /**
@@ -1422,7 +1413,7 @@ export class SyncEngine {
     // rename respells (#343). Only if the vault holds the two as one: on
     // NTFS or APFS a file at `STRASSE/b.md` is another one than
     // `straße/b.md`, so it is in the way (#447).
-    const respelled = outcome.content !== null && current !== null && outcome.path !== local.path && (await oneFileOnDisk(this.pathSpace, this.vault, outcome.path, local.path));
+    const respelled = outcome.content !== null && current !== null && outcome.path !== local.path && this.pathSpace.oneFile(outcome.path, local.path);
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).
@@ -1615,10 +1606,7 @@ export class SyncEngine {
    * (PO-1): a create whose file the user moved elsewhere keeps it.
    */
   private async supersedeCreates(path: string, documentId: string): Promise<void> {
-    // Under the spelling the vault holds the file at too: a vault that folds
-    // names more than the file key `F` does (X-18) reads another spelling's file at `path`.
-    const keys = new Set([this.pathSpace.filesystemKey(path), this.pathSpace.filesystemKey(await this.heldSpelling(path))]);
-    const holders = (await Promise.all([...keys].map((key) => this.journal.documentsByFileKey(key)))).flat();
+    const holders = await this.journal.documentsByFileKey(this.pathSpace.filesystemKey(path));
     for (const holder of holders) {
       if (holder.documentId === documentId || hasBase(holder)) continue;
       const operations = (await this.journal.listPending()).filter((operation) => operation.documentId === holder.documentId).map((operation) => operation.revisionId);

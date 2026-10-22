@@ -20,11 +20,14 @@ const bytes = (value: string) => encoder.encode(value);
  * Pairs of paths the server takes for one: by case, and by full case folding
  * (ß folds to ss). `held` is where the vault holds the remote document once
  * the local file has made its folder: a folder has one spelling on disk, so
- * notes/c.md is held in Notes/ (INV-9, #737, #659).
+ * notes/c.md is held in Notes/ (INV-9, #737, #659). `oneFile` is whether the
+ * platform's filesystem (`F`) takes the two for one file too, as NTFS and
+ * APFS take `Notes/C.md` and `notes/c.md`; `straße.md` and `STRASSE.md` are
+ * two files on disk (#797).
  */
 const collisions = [
-  { local: "Notes/C.md", remote: "notes/c.md", held: "Notes/c.md" },
-  { local: "straße.md", remote: "STRASSE.md", held: "STRASSE.md" },
+  { local: "Notes/C.md", remote: "notes/c.md", held: "Notes/c.md", oneFile: true },
+  { local: "straße.md", remote: "STRASSE.md", held: "STRASSE.md", oneFile: false },
 ] as const;
 
 /** The live documents, by path, that are not `documentId`: what the local version became. */
@@ -65,7 +68,7 @@ async function expectRemoteKept(h: Harness, remotePath: string, summaries: PushS
 describe("SyncEngine collisions by path key", () => {
   describe("on a case-insensitive platform, given a local file that collides with another device's document (#242)", () => {
     for (const platform of ["macos", "windows"] as const) {
-      for (const { local, remote, held } of collisions) {
+      for (const { local, remote, held, oneFile } of collisions) {
         it(`keeps the other device's document at ${remote} when a create at ${local} is refused (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write(local, bytes("mine\n"));
@@ -123,7 +126,8 @@ describe("SyncEngine collisions by path key", () => {
           ]);
         });
 
-        it(`drops the pending create at ${local} once a pull keeps its file as a conflict copy of ${remote}, without committing it again (${platform})`, async () => {
+        // The pull writes the remote document onto the local file: only where the disk holds the two as one file.
+        it.runIf(oneFile)(`drops the pending create at ${local} once a pull keeps its file as a conflict copy of ${remote}, without committing it again (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write(local, bytes("mine\n"));
           // The create's content is uploaded, but its commit never gets through.
@@ -144,7 +148,8 @@ describe("SyncEngine collisions by path key", () => {
           expect(h.localChanges).toEqual([{ type: "create", path: local }]);
         });
 
-        it(`keeps the other device's document at ${remote}, and the user's later edit of it, when a pull takes a refused create's identical file at ${local} for it (${platform})`, async () => {
+        // The pull writes the remote document onto the local file: only where the disk holds the two as one file.
+        it.runIf(oneFile)(`keeps the other device's document at ${remote}, and the user's later edit of it, when a pull takes a refused create's identical file at ${local} for it (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write(local, bytes("same\n"));
           // The create's content is uploaded, but its commit never gets through.
@@ -175,7 +180,8 @@ describe("SyncEngine collisions by path key", () => {
           ]);
         });
 
-        it(`keeps the other device's document at ${remote}, and the user's edit of it, when a journal from an earlier version still holds the create at ${local} (${platform})`, async () => {
+        // The pull writes the remote document onto the local file: only where the disk holds the two as one file.
+        it.runIf(oneFile)(`keeps the other device's document at ${remote}, and the user's edit of it, when a journal from an earlier version still holds the create at ${local} (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write(local, bytes("same\n"));
           // The create's content is uploaded, but its commit never gets through.
