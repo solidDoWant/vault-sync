@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { RegressionCase } from "./control";
-import { recordedCase, replayOptions, replayRegression } from "./regression";
+import { recordedCase, replayOptions, replayRegression, reproduces, shrinkCase } from "./regression";
 import { seededCommitRetryBackoff, seededPlatforms, type RunOptions, type RunResult, type SimEndpoints } from "./runner";
 import type { Step } from "./schedule";
 
@@ -115,5 +115,53 @@ describe("regression cases", () => {
     const regression = recordedCase("seed-42", seededOptions(false), violations, steps);
 
     expect(regression).toMatchObject({ name: "seed-42", seed: 42, clients: 3, engines: 2, commitRetryBackoff: seededCommitRetryBackoff, violations, steps });
+  });
+});
+
+describe("targeted shrink of a saved case (#822 item 7)", () => {
+  const endpoints: SimEndpoints = { serverUrl: "http://server", limitedServerUrl: "http://limited", controlUrl: "http://control" };
+  // Eight steps, told apart by their arg. Steps 1 and 6 together reproduce the named violation; step 5 alone produces another of the same kind (a drift).
+  const schedule: Step[] = Array.from({ length: 8 }, (_, arg): Step => ({ kind: "operation", client: 0, operation: "create", arg }));
+  const target = { invariant: "phantom-delete", pattern: "at x\\.md" };
+  const named = { invariant: "phantom-delete", detail: "e3 deleted d1 at x.md (seq 2, r2) although its user never deleted a file bound to it" };
+  const drift = { invariant: "phantom-delete", detail: "e3 deleted d2 at y.md (seq 4, r4) although its user never deleted a file bound to it" };
+  const fake = (candidate: readonly Step[]): RunResult => {
+    const args = new Set(candidate.map((step) => (step.kind === "operation" ? step.arg : -1)));
+    return { violations: [...(args.has(1) && args.has(6) ? [named] : []), ...(args.has(5) ? [drift] : [])], trace: [], steps: candidate } as unknown as RunResult;
+  };
+  const saved = (): RegressionCase => throughDisk(recordedCase("seed-42-faithful-fs", seededOptions(true), [named, drift], schedule));
+
+  it("keeps only the steps that still reproduce the named violation, never drifting to another of its kind", async () => {
+    const result = await shrinkCase(endpoints, saved(), target, 150, undefined, (_endpoints, _options, steps) => Promise.resolve(fake(steps)));
+
+    expect(result.regression.steps).toEqual([schedule[1], schedule[6]]);
+    expect(result.regression.violations).toEqual([named]);
+    expect(result.regression.name).toBe("seed-42-faithful-fs-min");
+    expect(replayOptions(result.regression)).toEqual(seededOptions(true));
+  });
+
+  it("replays with the options the case recorded", async () => {
+    const seen: RunOptions[] = [];
+    await shrinkCase(endpoints, saved(), target, 3, undefined, (_endpoints, options, steps) => {
+      seen.push(options);
+      return Promise.resolve(fake(steps));
+    });
+
+    expect(seen.length).toBe(5);
+    for (const options of seen) expect(options).toEqual(seededOptions(true));
+  });
+
+  it("refuses a case whose replay does not reproduce the named violation", async () => {
+    await expect(shrinkCase(endpoints, saved(), { invariant: "phantom-delete", pattern: "at z\\.md" }, 150, undefined, (_endpoints, _options, steps) => Promise.resolve(fake(steps)))).rejects.toThrow(
+      /seed-42-faithful-fs does not reproduce phantom-delete matching \/at z\\\.md\/; its replay violated: phantom-delete: e3 deleted d1 at x\.md/u,
+    );
+  });
+
+  it("matches a violation by its kind and, when given, by a pattern on its detail", () => {
+    expect(reproduces({ invariant: "phantom-delete" }, [drift])).toBe(true);
+    expect(reproduces({ invariant: "phantom-delete", pattern: "" }, [drift])).toBe(true);
+    expect(reproduces(target, [drift])).toBe(false);
+    expect(reproduces(target, [drift, named])).toBe(true);
+    expect(reproduces({ invariant: "lost-write", pattern: "at x\\.md" }, [named])).toBe(false);
   });
 });

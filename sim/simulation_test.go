@@ -306,6 +306,13 @@ func TestSimulation(t *testing.T) {
 	result := simulation.runSuite(t, true, nil)
 
 	for _, regression := range simulation.control.recorded() {
+		// The targeted shrink (VAULT_SYNC_SIM_SUITES=shrink) writes its result on purpose.
+		if os.Getenv(suitesEnv) == "shrink" {
+			t.Logf("minimized case written to %s", filepath.Join(regressionDir, regression.Name+".json"))
+
+			continue
+		}
+
 		t.Errorf("SIM FAILURE: seed %d violated %v; minimized to %s", regression.Seed, invariantsOf(regression.Violations),
 			filepath.Join(regressionDir, regression.Name+".json"))
 	}

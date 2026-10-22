@@ -50,3 +50,28 @@ export function loadRegressionCases(dir: string, { required }: { required: boole
 
   return files.map((file) => JSON.parse(readFileSync(path.join(dir, file), "utf8")) as unknown);
 }
+
+/**
+ * The saved case and the violation the `shrink` suite keeps, from
+ * SIM_SHRINK_CASE (a regression case's JSON file, relative to the repository
+ * root), SIM_SHRINK_INVARIANT (the violation's kind) and SIM_SHRINK_MATCH (a
+ * regular expression its detail must match, optional). A missing case or
+ * kind, an unreadable file or an invalid expression throws, naming the
+ * variable.
+ */
+export function loadShrinkTarget(env: Record<string, string | undefined>, repoRoot: string): { regression: unknown; invariant: string; pattern?: string } {
+  const file = env.SIM_SHRINK_CASE;
+  const invariant = env.SIM_SHRINK_INVARIANT;
+  if (file === undefined || file === "") throw new Error("SIM_SHRINK_CASE must name the regression case (a *.json file) the shrink suite minimizes");
+  if (invariant === undefined || invariant === "") throw new Error("SIM_SHRINK_INVARIANT must name the violation (its kind, e.g. phantom-delete) the shrink suite keeps");
+  const pattern = env.SIM_SHRINK_MATCH;
+  if (pattern !== undefined && pattern !== "") {
+    try {
+      new RegExp(pattern, "u");
+    } catch (error) {
+      throw new Error(`SIM_SHRINK_MATCH is not a valid regular expression: ${(error as Error).message}`, { cause: error });
+    }
+  }
+  const regression = JSON.parse(readFileSync(path.resolve(repoRoot, file), "utf8")) as unknown;
+  return { regression, invariant, ...(pattern === undefined || pattern === "" ? {} : { pattern }) };
+}

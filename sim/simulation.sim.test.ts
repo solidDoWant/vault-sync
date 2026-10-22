@@ -28,7 +28,7 @@ import { stalledAtFinish } from "./scenarios";
 import { StallError } from "./network";
 import { allRefused, answers, membershipChanges } from "./member-scenarios";
 import { Code } from "@connectrpc/connect";
-import { recordedCase, replayRegression } from "./regression";
+import { recordedCase, replayRegression, shrinkCase } from "./regression";
 import { generateSchedule, type Step } from "./schedule";
 import { shrink, type ShrinkProgress } from "./shrink";
 import { summarize } from "./summary";
@@ -221,6 +221,27 @@ describe.runIf(suites.has("regressions") && environment.regressions.length > 0)(
     expect(result.violations, tail(result.trace)).toEqual([]);
   });
 });
+
+// The targeted shrink (#822 item 7): only with VAULT_SYNC_SIM_SUITES=shrink,
+// never in a full run. It minimizes SIM_SHRINK_CASE to the steps that still
+// reproduce SIM_SHRINK_INVARIANT (matching SIM_SHRINK_MATCH) and writes the
+// result as `<name>-min.json` to the regression directory.
+if (suites.has("shrink")) {
+  describe("targeted shrink of a saved case", () => {
+    it("minimizes the case to the steps that still reproduce the named violation", async () => {
+      const target = environment.shrinkTarget;
+      if (target === undefined) throw new Error("the shrink suite needs SIM_SHRINK_CASE and SIM_SHRINK_INVARIANT");
+      const { regression } = target;
+      const named = `${target.invariant}${target.pattern === undefined ? "" : ` matching /${target.pattern}/`}`;
+      console.log(`${regression.name}: shrinking its ${String(regression.steps.length)} steps to ${named} in up to ${String(environment.shrinkRuns)} runs`);
+      const result = await shrinkCase(environment, regression, target, environment.shrinkRuns, shrinkProgress(regression.name));
+      const written = await new Control(environment.controlUrl).report(result.regression);
+      console.log(
+        [`${regression.name}: minimized to ${String(result.regression.steps.length)} steps in ${String(result.runs)} runs, written to ${written}; they violate:`, ...result.regression.violations.map((violation) => `  ${violation.invariant}: ${violation.detail}`)].join("\n"),
+      );
+    });
+  });
+}
 
 describe.runIf(suites.has("scenarios"))("scripted scenarios", () => {
   it("gates the engines' pulls on an announced seq only with notificationPulls, one gated pull per engine (#661)", async () => {

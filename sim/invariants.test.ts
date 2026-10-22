@@ -4,7 +4,7 @@ import { sha256Hex } from "../plugin/src/core/hash";
 import { InMemoryVault } from "../plugin/src/core/vault/memory";
 import { pathPool } from "./client";
 import { EngineUser } from "./engine-user";
-import { carriesLocalEdit, checkEngineEchoes, KnownContents, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type FeedRevision } from "./invariants";
+import { carriesLocalEdit, checkEngineEchoes, copiedFrom, KnownContents, checkLostWrites, checkPhantomDeletes, checkResurrections, UserLedger, type FeedRevision } from "./invariants";
 
 const at = "step 1";
 
@@ -13,6 +13,21 @@ function ledgerWith(...hashes: string[]): UserLedger {
   for (const hash of hashes) ledger.write({ hash, path: `${hash}.md`, at });
   return ledger;
 }
+
+describe("copiedFrom", () => {
+  it("strips a device's conflict suffix only where it ends a segment's name, before the extension", () => {
+    expect(copiedFrom("b (conflict e1 2026-01-02 030405).md", "e1")).toEqual(["b.md"]);
+    expect(copiedFrom("b (conflict e1 2026-01-02 030405 2).md", "e1")).toEqual(["b.md"]);
+    expect(copiedFrom("notes (conflict e1 2026-01-02 030405)/c.md", "e1")).toEqual(["notes/c.md"]);
+  });
+
+  it("does not take a name with the suffix mid-name for a copy (#503, #822 item 5)", () => {
+    // A rename to `b x.md` is not the copy `b (conflict …) x.md` names.
+    expect(copiedFrom("b (conflict e1 2026-01-02 030405) x.md", "e1")).toEqual([]);
+    // Nor another device's copy.
+    expect(copiedFrom("b (conflict e2 2026-01-02 030405).md", "e1")).toEqual([]);
+  });
+});
 
 describe("checkLostWrites", () => {
   it("accepts writes whose content is in a final vault or in history", () => {

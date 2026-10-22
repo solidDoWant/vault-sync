@@ -279,7 +279,7 @@ class Replay {
     const name = `${this.label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${this.label(revision.revisionId)})`;
     if (revision.deleted) {
       if (parent === undefined || parent.deleted) return;
-      if (this.deletedByUser(revision.documentId)) return;
+      if (this.deletedByUser(revision)) return;
       // The create of a crash-lost rename may come after the tombstone: judged once the replay is done.
       const position = this.position;
       this.pendingTombstones.push(() => {
@@ -339,9 +339,19 @@ class Replay {
     });
   }
 
-  /** The user deleted an inode bound to `documentId` (at any time before now). */
-  private deletedByUser(documentId: string): boolean {
-    return this.userDeleted.some((deleted) => this.everBound.get(deleted.inode)?.has(documentId) === true);
+  /**
+   * Whether the user deleted D's file since D's previous tombstone, where
+   * `tombstone` is the engine's tombstone of D (PO-6): an inode bound to D
+   * now (not one rebound to another document since), deleted after D's
+   * previous tombstone, if any (a delete an earlier tombstone already carried
+   * does not excuse a later one, after D was restored or re-created in
+   * another file).
+   */
+  private deletedByUser(tombstone: FeedRevision): boolean {
+    const documentId = tombstone.documentId;
+    const previous = lastOf(this.applied, (candidate) => candidate !== tombstone && candidate.documentId === documentId && candidate.deleted);
+    const since = previous === undefined ? 0 : (this.appliedAt.get(previous) ?? 0);
+    return this.userDeleted.some((deleted) => deleted.at > since && this.bound.get(deleted.inode) === documentId);
   }
 
   /**
