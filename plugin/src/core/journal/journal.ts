@@ -345,6 +345,14 @@ export interface DeferredRevision {
    * deferred behind one, and a deferral an older engine wrote.
    */
   descendsFromBase?: true;
+  /**
+   * For `path-conflict`: rule W(b) postponed the holder's detach while the
+   * pull drained the feed (design §4.5 W(b), #803). The end of the next pull
+   * decides the deferral again, also after a crash between the deferral and
+   * the end of its own pull (#884). Absent: no postponement to finish (also
+   * a deferral an older engine wrote).
+   */
+  postponed?: true;
 }
 
 /**

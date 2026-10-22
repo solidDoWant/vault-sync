@@ -824,7 +824,20 @@ describe("engine properties (design §9.3)", () => {
       { type: "pull" },
       { type: "restore", fraction: 0 },
     ];
+    // #884 (seed 566): a crash at the write that defers `a.md`'s new revision while W(b) postpones its holder's
+    // detach (#803) still has the end of the pull detach the holder, so the user edit that follows lands on the file
+    // it lands on in a run without the crash.
+    const postponed: WorldCommand[] = [
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 0, path: 1 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "remote-create", path: 0 },
+      { type: "pull" },
+      { type: "edit-during-pull", file: 1 },
+    ];
     const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["windows", postponed, 5],
       ["macos", respelled, 13],
       ["macos", aliasMoved, 18],
       ["windows", aliasFreed, 2],
