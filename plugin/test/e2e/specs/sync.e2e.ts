@@ -1,7 +1,7 @@
 import { browser, expect } from "@wdio/globals";
 
 import type VaultSyncPlugin from "../../../src/main";
-import { e2eEnvironment, pluginId } from "../environment";
+import { e2eEnvironment, harnessId, pluginId } from "../environment";
 import { reloadPlugin } from "../obsidian";
 import { configure, dialog, isDialogOpen, issuerPost, signInAs, signInResult, startSignIn } from "../signin";
 
@@ -60,6 +60,23 @@ function remoteFiles() {
     const response = await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n });
     const decoder = new TextDecoder();
     return response.revisions.map((revision) => ({ path: decoder.decode(revision.path), deviceId: revision.deviceId })).sort((a, b) => a.path.localeCompare(b.path));
+  }, pluginId);
+}
+
+/** The server's head revision of each document in the connected vault: its path, document id and whether it is deleted. */
+function remoteDocuments() {
+  return browser.executeObsidian(async ({ app }, id) => {
+    const plugin = (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id];
+    const vaultId = plugin?.connectedVault?.id;
+    if (plugin === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
+    const response = await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n });
+    const decoder = new TextDecoder();
+    const heads = new Map<string, { path: string; documentId: string; deleted: boolean; seq: bigint }>();
+    for (const revision of response.revisions) {
+      const head = heads.get(revision.documentId);
+      if (head === undefined || revision.seq > head.seq) heads.set(revision.documentId, { path: decoder.decode(revision.path), documentId: revision.documentId, deleted: revision.deleted, seq: revision.seq });
+    }
+    return [...heads.values()].map(({ path, documentId, deleted }) => ({ path, documentId, deleted }));
   }, pluginId);
 }
 
@@ -223,5 +240,29 @@ describe("syncing between two vaults", function () {
     expect(attachmentDigest).not.toBeNull();
     await browser.waitUntil(async () => (await binaryDigest(attachmentPath))?.sha256 === attachmentDigest?.sha256, { timeoutMsg: "the attachment never arrived whole in the second vault" });
     expect(await binaryDigest(attachmentPath)).toEqual(attachmentDigest);
+  });
+
+  // E7 through Obsidian (#834): the start-up scan finds a file renamed while
+  // vault-sync was not running by its content, narrowed by the size in
+  // Obsidian's file cache. A full relaunch rebuilds that cache from disk, so
+  // a stat it got wrong would surface here as a delete plus a create.
+  it("keeps the document of a file renamed while the app was closed", async function () {
+    const before = (await remoteDocuments()).find((document) => document.path === "Shared.md" && !document.deleted);
+    expect(before).toBeDefined();
+
+    // Obsidian without vault-sync: the rename is made where no sync engine sees it.
+    await browser.reloadObsidian({ plugins: [harnessId] });
+    await browser.executeObsidian(async ({ app }) => {
+      await app.vault.adapter.rename("Shared.md", "Renamed.md");
+    });
+    await browser.reloadObsidian({ plugins: [pluginId, harnessId] });
+
+    await browser.waitUntil(async () => (await remoteDocuments()).some((document) => document.path === "Renamed.md"), { timeoutMsg: "the rename never reached the server" });
+    await waitForIdle();
+    const after = await remoteDocuments();
+    // The same document moved: no tombstone for Shared.md and no new document for Renamed.md.
+    expect(after.filter((document) => document.documentId === before?.documentId)).toEqual([{ path: "Renamed.md", documentId: before?.documentId, deleted: false }]);
+    expect(after.filter((document) => document.path === "Shared.md" || document.path === "Renamed.md")).toHaveLength(1);
+    expect(await fileText("Renamed.md")).toBe(sharedText);
   });
 });

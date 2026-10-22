@@ -1159,4 +1159,43 @@ describe("the start-up content match, through Bindings", () => {
 
     expect(await binding(journal, "N")).toEqual({ binding: { spelling: "f.md", fileKey: "f.md", seen: hash("mine") }, absence: null });
   });
+
+  // A missing document whose content size the row does not know turns the
+  // size filter off for its kind, whichever missing document of that kind
+  // comes first and in every round (#834): its renamed file, of another size
+  // than the known one's, is still read and matched while the known one,
+  // deleted, stays missing.
+  it.each([
+    {
+      order: "a deleted synced document's, then a renamed unacknowledged create's (its row knows no size)",
+      setUp: async (journal: InMemoryJournal) => {
+        await journal.putDocument(synced("A", "a.md", "a1"));
+        await journal.addPending({ revisionId: "r", documentId: "N", baseRevisionId: "", path: "e.md", contentHash: hash("mine, longer"), size: 12n, kind: "text", deleted: false });
+      },
+      known: "A",
+      unknown: "N",
+    },
+    {
+      order: "a renamed offline-edited document's (its binding saw other content than its base), then a deleted synced document's",
+      setUp: async (journal: InMemoryJournal) => {
+        const edited = synced("A", "e.md", "base");
+        await journal.putDocument({ ...edited, binding: { spelling: "e.md", fileKey: "e.md", seen: hash("mine, longer") } });
+        await journal.putDocument(synced("B", "a.md", "a1"));
+      },
+      known: "B",
+      unknown: "A",
+    },
+  ])("matches the renamed file when the missing documents are $order", async ({ setUp, known, unknown }) => {
+    const journal = new InMemoryJournal();
+    await setUp(journal);
+    const vault = new InMemoryVault();
+    // While the app was not running, the known-size document's file was
+    // deleted and the other's renamed to f.md.
+    await vault.write("f.md", bytes("mine, longer"));
+
+    await new Bindings(journal, vault, space).idle();
+
+    expect(await binding(journal, unknown)).toEqual({ binding: { spelling: "f.md", fileKey: "f.md", seen: hash("mine, longer") }, absence: null });
+    expect(await binding(journal, known)).toEqual({ binding: null, absence: "user-deleted" });
+  });
 });
