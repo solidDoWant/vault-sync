@@ -763,7 +763,7 @@ Shrinking gives minimal command sequences. Each `it.fails` carries the issue it 
 
 ### 10.1 Bug-fix rule for engine and simulation bugs
 
-1. **State the violated invariant** (INV-n) and the rule (PO-n) in the issue before any code. If no rule forbids the behaviour, the model is incomplete: amend this document first, with owner review, and only then change code.
+1. **State the violated invariant** (INV-n) and the rule (PO-n) in the issue before any code. If no rule decides the case, or rules conflict, or the fix needs new state, it is a **design gap**: label the issue `design-gap` and stop. A fix PR never edits §4.9 or §5. The planner batches open gaps into one `design` issue, and the engine designer (`docs/agents/engine-designer.md`) amends the rules by generalizing, not by adding per-issue exceptions. Workers then fix the gaps under the amended rules.
 2. **Fix the class in the component that owns the rule**, never with a new clause at a call site. A new persistent or in-memory state, flag or helper outside §9.1's components needs a design amendment.
 3. **Add a property-based test** that generates the class (the property, or a new command or generator), and show that it fails before the fix. Commit the minimized seed as well, as CLAUDE.md already requires.
 4. **Checker exceptions** (a new excuse, or a widening) must cite the PO rule under which the flagged outcome is correct, and be added to §5.5 with a verdict. A PR that cannot cite a rule is an engine bug, not a checker bug.
@@ -783,6 +783,16 @@ Shrinking gives minimal command sequences. Each `it.fails` carries the issue it 
 - **E4.** Every simulation invariant has a mutation test that fails it: an engine mutant per invariant, including `identity` and `journal-holder`.
 - **E5.** None of the 64 identifiers in §8.2 remains in `plugin/src/core` (checked by grep in CI), except `resolving` as the W(b) guard.
 - **E6.** The plugin e2e is green on Linux, Windows, macOS and emulated mobile, including the journal conformance with `transact` and the v2 → v3 migration of a fixture journal.
+
+### 10.3 Deciding behaviour the rules leave open (owner decision 2026-10-22)
+
+When the design or `SPEC.md` does not say what should happen, the engine designer decides by the first of these that settles it, and records the choice on the decision log:
+
+1. **Do what Obsidian Sync does today.** Its documented behaviour: Markdown notes in conflict are merged with diff-match-patch; other files are last-modified-wins; with the "create conflict file" option, the local change goes to `<name> (Conflicted copy <device> <YYYYMMDDHHMM>).md` and the original keeps the remote version. Where Obsidian Sync's behaviour is undocumented, this step does not apply.
+2. **Do whatever loses the least data.** Prefer keeping both versions, or making a copy, over overwriting; prefer a recoverable outcome over a tidy one.
+3. **Do whatever is simplest** to state, implement and prove.
+
+These choices can be changed later in an engine update, so they need no owner review. Changing an invariant (§5) still does.
 
 ## 11. Risks and non-goals
 
