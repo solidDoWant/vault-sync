@@ -143,4 +143,45 @@ describe("content references of a moved file", () => {
     expect(await h.journal.listPending()).toEqual([]);
     expect(h.server.liveFiles().get(copy)).toBe("same");
   });
+
+  it("names a recreate's create by the recorded content's size when the moved file changes as the intent finishes", async () => {
+    // A recreate intent (a document the server lost, displaced under its
+    // own id) with its recorded size, open at a crash, its move done: the
+    // copy holds "same". The user saves the copy again just as recovery
+    // finishes the intent. The create must pair the recorded hash with the
+    // recorded size, never with the size of the file's newer bytes (#775).
+    const copy = `n (conflict ${testDeviceName} ${testStamp}).md`;
+    let armed = false;
+    let reads = 0;
+    const h = harness({
+      merge: "default",
+      wrapVault: (inner) => ({
+        list: () => inner.list(),
+        stat: (file) => inner.stat(file),
+        watch: (listener) => inner.watch(listener),
+        write: (file, data, precondition) => inner.write(file, data, precondition),
+        rename: (from, to) => inner.rename(from, to),
+        delete: (file, precondition) => inner.delete(file, precondition),
+        read: async (file) => {
+          // Recovery reads the copy to find the move done; any later read finds it saved again.
+          if (file === copy && armed && ++reads === 2) await inner.write(copy, bytes("saved again"));
+          return inner.read(file);
+        },
+      }),
+    });
+    h.server.commit({ documentId: "N", path: "n.md", content: "same" });
+    await h.engine.pull();
+    await h.engine.settled();
+    h.engine.dispose();
+    await h.vault.rename("n.md", copy);
+    const hash = sha256Hex(bytes("same"));
+    const record = { id: "record", documentId: "N", path: "n.md", reason: "path-taken" as const, copyPath: copy, copyHash: hash, remoteRevisionId: "", at: 0 };
+    await h.journal.putIntent({ kind: "displace", documentId: "N", steps: { from: "n.md", to: copy, hash, size: 4, record, recreate: true } });
+    h.restart();
+    armed = true;
+
+    await h.engine.pull();
+
+    expect(await h.journal.listPending()).toMatchObject([{ documentId: "N", baseRevisionId: "", path: copy, contentHash: hash, size: 4n, deleted: false }]);
+  });
 });

@@ -114,3 +114,43 @@ describe("a restore that lost a document whose delete is still pending", () => {
     );
   });
 });
+
+// #788 (design §4.6): the resync forgets a released document whose deferral
+// the restore lost only when it has nothing to send. A released document can
+// keep an outbox operation: the engine releases a document whose file another
+// document's binding takes without dropping its outbox (Bindings.unbindOthers,
+// e.g. of documents a v2 journal's migration bound to one file). That
+// operation survives the restore, and the push still sends it.
+describe("a restore that lost the deferral of a released document with an outbox operation", () => {
+  it("keeps the document and its operation, and the push sends it", async () => {
+    const h = windows();
+    h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
+    await h.engine.pull();
+    h.server.commit({ documentId: "a", path: "no:te.md" }); // 2: the device releases a's file
+    await h.engine.pull();
+    await h.engine.settled();
+    expect(await files(h.vault)).toEqual(new Map());
+    const state = await h.journal.getDocument("a");
+    expect(state).toMatchObject({ binding: null, absence: "released" });
+    // A delete of a, recorded against its base, that never reached the server.
+    h.engine.dispose();
+    await h.journal.addPending({ revisionId: "delete-a", documentId: "a", baseRevisionId: state?.revisionId ?? "", path: "a.md", contentHash: state?.baseHash ?? "", size: state?.size ?? 0n, kind: "text", deleted: true });
+    h.restart();
+
+    // The restore keeps a's base and loses the rename (its deferral).
+    h.server.restoreTo(1n);
+    await h.engine.pull();
+
+    expect(await h.journal.getDeferred("a")).toBeUndefined();
+    // It stays at its restored base and released: forgotten, its head would
+    // come back as a new document's, bound to a file this device does not have.
+    expect(await h.journal.getDocument("a")).toMatchObject({ revisionId: state?.revisionId, binding: null, absence: "released" });
+    expect((await h.journal.listPending()).map((operation) => operation.revisionId)).toEqual(["delete-a"]);
+    await h.engine.push();
+    await h.engine.settled();
+
+    expect(await h.journal.listPending()).toEqual([]);
+    expect(h.server.head("a")?.deleted).toBe(true);
+    expect(await files(h.vault)).toEqual(new Map());
+  });
+});
