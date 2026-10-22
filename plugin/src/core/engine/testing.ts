@@ -684,6 +684,8 @@ export type WorldCommand =
   | { type: "remote-edit"; document: number }
   | { type: "remote-rename"; document: number; path: number }
   | { type: "remote-delete"; document: number }
+  /** Another device brings a deleted document back: a live revision with new content on its tombstone, at a pool path (#790). */
+  | { type: "remote-recreate"; document: number; path: number }
   | { type: "pull" }
   | { type: "edit-during-pull"; file: number }
   | { type: "move-onto-incoming"; file: number; path: number }
@@ -873,6 +875,13 @@ export class PropertyWorld {
         if (command.type === "remote-edit") await this.remoteCommit(documentId, path, this.remoteContent(documentId), false);
         else if (command.type === "remote-rename") await this.remoteCommit(documentId, this.paths[command.path % this.paths.length] ?? "a.md", undefined, false);
         else await this.remoteCommit(documentId, path, undefined, true);
+        break;
+      }
+      case "remote-recreate": {
+        const deleted = this.server.deletedDocuments();
+        const documentId = deleted.length === 0 ? undefined : deleted[command.document % deleted.length];
+        if (documentId === undefined) break;
+        await this.remoteCommit(documentId, this.paths[command.path % this.paths.length] ?? "a.md", this.remoteContent(documentId), false);
         break;
       }
       case "pull":

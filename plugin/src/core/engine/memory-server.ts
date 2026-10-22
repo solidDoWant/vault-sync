@@ -423,6 +423,13 @@ export class InMemoryServer {
     return documents;
   }
 
+  /** The id of every document whose head is a tombstone, sorted. */
+  deletedDocuments(): string[] {
+    const heads = new Map<string, Revision>();
+    for (const revision of this.revisions) heads.set(revision.documentId, revision);
+    return [...heads].filter(([, revision]) => revision.deleted).map(([documentId]) => documentId).sort();
+  }
+
   /** Every retained revision of `documentId`, oldest first. */
   history(documentId: string): Revision[] {
     return this.revisions.filter((revision) => revision.documentId === documentId);
