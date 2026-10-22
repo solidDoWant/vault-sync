@@ -50,7 +50,8 @@ grep -qF "The nightly simulation failed: https://example.test/run/1" "$work/repo
 grep -qF '`sim-regressions` artifact' "$work/report" || fail "the default artifact is missing"
 grep -qF "faithfulFilesystem" "$work/report" || fail "the note on faithful-filesystem cases is missing"
 
-# The faithful-filesystem job (non-gating) names its own artifact and heading.
+# A leg may name its own artifact and heading (here a faithful-filesystem
+# seed recorded before R7, whose replay command still says SIM_FAITHFUL_FS=1).
 cat >"$work/faithful" <<'EOF2'
 AssertionError: SIM FAILURE: seed 9 violated invariants (3000 steps, 3 clients):
   lost-write: e3's user wrote 0a1b2c3d to Straße.md at step 4; it is in no vault

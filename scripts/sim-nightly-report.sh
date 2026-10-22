@@ -2,8 +2,8 @@
 # Writes the Markdown body of the report the nightly simulation
 # (.github/workflows/sim-nightly.yml, docs/testing/simulation.md) makes when
 # it fails: the failing seeds, the invariants each violated, and the command
-# that replays each one. The gating job files it as an issue; the
-# faithful-filesystem job writes it to its summary.
+# that replays each one. The file-issue job writes one per failed leg, under
+# the leg's artifact and heading, and files them as one issue.
 #
 # Usage: sim-nightly-report.sh OUTPUT RUN_URL [ARTIFACT [HEADING]]
 #   OUTPUT    the captured output of `make test-sim`

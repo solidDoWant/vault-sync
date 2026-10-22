@@ -77,7 +77,7 @@ var refusedEditPattern = regexp.MustCompile(`CommitRevision\(\S+ \S+ base=[^-\s]
 
 // brokenSchedule is the schedule the broken-server check always runs: the
 // short run CI does on every pull request (SIM_SEEDS=5, SIM_STEPS=1000, the
-// default three clients and two engines). It is pinned, not taken from the SIM_* tuning
+// default three clients and two engines, on the faithful filesystem). It is pinned, not taken from the SIM_* tuning
 // variables, so that replaying one seed or running shorter schedules locally
 // cannot make the check fail, and so that it proves the CI run catches the
 // broken server.
@@ -96,7 +96,9 @@ var brokenSchedule = []string{
 // pulls and the schedule has no engine-operation steps, the shape every
 // seeded run had before #22. Since engine users joined CI's short run, its
 // seeds no longer meet a commit retried after the head moved (follow-up
-// #284), so the detector keeps the schedule it was proven on (#110).
+// #284), so the detector keeps the schedule it was proven on (#110),
+// including the folded vault and its path pool that seeded runs used before
+// refactor step R7 made the faithful filesystem the default.
 var refusedRetrySchedule = []string{
 	"SIM_SEED=",
 	"SIM_FIRST_SEED=1",
@@ -104,7 +106,7 @@ var refusedRetrySchedule = []string{
 	"SIM_STEPS=1000",
 	"SIM_CLIENTS=3",
 	"SIM_ENGINES=0",
-	"SIM_FAITHFUL_FS=",
+	"SIM_FAITHFUL_FS=0",
 }
 
 // simulation is a running server plus control endpoint.

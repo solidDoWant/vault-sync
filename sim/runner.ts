@@ -63,12 +63,15 @@ export interface RunOptions {
    */
   retention?: boolean;
   /**
-   * The faithful filesystem (SIM_FAITHFUL_FS=1, refactor step R2 of
+   * The faithful filesystem (refactor step R2 of
    * docs/design/engine-path-ownership.md): the engines' vaults take two
    * spellings for one file as the platform's filesystem does, not by the
    * engine's file key, and the clients and users choose from
-   * faithfulPathPool. Off by default until step R7; it changes which paths a
-   * schedule's steps pick, so a run replays only with the same setting.
+   * faithfulPathPool. The seeded suites set it unless SIM_FAITHFUL_FS=0 (the
+   * default since step R7); unset here, as in scripted scenarios and in
+   * regression cases recorded without it, the run uses the folded vault. It
+   * changes which paths a schedule's steps pick, so a run replays only with
+   * the same setting.
    */
   faithfulFilesystem?: boolean;
   /**
