@@ -691,6 +691,52 @@ describe("P1 oracle (design §5.4)", () => {
     expect(violations(world, "P1")).toEqual([]);
   });
 
+  it("flags a file a document that could follow its head was moved off, committed as a new document", async () => {
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "user-edit", file: 0 });
+    // Steps 4-6, one page of the feed: the server moves the document to
+    // `no:te.md`, which Windows cannot hold, another document takes a.md,
+    // and the document moves on to b.md, which this device can hold.
+    await world.apply({ type: "remote-rename", document: 0, path: 11 });
+    await world.apply({ type: "remote-create", path: 0 });
+    // Live documents by path: a.md (the new one), then no:te.md.
+    await world.apply({ type: "remote-rename", document: 1, path: 2 });
+    // The engine moves the kept a.md aside on the page's second revision,
+    // while the server's head of its document is already at b.md: that
+    // document is not blocked, so the file stays its own.
+    await world.apply({ type: "pull" });
+    const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
+    expect(copy).toMatch(/^a \(conflict .*\)\.md$/);
+    await commitAsDevice(world, "forged-new", copy, "user 3");
+    await world.apply({ type: "restore", fraction: 1 });
+    expect(violations(world, "P1")).toContainEqual(expect.stringMatching(/create of forged-new at .* from inode 1, bound to /));
+  });
+
+  it("flags a file moved to a copy name from its document's head path, committed as a new document", async () => {
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 14 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "user-edit", file: 0 });
+    // Steps 4-6, one page of the feed: the server moves the document to
+    // `no:te.md`, which Windows cannot hold, another document takes `ı.md`,
+    // one file with I.md here, and the document moves back to I.md, the
+    // other document's F-alias, so this device holds only one of the two.
+    await world.apply({ type: "remote-rename", document: 0, path: 11 });
+    await world.apply({ type: "remote-create", path: 13 });
+    await world.apply({ type: "remote-rename", document: 0, path: 14 });
+    // The engine moves the kept I.md aside on the page's second revision,
+    // while the server's head of its document is already back at I.md: its
+    // head claims no other path, so the move is no detach.
+    await world.apply({ type: "pull" });
+    const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
+    expect(copy).toMatch(/^I \(conflict .*\)\.md$/);
+    await commitAsDevice(world, "forged-new", copy, "user 3");
+    await world.apply({ type: "restore", fraction: 1 });
+    expect(violations(world, "P1")).toContainEqual(expect.stringMatching(/create of forged-new at .* from inode 1, bound to /));
+  });
+
   it("flags a displaced document's file committed as a new document", async () => {
     const world = new PropertyWorld("posix");
     await world.apply({ type: "user-create", path: 0 });

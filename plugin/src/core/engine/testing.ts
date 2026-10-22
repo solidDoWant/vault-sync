@@ -721,6 +721,19 @@ export function withoutCopyNames(path: string): string {
 
 const worldEncoder = new TextEncoder();
 
+/**
+ * The harness's own check of the world paths a platform cannot hold
+ * (worldPaths), independent of the engine's rules (vaultpath/platform.ts):
+ * Windows's forbidden characters, trailing dots and spaces and reserved
+ * names, and Android shared storage's forbidden characters.
+ */
+function harnessCannotHold(path: string, platform: PathPlatform): boolean {
+  const segments = path.split("/");
+  if (platform === "windows") return segments.some((segment) => /[<>:"|?*]/.test(segment) || segment.endsWith(".") || segment.endsWith(" ") || /^(con|prn|aux|nul|com[0-9]|lpt[0-9])(\.|$)/i.test(segment));
+  if (platform === "android") return segments.some((segment) => /[":*<>?|]/.test(segment));
+  return false;
+}
+
 function byText(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
@@ -1188,10 +1201,12 @@ export class PropertyWorld {
    * (design §4.5 W(b), PO-4(b), §5.5 X-20): the inode is bound to a document
    * D at a path where D was synced (a revision of D there, and no user
    * rename of the inode onto it since), the server's live head of D is
-   * elsewhere, and the move is to a conflict-copy name, not to that head's
-   * path. D cannot follow its head there (a non-disk blocker, PO-11), so the
-   * file is given up and is an untracked copy the push commits as a new
-   * document. A displace (W(a), a local move) keeps the inode D's.
+   * elsewhere, at a path D is blocked from (`blocked`), and the move is to
+   * a conflict-copy name, not to that head's path. D cannot follow its head
+   * there (a non-disk blocker, PO-11), so the file is given up and is an
+   * untracked copy the push commits as a new document. A displace (W(a), a
+   * local move) keeps the inode D's, and so does a move of a document that
+   * could follow its head.
    */
   private detached(inode: number, from: string, to: string): boolean {
     const documentId = this.bound.get(inode);
@@ -1201,9 +1216,25 @@ export class PropertyWorld {
     const key = this.inodes.key(from);
     const headPath = new TextDecoder().decode(head.path);
     if (this.inodes.key(headPath) === key || this.inodes.key(headPath) === this.inodes.key(to)) return false;
+    if (!this.blocked(documentId, headPath)) return false;
     const synced = lastRevision(this.revisions, (revision) => revision.documentId === documentId && !revision.deleted && this.inodes.key(revision.path) === key);
     if (synced === undefined) return false;
     return !this.userOperations.some((operation) => operation.type === "rename" && operation.inode === inode && operation.path !== undefined && this.inodes.key(operation.path) === key && operation.step > synced.step);
+  }
+
+  /**
+   * Whether `documentId` is blocked from its head at `headPath` here (PO-11),
+   * by the harness's own rules, not the engine's: the platform cannot hold
+   * the path (`harnessCannotHold`), or another live document's path is one
+   * file with it under `F` but another under `K` (an `F`-alias, design
+   * §3.1), so the device holds only one of them. The world has no scope and
+   * no download cap, so no document is out of scope or too large; a
+   * deferred merge (`local-changes`) is no blocker that detaches (§4.5).
+   */
+  private blocked(documentId: string, headPath: string): boolean {
+    if (harnessCannotHold(headPath, this.pathRules.platform)) return true;
+    const file = this.inodes.key(headPath);
+    return [...this.server.liveDocuments()].some(([path, other]) => other !== documentId && this.inodes.key(path) === file && pathKey(path) !== pathKey(headPath));
   }
 
   private bind(inode: number, documentId: string): void {
