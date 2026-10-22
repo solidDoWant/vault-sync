@@ -458,9 +458,113 @@ const ghostsCollideAfterRestore: WorldCommand[] = [
   { type: "pull" },
   { type: "remote-edit", document: 0 },
 ];
+/**
+ * #913's class (INV-2, PO-12, PO-4, design §4.6): a document synced at `I.md`,
+ * renamed locally or not, that a restore to nothing makes a ghost, then a
+ * head of another document at a path colliding with `I.md` under `K` that
+ * the pull defers: another document's file holds its one file name (`ı.md`
+ * on Windows and macOS, an `F`-alias). The deferral is that document's newest
+ * server claim, so the ghost yields in that pull. The commands around the
+ * head vary.
+ */
+const deferredOnGhost: fc.Arbitrary<[PathPlatform, WorldCommand[]]> = fc
+  .tuple(fc.constantFrom<PathPlatform>("windows", "macos"), fc.constantFrom(0, 1, 2, 3, 4), fc.array(fc.oneof(...ghostCommands), { maxLength: 4 }), ghost, fc.array(fc.oneof(...ghostCommands), { maxLength: 4 }))
+  .map(([on, target, before, document, after]) => [
+    on,
+    [
+      { type: "remote-create", path: 3 },
+      { type: "push" },
+      { type: "user-rename", file: 0, mode: "pool", target },
+      { type: "restore", fraction: 0 },
+      { type: "remote-create", path: 2 },
+      ...before,
+      { type: "remote-create", path: 0 },
+      { type: "remote-rename", document, path: 3 },
+      { type: "pull" },
+      ...after,
+    ],
+  ]);
+const p3DeferredOnGhost: Definition<[PathPlatform, WorldCommand[]]> = {
+  property: "P3",
+  cases: deferredOnGhost,
+  check: async ([on, list]) => {
+    const world = new PropertyWorld(on, ghostPaths);
+    for (const command of list) await world.apply(command);
+    await world.quiesce();
+    return violations(world, "P3");
+  },
+};
+/** #913's counterexample (nightly seed 566, case 60,114 after #909). */
+const deferredOnGhostPath: WorldCommand[] = [
+  { type: "remote-create", path: 3 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 4 },
+  { type: "restore", fraction: 0 },
+  { type: "remote-create", path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "remote-rename", document: 0, path: 2 },
+  { type: "remote-create", path: 0 },
+  { type: "remote-rename", document: 0, path: 3 },
+  { type: "pull" },
+  { type: "remote-create", path: 0 },
+];
+/**
+ * The class's second case (seed 566, case 21,359 of the property below): on
+ * macOS a document the user moved to `ı.md` is renamed on the server to
+ * `I.md`, one file with it under `F`. The pull keeps the local move, so it
+ * claims no path for the file, but the base moves to `I.md`, which the
+ * ghost's synced path is under `K`.
+ */
+const movedHeadOnGhostPath: WorldCommand[] = [
+  { type: "remote-create", path: 3 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 1 },
+  { type: "restore", fraction: 0 },
+  { type: "remote-create", path: 2 },
+  { type: "remote-rename", document: 0, path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "user-rename", file: 0, mode: "pool", target: 2 },
+  { type: "remote-create", path: 0 },
+  { type: "remote-rename", document: 0, path: 3 },
+  { type: "pull" },
+];
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
+/**
+ * The alphabet of #926's class (INV-4, PO-5, PO-14): paths that include the
+ * conflict-copy names this device gives an untracked file (`testDeviceName`
+ * at `testDate`), so another device's rename of a document onto a copy name
+ * the device has just written, on the same feed page or a later one, is
+ * generated. The copy is in the way of the document's move there and must
+ * move on to another name, never be taken for a copy kept before.
+ */
+const copyNamePaths: readonly string[] = [
+  "a.md",
+  "a (conflict laptop 2026-10-18 040506).md",
+  "A (conflict laptop 2026-10-18 040506).md",
+  "ı.md",
+  "I (conflict laptop 2026-10-18 040506).md",
+  "ı (conflict laptop 2026-10-18 040506).md",
+  "I.md",
+];
+const copyName = fc.nat({ max: copyNamePaths.length - 1 });
+const copyNameCommands: fc.Arbitrary<WorldCommand>[] = [
+  copyName.map((path) => ({ type: "user-create", path })),
+  few.map((file) => ({ type: "user-edit", file })),
+  copyName.map((path) => ({ type: "remote-create", path })),
+  few.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(few, copyName).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc.tuple(few, copyName).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+];
+/** P5 over copyNameCommands (#926), on every platform. */
+const p5CopyNames: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P5",
+  cases: fc.tuple(platform, commands(copyNameCommands)),
+  check: async ([on, steps]) => (await play(on, steps, copyNamePaths)).world.lostWrites(),
+};
 /**
  * P7's alphabet: the steady one over the paths of `worldPaths` whose `K` and
  * `F` disagree (`Café.md` NFC and NFD, `Straße.md`, `STRASSE.md`) and a case
@@ -893,7 +997,11 @@ describe("engine properties (design §9.3)", () => {
       // #886 (seed 566, the run after the fix): a restore rolls a document back along this device's history onto a
       // ghost's synced path; the ghost yields in the resync.
       scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }),
+      // #913 (seed 566, after #909): a pulled head at a locally renamed ghost's synced path, deferred as an `F`-alias of
+      // another document's file; the ghost yields in the pull.
+      scripted("windows", ...deferredOnGhostPath),
     ]);
+    expect(await p3Ghosts.check(scripted("windows", ...deferredOnGhostPath))).toEqual([]);
     expect(await p3Ghosts.check(scripted("windows", ...ghostsCollideAfterRestore))).toEqual([]);
     expect(await p3Ghosts.check(scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }))).toEqual([]);
     expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
@@ -907,6 +1015,16 @@ describe("engine properties (design §9.3)", () => {
     expect(await p3CollidingGhosts.check(ghostsCollideAfterRestore)).toEqual([]);
     await holds(p3CollidingGhosts, [ghostsCollideAfterRestore]);
     await holds(p4CollidingGhosts, Array.from({ length: 24 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", ghostsCollideAfterRestore, write + 1]));
+  });
+
+  // #913 (INV-2, PO-12, PO-4, design §4.6): a pulled head deferred at a ghost's synced path (an `F`-alias of another
+  // document's file holds it) is its document's newest server claim, so the ghost yields in that pull, as it does to an
+  // applied, merged or rolled-back head; so does it to a head whose document's local move the pull keeps. Fixed cases:
+  // #913's counterexample (nightly seed 566) and the second case of its class.
+  it("P3: a ghost yields its synced path to a head the pull defers there or whose local move it keeps", { timeout }, async () => {
+    expect(await p3DeferredOnGhost.check(["windows", deferredOnGhostPath])).toEqual([]);
+    expect(await p3DeferredOnGhost.check(["macos", movedHeadOnGhostPath])).toEqual([]);
+    await holds<[PathPlatform, WorldCommand[]]>(p3DeferredOnGhost, [["windows", deferredOnGhostPath], ["macos", movedHeadOnGhostPath]]);
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
@@ -1201,6 +1319,20 @@ describe("engine properties (design §9.3)", () => {
   // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853. #882's (seed 566,
   // PO-9): the server carried the user's move before a remote delete, so rule W's copy name is no local change and the
   // delete wins. #933's (seed 566, PO-9): nor is the folder spelling the disk kept for a user's move the server carried.
+  // #926 (INV-4, PO-5, PO-14): another device moves a document onto the conflict-copy name this device just gave an
+  // untracked file in the way of that document. The copy is in the way of the move and moves on to another name; the
+  // engine never takes it for a copy it kept of the same content before and deletes it. Fixed cases: #926's
+  // counterexample, the create and the move on one feed page, and the move in a later pull.
+  it("P5: a remote rename onto the conflict-copy name the device just gave an untracked file keeps the file", { timeout }, async () => {
+    const fixed = [
+      scripted("posix", { type: "remote-create", path: 3 }, { type: "user-create", path: 3 }, { type: "remote-rename", document: 0, path: 5 }, { type: "user-edit", file: 0 }),
+      // The move comes in a later pull: the copy's conflict record is still logged.
+      scripted("posix", { type: "remote-create", path: 3 }, { type: "user-create", path: 3 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 5 }, { type: "pull" }),
+    ];
+    for (const example of fixed) expect(await p5CopyNames.check(example), JSON.stringify(example[1])).toEqual([]);
+    await holds(p5CopyNames, fixed);
+  });
+
   it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
