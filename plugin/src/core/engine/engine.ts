@@ -245,6 +245,8 @@ interface MergeSteps {
   copies: MergeCopy[];
   /** Migrated from a `merging` marker (journal v6): finished only if the disk shows the result. */
   legacy?: boolean;
+  /** The result moved off the document's local rename to a copy name (PO-4(a), #846): logged once the merge finishes. */
+  displaced?: ConflictRecord;
 }
 
 const defaultPageSize = 500;
@@ -860,7 +862,7 @@ export class SyncEngine {
       if (claims) {
         const claim = await this.claimPath(remote.path, remote.documentId);
         if (claim === "alias") return this.deferUnmaterializable(remote, "alias", descends);
-        if (claim === "held") return this.defer(remote, "path-conflict", descends);
+        if (claim === "held" || claim === "taken") return this.defer(remote, "path-conflict", descends);
       }
       if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
       const found = await this.inspect(state, remote);
@@ -948,8 +950,11 @@ export class SyncEngine {
    * synced path collides with it under the server's key. A document moved
    * aside keeps its bytes, under its own id (displace) or as an untracked
    * copy (detach); no file is ever deleted to free a path. Returns true if
-   * "held" if the path stays another document's (W(c)), or no copy name
-   * fits: the revision then waits, listed as `path-conflict`. Returns
+   * "taken" if the path stays another document's because its newest server
+   * claim is the path under the server's key (W(c)); "held" if it stays
+   * another document's for now (its own revision waits, or it is being
+   * resolved), or no copy name fits: the revision then waits, listed as
+   * `path-conflict`. Returns
    * "alias" if another live document's file holds the path's one file name
    * under another server key: the revision is unmaterializable here then
    * (ruleW, `alias`). Returns "free" once the path is clear.
@@ -958,7 +963,7 @@ export class SyncEngine {
    * the merge path keeps it as a conflict copy, or takes it if its content
    * is the revision's (supersedeCreates).
    */
-  private async claimPath(path: string, documentId: string): Promise<"free" | "held" | "alias"> {
+  private async claimPath(path: string, documentId: string): Promise<"free" | "held" | "taken" | "alias"> {
     const resolved = new Set<string>();
     // Each turn moves one holder away, or resolves one once.
     for (let turn = 0; turn < 16; turn++) {
@@ -972,7 +977,8 @@ export class SyncEngine {
       const outbox = (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId);
       const newer = this.page?.get(state.documentId);
       const move = ruleW(state, ahead, outbox, path, this.pathSpace, newer?.remote);
-      if (move === "keep" || move === "alias") return move === "keep" ? "held" : "alias";
+      if (move === "keep") return "taken";
+      if (move === "wait" || move === "alias") return move === "wait" ? "held" : "alias";
       if (move === "follow" && newer !== undefined) {
         // W(b) on the holder's newest server claim (#792): its newer revision
         // on the page is decided first, under its own id, which may move its
@@ -1445,8 +1451,8 @@ export class SyncEngine {
    * redoes the steps from the record, or drops the intent if the user
    * changed the file meanwhile, so the merge runs again.
    */
-  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, outcome: MergeResult): Promise<boolean | "held" | "alias"> {
-    if (outcome.content !== null && !isVaultRelativePath(outcome.path)) throw new Error(`the merge result's path is not vault-relative: ${outcome.path}`);
+  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, result: MergeResult): Promise<boolean | "held" | "alias"> {
+    if (result.content !== null && !isVaultRelativePath(result.path)) throw new Error(`the merge result's path is not vault-relative: ${result.path}`);
     // The document's own file, as the merge hook was given it. A document
     // whose file the user deleted has none: a file at `local.path` now is
     // another one, never this merge's to replace or move.
@@ -1458,7 +1464,32 @@ export class SyncEngine {
     // rename respells (#343). Only if the vault holds the two as one: on
     // NTFS or APFS a file at `STRASSE/b.md` is another one than
     // `straße/b.md`, so it is in the way (#447).
-    const respelled = outcome.content !== null && current !== null && outcome.path !== local.path && this.pathSpace.oneFile(outcome.path, local.path);
+    const respells = (path: string) => result.content !== null && current !== null && path !== local.path && this.pathSpace.oneFile(path, local.path);
+    let outcome = result;
+    let displaced: ConflictRecord | undefined;
+    // The path claim where the result lands (design §4.5 step 3, PO-4):
+    // another document's file in the way moves by rule W, or the result
+    // waits. Never at a path the result leaves (#473).
+    if (outcome.content !== null && !respells(outcome.path)) {
+      let claim = await this.claimPath(outcome.path, remote.documentId);
+      if (claim === "taken" && outcome.path !== remote.path) {
+        // The result keeps the document's local rename (mergePath), and
+        // another document's newest server claim is that path under the
+        // server's key (rule W's `keep`): the server will never give it this
+        // document. The local rename moves on to a conflict-copy name under
+        // the document's own id, as a commit refused with ALREADY_EXISTS
+        // would (PO-4(a) from its side, design §4.5, #846), and the result
+        // goes there.
+        const claims = (await PathClaims.load(this.pathSpace, this.journal, this.vault)).with([{ kind: "server-newer", path: remote.path, documentId: remote.documentId }]);
+        const copy = await claims.freeCopyName(outcome.path, this.copyNaming(), { documentId: remote.documentId, file: current === null ? undefined : local.path, result: null });
+        if (copy === null) return "held";
+        displaced = this.conflictRecord(remote.documentId, outcome.path, "path-taken", copy, "", remote.revisionId);
+        outcome = { ...outcome, path: copy };
+        claim = await this.claimPath(copy, remote.documentId);
+      }
+      if (claim !== "free") return claim === "taken" ? "held" : claim;
+    }
+    const respelled = respells(outcome.path);
     // The document's own file, which the result moves away from (or
     // deletes), and its synced path, where the result does not go: neither
     // takes a name from a conflict copy (#319, #299).
@@ -1467,13 +1498,6 @@ export class SyncEngine {
       file: current !== null && (outcome.content === null || outcome.path !== local.path) ? local.path : undefined,
       result: outcome.content === null ? null : outcome.path,
     };
-    // The path claim where the result lands (design §4.5 step 3, PO-4):
-    // another document's file in the way moves by rule W, or the result
-    // waits. Never at a path the result leaves (#473).
-    if (outcome.content !== null && !respelled) {
-      const claim = await this.claimPath(outcome.path, remote.documentId);
-      if (claim !== "free") return claim;
-    }
     const steps: MergeSteps = {
       revision: remote,
       local: { path: local.path, hash: current === null ? null : sha256Hex(current) },
@@ -1481,6 +1505,7 @@ export class SyncEngine {
       respelled,
       adopts: !liveHere(state) && current !== null,
       copies: [],
+      ...(displaced === undefined ? {} : { displaced }),
     };
     // A file in the way at the result's new path is no document's now: it
     // was created here concurrently with the remote document's move there,
@@ -1603,7 +1628,7 @@ export class SyncEngine {
     await this.putDocument(
       syncedState(remote),
       { kind: "merged", path: steps.result.path, hash: steps.result.hash },
-      { removePending: superseded, removeDeferred: [remote.documentId], putConflicts: steps.copies.map((copy) => copy.record), removeIntents: [id], ...this.feedCursor(remote.revisionId) },
+      { removePending: superseded, removeDeferred: [remote.documentId], putConflicts: [...steps.copies.map((copy) => copy.record), ...(steps.displaced === undefined ? [] : [steps.displaced])], removeIntents: [id], ...this.feedCursor(remote.revisionId) },
     );
     this.markDirty(steps.local.path);
     this.markDirty(steps.result.path);
