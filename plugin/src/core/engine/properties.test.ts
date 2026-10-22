@@ -921,6 +921,14 @@ describe("engine properties (design §9.3)", () => {
     // notes/ is on disk; the remote document Notes/b.md lands in it as notes/b.md (#737).
     await holds(p6Folders, [scripted("windows", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-create", path: 1 }, { type: "pull" })]);
   });
+
+  // #873: fast-check's counterexample at seed 566 — a case-only rename of a file whose folder the server spells
+  // differently left NOTES/A.MD on disk against the server's NOTES/a.md.
+  it("P6: a case-only rename in a folder of one spelling on disk converges", { timeout }, async () => {
+    const fixed = scripted("windows", { type: "remote-create", path: 12 }, { type: "user-create", path: 3 }, { type: "remote-rename", document: 0, path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-delete", document: 9 });
+    expect(await p6Folders.check(fixed)).toEqual([]);
+    await holds(p6Folders, [fixed]);
+  });
 });
 
 /** Commits `content` live on `documentId`'s head as device A would, behind the engine's back: a resurrection the oracle must judge. */
