@@ -156,9 +156,10 @@ export class SimRun {
   /**
    * The revisions restores removed, by id, with the seq they had: their
    * acknowledgements were lost by the operator's restore, not by the system
-   * (SPEC.md §8), so the server-side history check excuses exactly those.
+   * (SPEC.md §8), so the server-side history check excuses exactly those
+   * (docs/design/engine-path-ownership.md §5.5 X-23, PO-12).
    */
-  private readonly restoredAway = new Map<string, string>();
+  private restoredAway = new Map<string, string>();
 
   private constructor(
     readonly context: RunContext,
@@ -192,7 +193,8 @@ export class SimRun {
     const ids = new Ids();
     const trace: string[] = [];
     let serverSeq = 0n;
-    const run: { stepNumber: () => number; restored: () => boolean } = { stepNumber: () => 0, restored: () => false };
+    const run: { stepNumber: () => number; restores: () => number } = { stepNumber: () => 0, restores: () => 0 };
+    const restoredAway = new Map<string, string>();
     const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
     const violations: Violation[] = [];
     const purges = { seqs: new Set<bigint>(), revisions: new Set<string>() };
@@ -229,7 +231,8 @@ export class SimRun {
       purgedRevisions: purges.revisions,
       pathPool: options.faithfulFilesystem === true ? faithfulPathPool : pathPool,
       mayLoseAccess: (client) => access.members?.mayLoseAccess(client) === true,
-      restored: () => run.restored(),
+      restores: () => run.restores(),
+      restoredAway,
     };
     const members = await Members.join(http, vault.id, tokens, options.clients);
     access.members = members;
@@ -252,7 +255,9 @@ export class SimRun {
     }
     const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true, members);
     run.stepNumber = () => simRun.stepNumber;
-    run.restored = () => simRun.purgedOrRestored.restored;
+    run.restores = () => simRun.restores;
+    // The run context's read-only view, shared with the scripted clients.
+    simRun.restoredAway = restoredAway;
     return simRun;
   }
 
@@ -363,9 +368,10 @@ export class SimRun {
   }
 
   /**
-   * Restores the snapshot (Control.restore). The invariants of finish()
-   * assume the server keeps every acknowledged write, so a run that
-   * restores checks its own outcome instead.
+   * Restores the snapshot (Control.restore). A scenario that calls it
+   * directly checks its own outcome; the schedule's restore step also
+   * records what the restore removed (`restoredAway`), which finish()
+   * excuses from the history check (X-23).
    */
   async restore(): Promise<bigint> {
     this.purgedOrRestored.restored = true;

@@ -54,7 +54,8 @@ function setup(acknowledgedKind: (requested: DocumentKind) => DocumentKind) {
     purgedSeqs: new Set(),
     purgedRevisions: new Set(),
     pathPool,
-    restored: () => false,
+    restores: () => 0,
+    restoredAway: new Map(),
   };
   const client = new ScriptedClient(0, createProtocolClient({ transport: server }), "device", context);
   return { client, context, violations, trace };
