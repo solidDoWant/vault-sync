@@ -931,6 +931,34 @@ describe("the start-up content match (E7, decision 4)", () => {
     expect(h.server.deletedDocuments()).toEqual(["O"]);
   });
 
+  // The known limit of E7b (design §4.3, #827): with no identity evidence, an
+  // in-place overwrite of a bound file with a missing document's last-seen
+  // content is byte-identical to the move above, so it is taken as one. No
+  // bytes are lost: the pasted bytes sync under the missing document, and the
+  // overwritten document's previous content stays in its history.
+  it("takes an in-place overwrite with a missing file's content for a move onto that path, and loses no bytes (E7b limit, #827)", async () => {
+    const h = await syncedFiles([
+      ["N", "note.md", "note"],
+      ["O", "other.md", "other"],
+    ]);
+
+    // While the app is not running, the user pastes N's content into O's file and deletes N's file.
+    await h.vault.write("other.md", bytes("note"));
+    await h.vault.delete("note.md");
+    h.restart();
+    await h.engine.push();
+
+    expect(h.server.liveFiles()).toEqual(new Map([["other.md", "note"]]));
+    expect(h.server.liveDocuments()).toEqual(new Map([["other.md", "N"]]));
+    expect(h.server.deletedDocuments()).toEqual(["O"]);
+    const history = await h.engine.history("O");
+    const previous = history.entries.filter((entry) => !entry.deleted);
+    const [entry] = previous;
+    expect(previous.map((candidate) => candidate.path)).toEqual(["other.md"]);
+    if (entry === undefined) throw new Error("no previous revision of O");
+    expect(new TextDecoder().decode(await h.engine.readRevision(entry))).toBe("other");
+  });
+
   it("keeps a bound file that still holds its own content, even when it equals a missing file's (E7b)", async () => {
     const h = await syncedFiles([
       ["N", "note.md", "same"],

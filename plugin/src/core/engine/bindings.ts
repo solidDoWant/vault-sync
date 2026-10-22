@@ -361,7 +361,9 @@ export class Bindings {
    * is untracked, or (E7b) bound to another document but holding that
    * content and not its own `seen`: the vault moves nothing onto an
    * existing file, so that document's own file was gone, and it is
-   * `user-deleted` (PO-1, PO-3; #793). It may then take another file
+   * `user-deleted` (PO-1, PO-3; #793). An in-place overwrite with that
+   * content is byte-identical and is taken the same way (design §4.3's
+   * known limit, #827). It may then take another file
    * itself (a rename chain), until no match is left. Two identical files
    * match nothing: they stay a delete plus a create. Only a file that could
    * match is read: one of a missing document's kind and, when every such
