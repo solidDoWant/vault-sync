@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { DocumentState, RemoteRevision } from "../journal/journal";
+import { sha256Hex } from "../hash";
 import { mergePath } from "./decide";
 import { threeWayMerge, type MergeRequest } from "./merge";
 
@@ -58,6 +59,7 @@ describe("threeWayMerge (content only, decision 6)", () => {
       local: { path: local.path, content: local.content === null ? null : encoder.encode(local.content) },
       readRemoteContent: () => Promise.resolve(encoder.encode(remoteContent)),
       readBaseContent: () => Promise.resolve(encoder.encode(baseContent)),
+      descendsFromBase: true,
     };
   }
 
@@ -65,5 +67,39 @@ describe("threeWayMerge (content only, decision 6)", () => {
     const outcome = await threeWayMerge(request({ path: "renamed.md", content: "one\n" }, remote({ path: "moved.md" }), "two\n", "one\n"));
     expect(outcome).toEqual({ status: "merged", content: encoder.encode("two\n") });
     expect(outcome).not.toHaveProperty("path");
+  });
+
+  // #719 (design §4.6): a base retention purged leaves no content to merge on.
+  describe("when the base's content is gone", () => {
+    function purged(local: string, descendsFromBase: boolean, baseText: string): MergeRequest {
+      return {
+        remote: remote(),
+        base: state({ baseHash: sha256Hex(encoder.encode(baseText)) }),
+        local: { path: "renamed.md", content: encoder.encode(local) },
+        readRemoteContent: () => Promise.resolve(encoder.encode("remote edit\n")),
+        readBaseContent: () => Promise.resolve(null),
+        descendsFromBase,
+      };
+    }
+
+    it("takes the remote content when the local file is the base and the remote descends from it", async () => {
+      expect(await threeWayMerge(purged("base\n", true, "base\n"))).toEqual({ status: "merged", content: encoder.encode("remote edit\n") });
+    });
+
+    it("keeps both versions when the remote is not known to descend from the base", async () => {
+      expect(await threeWayMerge(purged("base\n", false, "base\n"))).toEqual({
+        status: "merged",
+        content: encoder.encode("remote edit\n"),
+        conflict: { reason: "base-purged", content: encoder.encode("base\n") },
+      });
+    });
+
+    it("keeps both versions when the local file changed since the base", async () => {
+      expect(await threeWayMerge(purged("local edit\n", true, "base\n"))).toEqual({
+        status: "merged",
+        content: encoder.encode("remote edit\n"),
+        conflict: { reason: "base-purged", content: encoder.encode("local edit\n") },
+      });
+    });
   });
 });

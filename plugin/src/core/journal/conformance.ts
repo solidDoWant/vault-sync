@@ -377,6 +377,16 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     },
   },
   {
+    name: "keeps whether a deferred revision descends from the base, and drops it when the deferral is replaced",
+    run: async (journal, reopen) => {
+      await journal.putDeferred(sampleDeferred("doc-1", "r2", { descendsFromBase: true }));
+      const reopened = await reopen();
+      assertEqual(await reopened.getDeferred("doc-1"), sampleDeferred("doc-1", "r2", { descendsFromBase: true }), "descending deferral");
+      await reopened.putDeferred(sampleDeferred("doc-1", "r4"));
+      assertEqual((await (await reopen()).getDeferred("doc-1"))?.descendsFromBase, undefined, "descent of the replaced deferral");
+    },
+  },
+  {
     name: "keeps why a deferred revision is unmaterializable, and drops it when the deferral is replaced",
     run: async (journal, reopen) => {
       await journal.putDeferred(sampleDeferred("doc-1", "r2", { reason: "unmaterializable", unmaterializable: "reserved-name" }));

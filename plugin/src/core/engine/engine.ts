@@ -536,8 +536,8 @@ export class SyncEngine {
    * (leaveBlockedFile), so the deferral, which blocks the document, is there
    * first.
    */
-  private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause): Promise<"deferred"> {
-    await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason });
+  private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause, descends: boolean): Promise<"deferred"> {
+    await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason, ...descent(descends) });
     await this.leaveBlockedFile(remote.documentId);
     const document = await this.unmaterializableDocument(remote, reason);
     try {
@@ -685,7 +685,7 @@ export class SyncEngine {
         const feed = { revisionId: revision.id, seq: revision.seq, anchor };
         this.feed = feed;
         try {
-          this.count(summary, await this.applyRevision(toIncoming(revision)));
+          this.count(summary, await this.applyRevision(toIncoming(revision), true));
           if (this.feed === feed) await this.journal.setCursor(revision.seq, anchor);
         } finally {
           this.feed = undefined;
@@ -722,7 +722,7 @@ export class SyncEngine {
    * Applies one remote revision, or defers it. Idempotent: a revision whose
    * apply was interrupted at any step is finished, not repeated.
    */
-  private async applyRevision(incoming: IncomingRevision): Promise<ApplyOutcome> {
+  private async applyRevision(incoming: IncomingRevision, fromFeed: boolean): Promise<ApplyOutcome> {
     const { remote } = incoming;
     const state = await this.journal.getDocument(remote.documentId);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === remote.documentId);
@@ -758,6 +758,10 @@ export class SyncEngine {
       return "applied";
     }
     const deferred = await this.journal.getDeferred(remote.documentId);
+    // Whether the revision descends from the document's base (design §4.6):
+    // from the feed of an undiverged server, for a base this server has,
+    // and not behind a deferred revision that is not known to descend.
+    const descends = fromFeed && state !== undefined && hasBase(state) && state.seq !== 0n && (deferred === undefined || deferred.descendsFromBase === true);
     // Applied or merged already: each step removes the revision's deferral
     // in its own final transaction (design §4.4), so none is left over.
     if (state?.revisionId === remote.revisionId) return "skipped";
@@ -767,7 +771,7 @@ export class SyncEngine {
       // start that finds it in scope (retryRefusedPaths).
       if (state !== undefined && remote.seq <= state.seq) return "skipped";
       if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
-      return this.defer(remote, !remote.deleted && !incoming.pathAllowed ? "invalid-path" : "out-of-scope");
+      return this.defer(remote, !remote.deleted && !incoming.pathAllowed ? "invalid-path" : "out-of-scope", descends);
     }
     if (this.overCap(remote)) {
       // Never downloaded, so never allocated (#316): nothing touches the
@@ -775,18 +779,18 @@ export class SyncEngine {
       // applies the document.
       if (state !== undefined && remote.seq <= state.seq) return "skipped";
       if (deferred !== undefined && remote.seq < deferred.revision.seq) return "skipped";
-      return this.defer(remote, "too-large");
+      return this.defer(remote, "too-large", descends);
     }
     if (deferred?.reason === "local-changes" || pending.length > 0) {
-      return this.handToMerge(remote, state);
+      return this.handToMerge(remote, state, descends);
     }
     if (state !== undefined && remote.seq <= state.seq) return "skipped";
     // A resync found the server had lost this document (seq 0): the content
     // here may exist nowhere else, so a new revision is merged, not applied.
-    if (state !== undefined && state.seq === 0n && liveHere(state)) return this.handToMerge(remote, state);
-    if (!remote.deleted && !incoming.pathAllowed) return this.defer(remote, "invalid-path");
+    if (state !== undefined && state.seq === 0n && liveHere(state)) return this.handToMerge(remote, state, descends);
+    if (!remote.deleted && !incoming.pathAllowed) return this.defer(remote, "invalid-path", descends);
     const unmaterializable = remote.deleted ? undefined : unmaterializableReason(remote.path, this.pathRules);
-    if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
+    if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable, descends);
 
     // The path claim (design §4.5 step 3): another document's file in the
     // way of the revision's path moves by rule W, or the revision waits for
@@ -801,8 +805,8 @@ export class SyncEngine {
     for (let attempt = 0; attempt < 3 && inspection === undefined; attempt++) {
       if (claims) {
         const claim = await this.claimPath(remote.path, remote.documentId);
-        if (claim === "alias") return this.deferUnmaterializable(remote, "alias");
-        if (claim === "held") return this.defer(remote, "path-conflict");
+        if (claim === "alias") return this.deferUnmaterializable(remote, "alias", descends);
+        if (claim === "held") return this.defer(remote, "path-conflict", descends);
       }
       if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
       const found = await this.inspect(state, remote);
@@ -814,8 +818,8 @@ export class SyncEngine {
       if (claims && (await this.vault.stat(remote.path)) !== null && (await this.heldByAnother(remote.path, remote.documentId))) continue;
       inspection = found;
     }
-    if (inspection === undefined) return this.defer(remote, "path-conflict");
-    if (inspection.kind === "dirty") return this.handToMerge(remote, state);
+    if (inspection === undefined) return this.defer(remote, "path-conflict", descends);
+    if (inspection.kind === "dirty") return this.handToMerge(remote, state, descends);
     // The `apply` intent (design §4.4, PO-8), recorded before the disk
     // changes: a file the apply wrote before a crash is the document's, never
     // an untracked one (#392), and its recovery finishes it (recoverApply).
@@ -828,12 +832,12 @@ export class SyncEngine {
     } catch (error) {
       const open = intent;
       if (open !== undefined) await this.bindings.transact(() => Promise.resolve({ removeIntents: [open] }));
-      if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return this.defer(remote, "path-conflict");
-      if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
+      if (isVaultError(error, "path-conflict") || isVaultError(error, "already-exists")) return this.defer(remote, "path-conflict", descends);
+      if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault", descends);
       if (isVaultError(error, "changed") && inspection.kind === "clean") {
         // Saved locally after inspect() checked it (Obsidian's autosave,
         // say; #163): a local change, so the merge path gets what is there now.
-        return this.handToMerge(remote, state);
+        return this.handToMerge(remote, state, descends);
       }
       throw error;
     }
@@ -923,7 +927,7 @@ export class SyncEngine {
         // its history (design §4.5, as amended in R7b).
         if (ahead === undefined || resolved.has(state.documentId) || this.resolving.has(state.documentId)) return "held";
         resolved.add(state.documentId);
-        await this.handToMerge(ahead.revision, state);
+        await this.handToMerge(ahead.revision, state, ahead.descendsFromBase === true);
         continue;
       }
       if (spelling === undefined) {
@@ -1199,16 +1203,16 @@ export class SyncEngine {
     }
   }
 
-  private async handToMerge(remote: RemoteRevision, state: DocumentState | undefined): Promise<"deferred" | "merged"> {
+  private async handToMerge(remote: RemoteRevision, state: DocumentState | undefined, descends: boolean): Promise<"deferred" | "merged"> {
     this.resolving.add(remote.documentId);
     try {
-      return await this.mergeRevision(remote, state);
+      return await this.mergeRevision(remote, state, descends);
     } finally {
       this.resolving.delete(remote.documentId);
     }
   }
 
-  private async mergeRevision(remote: RemoteRevision, state: DocumentState | undefined): Promise<"deferred" | "merged"> {
+  private async mergeRevision(remote: RemoteRevision, state: DocumentState | undefined, descends: boolean): Promise<"deferred" | "merged"> {
     // A merge a crash interrupted was finished or dropped before this pull
     // or push (Intents.recover, recoverMerge), so the document's state is
     // its own again.
@@ -1223,6 +1227,7 @@ export class SyncEngine {
       // purged has none any more (SPEC.md §11): never a reason to stop the
       // pull.
       readBaseContent: () => (!liveHere(state) ? Promise.resolve(null) : baseContent(this.api, this.vaultId, state.revisionId)),
+      descendsFromBase: descends,
     });
     // The hook merged the content; the path merge is the engine's (design §4.7, PO-9).
     const outcome: MergeResult | { status: "deferred" } = merged.status === "merged" ? { ...merged, path: mergePath(state, local.path, remote) } : merged;
@@ -1230,7 +1235,7 @@ export class SyncEngine {
       // The result cannot be written here: the remote path never touches the
       // disk, and the local changes stay as they are until a later revision
       // gives the document a path the platform can hold.
-      if (outcome.path === remote.path && !isVaultRelativePath(outcome.path)) return this.defer(remote, "invalid-path");
+      if (outcome.path === remote.path && !isVaultRelativePath(outcome.path)) return this.defer(remote, "invalid-path", descends);
       const unmaterializable = unmaterializableReason(outcome.path, this.pathRules);
       if (unmaterializable !== undefined && outcome.path !== remote.path && liveHere(state) && state.binding?.spelling === local.path && local.path === outcome.path) {
         // The result keeps a local rename to a path this platform cannot
@@ -1242,23 +1247,23 @@ export class SyncEngine {
         if (await this.intents.detach(state.documentId, local.path, local.path, record)) {
           this.schedulePush();
           const detached = await this.journal.getDocument(remote.documentId);
-          return this.mergeRevision(remote, detached);
+          return this.mergeRevision(remote, detached, descends);
         }
       }
-      if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable);
+      if (unmaterializable !== undefined) return this.deferUnmaterializable(remote, unmaterializable, descends);
     }
     try {
       const applied = outcome.status === "merged" ? await this.applyMerge(remote, state, local, outcome) : false;
       // Rule W left the result's path another document's (W(c)): the revision waits, listed.
-      if (applied === "held") return await this.defer(remote, "path-conflict");
+      if (applied === "held") return await this.defer(remote, "path-conflict", descends);
       // Another live document's file holds the result's one file name: unmaterializable here (ruleW).
-      if (applied === "alias") return await this.deferUnmaterializable(remote, "alias");
+      if (applied === "alias") return await this.deferUnmaterializable(remote, "alias", descends);
       if (applied) return "merged";
     } catch (error) {
-      if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault");
+      if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault", descends);
       throw error;
     }
-    return this.defer(remote, "local-changes");
+    return this.defer(remote, "local-changes", descends);
   }
 
   /**
@@ -1622,8 +1627,8 @@ export class SyncEngine {
     return !remote.deleted && remote.size > this.maxDownloadBytes;
   }
 
-  private async defer(remote: RemoteRevision, reason: DeferReason): Promise<"deferred"> {
-    await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason }], ...this.feedCursor(remote.revisionId) }));
+  private async defer(remote: RemoteRevision, reason: DeferReason, descends: boolean): Promise<"deferred"> {
+    await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends) }], ...this.feedCursor(remote.revisionId) }));
     return "deferred";
   }
 
@@ -1666,23 +1671,31 @@ export class SyncEngine {
     for (const state of await this.journal.listDocuments()) {
       if (!heads.has(state.documentId) && state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
+    // The restore may have lost a deferred revision, or the base it
+    // descends from: no deferral is known to descend any more (design §4.6).
+    for (const deferred of await this.journal.listDeferred()) {
+      if (deferred.descendsFromBase === undefined) continue;
+      const unproved = { ...deferred };
+      delete unproved.descendsFromBase;
+      await this.journal.putDeferred(unproved);
+    }
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
       const state = await this.journal.getDocument(remote.documentId);
       if (state === undefined || !hasBase(state)) {
-        this.count(summary, await this.applyRevision(incoming));
+        this.count(summary, await this.applyRevision(incoming, false));
       } else if (state.revisionId === remote.revisionId) {
         // Same revision; renumber it, as the restored server's seq values may differ.
         if (state.seq !== remote.seq) await this.putDocument({ ...state, seq: remote.seq }, { kind: "kept" });
       } else if (this.outOfScope(remote, state)) {
-        this.count(summary, await this.defer(remote, "out-of-scope"));
+        this.count(summary, await this.defer(remote, "out-of-scope", false));
       } else if (this.overCap(remote)) {
-        this.count(summary, await this.defer(remote, "too-large"));
+        this.count(summary, await this.defer(remote, "too-large", false));
       } else if (await this.rolledBack(state, remote)) {
         await this.fastForward(state, remote);
       } else {
-        this.count(summary, await this.handToMerge(remote, state));
+        this.count(summary, await this.handToMerge(remote, state, false));
       }
     }
     await this.journal.resetCursor(seq, anchor);
@@ -1752,7 +1765,7 @@ export class SyncEngine {
       const state = await this.journal.getDocument(deferred.revision.documentId);
       // Out of scope since it was deferred: its next revision, or a start that finds it in scope again, takes it on.
       if (this.outOfScope(deferred.revision, state)) continue;
-      await this.handToMerge(deferred.revision, state);
+      await this.handToMerge(deferred.revision, state, deferred.descendsFromBase === true);
     }
   }
 
@@ -2149,7 +2162,7 @@ export class SyncEngine {
       const { path } = deferred.revision;
       if (!deferred.revision.deleted && (folders.has(path) || this.pathSpace.ancestors(path).some((ancestor) => files.has(ancestor)))) continue;
       this.retried.add(deferred.revision.revisionId);
-      const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true });
+      const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true }, deferred.descendsFromBase === true);
       // Already superseded: a newer revision of the document was applied.
       if (outcome === "skipped") await this.journal.removeDeferred(deferred.revision.documentId);
     }
@@ -2369,4 +2382,9 @@ function sameHash(content: Uint8Array | null, hash: string): boolean {
 function sameContent(left: Uint8Array | null, right: Uint8Array | null): boolean {
   if (left === null || right === null) return left === right;
   return left.length === right.length && sha256Hex(left) === sha256Hex(right);
+}
+
+/** A deferral's `descendsFromBase` (design §4.6): recorded only when proved. */
+function descent(descends: boolean): { descendsFromBase?: true } {
+  return descends ? { descendsFromBase: true } : {};
 }

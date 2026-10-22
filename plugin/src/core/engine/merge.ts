@@ -1,4 +1,5 @@
 import type { ConflictReason, DocumentState, RemoteRevision } from "../journal/journal";
+import { sha256Hex } from "../hash";
 import { mergeText } from "../merge/text-merge";
 
 /**
@@ -31,6 +32,13 @@ export interface MergeRequest {
    * retention purged the base (§11), so the versions have no common base.
    */
   readBaseContent(): Promise<Uint8Array | null>;
+  /**
+   * The remote revision descends from `base` (design §4.6): it came from the
+   * change feed of a server that had not diverged since this device synced
+   * the base. False for a resync's head and every revision deferred behind
+   * one, which may be concurrent with a base the restore lost.
+   */
+  descendsFromBase: boolean;
 }
 
 /**
@@ -107,8 +115,13 @@ export const threeWayMerge: MergeHook = async (request) => {
   const keepBoth = (reason: ConflictReason): MergeOutcome => ({ status: "merged", content: remote, conflict: { reason, content: local.content ?? new Uint8Array() } });
   if (!ownFile) return keepBoth("concurrent-create");
   const baseContent = await request.readBaseContent();
-  // The device synced a base, but the server no longer has it (purged by retention).
-  if (baseContent === null) return keepBoth("base-purged");
+  if (baseContent === null) {
+    // The device synced a base, but the server no longer has it (purged by
+    // retention). A local file still at the base's content changed nothing a
+    // revision descending from that base could be concurrent with (#719).
+    if (request.descendsFromBase && sha256Hex(local.content) === base.baseHash) return { status: "merged", content: remote };
+    return keepBoth("base-purged");
+  }
   if (sameBytes(local.content, baseContent)) return { status: "merged", content: remote };
   if (sameBytes(remote, baseContent)) return { status: "merged", content: local.content };
   if (revision.kind !== "text" || base.kind !== "text") return keepBoth("binary");

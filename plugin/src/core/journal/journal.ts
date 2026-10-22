@@ -324,6 +324,13 @@ export interface DeferredRevision {
   reason: DeferReason;
   /** For `unmaterializable`: why the platform cannot hold the path. */
   unmaterializable?: UnmaterializableCause;
+  /**
+   * The revision is known to descend from the document's base: it came from
+   * the change feed of a server that had not diverged since the base was
+   * synced (design §4.6). Absent proves nothing: a resync's head, a revision
+   * deferred behind one, and a deferral an older engine wrote.
+   */
+  descendsFromBase?: true;
 }
 
 /**

@@ -256,7 +256,7 @@ describe("SyncEngine pull", () => {
       await h.engine.pull();
 
       expect(text(await h.vault.read("a.md"))).toBe("local edit");
-      expect(await h.journal.getDeferred("a")).toEqual({ reason: "local-changes", revision: expect.objectContaining({ revisionId: remote.id }) as unknown });
+      expect(await h.journal.getDeferred("a")).toEqual({ reason: "local-changes", descendsFromBase: true, revision: expect.objectContaining({ revisionId: remote.id }) as unknown });
       expect((await h.journal.getDocument("a"))?.baseHash).toBe(sha256Hex(bytes("base")));
       expect(await h.journal.getCursor()).toBe(remote.seq);
     });
