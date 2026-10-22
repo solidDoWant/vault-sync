@@ -16,7 +16,7 @@ import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
 import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
-import { boundLocalChange, mergePath, ownMovedCreate, ruleW } from "./decide";
+import { boundLocalChange, carriedDisplacement, mergePath, ownMovedCreate, ruleW } from "./decide";
 import { Intents } from "./intents";
 import { busyClaims, lost, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
@@ -1216,12 +1216,22 @@ export class SyncEngine {
     // The document's bound file is a local change the revision meets (PO-1,
     // PO-9): a local rename not pushed yet against a remote delete, or a
     // document bound on its tombstone against any revision (#790).
-    const bound = boundLocalChange(state, remote);
+    const bound = boundLocalChange(state, remote, this.pathSpace);
     if (bound !== undefined) {
       const content = await this.readOrNull(bound);
       if (content !== null) return { kind: "dirty", path: bound, content };
     }
     if (remote.deleted) {
+      // The user's move, which the delete carries, put the file elsewhere,
+      // and rule W's `displace` moved it on to a copy name (#882): that file
+      // is the one the delete removes, unless the user edited it.
+      const displaced = carriedDisplacement(state, remote, this.pathSpace);
+      if (displaced !== undefined) {
+        const content = await this.readOrNull(displaced);
+        if (content === null) return { kind: "applied" };
+        if (sha256Hex(content) === baseHash) return { kind: "clean", source: displaced, sourceHash: baseHash };
+        return { kind: "dirty", path: displaced, content };
+      }
       // Nothing there: the engine already deleted it, or the user deleted it too. Both agree.
       if (basePath === undefined || baseContent === null) return { kind: "applied" };
       // The user deleted its file, and another document's binding holds the
@@ -1450,7 +1460,7 @@ export class SyncEngine {
    */
   private async tombstoneBase(state: DocumentState | undefined, remote: RemoteRevision, local: LocalVersion): Promise<Uint8Array | null> {
     const before = state?.prior?.[0];
-    if (state?.deleted !== true || before === undefined || local.content === null || boundLocalChange(state, remote) === undefined) return null;
+    if (state?.deleted !== true || before === undefined || local.content === null || boundLocalChange(state, remote, this.pathSpace) === undefined) return null;
     const content = await baseContent(this.api, this.vaultId, before);
     return content !== null && sameContent(content, local.content) ? content : null;
   }

@@ -682,11 +682,16 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // Fixed case: #874 (seed 566), an unchanged file at another device's revision the restore lost, then that device's
-  // delete: the tombstone is pulled, never this device's resurrection (design §4.6).
+  // delete: the tombstone is pulled, never this device's resurrection (design §4.6). And #882's second (seed 566, after
+  // #874), a file moved onto an incoming path, then its document remotely renamed and deleted: the tombstone is pulled.
   it("P2: tombstones come from user deletes, resurrections from user changes", { timeout }, async () => {
-    const fixed = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0.5 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "restore", fraction: 0 });
-    expect(await p2.check(fixed)).toEqual([]);
-    await holds(p2, [fixed]);
+    const fixed = [
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0.5 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "restore", fraction: 0 }),
+      // #882 (seed 566): a file rule W displaced, its document remotely renamed and deleted; the tombstone is pulled.
+      scripted("windows", { type: "crash", write: 8 }, { type: "remote-create", path: 2 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+    ];
+    for (const example of fixed) expect(await p2.check(example), JSON.stringify(example[1])).toEqual([]);
+    await holds(p2, fixed);
   });
 
   // P3 exclusivity: INV-1 and INV-2 after every command. Flipped in R7b (#700). Fixed cases: R7a's pin (a document the
@@ -869,13 +874,18 @@ describe("engine properties (design §9.3)", () => {
   // #757 (INV-3, PO-1, PO-4(a)): a pull never adopts or merges a known document's file that the user moved onto the
   // path of a revision while the pull ran. Rule W displaces it under its own id, and the revision materializes.
   // Fixed case (#769, 20k cases): an unpushed case-only rename back to a spelling the document had wins over a later
-  // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853.
+  // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853. #882's (seed 566,
+  // PO-9): the server carried the user's move before a remote delete, so rule W's copy name is no local change and the
+  // delete wins.
   it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
       // #871 (seed 566, fixed by #853): a remote edit of a document whose local rename collides under the server's key
       // with another document's spelling; the merge result moves to a copy name instead of waiting as `path-conflict`.
       scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }, { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "push" }, { type: "user-rename", file: 3, mode: "pool", target: 6 }, { type: "remote-edit", document: 7 }),
+      // #882 (seed 566): rule W's displaced spelling is no user change, so the remote delete after the server took the
+      // user's move wins; the document stays deleted.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 6 }, { type: "remote-delete", document: 0 }, { type: "remote-rename", document: 0, path: 6 }, { type: "remote-delete", document: 0 }, { type: "move-onto-incoming", file: 1, path: 0 }),
     ];
     for (const example of fixed) expect(await movedOntoIncoming.check(example), JSON.stringify(example[1])).toEqual([]);
     await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DeferredRevision, DocumentState, RemoteRevision } from "../journal/journal";
 import { sha256Hex } from "../hash";
-import { boundLocalChange, mergePath, ruleW } from "./decide";
+import { boundLocalChange, carriedDisplacement, mergePath, ruleW } from "./decide";
 import { PathSpace } from "./pathspace";
 import { threeWayMerge, type MergeRequest } from "./merge";
 
@@ -99,25 +99,48 @@ describe("ruleW with the holder's newer revision on the feed page", () => {
 // The bound file that is a document's local change against a remote revision (design §4.5 step 4, PO-1, PO-9).
 describe("boundLocalChange (design §4.5 step 4)", () => {
   const bound = (spelling: string) => ({ spelling, fileKey: spelling, seen: "h1" });
+  const space = new PathSpace({ platform: "posix" });
 
   it("takes a moved file not pushed yet against a remote delete", () => {
-    expect(boundLocalChange(state({ binding: bound("x.md") }), remote({ deleted: true }))).toBe("x.md");
+    expect(boundLocalChange(state({ binding: bound("x.md") }), remote({ deleted: true }), space)).toBe("x.md");
   });
 
   it("takes no unmoved file against a remote delete, nor a moved one against a remote edit", () => {
-    expect(boundLocalChange(state({ binding: bound("a.md") }), remote({ deleted: true }))).toBeUndefined();
-    expect(boundLocalChange(state({ binding: bound("x.md") }), remote())).toBeUndefined();
+    expect(boundLocalChange(state({ binding: bound("a.md") }), remote({ deleted: true }), space)).toBeUndefined();
+    expect(boundLocalChange(state({ binding: bound("x.md") }), remote(), space)).toBeUndefined();
   });
 
   it("takes the file of a document bound on its tombstone against a revision that brings it back (#790)", () => {
-    expect(boundLocalChange(state({ deleted: true, binding: bound("x.md") }), remote({ path: "elsewhere.md" }))).toBe("x.md");
-    expect(boundLocalChange(state({ deleted: true, binding: bound("a.md") }), remote())).toBe("a.md");
+    expect(boundLocalChange(state({ deleted: true, binding: bound("x.md") }), remote({ path: "elsewhere.md" }), space)).toBe("x.md");
+    expect(boundLocalChange(state({ deleted: true, binding: bound("a.md") }), remote(), space)).toBe("a.md");
   });
 
   it("takes nothing for a document with no file here", () => {
-    expect(boundLocalChange(undefined, remote())).toBeUndefined();
-    expect(boundLocalChange(state({ deleted: true, binding: null, absence: "never" }), remote())).toBeUndefined();
-    expect(boundLocalChange(state({ binding: null, absence: "user-deleted" }), remote({ deleted: true }))).toBeUndefined();
+    expect(boundLocalChange(undefined, remote(), space)).toBeUndefined();
+    expect(boundLocalChange(state({ deleted: true, binding: null, absence: "never" }), remote(), space)).toBeUndefined();
+    expect(boundLocalChange(state({ binding: null, absence: "user-deleted" }), remote({ deleted: true }), space)).toBeUndefined();
+  });
+
+  // #882 (PO-9): rule W's copy name is the engine's; the user's move is to `userSpelling`.
+  it("takes no file rule W displaced against a delete at the path the user moved it to, which the server carried", () => {
+    const displaced = { ...bound("S (conflict).md"), displaced: true, userSpelling: "S.md" };
+    expect(boundLocalChange(state({ binding: displaced }), remote({ deleted: true, path: "S.md" }), space)).toBeUndefined();
+    expect(carriedDisplacement(state({ binding: displaced }), remote({ deleted: true, path: "S.md" }), space)).toBe("S (conflict).md");
+  });
+
+  it("takes a file rule W displaced against a delete at another path, or with no user spelling recorded", () => {
+    const displaced = { ...bound("S (conflict).md"), displaced: true, userSpelling: "S.md" };
+    expect(boundLocalChange(state({ binding: displaced }), remote({ deleted: true, path: "a.md" }), space)).toBe("S (conflict).md");
+    expect(carriedDisplacement(state({ binding: displaced }), remote({ deleted: true, path: "a.md" }), space)).toBeUndefined();
+    const unrecorded = { ...bound("S (conflict).md"), displaced: true };
+    expect(boundLocalChange(state({ binding: unrecorded }), remote({ deleted: true, path: "S.md" }), space)).toBe("S (conflict).md");
+    // Not displaced: the spelling is the user's own move.
+    expect(boundLocalChange(state({ binding: { ...bound("S (conflict).md"), userSpelling: "S.md" } }), remote({ deleted: true, path: "S.md" }), space)).toBe("S (conflict).md");
+  });
+
+  it("compares the user's spelling with the delete's path under the server's key", () => {
+    const displaced = { ...bound("S (conflict).md"), displaced: true, userSpelling: "s.md" };
+    expect(boundLocalChange(state({ binding: displaced }), remote({ deleted: true, path: "S.md" }), space)).toBeUndefined();
   });
 });
 

@@ -462,8 +462,8 @@ export const journalConformance: readonly JournalConformanceCase[] = [
       await journal.putDocument(bound);
       await journal.putDocument(released);
       await journal.putDocument(sampleDocument({ documentId: "doc-3", path: "other.md" }));
-      // A binding rule W's displace made (design §4.1, #802).
-      const displaced = sampleDocument({ documentId: "doc-4", path: "s.md", deleted: true, binding: { spelling: "s (copy).md", fileKey: "s (copy).md", seen: "bb", displaced: true }, absence: null });
+      // A binding rule W's displace made, with the user's spelling it moved the file off (design §4.1, #802, #882).
+      const displaced = sampleDocument({ documentId: "doc-4", path: "s.md", deleted: true, binding: { spelling: "s (copy).md", fileKey: "s (copy).md", seen: "bb", displaced: true, userSpelling: "s.md" }, absence: null });
       await journal.putDocument(displaced);
       if (bound.binding) bound.binding.spelling = "mutated.md";
       const reopened = await reopen();
@@ -477,7 +477,7 @@ export const journalConformance: readonly JournalConformanceCase[] = [
           ["doc-1", { spelling: "Note.md", fileKey: "NOTE.MD", seen: "aa" }, null],
           ["doc-2", null, "released"],
           ["doc-3", undefined, undefined],
-          ["doc-4", { spelling: "s (copy).md", fileKey: "s (copy).md", seen: "bb", displaced: true }, null],
+          ["doc-4", { spelling: "s (copy).md", fileKey: "s (copy).md", seen: "bb", displaced: true, userSpelling: "s.md" }, null],
         ],
         "listed bindings and absences",
       );

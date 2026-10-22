@@ -1,5 +1,5 @@
 import { sha256Hex } from "../hash";
-import { priorRevisionLimit, type ConflictRecord, type DocumentState, type Intent, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
+import { priorRevisionLimit, type Binding, type ConflictRecord, type DocumentState, type Intent, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
 import { isVaultError } from "../vault/adapter";
 import { hasBase, type Bindings } from "./bindings";
 import type { PathSpace } from "./pathspace";
@@ -141,7 +141,9 @@ export class Intents {
       if (state === undefined) return { removeIntents: [intent.id] };
       const operations = (await this.host.journal.listPending()).filter((operation) => operation.documentId === intent.documentId);
       // The engine, not the user, put the file at `to` (design §4.1; #802).
-      const binding = { spelling: steps.to, fileKey: this.host.space.filesystemKey(steps.to), seen: steps.hash, displaced: true };
+      // The user put it at `from`, unless the engine did that too (#882).
+      const userSpelling = state.binding?.displaced === true ? state.binding.userSpelling : steps.from;
+      const binding: Binding = { spelling: steps.to, fileKey: this.host.space.filesystemKey(steps.to), seen: steps.hash, displaced: true, ...(userSpelling === undefined || steps.recreate ? {} : { userSpelling }) };
       const changes: JournalChanges = { putConflicts: [steps.record], removeIntents: [intent.id] };
       if (intent.kind === "detach") {
         // Its outbox goes: the file is a new document's now.
