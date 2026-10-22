@@ -177,7 +177,7 @@ export class ScriptedClient {
    * does that (SPEC.md §8), and the client then pulls everything again.
    */
   private unconfirmed = new Map<string, bigint>();
-  /** The run's restores and purges as of this client's last complete pull (or its start): a divergence needs one since. */
+  /** The run's restores and purges as of the start of this client's last complete pull (or its start): a divergence needs one since. */
   private historyEvents = { restores: 0, purges: 0 };
   private documents = new Map<string, KnownDocument>();
   private contentCounter = 0;
@@ -319,6 +319,8 @@ export class ScriptedClient {
    * against the database (SimRun.finish).
    */
   private async pull(): Promise<void> {
+    // As of the pull's first request: the server may answer it from before a restore whose step comes before the reply's delivery.
+    const events = { restores: this.context.restores(), purges: this.context.purgedSeqs.size };
     for (let page = 0; page < maxPages; page++) {
       let response;
       try {
@@ -365,7 +367,7 @@ export class ScriptedClient {
           continue;
         }
         this.synced = true;
-        this.historyEvents = { restores: this.context.restores(), purges: this.context.purgedSeqs.size };
+        this.historyEvents = events;
         this.context.log(`${this.name} pulled up to seq ${String(this.cursor)}`);
         return;
       }
