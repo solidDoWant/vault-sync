@@ -796,12 +796,15 @@ describe("engine properties (design §9.3)", () => {
   // #757 (INV-3, PO-1, PO-4(a)): a pull never adopts or merges a known document's file that the user moved onto the
   // path of a revision while the pull ran. Rule W displaces it under its own id, and the revision materializes.
   // Fixed case (#769, 20k cases): an unpushed case-only rename back to a spelling the document had wins over a later
-  // remote delete (§4 R5b).
+  // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853.
   it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
+      // #871 (seed 566, fixed by #853): a remote edit of a document whose local rename collides under the server's key
+      // with another document's spelling; the merge result moves to a copy name instead of waiting as `path-conflict`.
+      scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }, { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "push" }, { type: "user-rename", file: 3, mode: "pool", target: 6 }, { type: "remote-edit", document: 7 }),
     ];
-    for (const example of fixed) expect(await movedOntoIncoming.check(example)).toEqual([]);
+    for (const example of fixed) expect(await movedOntoIncoming.check(example), JSON.stringify(example[1])).toEqual([]);
     await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);
   });
 
