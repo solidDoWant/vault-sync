@@ -256,6 +256,93 @@ describe("SimNetwork", () => {
     });
   });
 
+  describe("a retry of an applied commit that retention purged since (#845)", () => {
+    /** Commits `a` to d1 with its response lost, then `b` on top of it, so d1's head moved past `a`. */
+    async function appliedThenSuperseded(setupResult: ReturnType<typeof setup>): Promise<void> {
+      const { network, commit } = setupResult;
+      commit(0, "a", "d1");
+      await settle();
+      await network.deliverRequest();
+      network.dropResponse(0);
+      await settle();
+      commit(1, "b", "d1");
+      await settle();
+      await network.deliverRequest();
+      network.deliverResponse();
+      await settle();
+    }
+
+    it("excuses a FAILED_PRECONDITION for a revision retention purged before the retry was delivered, once the head moved past it", async () => {
+      const harness = setup();
+      await appliedThenSuperseded(harness);
+      harness.network.recordPurged("a");
+      harness.refuse.set("a", Code.FailedPrecondition);
+      harness.commit(0, "a", "d1");
+      await settle();
+      expect(await harness.network.deliverRequest()).toContain("-> FailedPrecondition");
+      expect(harness.violations).toEqual([]);
+    });
+
+    it("excuses it when the purge lands while the retry is still in flight, before it is delivered", async () => {
+      const harness = setup();
+      await appliedThenSuperseded(harness);
+      harness.refuse.set("a", Code.FailedPrecondition);
+      harness.commit(0, "a", "d1");
+      await settle();
+      harness.network.recordPurged("a");
+      expect(await harness.network.deliverRequest()).toContain("-> FailedPrecondition");
+      expect(harness.violations).toEqual([]);
+    });
+
+    it("still flags the refusal of a revision retention never purged", async () => {
+      const harness = setup();
+      await appliedThenSuperseded(harness);
+      harness.network.recordPurged("b");
+      harness.refuse.set("a", Code.FailedPrecondition);
+      harness.commit(0, "a", "d1");
+      await settle();
+      await harness.network.deliverRequest();
+      expect(harness.violations.map((violation) => violation.invariant)).toEqual(["protocol"]);
+    });
+
+    it("still flags the refusal when retention purged the revision only after the retry was delivered", async () => {
+      const harness = setup();
+      await appliedThenSuperseded(harness);
+      harness.refuse.set("a", Code.FailedPrecondition);
+      harness.commit(0, "a", "d1");
+      await settle();
+      await harness.network.deliverRequest();
+      harness.network.recordPurged("a");
+      expect(harness.violations.map((violation) => violation.invariant)).toEqual(["protocol"]);
+    });
+
+    it("still flags a purged revision's retry refused with a code other than FAILED_PRECONDITION", async () => {
+      const harness = setup();
+      await appliedThenSuperseded(harness);
+      harness.network.recordPurged("a");
+      harness.refuse.set("a", Code.AlreadyExists);
+      harness.commit(0, "a", "d1");
+      await settle();
+      expect(await harness.network.deliverRequest()).toContain("-> AlreadyExists");
+      expect(harness.violations.map((violation) => violation.invariant)).toEqual(["protocol"]);
+    });
+
+    it("still flags the refusal while the purged revision is its document's head", async () => {
+      const harness = setup();
+      harness.commit(0, "a", "d1");
+      await settle();
+      await harness.network.deliverRequest();
+      harness.network.dropResponse(0);
+      await settle();
+      harness.network.recordPurged("a");
+      harness.refuse.set("a", Code.FailedPrecondition);
+      harness.commit(0, "a", "d1");
+      await settle();
+      await harness.network.deliverRequest();
+      expect(harness.violations.map((violation) => violation.invariant)).toEqual(["protocol"]);
+    });
+  });
+
   describe("commit retry backoff (#110)", () => {
     it("holds a commit retried with a revision id it sent before for the backoff, and a first attempt not at all", async () => {
       const { network, received, commit } = setup(30);
