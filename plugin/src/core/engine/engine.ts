@@ -1814,6 +1814,11 @@ export class SyncEngine {
     const logged = (await this.journal.listConflicts()).filter((record) => record.documentId === remote.documentId && record.copyHash === hash && record.reason !== "path-taken");
     for (const record of logged) {
       if (record.copyPath === null || named.some((copy) => copy.path === record.copyPath)) continue;
+      // A logged copy where the result goes is the file in the way, not a
+      // copy kept beside it: another device moved the document onto the copy
+      // name (#926). Its file moves on to a fresh name, which freeCopyName
+      // keeps off the result's path (PO-5, PO-14).
+      if (merged.result !== null && this.pathSpace.collides(record.copyPath, merged.result, "file")) continue;
       if (sameHash(await this.readOrNull(record.copyPath), hash)) return { path: record.copyPath, hash, content: conflict.content, record };
     }
     // The revision's path is the document's newest server claim, which the journal does not hold yet.
