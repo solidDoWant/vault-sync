@@ -37,6 +37,31 @@ describe("a remote revision refused for an untracked file in the way", () => {
     expect(await devices.b.journal.listDeferred()).toEqual([]);
   });
 
+  it("is applied once the user removes a file where its path needs a folder of another spelling (#854)", async () => {
+    const devices = twoDevices({ pathRules: { platform: "macos" } });
+    await devices.a.vault.write("notes/a.md", bytes("from a\n"));
+    await devices.a.engine.push();
+
+    // An untracked file `NOTES`, where `notes/a.md` needs a folder on this device.
+    await devices.b.vault.write("NOTES", bytes("from b\n"));
+    await devices.b.engine.pull();
+    expect((await devices.b.journal.listDeferred()).map((deferred) => [deferred.revision.path, deferred.reason])).toEqual([["notes/a.md", "path-conflict"]]);
+
+    // A push whose commits fail: its retry of the refused revision runs while the file is still in the way.
+    devices.b.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("unavailable", Code.Unavailable);
+    };
+    await devices.b.engine.push().catch(() => undefined);
+    devices.b.server.interceptor = undefined;
+
+    // The user removes the file; the next push applies the revision.
+    await devices.b.vault.delete("NOTES");
+    await devices.b.engine.push();
+
+    expect(await files(devices.b.vault)).toEqual(new Map([["notes/a.md", "from a\n"]]));
+    expect(await devices.b.journal.listDeferred()).toEqual([]);
+  });
+
   it("is applied with a revision that waited for the holder it moves off the path (#843)", async () => {
     const devices = twoDevices({ pathRules: { platform: "macos" } });
     await devices.a.vault.write("h.md", bytes("holder\n"));
