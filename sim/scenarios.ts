@@ -903,8 +903,17 @@ export interface StalePageHolderResult extends RunResult {
  * file is. Rule W decides on the edited note's newest server claim, plan 2.md,
  * which Windows can hold: the note follows it under its own id with the edit,
  * and nothing is detached to a conflict copy as a new document.
+ *
+ * With `boundary` (#803), the POSIX engine also creates `fillers` notes
+ * between the first rename and the new note, so that the new note ends the
+ * Windows engine's first feed page (seven revisions) and the move to
+ * plan 2.md is on the next page. Rule W does not detach on the first page's
+ * knowledge: the new note waits until the pull has drained the feed, by when
+ * the edited note has followed its move.
  */
-export async function stalePageHolder(endpoints: SimEndpoints): Promise<StalePageHolderResult> {
+export const stalePageHolderFillers = 5;
+
+export async function stalePageHolder(endpoints: SimEndpoints, options: { boundary?: boolean } = {}): Promise<StalePageHolderResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
   const [posix, windows] = run.observers;
   if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
@@ -932,6 +941,10 @@ export async function stalePageHolder(endpoints: SimEndpoints): Promise<StalePag
   log(await windows.edit("plan.md", encoder.encode(textLines("one", "two (edited on windows)"))));
   log(await posix.move("plan.md", "plan?.md"));
   await push(posix);
+  if (options.boundary === true) {
+    for (let filler = 1; filler <= stalePageHolderFillers; filler++) log(await posix.edit(`filler ${String(filler)}.md`, encoder.encode(textLines(`filler ${String(filler)}`))));
+    await push(posix);
+  }
   log(await posix.edit("plan.md", encoder.encode(textLines("another plan"))));
   await push(posix);
   log(await posix.move("plan?.md", "plan 2.md"));

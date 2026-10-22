@@ -310,6 +310,14 @@ export class SyncEngine {
    * the pull has in hand (ruleW, `follow`; design §4.5, #792).
    */
   private page: Map<string, IncomingRevision> | undefined;
+  /**
+   * While the pull drains the feed: the documents whose revision waits
+   * (`path-conflict`) because rule W would detach a holder on knowledge the
+   * pull has so far. W(b) detaches only once the feed is drained, on the
+   * holder's newest server claim the pull has then (retryPostponed; design
+   * §4.5, PO-4, #803).
+   */
+  private postponed: Set<string> | undefined;
   /** The displace and detach intents of rule W (design §4.4). */
   private readonly intents: Intents;
   private readonly unsubscribe: () => void;
@@ -655,6 +663,37 @@ export class SyncEngine {
   private async pullRound(): Promise<PullSummary> {
     // Rule W's moves a crash interrupted are finished first (design §4.4).
     await this.intents.recover();
+    const postponed = new Set<string>();
+    this.postponed = postponed;
+    let summary: PullSummary;
+    try {
+      summary = await this.drainFeed();
+    } finally {
+      this.postponed = undefined;
+    }
+    await this.retryPostponed(postponed);
+    return summary;
+  }
+
+  /**
+   * The end of a pull (design §4.5 W(b), #803): the revisions that waited
+   * for a holder's detach while the feed was drained are decided again, now
+   * on each holder's newest server claim the pull has. A holder a later
+   * page moved off the path has followed that revision; one still blocked
+   * is detached now. A crash before this leaves an ordinary `path-conflict`
+   * deferral, which the push retries (retryRefusedPaths).
+   */
+  private async retryPostponed(postponed: ReadonlySet<string>): Promise<void> {
+    for (const documentId of postponed) {
+      const deferred = await this.journal.getDeferred(documentId);
+      if (deferred?.reason !== "path-conflict") continue;
+      const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true }, deferred.descendsFromBase === true);
+      // Already superseded: a newer revision of the document was applied.
+      if (outcome === "skipped") await this.journal.removeDeferred(documentId);
+    }
+  }
+
+  private async drainFeed(): Promise<PullSummary> {
     const summary: PullSummary = { cursor: await this.journal.getCursor(), applied: 0, deferred: 0, merged: 0, resynced: false };
     let anchor = summary.cursor > 0n ? await this.journal.getCursorAnchor() : undefined;
     const own = await this.ownCommitAbove(summary.cursor);
@@ -939,16 +978,11 @@ export class SyncEngine {
         // on the page is decided first, under its own id, which may move its
         // file off the path. A deferral it supersedes is stale, so the
         // holder is never detached on it. Each page revision is followed at
-        // most once (no loop); the feed skips it once it is applied, and the
-        // cursor stays with the revision being applied.
+        // most once (no loop); the feed skips it once it is applied. The
+        // cursor stays with the revision being applied: feedCursor moves it
+        // only in that revision's own step, never the followed one's.
         this.page?.delete(state.documentId);
-        const feed = this.feed;
-        this.feed = undefined;
-        try {
-          await this.applyRevision(newer, true);
-        } finally {
-          this.feed = feed;
-        }
+        await this.applyRevision(newer, true);
         continue;
       }
       if (move === "resolve") {
@@ -962,6 +996,14 @@ export class SyncEngine {
         resolved.add(state.documentId);
         await this.handToMerge(ahead.revision, state, ahead.descendsFromBase === true);
         continue;
+      }
+      if (move === "detach" && this.postponed !== undefined) {
+        // W(b) never detaches on what the pull knows while it drains the
+        // feed: a later page may hold the holder's newer revision, which
+        // supersedes its deferral (#803). The revision waits, and the end
+        // of the pull decides again (retryPostponed).
+        this.postponed.add(documentId);
+        return "held";
       }
       if (spelling === undefined) {
         // The server lost it and this device holds no file of it: nothing is left of it.
