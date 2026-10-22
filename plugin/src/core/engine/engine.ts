@@ -2049,7 +2049,18 @@ export class SyncEngine {
       const all = this.dirty.all;
       const seen = new Map(this.dirty.paths);
       const waiting = await this.pushRound({ all, paths: new Set(seen.keys()) }, summary, round === 0);
-      if (all) this.dirty.all = false;
+      if (all) {
+        this.dirty.all = false;
+        // A path the full scan left waiting stays dirty, as a marked one does: it is still undecided, and no event
+        // may mark it again (an untracked file a deferral holds off after a restart, #903; INV-7, PO-3). Its clock
+        // counts as seen, so it waits for a later push without starting another round.
+        for (const path of waiting) {
+          if (this.dirty.paths.has(path)) continue;
+          const clock = ++this.dirtyClock;
+          this.dirty.paths.set(path, clock);
+          seen.set(path, clock);
+        }
+      }
       for (const [path, clock] of seen) {
         if (!waiting.has(path) && this.dirty.paths.get(path) === clock) this.dirty.paths.delete(path);
       }

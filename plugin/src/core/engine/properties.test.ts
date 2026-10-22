@@ -922,7 +922,24 @@ describe("engine properties (design §9.3)", () => {
       { type: "pull" },
       { type: "edit-during-pull", file: 1 },
     ];
+    // #903 (seed 566): a remote rename onto the path the user then creates, across two restores, crashed at journal
+    // write 17: the user's create still reaches the server.
+    const recreated: WorldCommand[] = [
+      { type: "remote-create", path: 3 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "remote-edit", document: 0 },
+      { type: "remote-rename", document: 0, path: 0 },
+      { type: "push" },
+      { type: "restore", fraction: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 0, path: 2 },
+      { type: "user-create", path: 2 },
+      { type: "push" },
+      { type: "restore", fraction: 0 },
+    ];
     const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["windows", recreated, 17],
       ["windows", postponed, 5],
       ["macos", respelled, 13],
       ["macos", aliasMoved, 18],
