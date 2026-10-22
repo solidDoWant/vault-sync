@@ -135,7 +135,8 @@ describe("InMemoryVault", () => {
           await expect(vault.write("NOTES", new Uint8Array())).rejects.toSatisfy((error) => isVaultError(error, "path-conflict"));
           await vault.write("Notes/b.md", new Uint8Array([2]));
           await vault.delete("NOTES/A.MD");
-          expect(await vault.list()).toEqual(["Notes/b.md"]);
+          // The folder keeps the spelling it has on disk (#659).
+          expect(await vault.list()).toEqual(["notes/b.md"]);
         });
 
         // The server refuses two live documents whose path keys collide
@@ -266,12 +267,27 @@ describe("InMemoryVault", () => {
       expect((await notes.list()).sort()).toEqual(["STRASSE/b.md", "STRASSE/c.md", "Straße/a.md"]);
     });
 
-    it("lets each file keep its own spelling of a folder on the folded filesystem", async () => {
-      const notes = new InMemoryVault({ pathRules: { platform: "windows" } });
-      await notes.write("Notes/a.md", new Uint8Array([1]));
-      await notes.write("NOTES/x.md", new Uint8Array([2]));
-      expect((await notes.list()).sort()).toEqual(["NOTES/x.md", "Notes/a.md"]);
-    });
+    // A real disk holds one spelling per folder, so the folded vault does too
+    // (#659): it never holds `Notes/C.md` next to `notes/c.md`.
+    for (const platform of ["windows", "macos"] as const) {
+      it(`holds one spelling per folder on the folded filesystem too (${platform})`, async () => {
+        const notes = new InMemoryVault({ pathRules: { platform } });
+        await notes.write("Notes/a.md", new Uint8Array([1]));
+        await notes.write("NOTES/x.md", new Uint8Array([2]));
+        await notes.write("other.md", new Uint8Array([3]));
+        await notes.rename("other.md", "notes/y.md");
+        expect((await notes.list()).sort()).toEqual(["Notes/a.md", "Notes/x.md", "Notes/y.md"]);
+      });
+
+      // NTFS and APFS keep `Straße/` and `STRASSE/` apart, though the path
+      // key folds them, so the folded vault's folders do too.
+      it(`keeps folders apart that only the path key folds together, on the folded filesystem (${platform})`, async () => {
+        const notes = new InMemoryVault({ pathRules: { platform } });
+        await notes.write("Straße/a.md", new Uint8Array([1]));
+        await notes.write("STRASSE/b.md", new Uint8Array([2]));
+        expect((await notes.list()).sort()).toEqual(["STRASSE/b.md", "Straße/a.md"]);
+      });
+    }
   });
 
   // Faithful filesystem (docs/design/engine-path-ownership.md §3.1, step R2):

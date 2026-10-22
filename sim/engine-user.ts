@@ -162,10 +162,18 @@ export class EngineUser {
     const documents = new Set<string>();
     const pending = await this.options.journal.listPending();
     const states = await this.options.journal.listDocuments();
+    // A binding names its file by the vault's matching, not by spelling: a
+    // folder has one spelling on disk, so the binding of the server's
+    // notes/f.md may name the file the vault lists as Notes/f.md (INV-9,
+    // #737, #659).
+    const key = this.options.ledger.match;
     for (const candidate of [path, ...(this.renamedFrom.get(path) ?? [])]) {
       const synced = await this.options.journal.findDocumentByPath(candidate);
       if (synced !== undefined) documents.add(synced.documentId);
-      for (const state of states) if (state.binding?.spelling === candidate) documents.add(state.documentId);
+      for (const state of states) {
+        const spelling = state.binding?.spelling;
+        if (spelling !== undefined && key(spelling) === key(candidate)) documents.add(state.documentId);
+      }
       for (const operation of pending) if (operation.path === candidate) documents.add(operation.documentId);
       for (const document of this.movedDocuments.get(candidate) ?? []) documents.add(document);
     }

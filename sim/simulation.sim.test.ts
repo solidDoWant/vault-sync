@@ -1029,9 +1029,12 @@ describe.runIf(suites.has("scenarios"))("scripted case-only renames on a case-in
     const trace = `${tail(result.trace, 200)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}`;
 
     expect(result.violations, trace).toEqual([]);
-    expect([...result.documents.keys()], trace).toEqual(["notes/c.md"]);
+    // The user renames Notes/C.md to notes/c.md, and the folder keeps the
+    // spelling it has on disk, so the rename respells the file's own name
+    // only (#659).
+    expect([...result.documents.keys()], trace).toEqual(["Notes/c.md"]);
     expect(new Set(result.acknowledged.map((acknowledgement) => acknowledgement.documentId)).size, trace).toBe(1);
-    for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["notes/c.md", "new\n"]]));
+    for (const vault of result.vaults) expect(vault, trace).toEqual(new Map([["Notes/c.md", "new\n"]]));
     expect(result.tombstoned, trace).toEqual([]);
   });
 });
