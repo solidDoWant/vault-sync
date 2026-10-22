@@ -223,6 +223,56 @@ describe("SyncEngine resync after a server restore", () => {
       expect(h.server.liveFiles()).toEqual(new Map([["k.md", "k1"], ["renamed.md", "other device"]]));
     });
 
+    // #875 (design §4.6): this device's own commit that only renamed a file holding another device's edit wrote no
+    // content of its own, so losing it loses no write of this device's: the head is pulled, and the rename is kept (PO-9).
+    it("pulls the restored head over an unchanged file whose lost own commit only renamed another device's edit", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+      h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+      await h.engine.pull();
+      h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+      await h.engine.pull();
+      await h.vault.rename("x.md", "renamed.md");
+      await h.engine.settled();
+      await h.engine.push(); // 4: this device's rename of x2
+      expect(h.server.liveFiles().has("renamed.md")).toBe(true);
+      h.server.restoreTo(2n);
+      h.server.commit({ documentId: "x", path: "x.md", content: "other device" }); // 3
+
+      expect(await h.engine.pull()).toMatchObject({ resynced: true });
+      await h.engine.push();
+
+      expect(await h.journal.listConflicts()).toEqual([]);
+      expect(await files(h.vault)).toEqual(new Map([["k.md", "k1"], ["renamed.md", "other device"]]));
+      expect(h.server.liveFiles()).toEqual(new Map([["k.md", "k1"], ["renamed.md", "other device"]]));
+    });
+
+    // #875: a rename-only commit on top of this device's own edit still carries that edit, which the restore lost and
+    // only this device holds: both versions are kept (principle 1).
+    it("keeps both versions when the lost own rename-only commit carries this device's own edit", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+      h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+      await h.engine.pull();
+      await h.vault.write("x.md", new TextEncoder().encode("x2 from this device"));
+      await h.engine.settled();
+      await h.engine.push(); // 3
+      await h.vault.rename("x.md", "renamed.md");
+      await h.engine.settled();
+      await h.engine.push(); // 4: this device's rename of its own edit
+      expect(h.server.liveFiles().has("renamed.md")).toBe(true);
+      h.server.restoreTo(2n);
+      h.server.commit({ documentId: "x", path: "x.md", content: "other device" }); // 3
+
+      expect(await h.engine.pull()).toMatchObject({ resynced: true });
+      await h.engine.push();
+
+      const contents = [...(await files(h.vault)).values()];
+      expect(contents).toContain("x2 from this device");
+      expect(contents).toContain("other device");
+      expect([...h.server.liveFiles().values()]).toEqual(expect.arrayContaining(["x2 from this device", "other device"]));
+    });
+
     it("commits the lost revision on the restored head under the document's own id, without a conflict copy", async () => {
       const h = harness({ merge: "default" });
       const restoredHead = await rolledBack(h);
