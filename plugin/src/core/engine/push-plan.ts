@@ -37,6 +37,13 @@ export interface PushPlan {
   operations: PendingOperation[];
   /** Dirty paths the plan left for a later push: a document or path busy with an outbox or the merge path has them. */
   waiting: Set<string>;
+  /**
+   * The content the plan read in the bound file of a document it held back
+   * without an outbox (a deferral blocks it): the binding's `seen` from now
+   * on (design §4.3 E4, #877), so the start-up scan (E7) still finds the
+   * file after a rename made while the app was closed.
+   */
+  read: { documentId: string; spelling: string; hash: string }[];
   /** Documents whose synced content is back in an untracked file at their path after the user deleted their file: the push binds them to it again. */
   adopted: { state: DocumentState; path: string }[];
   /** Operations that bring a tombstoned document back from an untracked file: recorded with the document bound to it (Bindings.revived). */
@@ -79,6 +86,7 @@ export async function planPush(
     ...blocked.documents,
     ...source.pending.map((operation) => operation.documentId),
   ]);
+  const outboxes = new Set(source.pending.map((operation) => operation.documentId));
   const busyPaths = new Set([
     ...blocked.paths,
     ...source.pending.map((operation) => operation.path),
@@ -119,6 +127,7 @@ export async function planPush(
   const adopted: { state: DocumentState; path: string }[] = [];
   const revivals = new Set<string>();
   const adopting = new Set<string>();
+  const read: { documentId: string; spelling: string; hash: string }[] = [];
 
   const ghosts: { state: DocumentState; spelling: string }[] = [];
   const forgotten: string[] = [];
@@ -185,6 +194,13 @@ export async function planPush(
       busyPaths.has(at)
     ) {
       wait(at, ...(live ? [state.path] : []));
+      // Held back without an outbox, its edit is still read (E4): `seen` is
+      // what the engine last read there, and no acknowledgement will set it.
+      if (!outboxes.has(state.documentId) && isDirty(at) && source.inScope(at)) {
+        const content = await source.read(at);
+        const hash = content === null ? undefined : sha256Hex(content);
+        if (hash !== undefined && hash !== binding.seen) read.push({ documentId: state.documentId, spelling: at, hash });
+      }
       continue;
     }
     if (!source.inScope(at)) {
@@ -322,6 +338,7 @@ export async function planPush(
     ],
     waiting,
     adopted,
+    read,
     revivals,
     yielding,
     forgotten,
@@ -367,10 +384,16 @@ export interface Busy {
 export function busyClaims(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): Busy {
   const busy: Busy = { documents: new Set(), paths: new Set() };
   const states = new Map(documents.map((state) => [state.documentId, state]));
-  for (const { revision, reason } of deferred) {
+  for (const { revision, reason, unmaterializable: cause } of deferred) {
     if (reason === "invalid-path" || reason === "path-conflict") continue;
     busy.documents.add(revision.documentId);
-    busy.paths.add(revision.path);
+    // The deferred revision's path waits with it, unless the revision is an
+    // `F`-alias of another document's file (decision #52): that path is then
+    // the holder's file here, and a blocker holds no disk claim (PO-11). The
+    // holder's own change onto it, a respelling of its file, is sent, and
+    // the server's refusal (C3) moves it to a copy name under its own id
+    // (§4.5, local commits refused with `ALREADY_EXISTS`; #887).
+    if (reason !== "unmaterializable" || cause !== "alias") busy.paths.add(revision.path);
     // Its file waits with it where the file is: a path its file left is
     // free for the document the server has there (PO-11).
     const spelling = states.get(revision.documentId)?.binding?.spelling;

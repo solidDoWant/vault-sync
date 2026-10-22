@@ -10,7 +10,7 @@ import { isVaultError, type DeletePrecondition, type VaultAdapter, type VaultEve
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
-import { blobMissing, errorCode, headMoved } from "./errors";
+import { baseLost, blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
@@ -304,6 +304,8 @@ export class SyncEngine {
   private readonly retried = new Set<string>();
   /** Documents being merged right now, so rule W's resolving a holder first (W(b)) never loops back to another. */
   private readonly resolving = new Set<string>();
+  /** This device's latest acknowledged commit in this session, at the seq and anchor the server gave it (pastOwnCommit, #861). */
+  private acknowledgedAt: { seq: bigint; anchor: Uint8Array | undefined } | undefined;
   /** The feed revision the pull is applying, whose step's final transaction moves the cursor (feedCursor). */
   private feed: { revisionId: string; seq: bigint; anchor: Uint8Array | undefined } | undefined;
   /**
@@ -317,7 +319,9 @@ export class SyncEngine {
    * (`path-conflict`) because rule W would detach a holder on knowledge the
    * pull has so far. W(b) detaches only once the feed is drained, on the
    * holder's newest server claim the pull has then (retryPostponed; design
-   * §4.5, PO-4, #803).
+   * §4.5, PO-4, #803). Their deferrals are marked `postponed` in the same
+   * write, so a crash before the end of the pull leaves the retry to the end
+   * of the next one (#884).
    */
   private postponed: Set<string> | undefined;
   /** The displace and detach intents of rule W (design §4.4). */
@@ -665,15 +669,14 @@ export class SyncEngine {
   private async pullRound(): Promise<PullSummary> {
     // Rule W's moves a crash interrupted are finished first (design §4.4).
     await this.intents.recover();
-    const postponed = new Set<string>();
-    this.postponed = postponed;
+    this.postponed = new Set<string>();
     let summary: PullSummary;
     try {
       summary = await this.drainFeed();
     } finally {
       this.postponed = undefined;
     }
-    await this.retryPostponed(postponed);
+    await this.retryPostponed();
     return summary;
   }
 
@@ -682,8 +685,11 @@ export class SyncEngine {
    * for a holder's detach while the feed was drained are decided again, now
    * on each holder's newest server claim the pull has. A holder a later
    * page moved off the path has followed that revision; one still blocked
-   * is detached now. A crash before this leaves an ordinary `path-conflict`
-   * deferral, which the push retries (retryRefusedPaths).
+   * is detached now. Every deferral marked `postponed`, not only this
+   * pull's: a crash between the postponing write and here, which moved the
+   * cursor past the revision, leaves the decision to the end of the next
+   * pull, as in a run without the crash, never to whatever local change
+   * comes before the next push (#884, INV-7).
    *
    * So is every `alias` deferral whose alias the pull's revisions removed
    * (decision #52; #870, INV-7): a holder a later page moved or deleted no
@@ -692,10 +698,11 @@ export class SyncEngine {
    * not only this pull's, so a crash between the deferral and here, which
    * moved the cursor past it, changes nothing.
    */
-  private async retryPostponed(postponed: ReadonlySet<string>): Promise<void> {
-    for (const documentId of postponed) {
-      const deferred = await this.journal.getDeferred(documentId);
-      if (deferred?.reason !== "path-conflict") continue;
+  private async retryPostponed(): Promise<void> {
+    for (const { revision } of (await this.journal.listDeferred()).filter((deferred) => deferred.postponed === true)) {
+      // An earlier retry here may have applied or superseded it.
+      const deferred = await this.journal.getDeferred(revision.documentId);
+      if (deferred?.postponed !== true || deferred.reason !== "path-conflict") continue;
       await this.retryDeferred(deferred);
     }
     const listed = await this.journal.listDeferred();
@@ -1807,7 +1814,9 @@ export class SyncEngine {
   }
 
   private async defer(remote: RemoteRevision, reason: DeferReason, descends: boolean): Promise<"deferred"> {
-    await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends) }], ...this.feedCursor(remote.revisionId) }));
+    // A deferral W(b) postponed is marked in the write that moves the cursor past it (#884).
+    const postponed = reason === "path-conflict" && this.postponed?.has(remote.documentId) === true ? { postponed: true as const } : {};
+    await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends), ...postponed }], ...this.feedCursor(remote.revisionId) }));
     return "deferred";
   }
 
@@ -2055,6 +2064,8 @@ export class SyncEngine {
     );
     // The user deleted the document's file, and its synced content is back at its path: that file is its own again.
     for (const { state, path } of plan.adopted) await this.putDocument(state, { kind: "adopted", path });
+    // A held-back document's edit the plan read: its binding's `seen` (E4, #877).
+    for (const { documentId, spelling, hash } of plan.read) await this.bindings.read(documentId, spelling, hash);
     if (plan.forgotten.length > 0) await this.bindings.transact(() => Promise.resolve({ removeDocuments: plan.forgotten }));
     // A document the restored server lacks yields its path to another claim: re-created at a copy name (design §4.6).
     const recreated = new Set<string>();
@@ -2146,11 +2157,13 @@ export class SyncEngine {
    * Whether `operation` is on its document's base: the base is still the
    * one it was derived from, or the document is one the restored server
    * lacks (a ghost, or a tombstone it lost), which the operation creates
-   * again (#829).
+   * again (#829). An operation derived on the base before a resync found the
+   * restored server lacks it is not: a restore during the push lost it
+   * (#861, PO-12), and the next round derives the create.
    */
   private async onBase(operation: PendingOperation): Promise<boolean> {
     const state = await this.journal.getDocument(operation.documentId);
-    if (state !== undefined && operation.baseRevisionId === "" && lost(state)) return true;
+    if (state !== undefined && lost(state)) return operation.baseRevisionId === "";
     return (state?.revisionId ?? "") === operation.baseRevisionId;
   }
 
@@ -2312,10 +2325,21 @@ export class SyncEngine {
    * (its base is behind the server's head, so the commit is refused as head
    * moved). A stale path-conflict deferral would be removed by its retry
    * anyway, which finds it superseded.
+   *
+   * Not if this device's previous commit landed at the cursor's seq under
+   * another anchor: a restore during the push took the server back below
+   * the cursor, and the server reused that seq (#861, PO-12). Moving the
+   * cursor onto this commit would hide the divergence from the next pull,
+   * which must resync.
    */
   private async pastOwnCommit(revision: Revision): Promise<JournalChanges> {
-    if ((await this.journal.getCursor()) !== revision.seq - 1n) return {};
-    return { cursor: { seq: revision.seq, anchor: cursorAnchor(revision) } };
+    const previous = this.acknowledgedAt;
+    const anchor = cursorAnchor(revision);
+    this.acknowledgedAt = { seq: revision.seq, anchor };
+    const cursor = await this.journal.getCursor();
+    if (cursor !== revision.seq - 1n) return {};
+    if (previous?.seq === cursor && !sameBytes(previous.anchor, await this.journal.getCursorAnchor())) return {};
+    return { cursor: { seq: revision.seq, anchor } };
   }
 
   /**
@@ -2325,8 +2349,14 @@ export class SyncEngine {
    * so that document arrives. If its revision lands at the same path, the pull
    * hands it to the merge hook, which keeps the local file as a conflict copy;
    * otherwise (the paths differ only by case or Unicode form, or the hook
-   * deferred) see moveToConflictPath. INVALID_ARGUMENT: recorded as rejected.
-   * Anything else rejects the push.
+   * deferred) see moveToConflictPath. FAILED_PRECONDITION without a head on
+   * an operation with a base (a live one's blob uploaded again): the document does not
+   * exist, so a restore lost the base after the pull that started the push
+   * (#861, PO-12, design §4.6). Pull: the pull finds the divergence and its
+   * resync resolves the operation against the restored server, or an
+   * earlier resync of this push already did; the push goes on. A refusal
+   * the pull does not explain rejects the push.
+   * INVALID_ARGUMENT: recorded as rejected. Anything else rejects the push.
    */
   private async commitFailed(operation: PendingOperation, error: unknown, summary: PushSummary): Promise<void> {
     if (!(error instanceof ConnectError)) throw error;
@@ -2340,6 +2370,15 @@ export class SyncEngine {
       await this.pullOnce();
       await this.moveToConflictPath(operation, error, summary);
       return;
+    }
+    if (baseLost(error, operation)) {
+      const pulled = await this.pullOnce();
+      // A refusal the pull does not explain (no resync, the operation still
+      // pending on a base the journal holds) is a blob the server lacks: it
+      // rejects the push, as before.
+      const state = await this.journal.getDocument(operation.documentId);
+      const stillPending = (await this.journal.listPending()).some((candidate) => candidate.revisionId === operation.revisionId);
+      if (pulled.resynced || !stillPending || state === undefined || lost(state)) return;
     }
     if (error.code === Code.InvalidArgument) {
       summary.rejected.push({ operation, reason: "refused", error });
@@ -2646,11 +2685,14 @@ export class SyncEngine {
    * spelling of a folder is no move: a folder has one spelling on disk, the
    * engine never respells one (INV-9), and the vault would report no event
    * to match the expectation, which would then wait to swallow a user's
-   * later rename of the file (#737).
+   * later rename of the file (#737). So is a move to the spelling the vault
+   * already holds the file at (`from` spells its folder otherwise): the
+   * vault reports no event for it either, and a stale expectation would
+   * swallow the user's later case-only rename of the file (#873).
    */
   private async moveFile(from: string, to: string): Promise<void> {
     const held = await this.heldSpelling(from);
-    if (this.pathRules.platform !== "posix" && held !== to && this.pathSpace.sameButFolderSpelling(held, to)) return;
+    if (held === to || (this.pathRules.platform !== "posix" && this.pathSpace.sameButFolderSpelling(held, to))) return;
     await this.echoed(this.echoes.expectRename(held, to), () => this.vault.rename(from, to));
   }
 
@@ -2722,6 +2764,12 @@ function isTransient(error: unknown): boolean {
 
 function sameHash(content: Uint8Array | null, hash: string): boolean {
   return content !== null && sha256Hex(content) === hash;
+}
+
+/** Whether two cursor anchors are equal; a server without anchors gives none to compare. */
+function sameBytes(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
 function sameContent(left: Uint8Array | null, right: Uint8Array | null): boolean {

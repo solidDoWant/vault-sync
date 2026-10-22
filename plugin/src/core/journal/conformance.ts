@@ -387,6 +387,16 @@ export const journalConformance: readonly JournalConformanceCase[] = [
     },
   },
   {
+    name: "keeps whether rule W(b) postponed a deferral, and drops it when the deferral is replaced",
+    run: async (journal, reopen) => {
+      await journal.putDeferred(sampleDeferred("doc-1", "r2", { reason: "path-conflict", postponed: true }));
+      const reopened = await reopen();
+      assertEqual(await reopened.getDeferred("doc-1"), sampleDeferred("doc-1", "r2", { reason: "path-conflict", postponed: true }), "postponed deferral");
+      await reopened.putDeferred(sampleDeferred("doc-1", "r4", { reason: "path-conflict" }));
+      assertEqual((await (await reopen()).getDeferred("doc-1"))?.postponed, undefined, "postponement of the replaced deferral");
+    },
+  },
+  {
     name: "keeps why a deferred revision is unmaterializable, and drops it when the deferral is replaced",
     run: async (journal, reopen) => {
       await journal.putDeferred(sampleDeferred("doc-1", "r2", { reason: "unmaterializable", unmaterializable: "reserved-name" }));

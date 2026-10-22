@@ -17,7 +17,7 @@ import { EngineObserver, notificationSeq, serverHeads } from "./engine-observer"
 import { Members } from "./members";
 import { Ids } from "./ids";
 import { checkLostWrites, checkPhantomDeletes, checkResurrections, serverFeed, type FeedRevision } from "./invariants";
-import { checkLineage } from "./lineage";
+import { checkLineage, HarnessSeq } from "./lineage";
 import { settle, SimNetwork, StallError, type Outcome } from "./network";
 import { generateSchedule, type Step } from "./schedule";
 
@@ -192,7 +192,7 @@ export class SimRun {
 
     const ids = new Ids();
     const trace: string[] = [];
-    let serverSeq = 0n;
+    const serverSeq = new HarnessSeq();
     const run: { stepNumber: () => number; restores: () => number } = { stepNumber: () => 0, restores: () => 0 };
     const restoredAway = new Map<string, string>();
     const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
@@ -209,7 +209,7 @@ export class SimRun {
       },
       observeOutcome: (method, outcome, client) => {
         const seq = replySeq(method, outcome);
-        if (seq !== undefined && seq > serverSeq) serverSeq = seq;
+        if (seq !== undefined) serverSeq.observe(seq);
         // Each call against the role its user had while the server ran it (#35).
         for (const violation of access.members?.check(client, method, outcome) ?? []) {
           violations.push(violation);
@@ -226,7 +226,10 @@ export class SimRun {
       log,
       trace,
       stepNumber: () => run.stepNumber(),
-      serverSeq: () => serverSeq,
+      serverSeq: () => serverSeq.get(),
+      restoredTo: (headSeq) => {
+        serverSeq.restoredTo(headSeq);
+      },
       purgedSeqs: purges.seqs,
       purgedRevisions: purges.revisions,
       pathPool: options.faithfulFilesystem === true ? faithfulPathPool : pathPool,
@@ -377,6 +380,8 @@ export class SimRun {
     this.purgedOrRestored.restored = true;
     const headSeq = await this.control.restore(this.context.vaultId);
     this.context.log(`database restored to seq ${String(headSeq)}`);
+    this.context.restoredTo(headSeq);
+    for (const observer of this.observers) observer.restoredTo(headSeq);
     return headSeq;
   }
 

@@ -66,6 +66,47 @@ export type LineageEntry =
   /** The engine finished a pull or push, or its settled(): every change before timeline entry `since` was handled. */
   | { kind: "settled"; since: number; serverSeq: bigint; step: number };
 
+/**
+ * The server's head seq as far as the harness knows it, which stamps every
+ * timeline entry (RunContext.serverSeq): the highest seq a reply has
+ * carried, until a restore takes the server back to an older head. From
+ * then on seqs above that head are the restored server's, so the clock goes
+ * back to it (#861). Kept at the old server's head, it would stamp every
+ * change made after the restore after the restored server's own revisions
+ * up to that head, and the replay (checkLineage) would see a commit before
+ * the file it came from.
+ */
+export class HarnessSeq {
+  private seq = 0n;
+
+  get(): bigint {
+    return this.seq;
+  }
+
+  /** A reply carried `seq`. */
+  observe(seq: bigint): void {
+    if (seq > this.seq) this.seq = seq;
+  }
+
+  /** A restore took the server back to `headSeq`. */
+  restoredTo(headSeq: bigint): void {
+    this.seq = headSeq;
+  }
+}
+
+/**
+ * Clamps the stamps of `timeline`'s entries recorded before a restore to
+ * `headSeq`, the restored head (#861). The replay merges the timeline with
+ * the restored server's feed, in which a revision above `headSeq` came after
+ * the restore, so after every entry recorded before it; an entry still
+ * follows the revisions up to `headSeq` the restore kept.
+ */
+export function clampToRestore(timeline: LineageEntry[], headSeq: bigint): void {
+  for (const [index, entry] of timeline.entries()) {
+    if (entry.serverSeq > headSeq) timeline[index] = { ...entry, serverSeq: headSeq };
+  }
+}
+
 /** One engine's device, with its timeline and how its vault matches paths. */
 export interface EngineLineage {
   name: string;

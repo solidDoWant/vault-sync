@@ -610,8 +610,14 @@ const p6Keys: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Propert
     return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())];
   },
 };
-/** P6 with database restores (#576, #829): INV-9 holds after a restore too, since the push re-creates a document the restored server lost (design §4.6). */
-const p6Restores = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], allCommands);
+/** A push during which a restore lands, after the push's own pull and before its first commit (#861). */
+const restoreDuringPush: fc.Arbitrary<WorldCommand> = fc.double({ min: 0, max: 1, noNaN: true }).map((fraction) => ({ type: "restore-during-push", fraction }));
+/** P6 with database restores (#576, #829): INV-9 holds after a restore too, since the push re-creates a document the restored server lost (design §4.6), and after a restore during a push (#861). */
+const p6Restores = overWorld(
+  "P6",
+  async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())],
+  [...allCommands, restoreDuringPush],
+);
 
 describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
@@ -673,6 +679,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }] }),
       // #868: two closed-app renames of one file and a third onto its intermediate path, before the first push.
       scripted("macos", { type: "user-create", path: 9 }, { type: "user-create", path: 8 }, { type: "closed", changes: [{ file: 3, delete: false, target: 5 }, { file: 3, delete: false, target: 0 }, { file: 0, delete: false, target: 8 }] }, { type: "push" }),
+      // #877 (seed 566): a closed-app rename of a file whose edit a deferred, unmaterializable remote rename held back.
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "closed", changes: [{ file: 0, delete: false, target: 3 }] }, { type: "pull" }),
     ]);
   });
 
@@ -834,7 +842,20 @@ describe("engine properties (design §9.3)", () => {
       { type: "pull" },
       { type: "restore", fraction: 0 },
     ];
+    // #884 (seed 566): a crash at the write that defers `a.md`'s new revision while W(b) postpones its holder's
+    // detach (#803) still has the end of the pull detach the holder, so the user edit that follows lands on the file
+    // it lands on in a run without the crash.
+    const postponed: WorldCommand[] = [
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 0, path: 1 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "remote-create", path: 0 },
+      { type: "pull" },
+      { type: "edit-during-pull", file: 1 },
+    ];
     const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["windows", postponed, 5],
       ["macos", respelled, 13],
       ["macos", aliasMoved, 18],
       ["windows", aliasFreed, 2],
@@ -900,6 +921,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #872 (seed 566): X/b.md, held in x/, is moved to a path Windows refuses and keeps its edited file; the oracle matches it under `F`.
       scripted("windows", { type: "remote-create", path: 8 }, { type: "remote-create", path: 9 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 3 }, { type: "push" }),
+      // #887 (seed 566): an edited file respelled onto the path of an `F`-alias deferred as unmaterializable; the edit and the rename are not held off the server for good.
+      scripted("macos", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-rename", document: 0, path: 14 }, { type: "move-onto-incoming", file: 0, path: 13 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 13 }),
     ];
     for (const example of fixed) expect(await p6.check(example), JSON.stringify(example)).toEqual([]);
     await holds(p6, fixed);
@@ -913,13 +936,22 @@ describe("engine properties (design §9.3)", () => {
   // deferral of a revision the restored server lost is left to be re-derived against another document's path. #848's
   // (INV-9, PO-12): a ghost the resync keeps because its file is still bound drops its `local-changes` deferral of a
   // revision the restore lost, and so does a document whose restored head is its base (the same script restored to
-  // its first revision, the base); the push sends the bound file's version.
+  // its first revision, the base); the push sends the bound file's version. #861's (PO-12, INV-8): a restore during a
+  // push, after its pull, loses the base of the operation being committed; the push pulls and resyncs instead of failing,
+  // drops an operation its plan derived on the lost base, and keeps the cursor off the seqs the restored server reused.
   it("P6: after a database restore the device converges with the server", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-rename", document: 0, path: 8 }, { type: "pull" }, { type: "restore", fraction: 0 }, { type: "remote-delete", document: 0 }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-rename", document: 0, path: 8 }, { type: "pull" }, { type: "restore", fraction: 0.5 }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 }),
       scripted("posix", { type: "remote-create", path: 8 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-delete", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-edit", document: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "purge", revision: 0 }),
+      // #861 (PO-12, INV-8): a restore lands during the push of an edit and of a delete, losing their base.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "restore-during-push", fraction: 0 }),
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-delete", file: 0 }, { type: "restore-during-push", fraction: 0 }),
+      // #861: the push's plan holds a second document's edit on a base the resync after the first commit's refusal found lost.
+      scripted("posix", { type: "remote-create", path: 2 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 7 }, { type: "user-edit", file: 0 }, { type: "restore-during-push", fraction: 0 }),
+      // #861: the push's creates land on the restored server, which reuses the cursor's seq; the cursor must not move onto them.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "user-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "restore-during-push", fraction: 0 }, { type: "user-edit", file: 0 }),
     ];
     for (const restored of fixed) expect(await p6Restores.check(restored), JSON.stringify(restored)).toEqual([]);
     await holds(p6Restores, fixed);
@@ -984,6 +1016,14 @@ describe("engine properties (design §9.3)", () => {
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {
     // notes/ is on disk; the remote document Notes/b.md lands in it as notes/b.md (#737).
     await holds(p6Folders, [scripted("windows", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-create", path: 1 }, { type: "pull" })]);
+  });
+
+  // #873: fast-check's counterexample at seed 566 — a case-only rename of a file whose folder the server spells
+  // differently left NOTES/A.MD on disk against the server's NOTES/a.md.
+  it("P6: a case-only rename in a folder of one spelling on disk converges", { timeout }, async () => {
+    const fixed = scripted("windows", { type: "remote-create", path: 12 }, { type: "user-create", path: 3 }, { type: "remote-rename", document: 0, path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-delete", document: 9 });
+    expect(await p6Folders.check(fixed)).toEqual([]);
+    await holds(p6Folders, [fixed]);
   });
 });
 

@@ -51,6 +51,7 @@ function setup(acknowledgedKind: (requested: DocumentKind) => DocumentKind) {
     trace,
     stepNumber: () => 0,
     serverSeq: () => seq,
+    restoredTo: () => undefined,
     purgedSeqs: new Set(),
     purgedRevisions: new Set(),
     pathPool,
