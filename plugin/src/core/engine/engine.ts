@@ -1851,11 +1851,12 @@ export class SyncEngine {
     for (const { state, path } of plan.adopted) await this.putDocument(state, { kind: "adopted", path });
     if (plan.forgotten.length > 0) await this.bindings.transact(() => Promise.resolve({ removeDocuments: plan.forgotten }));
     // A document the restored server lacks yields its path to another claim: re-created at a copy name (design §4.6).
+    const recreated = new Set<string>();
     for (const { state, spelling } of plan.yielding) {
       const copy = await this.freeCopyName(spelling, { documentId: state.documentId, file: spelling, result: null });
       if (copy === null) continue;
-      await this.intents.displace(state.documentId, spelling, copy, this.conflictRecord(state.documentId, spelling, "path-taken", copy, "", ""), true);
-      plan.waiting.add(copy);
+      if (await this.intents.displace(state.documentId, spelling, copy, this.conflictRecord(state.documentId, spelling, "path-taken", copy, "", ""), true)) recreated.add(state.documentId);
+      else plan.waiting.add(copy);
     }
     for (const operation of plan.operations) {
       // An earlier commit's pull may have handed this document or path to the merge path.
@@ -1884,6 +1885,18 @@ export class SyncEngine {
       else if (plan.revivals.has(operation.revisionId)) await this.bindings.revived(operation);
       else await this.journal.addPending(operation);
       await this.commitOperation(operation, summary);
+    }
+    // The re-creates the displaces above put in the outbox are this push's,
+    // as they are when a restart recovers the intent and resumes the outbox
+    // (PO-8, INV-7, #801): the next push only gets one it cannot commit now.
+    for (const operation of await this.journal.listPending()) {
+      if (!recreated.has(operation.documentId)) continue;
+      busy = await this.busy();
+      if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path) || !this.inScope(operation.path)) {
+        plan.waiting.add(operation.path);
+        continue;
+      }
+      await this.commitOperation(await this.createFollowsBinding(operation), summary);
     }
     return plan.waiting;
   }
