@@ -762,8 +762,12 @@ describe("engine properties (design §9.3)", () => {
       // #886 (seed 566): a restore drops a deferral of a document renamed locally, exposing its stale base path, which a
       // new ghost's base path collides with under K; the ghost whose binding left its base path yields in the resync.
       scripted("windows", ...ghostsCollideAfterRestore),
+      // #886 (seed 566, the run after the fix): a restore rolls a document back along this device's history onto a
+      // ghost's synced path; the ghost yields in the resync.
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }),
     ]);
     expect(await p3Ghosts.check(scripted("windows", ...ghostsCollideAfterRestore))).toEqual([]);
+    expect(await p3Ghosts.check(scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }))).toEqual([]);
     expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
   });
 

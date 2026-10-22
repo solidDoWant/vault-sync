@@ -1934,6 +1934,10 @@ export class SyncEngine {
       } else if (await this.cachedOnly(state, anchored)) {
         this.count(summary, await this.applyRevision(incoming, false, true));
       } else if (await this.rolledBack(state, remote)) {
+        // The head becomes the base, a newest server claim: a ghost the
+        // restored server lost at its path yields to it, as to a pulled head
+        // (claimPath, `lost`; INV-2, PO-12, #867, #886).
+        if (!remote.deleted) await this.claimPath(remote.path, remote.documentId, "lost");
         await this.fastForward(state, remote);
       } else {
         this.count(summary, await this.handToMerge(remote, state, false));
