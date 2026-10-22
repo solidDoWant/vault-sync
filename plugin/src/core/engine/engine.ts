@@ -1356,7 +1356,7 @@ export class SyncEngine {
     }
   }
 
-  private async mergeRevision(remote: RemoteRevision, state: DocumentState | undefined, descends: boolean): Promise<"deferred" | "merged"> {
+  private async mergeRevision(remote: RemoteRevision, state: DocumentState | undefined, descends: boolean, again = false): Promise<"deferred" | "merged"> {
     // A merge a crash interrupted was finished or dropped before this pull
     // or push (Intents.recover, recoverMerge), so the document's state is
     // its own again.
@@ -1402,7 +1402,9 @@ export class SyncEngine {
       if (applied === "held") return await this.defer(remote, "path-conflict", descends);
       // Another live document's file holds the result's one file name: unmaterializable here (ruleW).
       if (applied === "alias") return await this.deferUnmaterializable(remote, "alias", descends);
-      if (applied) return "merged";
+      // A path claim moved the document's own file: merged again from where it is now, once.
+      if (applied === "moved" && !again) return await this.mergeRevision(remote, await this.journal.getDocument(remote.documentId), descends, true);
+      if (applied === true) return "merged";
     } catch (error) {
       if (isVaultError(error, "unmaterializable")) return this.deferUnmaterializable(remote, "refused-by-vault", descends);
       throw error;
@@ -1500,7 +1502,9 @@ export class SyncEngine {
    * nothing, if the local file no longer holds what the merge hook was given
    * (the user changed it meanwhile), or if a conflict copy has no name that
    * fits the path limits; "held" if rule W leaves the result's path another
-   * document's; and false, keeping whatever it already wrote, if the vault
+   * document's; "moved", writing nothing of the merge, if claiming the
+   * result's path moved the document's own file (rule W for another
+   * document); and false, keeping whatever it already wrote, if the vault
    * refuses a path. A file at the result's new path that is no document's
    * is first kept as a conflict copy and removed.
    *
@@ -1514,7 +1518,7 @@ export class SyncEngine {
    * redoes the steps from the record, or drops the intent if the user
    * changed the file meanwhile, so the merge runs again.
    */
-  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, result: MergeResult): Promise<boolean | "held" | "alias"> {
+  private async applyMerge(remote: RemoteRevision, state: DocumentState | undefined, local: LocalVersion, result: MergeResult): Promise<boolean | "held" | "alias" | "moved"> {
     if (result.content !== null && !isVaultRelativePath(result.path)) throw new Error(`the merge result's path is not vault-relative: ${result.path}`);
     // The document's own file, as the merge hook was given it. A document
     // whose file the user deleted has none: a file at `local.path` now is
@@ -1560,6 +1564,13 @@ export class SyncEngine {
         const server = await this.claimPath(remote.path, remote.documentId, "lost");
         if (server !== "free") return server === "taken" ? "held" : server;
       }
+      // The claims can apply another document's newer revision first, and
+      // its rule W(a) can displace this document's own file (a local rename
+      // onto that one's path under the server's key): the local version the
+      // merge read is stale, so the merge is decided again from the
+      // document's binding, never a second copy of its bytes beside an
+      // untracked first one (PO-8, PO-1, #893).
+      if (current !== null && !sameContent(await this.readOrNull(local.path), current)) return "moved";
     }
     const respelled = respells(outcome.path);
     // The document's own file, which the result moves away from (or
