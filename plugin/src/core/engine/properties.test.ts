@@ -764,16 +764,20 @@ describe("P1 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-create", path: 0 });
     await world.apply({ type: "pull" });
     await world.apply({ type: "user-edit", file: 0 });
-    // Steps 4-6, one page of the feed: the server moves the document to
-    // `no:te.md`, which Windows cannot hold, another document takes a.md,
-    // and the document moves on to b.md, which this device can hold.
+    // Steps 4-7: the server moves the document to `no:te.md`, which Windows
+    // cannot hold, another document takes a.md (and is edited), and the
+    // document moves on to b.md, which this device can hold. The feed's pages
+    // hold three revisions, so the move to b.md is on the next page, which the
+    // engine does not have when it decides on a.md (design §4.5 W(b), #792:
+    // on one page it follows the newer revision instead).
     await world.apply({ type: "remote-rename", document: 0, path: 11 });
     await world.apply({ type: "remote-create", path: 0 });
     // Live documents by path: a.md (the new one), then no:te.md.
+    await world.apply({ type: "remote-edit", document: 0 });
     await world.apply({ type: "remote-rename", document: 1, path: 2 });
-    // The engine moves the kept a.md aside on the page's second revision,
-    // while the server's head of its document is already at b.md: that
-    // document is not blocked, so the file stays its own.
+    // The engine moves the kept a.md aside on the first page's second
+    // revision, while the server's head of its document is already at b.md:
+    // that document is not blocked, so the file stays its own.
     await world.apply({ type: "pull" });
     const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
     expect(copy).toMatch(/^a \(conflict .*\)\.md$/);
@@ -787,16 +791,20 @@ describe("P1 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-create", path: 14 });
     await world.apply({ type: "pull" });
     await world.apply({ type: "user-edit", file: 0 });
-    // Steps 4-6, one page of the feed: the server moves the document to
-    // `no:te.md`, which Windows cannot hold, another document takes `ı.md`,
-    // one file with I.md here, and the document moves back to I.md, the
-    // other document's F-alias, so this device holds only one of the two.
+    // Steps 4-7: the server moves the document to `no:te.md`, which Windows
+    // cannot hold, another document takes `ı.md`, one file with I.md here
+    // (and is edited), and the document moves back to I.md, the other
+    // document's F-alias, so this device holds only one of the two. The move
+    // back is on the feed's next page (three revisions a page), which the
+    // engine does not have when it decides on I.md (design §4.5 W(b), #792).
     await world.apply({ type: "remote-rename", document: 0, path: 11 });
     await world.apply({ type: "remote-create", path: 13 });
+    // Live documents by path: no:te.md, then ı.md (the new one).
+    await world.apply({ type: "remote-edit", document: 1 });
     await world.apply({ type: "remote-rename", document: 0, path: 14 });
-    // The engine moves the kept I.md aside on the page's second revision,
-    // while the server's head of its document is already back at I.md: its
-    // head claims no other path, so the move is no detach.
+    // The engine moves the kept I.md aside on the first page's second
+    // revision, while the server's head of its document is already back at
+    // I.md: its head claims no other path, so the move is no detach.
     await world.apply({ type: "pull" });
     const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
     expect(copy).toMatch(/^I \(conflict .*\)\.md$/);
