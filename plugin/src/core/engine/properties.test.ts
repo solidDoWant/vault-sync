@@ -28,7 +28,7 @@ import { sha256Hex } from "../hash";
 import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
 import { kindValue } from "./remote";
-import { files, harness, PropertyWorld, testDeviceId, withoutCopyNames, worldPaths, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import { files, harness, PropertyWorld, remoteDeviceId, testDeviceId, withoutCopyNames, worldPaths, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
 import { uploadContent } from "./upload";
 
 declare module "vitest" {
@@ -419,7 +419,11 @@ const movedOntoIncoming = overWorld(
  * D follows it under its own id with the edit: nothing is detached as a new
  * document. Generated over the platforms and paths that refuse D's middle
  * revision, D's paths, and whether D's refused revision was pulled on an
- * earlier page.
+ * earlier page. #803's cross-page class: remote creates elsewhere fill the
+ * feed page so that E's take-over ends it and D's move is on the next page,
+ * which the pull has not fetched when it first decides on D's old path. W(b)
+ * detaches only once the pull has drained the feed, on D's newest server
+ * claim then, so D follows its move there too.
  */
 const holdable = [0, 2, 3, 5, 8, 10];
 const stalePageHolderCases = fc
@@ -429,18 +433,35 @@ const stalePageHolderCases = fc
     target: fc.constantFrom(...holdable),
     back: fc.boolean(),
     earlier: fc.boolean(),
+    boundary: fc.boolean(),
   })
   .filter(({ start, target, back }) => back || start !== target)
-  .map(({ refused: [on, refused], start, target, back, earlier }) => {
+  .map(({ refused: [on, refused], start, target, back, earlier, boundary }) => {
     const path = (index: number) => worldPaths[index] ?? "";
     // The world picks a remote command's document by its index among the live documents sorted by path.
-    const sorted = [path(start), path(refused)].sort();
-    const list: WorldCommand[] = [{ type: "remote-create", path: start }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: refused }];
+    const live = [path(start)];
+    const index = (at: string) => [...live].sort().indexOf(at);
+    const list: WorldCommand[] = [{ type: "remote-create", path: start }, { type: "pull" }, { type: "user-edit", file: 0 }];
+    list.push({ type: "remote-rename", document: index(path(start)), path: refused });
+    live[0] = path(refused);
     // The move back after E's delete needs a page of its own (three revisions).
-    if (earlier || back) list.push({ type: "pull" });
+    const pulled = earlier || back;
+    if (pulled) list.push({ type: "pull" });
+    if (boundary) {
+      // Pages hold three revisions: E's take-over is the last of its page.
+      const fillers = holdable.filter((filler) => filler !== start && filler !== target).slice(0, pulled ? 2 : 1);
+      for (const filler of fillers) {
+        list.push({ type: "remote-create", path: filler });
+        live.push(path(filler));
+      }
+    }
     list.push({ type: "remote-create", path: start });
-    if (back) list.push({ type: "remote-delete", document: sorted.indexOf(path(start)) }, { type: "remote-rename", document: 0, path: start });
-    else list.push({ type: "remote-rename", document: sorted.indexOf(path(refused)), path: target });
+    live.push(path(start));
+    if (back) {
+      list.push({ type: "remote-delete", document: index(path(start)) });
+      live.pop();
+      list.push({ type: "remote-rename", document: index(path(refused)), path: start });
+    } else list.push({ type: "remote-rename", document: index(path(refused)), path: target });
     list.push({ type: "pull" }, { type: "push" });
     return { on, list, head: path(back ? start : target) };
   });
@@ -623,11 +644,15 @@ describe("engine properties (design §9.3)", () => {
 
   // #792 (PO-4(b), PO-11; INV-1, INV-3): rule W never detaches a document on a deferral that a newer revision of it,
   // later on the feed page the pull is applying, supersedes. The document follows its newest server claim under its own
-  // id, with the user's edit. Fixed cases: the issue's reproduction, and its move-back variant.
+  // id, with the user's edit. #803: also when that revision is on a later page, as W(b) detaches only once the pull has
+  // drained the feed. Fixed cases: #792's reproduction and its move-back variant, and both across a page boundary.
   it("P1: a document follows its newest revision on the feed page instead of being detached on a stale one", { timeout }, async () => {
     const fixed = [
       { on: "windows" as const, list: [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 1, path: 2 }, { type: "pull" }, { type: "push" }] as WorldCommand[], head: "b.md" },
       { on: "windows" as const, list: [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "pull" }, { type: "remote-create", path: 0 }, { type: "remote-delete", document: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "pull" }, { type: "push" }] as WorldCommand[], head: "a.md" },
+      // #803: E's take-over ends the first page, and D's move is on the next one.
+      { on: "windows" as const, list: [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "remote-create", path: 5 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 2, path: 2 }, { type: "pull" }, { type: "push" }] as WorldCommand[], head: "b.md" },
+      { on: "windows" as const, list: [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "pull" }, { type: "remote-create", path: 2 }, { type: "remote-create", path: 5 }, { type: "remote-create", path: 0 }, { type: "remote-delete", document: 1 }, { type: "remote-rename", document: 2, path: 0 }, { type: "pull" }, { type: "push" }] as WorldCommand[], head: "a.md" },
     ];
     for (const example of fixed) expect(await stalePageHolder.check(example)).toEqual([]);
     await holds(stalePageHolder, fixed);
@@ -680,6 +705,35 @@ async function commitAsDevice(world: PropertyWorld, documentId: string, path: st
     deleted: false,
     deviceId: testDeviceId,
   });
+}
+
+/**
+ * Arms another device's move of `documentId` to `path`, committed right after
+ * the engine first defers a revision as `path-conflict`: while device A's
+ * pull runs, after it fetched the feed's last page, so the move is not in
+ * that pull (a concurrent commit).
+ */
+function moveWhenDeferred(world: PropertyWorld, documentId: string, path: string): void {
+  const transact = world.journal.transact.bind(world.journal);
+  let armed = true;
+  world.journal.transact = async (changes) => {
+    await transact(changes);
+    if (!armed || !(changes.putDeferred ?? []).some((deferred) => deferred.reason === "path-conflict")) return;
+    armed = false;
+    const head = world.server.head(documentId);
+    const api = createProtocolClient({ transport: world.server.transport });
+    await api.sync.commitRevision({
+      vaultId: world.server.vaultId,
+      documentId,
+      revisionId: `moved-${documentId}`,
+      baseRevId: head?.id ?? "",
+      kind: kindValue("text"),
+      contentRef: head?.contentRef,
+      path: new TextEncoder().encode(path),
+      deleted: false,
+      deviceId: remoteDeviceId,
+    });
+  };
 }
 
 // The P2 oracle credits a resurrection to an edit that wins over a delete
@@ -817,20 +871,17 @@ describe("P1 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-create", path: 0 });
     await world.apply({ type: "pull" });
     await world.apply({ type: "user-edit", file: 0 });
-    // Steps 4-7: the server moves the document to `no:te.md`, which Windows
-    // cannot hold, another document takes a.md (and is edited), and the
-    // document moves on to b.md, which this device can hold. The feed's pages
-    // hold three revisions, so the move to b.md is on the next page, which the
-    // engine does not have when it decides on a.md (design §4.5 W(b), #792:
-    // on one page it follows the newer revision instead).
+    // Steps 4-5: the server moves the document to `no:te.md`, which Windows
+    // cannot hold, and another document takes a.md. While the pull runs,
+    // after it fetched the feed's last page, another device moves the
+    // document on to b.md, which this device can hold (#803: a move on a
+    // later page of the same pull is followed instead).
     await world.apply({ type: "remote-rename", document: 0, path: 11 });
     await world.apply({ type: "remote-create", path: 0 });
-    // Live documents by path: a.md (the new one), then no:te.md.
-    await world.apply({ type: "remote-edit", document: 0 });
-    await world.apply({ type: "remote-rename", document: 1, path: 2 });
-    // The engine moves the kept a.md aside on the first page's second
-    // revision, while the server's head of its document is already at b.md:
-    // that document is not blocked, so the file stays its own.
+    moveWhenDeferred(world, "r-1", "b.md");
+    // The engine moves the kept a.md aside at the end of the pull, while the
+    // server's head of its document is already at b.md: that document is not
+    // blocked, so the file stays its own.
     await world.apply({ type: "pull" });
     const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
     expect(copy).toMatch(/^a \(conflict .*\)\.md$/);
@@ -844,20 +895,18 @@ describe("P1 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-create", path: 14 });
     await world.apply({ type: "pull" });
     await world.apply({ type: "user-edit", file: 0 });
-    // Steps 4-7: the server moves the document to `no:te.md`, which Windows
-    // cannot hold, another document takes `ı.md`, one file with I.md here
-    // (and is edited), and the document moves back to I.md, the other
-    // document's F-alias, so this device holds only one of the two. The move
-    // back is on the feed's next page (three revisions a page), which the
-    // engine does not have when it decides on I.md (design §4.5 W(b), #792).
+    // Steps 4-5: the server moves the document to `no:te.md`, which Windows
+    // cannot hold, and another document takes `ı.md`, one file with I.md
+    // here. While the pull runs, after it fetched the feed's last page,
+    // another device moves the document back to I.md, the other document's
+    // F-alias, so this device holds only one of the two (#803: a move on a
+    // later page of the same pull is followed instead).
     await world.apply({ type: "remote-rename", document: 0, path: 11 });
     await world.apply({ type: "remote-create", path: 13 });
-    // Live documents by path: no:te.md, then ı.md (the new one).
-    await world.apply({ type: "remote-edit", document: 1 });
-    await world.apply({ type: "remote-rename", document: 0, path: 14 });
-    // The engine moves the kept I.md aside on the first page's second
-    // revision, while the server's head of its document is already back at
-    // I.md: its head claims no other path, so the move is no detach.
+    moveWhenDeferred(world, "r-1", "I.md");
+    // The engine moves the kept I.md aside at the end of the pull, while the
+    // server's head of its document is already back at I.md: its head claims
+    // no other path, so the move is no detach.
     await world.apply({ type: "pull" });
     const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
     expect(copy).toMatch(/^I \(conflict .*\)\.md$/);

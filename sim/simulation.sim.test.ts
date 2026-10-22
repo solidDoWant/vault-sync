@@ -19,7 +19,7 @@ import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
-import { stalePageHolder } from "./scenarios";
+import { stalePageHolder, stalePageHolderFillers } from "./scenarios";
 import { historyRestores } from "./history-scenarios";
 import { restoreWindow } from "./restore-scenarios";
 import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
@@ -507,6 +507,24 @@ describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
     const expected = new Map([
       ["plan 2.md", "one\ntwo (edited on windows)\n"],
       ["plan.md", "another plan\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    // The edited note is still the same document; nothing became a new document's conflict copy.
+    expect(result.documents.size, trace).toBe(expected.size);
+    expect(result.documents.get("plan 2.md"), trace).toBe(result.before.get("plan.md"));
+  });
+
+  // #803 (PO-4(b), PO-11; INV-3): as above, with the move on the Windows engine's next feed page.
+  it("lets an edited note follow its newest revision on a later feed page instead of detaching it on a name Windows cannot hold", async () => {
+    const result = await stalePageHolder(environment, { boundary: true });
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([
+      ["plan 2.md", "one\ntwo (edited on windows)\n"],
+      ["plan.md", "another plan\n"],
+      ...Array.from({ length: stalePageHolderFillers }, (_, index): [string, string] => [`filler ${String(index + 1)}.md`, `filler ${String(index + 1)}\n`]),
     ]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
