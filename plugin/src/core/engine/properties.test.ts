@@ -63,7 +63,13 @@ const renameMode = fc.constantFrom<RenameMode>("pool", "case", "respell", "folde
 /** A database restore to a fraction of the server's head seq. */
 const restore: fc.Arbitrary<WorldCommand> = fc.double({ min: 0, max: 1, noNaN: true }).map((fraction) => ({ type: "restore", fraction }));
 
-/** The alphabet of §9.3 without crashes (P4 places its own crash). */
+/**
+ * A known document's file the user moves onto the path of a revision with
+ * its bytes while the pull reads it (#757, design §4.5 step 3, INV-3, PO-4(a)).
+ */
+const moveOntoIncoming: fc.Arbitrary<WorldCommand> = fc.tuple(index, index).map(([file, path]) => ({ type: "move-onto-incoming", file, path }));
+
+/** The alphabet of §9.3 without crashes (P4 places its own crash), with `move-onto-incoming` since #769. */
 const steadyCommands: fc.Arbitrary<WorldCommand>[] = [
   index.map((path) => ({ type: "user-create", path })),
   index.map((file) => ({ type: "user-edit", file })),
@@ -78,6 +84,7 @@ const steadyCommands: fc.Arbitrary<WorldCommand>[] = [
   fc.constant({ type: "push" }),
   restore,
   index.map((revision) => ({ type: "purge", revision })),
+  moveOntoIncoming,
 ];
 
 const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write }))];
@@ -152,15 +159,10 @@ const outboxCommands: fc.Arbitrary<WorldCommand>[] = [
 const platform = fc.constantFrom<PathPlatform>("posix", "windows", "macos");
 
 /**
- * The alphabet of #757's class (design §4.5 step 3, INV-3, PO-4(a)): a known
- * document's file the user moves onto the path of a revision with its bytes
- * while the pull reads it (`move-onto-incoming`), among the steady commands
- * without restores and purges.
+ * The alphabet of #757's class: `move-onto-incoming` among the steady
+ * commands without restores and purges, so that it comes more often.
  */
-const movedOntoIncomingCommands: fc.Arbitrary<WorldCommand>[] = [
-  ...steadyCommands.filter((command) => command !== restore).slice(0, 11),
-  fc.tuple(index, index).map(([file, path]) => ({ type: "move-onto-incoming", file, path })),
-];
+const movedOntoIncomingCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands.filter((command) => command !== restore).slice(0, 11), moveOntoIncoming];
 
 /**
  * The alphabet of #768's class (INV-2, PO-12): a document's revision deferred
@@ -352,12 +354,23 @@ const p6Folders: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prop
   },
 };
 /**
- * #757: P1, P2, P3 and P5 over movedOntoIncomingCommands, with no harness
- * errors. Not P6: on macOS, a document deferred as an `F`-alias keeps its
- * file, which the convergence check does not excuse yet, a gap of the check
- * this alphabet meets without the new command.
+ * #757: P1, P2, P3, P5 and P6 over movedOntoIncomingCommands, with no
+ * harness errors (P6 since #769, whose convergence check excuses the kept
+ * file of a document deferred as an `F`-alias, §5.5 X-15).
  */
-const movedOntoIncoming = overWorld("P1", async (world) => [...violations(world, "P1"), ...violations(world, "P2"), ...violations(world, "P3"), ...(await world.lostWrites()), ...world.errors.map((error) => `error: ${String(error)}`)], movedOntoIncomingCommands);
+const movedOntoIncoming = overWorld(
+  "P1",
+  async (world, quiet) => [
+    ...violations(world, "P1"),
+    ...violations(world, "P2"),
+    ...violations(world, "P3"),
+    ...(await world.lostWrites()),
+    ...world.errors.map((error) => `error: ${String(error)}`),
+    ...(quiet ? [] : ["no quiescence within the round bound"]),
+    ...(await world.convergence()),
+  ],
+  movedOntoIncomingCommands,
+);
 const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
 
 describe("engine properties (design §9.3)", () => {
@@ -376,6 +389,10 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
       // #770 (seed 719): a known document's file edited during a pull, then a create at its old path.
       scripted("windows", { type: "remote-create", path: 0 }, { type: "push" }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 0 }, { type: "remote-create", path: 0 }, { type: "user-create", path: 0 }),
+      // #769: a document re-created after a restore with bytes the remote device committed to it, and to another document first.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "restore", fraction: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+      // #769: a remote rename of a document moved locally onto the path where the user's unpushed rename put another document's file with the same bytes.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
     await holds(p1, fixed);
@@ -448,6 +465,20 @@ describe("engine properties (design §9.3)", () => {
         ],
         12,
       ],
+      // #769's, found with `move-onto-incoming` before it was limited to free target paths.
+      [
+        "posix",
+        [
+          { type: "remote-create", path: 0 },
+          { type: "remote-rename", document: 0, path: 2 },
+          { type: "remote-create", path: 0 },
+          { type: "remote-delete", document: 0 },
+          { type: "edit-during-pull", file: 0 },
+          { type: "remote-edit", document: 0 },
+          { type: "move-onto-incoming", file: 0, path: 0 },
+        ],
+        13,
+      ],
     ]);
   });
 
@@ -470,15 +501,28 @@ describe("engine properties (design §9.3)", () => {
 
   // #757 (INV-3, PO-1, PO-4(a)): a pull never adopts or merges a known document's file that the user moved onto the
   // path of a revision while the pull ran. Rule W displaces it under its own id, and the revision materializes.
-  it("P1–P3, P5: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
-    await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 })]);
+  // Fixed case (#769, 20k cases): an unpushed case-only rename back to a spelling the document had wins over a later
+  // remote delete (§4 R5b).
+  it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
+    const fixed = [
+      scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
+    ];
+    for (const example of fixed) expect(await movedOntoIncoming.check(example)).toEqual([]);
+    await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);
   });
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.
   // Flipped in R7b (#700; #583, PO-11). Fixed case: the pin before it (the engine's own file of a remote note held the
-  // folder that note's next path needs).
+  // folder that note's next path needs); #769's, an `F`-alias deferral's kept file with the user's edit (decision #52),
+  // and a remote rename onto another document's file with equal bytes that an unpushed rename put there.
   it("P6: the device converges with the server within bounded rounds", { timeout }, async () => {
-    await holds(p6, [scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 })]);
+    const fixed = [
+      scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
+      scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-create", path: 14 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 1, path: 13 }, { type: "edit-during-pull", file: 15 }, { type: "pull" }),
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+    ];
+    for (const example of fixed) expect(await p6.check(example)).toEqual([]);
+    await holds(p6, fixed);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {

@@ -1046,13 +1046,18 @@ export class SyncEngine {
     // move of it, which the disk shows). A file another document's binding
     // names (one a local rename brought to this document's synced path after
     // its file moved away) is never this revision's to replace or delete;
-    // the merge path takes the document's own file (localVersion).
-    if (inspection.kind === "clean" && inspection.source !== undefined && liveHere(state)) {
-      const binding = state.binding;
-      const owner = await this.journal.documentByFileKey(this.pathSpace.filesystemKey(inspection.source));
-      const another = owner !== undefined && owner.documentId !== state.documentId;
-      const elsewhere = binding !== undefined && binding !== null && this.pathSpace.fileKey(binding.spelling) !== this.pathSpace.fileKey(inspection.source);
-      if (another || elsewhere) return { kind: "dirty", path: inspection.source, content: await this.readOrNull(inspection.source) };
+    // the merge path takes the document's own file (localVersion). Nor does
+    // such a file show the revision applied because its bytes are equal
+    // (INV-3, PO-1): a document whose file a local move put elsewhere claims
+    // no path, and the user's unpushed rename may have brought another
+    // document's file with the same bytes to the revision's path (#769).
+    const file = inspection.kind === "clean" && liveHere(state) ? inspection.source : inspection.kind === "applied" && !remote.deleted ? remote.path : undefined;
+    if (file !== undefined) {
+      const binding = state?.binding;
+      const owner = await this.journal.documentByFileKey(this.pathSpace.filesystemKey(file));
+      const another = owner !== undefined && owner.documentId !== remote.documentId;
+      const elsewhere = inspection.kind === "clean" && binding !== undefined && binding !== null && this.pathSpace.fileKey(binding.spelling) !== this.pathSpace.fileKey(file);
+      if (another || elsewhere) return { kind: "dirty", path: file, content: await this.readOrNull(file) };
     }
     return inspection;
   }

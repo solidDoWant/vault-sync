@@ -945,10 +945,6 @@ export class PropertyWorld {
   /** INV-9 at quiescence: the problems found, empty if the device converged with the server. */
   async convergence(): Promise<string[]> {
     const problems: string[] = [];
-    // Modulo unmaterializable (INV-9): a live document whose path this platform
-    // cannot hold has no file here, and the earlier version of one, where the
-    // device kept it, is no copy of the server's.
-    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && unmaterializableReason(document.path, this.pathRules) !== undefined ? [document.localPath] : [])));
     const space = new PathSpace(this.pathRules);
     const live = [...this.server.liveFiles()].filter(([path]) => unmaterializableReason(path, this.pathRules) === undefined);
     // Modulo `F`-aliases (decision #52, #736): of live documents whose paths
@@ -956,6 +952,13 @@ export class PropertyWorld {
     // exactly one, whichever arrived first; the others are unmaterializable.
     const aliases = (path: string) => live.some(([other]) => other !== path && space.collides(other, path, "file") && !space.collides(other, path, "server"));
     const aliased = live.filter(([path]) => aliases(path));
+    // Modulo unmaterializable (INV-9): a live document whose path this platform
+    // cannot hold has no file here, and the earlier version of one, where the
+    // device kept it, is no copy of the server's. The harness decides "cannot
+    // hold" itself (§5.5 X-15): the platform refuses the path, or the path is
+    // an `F`-alias of another live document's (the kept file of a document
+    // deferred as `alias`, decision #52, #769).
+    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && (unmaterializableReason(document.path, this.pathRules) !== undefined || aliases(document.path)) ? [document.localPath] : [])));
     const held = [...(await files(this.vault))].filter(([path]) => !kept.has(path));
     // Folder segments compare under `F`, the final segment exactly (INV-9,
     // PO-10): a folder has one spelling on disk, so the server's `X/b.md` is
@@ -1274,9 +1277,14 @@ export class PropertyWorld {
       return;
     }
     const holder = this.inodes.at(revision.path);
+    // Bytes the remote device committed to this document are its own, also
+    // where it committed them to another document first (`move-onto-incoming`
+    // gives a new document a known file's bytes, #757): the origin by hash
+    // names only the first (§5.5 X-21, #769). The inode checks stay exact.
+    const foreign = origin?.kind === "remote" && origin.documentId !== revision.documentId && !this.revisions.some((candidate) => candidate !== revision && candidate.documentId === revision.documentId && candidate.deviceId === remoteDeviceId && candidate.hash === revision.hash);
     if (parent === undefined) {
       // P1 on a create: another document's content, or file, never becomes a new document.
-      if (origin?.kind === "remote" && origin.documentId !== revision.documentId) this.violation("P1", `create of ${name} carries the ${this.describe(revision.hash)}`);
+      if (foreign) this.violation("P1", `create of ${name} carries the ${this.describe(revision.hash)}`);
       const owner = holder?.hash === revision.hash ? this.bound.get(holder.inode) : undefined;
       if (holder !== undefined && owner !== undefined && owner !== revision.documentId) this.violation("P1", `create of ${name} from inode ${String(holder.inode)}, bound to ${owner}`);
       if (holder?.hash === revision.hash) this.bind(holder.inode, revision.documentId);
@@ -1300,7 +1308,11 @@ export class PropertyWorld {
       // a file at the tombstone's path (E5, INV-6). Inode-exact (§5.5 X-10).
       const earlier = this.revisions.filter((candidate) => candidate.documentId === revision.documentId && candidate.seq < revision.seq);
       const carried = new Set(earlier.map((candidate) => candidate.hash));
-      const named = new Set(earlier.map((candidate) => candidate.path));
+      // A rename is carried by a revision of the document at its path made
+      // since: a rename back to a path the document had earlier, still
+      // unpushed, is a binding change that wins over the delete (§4 R5b,
+      // §5.5 X-10, #769).
+      const carriedRename = (operation: UserOperation) => earlier.some((candidate) => candidate.path === operation.path && candidate.step >= operation.step);
       const ownInode = (inode: number) => this.everBound.get(inode)?.has(revision.documentId) === true;
       // The user created, edited or renamed the bytes since the document was
       // last live: in the document's own file, or in the file at the path
@@ -1312,7 +1324,7 @@ export class PropertyWorld {
         (operation) =>
           inodes.has(operation.inode) &&
           (((operation.type === "create" || operation.type === "edit") && operation.hash === revision.hash && !carried.has(operation.hash) && (ownInode(operation.inode) || (this.bound.get(operation.inode) === undefined && this.inodes.at(revision.path)?.inode === operation.inode))) ||
-            (operation.type === "rename" && operation.path !== undefined && !named.has(operation.path) && ownInode(operation.inode))),
+            (operation.type === "rename" && operation.path !== undefined && !carriedRename(operation) && ownInode(operation.inode))),
       );
       if (!touched && !unsynced) this.violation("P2", `live revision of ${name} on its tombstone without a user change since step ${String(since)}`);
       if (holder?.hash === revision.hash) this.bind(holder.inode, revision.documentId);
@@ -1320,7 +1332,7 @@ export class PropertyWorld {
     }
     if (parent.hash === revision.hash || origin === undefined) return;
     // P1 on an edit: the content comes from the document's own file.
-    if (origin.kind === "remote" && origin.documentId !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}`);
+    if (foreign) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}`);
     const owner = origin.kind === "user" ? this.bound.get(origin.inode) : undefined;
     if (owner !== undefined && owner !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}, an inode bound to ${owner}`);
   }
