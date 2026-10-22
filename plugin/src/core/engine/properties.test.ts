@@ -508,6 +508,26 @@ const deferredOnGhostPath: WorldCommand[] = [
   { type: "pull" },
   { type: "remote-create", path: 0 },
 ];
+/**
+ * The class's second case (seed 566, case 21,359 of the property below): on
+ * macOS a document the user moved to `ı.md` is renamed on the server to
+ * `I.md`, one file with it under `F`. The pull keeps the local move, so it
+ * claims no path for the file, but the base moves to `I.md`, which the
+ * ghost's synced path is under `K`.
+ */
+const movedHeadOnGhostPath: WorldCommand[] = [
+  { type: "remote-create", path: 3 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 1 },
+  { type: "restore", fraction: 0 },
+  { type: "remote-create", path: 2 },
+  { type: "remote-rename", document: 0, path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "user-rename", file: 0, mode: "pool", target: 2 },
+  { type: "remote-create", path: 0 },
+  { type: "remote-rename", document: 0, path: 3 },
+  { type: "pull" },
+];
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
@@ -913,10 +933,12 @@ describe("engine properties (design §9.3)", () => {
 
   // #913 (INV-2, PO-12, PO-4, design §4.6): a pulled head deferred at a ghost's synced path (an `F`-alias of another
   // document's file holds it) is its document's newest server claim, so the ghost yields in that pull, as it does to an
-  // applied, merged or rolled-back head. Fixed case: #913's counterexample (nightly seed 566).
-  it("P3: a ghost yields its synced path to a head the pull defers there", { timeout }, async () => {
+  // applied, merged or rolled-back head; so does it to a head whose document's local move the pull keeps. Fixed cases:
+  // #913's counterexample (nightly seed 566) and the second case of its class.
+  it("P3: a ghost yields its synced path to a head the pull defers there or whose local move it keeps", { timeout }, async () => {
     expect(await p3DeferredOnGhost.check(["windows", deferredOnGhostPath])).toEqual([]);
-    await holds<[PathPlatform, WorldCommand[]]>(p3DeferredOnGhost, [["windows", deferredOnGhostPath]]);
+    expect(await p3DeferredOnGhost.check(["macos", movedHeadOnGhostPath])).toEqual([]);
+    await holds<[PathPlatform, WorldCommand[]]>(p3DeferredOnGhost, [["windows", deferredOnGhostPath], ["macos", movedHeadOnGhostPath]]);
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
