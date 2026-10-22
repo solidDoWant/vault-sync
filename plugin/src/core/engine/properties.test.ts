@@ -949,6 +949,9 @@ describe("engine properties (design §9.3)", () => {
       // #933 (seed 567): a closed-app rename of X/b.md to x/a.md, held as X/a.md, that another device also made before
       // deleting the document: the document stays deleted.
       scripted("macos", { type: "user-create", path: 9 }, { type: "closed", changes: [{ file: 0, delete: false, target: 8 }] }, { type: "remote-rename", document: 0, path: 8 }, { type: "remote-delete", document: 0 }, { type: "closed", changes: [{ file: 0, delete: false, target: 0 }] }),
+      // #921 (seed 566): a synced file and a pulled file swapped through a temporary name while the app was closed,
+      // then a remote edit of the pulled one: each file keeps its own document.
+      scripted("posix", { type: "user-create", path: 0 }, { type: "remote-create", path: 4 }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }, { file: 0, delete: false, target: 4 }, { file: 3, delete: false, target: 0 }] }, { type: "remote-edit", document: 0 }),
     ]);
   });
 

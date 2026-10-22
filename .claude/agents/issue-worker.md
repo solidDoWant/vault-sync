@@ -36,6 +36,12 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
 
 ## Rules
 
+- **Engine and simulation bugs: design gaps are not yours to fix.** Follow `CLAUDE.md`'s fix rule. Before writing code, classify the failure:
+  - the code breaks an existing rule: fix the code;
+  - the simulation checker is wrong under an existing rule: fix the checker, citing the rule;
+  - the rules do not decide the case, conflict, or the fix needs new engine state: it is a **design gap**. Do not edit `docs/design/engine-path-ownership.md` §4.9 or §5 and do not patch around it. Label the issue `design-gap`, post the minimized trace and the rules involved on it, and hand back `HANDOFF: blocked`.
+- **An issue labelled `design` is engine design work:** follow `docs/agents/engine-designer.md` instead of the procedure above.
+
 - **Time box.** If you have been working for ~45 minutes in this run (~90 minutes for an engine refactor step — a sub-issue of #552 titled `refactor(engine):` — where a restart means reloading a very large context) and the issue is not done, commit and push what you have, open (or update) the PR as a **draft** describing what is left, and hand back with `HANDOFF: incomplete` — the scheduler resumes this session in the next free slot, after reviews and CI fixes that were waiting. Work in progress is then never only on this VM. When you finish a resumed run, mark the draft ready (`gh pr ready`).
 
 - Never push to `master`, never merge your own PR, never modify acceptance tests to make them pass.
