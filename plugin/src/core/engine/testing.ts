@@ -660,6 +660,8 @@ export interface UserOperation {
   hash: string;
   /** A rename's new path. */
   path?: string;
+  /** The path a create wrote. */
+  created?: string;
 }
 
 /** The properties of §9.3 a violation counts against. */
@@ -708,9 +710,11 @@ export type WorldCommand =
   /**
    * A push during which the operator restores the database to a fraction of
    * its head seq, just before the push's first commit reaches the server,
-   * after the pull that started the push (#861).
+   * after the pull that started the push (#861). With `lost`, the commit
+   * lands on the restored server but its response is lost, so only the next
+   * pull's resync can acknowledge it (#892).
    */
-  | { type: "restore-during-push"; fraction: number }
+  | { type: "restore-during-push"; fraction: number; lost?: boolean }
   | { type: "purge"; revision: number };
 
 /**
@@ -784,8 +788,17 @@ export class PropertyWorld {
   private offline = false;
   /** The restore the next CommitRevision lands after (the `restore-during-push` command). */
   private restoreAtCommit: number | undefined;
+  /** Whether the response of the commit that lands after `restoreAtCommit` is lost (#892). */
+  private loseCommitResponse = false;
+  /** Whether the device is offline because a commit's response was lost (#892): its failures are the network's too. */
+  private lostOffline = false;
   /** Every content hash any revision ever carried on the server, purged or rolled back since or not. */
   readonly everOnServer = new Set<string>();
+  /**
+   * This device's live heads a restore lost, by document, until this device
+   * commits that document again: its write, which it must keep (#892).
+   */
+  private readonly restoredOwnWrites = new Map<string, string>();
   /** The document each inode is bound to, as far as the oracle can tell. */
   readonly bound = new Map<number, string>();
   /** Every document each inode was ever bound to. */
@@ -842,11 +855,20 @@ export class PropertyWorld {
     this.api = createProtocolClient({ transport: this.server.transport });
     this.server.interceptor = (method, request) => {
       this.checkBlobRequest(method, request);
-      if (method === "CommitRevision" && this.offline) throw new ConnectError("offline", Code.Unavailable);
+      if (method === "CommitRevision" && this.offline) throw new ConnectError(this.lostOffline ? lostResponse : "offline", Code.Unavailable);
       if (method === "CommitRevision" && this.restoreAtCommit !== undefined) {
         this.restoreServer(this.restoreAtCommit);
         this.restoreAtCommit = undefined;
       }
+    };
+    this.server.responseInterceptor = (method) => {
+      if (method !== "CommitRevision" || !this.loseCommitResponse) return;
+      this.loseCommitResponse = false;
+      // The device stays offline until the command ends, so no retry of the
+      // commit acknowledges it before the next pull's resync does.
+      this.offline = true;
+      this.lostOffline = true;
+      throw new ConnectError(lostResponse, Code.Unavailable);
     };
     this.engine = this.createEngine();
   }
@@ -999,10 +1021,14 @@ export class PropertyWorld {
         break;
       case "restore-during-push":
         this.restoreAtCommit = command.fraction;
+        this.loseCommitResponse = command.lost === true;
         try {
           await this.run(() => this.engine.push());
         } finally {
           this.restoreAtCommit = undefined;
+          this.loseCommitResponse = false;
+          this.offline = false;
+          this.lostOffline = false;
         }
         break;
       case "purge": {
@@ -1020,6 +1046,12 @@ export class PropertyWorld {
   /** Restores the server's database to `fraction` of its head seq. */
   private restoreServer(fraction: number): void {
     const seq = BigInt(Math.floor(Number(this.server.currentHeadSeq) * fraction));
+    // This device's live heads the restore loses: writes it must keep (principle 1, #892).
+    const heads = new Map<string, Revision>();
+    for (const revision of this.retained()) heads.set(revision.documentId, revision);
+    for (const head of heads.values()) {
+      if (head.seq > seq && head.deviceId === testDeviceId && !head.deleted) this.restoredOwnWrites.set(head.documentId, bytesToHex(head.contentRef?.blobId ?? new Uint8Array()));
+    }
     this.server.restoreTo(seq);
     if (this.scanned > seq) this.scanned = seq;
   }
@@ -1113,6 +1145,23 @@ export class PropertyWorld {
     return lost;
   }
 
+  /**
+   * P1 over restores (principle 1, INV-3, #892): this device's acknowledged
+   * writes a restore lost, the head of their document, that it neither
+   * committed again (as itself, merged or under a rename) nor still holds in
+   * the vault, and that the user did not overwrite or delete.
+   */
+  async restoredWritesLost(): Promise<string[]> {
+    const inVault = new Set<string>();
+    for (const path of await this.vault.list()) inVault.add(sha256Hex(await this.vault.read(path)));
+    const lost: string[] = [];
+    for (const [documentId, hash] of this.restoredOwnWrites) {
+      if (this.discarded.has(hash) || inVault.has(hash)) continue;
+      lost.push(`a restore lost this device's write of ${documentId}, the ${this.describe(hash)}, and it was never committed again`);
+    }
+    return lost;
+  }
+
   /** P4's comparison: the server's live documents and the vault, modulo copy names. */
   async outcome(): Promise<string> {
     const vault = [...(await files(this.vault))].map(([path, content]) => `${withoutCopyNames(path)}=${content}`).sort(byText);
@@ -1189,7 +1238,7 @@ export class PropertyWorld {
     this.userWrites.add(hash);
     this.heldHere.add(hash);
     if (previous !== undefined) this.discarded.add(previous.hash);
-    this.userOperations.push({ type, inode: file.inode, step: this.step, hash });
+    this.userOperations.push({ type, inode: file.inode, step: this.step, hash, ...(type === "create" ? { created: path } : {}) });
   }
 
   private async userRename(index: number, mode: RenameMode, target: number): Promise<void> {
@@ -1323,7 +1372,8 @@ export class PropertyWorld {
       try {
         await call();
       } catch (error) {
-        if (!this.life.dead && !(error instanceof Crash)) this.errors.push(error);
+        // A lost commit response is the network's failure, not the engine's (#892).
+        if (!this.life.dead && !(error instanceof Crash) && !(error instanceof Error && error.message.includes(lostResponse))) this.errors.push(error);
       }
       const crashed = this.life.dead;
       await this.settle();
@@ -1377,6 +1427,7 @@ export class PropertyWorld {
       const parent = observed.parentRevisionId === "" ? undefined : lastRevision(this.revisions, (candidate) => candidate.revisionId === observed.parentRevisionId);
       this.revisions.push(observed);
       this.everOnServer.add(observed.hash);
+      if (observed.deviceId === testDeviceId) this.restoredOwnWrites.delete(observed.documentId);
       if (observed.deviceId === testDeviceId) this.checkCommit(observed, parent);
       if (observed.deviceId === testDeviceId) this.checkParent(observed, parent);
     }
@@ -1474,6 +1525,23 @@ export class PropertyWorld {
     if (foreign) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}`);
     const owner = origin.kind === "user" ? this.bound.get(origin.inode) : undefined;
     if (owner !== undefined && owner !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}, an inode bound to ${owner}`);
+    if (origin.kind === "user" && owner === undefined && this.savedAgain(origin.inode, revision.documentId)) this.bind(origin.inode, revision.documentId);
+  }
+
+  /**
+   * Whether `inode` is a file the user saved at document D's synced path
+   * after deleting D's file there (an editor saving through a delete and a
+   * create, #380): D's local version (design §6.2 R5b), which the engine's
+   * edit of D carrying its bytes binds to D (§5.5 X-25, #910).
+   */
+  private savedAgain(inode: number, documentId: string): boolean {
+    const deleted = this.userOperations.filter((operation) => operation.type === "delete" && this.everBound.get(operation.inode)?.has(documentId) === true);
+    return this.userOperations.some((operation) => {
+      if (operation.type !== "create" || operation.inode !== inode || operation.created === undefined) return false;
+      const created = operation.created;
+      const synced = lastRevision(this.revisions, (candidate) => candidate.documentId === documentId && candidate.step <= operation.step);
+      return synced !== undefined && !synced.deleted && this.inodes.key(synced.path) === this.inodes.key(created) && deleted.some((deletion) => deletion.step <= operation.step);
+    });
   }
 
   /** P3 (INV-1, INV-2) at a durable point: no two documents' newest server claims, and no two live outboxes, collide under the path key. */
@@ -1527,3 +1595,6 @@ export class PropertyWorld {
     return JSON.stringify({ head: String(this.server.currentHeadSeq), files: [...(await files(this.vault))] });
   }
 }
+
+/** The message of the error a `restore-during-push` command with `lost` makes its commit's response fail with. */
+const lostResponse = "the commit's response was lost";

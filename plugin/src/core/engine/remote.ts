@@ -21,10 +21,18 @@ export interface IncomingRevision {
   remote: RemoteRevision;
   /** The path is valid UTF-8, within the length and character-set rule, and vault-relative (SPEC.md §6.2); otherwise it must never reach the vault. */
   pathAllowed: boolean;
+  /**
+   * The revision's anchor (SPEC.md §6.1), when the server sends one. An own
+   * commit that this revision acknowledges records it (design §4.6, #892).
+   */
+  anchor?: Uint8Array;
 }
 
 const strictDecoder = new TextDecoder("utf-8", { fatal: true });
 const lenientDecoder = new TextDecoder("utf-8");
+
+/** Length of a Revision.anchor (SPEC.md §6.1). */
+const anchorBytes = 16;
 
 /** Converts a protobuf revision (plaintext vault) into journal form. */
 export function toIncoming(revision: Revision): IncomingRevision {
@@ -50,6 +58,7 @@ export function toIncoming(revision: Revision): IncomingRevision {
       deviceId: revision.deviceId,
     },
     pathAllowed: decodable && isPathText(path) && isVaultRelativePath(path),
+    ...(revision.anchor.length === anchorBytes ? { anchor: revision.anchor } : {}),
   };
 }
 

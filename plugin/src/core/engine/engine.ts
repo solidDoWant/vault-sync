@@ -831,8 +831,9 @@ export class SyncEngine {
       // with the base's move and the cursor's.
       // Its anchor, as a commit response records it: the base is this
       // device's own commit, which a restore resync never pulls over
-      // (cachedOnly, design §4.6).
-      const anchor = this.feed?.revisionId === remote.revisionId ? this.feed.anchor : undefined;
+      // (cachedOnly, design §4.6). A restore resync's head carries it too
+      // (#892), so no acknowledgement of an own commit leaves it unanchored.
+      const { anchor } = incoming;
       const done: JournalChanges = { removePending: [remote.revisionId], ...this.feedCursor(remote.revisionId) };
       const cachedPath = anchor === undefined ? undefined : pathOfCachedContent(state, remote.parentRevisionId, remote.contentHash, remote.deleted);
       if (state?.revisionId !== remote.revisionId) await this.putDocument({ ...syncedState(remote), ...(anchor === undefined ? {} : { anchor }), ...(cachedPath === undefined ? {} : { cachedPath }) }, { kind: "acknowledged", hash: remote.contentHash }, done);
@@ -1879,13 +1880,18 @@ export class SyncEngine {
     // (cachedOnly); without them nothing proves a base only cached.
     const anchored = (await this.journal.getCursorAnchor()) !== undefined;
     const heads = new Map<string, IncomingRevision>();
+    // The revisions of this device's outbox the restored server holds, by document, in feed order.
+    const sent = new Set((await this.journal.listPending()).map((operation) => operation.revisionId));
+    const owned = new Map<string, IncomingRevision[]>();
     let seq = 0n;
     let anchor: Uint8Array | undefined;
     for (;;) {
       const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: seq, pageSize: this.pageSize });
       for (const revision of response.revisions) {
         if (revision.seq <= seq) throw new RemoteContentError(`change feed went from seq ${String(seq)} back to ${String(revision.seq)}`);
-        heads.set(revision.documentId, toIncoming(revision));
+        const incoming = toIncoming(revision);
+        heads.set(revision.documentId, incoming);
+        if (sent.has(revision.id)) owned.set(revision.documentId, [...(owned.get(revision.documentId) ?? []), incoming]);
         seq = revision.seq;
         anchor = cursorAnchor(revision);
       }
@@ -1955,9 +1961,17 @@ export class SyncEngine {
       if (!outbox.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId], removeDeferred: [state.documentId] }));
       else if (state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
+    await this.settleGhostClaims(heads);
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
+      // This device's own commits of the document the restored server holds
+      // and whose responses were lost (the head, or revisions the head
+      // descends from): the `commit` step acknowledges each, in feed order,
+      // with its anchor, as a pull from the feed would, before the head is
+      // decided. Never merged as another device's revision, and a later
+      // restore never takes one for a base only cached (#892, design §4.6).
+      for (const own of owned.get(remote.documentId) ?? []) this.count(summary, await this.applyRevision(own, false));
       const state = await this.journal.getDocument(remote.documentId);
       if (state === undefined || !hasBase(state)) {
         this.count(summary, await this.applyRevision(incoming, false));
@@ -1976,6 +1990,10 @@ export class SyncEngine {
         if (state.anchor !== undefined && state.cachedPath !== undefined) await this.putDocument({ ...state, anchor: undefined, cachedPath: undefined, path: state.cachedPath }, { kind: "kept" });
         this.count(summary, await this.applyRevision(incoming, false, true));
       } else if (await this.rolledBack(state, remote)) {
+        // The head becomes the base, a newest server claim: a ghost the
+        // restored server lost at its path yields to it, as to a pulled head
+        // (claimPath, `lost`; INV-2, PO-12, #867, #886).
+        if (!remote.deleted) await this.claimPath(remote.path, remote.documentId, "lost");
         await this.fastForward(state, remote);
       } else {
         this.count(summary, await this.handToMerge(remote, state, false));
@@ -1983,6 +2001,41 @@ export class SyncEngine {
     }
     await this.journal.resetCursor(seq, anchor);
     summary.cursor = seq;
+  }
+
+  /**
+   * Ghosts whose synced paths collide under the server's key (INV-2, PO-12,
+   * design §4.6, #886): a deferral the resync dropped can expose a ghost's
+   * stale base path, which another ghost's base path collides with. One of
+   * them keeps the claim and the others yield, each displaced as a create of
+   * its own id (claimPath, `lost`): in place at its bound spelling, or at a
+   * copy name if that spelling is in the keeper's way. The keeper is a ghost
+   * still bound at its synced path, so the ghost whose binding left it
+   * yields, as the push's rule W would make it one step later. Of several
+   * such ghosts, or of none, the first by bound spelling (code-unit order)
+   * keeps, as the push orders colliding ghosts (#869): spellings survive a
+   * crash, which reruns the resync. A ghost with no bound file comes last.
+   */
+  private async settleGhostClaims(heads: ReadonlyMap<string, IncomingRevision>): Promise<void> {
+    const ghost = (state: DocumentState | undefined): state is DocumentState => state !== undefined && !heads.has(state.documentId) && hasBase(state) && !state.deleted && state.seq === 0n;
+    const ghosts = (await this.journal.listDocuments()).filter(ghost);
+    if (ghosts.length < 2) return;
+    const order = (state: DocumentState): [number, string] => {
+      const spelling = state.binding?.spelling;
+      if (spelling === undefined) return [2, ""];
+      return [this.pathSpace.collides(spelling, state.path, "server") ? 0 : 1, spelling];
+    };
+    ghosts.sort((left, right) => {
+      const [leftRank, leftSpelling] = order(left);
+      const [rightRank, rightSpelling] = order(right);
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return leftSpelling < rightSpelling ? -1 : leftSpelling > rightSpelling ? 1 : 0;
+    });
+    for (const candidate of ghosts) {
+      const state = await this.journal.getDocument(candidate.documentId);
+      if (!ghost(state)) continue;
+      await this.claimPath(state.path, state.documentId, "lost");
+    }
   }
 
   /**
