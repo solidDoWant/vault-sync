@@ -519,6 +519,48 @@ const p6RefusedPaths: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object,
   },
 };
 /**
+ * #908's class (INV-3, PO-4(b), PO-11): on Windows, a document that another
+ * device moves to a path Windows cannot hold keeps its file while it waits
+ * (`unmaterializable`), and the user renames that file away and back onto
+ * its synced path before a remote create takes the path. The binding back at
+ * the base path is no local move, so the file is detached (W(b)), never
+ * displaced: P1's oracle must tell a round trip from a move off a base that
+ * moved (§5.5 X-20). The full alphabet first reached it at case 70,933 of
+ * seed 566, so `roundTrip` builds the trip and fills its gaps at random.
+ */
+const roundTripPaths: readonly string[] = ["a.md", "b.md", "no:te.md"];
+const roundTripCommands: fc.Arbitrary<WorldCommand>[] = [
+  index.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(index, index).map(([file, target]) => ({ type: "user-rename", file, mode: "pool" as const, target })),
+  index.map((path) => ({ type: "remote-create", path })),
+  fc.tuple(index, index).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+];
+/** The round trip with up to two commands of the alphabet in every gap, on Windows (`no:te.md` is path 2). */
+const roundTrip: fc.Arbitrary<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = fc
+  .tuple(fc.nat({ max: 1 }), fc.array(fc.array(fc.oneof(...roundTripCommands), { maxLength: 2 }), { minLength: 8, maxLength: 8 }))
+  .map(([path, gaps]) => {
+    const away = 1 - path;
+    const skeleton: WorldCommand[] = [
+      { type: "remote-create", path },
+      { type: "pull" },
+      { type: "user-rename", file: 0, mode: "pool", target: away },
+      { type: "remote-rename", document: 0, path: 2 },
+      { type: "pull" },
+      { type: "user-rename", file: 0, mode: "pool", target: path },
+      { type: "remote-create", path },
+      { type: "pull" },
+    ];
+    const list = skeleton.flatMap((command, at) => [...(gaps[at] ?? []), command]);
+    return ["windows", list.map((command) => new Step(command))];
+  });
+const p1RoundTrips: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P1",
+  cases: roundTrip,
+  check: async ([on, steps]) => violations((await play(on, steps, roundTripPaths)).world, "P1"),
+};
+/**
  * The alphabet of #847's class (INV-8, INV-9, PO-11): a document whose newest
  * revision this device cannot hold (a path Windows refuses) keeps its file at
  * its old path, which the server then gives another document that a local
@@ -688,9 +730,21 @@ describe("engine properties (design §9.3)", () => {
       // #875 (seed 566): a restore lost this device's rename-only commit over another device's edit, then that device
       // committed over the restored head and the user renamed the file back: the file's content is merged as its document's.
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "restore", fraction: 1 / 3 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+      // #908 (seed 566): on Windows, the user renames a synced file away, another device moves its document to a path
+      // Windows cannot hold, and the user moves the file back onto its synced path as a remote create takes it: the
+      // blocked document's file is detached (W(b), §5.5 X-20) and pushed as a new document; then a restore to nothing.
+      scripted("windows", { type: "remote-create", path: 10 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "restore", fraction: 0 }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
     await holds(p1, fixed);
+  });
+
+  // #908's class: a blocked document's file renamed away and back onto its synced path, then claimed by another
+  // document, is detached (W(b), PO-4(b)) and pushed as a new document, which P1 credits (§5.5 X-20).
+  it("P1: a blocked document's file renamed off its synced path and back is detached as a new document's", { timeout }, async () => {
+    const fixed = scripted("windows", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-rename", document: 0, path: 2 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-create", path: 0 }, { type: "pull" });
+    expect(await p1RoundTrips.check(fixed)).toEqual([]);
+    await holds(p1RoundTrips, [fixed]);
   });
 
   // P1 over restores that roll documents back along this device's own history (design §4.6): remote edits the device
@@ -1341,6 +1395,75 @@ describe("P1 oracle (design §5.4)", () => {
     const copies = [...world.server.liveFiles()].filter(([path]) => withoutCopyNames(path) !== path);
     expect(copies).toEqual([[expect.stringMatching(/^a \(conflict .*\)\.md$/), "user 4"]]);
     expect(violations(world, "P1")).toEqual([]);
+  });
+
+  it("credits an unedited detached file the user moved off its synced path and back, which carries its document's remote bytes, pushed as a new document", async () => {
+    // #908: the user's rename keeps the unedited file through the deferral; the round trip leaves it at its base path (W(b)).
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 2 });
+    // Step 4: the server moves the document to `no:te.md`, which Windows cannot hold; the device keeps b.md.
+    await world.apply({ type: "remote-rename", document: 0, path: 11 });
+    await world.apply({ type: "pull" });
+    // Step 6: the user moves the file back to a.md; then another document takes a.md, so the kept file is detached with the bytes of step 1.
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 0 });
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "push" });
+    const copies = [...world.server.liveFiles()].filter(([path]) => withoutCopyNames(path) !== path);
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.[0]).toMatch(/^a \(conflict .*\)\.md$/);
+    expect(violations(world, "P1")).toEqual([]);
+  });
+
+  it("credits a detached file the user moved off its synced path and back before any push, pushed as a new document", async () => {
+    // #908: a round trip leaves the binding at the base path, no local move (W(b), not W(a)).
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "user-edit", file: 0 });
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 2 });
+    // Step 5: the server moves the document to `no:te.md`, which Windows cannot hold; the device keeps the edited b.md.
+    await world.apply({ type: "remote-rename", document: 0, path: 11 });
+    await world.apply({ type: "pull" });
+    // Step 7: the user moves the file back to a.md, its synced path; then another document takes a.md, so the kept file is detached.
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 0 });
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "push" });
+    const copies = [...world.server.liveFiles()].filter(([path]) => withoutCopyNames(path) !== path);
+    expect(copies).toEqual([[expect.stringMatching(/^a \(conflict .*\)\.md$/), "user 3"]]);
+    expect(violations(world, "P1")).toEqual([]);
+  });
+
+  it("flags a create of another document's remote bytes from no detached file", async () => {
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await commitAsDevice(world, "forged-new", "b.md", new TextDecoder().decode(await world.vault.read("a.md")));
+    await world.apply({ type: "restore", fraction: 1 });
+    expect(violations(world, "P1")).toContainEqual(expect.stringMatching(/create of forged-new at "b\.md" .* carries the remote write of step 1 to r-1/));
+  });
+
+  it("flags a file moved back onto an old synced path after a pushed rename moved its base, committed as a new document", async () => {
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    // Steps 3-4: the user renames a.md to b.md and pushes it: the base is at b.md now.
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 2 });
+    await world.apply({ type: "push" });
+    // Step 5: the user moves the file back to a.md, a local move off its base.
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 0 });
+    // Steps 6-8: the server moves the document to `no:te.md` and another document takes a.md: the file is displaced under its own id (W(a)).
+    await world.apply({ type: "remote-rename", document: 0, path: 11 });
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
+    expect(copy).toMatch(/^a \(conflict .*\)\.md$/);
+    await commitAsDevice(world, "forged-new", copy, new TextDecoder().decode(await world.vault.read(copy)));
+    await world.apply({ type: "restore", fraction: 1 });
+    expect(violations(world, "P1")).toContainEqual(expect.stringMatching(/create of forged-new at .* from inode 1, bound to /));
   });
 
   it("flags a file a document that could follow its head was moved off, committed as a new document", async () => {

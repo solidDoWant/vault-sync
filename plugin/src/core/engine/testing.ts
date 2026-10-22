@@ -801,6 +801,8 @@ export class PropertyWorld {
   readonly bound = new Map<number, string>();
   /** Every document each inode was ever bound to. */
   readonly everBound = new Map<number, Set<string>>();
+  /** The document the engine detached each untracked inode from (W(b), §5.5 X-20), until the inode is bound again. */
+  private readonly detachedFrom = new Map<number, string>();
   readonly userOperations: UserOperation[] = [];
   /** Every content the user wrote. */
   readonly userWrites = new Set<string>();
@@ -1295,7 +1297,11 @@ export class PropertyWorld {
   private engineChanged(change: EngineChange): void {
     if (change.type === "rename") {
       const file = this.inodes.renamed(change.from, change.to);
-      if (file !== undefined && this.detached(file.inode, change.from, change.to)) this.bound.delete(file.inode);
+      const documentId = file === undefined ? undefined : this.bound.get(file.inode);
+      if (file !== undefined && documentId !== undefined && this.detached(file.inode, change.from, change.to)) {
+        this.bound.delete(file.inode);
+        this.detachedFrom.set(file.inode, documentId);
+      }
       return;
     }
     if (change.type === "delete") {
@@ -1315,8 +1321,10 @@ export class PropertyWorld {
    * Whether the engine's move of `inode` from `from` to `to` is a detach
    * (design §4.5 W(b), PO-4(b), §5.5 X-20): the inode is bound to a document
    * D at a path where D was synced (a revision of D there, and no user
-   * rename of the inode onto it since), the server's live head of D is
-   * elsewhere, at a path D is blocked from (`blocked`), and the move is to
+   * rename of the inode onto it since, unless every later revision of D is
+   * one D is blocked from, so the base never left the path: #908), the
+   * server's live head of D is elsewhere, at a path D is blocked from
+   * (`blocked`), and the move is to
    * a conflict-copy name, not to that head's path. D cannot follow its head
    * there (a non-disk blocker, PO-11), so the file is given up and is an
    * untracked copy the push commits as a new document. A displace (W(a), a
@@ -1334,7 +1342,14 @@ export class PropertyWorld {
     if (!this.blocked(documentId, headPath)) return false;
     const synced = lastRevision(this.revisions, (revision) => revision.documentId === documentId && !revision.deleted && this.inodes.key(revision.path) === key);
     if (synced === undefined) return false;
-    return !this.userOperations.some((operation) => operation.type === "rename" && operation.inode === inode && operation.path !== undefined && this.inodes.key(operation.path) === key && operation.step > synced.step);
+    const movedBack = this.userOperations.some((operation) => operation.type === "rename" && operation.inode === inode && operation.path !== undefined && this.inodes.key(operation.path) === key && operation.step > synced.step);
+    // A user's move back onto the synced path is a local move (W(a)) only if
+    // the base can have left it in between: a later revision of D the device
+    // could take as its base. While every later one is live at a path D is
+    // blocked from (deferred, PO-11), the base is still `synced` and the
+    // binding back at its path is no local move (W(b), #908).
+    const later = this.revisions.slice(this.revisions.lastIndexOf(synced) + 1).filter((revision) => revision.documentId === documentId);
+    return !movedBack || later.every((revision) => !revision.deleted && this.blocked(documentId, revision.path));
   }
 
   /**
@@ -1354,6 +1369,7 @@ export class PropertyWorld {
 
   private bind(inode: number, documentId: string): void {
     this.bound.set(inode, documentId);
+    this.detachedFrom.delete(inode);
     const ever = this.everBound.get(inode) ?? new Set<string>();
     ever.add(documentId);
     this.everBound.set(inode, ever);
@@ -1469,7 +1485,12 @@ export class PropertyWorld {
     // where it committed them to another document first (`move-onto-incoming`
     // gives a new document a known file's bytes, #757): the origin by hash
     // names only the first (§5.5 X-21, #769). The inode checks stay exact.
-    const foreign = origin?.kind === "remote" && origin.documentId !== revision.documentId && !this.revisions.some((candidate) => candidate !== revision && candidate.documentId === revision.documentId && candidate.deviceId === remoteDeviceId && candidate.hash === revision.hash);
+    // A detached file (W(b), §5.5 X-20) keeps the bytes it had as the
+    // document it was detached from, unedited too (#908): the new document
+    // carries them so they survive (principle 1).
+    const detachedFrom = holder?.hash === revision.hash ? this.detachedFrom.get(holder.inode) : undefined;
+    const keptByDetach = detachedFrom !== undefined && this.revisions.some((candidate) => candidate.documentId === detachedFrom && candidate.hash === revision.hash);
+    const foreign = origin?.kind === "remote" && origin.documentId !== revision.documentId && !keptByDetach && !this.revisions.some((candidate) => candidate !== revision && candidate.documentId === revision.documentId && candidate.deviceId === remoteDeviceId && candidate.hash === revision.hash);
     if (parent === undefined) {
       // P1 on a create: another document's content, or file, never becomes a new document.
       if (foreign) this.violation("P1", `create of ${name} carries the ${this.describe(revision.hash)}`);
