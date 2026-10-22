@@ -13,7 +13,7 @@ import { EchoSuppressor } from "./echo";
 import { baseLost, blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
-import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
+import { Bindings, hasBase, liveHere, released, sameBinding, type BindingChange } from "./bindings";
 import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { boundLocalChange, carriedDisplacement, mergePath, ownMovedCreate, ruleW } from "./decide";
@@ -817,7 +817,7 @@ export class SyncEngine {
    * Applies one remote revision, or defers it. Idempotent: a revision whose
    * apply was interrupted at any step is finished, not repeated.
    */
-  private async applyRevision(incoming: IncomingRevision, fromFeed: boolean, cachedBase = false): Promise<ApplyOutcome> {
+  private async applyRevision(incoming: IncomingRevision, fromFeed: boolean, cachedBase = false, redecisions = 0): Promise<ApplyOutcome> {
     const { remote } = incoming;
     const state = await this.journal.getDocument(remote.documentId);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === remote.documentId);
@@ -917,7 +917,14 @@ export class SyncEngine {
         if (claim === "held" || claim === "taken") return this.defer(remote, "path-conflict", descends);
       }
       if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      const bound = await this.journal.getDocument(remote.documentId);
       const found = await this.inspect(state, remote);
+      // The user moved or deleted the document's own file while inspect read
+      // the disk, and its transition (E1–E3) landed meanwhile (PO-2, #906):
+      // the inspection classified a binding the document no longer has. The
+      // revision is decided again from the journal, as an engine restarted
+      // right after that transition decides it (INV-7).
+      if (redecisions < maxRedecisions && !sameBinding(bound, await this.journal.getDocument(remote.documentId))) return this.applyRevision(incoming, fromFeed, cachedBase, redecisions + 1);
       // A file at the path that another document's binding holds is that
       // document's (PO-1), also one the user moved there after the claim
       // (#757), whose rename (E1) is classified first (PO-2): it is neither
@@ -2833,6 +2840,9 @@ export class SyncEngine {
     }
   }
 }
+
+/** How many times applyRevision decides a revision again because a user transition of its document landed mid-inspection (#906). */
+const maxRedecisions = 3;
 
 /** Length of a Revision.anchor (SPEC.md §6.1). */
 const anchorBytes = 16;
