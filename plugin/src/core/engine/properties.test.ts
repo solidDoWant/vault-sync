@@ -670,6 +670,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }] }),
       // #868: two closed-app renames of one file and a third onto its intermediate path, before the first push.
       scripted("macos", { type: "user-create", path: 9 }, { type: "user-create", path: 8 }, { type: "closed", changes: [{ file: 3, delete: false, target: 5 }, { file: 3, delete: false, target: 0 }, { file: 0, delete: false, target: 8 }] }, { type: "push" }),
+      // #877 (seed 566): a closed-app rename of a file whose edit a deferred, unmaterializable remote rename held back.
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "closed", changes: [{ file: 0, delete: false, target: 3 }] }, { type: "pull" }),
     ]);
   });
 
