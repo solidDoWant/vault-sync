@@ -6,7 +6,7 @@ import type { PathSpace } from "./pathspace";
 
 /**
  * The steps of a `displace` or `detach` intent (design §4.4): the file at
- * `from` with content `hash` moves to `to`, and `record` goes to the
+ * `from` with content `hash` of `size` bytes moves to `to`, and `record` goes to the
  * conflict log when the intent finishes. `recreate`: the document is one
  * the server lost in a restore, so it is committed again as a create at
  * `to` (decide.ts, ruleW).
@@ -15,6 +15,12 @@ interface MoveSteps {
   from: string;
   to: string;
   hash: string;
+  /**
+   * The byte length of the content `hash` names, read with it: a create the
+   * intent commits carries both, never the old outbox's size (#770). Absent
+   * from an intent recorded before it was kept.
+   */
+  size?: number;
   record: ConflictRecord;
   recreate: boolean;
 }
@@ -105,7 +111,7 @@ export class Intents {
     const content = await this.host.read(from);
     // Nothing there to move: its event is still to come.
     if (content === null) return false;
-    const steps: MoveSteps = { from, to, hash: sha256Hex(content), record: { ...record, copyHash: sha256Hex(content) }, recreate };
+    const steps: MoveSteps = { from, to, hash: sha256Hex(content), size: content.length, record: { ...record, copyHash: sha256Hex(content) }, recreate };
     const id = await this.host.journal.putIntent({ kind, documentId, steps: steps as unknown as Record<string, unknown> });
     const intent: Intent = { id, kind, documentId, steps: steps as unknown as Record<string, unknown> };
     if (!(await this.rename(steps))) {
@@ -142,7 +148,7 @@ export class Intents {
       }
       if (steps.recreate) {
         // The server lost the document: it is created again at its file's new path, under its own id.
-        const size = BigInt((await this.host.read(steps.to))?.length ?? 0);
+        const size = await this.size(steps);
         const create: PendingOperation = { revisionId: this.host.newId(), documentId: state.documentId, baseRevisionId: "", path: steps.to, contentHash: steps.hash, size, kind: state.kind, deleted: false };
         // It keeps the revisions this device synced of it (DocumentState.prior): a known document, not a new file (rule W).
         const prior = [state.revisionId, ...(state.prior ?? [])].slice(0, priorRevisionLimit);
@@ -152,12 +158,25 @@ export class Intents {
       // The push derives the document's next operation from its binding: a
       // rename to `to` from its synced path, or its create there.
       const moved = operations.filter((operation) => !operation.deleted);
-      const creates = hasBase(state) ? [] : moved.map((operation) => ({ ...operation, revisionId: this.host.newId(), path: steps.to, contentHash: steps.hash }));
+      const size = hasBase(state) ? 0n : await this.size(steps);
+      const creates = hasBase(state) ? [] : moved.map((operation) => ({ ...operation, revisionId: this.host.newId(), path: steps.to, contentHash: steps.hash, size }));
       return { ...changes, putDocuments: [{ ...state, binding, absence: null }], removePending: moved.map((operation) => operation.revisionId), addPending: creates.slice(0, 1) };
     });
     if (intent.kind === "detach") this.host.markDirty(steps.to);
     this.host.markDirty(steps.from);
     this.host.markDirty(steps.to);
+  }
+
+  /**
+   * The size of the content the intent's `hash` names: recorded with it, or,
+   * for an intent recorded before the size was, the moved file's length when
+   * it still holds that content (0 otherwise, which the push refuses to
+   * upload and derives again from the binding).
+   */
+  private async size(steps: MoveSteps): Promise<bigint> {
+    if (steps.size !== undefined) return BigInt(steps.size);
+    const content = await this.host.read(steps.to);
+    return content !== null && sha256Hex(content) === steps.hash ? BigInt(content.length) : 0n;
   }
 
   /** The intent's file is gone from both paths: the user deleted it (E3). */

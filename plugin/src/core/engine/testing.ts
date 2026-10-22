@@ -1115,7 +1115,8 @@ export class PropertyWorld {
 
   private engineChanged(change: EngineChange): void {
     if (change.type === "rename") {
-      this.inodes.renamed(change.from, change.to);
+      const file = this.inodes.renamed(change.from, change.to);
+      if (file !== undefined && this.detached(file.inode, change.from, change.to)) this.bound.delete(file.inode);
       return;
     }
     if (change.type === "delete") {
@@ -1127,6 +1128,29 @@ export class PropertyWorld {
     const key = this.inodes.key(change.path);
     const revision = lastRevision(this.revisions, (candidate) => candidate.hash === change.hash && !candidate.deleted && this.inodes.key(candidate.path) === key);
     if (revision !== undefined) this.bind(file.inode, revision.documentId);
+  }
+
+  /**
+   * Whether the engine's move of `inode` from `from` to `to` is a detach
+   * (design §4.5 W(b), PO-4(b), §5.5 X-20): the inode is bound to a document
+   * D at a path where D was synced (a revision of D there, and no user
+   * rename of the inode onto it since), the server's live head of D is
+   * elsewhere, and the move is to a conflict-copy name, not to that head's
+   * path. D cannot follow its head there (a non-disk blocker, PO-11), so the
+   * file is given up and is an untracked copy the push commits as a new
+   * document. A displace (W(a), a local move) keeps the inode D's.
+   */
+  private detached(inode: number, from: string, to: string): boolean {
+    const documentId = this.bound.get(inode);
+    if (documentId === undefined || withoutCopyNames(to) === to) return false;
+    const head = this.server.head(documentId);
+    if (head === undefined || head.deleted) return false;
+    const key = this.inodes.key(from);
+    const headPath = new TextDecoder().decode(head.path);
+    if (this.inodes.key(headPath) === key || this.inodes.key(headPath) === this.inodes.key(to)) return false;
+    const synced = lastRevision(this.revisions, (revision) => revision.documentId === documentId && !revision.deleted && this.inodes.key(revision.path) === key);
+    if (synced === undefined) return false;
+    return !this.userOperations.some((operation) => operation.type === "rename" && operation.inode === inode && operation.path !== undefined && this.inodes.key(operation.path) === key && operation.step > synced.step);
   }
 
   private bind(inode: number, documentId: string): void {

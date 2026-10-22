@@ -114,3 +114,33 @@ describe("Intents.recover of a file gone from both paths", () => {
     expect(await h.journal.getDocument("N")).toBeUndefined();
   });
 });
+
+// An intent recorded before intents kept the moved content's size (#770): the
+// create it rewrites carries that content's size, never the old outbox's.
+describe("Intents.recover of an intent recorded without a size", () => {
+  it("finishes a displace intent recorded without a size with a create of the moved content's size, under the document's own id", async () => {
+    const h = harness({ merge: "default" });
+    await h.vault.write("n.md", bytes("n1"));
+    await h.engine.settled();
+    h.engine.dispose();
+    // The crash: N's create (of "n1") is in the outbox; the user saved a longer version, and a displace intent of it,
+    // recorded before intents kept the content's size (#770), is open with the rename not done.
+    const first = sha256Hex(bytes("n1"));
+    await h.journal.putDocument({ documentId: "N", path: "n.md", revisionId: "", seq: 0n, baseHash: "", size: 0n, kind: "text", deleted: true, binding: { spelling: "n.md", fileKey: "n.md", seen: first }, absence: null, prior: [] });
+    await h.journal.addPending({ revisionId: "create", documentId: "N", baseRevisionId: "", path: "n.md", contentHash: first, size: 2n, kind: "text", deleted: false });
+    await h.vault.write("n.md", bytes("n1, saved again"));
+    const hash = sha256Hex(bytes("n1, saved again"));
+    const copy = "n (conflict).md";
+    const record = { id: "record", documentId: "N", path: "n.md", reason: "path-taken" as const, copyPath: copy, copyHash: hash, remoteRevisionId: "", at: 0 };
+    await h.journal.putIntent({ kind: "displace", documentId: "N", steps: { from: "n.md", to: copy, hash, record, recreate: false } });
+    h.restart();
+
+    await h.engine.pull();
+    expect(await h.journal.listPending()).toEqual([expect.objectContaining({ documentId: "N", path: copy, contentHash: hash, size: 15n })]);
+    await h.engine.push();
+    await h.engine.settled();
+
+    expect(h.server.liveDocuments().get(copy)).toBe("N");
+    expect(h.server.liveFiles().get(copy)).toBe("n1, saved again");
+  });
+});

@@ -45,8 +45,9 @@ if (clients < 1) throw new Error("SIM_CLIENTS must be at least 1");
 const engines = integer("SIM_ENGINES", 2);
 if (engines < 0) throw new Error("SIM_ENGINES must not be negative");
 
-// 1 runs the seeded suites with the faithful filesystem (refactor step R2 of
-// docs/design/engine-path-ownership.md), as the non-gating nightly job does.
+// The seeded suites run on the faithful filesystem by default (refactor step
+// R7 of docs/design/engine-path-ownership.md); 0 opts into the folded vault,
+// for replaying a seed recorded before R7.
 const faithful = process.env.SIM_FAITHFUL_FS ?? "";
 if (!["", "0", "1"].includes(faithful)) throw new Error(`SIM_FAITHFUL_FS must be 0 or 1, got ${JSON.stringify(faithful)}`);
 
@@ -66,7 +67,7 @@ export default defineConfig({
         steps: integer("SIM_STEPS", 1000),
         clients,
         engines,
-        faithfulFilesystem: faithful === "1",
+        faithfulFilesystem: faithful !== "0",
         shrinkRuns: integer("SIM_SHRINK_RUNS", 150),
         regressions,
         suites,
