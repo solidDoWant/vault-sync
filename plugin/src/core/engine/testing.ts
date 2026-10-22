@@ -354,6 +354,24 @@ export async function files(vault: VaultAdapter): Promise<Map<string, string>> {
 }
 
 /**
+ * `files` (path to content) keyed as a case-insensitive disk with one
+ * spelling per folder tells them apart: folder segments lowercased, the
+ * file's own name exact. A vault holds a live document at the server's path
+ * with its folders spelled as they already are on disk (INV-9 as amended
+ * for #737), so compare the vault with the server through this on Windows
+ * and macOS rules (#659). Covers ASCII case only, which is what the tests
+ * using it spell differently.
+ */
+export function byFolderCase(files: Map<string, string>): Map<string, string> {
+  return new Map(
+    [...files].map(([path, content]) => {
+      const slash = path.lastIndexOf("/");
+      return [slash < 0 ? path : `${path.slice(0, slash).toLowerCase()}${path.slice(slash)}`, content];
+    }),
+  );
+}
+
+/**
  * Each document's newest server claim (design §4.2 C2, INV-2): its deferred
  * revision's path when one waits, else its base's path; a deleted newest
  * revision claims nothing. A released document keeps its live base, so its
