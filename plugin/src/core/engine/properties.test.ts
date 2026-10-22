@@ -774,6 +774,23 @@ describe("engine properties (design §9.3)", () => {
         ],
         16,
       ],
+      // #878's (nightly seed 566): on macOS `I.md` aliases `ı.md` under `F` and is deferred; the user moves `ı.md`'s
+      // file away. A crash then retried the deferral at restart while the run without it never did.
+      [
+        "macos",
+        [
+          { type: "user-create", path: 0 },
+          { type: "remote-create", path: 13 },
+          { type: "remote-create", path: 14 },
+          { type: "push" },
+          { type: "move-onto-incoming", file: 3, path: 5 },
+          { type: "remote-delete", document: 1 },
+          { type: "remote-delete", document: 1 },
+          { type: "push" },
+          { type: "move-onto-incoming", file: 0, path: 0 },
+        ],
+        8,
+      ],
     ]);
   });
 
