@@ -32,8 +32,7 @@
 //   (§5.5 X-10, on inodes).
 // - `identity` (INV-3, PO-1): an engine commit of D never comes from an
 //   inode bound to another document, except a crash-lost rename's create
-//   (X-2), a detached file (PO-4(b), X-20) and a conflict copy the engine
-//   made by moving the file to its copy name (X-21), each committed as a new
+//   (X-2) and a detached file (PO-4(b), X-20), each committed as a new
 //   document.
 //
 // The checks are pure functions over recorded data, unit tested in
@@ -122,7 +121,7 @@ class Replay {
   private readonly applied: FeedRevision[] = [];
   /** First seq of each document. */
   private readonly firstSeq = new Map<string, bigint>();
-  /** Inodes the engine detached (X-20) or moved to a conflict copy (X-21), with the document they were the file of. */
+  /** Inodes the engine detached (X-20), with the document they were the file of. */
   private readonly unboundFrom = new Map<string, string>();
   /** Lost-rename inodes (X-2) whose create came after a crash in the window, by document they were bound to. */
   private readonly lostRenames = new Map<string, Set<string>>();
@@ -210,7 +209,7 @@ class Replay {
           const documents = new Set(this.everBound.get(entry.inode) ?? []);
           this.renames.push({ inode: entry.inode, documents, at: this.position });
           this.userChanges.push({ inode: entry.inode, at: this.position, hash: file?.hash, path: entry.path, rename: true });
-        } else if (entry.oldPath !== undefined && (this.detached(entry.inode, entry.oldPath, entry.path) || this.copied(entry.oldPath, entry.path))) {
+        } else if (entry.oldPath !== undefined && this.detached(entry.inode, entry.oldPath, entry.path)) {
           const documentId = this.bound.get(entry.inode);
           if (documentId !== undefined) this.unboundFrom.set(entry.inode, documentId);
           this.bound.delete(entry.inode);
@@ -229,27 +228,27 @@ class Replay {
   }
 
   /**
-   * Whether the engine's move of `inode` to `to` is a detach (PO-4(b), X-20):
-   * the inode is bound to D, D's newest revision so far is live at another
-   * path than `from` and `to`, and `to` is a conflict copy name.
+   * Whether the engine's move of `inode` from `from` to `to` is a detach
+   * (design §4.5 W(b), PO-4(b), §5.5 X-20), by the property oracle's rule
+   * (`PropertyWorld.detached`): the inode is bound to D at a path where D
+   * was synced (a live revision of D there, and no user rename of the inode
+   * onto it since), D's newest revision so far is live at another path than
+   * `from` and `to`, and `to` is a conflict copy name. A displace (W(a), a
+   * local move) or the engine moving D's file to a copy of its own path
+   * keeps the inode D's (PO-1, §4.4: a conflict copy is written as a new
+   * file, never D's inode).
    */
   private detached(inode: string, from: string, to: string): boolean {
     const documentId = this.bound.get(inode);
     if (documentId === undefined || this.engine.copyOf(to).length === 0) return false;
     const head = lastOf(this.applied, (revision) => revision.documentId === documentId);
     if (head === undefined || head.deleted) return false;
-    return this.key(head.path) !== this.key(from) && this.key(head.path) !== this.key(to);
-  }
-
-  /**
-   * Whether the engine's move from `from` to `to` is its copy step (§5.5
-   * X-21): `to` is its conflict copy of `from` itself. The local version is
-   * kept at the copy, an untracked file the next push makes a new document
-   * (§4.8, SPEC.md §7), and the document's revision goes to `from`; moving
-   * the file there instead of writing a copy leaves the user the same files.
-   */
-  private copied(from: string, to: string): boolean {
-    return this.engine.copyOf(to).some((original) => this.key(original) === this.key(from));
+    const key = this.key(from);
+    if (this.key(head.path) === key || this.key(head.path) === this.key(to)) return false;
+    const synced = lastOf(this.applied, (revision) => revision.documentId === documentId && !revision.deleted && this.key(revision.path) === key);
+    if (synced === undefined) return false;
+    const syncedAt = this.appliedAt.get(synced) ?? 0;
+    return !this.userChanges.some((change) => change.rename && change.inode === inode && this.key(change.path) === key && change.at > syncedAt);
   }
 
   /** The inode an engine commit of `revision` was read from, if the oracle can tell. */
@@ -298,7 +297,7 @@ class Replay {
       lost.add(revision.documentId);
       this.lostRenames.set(previous, lost);
     }
-    // A detached or copied file (X-20, X-21) is free only to become a new document: an existing one's commit from it still carries the old document's file.
+    // A detached file (X-20) is free only to become a new document: an existing one's commit from it still carries the old document's file.
     const excused = lostRename || (owner === undefined && create);
     if (previous !== undefined && previous !== revision.documentId && !excused) {
       this.violations.push({ invariant: "identity", detail: `${this.engine.name} committed ${name} from inode ${inode}, which is ${this.label(previous)}'s file` });

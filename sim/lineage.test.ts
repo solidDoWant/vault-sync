@@ -181,12 +181,18 @@ describe("identity on inodes", () => {
     expect(check([synced, moved, revision({ documentId: "d3", seq: 3n, path: "x.md" })], renamed)).toEqual(["identity: e1 committed d3 at x.md (seq 3, r3) from inode 1, which is d1's file"]);
   });
 
-  it("accepts a file the engine moved to its conflict copy committed as a new document (§5.5 X-21), not as another existing one", () => {
+  it("reports a document's own file the engine moved to its conflict copy and committed as a new document (no X-21: PO-1, §4.4)", () => {
     const copyOfA = "a (conflict e1 2026-01-02 030405).md";
-    const moved = created().user("create", "b.md", "2", 1n, "bb").rename("engine", "a.md", copyOfA, "1", 2n);
-    const feed = [synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb" })];
-    expect(check([...feed, revision({ documentId: "d3", seq: 3n, path: copyOfA })], moved)).toEqual([]);
-    expect(check([...feed, revision({ documentId: "d2", seq: 3n, path: copyOfA })], moved)).toEqual([`identity: e1 committed d2 at ${copyOfA} (seq 3, r3) from inode 1, which is d1's file`]);
+    const moved = created().rename("engine", "a.md", copyOfA, "1", 1n);
+    expect(check([synced, revision({ documentId: "d3", seq: 2n, path: copyOfA })], moved)).toEqual([`identity: e1 committed d3 at ${copyOfA} (seq 2, r2) from inode 1, which is d1's file`]);
+  });
+
+  it("keeps a file the user renamed onto the path bound, so its detach is a displace (X-20's narrowed rule)", () => {
+    // d1 synced at a.md, then the user renamed its file away and back onto a.md: no longer a detach (PropertyWorld.detached).
+    const copyOfA = "a (conflict e1 2026-01-02 030405).md";
+    const moved = revision({ seq: 2n, path: "c.md", deviceId: "scripted" });
+    const timeline = created().rename("user", "a.md", "x.md", "1", 1n).rename("user", "x.md", "a.md", "1", 1n).rename("engine", "a.md", copyOfA, "1", 2n);
+    expect(check([synced, moved, revision({ documentId: "d3", seq: 3n, path: copyOfA })], timeline)).toEqual([`identity: e1 committed d3 at ${copyOfA} (seq 3, r3) from inode 1, which is d1's file`]);
   });
 
   it("matches paths as the platform's filesystem does", () => {
