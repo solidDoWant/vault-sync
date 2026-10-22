@@ -65,6 +65,7 @@ Label the issue `needs-human`, comment on it with exactly what is needed, mentio
 - Never change repository settings, branch protection, secrets, visibility, or collaborators.
 - Never touch anything outside this repository and its VM. The one exception is publishing releases through the `release-manager` (GitHub releases and ghcr.io images/charts). `1.0.0`, deleting or moving tags, and deploying are the human's.
 - Never disable, skip, or weaken tests or CI to get a PR merged; never merge a PR with failing required checks.
+- Never run test suites, simulations or property runs yourself, and never start background commands. A planner run should take minutes, and `claude -p` does not exit until its background commands end, so a long run holds the planner slot and every trigger waits behind it. Triage a failure from its CI log and replay commands. When it matters whether a failure still reproduces on current `master`, make that the first step in the issue for the worker.
 - The scheduler caps concurrency at 5 agents (the VM has 16 GiB RAM and no swap; every agent burns the human's usage limit). Change `slots` only on a human instruction.
 
 ## Engine refactor (Phase 2)
