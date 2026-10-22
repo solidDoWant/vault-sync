@@ -790,6 +790,9 @@ describe("engine properties (design §9.3)", () => {
       scripted("windows", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "closed", changes: [{ file: 0, delete: false, target: 3 }] }, { type: "pull" }),
       // #893 (seed 566): two unpushed creates when the app closes, one renamed onto a name Windows cannot hold.
       scripted("windows", { type: "user-create", path: 6 }, { type: "user-create", path: 0 }, { type: "closed", changes: [{ file: 7, delete: false, target: 5 }, { file: 0, delete: false, target: 11 }] }, { type: "remote-delete", document: 9 }, { type: "remote-edit", document: 0 }, { type: "user-create", path: 0 }),
+      // #910 (seed 566): a closed-app delete and re-save at the synced path, a remote rename, a closed-app rename of the
+      // re-saved file, then a remote delete: the document stays deleted.
+      scripted("posix", { type: "user-create", path: 1 }, { type: "closed", changes: [{ file: 0, delete: true, target: 0 }, { file: 0, delete: false, target: 0 }] }, { type: "user-create", path: 1 }, { type: "remote-rename", document: 0, path: 0 }, { type: "closed", changes: [{ file: 0, delete: false, target: 8 }] }, { type: "remote-delete", document: 0 }),
     ]);
   });
 
@@ -1220,7 +1223,7 @@ describe("engine properties (design §9.3)", () => {
 });
 
 /** Commits `content` live on `documentId`'s head as device A would, behind the engine's back: a resurrection the oracle must judge. */
-async function commitAsDevice(world: PropertyWorld, documentId: string, path: string, content: string): Promise<void> {
+async function commitAsDevice(world: PropertyWorld, documentId: string, path: string, content: string, revisionId = `forged-${documentId}`): Promise<void> {
   const api = createProtocolClient({ transport: world.server.transport });
   const bytes = new TextEncoder().encode(content);
   const hash = sha256Hex(bytes);
@@ -1228,7 +1231,7 @@ async function commitAsDevice(world: PropertyWorld, documentId: string, path: st
   await api.sync.commitRevision({
     vaultId: world.server.vaultId,
     documentId,
-    revisionId: `forged-${documentId}`,
+    revisionId,
     baseRevId: world.server.head(documentId)?.id ?? "",
     kind: kindValue("text"),
     contentRef: { blobId: hexToBytes(hash), size: BigInt(bytes.length) },
@@ -1321,6 +1324,24 @@ describe("P2 oracle (design §5.4)", () => {
     await world.apply({ type: "remote-edit", document: 0 });
     await world.apply({ type: "remote-delete", document: 0 });
     await commitAsDevice(world, documentId, "a.md", "user 4");
+    await world.apply({ type: "pull" });
+    expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
+  });
+
+  // #910: only a file saved again at the document's synced path after its delete is the document's local version
+  // (design §6.2 R5b, §5.5 X-25); an edit carrying another untracked file's bytes does not make that file the document's.
+  it("flags a resurrection through the rename of an untracked file an edit carried from another path", async () => {
+    const world = new PropertyWorld("posix");
+    await world.apply({ type: "user-create", path: 0 });
+    await world.apply({ type: "push" });
+    const documentId = world.server.liveDocuments().get("a.md") ?? "";
+    // Step 3: an untracked file at b.md, whose bytes this device commits as the document's edit at a.md.
+    await world.apply({ type: "user-create", path: 2 });
+    await commitAsDevice(world, documentId, "a.md", "user 3", "forged-edit");
+    // Step 4: the user renames b.md to y/x.md.
+    await world.apply({ type: "user-rename", file: 1, mode: "pool", target: 10 });
+    await world.apply({ type: "remote-delete", document: 0 });
+    await commitAsDevice(world, documentId, "x/a.md", "user 3", "forged-resurrection");
     await world.apply({ type: "pull" });
     expect(violations(world, "P2")).toEqual([expect.stringMatching(/live revision of .* on its tombstone without a user change/)]);
   });
