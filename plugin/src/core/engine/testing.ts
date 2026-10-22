@@ -1036,9 +1036,12 @@ export class PropertyWorld {
     // device kept it, is no copy of the server's. The harness decides "cannot
     // hold" itself (§5.5 X-15): the platform refuses the path, or the path is
     // an `F`-alias of another live document's (the kept file of a document
-    // deferred as `alias`, decision #52, #769).
-    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && (unmaterializableReason(document.path, this.pathRules) !== undefined || aliases(document.path)) ? [document.localPath] : [])));
-    const held = [...(await files(this.vault))].filter(([path]) => !kept.has(path));
+    // deferred as `alias`, decision #52, #769). The kept file matches under
+    // `F` (PO-10, §5.5 X-14): the engine reports it under its binding's
+    // spelling, which a folder of one spelling on disk holds as another
+    // (`X/b.md` in `x/`, #737, #872).
+    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && (unmaterializableReason(document.path, this.pathRules) !== undefined || aliases(document.path)) ? [space.filesystemKey(document.localPath)] : [])));
+    const held = [...(await files(this.vault))].filter(([path]) => !kept.has(space.filesystemKey(path)));
     // Folder segments compare under `F`, the final segment exactly (INV-9,
     // PO-10): a folder has one spelling on disk, so the server's `X/b.md` is
     // held as `x/b.md` where the vault has `x/` (#737).

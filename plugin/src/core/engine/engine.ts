@@ -1961,7 +1961,8 @@ export class SyncEngine {
         if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) continue;
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
-        await this.commitOperation(await this.createFollowsBinding(operation), summary);
+        const followed = await this.createFollowsBinding(operation);
+        if (followed !== undefined) await this.commitOperation(followed, summary);
         busy = await this.busy();
       }
     }
@@ -2029,7 +2030,8 @@ export class SyncEngine {
         plan.waiting.add(operation.path);
         continue;
       }
-      await this.commitOperation(await this.createFollowsBinding(operation), summary);
+      const followed = await this.createFollowsBinding(operation);
+      if (followed !== undefined) await this.commitOperation(followed, summary);
     }
     return plan.waiting;
   }
@@ -2042,10 +2044,24 @@ export class SyncEngine {
    * dropped as superseded, and the file is pushed as another document (P1;
    * a document re-created after a restore, R7b). If the first create did
    * land, the pull finds it and rebases this one on it (applyRevision).
+   *
+   * A create whose document has no file any more (the user deleted it,
+   * E3) has nothing to create: it is dropped, with the document if that
+   * leaves it nothing (Bindings.dropped), and undefined is returned.
+   * Committed, it would carry content from no file of the document (PO-1,
+   * INV-3; #866): the server holding the blob, the upload never reads the
+   * file. The pull that starts every push has acknowledged any own commit
+   * of it that landed (design §4.5 step 1) before the outbox resumes: the
+   * document then has a base, and the push derives its delete instead.
    */
-  private async createFollowsBinding(operation: PendingOperation): Promise<PendingOperation> {
+  private async createFollowsBinding(operation: PendingOperation): Promise<PendingOperation | undefined> {
     if (operation.baseRevisionId !== "" || operation.deleted) return operation;
-    const spelling = (await this.journal.getDocument(operation.documentId))?.binding?.spelling;
+    const state = await this.journal.getDocument(operation.documentId);
+    if (state?.binding === null) {
+      await this.bindings.dropped([operation.revisionId]);
+      return undefined;
+    }
+    const spelling = state?.binding?.spelling;
     if (spelling === undefined) return operation;
     const content = await this.readOrNull(spelling);
     if (content === null || (spelling === operation.path && sha256Hex(content) === operation.contentHash)) return operation;

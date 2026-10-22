@@ -630,6 +630,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "restore", fraction: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #769: a remote rename of a document moved locally onto the path where the user's unpushed rename put another document's file with the same bytes.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+      // #866 (seed 566): a pushed create moved onto incoming paths around a restore, then another file renamed and deleted.
+      scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "user-rename", file: 1, mode: "pool", target: 0 }, { type: "restore", fraction: 0 }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "user-rename", file: 1, mode: "pool", target: 3 }, { type: "user-delete", file: 1 }, { type: "pull" }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
     await holds(p1, fixed);
@@ -838,8 +840,10 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
       scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-create", path: 14 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 1, path: 13 }, { type: "edit-during-pull", file: 15 }, { type: "pull" }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+      // #872 (seed 566): X/b.md, held in x/, is moved to a path Windows refuses and keeps its edited file; the oracle matches it under `F`.
+      scripted("windows", { type: "remote-create", path: 8 }, { type: "remote-create", path: 9 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 3 }, { type: "push" }),
     ];
-    for (const example of fixed) expect(await p6.check(example)).toEqual([]);
+    for (const example of fixed) expect(await p6.check(example), JSON.stringify(example)).toEqual([]);
     await holds(p6, fixed);
   });
 
