@@ -741,7 +741,11 @@ describe("engine properties (design §9.3)", () => {
   // not exist" stays in the outbox. Flip to `it` with `holds(p6Restores, [case])` once #829 is fixed.
   it.fails("P6: after a database restore the device converges with the server (#829)", { timeout }, async () => {
     const restored = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 });
-    expect(await p6Restores.check(restored)).toEqual([]);
+    // Only #829's symptom counts as the expected failure: a harness error, or a pass once #829 is fixed, returns
+    // without throwing, so `it.fails` reports this case as failing.
+    const found = await p6Restores.check(restored).catch(() => undefined);
+    if (found === undefined || !found.includes("pending operations left: r-1@A.md")) return;
+    expect(found).toEqual([]);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {
