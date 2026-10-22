@@ -10,7 +10,7 @@ import { isVaultError, type DeletePrecondition, type VaultAdapter, type VaultEve
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
-import { blobMissing, errorCode, headMoved } from "./errors";
+import { baseLost, blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
@@ -304,6 +304,8 @@ export class SyncEngine {
   private readonly retried = new Set<string>();
   /** Documents being merged right now, so rule W's resolving a holder first (W(b)) never loops back to another. */
   private readonly resolving = new Set<string>();
+  /** This device's latest acknowledged commit in this session, at the seq and anchor the server gave it (pastOwnCommit, #861). */
+  private acknowledgedAt: { seq: bigint; anchor: Uint8Array | undefined } | undefined;
   /** The feed revision the pull is applying, whose step's final transaction moves the cursor (feedCursor). */
   private feed: { revisionId: string; seq: bigint; anchor: Uint8Array | undefined } | undefined;
   /**
@@ -2153,11 +2155,13 @@ export class SyncEngine {
    * Whether `operation` is on its document's base: the base is still the
    * one it was derived from, or the document is one the restored server
    * lacks (a ghost, or a tombstone it lost), which the operation creates
-   * again (#829).
+   * again (#829). An operation derived on the base before a resync found the
+   * restored server lacks it is not: a restore during the push lost it
+   * (#861, PO-12), and the next round derives the create.
    */
   private async onBase(operation: PendingOperation): Promise<boolean> {
     const state = await this.journal.getDocument(operation.documentId);
-    if (state !== undefined && operation.baseRevisionId === "" && lost(state)) return true;
+    if (state !== undefined && lost(state)) return operation.baseRevisionId === "";
     return (state?.revisionId ?? "") === operation.baseRevisionId;
   }
 
@@ -2319,10 +2323,21 @@ export class SyncEngine {
    * (its base is behind the server's head, so the commit is refused as head
    * moved). A stale path-conflict deferral would be removed by its retry
    * anyway, which finds it superseded.
+   *
+   * Not if this device's previous commit landed at the cursor's seq under
+   * another anchor: a restore during the push took the server back below
+   * the cursor, and the server reused that seq (#861, PO-12). Moving the
+   * cursor onto this commit would hide the divergence from the next pull,
+   * which must resync.
    */
   private async pastOwnCommit(revision: Revision): Promise<JournalChanges> {
-    if ((await this.journal.getCursor()) !== revision.seq - 1n) return {};
-    return { cursor: { seq: revision.seq, anchor: cursorAnchor(revision) } };
+    const previous = this.acknowledgedAt;
+    const anchor = cursorAnchor(revision);
+    this.acknowledgedAt = { seq: revision.seq, anchor };
+    const cursor = await this.journal.getCursor();
+    if (cursor !== revision.seq - 1n) return {};
+    if (previous?.seq === cursor && !sameBytes(previous.anchor, await this.journal.getCursorAnchor())) return {};
+    return { cursor: { seq: revision.seq, anchor } };
   }
 
   /**
@@ -2332,8 +2347,14 @@ export class SyncEngine {
    * so that document arrives. If its revision lands at the same path, the pull
    * hands it to the merge hook, which keeps the local file as a conflict copy;
    * otherwise (the paths differ only by case or Unicode form, or the hook
-   * deferred) see moveToConflictPath. INVALID_ARGUMENT: recorded as rejected.
-   * Anything else rejects the push.
+   * deferred) see moveToConflictPath. FAILED_PRECONDITION without a head on
+   * an operation with a base (a live one's blob uploaded again): the document does not
+   * exist, so a restore lost the base after the pull that started the push
+   * (#861, PO-12, design §4.6). Pull: the pull finds the divergence and its
+   * resync resolves the operation against the restored server, or an
+   * earlier resync of this push already did; the push goes on. A refusal
+   * the pull does not explain rejects the push.
+   * INVALID_ARGUMENT: recorded as rejected. Anything else rejects the push.
    */
   private async commitFailed(operation: PendingOperation, error: unknown, summary: PushSummary): Promise<void> {
     if (!(error instanceof ConnectError)) throw error;
@@ -2347,6 +2368,15 @@ export class SyncEngine {
       await this.pullOnce();
       await this.moveToConflictPath(operation, error, summary);
       return;
+    }
+    if (baseLost(error, operation)) {
+      const pulled = await this.pullOnce();
+      // A refusal the pull does not explain (no resync, the operation still
+      // pending on a base the journal holds) is a blob the server lacks: it
+      // rejects the push, as before.
+      const state = await this.journal.getDocument(operation.documentId);
+      const stillPending = (await this.journal.listPending()).some((candidate) => candidate.revisionId === operation.revisionId);
+      if (pulled.resynced || !stillPending || state === undefined || lost(state)) return;
     }
     if (error.code === Code.InvalidArgument) {
       summary.rejected.push({ operation, reason: "refused", error });
@@ -2729,6 +2759,12 @@ function isTransient(error: unknown): boolean {
 
 function sameHash(content: Uint8Array | null, hash: string): boolean {
   return content !== null && sha256Hex(content) === hash;
+}
+
+/** Whether two cursor anchors are equal; a server without anchors gives none to compare. */
+function sameBytes(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
 function sameContent(left: Uint8Array | null, right: Uint8Array | null): boolean {

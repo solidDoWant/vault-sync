@@ -61,9 +61,16 @@ export interface RunContext {
    * not exact: a commit whose reply was lost moves the head unseen until the
    * next reply that shows it. SimRun.finish() checks that it equals the feed
    * head at the end of a run (`server-seq`), so the plumbing cannot lag
-   * unnoticed.
+   * unnoticed. A restore lowers it to the restored head (`restoredTo`).
    */
   serverSeq: () => bigint;
+  /**
+   * Sets serverSeq to `headSeq`, the head a restore took the server back to
+   * (#861). Seqs above it are the restored server's from then on; kept at the
+   * old server's head, every change recorded after the restore would be
+   * stamped after the restored server's own revisions up to that head.
+   */
+  restoredTo: (headSeq: bigint) => void;
   /**
    * The seqs of the revisions retention purged during the run (SPEC.md
    * §11): the only seqs the change feed may skip.

@@ -71,7 +71,7 @@ import {
 import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { RunContext, Violation } from "./client";
 import { EngineUser } from "./engine-user";
-import type { EngineLineage, LineageEntry } from "./lineage";
+import { clampToRestore, type EngineLineage, type LineageEntry } from "./lineage";
 import {
   carriesLocalEdit,
   checkEngineEchoes,
@@ -385,6 +385,11 @@ export class EngineObserver {
   /** The engine's device and timeline, for the inode oracle (sim/lineage.ts). */
   lineage(): EngineLineage {
     return { name: this.name, deviceId: this.deviceId, timeline: this.timeline, match: this.ledger.match, copyOf: (path) => copiedFrom(path, this.name) };
+  }
+
+  /** A restore took the server back to `headSeq`: entries stamped with the old server's lost seqs are clamped to it (clampToRestore, #861). */
+  restoredTo(headSeq: bigint): void {
+    clampToRestore(this.timeline, headSeq);
   }
 
   /** Marks a settled point in the timeline: the engine has handled every event up to timeline entry `since`. */

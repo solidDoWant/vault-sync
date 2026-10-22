@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import type { FeedRevision } from "./invariants";
 import { copiedFrom, pathMatcher } from "./invariants";
-import { checkLineage, type LineageEntry } from "./lineage";
+import { checkLineage, clampToRestore, HarnessSeq, type LineageEntry } from "./lineage";
 
 const copy = "b (conflict e1 2026-01-02 030405).md";
 
@@ -363,5 +363,40 @@ describe("resurrected-delete on inodes", () => {
   it("matches paths as the platform's filesystem does", () => {
     // An untracked file at the tombstone's path, by the platform's file key, is adopted (PO-13).
     expect(check(deletedThenBack({ path: "A.md" }), new Timeline().user("create", "A.md", "2", 2n, "bb"), "windows")).toEqual([]);
+  });
+});
+
+describe("timeline stamps across a server restore (#861)", () => {
+  // d1 synced at a.md (inode 1, content aa) at seq 1. The old server then
+  // reaches seq 6 with revisions the restore loses, and is restored to seq 1.
+  // A merge writes the user's version aa into a conflict copy (a new inode 3)
+  // and the result bb into d1's file, and the engine commits both on the
+  // restored server: d1 at seq 2, the copy as the new document d3 at seq 3.
+  const copyOfA = "a (conflict e1 2026-01-02 030405).md";
+  const feed = [synced, revision({ seq: 2n, contentHash: "bb" }), revision({ documentId: "d3", seq: 3n, path: copyOfA, contentHash: "aa" })];
+  const merge = (timeline: Timeline, seq: bigint) => timeline.engine("create", copyOfA, "3", seq, "aa").engine("modify", "a.md", "1", seq, "bb");
+
+  function run(mergeBeforeRestore: boolean): string[] {
+    const clock = new HarnessSeq();
+    const timeline = created();
+    clock.observe(1n);
+    clock.observe(6n);
+    if (mergeBeforeRestore) merge(timeline, clock.get());
+    clock.restoredTo(1n);
+    clampToRestore(timeline.entries, 1n);
+    if (!mergeBeforeRestore) merge(timeline, clock.get());
+    return check(feed, timeline);
+  }
+
+  it("stamps a change made after the restore with the restored head, so the copy's commit follows the copy's file", () => {
+    expect(run(false)).toEqual([]);
+  });
+
+  it("clamps a change stamped with a seq the restore lost to the restored head, so it precedes the restored server's later revisions", () => {
+    expect(run(true)).toEqual([]);
+  });
+
+  it("reports the copy's commit from d1's file if the stamps put it before the merge (the oracle depends on the clock)", () => {
+    expect(check(feed, merge(created(), 6n))).toEqual([`identity: e1 committed d3 at ${copyOfA} (seq 3, r3) from inode 1, which is d1's file`]);
   });
 });
