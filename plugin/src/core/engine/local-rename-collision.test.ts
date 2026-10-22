@@ -103,3 +103,63 @@ describe("SyncEngine merge result at a local rename onto a path its holder is le
     });
   }
 });
+
+// The own-path guard of the #846 fix (#857): a merge result at the remote
+// revision's own path, not a local rename, never moves to a copy name. Rule
+// W keeps the path for a holder whose newest server claim is it under the
+// server's key (W(c)), and the revision waits, listed (`path-conflict`,
+// design §4.5), until the holder moves. A resync after a server restore
+// meets this: it applies the restored heads in seq order, so a document's
+// head at a path this device's journal still gives another document, whose
+// own head (later in seq) moves it away, is merged first. Only where the
+// vault holds the two spellings as one file (macOS, Windows): on POSIX the
+// holder's file is not in the way, and the revision takes its path at once.
+describe("SyncEngine merge result at the remote revision's own path, held by another document's newest server claim (#857)", () => {
+  for (const platform of ["macos", "windows"] as const) {
+    for (const { holder, path } of [
+      { holder: "STRASSE.md", path: "straße.md" },
+      { holder: "straße.md", path: "STRASSE.md" },
+    ]) {
+      it(`makes the revision at ${path} wait while ${holder} is another document's, and lands it there with no copy once the holder moves (${platform})`, async () => {
+        const h = harness({ merge: "default", pathRules: { platform } });
+        h.server.commit({ documentId: "mine", path: "draft.md", content: "mine\n" }); // 1
+        h.server.commit({ documentId: "theirs", path: holder, content: "theirs\n" }); // 2
+        await h.engine.pull();
+        // A local edit, not pushed yet: the restored head goes to the merge path.
+        await h.vault.write("draft.md", bytes("mine\nlocal\n"));
+
+        // The restore loses the holder's revision. On the restored server
+        // another device moves the document to `path` (seq 2), and then
+        // re-creates the holder elsewhere under its id (seq 3).
+        h.server.restoreTo(1n);
+        h.server.commit({ documentId: "mine", path, content: "edited elsewhere\nmine\n" }); // 2
+        h.server.commit({ documentId: "theirs", path: "elsewhere.md", content: "theirs\n" }); // 3
+
+        await h.engine.pull();
+        // The revision waits, listed, at its own path: no copy is made.
+        expect((await h.journal.listDeferred()).map((deferred) => ({ documentId: deferred.revision.documentId, path: deferred.revision.path, reason: deferred.reason }))).toEqual([
+          { documentId: "mine", path, reason: "path-conflict" },
+        ]);
+        expect((await h.journal.listConflicts()).filter((record) => record.reason === "path-taken")).toEqual([]);
+        expect(await files(h.vault)).toEqual(
+          new Map([
+            ["draft.md", "mine\nlocal\n"],
+            ["elsewhere.md", "theirs\n"],
+          ]),
+        );
+
+        const summaries = await syncUntilQuiet(h);
+
+        expect(h.server.liveDocuments().get(path)).toBe("mine");
+        expect(h.server.liveFiles().get(path)).toBe("edited elsewhere\nmine\nlocal\n");
+        expect(h.server.liveDocuments().get("elsewhere.md")).toBe("theirs");
+        expect(h.server.liveDocuments().get(copyOf(path.slice(0, -".md".length), ".md"))).toBeUndefined();
+        expect(await files(h.vault)).toEqual(h.server.liveFiles());
+        expect(await h.journal.listDeferred()).toEqual([]);
+        expect(await h.journal.listPending()).toEqual([]);
+        expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
+        expect((await h.journal.listConflicts()).filter((record) => record.reason === "path-taken")).toEqual([]);
+      });
+    }
+  }
+});
