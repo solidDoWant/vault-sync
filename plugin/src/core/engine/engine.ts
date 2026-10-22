@@ -16,7 +16,7 @@ import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
 import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
-import { boundLocalChange, mergePath, ruleW } from "./decide";
+import { boundLocalChange, mergePath, ownMovedCreate, ruleW } from "./decide";
 import { Intents } from "./intents";
 import { busyClaims, ghost, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
@@ -794,11 +794,11 @@ export class SyncEngine {
       this.schedulePush();
       return "applied";
     }
-    const rebased = (operation: PendingOperation) => operation.baseRevisionId === "" || operation.baseRevisionId === remote.revisionId;
-    if ((state === undefined || !hasBase(state)) && !remote.deleted && remote.parentRevisionId === "" && pending.length > 0 && pending.every(rebased)) {
+    if (ownMovedCreate(state, remote, pending, this.deviceId)) {
       // This device's own create, which it moved on (to a path-taken copy,
-      // #286) before learning that the commit had landed: document ids are
-      // this device's own. The moved create becomes the document's next
+      // #286) before learning that the commit had landed (ownMovedCreate:
+      // never another device's re-create of a shared ghost, #816). The
+      // moved create becomes the document's next
       // revision, a rename, on top of it; then the document is taken as
       // created. Interrupted in between, the pull finds it here again.
       for (const operation of pending) {
