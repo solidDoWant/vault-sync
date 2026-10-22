@@ -458,6 +458,76 @@ const ghostsCollideAfterRestore: WorldCommand[] = [
   { type: "pull" },
   { type: "remote-edit", document: 0 },
 ];
+/**
+ * #913's class (INV-2, PO-12, PO-4, design §4.6): a document synced at `I.md`,
+ * renamed locally or not, that a restore to nothing makes a ghost, then a
+ * head of another document at a path colliding with `I.md` under `K` that
+ * the pull defers: another document's file holds its one file name (`ı.md`
+ * on Windows and macOS, an `F`-alias). The deferral is that document's newest
+ * server claim, so the ghost yields in that pull. The commands around the
+ * head vary.
+ */
+const deferredOnGhost: fc.Arbitrary<[PathPlatform, WorldCommand[]]> = fc
+  .tuple(fc.constantFrom<PathPlatform>("windows", "macos"), fc.constantFrom(0, 1, 2, 3, 4), fc.array(fc.oneof(...ghostCommands), { maxLength: 4 }), ghost, fc.array(fc.oneof(...ghostCommands), { maxLength: 4 }))
+  .map(([on, target, before, document, after]) => [
+    on,
+    [
+      { type: "remote-create", path: 3 },
+      { type: "push" },
+      { type: "user-rename", file: 0, mode: "pool", target },
+      { type: "restore", fraction: 0 },
+      { type: "remote-create", path: 2 },
+      ...before,
+      { type: "remote-create", path: 0 },
+      { type: "remote-rename", document, path: 3 },
+      { type: "pull" },
+      ...after,
+    ],
+  ]);
+const p3DeferredOnGhost: Definition<[PathPlatform, WorldCommand[]]> = {
+  property: "P3",
+  cases: deferredOnGhost,
+  check: async ([on, list]) => {
+    const world = new PropertyWorld(on, ghostPaths);
+    for (const command of list) await world.apply(command);
+    await world.quiesce();
+    return violations(world, "P3");
+  },
+};
+/** #913's counterexample (nightly seed 566, case 60,114 after #909). */
+const deferredOnGhostPath: WorldCommand[] = [
+  { type: "remote-create", path: 3 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 4 },
+  { type: "restore", fraction: 0 },
+  { type: "remote-create", path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "remote-rename", document: 0, path: 2 },
+  { type: "remote-create", path: 0 },
+  { type: "remote-rename", document: 0, path: 3 },
+  { type: "pull" },
+  { type: "remote-create", path: 0 },
+];
+/**
+ * The class's second case (seed 566, case 21,359 of the property below): on
+ * macOS a document the user moved to `ı.md` is renamed on the server to
+ * `I.md`, one file with it under `F`. The pull keeps the local move, so it
+ * claims no path for the file, but the base moves to `I.md`, which the
+ * ghost's synced path is under `K`.
+ */
+const movedHeadOnGhostPath: WorldCommand[] = [
+  { type: "remote-create", path: 3 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 1 },
+  { type: "restore", fraction: 0 },
+  { type: "remote-create", path: 2 },
+  { type: "remote-rename", document: 0, path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "user-rename", file: 0, mode: "pool", target: 2 },
+  { type: "remote-create", path: 0 },
+  { type: "remote-rename", document: 0, path: 3 },
+  { type: "pull" },
+];
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
@@ -924,7 +994,11 @@ describe("engine properties (design §9.3)", () => {
       // #886 (seed 566, the run after the fix): a restore rolls a document back along this device's history onto a
       // ghost's synced path; the ghost yields in the resync.
       scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }),
+      // #913 (seed 566, after #909): a pulled head at a locally renamed ghost's synced path, deferred as an `F`-alias of
+      // another document's file; the ghost yields in the pull.
+      scripted("windows", ...deferredOnGhostPath),
     ]);
+    expect(await p3Ghosts.check(scripted("windows", ...deferredOnGhostPath))).toEqual([]);
     expect(await p3Ghosts.check(scripted("windows", ...ghostsCollideAfterRestore))).toEqual([]);
     expect(await p3Ghosts.check(scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }))).toEqual([]);
     expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
@@ -938,6 +1012,16 @@ describe("engine properties (design §9.3)", () => {
     expect(await p3CollidingGhosts.check(ghostsCollideAfterRestore)).toEqual([]);
     await holds(p3CollidingGhosts, [ghostsCollideAfterRestore]);
     await holds(p4CollidingGhosts, Array.from({ length: 24 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", ghostsCollideAfterRestore, write + 1]));
+  });
+
+  // #913 (INV-2, PO-12, PO-4, design §4.6): a pulled head deferred at a ghost's synced path (an `F`-alias of another
+  // document's file holds it) is its document's newest server claim, so the ghost yields in that pull, as it does to an
+  // applied, merged or rolled-back head; so does it to a head whose document's local move the pull keeps. Fixed cases:
+  // #913's counterexample (nightly seed 566) and the second case of its class.
+  it("P3: a ghost yields its synced path to a head the pull defers there or whose local move it keeps", { timeout }, async () => {
+    expect(await p3DeferredOnGhost.check(["windows", deferredOnGhostPath])).toEqual([]);
+    expect(await p3DeferredOnGhost.check(["macos", movedHeadOnGhostPath])).toEqual([]);
+    await holds<[PathPlatform, WorldCommand[]]>(p3DeferredOnGhost, [["windows", deferredOnGhostPath], ["macos", movedHeadOnGhostPath]]);
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
@@ -1028,6 +1112,24 @@ describe("engine properties (design §9.3)", () => {
         ],
         20,
       ],
+      // #906's (nightly seed 566): after a purge, a restore to nothing and a push, a crash dropped the conflict copy of `no:te.md`.
+      [
+        "posix",
+        [
+          { type: "remote-create", path: 0 },
+          { type: "remote-edit", document: 0 },
+          { type: "remote-create", path: 11 },
+          { type: "remote-delete", document: 0 },
+          { type: "purge", revision: 0 },
+          { type: "edit-during-pull", file: 0 },
+          { type: "restore", fraction: 0 },
+          { type: "push" },
+          { type: "user-rename", file: 0, mode: "pool", target: 0 },
+          { type: "remote-delete", document: 0 },
+          { type: "move-onto-incoming", file: 0, path: 11 },
+        ],
+        14,
+      ],
     ]);
   });
 
@@ -1051,6 +1153,36 @@ describe("engine properties (design §9.3)", () => {
       expect(await world.vault.list(), `crash at write ${String(write)}`).not.toContain("I.md");
       expect((await world.journal.listDeferred()).map((deferred) => [deferred.revision.path, deferred.unmaterializable]), `crash at write ${String(write)}`).toEqual([["I.md", "alias"]]);
     }
+  });
+
+  // #922 (INV-7, §4.5 step 3, decision #52): a push that frees an `alias` deferral by committing its holder's move
+  // applies the deferred revision right after that commit, before it commits the user's untracked file at the alias
+  // spelling as a new document, as the push a crash right after the commit restarts does at its start. Generated
+  // cases on macOS: `I.md` deferred behind `ı.md`, the user moves `ı.md`'s file off (onto a path free or not) and
+  // creates either spelling again, with other documents on the device or not, then one push, crashed at any write.
+  it("P4: a push that frees an alias deferral and creates a file at the alias reaches the state a crash in it reaches", { timeout }, async () => {
+    const aliasRetaken = crashEquivalence(
+      fc.constant<PathPlatform>("macos"),
+      fc.tuple(fc.subarray([1, 4]), fc.constantFrom(0, 1, 4), fc.constantFrom(2, 3), fc.boolean()).map(([others, target, alias, remoteFirst]): WorldCommand[] => [
+        { type: "user-create", path: 2 },
+        ...(remoteFirst ? others.map((path): WorldCommand => ({ type: "remote-create", path })) : []),
+        { type: "push" },
+        { type: "remote-create", path: 3 },
+        ...(remoteFirst ? [] : others.map((path): WorldCommand => ({ type: "remote-create", path }))),
+        { type: "pull" },
+        // `ı.md` sorts after the ASCII paths.
+        { type: "user-rename", file: others.length, mode: "pool", target },
+        { type: "user-create", path: alias },
+        { type: "push" },
+      ]),
+      ghostPaths,
+    );
+    const fixed: [PathPlatform, WorldCommand[], number][] = [];
+    for (let write = 1; write <= 12; write++) {
+      const list: WorldCommand[] = [{ type: "user-create", path: 2 }, { type: "push" }, { type: "remote-create", path: 3 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "user-create", path: 2 }, { type: "push" }];
+      fixed.push(["macos", list, write]);
+    }
+    await holds(aliasRetaken, fixed);
   });
 
   // #801 (INV-7, PO-8): a push that displaces a ghost the restore lost to a copy name commits its re-create in the
@@ -1143,7 +1275,26 @@ describe("engine properties (design §9.3)", () => {
       { type: "push" },
       { type: "restore", fraction: 0 },
     ];
+    // #922 (seed 566): a push commits the move of an `alias` deferral's holder off `ı.md` and then the user's untracked
+    // `ı.md` on macOS, crashed at journal write 14, between the two: the deferred `I.md` takes the file either way.
+    const aliasUntracked: WorldCommand[] = [
+      { type: "remote-create", path: 0 },
+      { type: "user-create", path: 0 },
+      { type: "user-rename", file: 0, mode: "pool", target: 2 },
+      { type: "push" },
+      { type: "remote-create", path: 3 },
+      { type: "user-rename", file: 0, mode: "pool", target: 1 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "user-rename", file: 3, mode: "pool", target: 0 },
+      { type: "user-create", path: 2 },
+      { type: "remote-rename", document: 1, path: 0 },
+      { type: "push" },
+    ];
+    // Its variant with the create and the remote rename swapped.
+    const aliasUntrackedLater = [...aliasUntracked.slice(0, 8), aliasUntracked[9], aliasUntracked[8], aliasUntracked[10]].filter((command) => command !== undefined);
     const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["macos", aliasUntracked, 14],
+      ["macos", aliasUntrackedLater, 14],
       ["windows", recreated, 17],
       ["windows", postponed, 5],
       ["macos", respelled, 13],

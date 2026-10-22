@@ -13,7 +13,7 @@ import { EchoSuppressor } from "./echo";
 import { baseLost, blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
-import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
+import { Bindings, hasBase, liveHere, released, sameBinding, type BindingChange } from "./bindings";
 import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { boundLocalChange, carriedDisplacement, mergePath, ownMovedCreate, ruleW } from "./decide";
@@ -557,6 +557,7 @@ export class SyncEngine {
    * first.
    */
   private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause, descends: boolean): Promise<"deferred"> {
+    await this.yieldLostClaims(remote);
     await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason, ...descent(descends) });
     await this.leaveBlockedFile(remote.documentId);
     const document = await this.unmaterializableDocument(remote, reason);
@@ -817,7 +818,7 @@ export class SyncEngine {
    * Applies one remote revision, or defers it. Idempotent: a revision whose
    * apply was interrupted at any step is finished, not repeated.
    */
-  private async applyRevision(incoming: IncomingRevision, fromFeed: boolean, cachedBase = false): Promise<ApplyOutcome> {
+  private async applyRevision(incoming: IncomingRevision, fromFeed: boolean, cachedBase = false, redecisions = 0): Promise<ApplyOutcome> {
     const { remote } = incoming;
     const state = await this.journal.getDocument(remote.documentId);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === remote.documentId);
@@ -906,6 +907,10 @@ export class SyncEngine {
     // its local rename wins, so the merge path decides where its result
     // lands, and claims that path (applyMerge, #473).
     const claims = !remote.deleted && !movedLocally(state);
+    // Its base still moves to the revision's path, its newest server claim
+    // from now on: a document the server lost whose synced path collides
+    // with it yields in this step too (#913).
+    if (!remote.deleted && !claims) await this.yieldLostClaims(remote);
     // Download before looking at the disk, so the check-then-write window is short.
     const needsContent = !remote.deleted && (!liveHere(state) || state.baseHash !== remote.contentHash);
     let content: Uint8Array | undefined;
@@ -917,7 +922,14 @@ export class SyncEngine {
         if (claim === "held" || claim === "taken") return this.defer(remote, "path-conflict", descends);
       }
       if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      const bound = await this.journal.getDocument(remote.documentId);
       const found = await this.inspect(state, remote);
+      // The user moved or deleted the document's own file while inspect read
+      // the disk, and its transition (E1–E3) landed meanwhile (PO-2, #906):
+      // the inspection classified a binding the document no longer has. The
+      // revision is decided again from the journal, as an engine restarted
+      // right after that transition decides it (INV-7).
+      if (redecisions < maxRedecisions && !sameBinding(bound, await this.journal.getDocument(remote.documentId))) return this.applyRevision(incoming, fromFeed, cachedBase, redecisions + 1);
       // A file at the path that another document's binding holds is that
       // document's (PO-1), also one the user moved there after the claim
       // (#757), whose rename (E1) is classified first (PO-2): it is neither
@@ -1855,7 +1867,24 @@ export class SyncEngine {
     return !remote.deleted && remote.size > this.maxDownloadBytes;
   }
 
+  /**
+   * A deferred revision is its document's newest server claim (`ahead`,
+   * design §4.2), whatever its blocker: a document the server lost whose
+   * synced path collides with it under the server's key yields in the step
+   * that defers it, as to a revision applied, merged or rolled back there
+   * (claimPath, `lost`; INV-2, PO-4, PO-12, design §4.6, #867, #913). A
+   * deferral is written only by defer and deferUnmaterializable, which call
+   * this first; applyRevision calls it for a head whose document's local
+   * move it keeps, which claims no path for the file but still moves the
+   * base. The revision waits either way: a ghost that cannot yield (no copy
+   * name fits) keeps its file where it is.
+   */
+  private async yieldLostClaims(remote: RemoteRevision): Promise<void> {
+    if (!remote.deleted) await this.claimPath(remote.path, remote.documentId, "lost");
+  }
+
   private async defer(remote: RemoteRevision, reason: DeferReason, descends: boolean): Promise<"deferred"> {
+    await this.yieldLostClaims(remote);
     // A deferral W(b) postponed is marked in the write that moves the cursor past it (#884).
     const postponed = reason === "path-conflict" && this.postponed?.has(remote.documentId) === true ? { postponed: true as const } : {};
     await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends), ...postponed }], ...this.feedCursor(remote.revisionId) }));
@@ -2125,11 +2154,8 @@ export class SyncEngine {
       // Changes made or found during the round (a merge, an acknowledged commit, an upload superseded) are the next round's.
       changed = [...this.dirty.paths].some(([path, clock]) => seen.get(path) !== clock);
     }
-    // A commit may have moved or deleted an `alias` deferral's holder (#878).
-    const clock = this.dirtyClock;
-    if (summary.committed > 0) await this.retryFreedAliases();
     summary.pending = (await this.journal.listPending()).length;
-    if (changed || this.dirtyClock !== clock) this.schedulePush();
+    if (changed) this.schedulePush();
     return summary;
   }
 
@@ -2157,7 +2183,7 @@ export class SyncEngine {
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
         const followed = await this.createFollowsBinding(operation);
-        if (followed !== undefined) await this.commitOperation(followed, summary);
+        if (followed !== undefined) await this.commitInPush(followed, summary);
         busy = await this.busy();
       }
     }
@@ -2215,7 +2241,7 @@ export class SyncEngine {
       if (operation.baseRevisionId === "" && !(await this.known(operation.documentId))) await this.bindings.created(operation);
       else if (plan.revivals.has(operation.revisionId)) await this.bindings.revived(operation);
       else await this.journal.addPending(operation);
-      await this.commitOperation(operation, summary);
+      await this.commitInPush(operation, summary);
     }
     // The re-creates the displaces above put in the outbox are this push's,
     // as they are when a restart recovers the intent and resumes the outbox
@@ -2228,9 +2254,24 @@ export class SyncEngine {
         continue;
       }
       const followed = await this.createFollowsBinding(operation);
-      if (followed !== undefined) await this.commitOperation(followed, summary);
+      if (followed !== undefined) await this.commitInPush(followed, summary);
     }
     return plan.waiting;
+  }
+
+  /**
+   * Commits one of the push's operations, then applies every `alias`
+   * deferral the commit freed (retryFreedAliases): the commit may have moved
+   * or deleted the holder (#878). Right after the commit, before the push
+   * commits anything else, which may re-take the alias spelling (the user's
+   * untracked file there, created as a new document), as a push a crash right
+   * after this commit restarts does at its start (#922, INV-7). The push's
+   * later operations re-check their file before committing.
+   */
+  private async commitInPush(operation: PendingOperation, summary: PushSummary): Promise<void> {
+    const committed = summary.committed;
+    await this.commitOperation(operation, summary);
+    if (summary.committed > committed) await this.retryFreedAliases();
   }
 
   /**
@@ -2838,6 +2879,9 @@ export class SyncEngine {
     }
   }
 }
+
+/** How many times applyRevision decides a revision again because a user transition of its document landed mid-inspection (#906). */
+const maxRedecisions = 3;
 
 /** Length of a Revision.anchor (SPEC.md §6.1). */
 const anchorBytes = 16;

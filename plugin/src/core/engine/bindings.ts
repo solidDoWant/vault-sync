@@ -594,6 +594,15 @@ export function hasBase(state: DocumentState): boolean {
   return state.revisionId !== "";
 }
 
+/**
+ * Whether two reads of a document's row bind it to the same file: the same
+ * spelling, or no file for the same reason. A user transition (E1–E3,
+ * PO-2) changes one or the other.
+ */
+export function sameBinding(before: DocumentState | undefined, after: DocumentState | undefined): boolean {
+  return (before?.binding?.spelling ?? null) === (after?.binding?.spelling ?? null) && (before?.absence ?? null) === (after?.absence ?? null);
+}
+
 /** Whether the engine gave up the document's file (`absence = released`, design §4.1): it has none here, whatever its base. */
 export function released(state: DocumentState): boolean {
   return state.binding === null && state.absence === "released";
