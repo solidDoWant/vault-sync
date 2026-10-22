@@ -85,6 +85,15 @@ describe("phantom-delete on inodes", () => {
     expect(check([pulled, revision({ seq: 2n, deleted: true })], other)).toEqual([phantom(2n)]);
   });
 
+  it("binds a file the user deleted before the engine committed what it had read from it", () => {
+    // The engine read a.md, the user deleted it, the engine committed it as d1 and then its delete.
+    const timeline = new Timeline().user("create", "a.md", "1", 0n, "aa").user("delete", "a.md", "1", 0n);
+    expect(check([synced, revision({ seq: 2n, deleted: true })], timeline)).toEqual([]);
+    // Not when the deleted file was at another path.
+    const elsewhere = new Timeline().user("create", "b.md", "1", 0n, "aa").user("delete", "b.md", "1", 0n);
+    expect(check([synced, revision({ seq: 2n, deleted: true })], elsewhere)).toEqual([phantom(2n)]);
+  });
+
   it("follows the document's file through the engine's move to its conflict copy (§5.5 X-4, #509)", () => {
     const timeline = created().rename("engine", "a.md", copy, "1", 1n).user("delete", copy, "1", 1n);
     expect(check([synced, revision({ seq: 2n, deleted: true })], timeline)).toEqual([]);
@@ -167,6 +176,14 @@ describe("identity on inodes", () => {
     // Moved, but not to a conflict copy: still d1's file.
     const renamed = created().rename("engine", "a.md", "x.md", "1", 2n);
     expect(check([synced, moved, revision({ documentId: "d3", seq: 3n, path: "x.md" })], renamed)).toEqual(["identity: e1 committed d3 at x.md (seq 3, r3) from inode 1, which is d1's file"]);
+  });
+
+  it("accepts a file the engine moved to its conflict copy committed as a new document (§5.5 X-21), not as another existing one", () => {
+    const copyOfA = "a (conflict e1 2026-01-02 030405).md";
+    const moved = created().user("create", "b.md", "2", 1n, "bb").rename("engine", "a.md", copyOfA, "1", 2n);
+    const feed = [synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb" })];
+    expect(check([...feed, revision({ documentId: "d3", seq: 3n, path: copyOfA })], moved)).toEqual([]);
+    expect(check([...feed, revision({ documentId: "d2", seq: 3n, path: copyOfA })], moved)).toEqual([`identity: e1 committed d2 at ${copyOfA} (seq 3, r3) from inode 1, which is d1's file`]);
   });
 
   it("matches paths as the platform's filesystem does", () => {

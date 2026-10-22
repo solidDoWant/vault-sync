@@ -448,7 +448,14 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
 
   // INV-1, design §5.2: two documents never hold one file in the journal.
   it("catches a journal in which two documents hold one file (journal-holder)", async () => {
-    const result = await twoEngines(environment, async (run) => run.observers[1]?.bindTwiceBehindEngine("notes/b.md", "notes/a.md") ?? "");
+    // The scenario runs no schedule steps, so the check runs at the durable point right after the mutation, as it would after a step.
+    const result = await twoEngines(environment, async (run) => {
+      const observer = run.observers[1];
+      if (observer === undefined) throw new Error("the run has two engines");
+      const entry = await observer.bindTwiceBehindEngine("notes/b.md", "notes/a.md");
+      await observer.checkJournalHolder();
+      return entry;
+    });
     const holder = result.violations.filter((violation) => violation.invariant === "journal-holder");
     expect(holder.length, tail(result.trace)).toBeGreaterThan(0);
     expect(holder[0]?.detail).toContain("e2's bindings");

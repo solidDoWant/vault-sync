@@ -102,6 +102,8 @@ const bySeq = (a: FeedRevision, b: FeedRevision): number => (a.seq < b.seq ? -1 
 /** Replays one engine's timeline against the feed; collects phantom-delete, resurrected-delete and identity violations. */
 class Replay {
   private readonly files = new Map<string, FileState>();
+  /** Deleted inodes, with where they were and what they held then. */
+  private readonly gone = new Map<string, FileState>();
   private readonly byKey = new Map<string, string>();
   readonly bound = new Map<string, string>();
   private readonly everBound = new Map<string, Set<string>>();
@@ -219,6 +221,7 @@ class Replay {
         const file = this.files.get(entry.inode);
         if (file !== undefined && this.byKey.get(this.key(file.path)) === entry.inode) this.byKey.delete(this.key(file.path));
         this.files.delete(entry.inode);
+        if (file !== undefined) this.gone.set(entry.inode, file);
         if (entry.actor === "user") this.userDeleted.push({ inode: entry.inode, at: this.position });
         return;
       }
@@ -251,11 +254,14 @@ class Replay {
 
   /** The inode an engine commit of `revision` was read from, if the oracle can tell. */
   private source(revision: FeedRevision): string | undefined {
-    // The file at the commit's path if it holds the content; else the file the content was last written into, if it still exists (the file at the path changed since the engine read it); else the file at the path.
-    const holder = this.byKey.get(this.key(revision.path));
+    // The file at the commit's path if it holds the content; else the file the content was last written into, if it still exists (the file at the path changed since the engine read it) or the user deleted it at the commit's path since (the engine read it before the delete); else the file at the path.
+    const key = this.key(revision.path);
+    const holder = this.byKey.get(key);
     if (holder !== undefined && this.files.get(holder)?.hash === revision.contentHash) return holder;
     const origin = this.origins.get(revision.contentHash);
     if (origin !== undefined && this.files.has(origin)) return origin;
+    const gone = origin === undefined ? undefined : this.gone.get(origin);
+    if (gone !== undefined && gone.hash === revision.contentHash && this.key(gone.path) === key) return origin;
     return holder;
   }
 
@@ -292,8 +298,10 @@ class Replay {
       lost.add(revision.documentId);
       this.lostRenames.set(previous, lost);
     }
-    if (owner !== undefined && owner !== revision.documentId && !lostRename) {
-      this.violations.push({ invariant: "identity", detail: `${this.engine.name} committed ${name} from inode ${inode}, which is ${this.label(owner)}'s file` });
+    // A detached or copied file (X-20, X-21) is free only to become a new document: an existing one's commit from it still carries the old document's file.
+    const excused = lostRename || (owner === undefined && create);
+    if (previous !== undefined && previous !== revision.documentId && !excused) {
+      this.violations.push({ invariant: "identity", detail: `${this.engine.name} committed ${name} from inode ${inode}, which is ${this.label(previous)}'s file` });
     }
     this.unboundFrom.delete(inode);
     this.bind(inode, revision.documentId);

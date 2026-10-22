@@ -1096,8 +1096,8 @@ export class EngineObserver {
    * at whatever durable point the journal is in: no two documents' bindings
    * name one file under the vault's own path matching (`F`, PO-10), no two
    * documents' newest server claims (a deferred revision, else the synced
-   * one) are live at one path key (`K`), and no two live outboxes are at one
-   * path key. Reads the journal only; it changes nothing the engine sees.
+   * one) are live at one path key (`K`) once the journal's cursor has reached
+   * the server's head, and no two live outboxes are at one path key. Reads the journal only; it changes nothing the engine sees.
    */
   async checkJournalHolder(): Promise<void> {
     const states = await this.journal.listDocuments();
@@ -1123,14 +1123,17 @@ export class EngineObserver {
       this.ledger.match,
       states.flatMap((state) => (state.binding === undefined || state.binding === null ? [] : [[state.documentId, state.binding.spelling] as [string, string]])),
     );
-    collide(
-      "newest server claims",
-      pathKey,
-      states.flatMap((state) => {
-        const newest = ahead.get(state.documentId) ?? state;
-        return newest.deleted ? [] : [[state.documentId, newest.path] as [string, string]];
-      }),
-    );
+    // C2 holds once the pull has reached the revision that freed the path (design §4.2): a journal behind the server head may hold a claim the server moved on from, in a revision a retention purge may even have dropped from the feed.
+    if ((await this.journal.getCursor()) >= this.context.serverSeq()) {
+      collide(
+        "newest server claims",
+        pathKey,
+        states.flatMap((state) => {
+          const newest = ahead.get(state.documentId) ?? state;
+          return newest.deleted ? [] : [[state.documentId, newest.path] as [string, string]];
+        }),
+      );
+    }
     collide(
       "live outboxes",
       pathKey,
