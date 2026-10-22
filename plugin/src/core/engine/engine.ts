@@ -1780,9 +1780,12 @@ export class SyncEngine {
     // good as "the document does not exist" (#829, PO-12, design §4.6): it is
     // resolved against the restored server here. A live revision becomes a
     // create under the document's own id, as a ghost's re-create is, under a
-    // new revision id since its fields change. A delete has nothing left to
-    // delete: it is dropped, and the document, with no file here, is
-    // forgotten below.
+    // new revision id since its fields change: a sealed operation is never
+    // edited (design §4.1), as a server may yet hold its first commit, such as
+    // a newer backup an operator restores next, which would refuse the id
+    // with other fields (#840). A delete has nothing left to delete: it is
+    // dropped, and the document, with no file here and nothing left in the
+    // outbox, is forgotten below with any merge it owed.
     for (const operation of await this.journal.listPending()) {
       if (operation.baseRevisionId === "" || heads.has(operation.documentId)) continue;
       const state = await this.journal.getDocument(operation.documentId);

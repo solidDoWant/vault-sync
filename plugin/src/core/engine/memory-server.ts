@@ -1,4 +1,4 @@
-import { create } from "@bufbuild/protobuf";
+import { clone, create } from "@bufbuild/protobuf";
 import { timestampFromDate } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError, createRouterTransport, type Transport } from "@connectrpc/connect";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
@@ -9,6 +9,13 @@ import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { fitsPathKeyLimit, isNewVaultPath, isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
+
+/** A copy of an InMemoryServer's database (InMemoryServer.backup). */
+export interface ServerBackup {
+  readonly revisions: readonly Revision[];
+  readonly purged: ReadonlyMap<bigint, string>;
+  readonly headSeq: bigint;
+}
 
 export interface InMemoryServerOptions {
   vaultId?: string;
@@ -344,6 +351,22 @@ export class InMemoryServer {
     this.revisions = this.revisions.filter((revision) => revision.seq <= seq);
     for (const purged of this.purged.keys()) if (purged > seq) this.purged.delete(purged);
     this.headSeq = seq;
+  }
+
+  /** A backup of the database as it is now, for restoreBackup: its revisions, purge markers and head seq. */
+  backup(): ServerBackup {
+    return { revisions: this.revisions.map((revision) => clone(RevisionSchema, revision)), purged: new Map(this.purged), headSeq: this.headSeq };
+  }
+
+  /**
+   * Restores the database from `backup`, which may be newer than the state it
+   * replaces: an operator who restored an older backup restores a newer one,
+   * so revisions the first restore lost come back. Blobs are not rolled back.
+   */
+  restoreBackup(backup: ServerBackup): void {
+    this.revisions = backup.revisions.map((revision) => clone(RevisionSchema, revision));
+    this.purged = new Map(backup.purged);
+    this.headSeq = backup.headSeq;
   }
 
   get currentHeadSeq(): bigint {
