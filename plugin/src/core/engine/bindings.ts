@@ -1,6 +1,6 @@
 import { priorRevisionLimit, releasedRows, type Absence, type Binding, type DocumentKindName, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
 import { sha256Hex } from "../hash";
-import { isVaultError, type VaultAdapter } from "../vault/adapter";
+import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import type { PathSpace } from "./pathspace";
 import { classifyByExtension } from "./remote";
 
@@ -57,6 +57,12 @@ export class Bindings {
     return this.scanPending;
   }
   private scanPending = true;
+  /**
+   * The file keys a create, delete or rename event named while the scan ran,
+   * as the events arrived (observe): the scan may have read the disk after
+   * them, and their transitions run after it.
+   */
+  private readonly raced = new Set<string>();
   /** How many rounds are running, and the document rows they read (round). */
   private rounds = 0;
   private snapshot: Map<string, DocumentState> | undefined;
@@ -83,8 +89,23 @@ export class Bindings {
     this.serialize(() => this.scan())
       .finally(() => {
         this.scanPending = false;
+        this.raced.clear();
       })
       .catch(() => undefined);
+  }
+
+  /**
+   * Notes a vault event as it arrives, before its transition is queued, and
+   * returns whether the start-up scan is still running (`duringScan` of
+   * renamed and deleted). While it runs, the file keys a create, delete or
+   * rename names are kept: a rename cycle the scan finds at one of them is
+   * left to the events (cycleMatch, #921).
+   */
+  observe(event: VaultEvent): boolean {
+    if (!this.scanPending) return false;
+    if (event.type === "rename") this.raced.add(this.space.filesystemKey(event.oldPath));
+    if (event.type !== "modify") this.raced.add(this.space.filesystemKey(event.path));
+    return true;
   }
 
   /**
@@ -446,7 +467,8 @@ export class Bindings {
       // Every file that may be a missing document's: untracked, or bound to a document whose content it no longer holds.
       const candidates: { path: string; hash: string; owner: string | undefined }[] = [];
       for (const path of listed) {
-        if (assigned.has(path)) continue;
+        // A file an event named while the scan ran is the events' to place (E1, #921): following it here too would apply that move twice.
+        if (assigned.has(path) || this.raced.has(this.space.filesystemKey(path))) continue;
         const kind = this.classify(path);
         if (!wanted.has(kind)) continue;
         const wantedSizes = wanted.get(kind);
@@ -504,7 +526,10 @@ export class Bindings {
    * same way, as E7b takes an in-place overwrite (#827): no bytes are lost.
    * Only a document whose `seen` size is known (its live base's) is in a
    * cycle, and only a file whose `stat` size is another such document's of
-   * its kind is read (#826).
+   * its kind is read (#826). A cycle with a file key that an event named
+   * while the scan ran is left alone: those events, applied after the scan
+   * (E1), are the moves it would follow, and following them again on top of
+   * its result would undo it (#921).
    */
   private async cycleMatch(scanned: readonly DocumentState[], transferred: ReadonlyMap<string, Binding | null>): Promise<Map<string, Binding>> {
     const result = new Map<string, Binding>();
@@ -555,7 +580,7 @@ export class Bindings {
       const hash = held.get(documentId);
       if (hash === undefined || hash === member.binding.seen) continue;
       const files = (holders.get(hash) ?? []).filter((holder) => holder.kind === member.kind);
-      const takers = scanned.filter((state) => state.kind === member.kind && (bindings.get(state.documentId) ?? state.binding)?.seen === hash);
+      const takers = scanned.filter((state) => state.kind === member.kind && bindings.get(state.documentId)?.seen === hash);
       const [taker] = takers;
       if (files.length !== 1 || takers.length !== 1 || taker === undefined || !members.has(taker.documentId)) continue;
       next.set(documentId, taker.documentId);
@@ -571,6 +596,7 @@ export class Bindings {
       }
       for (const documentId of cycle) visited.add(documentId);
       if (at !== start) continue;
+      if (cycle.some((documentId) => this.raced.has(members.get(documentId)?.binding.fileKey ?? ""))) continue;
       for (const documentId of cycle) {
         const taker = next.get(documentId);
         const file = members.get(documentId)?.binding;
