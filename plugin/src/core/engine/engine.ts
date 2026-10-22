@@ -797,17 +797,28 @@ export class SyncEngine {
     // it, listed. Not for a document whose file a local move put elsewhere:
     // its local rename wins, so the merge path decides where its result
     // lands, and claims that path (applyMerge, #473).
-    if (!remote.deleted && !movedLocally(state)) {
-      const claim = await this.claimPath(remote.path, remote.documentId);
-      if (claim === "alias") return this.deferUnmaterializable(remote, "alias", descends);
-      if (claim === "held") return this.defer(remote, "path-conflict", descends);
-    }
-
+    const claims = !remote.deleted && !movedLocally(state);
     // Download before looking at the disk, so the check-then-write window is short.
     const needsContent = !remote.deleted && (!liveHere(state) || state.baseHash !== remote.contentHash);
-    const content = needsContent ? await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size) : undefined;
-
-    const inspection = await this.inspect(state, remote);
+    let content: Uint8Array | undefined;
+    let inspection: Inspection | undefined;
+    for (let attempt = 0; attempt < 3 && inspection === undefined; attempt++) {
+      if (claims) {
+        const claim = await this.claimPath(remote.path, remote.documentId);
+        if (claim === "alias") return this.deferUnmaterializable(remote, "alias", descends);
+        if (claim === "held") return this.defer(remote, "path-conflict", descends);
+      }
+      if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      const found = await this.inspect(state, remote);
+      // A file at the path that another document's binding holds is that
+      // document's (PO-1), also one the user moved there after the claim
+      // (#757), whose rename (E1) is classified first (PO-2): it is neither
+      // adopted (design §4.5 step 3, INV-3) nor merged into this document.
+      // The claim runs again, and rule W moves it on under its own id (PO-4).
+      if (claims && (await this.vault.stat(remote.path)) !== null && (await this.heldByAnother(remote.path, remote.documentId))) continue;
+      inspection = found;
+    }
+    if (inspection === undefined) return this.defer(remote, "path-conflict", descends);
     if (inspection.kind === "dirty") return this.handToMerge(remote, state, descends);
     // The `apply` intent (design §4.4, PO-8), recorded before the disk
     // changes: a file the apply wrote before a crash is the document's, never
@@ -947,6 +958,19 @@ export class SyncEngine {
       this.schedulePush();
     }
     return "held";
+  }
+
+  /**
+   * Whether another document holds the file at `path` that a revision of
+   * `documentId` would adopt (design §4.5 step 3): its binding names the
+   * file, as rule W's holder (nextHolder), once every vault event received
+   * so far is classified (PO-2), so a rename the user made while the pull
+   * ran has moved its document's binding there.
+   */
+  private async heldByAnother(path: string, documentId: string): Promise<boolean> {
+    await this.events.catch(() => undefined);
+    await this.bindings.idle();
+    return (await this.nextHolder(path, documentId)) !== undefined;
   }
 
   /**

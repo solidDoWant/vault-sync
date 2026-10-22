@@ -137,6 +137,7 @@ export class LateEventsVault implements VaultAdapter {
  */
 export class InterleavingVault implements VaultAdapter {
   private readonly armed = new Map<string, () => Promise<void>>();
+  private readonly armedReads = new Map<string, () => Promise<void>>();
 
   constructor(readonly inner: VaultAdapter) {}
 
@@ -145,15 +146,25 @@ export class InterleavingVault implements VaultAdapter {
     this.armed.set(path, change);
   }
 
+  /** Runs `change` once, right before the next read of `path`: a user's change racing what the engine reads (#757). */
+  beforeNextRead(path: string, change: () => Promise<void>): void {
+    this.armedReads.set(path, change);
+  }
+
   /** Whether an armed change has not run yet. */
   get pending(): boolean {
-    return this.armed.size > 0;
+    return this.armed.size > 0 || this.armedReads.size > 0;
   }
 
   list(): Promise<string[]> {
     return this.inner.list();
   }
-  read(path: string): Promise<Uint8Array> {
+  async read(path: string): Promise<Uint8Array> {
+    const change = this.armedReads.get(path);
+    if (change !== undefined) {
+      this.armedReads.delete(path);
+      await change();
+    }
     return this.inner.read(path);
   }
   stat(path: string): Promise<FileStat | null> {
@@ -527,14 +538,17 @@ export class ObservedVault implements VaultAdapter {
     readonly inner: VaultAdapter,
     private readonly life: Lifeline,
     private readonly observe: (change: EngineChange) => void,
+    /** Runs before each of the engine's reads, which waits for it: a user change racing the read. */
+    private readonly beforeRead: (path: string) => Promise<void> = () => Promise.resolve(),
   ) {}
 
   list(): Promise<string[]> {
     this.life.check();
     return this.inner.list();
   }
-  read(path: string): Promise<Uint8Array> {
+  async read(path: string): Promise<Uint8Array> {
     this.life.check();
+    await this.beforeRead(path);
     return this.inner.read(path);
   }
   stat(path: string): Promise<FileStat | null> {
@@ -654,6 +668,7 @@ export type WorldCommand =
   | { type: "remote-delete"; document: number }
   | { type: "pull" }
   | { type: "edit-during-pull"; file: number }
+  | { type: "move-onto-incoming"; file: number; path: number }
   | { type: "push" }
   | { type: "crash"; write: number }
   | { type: "restore"; fraction: number }
@@ -740,6 +755,8 @@ export class PropertyWorld {
   private scanned = 0n;
   private ids = 0;
   private readonly api: ReturnType<typeof createProtocolClient>;
+  /** A user change armed to run right before the engine's next read of a path. */
+  private raceRead: { path: string; change: () => Promise<void> } | undefined;
 
   /**
    * `filesystem` is the in-memory vault's (`folded` by default): on the
@@ -771,9 +788,19 @@ export class PropertyWorld {
       deviceName: testDeviceName,
       now: () => testDate,
       api: createProtocolClient({ transport: this.server.transport }),
-      vault: new ObservedVault(this.vault.handle("engine"), this.life, (change) => {
-        this.engineChanged(change);
-      }),
+      vault: new ObservedVault(
+        this.vault.handle("engine"),
+        this.life,
+        (change) => {
+          this.engineChanged(change);
+        },
+        async (path) => {
+          const race = this.raceRead;
+          if (race === undefined || race.path !== path) return;
+          this.raceRead = undefined;
+          await race.change();
+        },
+      ),
       onLocalChange: (event) => this.localChanges.push(event),
       journal: new CrashAtWriteJournal(this.journal, this.life),
       pageSize: 3,
@@ -830,6 +857,26 @@ export class PropertyWorld {
         const pulling = this.run(() => this.engine.pull());
         await this.userEdit(command.file);
         await pulling;
+        break;
+      }
+      case "move-onto-incoming": {
+        // Another device creates a document with the bytes of a known
+        // document's file here (an untracked file would be adopted, INV-3),
+        // and the user moves that file onto the document's path while the
+        // pull reads it, before the engine has handled the rename (#757).
+        const bound = (await this.vault.list()).filter((path) => this.bound.has(this.inodes.at(path)?.inode ?? 0)).sort(byText);
+        const from = bound.length === 0 ? undefined : bound[command.file % bound.length];
+        const to = worldPaths[command.path % worldPaths.length] ?? "a.md";
+        // Only a move the vault allows: a file at `to` refuses it.
+        if (from !== undefined && from !== to && (await this.vault.stat(to)) === null) {
+          const content = await this.vault.read(from);
+          await this.remoteCommit(`r-${String(step)}`, to, content, false);
+          // Recorded before the pull, so the oracle knows the revision the engine writes.
+          this.scan();
+          this.raceRead = { path: to, change: () => this.userMove(from, to) };
+        }
+        await this.run(() => this.engine.pull());
+        this.raceRead = undefined;
         break;
       }
       case "push":
@@ -1035,6 +1082,11 @@ export class PropertyWorld {
       }
     }
     if (to === from) return;
+    await this.userMove(from, to);
+  }
+
+  /** The user moves the file at `from` to `to`; a move the vault refuses is a no-op. */
+  private async userMove(from: string, to: string): Promise<void> {
     try {
       await this.vault.rename(from, to);
     } catch (error) {

@@ -504,6 +504,19 @@ export class EngineObserver {
     return `${this.name}'s next change of ${path} will never finish`;
   }
 
+  /**
+   * Arms a rename of `from` to `path` by the user that lands just before the
+   * engine's next read of `path`: during a pull, after the engine claimed
+   * `path` for a revision and before it looks at the disk there (#757).
+   */
+  moveBeforeNextEngineRead(from: string, path: string): string {
+    this.engineVault.beforeNextRead(path, async () => {
+      this.context.log(`${this.name} user renames ${from} to ${path} just before the engine reads it`);
+      await this.user.rename(from, path);
+    });
+    return `${this.name} user will rename ${from} to ${path} just before the engine's next read of it`;
+  }
+
   /** Whether a save armed by saveBeforeNextEngineChange has not landed yet. */
   get savePending(): boolean {
     return this.engineVault.pending;
