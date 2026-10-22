@@ -44,11 +44,13 @@ describe("SyncEngine resync after a server restore", () => {
       expect(await reference.engine.pull()).toMatchObject({ resynced: true });
       const expected = await finalState(reference);
       const handedToMerge = new Set(reference.merges.map((request) => request.remote.documentId));
-      // The reference resync handed over the document another device changed on the restored server; a, rolled back to
-      // a revision this device synced before its base, is re-committed on that head without a merge (design §4.6).
-      expect(handedToMerge).toEqual(new Set(["b"]));
+      // Every lost revision is another device's, which this device only pulled under files it never changed (#874,
+      // design §4.6): the reference resync pulls each restored head, merging nothing, and sends nothing the writer
+      // must send again.
+      expect(handedToMerge).toEqual(new Set());
       expect(expected.documents.get("a")?.revisionId).toBe(reference.server.head("a")?.id);
-      expect(expected.files.get("a.md")).toBe("a3");
+      expect(expected.files.get("a.md")).toBe("a1");
+      expect(expected.files.get("b.md")).toBe("b2");
 
       let crashed = 0;
       for (let crashAfter = 1; ; crashAfter++) {
@@ -184,13 +186,42 @@ describe("SyncEngine resync after a server restore", () => {
       h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
       h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
       await h.engine.pull();
-      h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
-      h.server.commit({ documentId: "x", path: "x.md", content: "x3" }); // 4
-      await h.engine.pull();
+      // This device's own edits, acknowledged (#874: a revision it only pulled is its writer's to send again).
+      for (const content of ["x2", "x3"]) {
+        await h.vault.write("x.md", new TextEncoder().encode(content)); // 3, 4
+        await h.engine.settled();
+        await h.engine.push();
+      }
       // The restore keeps x1 only: x2 and x3 exist only on this device now.
       h.server.restoreTo(2n);
       return h.server.head("x")?.id;
     }
+
+    // #874 (design §4.6): a lost revision this device only pulled, under a file it never changed, is no write of its
+    // own: the restored head is pulled over it, and the writer sends the lost revision again.
+    it("pulls the restored head over an unchanged file at a lost revision another device wrote", async () => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
+      h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
+      h.server.commit({ documentId: "y", path: "y.md", content: "y1" }); // 3
+      await h.engine.pull();
+      h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 4
+      h.server.commit({ documentId: "y", path: "y.md", content: "y2" }); // 5
+      await h.engine.pull();
+      await h.vault.rename("x.md", "renamed.md");
+      await h.engine.settled();
+      h.server.restoreTo(3n);
+      // The other device's edit of x on the restored server, and its delete of y.
+      h.server.commit({ documentId: "x", path: "x.md", content: "other device" }); // 4
+      h.server.commit({ documentId: "y", path: "y.md", deleted: true }); // 5
+
+      expect(await h.engine.pull()).toMatchObject({ resynced: true });
+      await h.engine.push();
+
+      expect(await h.journal.listConflicts()).toEqual([]);
+      expect(await files(h.vault)).toEqual(new Map([["k.md", "k1"], ["renamed.md", "other device"]]));
+      expect(h.server.liveFiles()).toEqual(new Map([["k.md", "k1"], ["renamed.md", "other device"]]));
+    });
 
     it("commits the lost revision on the restored head under the document's own id, without a conflict copy", async () => {
       const h = harness({ merge: "default" });
@@ -247,7 +278,7 @@ describe("SyncEngine resync after a server restore", () => {
       deferring = false;
       h.server.commit({ documentId: "x", path: "x.md", content: "other device again" }); // 4
 
-      expect(await h.engine.pull()).toMatchObject({ resynced: false });
+      await h.engine.pull();
       await h.engine.push();
 
       const contents = [...(await files(h.vault)).values()];

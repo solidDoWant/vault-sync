@@ -654,6 +654,9 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 2 }, { type: "user-rename", file: 0, mode: "pool", target: 3 }),
       // #770 (seed 719): a document's file edited during a pull, renamed, then a create at its new path and an edit.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "remote-create", path: 2 }, { type: "remote-edit", document: 0 }),
+      // #874 (seed 566): an unchanged file at another device's revision the restore lost, then that device's edit on an
+      // older revision: the head is pulled, never this device's change (design §4.6).
+      scripted("posix", { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "remote-edit", document: 0 }, { type: "pull" }, { type: "restore", fraction: 0.25 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
     ]);
   });
 
@@ -670,8 +673,12 @@ describe("engine properties (design §9.3)", () => {
     ]);
   });
 
+  // Fixed case: #874 (seed 566), an unchanged file at another device's revision the restore lost, then that device's
+  // delete: the tombstone is pulled, never this device's resurrection (design §4.6).
   it("P2: tombstones come from user deletes, resurrections from user changes", { timeout }, async () => {
-    await holds(p2);
+    const fixed = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0.5 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "restore", fraction: 0 });
+    expect(await p2.check(fixed)).toEqual([]);
+    await holds(p2, [fixed]);
   });
 
   // P3 exclusivity: INV-1 and INV-2 after every command. Flipped in R7b (#700). Fixed cases: R7a's pin (a document the
