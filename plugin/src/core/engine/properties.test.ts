@@ -665,6 +665,8 @@ describe("engine properties (design §9.3)", () => {
     await holds(overWorld("P1", both, closedCommands), [
       scripted("posix", { type: "user-create", path: 0 }, { type: "user-create", path: 2 }, { type: "push" }, { type: "closed", changes: [{ file: 1, delete: true, target: 0 }, { file: 0, delete: false, target: 2 }] }),
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }] }),
+      // #868: two closed-app renames of one file and a third onto its intermediate path, before the first push.
+      scripted("macos", { type: "user-create", path: 9 }, { type: "user-create", path: 8 }, { type: "closed", changes: [{ file: 3, delete: false, target: 5 }, { file: 3, delete: false, target: 0 }, { file: 0, delete: false, target: 8 }] }, { type: "push" }),
     ]);
   });
 
@@ -730,6 +732,25 @@ describe("engine properties (design §9.3)", () => {
       ],
       // #801's: a crash at the displace intent that re-creates a ghost at a copy name after a restore.
       ["posix", restoredGhostYields, 17],
+      // #869's (nightly seed 566): a crash at a journal write changed which of `Straße.md` and `STRASSE.md` (one path under `K`) got the conflict name.
+      [
+        "posix",
+        [
+          { type: "remote-create", path: 0 },
+          { type: "pull" },
+          { type: "user-rename", file: 0, mode: "pool", target: 1 },
+          { type: "remote-delete", document: 0 },
+          { type: "user-create", path: 2 },
+          { type: "move-onto-incoming", file: 0, path: 0 },
+          { type: "user-create", path: 6 },
+          { type: "user-create", path: 7 },
+          { type: "remote-delete", document: 0 },
+          { type: "push" },
+          { type: "restore", fraction: 0 },
+          { type: "user-rename", file: 6, mode: "pool", target: 5 },
+        ],
+        16,
+      ],
     ]);
   });
 

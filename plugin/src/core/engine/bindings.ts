@@ -437,7 +437,13 @@ export class Bindings {
         const owner = owners.get(this.space.filesystemKey(path));
         const hash = await hashOf(path);
         if (hash === null) continue;
-        if (owner !== undefined && (bindings.get(owner)?.seen === hash || bindings.get(owner)?.spelling !== path)) continue;
+        // The owner's file is the one listed at its binding's spelling, or at
+        // that spelling but for folders `F` takes for one: a folder has one
+        // spelling on disk, which the scan never chases (INV-9, #737), so a
+        // folder re-created in another case while the app was closed still
+        // holds the owner's file (#868).
+        const ownSpelling = owner === undefined ? undefined : bindings.get(owner)?.spelling;
+        if (owner !== undefined && (bindings.get(owner)?.seen === hash || ownSpelling === undefined || (ownSpelling !== path && !this.space.sameButFolderSpelling(path, ownSpelling)))) continue;
         candidates.push({ path, hash, owner });
       }
       const moves: { documentId: string; candidate: (typeof candidates)[number] }[] = [];
