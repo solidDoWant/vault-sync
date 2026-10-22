@@ -16,7 +16,7 @@ import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
 import { oneFileOnDisk, PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
-import { mergePath, movedBeforeDelete, ruleW } from "./decide";
+import { boundLocalChange, mergePath, ruleW } from "./decide";
 import { Intents } from "./intents";
 import { busyClaims, ghost, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
@@ -1099,13 +1099,15 @@ export class SyncEngine {
     const baseHash = state?.baseHash;
     const baseOnDisk = baseContent !== null && sha256Hex(baseContent) === baseHash;
 
+    // The document's bound file is a local change the revision meets (PO-1,
+    // PO-9): a local rename not pushed yet against a remote delete, or a
+    // document bound on its tombstone against any revision (#790).
+    const bound = boundLocalChange(state, remote);
+    if (bound !== undefined) {
+      const content = await this.readOrNull(bound);
+      if (content !== null) return { kind: "dirty", path: bound, content };
+    }
     if (remote.deleted) {
-      // A local rename not pushed yet wins over the remote delete (PO-9).
-      const moved = movedBeforeDelete(state, remote);
-      if (moved !== undefined) {
-        const content = await this.readOrNull(moved);
-        if (content !== null) return { kind: "dirty", path: moved, content };
-      }
       // Nothing there: the engine already deleted it, or the user deleted it too. Both agree.
       if (basePath === undefined || baseContent === null) return { kind: "applied" };
       // The user deleted its file, and another document's binding holds the
@@ -1261,7 +1263,7 @@ export class SyncEngine {
       // document whose file this device released, and a base retention
       // purged has none any more (SPEC.md §11): never a reason to stop the
       // pull.
-      readBaseContent: () => (!liveHere(state) ? Promise.resolve(null) : baseContent(this.api, this.vaultId, state.revisionId)),
+      readBaseContent: () => (!liveHere(state) ? this.tombstoneBase(state, remote, local) : baseContent(this.api, this.vaultId, state.revisionId)),
       descendsFromBase: descends,
     });
     // The hook merged the content; the path merge is the engine's (design §4.7, PO-9).
@@ -1327,6 +1329,23 @@ export class SyncEngine {
       return { path: current.path, content: await this.readOrNull(current.path) };
     }
     return { path: remote.path, content: await this.readOrNull(remote.path) };
+  }
+
+  /**
+   * The merge base of a document bound on its tombstone (boundLocalChange,
+   * #790) whose bound file still holds exactly the content of the revision
+   * the delete removed (`prior[0]`, the tombstone's parent): that revision,
+   * so the file's unedited bytes, which the server's history already
+   * holds, are no local change against a revision that brings the document
+   * back, and never become a conflict copy that is another document (PO-1,
+   * INV-3). Otherwise null, as for any tombstone: the two versions have no
+   * common base.
+   */
+  private async tombstoneBase(state: DocumentState | undefined, remote: RemoteRevision, local: LocalVersion): Promise<Uint8Array | null> {
+    const before = state?.prior?.[0];
+    if (state?.deleted !== true || before === undefined || local.content === null || boundLocalChange(state, remote) === undefined) return null;
+    const content = await baseContent(this.api, this.vaultId, before);
+    return content !== null && sameContent(content, local.content) ? content : null;
   }
 
   /** Whether the journal has a server revision of the document (not only the row of a create not acknowledged yet). */

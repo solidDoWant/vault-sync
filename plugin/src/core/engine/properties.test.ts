@@ -165,6 +165,26 @@ const platform = fc.constantFrom<PathPlatform>("posix", "windows", "macos");
 const movedOntoIncomingCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands.filter((command) => command !== restore).slice(0, 11), moveOntoIncoming];
 
 /**
+ * The alphabet of #790's class (INV-3, PO-1, design §4.5 step 4): a document
+ * whose file the user moved, deleted on the server before the move is
+ * pushed, then brought back by another device (`remote-recreate`) and moved
+ * there, all meeting the file the document is bound to. Few paths and
+ * documents, so the move, the delete and the re-create meet.
+ */
+const recreateCommands: fc.Arbitrary<WorldCommand>[] = [
+  few.map((path) => ({ type: "user-create", path })),
+  few.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(few, fc.constantFrom<RenameMode>("pool", "case"), few).map(([file, mode, target]) => ({ type: "user-rename", file, mode, target })),
+  few.map((path) => ({ type: "remote-create", path })),
+  few.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(few, few).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  few.map((document) => ({ type: "remote-delete", document })),
+  fc.tuple(few, few).map(([document, path]) => ({ type: "remote-recreate", document, path })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+];
+
+/**
  * The alphabet of #768's class (INV-2, PO-12): a document's revision deferred
  * because this device cannot hold it (a path Windows refuses, an `F`-alias of
  * another file on macOS), a restore that loses it, and a later revision of
@@ -292,6 +312,7 @@ const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prope
   check: async ([on, steps]) => violations((await play(on, steps, "folded", ghostPaths)).world, "P3"),
 };
 const p8 = overWorld("P8", (world) => violations(world, "P8"), outboxCommands);
+const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateCommands);
 /**
  * P4 over `alphabet` on `platforms`: crashing at journal write N and
  * restarting reaches the quiescent state the run without the crash reaches.
@@ -577,6 +598,16 @@ describe("engine properties (design §9.3)", () => {
     ];
     for (const example of fixed) expect(await stalePageHolder.check(example)).toEqual([]);
     await holds(stalePageHolder, fixed);
+  });
+
+  // #790 (INV-3, PO-1, design §4.5 step 4): a document bound on its tombstone (the user's move, not pushed yet, won
+  // over a remote delete) meets a revision that brings it back elsewhere as a local change: the merge path takes its
+  // bound file, which stays the document's. Fixed case: the move, the delete, the re-create and a remote move in one
+  // pull, then an edit of the moved file (seed 100101).
+  it("P1: a document's file moved before a remote delete stays the document's when another device brings it back", { timeout }, async () => {
+    await holds(p1Recreate, [
+      scripted("macos", { type: "remote-create", path: 3 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-recreate", document: 0, path: 3 }, { type: "remote-rename", document: 0, path: 8 }, { type: "pull" }, { type: "user-edit", file: 0 }, { type: "push" }),
+    ]);
   });
 
   // P6 convergence and progress: INV-8 and INV-9 after quiescence, with bounded push rounds.

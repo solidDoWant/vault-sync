@@ -113,7 +113,14 @@ export const threeWayMerge: MergeHook = async (request) => {
   if (local.content === null) return { status: "merged", content: remote };
   if (sameBytes(local.content, remote)) return { status: "merged", content: remote };
   const keepBoth = (reason: ConflictReason): MergeOutcome => ({ status: "merged", content: remote, conflict: { reason, content: local.content ?? new Uint8Array() } });
-  if (!ownFile) return keepBoth("concurrent-create");
+  if (!ownFile) {
+    // A tombstone, or no base here: no common base, unless the engine gives
+    // the deleted revision's content for a file still holding exactly it
+    // (#790): unedited, it is no local change against the document's return.
+    const before = await request.readBaseContent();
+    if (before !== null && sameBytes(local.content, before)) return { status: "merged", content: remote };
+    return keepBoth("concurrent-create");
+  }
   const baseContent = await request.readBaseContent();
   if (baseContent === null) {
     // The device synced a base, but the server no longer has it (purged by

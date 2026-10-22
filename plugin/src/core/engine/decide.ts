@@ -3,20 +3,30 @@ import type { PathSpace } from "./pathspace";
 
 /**
  * The path merge of design §4.7 (PO-9), for the remote decision
- * (`decideRemote`, §4.5, whose rest lands with refactor step R7): the local
- * file that is the document's local change when `remote` arrives, as far as
- * the document's binding alone tells.
+ * (`decideRemote`, §4.5 step 4, whose rest lands with refactor step R7):
+ * the bound file that is the document's local change when `remote`
+ * arrives, as far as the document's binding alone tells (PO-1). Returns its
+ * spelling, or undefined when the binding alone makes no local change.
  *
- * A remote delete of a document whose file the user moved and has not
- * pushed yet meets a local change: the user's rename, which wins over the
- * delete as an edit does (PO-7, PO-9; decision #52 as revised for R5). The
- * document keeps its id and comes back on its tombstone at the bound
- * spelling. Returns the bound spelling then, and undefined otherwise.
+ * - A remote delete of a document whose file the user moved and has not
+ *   pushed yet meets a local change: the user's rename, which wins over the
+ *   delete as an edit does (PO-7, PO-9; decision #52 as revised for R5).
+ *   The document keeps its id and comes back on its tombstone at the bound
+ *   spelling.
+ * - A document bound on its tombstone (the rename above, after the delete
+ *   was pulled and before the push re-creates it; or an untracked file the
+ *   push took for the tombstone, PO-13) is a local change against any
+ *   remote revision: its file is the document's (PO-1, INV-3), so a
+ *   revision that brings it back on the server meets that file in the merge
+ *   path, never as a document with no file here (#790). Writing the
+ *   revision as a new file would leave the bound file untracked, and the
+ *   next push would commit the document's file as another document.
  */
-export function movedBeforeDelete(state: DocumentState | undefined, remote: RemoteRevision): string | undefined {
-  if (!remote.deleted || state === undefined || state.deleted) return undefined;
-  const binding = state.binding;
-  if (binding === undefined || binding === null || binding.spelling === state.path) return undefined;
+export function boundLocalChange(state: DocumentState | undefined, remote: RemoteRevision): string | undefined {
+  const binding = state?.binding;
+  if (state === undefined || binding === undefined || binding === null) return undefined;
+  if (state.deleted) return binding.spelling;
+  if (!remote.deleted || binding.spelling === state.path) return undefined;
   return binding.spelling;
 }
 

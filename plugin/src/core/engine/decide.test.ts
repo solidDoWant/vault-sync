@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { DeferredRevision, DocumentState, RemoteRevision } from "../journal/journal";
 import { sha256Hex } from "../hash";
-import { mergePath, ruleW } from "./decide";
+import { boundLocalChange, mergePath, ruleW } from "./decide";
 import { PathSpace } from "./pathspace";
 import { threeWayMerge, type MergeRequest } from "./merge";
 
@@ -78,6 +78,31 @@ describe("ruleW with the holder's newer revision on the feed page", () => {
   });
 });
 
+// The bound file that is a document's local change against a remote revision (design §4.5 step 4, PO-1, PO-9).
+describe("boundLocalChange (design §4.5 step 4)", () => {
+  const bound = (spelling: string) => ({ spelling, fileKey: spelling, seen: "h1" });
+
+  it("takes a moved file not pushed yet against a remote delete", () => {
+    expect(boundLocalChange(state({ binding: bound("x.md") }), remote({ deleted: true }))).toBe("x.md");
+  });
+
+  it("takes no unmoved file against a remote delete, nor a moved one against a remote edit", () => {
+    expect(boundLocalChange(state({ binding: bound("a.md") }), remote({ deleted: true }))).toBeUndefined();
+    expect(boundLocalChange(state({ binding: bound("x.md") }), remote())).toBeUndefined();
+  });
+
+  it("takes the file of a document bound on its tombstone against a revision that brings it back (#790)", () => {
+    expect(boundLocalChange(state({ deleted: true, binding: bound("x.md") }), remote({ path: "elsewhere.md" }))).toBe("x.md");
+    expect(boundLocalChange(state({ deleted: true, binding: bound("a.md") }), remote())).toBe("a.md");
+  });
+
+  it("takes nothing for a document with no file here", () => {
+    expect(boundLocalChange(undefined, remote())).toBeUndefined();
+    expect(boundLocalChange(state({ deleted: true, binding: null, absence: "never" }), remote())).toBeUndefined();
+    expect(boundLocalChange(state({ binding: null, absence: "user-deleted" }), remote({ deleted: true }))).toBeUndefined();
+  });
+});
+
 describe("threeWayMerge (content only, decision 6)", () => {
   function request(local: { path: string; content: string | null }, remoteRevision: RemoteRevision, remoteContent: string, baseContent: string): MergeRequest {
     return {
@@ -94,6 +119,30 @@ describe("threeWayMerge (content only, decision 6)", () => {
     const outcome = await threeWayMerge(request({ path: "renamed.md", content: "one\n" }, remote({ path: "moved.md" }), "two\n", "one\n"));
     expect(outcome).toEqual({ status: "merged", content: encoder.encode("two\n") });
     expect(outcome).not.toHaveProperty("path");
+  });
+
+  // #790: a tombstone's merge has no common base, unless the engine gives the deleted revision's content.
+  describe("when the base is a tombstone", () => {
+    function tombstone(local: string, before: string | null): MergeRequest {
+      return {
+        remote: remote(),
+        base: state({ deleted: true }),
+        local: { path: "moved.md", content: encoder.encode(local) },
+        readRemoteContent: () => Promise.resolve(encoder.encode("back\n")),
+        readBaseContent: () => Promise.resolve(before === null ? null : encoder.encode(before)),
+        descendsFromBase: false,
+      };
+    }
+
+    it("takes the remote content when the local file is exactly the deleted revision's content", async () => {
+      expect(await threeWayMerge(tombstone("old\n", "old\n"))).toEqual({ status: "merged", content: encoder.encode("back\n") });
+    });
+
+    it("keeps both versions when the local file differs from it, or there is none", async () => {
+      const both = (local: string) => ({ status: "merged", content: encoder.encode("back\n"), conflict: { reason: "concurrent-create", content: encoder.encode(local) } });
+      expect(await threeWayMerge(tombstone("old\nmine\n", "old\n"))).toEqual(both("old\nmine\n"));
+      expect(await threeWayMerge(tombstone("old\n", null))).toEqual(both("old\n"));
+    });
   });
 
   // #719 (design §4.6): a base retention purged leaves no content to merge on.
