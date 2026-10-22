@@ -151,7 +151,7 @@ export class Bindings {
     return this.serialize(async () => {
       const current = await this.journal.getDocument(state.documentId);
       const next = { ...state, ...this.bindingAfter(state, current, change), ...priorAfter(state, current) };
-      if (change.kind === "applied" || change.kind === "merged") next.binding = await this.keptName(current?.binding, next.binding);
+      if ((change.kind === "applied" || change.kind === "merged") && !this.carriedMove(state, current)) next.binding = await this.keptName(current?.binding, next.binding);
       const others = next.binding === null ? [] : await this.unbindOthers(next.documentId, next.binding.spelling, "released");
       await this.write({ ...alongside, putDocuments: [...(alongside.putDocuments ?? []), ...others, next] });
     });
@@ -638,9 +638,10 @@ export class Bindings {
     const kept = current?.binding;
     switch (change.kind) {
       case "applied":
-        return state.deleted ? unbound("never") : { binding: this.written(kept, state.path, state.baseHash), absence: null };
+        if (state.deleted) return unbound("never");
+        return { binding: this.carriedMove(state, current) ? this.bound(state.path, state.baseHash) : this.written(kept, state.path, state.baseHash), absence: null };
       case "merged":
-        if (change.hash !== null) return { binding: this.written(kept, change.path, change.hash), absence: null };
+        if (change.hash !== null) return { binding: this.carriedMove(state, current) && change.path === state.path ? this.bound(change.path, change.hash) : this.written(kept, change.path, change.hash), absence: null };
         return unbound(current?.absence === "user-deleted" ? "user-deleted" : "never");
       case "acknowledged":
         if (state.deleted) return unbound("user-deleted");
@@ -659,6 +660,24 @@ export class Bindings {
         if (kept === undefined) return state.deleted ? unbound("never") : { binding: this.bound(state.path, state.baseHash), absence: null };
         return { binding: kept, absence: current?.absence ?? null };
     }
+  }
+
+  /**
+   * Whether the revision `state` moves the document (its synced path was
+   * another file, `current.path`) onto the file it is bound to, spelled
+   * like the revision's path but for folders `F` takes for one (#933,
+   * PO-9): the user's own rename put the file there, and the server
+   * carried that move. A folder has one spelling on disk (#737), so the
+   * folder spelling the vault kept is no spelling of the user's: the
+   * binding takes the revision's path, and no local rename is left to win
+   * over a later remote delete (INV-6). A user's spelling of the file name
+   * itself differs in the final segment and is kept (#304).
+   */
+  private carriedMove(state: DocumentState, current: DocumentState | undefined): boolean {
+    const kept = current?.binding;
+    if (current === undefined || kept === undefined || kept === null || state.deleted) return false;
+    if (kept.spelling === state.path || this.space.oneFile(current.path, state.path)) return false;
+    return this.space.sameButFolderSpelling(kept.spelling, state.path);
   }
 
   /** The rows that leave every document other than `documentId` bound to the file at `path` with none, for `absence`. */
