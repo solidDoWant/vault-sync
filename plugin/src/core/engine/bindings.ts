@@ -363,10 +363,18 @@ export class Bindings {
    * existing file, so that document's own file was gone, and it is
    * `user-deleted` (PO-1, PO-3; #793). It may then take another file
    * itself (a rename chain), until no match is left. Two identical files
-   * match nothing: they stay a delete plus a create.
+   * match nothing: they stay a delete plus a create. Only a file that could
+   * match is read: one of a missing document's kind and, when every such
+   * document's content size is known, of one of those sizes (#826).
    */
   private async contentMatch(scanned: readonly DocumentState[], lost: ReadonlyMap<string, Binding>): Promise<Map<string, Binding | null>> {
     const kinds = new Map(scanned.map((state) => [state.documentId, state.kind]));
+    // The size of the content a document's binding saw, where the row knows it: its live base's.
+    const sizes = new Map(scanned.flatMap((state) => (state.deleted || state.baseHash === "" ? [] : [[state.documentId, { hash: state.baseHash, size: Number(state.size) }] as const])));
+    const sizeOf = (documentId: string, binding: Binding): number | undefined => {
+      const known = sizes.get(documentId);
+      return known !== undefined && known.hash === binding.seen ? known.size : undefined;
+    };
     const bindings = new Map(scanned.flatMap((state) => (state.binding == null ? [] : [[state.documentId, state.binding] as const])));
     const missing = new Map(lost);
     const result = new Map<string, Binding | null>();
@@ -375,15 +383,35 @@ export class Bindings {
       if (!hashes.has(path)) hashes.set(path, await this.hashAt(path));
       return hashes.get(path) ?? null;
     };
+    const stats = new Map<string, number>();
+    const sizeAt = async (path: string): Promise<number> => {
+      if (!stats.has(path)) stats.set(path, (await this.vault.stat(path))?.size ?? -1);
+      return stats.get(path) ?? -1;
+    };
     const listed = (await this.vault.list()).filter((path) => this.vault.isSynced?.(path) ?? true);
     // A file a match bound is never a candidate again, so each round that moves a binding takes a file for good, and the rounds end.
     const assigned = new Set<string>();
     for (;;) {
       const owners = new Map([...bindings].map(([documentId, binding]) => [binding.fileKey, documentId]));
+      // Only a file of a missing document's kind, and of its content's size
+      // where every such document's is known, can match: the others are
+      // never read, so the scan of a large vault reads only what may match.
+      const wanted = new Map<DocumentKindName, Set<number> | null>();
+      for (const [documentId, binding] of missing) {
+        const kind = kinds.get(documentId);
+        if (kind === undefined) continue;
+        const known = wanted.get(kind);
+        const size = sizeOf(documentId, binding);
+        if (known !== null) wanted.set(kind, size === undefined ? null : (known ?? new Set<number>()).add(size));
+      }
       // Every file that may be a missing document's: untracked, or bound to a document whose content it no longer holds.
       const candidates: { path: string; hash: string; owner: string | undefined }[] = [];
       for (const path of listed) {
         if (assigned.has(path)) continue;
+        const kind = this.classify(path);
+        if (!wanted.has(kind)) continue;
+        const wantedSizes = wanted.get(kind);
+        if (wantedSizes != null && !wantedSizes.has(await sizeAt(path))) continue;
         const owner = owners.get(this.space.filesystemKey(path));
         const hash = await hashOf(path);
         if (hash === null) continue;

@@ -1017,3 +1017,118 @@ describe("the start-up content match races with events (E7, decision 4)", () => 
     expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
   });
 });
+
+// Follow-ups to R11 (#826): the start-up content match driven through Bindings directly.
+describe("the start-up content match, through Bindings", () => {
+  const space = new PathSpace();
+
+  /** A vault that records every path read from it. */
+  class CountingVault extends InMemoryVault {
+    readonly reads: string[] = [];
+    override read(path: string): Promise<Uint8Array> {
+      this.reads.push(path);
+      return super.read(path);
+    }
+  }
+
+  /** A synced text document at `path` with `content`, bound to its file there. */
+  function synced(documentId: string, path: string, content: string): DocumentState {
+    return {
+      documentId,
+      path,
+      revisionId: `${documentId}1`,
+      seq: 1n,
+      baseHash: hash(content),
+      size: BigInt(bytes(content).length),
+      kind: "text",
+      deleted: false,
+      binding: { spelling: path, fileKey: space.filesystemKey(path), seen: hash(content) },
+      absence: null,
+    };
+  }
+
+  async function binding(journal: InMemoryJournal, documentId: string): Promise<Pick<DocumentState, "binding" | "absence">> {
+    const state = await journal.getDocument(documentId);
+    return { binding: state?.binding, absence: state?.absence };
+  }
+
+  it("leaves the matched document user-deleted when a delete of its new file, really gone, arrives while the scan runs", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(synced("A", "a.md", "a1"));
+    const vault = new InMemoryVault();
+    // The user renamed a.md to b.md while the app was not running.
+    await vault.write("b.md", bytes("a1"));
+
+    const owner = new Bindings(journal, vault, space);
+    expect(owner.scanning).toBe(true);
+    // After the scan matched A to b.md, the user deletes b.md; its event arrived while the scan ran.
+    const removed = owner.transact(async () => {
+      await vault.delete("b.md");
+      return undefined;
+    });
+    const deleted = owner.deleted("b.md", "user", owner.scanning);
+    await removed;
+    await deleted;
+
+    expect(await vault.stat("b.md")).toBeNull();
+    expect(await binding(journal, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("keeps the matched binding when the delete arriving while the scan runs was of the file there before it (E7b)", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(synced("A", "a.md", "a1"));
+    const vault = new InMemoryVault();
+    await vault.write("b.md", bytes("a1"));
+
+    const owner = new Bindings(journal, vault, space);
+    await owner.deleted("b.md", "user", owner.scanning);
+
+    expect(await binding(journal, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+  });
+
+  it("reads no file of a kind or size the missing documents' content cannot have", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(synced("A", "a.md", "a1"));
+    await journal.putDocument(synced("O", "other.md", "another note"));
+    const vault = new CountingVault();
+    await vault.write("b.md", bytes("a1"));
+    await vault.write("same-size.md", bytes("zz"));
+    await vault.write("picture.png", bytes("a1"));
+    await vault.write("longer.md", bytes("a1 and more"));
+    await vault.write("shorter.md", bytes("a"));
+    await vault.write("other.md", bytes("another note"));
+
+    await new Bindings(journal, vault, space).idle();
+
+    expect(await binding(journal, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await binding(journal, "O")).toEqual({ binding: { spelling: "other.md", fileKey: "other.md", seen: hash("another note") }, absence: null });
+    expect(vault.reads.sort()).toEqual(["b.md", "same-size.md"]);
+  });
+
+  it("follows a rename chain whose files differ in size, reading each file a missing document may have", async () => {
+    const journal = new InMemoryJournal();
+    await journal.putDocument(synced("A", "a.md", "a1"));
+    await journal.putDocument(synced("B", "b.md", "a much longer note"));
+    const vault = new CountingVault();
+    // b.md moved to c.md, then a.md to b.md, while the app was not running.
+    await vault.write("c.md", bytes("a much longer note"));
+    await vault.write("b.md", bytes("a1"));
+
+    await new Bindings(journal, vault, space).idle();
+
+    expect(await binding(journal, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await binding(journal, "B")).toEqual({ binding: { spelling: "c.md", fileKey: "c.md", seen: hash("a much longer note") }, absence: null });
+  });
+
+  it("matches a create not acknowledged yet, whose row knows no size, by content alone", async () => {
+    const journal = new InMemoryJournal();
+    await journal.addPending({ revisionId: "r", documentId: "N", baseRevisionId: "", path: "e.md", contentHash: hash("mine"), size: 4n, kind: "text", deleted: false });
+    const vault = new InMemoryVault();
+    // The create's file was renamed while the app was not running.
+    await vault.write("f.md", bytes("mine"));
+
+    await new Bindings(journal, vault, space).idle();
+
+    expect(await binding(journal, "N")).toEqual({ binding: { spelling: "f.md", fileKey: "f.md", seen: hash("mine") }, absence: null });
+  });
+});
