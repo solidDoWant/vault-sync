@@ -9,7 +9,8 @@
 //
 // - when the engine commits a revision of D whose path and content match an
 //   inode at that moment (or, if the file changed since the engine read it,
-//   the inode the user last wrote that content into), the inode is D's;
+//   the inode that last held that content at that path, #844), the inode is
+//   D's;
 // - when the engine writes a revision's content at that revision's path (it
 //   applies a pulled revision), the inode is that revision's document's.
 //
@@ -103,13 +104,13 @@ const bySeq = (a: FeedRevision, b: FeedRevision): number => (a.seq < b.seq ? -1 
 /** Replays one engine's timeline against the feed; collects phantom-delete, resurrected-delete and identity violations. */
 class Replay {
   private readonly files = new Map<string, FileState>();
-  /** Deleted inodes, with where they were and what they held then. */
-  private readonly gone = new Map<string, FileState>();
   private readonly byKey = new Map<string, string>();
   readonly bound = new Map<string, string>();
   private readonly everBound = new Map<string, Set<string>>();
   /** The inode each content was last written into, by anyone. */
   private readonly origins = new Map<string, string>();
+  /** The inode that last held each content at each path (by path key), by a write there or a rename onto it (#844). */
+  private readonly heldAt = new Map<string, string>();
   private readonly userDeleted: { inode: string; at: number }[] = [];
   /** The user's creates, writes and renames of inodes, with the content after them and a rename's new path. */
   private readonly userChanges: { inode: string; at: number; hash: string | undefined; path: string; rename: boolean }[] = [];
@@ -162,6 +163,11 @@ class Replay {
     return this.engine.match(path);
   }
 
+  /** The heldAt key of `hash` at `path`. */
+  private held(path: string, hash: string): string {
+    return `${this.key(path)}\u0000${hash}`;
+  }
+
   private bind(inode: string, documentId: string): void {
     this.bound.set(inode, documentId);
     const ever = this.everBound.get(inode) ?? new Set<string>();
@@ -192,6 +198,7 @@ class Replay {
         this.byKey.set(this.key(entry.path), entry.inode);
         if (entry.hash === undefined) return;
         this.origins.set(entry.hash, entry.inode);
+        this.heldAt.set(this.held(entry.path, entry.hash), entry.inode);
         if (entry.actor === "user") {
           this.userChanges.push({ inode: entry.inode, at: this.position, hash: entry.hash, path: entry.path, rename: false });
           return;
@@ -210,6 +217,7 @@ class Replay {
         if (entry.oldPath !== undefined && this.byKey.get(this.key(entry.oldPath)) === entry.inode) this.byKey.delete(this.key(entry.oldPath));
         this.files.set(entry.inode, { path: entry.path, hash: file?.hash });
         this.byKey.set(this.key(entry.path), entry.inode);
+        if (file?.hash !== undefined) this.heldAt.set(this.held(entry.path, file.hash), entry.inode);
         if (entry.actor === "user") {
           const documents = new Set(this.everBound.get(entry.inode) ?? []);
           this.renames.push({ inode: entry.inode, documents, at: this.position });
@@ -225,7 +233,6 @@ class Replay {
         const file = this.files.get(entry.inode);
         if (file !== undefined && this.byKey.get(this.key(file.path)) === entry.inode) this.byKey.delete(this.key(file.path));
         this.files.delete(entry.inode);
-        if (file !== undefined) this.gone.set(entry.inode, file);
         if (entry.actor === "user") this.userDeleted.push({ inode: entry.inode, at: this.position });
         return;
       }
@@ -256,16 +263,24 @@ class Replay {
     return !this.userChanges.some((change) => change.rename && change.inode === inode && this.key(change.path) === key && change.at > syncedAt);
   }
 
-  /** The inode an engine commit of `revision` was read from, if the oracle can tell. */
+  /**
+   * The inode an engine commit of `revision` was read from, if the oracle
+   * can tell: one whose path and content match the commit's (§5.4). That is
+   * the file at the commit's path if it holds the content; else the file
+   * that last held the content at that path, which changed since the engine
+   * read it (the user overwrote, moved or deleted it). Only content that
+   * never sat at the commit's path falls back to the file it was last
+   * written into anywhere, if that still exists, and then to the file at the
+   * path. With shared contents that last write may be another document's
+   * file, which the commit never came from (#844, seeds 100160 and 100197).
+   */
   private source(revision: FeedRevision): string | undefined {
-    // The file at the commit's path if it holds the content; else the file the content was last written into, if it still exists (the file at the path changed since the engine read it) or the user deleted it at the commit's path since (the engine read it before the delete, and maybe before a later write of the user's); else the file at the path.
-    const key = this.key(revision.path);
-    const holder = this.byKey.get(key);
+    const holder = this.byKey.get(this.key(revision.path));
     if (holder !== undefined && this.files.get(holder)?.hash === revision.contentHash) return holder;
+    const held = this.heldAt.get(this.held(revision.path, revision.contentHash));
+    if (held !== undefined) return held;
     const origin = this.origins.get(revision.contentHash);
     if (origin !== undefined && this.files.has(origin)) return origin;
-    const gone = origin === undefined ? undefined : this.gone.get(origin);
-    if (gone !== undefined && this.key(gone.path) === key) return origin;
     return holder;
   }
 
