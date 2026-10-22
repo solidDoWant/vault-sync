@@ -317,15 +317,15 @@ const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateC
  * P4 over `alphabet` on `platforms`: crashing at journal write N and
  * restarting reaches the quiescent state the run without the crash reaches.
  */
-function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[], paths?: readonly string[]): Definition<[PathPlatform, WorldCommand[], number]> {
+function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[], paths?: readonly string[], filesystem: "folded" | "faithful" = "folded"): Definition<[PathPlatform, WorldCommand[], number]> {
   return {
     property: "P4",
     cases: fc.tuple(platforms, fc.array(fc.oneof(...alphabet), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
     check: async ([on, list, write]) => {
-      const baseline = new PropertyWorld(on, "folded", paths);
+      const baseline = new PropertyWorld(on, filesystem, paths);
       for (const command of list) await baseline.apply(command);
       await baseline.quiesce();
-      const crashed = new PropertyWorld(on, "folded", paths);
+      const crashed = new PropertyWorld(on, filesystem, paths);
       crashed.armCrash(write);
       for (const command of list) await crashed.apply(command);
       await crashed.quiesce();
@@ -335,6 +335,25 @@ function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Ar
   };
 }
 const p4 = crashEquivalence(platform, steadyCommands);
+/**
+ * #801's commands: after a restore to nothing, the push re-creates `STRASSE.md`'s
+ * document, which yields its path to the new `Straße.md` (one path under `K`)
+ * and is displaced to a copy name; a remote edit then picks the first live
+ * document by path.
+ */
+const restoredGhostYields: WorldCommand[] = [
+  { type: "remote-create", path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "user-create", path: 5 },
+  { type: "move-onto-incoming", file: 0, path: 7 },
+  { type: "move-onto-incoming", file: 0, path: 6 },
+  { type: "restore", fraction: 0 },
+  { type: "push" },
+  { type: "remote-edit", document: 0 },
+  { type: "move-onto-incoming", file: 0, path: 0 },
+];
+/** P4 on the faithful vault, for fixed cases (#801). */
+const p4Faithful = crashEquivalence(platform, steadyCommands, undefined, "faithful");
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
@@ -525,7 +544,7 @@ describe("engine properties (design §9.3)", () => {
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
   // Flipped in R7b (#700), which re-creates a document the restored server lost (design §4.6). Fixed case: the pin before it.
   it("P4: a crash at any journal write reaches the state a run without it reaches", { timeout }, async () => {
-    await holds(p4, [
+    await holds<[PathPlatform, WorldCommand[], number]>(p4, [
       [
         "posix",
         [
@@ -556,7 +575,23 @@ describe("engine properties (design §9.3)", () => {
         ],
         13,
       ],
+      // #801's: a crash at the displace intent that re-creates a ghost at a copy name after a restore.
+      ["posix", restoredGhostYields, 17],
     ]);
+  });
+
+  // #801 (INV-7, PO-8): a push that displaces a ghost the restore lost to a copy name commits its re-create in the
+  // same push, as the push a crash restarts does when it recovers the intent and resumes the outbox. Otherwise a
+  // remote edit in between reaches a different copy. Fixed cases: on the faithful vault on every platform, crashed at
+  // each journal write of that push.
+  it("P4: a push that re-creates a ghost at a copy name reaches the state a crash in it reaches", { timeout }, async () => {
+    for (const on of ["posix", "macos", "windows"] as const) {
+      for (let write = 13; write <= 24; write++) expect(await p4Faithful.check([on, restoredGhostYields, write]), `${on}, crash at write ${String(write)}`).toEqual([]);
+    }
+    const world = new PropertyWorld("posix", "faithful");
+    for (const command of restoredGhostYields.slice(0, 7)) await world.apply(command);
+    expect(await world.journal.listPending()).toEqual([]);
+    expect([...world.server.liveFiles()].map(([path]) => path).sort()).toEqual(["STRASSE (conflict laptop 2026-10-18 040506 2).md", "STRASSE (conflict laptop 2026-10-18 040506).md", "Straße.md", "x (conflict laptop 2026-10-18 040506)"]);
   });
 
   // #784 (INV-7, INV-9, PO-12): a resync that drops a released document's deferral the restore lost forgets the
