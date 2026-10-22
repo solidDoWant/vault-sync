@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { DocumentState, RemoteRevision } from "../journal/journal";
+import type { DeferredRevision, DocumentState, RemoteRevision } from "../journal/journal";
 import { sha256Hex } from "../hash";
-import { boundLocalChange, mergePath } from "./decide";
+import { boundLocalChange, mergePath, ruleW } from "./decide";
+import { PathSpace } from "./pathspace";
 import { threeWayMerge, type MergeRequest } from "./merge";
 
 const encoder = new TextEncoder();
@@ -48,6 +49,32 @@ describe("mergePath (design §4.7, PO-9)", () => {
 
   it("takes the remote path for a tombstone brought back by a bound file elsewhere", () => {
     expect(mergePath(state({ deleted: true }), "copy.md", remote({ path: "back.md" }))).toBe("back.md");
+  });
+});
+
+// #792 (PO-4(b), PO-11): W(b) decides on the holder's newest server claim the pull has in hand.
+describe("ruleW with the holder's newer revision on the feed page", () => {
+  const space = new PathSpace({ platform: "windows" });
+  const holder = state({ binding: { spelling: "a.md", fileKey: "A.MD", seen: "h-edit" } });
+  const refused: DeferredRevision = { revision: remote({ path: "no:te.md" }), reason: "unmaterializable", unmaterializable: "refused-by-vault" };
+
+  it("follows a revision newer than the deferral instead of detaching on it", () => {
+    expect(ruleW(holder, refused, [], "a.md", space, remote({ revisionId: "r3", seq: 3n, path: "b.md" }))).toBe("follow");
+  });
+
+  it("detaches on the deferral when the page's revision is the deferral itself", () => {
+    expect(ruleW(holder, refused, [], "a.md", space, remote({ path: "no:te.md" }))).toBe("detach");
+    expect(ruleW(holder, refused, [], "a.md", space)).toBe("detach");
+  });
+
+  it("follows a newer revision of a holder with no deferral, and not one it already has", () => {
+    expect(ruleW(holder, undefined, [], "a.md", space, remote({ path: "b.md" }))).toBe("follow");
+    expect(ruleW(holder, undefined, [], "a.md", space, remote({ seq: 1n, path: "b.md" }))).toBe("keep");
+  });
+
+  it("displaces a locally moved holder whatever the page holds", () => {
+    const moved = state({ binding: { spelling: "c.md", fileKey: "C.MD", seen: "h1" } });
+    expect(ruleW(moved, refused, [], "c.md", space, remote({ revisionId: "r3", seq: 3n, path: "b.md" }))).toBe("displace");
   });
 });
 

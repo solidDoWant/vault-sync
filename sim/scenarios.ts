@@ -886,6 +886,71 @@ export async function unmaterializableOnWindows(endpoints: SimEndpoints): Promis
   };
 }
 
+export interface StalePageHolderResult extends RunResult {
+  /** Each engine's vault after the run: path to content. */
+  vaults: Map<string, string>[];
+  /** The server's live documents before the renames and after the run: path to document label. */
+  before: Map<string, string>;
+  documents: Map<string, string>;
+}
+
+/**
+ * #792 (PO-4(b), PO-11; INV-1, INV-3): the Windows engine's user edits a
+ * synced note, plan.md, and does not push. The POSIX engine renames it to
+ * plan?.md, a name Windows cannot hold, creates a new note at plan.md, and
+ * renames the first note on to plan 2.md, all before the Windows engine
+ * pulls them, on one feed page. The new note needs plan.md, where the edited
+ * file is. Rule W decides on the edited note's newest server claim, plan 2.md,
+ * which Windows can hold: the note follows it under its own id with the edit,
+ * and nothing is detached to a conflict copy as a new document.
+ */
+export async function stalePageHolder(endpoints: SimEndpoints): Promise<StalePageHolderResult> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 1, engines: 2, platforms: ["posix", "windows"] });
+  const [posix, windows] = run.observers;
+  if (posix === undefined || windows === undefined) throw new Error("the run has two engines");
+  const log = (entry: string) => {
+    run.context.log(entry);
+  };
+  const drain = async (engine: number) => {
+    await settle();
+    await run.drain(engine);
+  };
+  const push = async (engine: typeof posix) => {
+    log(engine.startPush());
+    await drain(engine.index);
+  };
+  const pull = async (engine: typeof posix) => {
+    log(engine.startPull());
+    await drain(engine.index);
+  };
+
+  log(await posix.edit("plan.md", encoder.encode(textLines("one", "two"))));
+  await push(posix);
+  await pull(windows);
+  const before = await liveDocuments(run);
+
+  log(await windows.edit("plan.md", encoder.encode(textLines("one", "two (edited on windows)"))));
+  log(await posix.move("plan.md", "plan?.md"));
+  await push(posix);
+  log(await posix.edit("plan.md", encoder.encode(textLines("another plan"))));
+  await push(posix);
+  log(await posix.move("plan?.md", "plan 2.md"));
+  await push(posix);
+  await pull(windows);
+  await push(windows);
+  await pull(posix);
+
+  const result = await run.finish();
+  const vaults = await Promise.all(
+    [posix, windows].map(async (engine) => {
+      const contents = new Map<string, string>();
+      for (const path of await engine.list()) contents.set(path, decoder.decode((await engine.read(path)) ?? new Uint8Array()));
+      return contents;
+    }),
+  );
+  return { ...result, vaults, before, documents: await liveDocuments(run) };
+}
+
 export interface FreedPathResult extends RunResult {
   /** Each engine's vault after the run: path to content. */
   vaults: Map<string, string>[];
