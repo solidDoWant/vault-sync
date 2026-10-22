@@ -313,6 +313,8 @@ export class SimRun {
       this.purged.set(id, revision);
       this.purges.seqs.add(revision.seq);
       this.purges.revisions.add(id);
+      // A retry of it delivered from now on is a new commit to the server (#845, X-22).
+      this.context.network.recordPurged(id);
     }
     this.context.log(`retention purged ${purged.map((id) => this.context.ids.label(id)).join(", ") || "nothing"}`);
     return purged;

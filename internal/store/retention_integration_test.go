@@ -361,6 +361,34 @@ func TestCommitRetryAfterItsBaseWasPurged(t *testing.T) {
 	require.ErrorIs(t, err, store.ErrRevisionConflict)
 }
 
+// Issue #845: a commit whose response was lost, retried after retention
+// purged the revision itself (a newer revision of the document is the head),
+// is a new commit to the server: it has no record of the id any more, so
+// the retry is judged against the head and refused as head moved, carrying
+// the head (SPEC.md §6.2, §11). The client then takes the head-moved path.
+func TestCommitRetryAfterItsRevisionWasPurged(t *testing.T) {
+	fixture := newCommitFixture(t)
+
+	base := fixture.history(t, "a.md", []string{dailyDay + ` + interval '1 hour'`})[0]
+
+	retry := fixture.next(base, "a.md", fixture.content, 7)
+	applied := fixture.commit(t, retry)
+	fixture.setCreated(t, applied.ID, dailyDay+` + interval '2 hours'`)
+
+	head := fixture.commit(t, fixture.next(applied, "a.md", fixture.content, 7))
+	fixture.setCreated(t, head.ID, dailyDay+` + interval '3 hours'`)
+
+	require.Equal(t, 2, fixture.purge(t, defaultPolicy), "the base and the retried revision are purged")
+	require.Equal(t, []uuid.UUID{head.ID}, fixture.retained(t, head.DocumentID))
+
+	_, err := fixture.vault.CommitRevision(t.Context(), retry)
+
+	var headMoved *store.HeadMovedError
+	require.ErrorAs(t, err, &headMoved)
+	assert.Equal(t, head.ID, headMoved.Document.HeadRevID, "the refusal carries the head")
+	assert.Equal(t, []uuid.UUID{head.ID}, fixture.retained(t, head.DocumentID), "the refused retry committed nothing")
+}
+
 // HA (SPEC.md §12): a purge never waits for a commit to the same document
 // or another server process's purge of it: it skips the locked document,
 // and a later run picks it up.
