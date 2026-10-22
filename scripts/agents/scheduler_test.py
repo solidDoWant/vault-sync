@@ -653,28 +653,21 @@ class SchedulerTest(unittest.TestCase):
         self.assertFalse(wt.exists())
         self.assertNotIn("worker:1", self.sched.state["sessions"])
 
-    def test_gocache_clear_waits_for_running_jobs(self):
+    def test_gocache_trim_runs_beside_jobs_without_blocking(self):
         sched = self.sched
         del sched.housekeeping  # use the real one, with its side effects stubbed
-        cleared = []
+        cmds = []
         sched.sync_main_checkout = lambda: None
         sched.refresh_env_file = lambda: None
         sched.remove_orphan_stacks = lambda: None
         sched.gocache_size = lambda: 50 * 1024 ** 3
-        sched.sh = lambda cmd, timeout=600: cleared.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
+        sched.sh = lambda cmd, timeout=600: cmds.append(cmd) or subprocess.CompletedProcess(cmd, 0, "", "")
         sched.state["running"]["x"] = {"key": "worker:9", "claims": [], "locks": [], "marker": "m", "pid": None,
                                        "log": "/nonexistent", "started": s.iso(s.now_utc())}
+        sched.state["maintenance"] = "gocache"  # left by the old blocking clear
         sched.housekeeping()
-        self.assertEqual(sched.state["maintenance"], "gocache")
-        self.assertFalse(any("go clean" in c for c in cleared))
-        sched.reap = lambda: 0
-        self.disable_planner()
-        sched.poll()  # maintenance blocks launches
-        self.assertEqual(self.calls_made(), [])
-        self.assertEqual(sched.state["blocked_by"], "maintenance: gocache")
-        del sched.state["running"]["x"]
-        sched.housekeeping()
-        self.assertTrue(any("go clean -cache" in c for c in cleared))
+        self.assertTrue(any("-mmin +360 -delete" in c for c in cmds))
+        self.assertFalse(any("go clean" in c for c in cmds))
         self.assertIsNone(sched.state["maintenance"])
 
     def test_pause_and_stop_files(self):

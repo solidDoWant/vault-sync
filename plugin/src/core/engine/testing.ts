@@ -2,7 +2,7 @@
 // in-memory server, vault and journal, plus fault-injecting wrappers that
 // "crash" the engine after a chosen number of durable changes.
 
-import { ConnectError } from "@connectrpc/connect";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
@@ -548,7 +548,7 @@ export class CrashAtWriteJournal implements Journal {
 }
 
 /** A change the engine made to the vault, as the harness's oracle records it. */
-export type EngineChange = { type: "write"; path: string; hash: string } | { type: "rename"; from: string; to: string } | { type: "delete"; path: string };
+export type EngineChange = { type: "write"; path: string; hash: string; size: bigint } | { type: "rename"; from: string; to: string } | { type: "delete"; path: string };
 
 /** The vault the engine sees: calls fail once its Lifeline is dead, and every change that landed is reported. */
 export class ObservedVault implements VaultAdapter {
@@ -579,7 +579,7 @@ export class ObservedVault implements VaultAdapter {
   async write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
     this.life.check();
     await this.inner.write(path, data, precondition);
-    this.observe({ type: "write", path, hash: sha256Hex(data) });
+    this.observe({ type: "write", path, hash: sha256Hex(data), size: BigInt(data.length) });
   }
   async rename(from: string, to: string): Promise<void> {
     this.life.check();
@@ -663,7 +663,7 @@ export interface UserOperation {
 }
 
 /** The properties of §9.3 a violation counts against. */
-export type PropertyId = "P1" | "P2" | "P3";
+export type PropertyId = "P1" | "P2" | "P3" | "P8";
 
 export interface Violation {
   property: PropertyId;
@@ -688,6 +688,7 @@ export type WorldCommand =
   | { type: "edit-during-pull"; file: number }
   | { type: "move-onto-incoming"; file: number; path: number }
   | { type: "push" }
+  | { type: "offline-push" }
   | { type: "crash"; write: number }
   | { type: "restore"; fraction: number }
   | { type: "purge"; revision: number };
@@ -744,6 +745,10 @@ export class PropertyWorld {
   step = 0;
   readonly origins = new Map<string, ContentOrigin>();
   readonly revisions: ObservedRevision[] = [];
+  /** The size of every content the user, the remote device or the engine wrote, by hash (P8). */
+  readonly sizes = new Map<string, bigint>();
+  /** Whether CommitRevision is unreachable (the `offline-push` command). */
+  private offline = false;
   /** Every content hash any revision ever carried on the server, purged or rolled back since or not. */
   readonly everOnServer = new Set<string>();
   /** The document each inode is bound to, as far as the oracle can tell. */
@@ -796,6 +801,10 @@ export class PropertyWorld {
       if (this.emitting === "user") this.userEvents.add(event);
     });
     this.api = createProtocolClient({ transport: this.server.transport });
+    this.server.interceptor = (method, request) => {
+      this.checkBlobRequest(method, request);
+      if (method === "CommitRevision" && this.offline) throw new ConnectError("offline", Code.Unavailable);
+    };
     this.engine = this.createEngine();
   }
 
@@ -900,6 +909,15 @@ export class PropertyWorld {
       case "push":
         await this.run(() => this.engine.push());
         break;
+      case "offline-push":
+        // A push whose commits never reach the server: its operations stay in the outbox.
+        this.offline = true;
+        try {
+          await this.run(() => this.engine.push());
+        } finally {
+          this.offline = false;
+        }
+        break;
       case "crash":
         this.armCrash(command.write);
         break;
@@ -918,6 +936,7 @@ export class PropertyWorld {
     }
     await this.settle();
     await this.checkExclusivity();
+    await this.checkOutboxContent();
   }
 
   /**
@@ -933,6 +952,7 @@ export class PropertyWorld {
       await this.run(() => this.engine.push());
       await this.run(() => this.engine.pull());
       await this.checkExclusivity();
+      await this.checkOutboxContent();
       const after = await this.fingerprint();
       if (after === before) return true;
       before = after;
@@ -943,10 +963,6 @@ export class PropertyWorld {
   /** INV-9 at quiescence: the problems found, empty if the device converged with the server. */
   async convergence(): Promise<string[]> {
     const problems: string[] = [];
-    // Modulo unmaterializable (INV-9): a live document whose path this platform
-    // cannot hold has no file here, and the earlier version of one, where the
-    // device kept it, is no copy of the server's.
-    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && unmaterializableReason(document.path, this.pathRules) !== undefined ? [document.localPath] : [])));
     const space = new PathSpace(this.pathRules);
     const live = [...this.server.liveFiles()].filter(([path]) => unmaterializableReason(path, this.pathRules) === undefined);
     // Modulo `F`-aliases (decision #52, #736): of live documents whose paths
@@ -954,6 +970,13 @@ export class PropertyWorld {
     // exactly one, whichever arrived first; the others are unmaterializable.
     const aliases = (path: string) => live.some(([other]) => other !== path && space.collides(other, path, "file") && !space.collides(other, path, "server"));
     const aliased = live.filter(([path]) => aliases(path));
+    // Modulo unmaterializable (INV-9): a live document whose path this platform
+    // cannot hold has no file here, and the earlier version of one, where the
+    // device kept it, is no copy of the server's. The harness decides "cannot
+    // hold" itself (§5.5 X-15): the platform refuses the path, or the path is
+    // an `F`-alias of another live document's (the kept file of a document
+    // deferred as `alias`, decision #52, #769).
+    const kept = new Set((await this.engine.unmaterializable()).flatMap((document) => (document.localPath !== undefined && (unmaterializableReason(document.path, this.pathRules) !== undefined || aliases(document.path)) ? [document.localPath] : [])));
     const held = [...(await files(this.vault))].filter(([path]) => !kept.has(path));
     // Folder segments compare under `F`, the final segment exactly (INV-9,
     // PO-10): a folder has one spelling on disk, so the server's `X/b.md` is
@@ -1011,6 +1034,7 @@ export class PropertyWorld {
 
   private remoteContent(documentId: string): Uint8Array {
     const content = worldEncoder.encode(`remote ${String(this.step)}`);
+    this.sizes.set(sha256Hex(content), BigInt(content.length));
     this.origins.set(sha256Hex(content), { kind: "remote", documentId, step: this.step });
     return content;
   }
@@ -1071,6 +1095,7 @@ export class PropertyWorld {
       throw error;
     }
     const hash = sha256Hex(content);
+    this.sizes.set(hash, BigInt(content.length));
     const file = this.inodes.wrote(path, hash);
     this.origins.set(hash, { kind: "user", inode: file.inode, step: this.step });
     this.userWrites.add(hash);
@@ -1141,6 +1166,7 @@ export class PropertyWorld {
       this.inodes.deleted(change.path);
       return;
     }
+    this.sizes.set(change.hash, change.size);
     const file = this.inodes.wrote(change.path, change.hash);
     // The engine materialized a revision of a document at that document's path: the file is that document's.
     const key = this.inodes.key(change.path);
@@ -1269,9 +1295,14 @@ export class PropertyWorld {
       return;
     }
     const holder = this.inodes.at(revision.path);
+    // Bytes the remote device committed to this document are its own, also
+    // where it committed them to another document first (`move-onto-incoming`
+    // gives a new document a known file's bytes, #757): the origin by hash
+    // names only the first (§5.5 X-21, #769). The inode checks stay exact.
+    const foreign = origin?.kind === "remote" && origin.documentId !== revision.documentId && !this.revisions.some((candidate) => candidate !== revision && candidate.documentId === revision.documentId && candidate.deviceId === remoteDeviceId && candidate.hash === revision.hash);
     if (parent === undefined) {
       // P1 on a create: another document's content, or file, never becomes a new document.
-      if (origin?.kind === "remote" && origin.documentId !== revision.documentId) this.violation("P1", `create of ${name} carries the ${this.describe(revision.hash)}`);
+      if (foreign) this.violation("P1", `create of ${name} carries the ${this.describe(revision.hash)}`);
       const owner = holder?.hash === revision.hash ? this.bound.get(holder.inode) : undefined;
       if (holder !== undefined && owner !== undefined && owner !== revision.documentId) this.violation("P1", `create of ${name} from inode ${String(holder.inode)}, bound to ${owner}`);
       if (holder?.hash === revision.hash) this.bind(holder.inode, revision.documentId);
@@ -1295,7 +1326,11 @@ export class PropertyWorld {
       // a file at the tombstone's path (E5, INV-6). Inode-exact (§5.5 X-10).
       const earlier = this.revisions.filter((candidate) => candidate.documentId === revision.documentId && candidate.seq < revision.seq);
       const carried = new Set(earlier.map((candidate) => candidate.hash));
-      const named = new Set(earlier.map((candidate) => candidate.path));
+      // A rename is carried by a revision of the document at its path made
+      // since: a rename back to a path the document had earlier, still
+      // unpushed, is a binding change that wins over the delete (§4 R5b,
+      // §5.5 X-10, #769).
+      const carriedRename = (operation: UserOperation) => earlier.some((candidate) => candidate.path === operation.path && candidate.step >= operation.step);
       const ownInode = (inode: number) => this.everBound.get(inode)?.has(revision.documentId) === true;
       // The user created, edited or renamed the bytes since the document was
       // last live: in the document's own file, or in the file at the path
@@ -1307,7 +1342,7 @@ export class PropertyWorld {
         (operation) =>
           inodes.has(operation.inode) &&
           (((operation.type === "create" || operation.type === "edit") && operation.hash === revision.hash && !carried.has(operation.hash) && (ownInode(operation.inode) || (this.bound.get(operation.inode) === undefined && this.inodes.at(revision.path)?.inode === operation.inode))) ||
-            (operation.type === "rename" && operation.path !== undefined && !named.has(operation.path) && ownInode(operation.inode))),
+            (operation.type === "rename" && operation.path !== undefined && !carriedRename(operation) && ownInode(operation.inode))),
       );
       if (!touched && !unsynced) this.violation("P2", `live revision of ${name} on its tombstone without a user change since step ${String(since)}`);
       if (holder?.hash === revision.hash) this.bind(holder.inode, revision.documentId);
@@ -1315,7 +1350,7 @@ export class PropertyWorld {
     }
     if (parent.hash === revision.hash || origin === undefined) return;
     // P1 on an edit: the content comes from the document's own file.
-    if (origin.kind === "remote" && origin.documentId !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}`);
+    if (foreign) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}`);
     const owner = origin.kind === "user" ? this.bound.get(origin.inode) : undefined;
     if (owner !== undefined && owner !== revision.documentId) this.violation("P1", `edit of ${name} carries the ${this.describe(revision.hash)}, an inode bound to ${owner}`);
   }
@@ -1329,6 +1364,32 @@ export class PropertyWorld {
       "live outboxes",
       [...outbox.values()].filter((operation) => !operation.deleted).map((operation) => [operation.documentId, operation.path]),
     );
+  }
+
+  /**
+   * P8 (INV-8, PO-8): a content reference names a content by its hash and
+   * that content's size (SPEC.md §6.2). No outbox operation pairs a hash
+   * with another content's size, or its upload and commit would ask the
+   * server for a blob at a size it does not have, on every push (#775).
+   */
+  private async checkOutboxContent(): Promise<void> {
+    for (const operation of await this.journal.listPending()) {
+      const size = this.sizes.get(operation.contentHash);
+      if (size !== undefined && size !== operation.size) this.violation("P8", `outbox ${operation.revisionId} of ${operation.documentId} names content ${operation.contentHash.slice(0, 8)} of ${String(size)} bytes at ${String(operation.size)} bytes`);
+    }
+  }
+
+  /** P8 on the wire: BeginBlob and CommitRevision name a blob at its content's size, and DownloadBlob never asks beyond it. */
+  private checkBlobRequest(method: string, request: unknown): void {
+    const blob = request as { blobId?: Uint8Array; size?: bigint; offset?: bigint; contentRef?: { blobId: Uint8Array; size: bigint } };
+    let named: { hash: string; size: bigint; beyond: boolean } | undefined;
+    if (method === "CommitRevision" && blob.contentRef !== undefined && blob.contentRef.blobId.length > 0) named = { hash: bytesToHex(blob.contentRef.blobId), size: blob.contentRef.size, beyond: false };
+    if (method === "BeginBlob" && blob.blobId !== undefined && blob.size !== undefined) named = { hash: bytesToHex(blob.blobId), size: blob.size, beyond: false };
+    if (method === "DownloadBlob" && blob.blobId !== undefined && blob.offset !== undefined) named = { hash: bytesToHex(blob.blobId), size: blob.offset, beyond: true };
+    if (named === undefined) return;
+    const size = this.sizes.get(named.hash);
+    if (size === undefined || (named.beyond ? named.size <= size : named.size === size)) return;
+    this.violation("P8", `${method} names content ${named.hash.slice(0, 8)} of ${String(size)} bytes at ${named.beyond ? "offset " : ""}${String(named.size)}${named.beyond ? "" : " bytes"}`);
   }
 
   private collisions(what: string, claims: [string, string][]): void {

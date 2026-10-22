@@ -146,20 +146,20 @@ export class Intents {
         // Its outbox goes: the file is a new document's now.
         return { ...changes, putDocuments: [{ ...state, binding: null, absence: "released" }], removePending: operations.map((operation) => operation.revisionId) };
       }
+      // What a create the intent writes names (null: no create, the file is gone and its delete event follows).
+      const content = hasBase(state) && !steps.recreate ? null : await this.content(steps);
       if (steps.recreate) {
         // The server lost the document: it is created again at its file's new path, under its own id.
-        const size = await this.size(steps);
-        const create: PendingOperation = { revisionId: this.host.newId(), documentId: state.documentId, baseRevisionId: "", path: steps.to, contentHash: steps.hash, size, kind: state.kind, deleted: false };
+        const create: PendingOperation[] = content === null ? [] : [{ revisionId: this.host.newId(), documentId: state.documentId, baseRevisionId: "", path: steps.to, contentHash: content.hash, size: content.size, kind: state.kind, deleted: false }];
         // It keeps the revisions this device synced of it (DocumentState.prior): a known document, not a new file (rule W).
         const prior = [state.revisionId, ...(state.prior ?? [])].slice(0, priorRevisionLimit);
         const row: DocumentState = { documentId: state.documentId, path: steps.to, revisionId: "", seq: 0n, baseHash: "", size: 0n, kind: state.kind, deleted: true, binding, absence: null, prior };
-        return { ...changes, putDocuments: [row], removePending: operations.map((operation) => operation.revisionId), addPending: [create] };
+        return { ...changes, putDocuments: [row], removePending: operations.map((operation) => operation.revisionId), addPending: create };
       }
       // The push derives the document's next operation from its binding: a
       // rename to `to` from its synced path, or its create there.
       const moved = operations.filter((operation) => !operation.deleted);
-      const size = hasBase(state) ? 0n : await this.size(steps);
-      const creates = hasBase(state) ? [] : moved.map((operation) => ({ ...operation, revisionId: this.host.newId(), path: steps.to, contentHash: steps.hash, size }));
+      const creates = content === null ? [] : moved.map((operation) => ({ ...operation, revisionId: this.host.newId(), path: steps.to, contentHash: content.hash, size: content.size }));
       return { ...changes, putDocuments: [{ ...state, binding, absence: null }], removePending: moved.map((operation) => operation.revisionId), addPending: creates.slice(0, 1) };
     });
     if (intent.kind === "detach") this.host.markDirty(steps.to);
@@ -168,15 +168,16 @@ export class Intents {
   }
 
   /**
-   * The size of the content the intent's `hash` names: recorded with it, or,
-   * for an intent recorded before the size was, the moved file's length when
-   * it still holds that content (0 otherwise, which the push refuses to
-   * upload and derives again from the binding).
+   * The content a create the intent writes names, by hash and size from one
+   * read (#775): the recorded `hash` with its recorded `size`, or, for an
+   * intent recorded before the size was, the moved file's content as it is
+   * now. Null if that file is gone. Never one content's hash with another's
+   * size, whose upload the server's blob would refuse on every push.
    */
-  private async size(steps: MoveSteps): Promise<bigint> {
-    if (steps.size !== undefined) return BigInt(steps.size);
+  private async content(steps: MoveSteps): Promise<{ hash: string; size: bigint } | null> {
+    if (steps.size !== undefined) return { hash: steps.hash, size: BigInt(steps.size) };
     const content = await this.host.read(steps.to);
-    return content !== null && sha256Hex(content) === steps.hash ? BigInt(content.length) : 0n;
+    return content === null ? null : { hash: sha256Hex(content), size: BigInt(content.length) };
   }
 
   /** The intent's file is gone from both paths: the user deleted it (E3). */
