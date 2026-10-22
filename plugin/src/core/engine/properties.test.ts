@@ -842,6 +842,9 @@ describe("engine properties (design §9.3)", () => {
       // #910 (seed 566): a closed-app delete and re-save at the synced path, a remote rename, a closed-app rename of the
       // re-saved file, then a remote delete: the document stays deleted.
       scripted("posix", { type: "user-create", path: 1 }, { type: "closed", changes: [{ file: 0, delete: true, target: 0 }, { file: 0, delete: false, target: 0 }] }, { type: "user-create", path: 1 }, { type: "remote-rename", document: 0, path: 0 }, { type: "closed", changes: [{ file: 0, delete: false, target: 8 }] }, { type: "remote-delete", document: 0 }),
+      // #933 (seed 567): a closed-app rename of X/b.md to x/a.md, held as X/a.md, that another device also made before
+      // deleting the document: the document stays deleted.
+      scripted("macos", { type: "user-create", path: 9 }, { type: "closed", changes: [{ file: 0, delete: false, target: 8 }] }, { type: "remote-rename", document: 0, path: 8 }, { type: "remote-delete", document: 0 }, { type: "closed", changes: [{ file: 0, delete: false, target: 0 }] }),
     ]);
   });
 
@@ -1197,7 +1200,7 @@ describe("engine properties (design §9.3)", () => {
   // Fixed case (#769, 20k cases): an unpushed case-only rename back to a spelling the document had wins over a later
   // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853. #882's (seed 566,
   // PO-9): the server carried the user's move before a remote delete, so rule W's copy name is no local change and the
-  // delete wins.
+  // delete wins. #933's (seed 566, PO-9): nor is the folder spelling the disk kept for a user's move the server carried.
   it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
@@ -1210,6 +1213,9 @@ describe("engine properties (design §9.3)", () => {
       // #917 (seed 566, PO-14): the merge's copy of the user's untracked ı.md was named ı (conflict …).md, on Windows
       // the merged document's own file I (conflict …).md, so the merge never finished and the revision stayed deferred.
       scripted("windows", { type: "user-create", path: 0 }, { type: "user-create", path: 5 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 14 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "user-create", path: 13 }, { type: "remote-rename", document: 0, path: 13 }, { type: "move-onto-incoming", file: 0, path: 0 }),
+      // #933 (seed 566): the user's rename of X/b.md to x/a.md matched the remote rename the server carried (the folder
+      // keeps its X/ spelling on Windows), so the remote delete after it wins; the document stays deleted.
+      scripted("windows", { type: "remote-create", path: 9 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 8 }, { type: "remote-rename", document: 0, path: 8 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }),
     ];
     for (const example of fixed) expect(await movedOntoIncoming.check(example), JSON.stringify(example[1])).toEqual([]);
     await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);
