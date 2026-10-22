@@ -192,6 +192,14 @@ export interface Binding {
   fileKey: string;
   /** Content hash the engine last read or wrote at `spelling`. */
   seen: string;
+  /**
+   * The engine put the file at `spelling`: rule W's `displace` moved it
+   * there (design §4.1, §4.4), not the user. A later move of the file by
+   * the user (seen at a new spelling) clears it. The path merge keeps the
+   * spelling of a document bound on its tombstone only when it is not
+   * displaced (§4.7, PO-9; #802). Absent means false.
+   */
+  displaced?: boolean;
 }
 
 /**

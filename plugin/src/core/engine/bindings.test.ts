@@ -178,6 +178,36 @@ describe("Bindings", () => {
     expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
   });
 
+  it("finds at start-up a user's case-only rename of a file the engine moved aside, which is the user's move then (#802)", async () => {
+    const h = await synced("windows");
+    await h.engine.settled();
+    h.engine.dispose();
+    const state = await h.journal.getDocument("A");
+    if (state?.binding == null) throw new Error("no binding");
+    // As rule W's displace leaves it (design §4.1).
+    await h.journal.putDocument({ ...state, binding: { ...state.binding, displaced: true } });
+
+    await h.vault.rename("a.md", "A.md");
+    h.restart();
+
+    const found = await row(h, "A");
+    expect(found?.binding?.spelling).toBe("A.md");
+    expect(found?.binding?.displaced).toBeUndefined();
+  });
+
+  it("keeps at start-up the record that the engine moved a file it finds where it left it (#802)", async () => {
+    const h = await synced("windows");
+    await h.engine.settled();
+    h.engine.dispose();
+    const state = await h.journal.getDocument("A");
+    if (state?.binding == null) throw new Error("no binding");
+    await h.journal.putDocument({ ...state, binding: { ...state.binding, displaced: true } });
+
+    h.restart();
+
+    expect((await row(h, "A"))?.binding?.displaced).toBe(true);
+  });
+
   it("re-keys at start-up a binding recorded under another filesystem key than the platform's (#699)", async () => {
     // An Android journal from before its shared storage got a case-insensitive file key holds the spelling itself.
     const h = harness({ merge: "default", pathRules: { platform: "android" }, vault: new InMemoryVault({ pathRules: { platform: "android" } }) });

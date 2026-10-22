@@ -28,7 +28,7 @@ import { sha256Hex } from "../hash";
 import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
 import { kindValue } from "./remote";
-import { PropertyWorld, testDeviceId, withoutCopyNames, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import { files, harness, PropertyWorld, testDeviceId, withoutCopyNames, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
 import { uploadContent } from "./upload";
 
 declare module "vitest" {
@@ -224,7 +224,7 @@ function violations(world: PropertyWorld, property: PropertyId): string[] {
   return world.violations.filter((violation) => violation.property === property).map((violation) => `step ${String(violation.step)}: ${violation.message}`);
 }
 
-type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7" | "P8";
+type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7" | "P8" | "P9";
 
 /** The only error a property run may fail with: the property found what it checks for. */
 class PropertyViolation extends Error {
@@ -786,5 +786,103 @@ describe("P1 oracle (design §5.4)", () => {
     // A restore to the head changes nothing; the world records the forged create while the copy is still inode 1.
     await world.apply({ type: "restore", fraction: 1 });
     expect(violations(world, "P1")).toEqual([expect.stringMatching(/create of forged-new at .* from inode 1, bound to /)]);
+  });
+});
+
+/**
+ * One case of P9 (#802): how a document bound on its tombstone came to be
+ * bound away from the tombstone's path, before another device brings it
+ * back at `recreate`. `user`: the user moved its file to `target` before a
+ * remote delete was pulled. `engine`: the user edited it, the edit won over
+ * a remote delete, and another document then took its path, so rule W's
+ * `displace` moved the file aside to a copy name; with `renamed`, the user
+ * then moved that copy to `target`.
+ */
+interface PathMergeCase {
+  on: PathPlatform;
+  move: "user" | "engine";
+  target: string;
+  edited: boolean;
+  stepwise: boolean;
+  renamed: boolean;
+  recreate: string;
+}
+
+const bytes = (content: string) => new TextEncoder().encode(content);
+
+/**
+ * P9 path merge (PO-9; ruling on decision #52, #802): the user's rename of a
+ * document bound on its tombstone wins over a revision another device brings
+ * it back with, and the push commits the document at the user's name. A file
+ * the engine moved aside, and the user did not move since, is no user's
+ * rename: the document takes the server's path.
+ */
+const p9: Definition<PathMergeCase> = {
+  property: "P9",
+  cases: fc.record({
+    on: platform,
+    move: fc.constantFrom<"user" | "engine">("user", "engine"),
+    target: fc.constantFrom("A.md", "notes/m.md", "Moved note.md"),
+    edited: fc.boolean(),
+    stepwise: fc.boolean(),
+    renamed: fc.boolean(),
+    recreate: fc.constantFrom("s.md", "back.md", "notes/f.md"),
+  }),
+  check: async ({ on, move, target, edited, stepwise, renamed, recreate }) => {
+    const h = harness({ merge: "default", pathRules: { platform: on } });
+    h.server.commit({ documentId: "d", path: "s.md", content: "s\n" });
+    await h.engine.pull();
+    let recreatedAt = recreate;
+    let userMoved = move === "user";
+    if (move === "user") {
+      await h.vault.rename("s.md", target);
+      if (edited) await h.vault.write(target, bytes("s\nmine\n"));
+      await h.engine.settled();
+      h.server.commit({ documentId: "d", path: "s.md", deleted: true });
+      if (stepwise) await h.engine.pull();
+    } else {
+      h.server.commit({ documentId: "d", path: "s.md", deleted: true });
+      h.server.commit({ documentId: "other", path: "s.md", content: "other\n" });
+      await h.vault.write("s.md", bytes("s\nmine\n"));
+      await h.engine.settled();
+      await h.engine.pull();
+      // The other document holds s.md: the re-create goes elsewhere.
+      if (recreate === "s.md") recreatedAt = "back.md";
+      const copy = (await h.vault.list()).find((path) => withoutCopyNames(path) !== path);
+      if (copy === undefined) return ["rule W moved no file aside"];
+      if (renamed) {
+        await h.vault.rename(copy, target);
+        await h.engine.settled();
+        userMoved = true;
+      }
+    }
+    h.server.commit({ documentId: "d", path: recreatedAt, content: "back\n" });
+    await h.engine.pull();
+    for (let round = 0; round < 3; round++) await h.engine.push();
+    await h.engine.pull();
+
+    const found: string[] = [];
+    const expected = userMoved ? target : recreatedAt;
+    const at = [...h.server.liveDocuments()].find(([, documentId]) => documentId === "d")?.[0];
+    if (at !== expected) found.push(`document d (${move} move${renamed && move === "engine" ? ", then the user's" : ""}) is at ${String(at)} on the server, not ${expected}`);
+    const local = [...(await files(h.vault))].sort();
+    const live = [...h.server.liveFiles()].sort();
+    if (JSON.stringify(local) !== JSON.stringify(live)) found.push(`the vault ${JSON.stringify(local)} does not match the server ${JSON.stringify(live)}`);
+    if ((edited || move === "engine") && !live.some(([, content]) => content === "s\nmine\n")) found.push("the user's edit is lost");
+    return found;
+  },
+};
+
+describe("path merge property (design §9.3, PO-9)", () => {
+  // P9 path merge (#802): the user's unpushed rename of a document bound on its tombstone wins over another device's
+  // re-create; a file rule W's displace moved aside takes the server's path (decision #52 as amended), unless the user
+  // moved it since. Fixed cases: seed 100101's shape, seed 100039's displace on posix (Windows defers the
+  // unmaterializable path the seed used), and that displaced copy moved by the user.
+  it("P9: a document bound on its tombstone keeps the user's rename, and only the user's, against a re-create", { timeout }, async () => {
+    await holds<PathMergeCase>(p9, [
+      { on: "macos", move: "user", target: "A.md", edited: true, stepwise: false, renamed: false, recreate: "notes/f.md" },
+      { on: "posix", move: "engine", target: "A.md", edited: true, stepwise: false, renamed: false, recreate: "back.md" },
+      { on: "windows", move: "engine", target: "notes/m.md", edited: true, stepwise: false, renamed: true, recreate: "back.md" },
+    ]);
   });
 });

@@ -590,7 +590,30 @@ export const journalMigrations: readonly JournalMigration[] = [
       for (const intent of migrated.intents) intents.add(intent);
     };
   },
+  // Version 7: a binding records whether rule W's `displace` put the file
+  // at its spelling (Binding.displaced, design §4.1; #802). A journal
+  // before it did not record who moved a file, so every binding is taken
+  // for the engine's, which keeps the path merge of a document bound on
+  // its tombstone as it was (displacedBindings).
+  (transaction) => {
+    const documents = transaction.objectStore("documents");
+    // Read after the writes earlier migrations make in their own callbacks
+    // (v3, v4 derive bindings there), which an upgrade from before v4 runs
+    // in this transaction too: a request placed in this callback runs after
+    // them.
+    documents.count().onsuccess = () => {
+      const states = documents.getAll();
+      states.onsuccess = () => {
+        for (const state of displacedBindings(states.result as DocumentState[])) documents.put(state);
+      };
+    };
+  },
 ];
+
+/** The rows of journal v7 that change from v6: every bound document, its binding marked `displaced` (design §4.1; #802). */
+export function displacedBindings(documents: readonly DocumentState[]): DocumentState[] {
+  return documents.flatMap((state) => (state.binding === undefined || state.binding === null || state.binding.displaced === true ? [] : [{ ...state, binding: { ...state.binding, displaced: true } }]));
+}
 
 /** A deferral as journals before v6 may hold it: with the `merging` marker of a merge being written. */
 type LegacyDeferredRevision = DeferredRevision & { merging?: { path: string; contentHash: string | null } };
