@@ -42,10 +42,15 @@ describe.each(["posix", "macos", "windows"] as const)("a local move into a just-
     await h.engine.pull();
 
     await h.vault.rename("notes/b.md", target);
+    // On Windows and macOS the folder notes/ stays on disk when the note
+    // leaves it, so a rename to Notes/z.md lands in it as notes/z.md, and
+    // that is the user's rename (#659).
+    const renamed = platform === "posix" ? target : target.replace(/^Notes\//, "notes/");
+    expect([...(await files(h.vault)).keys()]).toEqual([renamed]);
     h.server.commit({ documentId: "B", path: "NOTES/b.md" });
     await h.engine.push();
 
-    expect(h.server.liveDocuments()).toEqual(new Map([[target, "B"]]));
+    expect(h.server.liveDocuments()).toEqual(new Map([[renamed, "B"]]));
     expect(await files(h.vault)).toEqual(h.server.liveFiles());
     expect(await h.engine.push()).toEqual(quiet);
   });

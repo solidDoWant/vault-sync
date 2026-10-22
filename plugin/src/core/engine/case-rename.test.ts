@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { files, harness } from "./testing";
+import { byFolderCase, files, harness } from "./testing";
 
 // A case-only rename on a case-insensitive platform (#304): the user's rename
 // is a local change like any other, so a pull never undoes it (SPEC.md §2,
@@ -55,7 +55,9 @@ describe.each(["windows", "macos"] as const)("a case-only rename on %s (#304)", 
     await h.vault.rename("Notes/C.md", "notes/c.md");
     await h.engine.push();
 
-    expect([...h.server.liveFiles()]).toEqual([["notes/c.md", "new\n"]]);
+    // The folder keeps the spelling it has on disk, so the rename respells
+    // the file's own name only (#659).
+    expect([...h.server.liveFiles()]).toEqual([["Notes/c.md", "new\n"]]);
     expect(h.server.revisionCount).toBe(1);
     expect(await files(h.vault)).toEqual(h.server.liveFiles());
     expect(await h.engine.push()).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
@@ -80,13 +82,14 @@ describe.each(["windows", "macos"] as const)("a remote case-only rename of a loc
 
     expect(h.server.liveDocuments()).toEqual(new Map([["notes/c.md", "note"]]));
     expect(h.server.liveFiles()).toEqual(new Map([["notes/c.md", "c\nlocal edit\n"]]));
-    expect(await files(h.vault)).toEqual(new Map([["notes/c.md", "c\nlocal edit\n"]]));
+    // The folder keeps the spelling it has on disk (INV-9, #737, #659).
+    expect(await files(h.vault)).toEqual(new Map([["Notes/c.md", "c\nlocal edit\n"]]));
     expect(await h.journal.getDeferred("note")).toBeUndefined();
     expect(await h.journal.listPending()).toEqual([]);
 
     // Quiet: nothing more to push, and the vault still matches the server.
     expect(await h.engine.push()).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
-    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    expect(byFolderCase(await files(h.vault))).toEqual(byFolderCase(h.server.liveFiles()));
   });
 
   it.each([
@@ -110,15 +113,16 @@ describe.each(["windows", "macos"] as const)("a remote case-only rename of a loc
 
     expect(h.server.liveDocuments()).toEqual(new Map([["notes/c.md", "note"]]));
     expect(h.server.liveFiles()).toEqual(new Map([["notes/c.md", mergedContent]]));
-    // One file, at the new spelling: no conflict copy.
-    expect(await files(h.vault)).toEqual(new Map([["notes/c.md", mergedContent]]));
+    // One file, at the new spelling of its name, in its folder as the disk
+    // spells it: no conflict copy.
+    expect(await files(h.vault)).toEqual(new Map([["Notes/c.md", mergedContent]]));
     expect(await h.journal.getDeferred("note")).toBeUndefined();
     expect(await h.journal.listPending()).toEqual([]);
 
     // Quiet: nothing more to pull or push, and the vault still matches the server.
     await h.engine.pull();
     expect(await h.engine.push()).toEqual({ committed: 0, conflicts: 0, pending: 0, rejected: [] });
-    expect(await files(h.vault)).toEqual(h.server.liveFiles());
+    expect(byFolderCase(await files(h.vault))).toEqual(byFolderCase(h.server.liveFiles()));
   });
 });
 

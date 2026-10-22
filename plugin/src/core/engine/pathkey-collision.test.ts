@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import { pathKey } from "../pathkey/pathkey";
 import type { PushSummary } from "./engine";
 import { threeWayMerge, type MergeHook } from "./merge";
-import { copyOf, files, harness, moveHeadBeforeCommit, type Harness } from "./testing";
+import { byFolderCase, copyOf, files, harness, moveHeadBeforeCommit, type Harness } from "./testing";
 
 // Collisions by path key (SPEC.md §5, §6.3, §7): the server refuses a
 // document whose path equals another live document's ignoring case and
@@ -16,10 +16,15 @@ import { copyOf, files, harness, moveHeadBeforeCommit, type Harness } from "./te
 const encoder = new TextEncoder();
 const bytes = (value: string) => encoder.encode(value);
 
-/** Pairs of paths the server takes for one: by case, and by full case folding (ß folds to ss). */
+/**
+ * Pairs of paths the server takes for one: by case, and by full case folding
+ * (ß folds to ss). `held` is where the vault holds the remote document once
+ * the local file has made its folder: a folder has one spelling on disk, so
+ * notes/c.md is held in Notes/ (INV-9, #737, #659).
+ */
 const collisions = [
-  { local: "Notes/C.md", remote: "notes/c.md" },
-  { local: "straße.md", remote: "STRASSE.md" },
+  { local: "Notes/C.md", remote: "notes/c.md", held: "Notes/c.md" },
+  { local: "straße.md", remote: "STRASSE.md", held: "STRASSE.md" },
 ] as const;
 
 /** The live documents, by path, that are not `documentId`: what the local version became. */
@@ -45,7 +50,9 @@ async function expectRemoteKept(h: Harness, remotePath: string, summaries: PushS
   expect(h.server.liveDocuments().get(remotePath)).toBe("theirs");
   // Never deleted, moved or overwritten: its only revision is the other device's.
   expect(h.server.history("theirs")).toHaveLength(1);
-  expect(await files(h.vault)).toEqual(h.server.liveFiles());
+  // A folder has one spelling on disk, so the vault may hold the server's
+  // notes/c.md in the Notes/ folder the local file made (INV-9, #737, #659).
+  expect(byFolderCase(await files(h.vault))).toEqual(byFolderCase(h.server.liveFiles()));
   expect(await h.journal.listPending()).toEqual([]);
   expect(await h.journal.listDeferred()).toEqual([]);
   expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
@@ -58,7 +65,7 @@ async function expectRemoteKept(h: Harness, remotePath: string, summaries: PushS
 describe("SyncEngine collisions by path key", () => {
   describe("on a case-insensitive platform, given a local file that collides with another device's document (#242)", () => {
     for (const platform of ["macos", "windows"] as const) {
-      for (const { local, remote } of collisions) {
+      for (const { local, remote, held } of collisions) {
         it(`keeps the other device's document at ${remote} when a create at ${local} is refused (${platform})`, async () => {
           const h = harness({ merge: "default", pathRules: { platform } });
           await h.vault.write(local, bytes("mine\n"));
@@ -158,13 +165,13 @@ describe("SyncEngine collisions by path key", () => {
           expect(h.server.liveFiles()).toEqual(new Map([[remote, "edited\n"]]));
           expect(h.server.liveDocuments().get(remote)).toBe("theirs");
           expect(h.server.history("theirs").map((revision) => revision.deleted)).toEqual([false, false]);
-          expect(await files(h.vault)).toEqual(h.server.liveFiles());
+          expect(byFolderCase(await files(h.vault))).toEqual(byFolderCase(h.server.liveFiles()));
           expect(await h.journal.listPending()).toEqual([]);
           expect(await h.journal.listDeferred()).toEqual([]);
           expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
           expect(h.localChanges).toEqual([
             { type: "create", path: local },
-            { type: "modify", path: remote },
+            { type: "modify", path: held },
           ]);
         });
 
@@ -191,7 +198,7 @@ describe("SyncEngine collisions by path key", () => {
           expect(h.server.liveFiles()).toEqual(new Map([[remote, "edited\n"]]));
           expect(h.server.liveDocuments().get(remote)).toBe("theirs");
           expect(h.server.history("theirs").map((revision) => revision.deleted)).toEqual([false, false]);
-          expect(await files(h.vault)).toEqual(h.server.liveFiles());
+          expect(byFolderCase(await files(h.vault))).toEqual(byFolderCase(h.server.liveFiles()));
           expect(await h.journal.listPending()).toEqual([]);
           expect(summaries.flatMap((summary) => summary.rejected)).toEqual([]);
           expect(summaries.at(-1)).toMatchObject({ committed: 0, conflicts: 0, pending: 0 });

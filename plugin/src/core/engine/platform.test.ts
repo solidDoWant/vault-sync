@@ -268,10 +268,12 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
     describe.each([
       { name: "its folder", kept: "Notes/plan.md", other: "NOTES", copy: /^Notes \(conflict .*\)\/plan\.md$/ },
       { name: "its folder under the same spelling", kept: "Notes/plan.md", other: "Notes", copy: /^Notes \(conflict .*\)\/plan\.md$/ },
-      { name: "a folder of its folder", kept: "a/Notes/plan.md", other: "A/NOTES", copy: /^a\/Notes \(conflict .*\)\/plan\.md$/ },
+      // `held`: where the vault holds `other`, if not at `other`: in the
+      // folder `a/` already on disk, since a folder has one spelling (#659).
+      { name: "a folder of its folder", kept: "a/Notes/plan.md", other: "A/NOTES", held: "a/NOTES", copy: /^a\/Notes \(conflict .*\)\/plan\.md$/ },
       { name: "a path under it", kept: "notes", other: "NOTES/d.md", copy: /^notes \(conflict .*\)$/ },
-      { name: "a path deep under its folder", kept: "a/notes", other: "A/NOTES/sub/d.md", copy: /^a\/notes \(conflict .*\)$/ },
-    ])("when the server puts another document at $name", ({ kept, other, copy }) => {
+      { name: "a path deep under its folder", kept: "a/notes", other: "A/NOTES/sub/d.md", held: "a/NOTES/sub/d.md", copy: /^a\/notes \(conflict .*\)$/ },
+    ])("when the server puts another document at $name", ({ kept, other, held = other, copy }) => {
       async function occupied(restart = false) {
         const h = windowsDevice();
         h.server.commit({ documentId: "doc", path: kept, content: "one\ntwo\n" });
@@ -295,8 +297,8 @@ describe("SyncEngine platform path rules (SPEC.md §8)", () => {
         const h = await occupied(restart);
 
         const vault = await files(h.vault);
-        expect(vault.get(other)).toBe("another note\n");
-        const copies = [...vault].filter(([path]) => path !== other);
+        expect(vault.get(held)).toBe("another note\n");
+        const copies = [...vault].filter(([path]) => path !== held);
         expect(copies).toEqual([[expect.stringMatching(copy), "one (edited)\ntwo\n"]]);
         const live = h.server.liveFiles();
         expect(live.get(other)).toBe("another note\n");
