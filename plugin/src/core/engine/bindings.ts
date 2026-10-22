@@ -60,7 +60,12 @@ export class Bindings {
   /** How many rounds are running, and the document rows they read (round). */
   private rounds = 0;
   private snapshot: Map<string, DocumentState> | undefined;
-  /** The documents the scan unbound for a file missing at their binding's file key (see renamed). */
+  /**
+   * The documents the scan unbound for a file missing at their binding's
+   * file key: the file there before the scan, which a rename event during
+   * the scan may have moved (see renamed). An event that puts another file
+   * at the key (appeared, renamed) ends the entry.
+   */
   private readonly missing = new Map<string, { documentId: string; seen: string }>();
   /** The documents the scan's content match bound to another file, by that file's key, with the key of the file it found missing (see renamed, deleted). */
   private readonly matched = new Map<string, { documentId: string; from: string }>();
@@ -203,13 +208,16 @@ export class Bindings {
   renamed(from: string, to: string, duringScan = false): Promise<void> {
     // The scan reads the disk after events it races with: a file it found
     // missing may be one that a rename made while it ran (`duringScan`, as
-    // the event arrived) moved, which keeps its document's binding (the
-    // vault moves only an existing file).
+    // the event arrived) moved. The vault moves only an existing file, and
+    // no event put another one at `from` since the scan began (missing), so
+    // it is the document's own file, whatever its content (E1, PO-1, #758).
     const early = duringScan;
     return this.serialize(async () => {
       const key = this.space.filesystemKey(from);
       const missing = early ? this.missing.get(key) : undefined;
       this.missing.delete(key);
+      // The file now at `to` is another one than any the scan found missing there.
+      this.missing.delete(this.space.filesystemKey(to));
       // The scan's content match already followed this rename: its document is bound at `to`.
       const followed = early ? this.matched.get(this.space.filesystemKey(to)) : undefined;
       if (followed !== undefined && followed.from === key) {
@@ -221,10 +229,10 @@ export class Bindings {
       // lowest id, keeps it; the others are released, not user-deleted, as
       // the user deleted nothing (C1, #641).
       const [found, ...duplicates] = await this.journal.documentsByFileKey(key);
-      // Only the document's own file, with the content the scan expected
-      // there: a new file the user made at the old path and moved away is
-      // another one (PO-1, INV-3), which leaves the document deleted.
-      const lost = found === undefined && missing !== undefined && (await this.holds(to, missing.seen)) ? await this.journal.getDocument(missing.documentId) : undefined;
+      // A new file the user made at the old path, or moved there, and moved
+      // away is another one (PO-1, INV-3): its event ended `missing`, which
+      // leaves the document deleted.
+      const lost = found === undefined && missing !== undefined ? await this.journal.getDocument(missing.documentId) : undefined;
       const moved = found ?? (lost === undefined || lost.binding !== null ? undefined : { ...lost, binding: { spelling: from, fileKey: key, seen: missing?.seen ?? lost.baseHash } });
       const changes = this.space.oneFile(from, to) ? [] : await this.unbindOthers(moved?.documentId, to, "user-deleted");
       changes.push(...duplicates.map((other) => ({ ...other, ...unbound("released") })));
@@ -249,6 +257,18 @@ export class Bindings {
       this.matched.delete(key);
       const changes = await this.unbindOthers(undefined, path, by === "user" ? "user-deleted" : "released");
       if (changes.length > 0) await this.write({ putDocuments: changes });
+    });
+  }
+
+  /**
+   * A file was created at `path` (E5): an untracked file, which changes no
+   * binding. It is not the file the scan found missing at its key, so a
+   * later rename of it is not that document's (renamed, #671).
+   */
+  appeared(path: string): Promise<void> {
+    return this.serialize(() => {
+      this.missing.delete(this.space.filesystemKey(path));
+      return Promise.resolve();
     });
   }
 
@@ -508,16 +528,6 @@ export class Bindings {
     const listed = await this.vault.list();
     if (!listed.includes(kept.spelling) || listed.includes(written.spelling) || (await this.vault.stat(written.spelling)) === null) return written;
     return { ...kept, seen: written.seen };
-  }
-
-  /** Whether the vault's file at `path` has content `seen`. */
-  private async holds(path: string, seen: string): Promise<boolean> {
-    try {
-      return sha256Hex(await this.vault.read(path)) === seen;
-    } catch (error) {
-      if (isVaultError(error)) return false;
-      throw error;
-    }
   }
 
   private bound(spelling: string, seen: string): Binding {

@@ -2472,13 +2472,14 @@ export class SyncEngine {
     await this.bindings.deleted(path, "engine");
   }
 
-  /** Records a user's rename or delete as its binding transition (E1–E3), before the event counts as handled (PO-2). */
+  /** Records a user's rename, delete or create as its binding transition (E1–E3, E5), before the event counts as handled (PO-2). */
   private async transition(event: VaultEvent, duringScan: boolean): Promise<void> {
     // A transition that fails stops event handling (later events wait
     // behind it and every push rejects with its error) until a restart,
     // whose scan reconciles bindings with the disk (PO-3).
     if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path, duringScan);
     else if (event.type === "delete") await this.bindings.deleted(event.path, "user", duringScan);
+    else if (event.type === "create") await this.bindings.appeared(event.path);
   }
 
   private async readOrNull(path: string): Promise<Uint8Array | null> {
