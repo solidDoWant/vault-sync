@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { sha256Hex } from "../hash";
-import type { FileStat, VaultAdapter, VaultListener, WritePrecondition, DeletePrecondition } from "../vault/adapter";
+import type { FileStat, VaultAdapter, VaultEvent, VaultListener, WritePrecondition, DeletePrecondition } from "../vault/adapter";
 import { harness } from "./testing";
 
 const bytes = (value: string) => new TextEncoder().encode(value);
@@ -123,5 +123,114 @@ describe("a known document whose file the user moves onto a revision's path duri
     expect(new Set(h.server.liveDocuments().values())).toEqual(new Set(["R", "K1", "K2", "K3"]));
     expect(await h.journal.getDeferred("R")).toBeUndefined();
     expect(await h.journal.listPending()).toEqual([]);
+  });
+});
+
+/**
+ * A vault whose file watcher reports late, as Obsidian's may: from hold()
+ * on, it holds back vault events until the next stat of the armed path,
+ * after the armed change ran right before a read of that path. The first
+ * held event, an echo of the engine's own write, is slow to check: a read
+ * of its path waits a timer, so the events after it (the user's rename) are
+ * received but not classified yet when the engine looks at the bindings.
+ */
+class LateRenameVault implements VaultAdapter {
+  private armed: { path: string; change: () => Promise<void> } | undefined;
+  private releaseAt: string | undefined;
+  private holding = false;
+  private slowPath: string | undefined;
+  private held: VaultEvent[] = [];
+  private readonly listeners = new Set<VaultListener>();
+  constructor(readonly inner: VaultAdapter) {
+    inner.watch((event) => {
+      if (this.holding) this.held.push(event);
+      else for (const listener of this.listeners) listener(event);
+    });
+  }
+  hold(): void {
+    this.holding = true;
+  }
+  beforeNextRead(path: string, change: () => Promise<void>): void {
+    this.armed = { path, change };
+  }
+  list(): Promise<string[]> {
+    return this.inner.list();
+  }
+  async read(path: string): Promise<Uint8Array> {
+    if (path === this.slowPath) await new Promise((resolve) => setTimeout(resolve, 0));
+    const armed = this.armed;
+    if (armed !== undefined && armed.path === path) {
+      this.armed = undefined;
+      this.releaseAt = path;
+      await armed.change();
+    }
+    return this.inner.read(path);
+  }
+  stat(path: string): Promise<FileStat | null> {
+    if (this.releaseAt === path) {
+      this.releaseAt = undefined;
+      this.holding = false;
+      const events = this.held;
+      this.held = [];
+      this.slowPath = events[0]?.path;
+      for (const event of events) for (const listener of this.listeners) listener(event);
+    }
+    return this.inner.stat(path);
+  }
+  watch(listener: VaultListener): () => void {
+    const subscription: VaultListener = (event) => {
+      listener(event);
+    };
+    this.listeners.add(subscription);
+    return () => {
+      this.listeners.delete(subscription);
+    };
+  }
+  write(path: string, data: Uint8Array, precondition?: WritePrecondition): Promise<void> {
+    return this.inner.write(path, data, precondition);
+  }
+  rename(from: string, to: string): Promise<void> {
+    return this.inner.rename(from, to);
+  }
+  delete(path: string, precondition?: DeletePrecondition): Promise<void> {
+    return this.inner.delete(path, precondition);
+  }
+}
+
+// The holder check classifies every vault event received so far before it
+// looks at the bindings (PO-2): a watcher may report the user's rename (E1)
+// only after the engine has inspected the file and is about to look again,
+// and the file it moved is still its document's (PO-1, #773).
+
+describe("a known document whose file the user moves onto a revision's path, reported late by the vault", () => {
+  it("keeps its file under its own id, displaced by rule W(a); the revision materializes at its path", async () => {
+    let late: LateRenameVault | undefined;
+    const h = harness({ merge: "default", wrapVault: (vault) => (late = new LateRenameVault(vault)) });
+    if (late === undefined) throw new Error("no vault");
+    // The vault reports nothing until the engine looks at p.md after the
+    // user's move, the echo of the engine's write of K's file first.
+    late.hold();
+    h.server.commit({ documentId: "K", path: "k.md", content: "same" });
+    await h.engine.pull();
+    await h.engine.settled();
+    h.server.commit({ documentId: "R", path: "p.md", content: "same" });
+    // While the pull downloads R, the user moves K's file onto R's path.
+    late.beforeNextRead("p.md", () => h.vault.rename("k.md", "p.md"));
+
+    await h.engine.pull();
+    await h.engine.settled();
+
+    // K stays bound to its file, which rule W moved on to a copy name; R is not given K's file.
+    const spelling = (await h.journal.getDocument("K"))?.binding?.spelling ?? "";
+    expect(spelling).toMatch(/^p \(conflict .*\)\.md$/);
+    expect((await h.journal.getDocument("R"))?.binding?.spelling).toBe("p.md");
+
+    await h.engine.push();
+    await h.engine.settled();
+
+    expect(h.server.liveDocuments()).toEqual(new Map([["p.md", "R"], [spelling, "K"]]));
+    expect(h.server.liveFiles()).toEqual(new Map([["p.md", "same"], [spelling, "same"]]));
+    expect(await h.journal.listPending()).toEqual([]);
+    expect([...(await h.vault.list())].sort()).toEqual(["p.md", spelling].sort());
   });
 });
