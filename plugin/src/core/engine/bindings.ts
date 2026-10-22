@@ -1,7 +1,8 @@
-import { priorRevisionLimit, releasedRows, type Absence, type Binding, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
+import { priorRevisionLimit, releasedRows, type Absence, type Binding, type DocumentKindName, type DocumentState, type Journal, type JournalChanges, type PendingOperation } from "../journal/journal";
 import { sha256Hex } from "../hash";
 import { isVaultError, type VaultAdapter } from "../vault/adapter";
 import type { PathSpace } from "./pathspace";
+import { classifyByExtension } from "./remote";
 
 /**
  * What an engine write of a document's state did to its local file, which
@@ -36,13 +37,13 @@ export type BindingChange =
   | { kind: "kept" };
 
 type BindingsJournal = Pick<Journal, "getDocument" | "listDocuments" | "listPending" | "listDeferred" | "documentsByFileKey" | "transact">;
-type BindingsVault = Pick<VaultAdapter, "stat" | "list" | "read">;
+type BindingsVault = Pick<VaultAdapter, "stat" | "list" | "read" | "isSynced">;
 
 /**
  * The owner of every document's `binding` and `absence` (design §4.1, §9.1):
  * which local file is the document on this device. It maintains bindings
  * from vault events (E1–E5), from the engine's own changes and from the
- * start-up scan (E7, without the content match of R11). Since refactor step
+ * start-up scan (E7, with its content match since refactor step R11). Since refactor step
  * R7 the engine decides which file is a document's by them alone (PO-1).
  *
  * Every write of a document row goes through here, one at a time, and reads
@@ -61,11 +62,15 @@ export class Bindings {
   private snapshot: Map<string, DocumentState> | undefined;
   /** The documents the scan unbound for a file missing at their binding's file key (see renamed). */
   private readonly missing = new Map<string, { documentId: string; seen: string }>();
+  /** The documents the scan's content match bound to another file, by that file's key, with the key of the file it found missing (see renamed, deleted). */
+  private readonly matched = new Map<string, { documentId: string; from: string }>();
 
   constructor(
     private readonly journal: BindingsJournal,
     private readonly vault: BindingsVault,
     private readonly space: PathSpace,
+    /** The kind of a file, by path, as the push classifies a new document (E7 matches only a file of the document's kind). */
+    private readonly classify: (path: string) => DocumentKindName = classifyByExtension,
   ) {
     // The start-up scan runs before any event's transition, since events
     // lost to a crash or made while the app was closed are only seen there.
@@ -205,6 +210,12 @@ export class Bindings {
       const key = this.space.filesystemKey(from);
       const missing = early ? this.missing.get(key) : undefined;
       this.missing.delete(key);
+      // The scan's content match already followed this rename: its document is bound at `to`.
+      const followed = early ? this.matched.get(this.space.filesystemKey(to)) : undefined;
+      if (followed !== undefined && followed.from === key) {
+        this.matched.delete(this.space.filesystemKey(to));
+        return;
+      }
       // Every row at the key: a v2 journal's migration may have bound several
       // documents to the file (indexeddb.ts deriveV3Records). The first, the
       // lowest id, keeps it; the others are released, not user-deleted, as
@@ -227,8 +238,15 @@ export class Bindings {
    * the document `user-deleted`, or by the engine, which gives the file up
    * (`released`) unless the write that follows says otherwise.
    */
-  deleted(path: string, by: "user" | "engine"): Promise<void> {
+  deleted(path: string, by: "user" | "engine", duringScan = false): Promise<void> {
     return this.serialize(async () => {
+      // A file the scan's content match bound a document to, still there:
+      // the delete was of the file there before it (E7b's other document's,
+      // which the vault removed before the rename that put this file there).
+      const key = this.space.filesystemKey(path);
+      const followed = duringScan ? this.matched.get(key) : undefined;
+      if (followed !== undefined && (await this.vault.stat(path)) !== null) return;
+      this.matched.delete(key);
       const changes = await this.unbindOthers(undefined, path, by === "user" ? "user-deleted" : "released");
       if (changes.length > 0) await this.write({ putDocuments: changes });
     });
@@ -261,9 +279,11 @@ export class Bindings {
   }
 
   /**
-   * E7 without the content match (refactor step R11): a document bound to a
-   * file the vault no longer has was deleted while the app was not
-   * watching. A row without a recorded binding gets one derived from its
+   * E7: a document bound to a file the vault no longer has was renamed or
+   * deleted while the app was not watching (or by a change whose event a
+   * kill lost). Its binding moves to the one file that holds its `seen`
+   * content, when the content match is unique (contentMatch); otherwise
+   * the document is `user-deleted`. A row without a recorded binding gets one derived from its
    * base, as the v3 migration derives it (indexeddb.ts deriveV3Records),
    * and a create pending without a row (recorded before refactor step R5)
    * gets the row `created` writes.
@@ -288,6 +308,8 @@ export class Bindings {
     // respelled while the app was not watching: the binding takes the
     // vault's spelling, as a rename event (E1) would have given it.
     const listed = this.space.rules.platform === "posix" ? [] : await this.vault.list();
+    const lost = new Map<string, Binding>();
+    const scanned: DocumentState[] = [];
     for (const state of documents) {
       let binding = state.binding;
       let absence = state.absence ?? null;
@@ -300,7 +322,7 @@ export class Bindings {
       // the platform's, or documentByFileKey would not find it.
       if (binding !== null && binding.fileKey !== this.space.filesystemKey(binding.spelling)) binding = { ...binding, fileKey: this.space.filesystemKey(binding.spelling) };
       if (binding !== null && (await this.vault.stat(binding.spelling)) === null) {
-        this.missing.set(binding.fileKey, { documentId: state.documentId, seen: binding.seen });
+        lost.set(state.documentId, binding);
         binding = null;
         absence = "user-deleted";
       }
@@ -314,9 +336,96 @@ export class Bindings {
         // folder's disk spelling for the user's rename.
         if (spellings.length === 1 && spellings[0] !== undefined && !this.space.sameButFolderSpelling(spellings[0], binding.spelling)) binding = { spelling: spellings[0], fileKey: binding.fileKey, seen: binding.seen };
       }
-      if (binding !== state.binding || absence !== (state.absence ?? null)) changes.set(state.documentId, { ...state, binding, absence });
+      scanned.push({ ...state, binding, absence });
+    }
+    const transferred = lost.size === 0 ? new Map<string, Binding | null>() : await this.contentMatch(scanned, lost);
+    const read = new Map(documents.map((state) => [state.documentId, state]));
+    for (const state of scanned) {
+      const before = read.get(state.documentId);
+      const binding = transferred.has(state.documentId) ? (transferred.get(state.documentId) ?? null) : state.binding;
+      const absence = binding === null ? (state.absence ?? "user-deleted") : null;
+      const missing = binding === null ? lost.get(state.documentId) : undefined;
+      if (missing !== undefined) this.missing.set(missing.fileKey, { documentId: state.documentId, seen: missing.seen });
+      if (before !== undefined && (binding !== before.binding || absence !== (before.absence ?? null))) changes.set(state.documentId, { ...state, binding, absence });
     }
     if (changes.size > 0) await this.write({ putDocuments: [...changes.values()] });
+  }
+
+  /**
+   * E7's content match (decision 4, design §4.3): the new binding of each
+   * document whose bound file the scan found missing (`lost`, its binding
+   * then), and null for each document whose file such a match took. A
+   * missing document takes the file that holds its `seen` content, of its
+   * kind, in the vault's scope, when that match is one-to-one: exactly one
+   * such file, and no other missing document with that content. The file
+   * is untracked, or (E7b) bound to another document but holding that
+   * content and not its own `seen`: the vault moves nothing onto an
+   * existing file, so that document's own file was gone, and it is
+   * `user-deleted` (PO-1, PO-3; #793). It may then take another file
+   * itself (a rename chain), until no match is left. Two identical files
+   * match nothing: they stay a delete plus a create.
+   */
+  private async contentMatch(scanned: readonly DocumentState[], lost: ReadonlyMap<string, Binding>): Promise<Map<string, Binding | null>> {
+    const kinds = new Map(scanned.map((state) => [state.documentId, state.kind]));
+    const bindings = new Map(scanned.flatMap((state) => (state.binding == null ? [] : [[state.documentId, state.binding] as const])));
+    const missing = new Map(lost);
+    const result = new Map<string, Binding | null>();
+    const hashes = new Map<string, string | null>();
+    const hashOf = async (path: string): Promise<string | null> => {
+      if (!hashes.has(path)) hashes.set(path, await this.hashAt(path));
+      return hashes.get(path) ?? null;
+    };
+    const listed = (await this.vault.list()).filter((path) => this.vault.isSynced?.(path) ?? true);
+    // A file a match bound is never a candidate again, so each round that moves a binding takes a file for good, and the rounds end.
+    const assigned = new Set<string>();
+    for (;;) {
+      const owners = new Map([...bindings].map(([documentId, binding]) => [binding.fileKey, documentId]));
+      // Every file that may be a missing document's: untracked, or bound to a document whose content it no longer holds.
+      const candidates: { path: string; hash: string; owner: string | undefined }[] = [];
+      for (const path of listed) {
+        if (assigned.has(path)) continue;
+        const owner = owners.get(this.space.filesystemKey(path));
+        const hash = await hashOf(path);
+        if (hash === null) continue;
+        if (owner !== undefined && (bindings.get(owner)?.seen === hash || bindings.get(owner)?.spelling !== path)) continue;
+        candidates.push({ path, hash, owner });
+      }
+      const moves: { documentId: string; candidate: (typeof candidates)[number] }[] = [];
+      for (const [documentId, binding] of missing) {
+        const kind = kinds.get(documentId);
+        const files = candidates.filter((candidate) => candidate.hash === binding.seen && this.classify(candidate.path) === kind);
+        const rivals = [...missing].filter(([other, otherBinding]) => otherBinding.seen === binding.seen && kinds.get(other) === kind);
+        const [file] = files;
+        if (files.length === 1 && rivals.length === 1 && file !== undefined) moves.push({ documentId, candidate: file });
+      }
+      if (moves.length === 0) break;
+      for (const { documentId, candidate } of moves) {
+        const before = missing.get(documentId);
+        if (before === undefined) continue;
+        const binding = { spelling: candidate.path, fileKey: this.space.filesystemKey(candidate.path), seen: before.seen };
+        assigned.add(candidate.path);
+        missing.delete(documentId);
+        bindings.set(documentId, binding);
+        result.set(documentId, binding);
+        this.matched.set(binding.fileKey, { documentId, from: before.fileKey });
+        if (candidate.owner === undefined) continue;
+        const taken = bindings.get(candidate.owner);
+        bindings.delete(candidate.owner);
+        result.set(candidate.owner, null);
+        if (taken !== undefined) missing.set(candidate.owner, taken);
+      }
+    }
+    return result;
+  }
+
+  /** The content hash of the vault's file at `path`, or null if it has none there. */
+  private async hashAt(path: string): Promise<string | null> {
+    try {
+      return sha256Hex(await this.vault.read(path));
+    } catch (error) {
+      if (isVaultError(error)) return null;
+      throw error;
+    }
   }
 
   /** The row of a create not acknowledged yet: no base, bound to the file the create reads. */

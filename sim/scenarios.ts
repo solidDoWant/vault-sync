@@ -1569,22 +1569,22 @@ export interface LostRenameResult extends KnownHeldPathResult {
 /**
  * A rename lost to a crash, against a concurrent edit (#280, #167 item 2).
  * Both engines sync `note.md`. The second engine's user renames it to
- * `moved.md` while the app is killed, so the engine never records the rename, and
- * its next push (a full scan) sees a missing file and a new one: a delete of
- * the note plus a new document at `moved.md`. Meanwhile the first engine's
- * user edits the note and pushes, before (`editor-first`) or after
- * (`renamer-first`) that delete reaches the server. The edit must never be
- * lost to the delete (SPEC.md §2 principle 1, §7: an edit wins over a
- * concurrent delete): the note stays live at `note.md` with the edit in both
- * vaults, and `moved.md` holds the renamed content.
+ * `moved.md` while the app is killed, so the engine never records the
+ * rename. Its start-up scan finds the note's file missing and `moved.md`
+ * holding exactly the note's content, and takes it for the note's file
+ * (design §4.3 E7, decision 4; refactor step R11): the push commits a
+ * rename. Meanwhile the first engine's user edits the note and pushes,
+ * before (`editor-first`) or after (`renamer-first`) the rename reaches the
+ * server. The edit must never be lost (SPEC.md §2 principle 1): the note
+ * ends at `moved.md` under its own id, with the edit (a local rename wins,
+ * §7).
  *
  * With `deleted-note-path`, both engines also sync a second note at
  * `moved.md`, and the second engine's user deletes that file just before the
- * rename, so the crash loses the delete too. The restarted engine's full scan
- * then sees `moved.md` changed, and takes the renamed content for an edit of
- * the deleted note (#254 after a crash): the lost rename lands on the deleted
- * note's id, and the renamed-away note gets the delete. The first engine's
- * edit of the renamed-away note must survive that delete just the same.
+ * rename, so the crash loses the delete too. The restarted engine's scan
+ * finds `moved.md` holding the renamed note's content and not the second
+ * note's own (E7b, #793): the renamed note keeps its id at `moved.md`, and
+ * the second note is deleted.
  */
 export async function renameLostToCrash(endpoints: SimEndpoints, order: "editor-first" | "renamer-first", variant: "free-path" | "deleted-note-path" = "free-path"): Promise<LostRenameResult> {
   const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
