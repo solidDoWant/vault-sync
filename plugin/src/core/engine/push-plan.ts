@@ -161,7 +161,9 @@ export async function planPush(
         !source.inScope(state.path)
       )
         continue;
-      if (busyDocuments.has(state.documentId) || busyPaths.has(state.path)) {
+      // A delete waits for its own busy state only: it leaves its synced
+      // path, so no busy path is its claim (waits, #862).
+      if (busyDocuments.has(state.documentId)) {
         wait(state.path);
         continue;
       }
@@ -398,6 +400,17 @@ export function busyClaims(documents: readonly DocumentState[], deferred: readon
     if (spelling !== undefined) busy.paths.add(spelling);
   }
   return busy;
+}
+
+/**
+ * Whether an outbox operation waits (design §6.2, #847, #862): for its
+ * document's busy state, or for a busy path it claims. A live revision
+ * claims its path; a tombstone claims none, since a delete leaves its path,
+ * so a blocked document's file kept there never holds it off the server
+ * (PO-11, INV-8).
+ */
+export function waits(busy: Busy, operation: PendingOperation): boolean {
+  return busy.documents.has(operation.documentId) || (!operation.deleted && busy.paths.has(operation.path));
 }
 
 /** A new revision of a known document: `content` at `path`, or a tombstone (null). */

@@ -18,7 +18,7 @@ import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { boundLocalChange, mergePath, ownMovedCreate, ruleW } from "./decide";
 import { Intents } from "./intents";
-import { busyClaims, lost, planPush, type Busy, type DirtyPaths } from "./push-plan";
+import { busyClaims, lost, planPush, waits, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
@@ -706,6 +706,8 @@ export class SyncEngine {
       await this.retryDeferred(deferred);
     }
     const listed = await this.journal.listDeferred();
+    // The claims scan reads every document: only a pull with an alias deferral needs it.
+    if (!listed.some((deferred) => deferred.reason === "unmaterializable" && deferred.unmaterializable === "alias")) return;
     const aliased = await this.aliasedPaths(listed);
     for (const deferred of listed) {
       if (deferred.reason !== "unmaterializable" || deferred.unmaterializable !== "alias" || aliased(deferred.revision)) continue;
@@ -2044,7 +2046,7 @@ export class SyncEngine {
     let busy = await this.busy();
     if (resume) {
       for (const operation of await this.journal.listPending()) {
-        if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) continue;
+        if (waits(busy, operation)) continue;
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
         const followed = await this.createFollowsBinding(operation);
@@ -2083,7 +2085,7 @@ export class SyncEngine {
     for (const operation of plan.operations) {
       // An earlier commit's pull may have handed this document or path to the merge path.
       busy = await this.busy();
-      if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) {
+      if (waits(busy, operation)) {
         plan.waiting.add(operation.path);
         continue;
       }
@@ -2114,7 +2116,7 @@ export class SyncEngine {
     for (const operation of await this.journal.listPending()) {
       if (!recreated.has(operation.documentId)) continue;
       busy = await this.busy();
-      if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path) || !this.inScope(operation.path)) {
+      if (waits(busy, operation) || !this.inScope(operation.path)) {
         plan.waiting.add(operation.path);
         continue;
       }
@@ -2413,10 +2415,10 @@ export class SyncEngine {
       // document (a local rename onto that one's path), the document's
       // operation now stands at the conflict-copy path: committed there.
       const moved = pending.find((candidate) => candidate.documentId === operation.documentId && !candidate.deleted);
-      if (moved !== undefined && !busy.documents.has(moved.documentId) && !busy.paths.has(moved.path)) await this.commitOperation(moved, summary);
+      if (moved !== undefined && !waits(busy, moved)) await this.commitOperation(moved, summary);
       return;
     }
-    if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) return;
+    if (waits(busy, operation)) return;
     // A record whose copy is its own path names no move: a document the
     // restored server lacks, re-created where its file is (design §4.6). Its
     // refused create still moves to a copy name under its own id (#722).
