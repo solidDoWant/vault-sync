@@ -125,6 +125,30 @@ const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
   few.map((revision) => ({ type: "purge", revision })),
 ];
 
+/**
+ * P8's alphabet: few paths, and a push whose commits never reach the
+ * server, so an outbox outlives the push into the user's later renames and
+ * edits and the pulls after them, and remote documents take its paths
+ * (#775). Restores make the push re-create documents the server lost,
+ * which rule W may move too.
+ */
+const outboxCommands: fc.Arbitrary<WorldCommand>[] = [
+  few.map((path) => ({ type: "user-create", path })),
+  few.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(few, renameMode, few).map(([file, mode, target]) => ({ type: "user-rename", file, mode, target })),
+  few.map((file) => ({ type: "user-delete", file })),
+  few.map((path) => ({ type: "remote-create", path })),
+  few.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(few, few).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  few.map((file) => ({ type: "edit-during-pull", file })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+  fc.constant({ type: "offline-push" }),
+  fc.constant({ type: "offline-push" }),
+  restore,
+  fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write })),
+];
+
 const platform = fc.constantFrom<PathPlatform>("posix", "windows", "macos");
 
 /**
@@ -178,7 +202,7 @@ function violations(world: PropertyWorld, property: PropertyId): string[] {
   return world.violations.filter((violation) => violation.property === property).map((violation) => `step ${String(violation.step)}: ${violation.message}`);
 }
 
-type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7";
+type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7" | "P8";
 
 /** The only error a property run may fail with: the property found what it checks for. */
 class PropertyViolation extends Error {
@@ -265,6 +289,7 @@ const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prope
   cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(ghostCommands)),
   check: async ([on, steps]) => violations((await play(on, steps, "folded", ghostPaths)).world, "P3"),
 };
+const p8 = overWorld("P8", (world) => violations(world, "P8"), outboxCommands);
 const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
   property: "P4",
   cases: fc.tuple(platform, fc.array(fc.oneof(...steadyCommands), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
@@ -464,6 +489,19 @@ async function commitAsDevice(world: PropertyWorld, documentId: string, path: st
 // only for a user write into an inode bound to the document whose content no
 // server revision of the document carried (PO-7). These pin that it still
 // flags a resurrection without such a write.
+describe("content reference property (design §9.3, INV-8)", () => {
+  // P8 content references: INV-8 with PO-8. No outbox operation, and no blob request the engine sends, names a content
+  // hash at another content's size, which the server refuses on every push (#775). Fixed case: an unpushed create the user
+  // renames onto a path and edits to a content of another size before a remote document takes that path, whose displace
+  // intent rewrote the outbox with the moved content's hash and the create's old size.
+  it("P8: the engine names every content at its own size", { timeout }, async () => {
+    const pad = Array.from({ length: 8 }, (): WorldCommand => ({ type: "pull" }));
+    await holds(p8, [
+      scripted("posix", { type: "user-create", path: 2 }, { type: "offline-push" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, ...pad, { type: "user-edit", file: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }),
+    ]);
+  });
+});
+
 describe("engine echo property (design §9.3, INV-10)", () => {
   // P7 echo independence: INV-10 with PO-10. The engine never reports its own vault change as the user's, on the faithful
   // filesystem, where two files can share a file key (#738). Fixed cases: the engine's create of a remote `Straße.md` beside
