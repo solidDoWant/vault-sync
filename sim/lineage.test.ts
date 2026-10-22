@@ -51,7 +51,7 @@ const revision = (overrides: Partial<FeedRevision>): FeedRevision => ({
 });
 
 function check(feed: FeedRevision[], timeline: Timeline, platform: "posix" | "windows" = "posix"): string[] {
-  return checkLineage(feed, [{ name: "e1", deviceId: "engine", timeline: timeline.entries, match: pathMatcher(platform, "faithful"), copyOf: (path) => copiedFrom(path, "e1") }], (id) => id).map(
+  return checkLineage(feed, [{ name: "e1", deviceId: "engine", timeline: timeline.entries, match: pathMatcher(platform), copyOf: (path) => copiedFrom(path, "e1") }], (id) => id).map(
     (violation) => `${violation.invariant}: ${violation.detail}`,
   );
 }
