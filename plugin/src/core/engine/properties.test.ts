@@ -862,7 +862,8 @@ describe("engine properties (design §9.3)", () => {
   // (INV-9, PO-12): a ghost the resync keeps because its file is still bound drops its `local-changes` deferral of a
   // revision the restore lost, and so does a document whose restored head is its base (the same script restored to
   // its first revision, the base); the push sends the bound file's version. #861's (PO-12, INV-8): a restore during a
-  // push, after its pull, loses the base of the operation being committed; the push pulls and resyncs instead of failing.
+  // push, after its pull, loses the base of the operation being committed; the push pulls and resyncs instead of failing,
+  // drops an operation its plan derived on the lost base, and keeps the cursor off the seqs the restored server reused.
   it("P6: after a database restore the device converges with the server", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-rename", document: 0, path: 8 }, { type: "pull" }, { type: "restore", fraction: 0 }, { type: "remote-delete", document: 0 }),
@@ -874,6 +875,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-delete", file: 0 }, { type: "restore-during-push", fraction: 0 }),
       // #861: the push's plan holds a second document's edit on a base the resync after the first commit's refusal found lost.
       scripted("posix", { type: "remote-create", path: 2 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 7 }, { type: "user-edit", file: 0 }, { type: "restore-during-push", fraction: 0 }),
+      // #861: the push's creates land on the restored server, which reuses the cursor's seq; the cursor must not move onto them.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "user-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "restore-during-push", fraction: 0 }, { type: "user-edit", file: 0 }),
     ];
     for (const restored of fixed) expect(await p6Restores.check(restored), JSON.stringify(restored)).toEqual([]);
     await holds(p6Restores, fixed);

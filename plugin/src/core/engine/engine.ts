@@ -304,6 +304,8 @@ export class SyncEngine {
   private readonly retried = new Set<string>();
   /** Documents being merged right now, so rule W's resolving a holder first (W(b)) never loops back to another. */
   private readonly resolving = new Set<string>();
+  /** This device's latest acknowledged commit in this session, at the seq and anchor the server gave it (pastOwnCommit, #861). */
+  private acknowledgedAt: { seq: bigint; anchor: Uint8Array | undefined } | undefined;
   /** The feed revision the pull is applying, whose step's final transaction moves the cursor (feedCursor). */
   private feed: { revisionId: string; seq: bigint; anchor: Uint8Array | undefined } | undefined;
   /**
@@ -2242,10 +2244,21 @@ export class SyncEngine {
    * (its base is behind the server's head, so the commit is refused as head
    * moved). A stale path-conflict deferral would be removed by its retry
    * anyway, which finds it superseded.
+   *
+   * Not if this device's previous commit landed at the cursor's seq under
+   * another anchor: a restore during the push took the server back below
+   * the cursor, and the server reused that seq (#861, PO-12). Moving the
+   * cursor onto this commit would hide the divergence from the next pull,
+   * which must resync.
    */
   private async pastOwnCommit(revision: Revision): Promise<JournalChanges> {
-    if ((await this.journal.getCursor()) !== revision.seq - 1n) return {};
-    return { cursor: { seq: revision.seq, anchor: cursorAnchor(revision) } };
+    const previous = this.acknowledgedAt;
+    const anchor = cursorAnchor(revision);
+    this.acknowledgedAt = { seq: revision.seq, anchor };
+    const cursor = await this.journal.getCursor();
+    if (cursor !== revision.seq - 1n) return {};
+    if (previous?.seq === cursor && !sameBytes(previous.anchor, await this.journal.getCursorAnchor())) return {};
+    return { cursor: { seq: revision.seq, anchor } };
   }
 
   /**
@@ -2658,6 +2671,12 @@ function isTransient(error: unknown): boolean {
 
 function sameHash(content: Uint8Array | null, hash: string): boolean {
   return content !== null && sha256Hex(content) === hash;
+}
+
+/** Whether two cursor anchors are equal; a server without anchors gives none to compare. */
+function sameBytes(left: Uint8Array | undefined, right: Uint8Array | undefined): boolean {
+  if (left === undefined || right === undefined) return left === right;
+  return left.length === right.length && left.every((byte, index) => byte === right[index]);
 }
 
 function sameContent(left: Uint8Array | null, right: Uint8Array | null): boolean {
