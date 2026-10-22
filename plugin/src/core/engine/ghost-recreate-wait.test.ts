@@ -14,7 +14,7 @@ const copy = `STRASSE (conflict laptop ${testStamp}).md`;
 describe("SyncEngine re-creating a ghost at a copy name", () => {
   it("leaves the re-create in the outbox while the copy name is out of scope, and commits it once it is back in scope", async () => {
     let copiesSynced = true;
-    const vault = new InMemoryVault({ filesystem: "faithful" });
+    const vault = new InMemoryVault();
     const h = harness({
       vault,
       merge: "default",
