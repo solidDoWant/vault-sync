@@ -17,7 +17,7 @@ import { InMemoryVault } from "../vault/memory";
 import { filesystemKey, unmaterializableReason, type PathPlatform, type PathRules } from "../vaultpath/platform";
 import { PathSpace } from "./pathspace";
 import { SyncEngine, type PushSummary, type UnmaterializableDocument } from "./engine";
-import type { MergeHook, MergeRequest } from "./merge";
+import { threeWayMerge, type MergeHook, type MergeRequest } from "./merge";
 import { InMemoryServer, type InMemoryServerOptions } from "./memory-server";
 import { uploadContent } from "./upload";
 
@@ -663,7 +663,7 @@ export interface UserOperation {
 }
 
 /** The properties of §9.3 a violation counts against. */
-export type PropertyId = "P1" | "P2" | "P3" | "P8";
+export type PropertyId = "P1" | "P2" | "P3" | "P8" | "P10";
 
 export interface Violation {
   property: PropertyId;
@@ -686,6 +686,12 @@ export type WorldCommand =
   | { type: "remote-delete"; document: number }
   /** Another device brings a deleted document back: a live revision with new content on its tombstone, at a pool path (#790). */
   | { type: "remote-recreate"; document: number; path: number }
+  /**
+   * Another device re-creates a document of device A's that the restored
+   * server lost (a shared ghost, #816): a first revision under the
+   * document's id, with new content, at a pool path.
+   */
+  | { type: "remote-recreate-lost"; document: number; path: number }
   | { type: "pull" }
   | { type: "edit-during-pull"; file: number }
   | { type: "move-onto-incoming"; file: number; path: number }
@@ -777,6 +783,10 @@ export class PropertyWorld {
   readonly discarded = new Set<string>();
   /** Inodes the user deleted. */
   readonly userDeleted = new Set<number>();
+  /** Every content a file here ever held: the user's writes and the engine's (P10). */
+  private readonly heldHere = new Set<string>();
+  /** Every remote revision the engine handed to the merge hook (P10). */
+  private readonly handedToMerge = new Set<string>();
   /** Errors a pull or push of a live engine rejected with. */
   readonly errors: unknown[] = [];
   readonly violations: Violation[] = [];
@@ -844,6 +854,10 @@ export class PropertyWorld {
         },
       ),
       onLocalChange: (event) => this.localChanges.push(event),
+      merge: (request) => {
+        this.handedToMerge.add(request.remote.revisionId);
+        return threeWayMerge(request);
+      },
       journal: new CrashAtWriteJournal(this.journal, this.life),
       pageSize: 3,
       pushDebounceMs: null,
@@ -893,6 +907,14 @@ export class PropertyWorld {
       case "remote-recreate": {
         const deleted = this.server.deletedDocuments();
         const documentId = deleted.length === 0 ? undefined : deleted[command.document % deleted.length];
+        if (documentId === undefined) break;
+        await this.remoteCommit(documentId, this.paths[command.path % this.paths.length] ?? "a.md", this.remoteContent(documentId), false);
+        break;
+      }
+      case "remote-recreate-lost": {
+        const known = [...new Set(this.revisions.filter((revision) => revision.deviceId === testDeviceId).map((revision) => revision.documentId))];
+        const lost = known.filter((documentId) => this.server.head(documentId) === undefined).sort(byText);
+        const documentId = lost.length === 0 ? undefined : lost[command.document % lost.length];
         if (documentId === undefined) break;
         await this.remoteCommit(documentId, this.paths[command.path % this.paths.length] ?? "a.md", this.remoteContent(documentId), false);
         break;
@@ -1121,6 +1143,7 @@ export class PropertyWorld {
     const file = this.inodes.wrote(path, hash);
     this.origins.set(hash, { kind: "user", inode: file.inode, step: this.step });
     this.userWrites.add(hash);
+    this.heldHere.add(hash);
     if (previous !== undefined) this.discarded.add(previous.hash);
     this.userOperations.push({ type, inode: file.inode, step: this.step, hash });
   }
@@ -1189,6 +1212,7 @@ export class PropertyWorld {
       return;
     }
     this.sizes.set(change.hash, change.size);
+    this.heldHere.add(change.hash);
     const file = this.inodes.wrote(change.path, change.hash);
     // The engine materialized a revision of a document at that document's path: the file is that document's.
     const key = this.inodes.key(change.path);
@@ -1310,7 +1334,20 @@ export class PropertyWorld {
       this.revisions.push(observed);
       this.everOnServer.add(observed.hash);
       if (observed.deviceId === testDeviceId) this.checkCommit(observed, parent);
+      if (observed.deviceId === testDeviceId) this.checkParent(observed, parent);
     }
+  }
+
+  /**
+   * P10 (INV-4, principle 1, PO-12): device A commits on top of another
+   * device's live revision only once it had that revision, in a file here
+   * or through the merge hook. A commit on top of one it never had replaces
+   * the other device's write with no merge and no conflict copy (#816).
+   */
+  private checkParent(revision: ObservedRevision, parent: ObservedRevision | undefined): void {
+    if (parent === undefined || parent.deviceId === testDeviceId || parent.deleted) return;
+    if (this.heldHere.has(parent.hash) || this.handedToMerge.has(parent.revisionId)) return;
+    this.violation("P10", `${revision.documentId} at ${JSON.stringify(revision.path)} (seq ${String(revision.seq)}) commits over ${parent.documentId}'s revision of seq ${String(parent.seq)} (the ${this.describe(parent.hash)}), which this device never had`);
   }
 
   private violation(property: PropertyId, message: string): void {

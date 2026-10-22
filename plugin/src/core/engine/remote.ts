@@ -47,6 +47,7 @@ export function toIncoming(revision: Revision): IncomingRevision {
       deleted: revision.deleted,
       contentHash: bytesToHex(revision.contentRef?.blobId ?? new Uint8Array()),
       size: revision.contentRef?.size ?? 0n,
+      deviceId: revision.deviceId,
     },
     pathAllowed: decodable && isPathText(path) && isVaultRelativePath(path),
   };

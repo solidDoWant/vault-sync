@@ -1,5 +1,26 @@
 import type { DeferredRevision, DocumentState, PendingOperation, RemoteRevision } from "../journal/journal";
+import { hasBase } from "./bindings";
 import type { PathSpace } from "./pathspace";
+
+/**
+ * Whether `remote` is this device's own create of the document, which it
+ * moved on (to a path-taken copy, #286) before learning that the commit had
+ * landed (design §4.5 step 1): the document has no base here, the revision is
+ * the document's live first revision, every outbox operation of the document
+ * is a create or already rebased onto it, and the server says this device
+ * committed it. Document ids are shared, so the outbox alone does not make the
+ * create this device's: after a restore every device that held the document
+ * keeps it as a ghost and re-creates it under the same id (§4.6). Another
+ * device's re-create is that device's revision of a document with local
+ * changes here, so it takes the merge path (step 4, PO-12, INV-4), never this
+ * step, which would commit this device's version over it (#816).
+ */
+export function ownMovedCreate(state: DocumentState | undefined, remote: RemoteRevision, outbox: readonly PendingOperation[], deviceId: string): boolean {
+  if (state !== undefined && hasBase(state)) return false;
+  if (remote.deleted || remote.parentRevisionId !== "" || outbox.length === 0) return false;
+  if (remote.deviceId === undefined || remote.deviceId === "" || remote.deviceId !== deviceId) return false;
+  return outbox.every((operation) => operation.baseRevisionId === "" || operation.baseRevisionId === remote.revisionId);
+}
 
 /**
  * The path merge of design §4.7 (PO-9), for the remote decision

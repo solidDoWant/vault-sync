@@ -205,6 +205,27 @@ const ghostCommands: fc.Arbitrary<WorldCommand>[] = [
   restore,
 ];
 
+/**
+ * The alphabet of #816's class (INV-4, PO-12, design §4.6): a restore that
+ * loses documents both devices hold, so both keep them as ghosts, a push that
+ * leaves this device's re-create in the outbox, and the other device's
+ * re-create of the same ghost under the shared id. Few paths and documents,
+ * so the restore, the two re-creates and the pull between them meet.
+ */
+const sharedGhostCommands: fc.Arbitrary<WorldCommand>[] = [
+  few.map((path) => ({ type: "user-create", path })),
+  few.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(few, fc.constantFrom<RenameMode>("pool", "case"), few).map(([file, mode, target]) => ({ type: "user-rename", file, mode, target })),
+  few.map((path) => ({ type: "remote-create", path })),
+  few.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(few, few).map(([document, path]) => ({ type: "remote-recreate-lost", document, path })),
+  fc.tuple(few, few).map(([document, path]) => ({ type: "remote-recreate-lost", document, path })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+  fc.constant({ type: "offline-push" }),
+  restore,
+];
+
 function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
   return fc.commands(
     alphabet.map((command) => command.map((data) => new Step(data))),
@@ -224,7 +245,7 @@ function violations(world: PropertyWorld, property: PropertyId): string[] {
   return world.violations.filter((violation) => violation.property === property).map((violation) => `step ${String(violation.step)}: ${violation.message}`);
 }
 
-type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7" | "P8" | "P9";
+type Property = "P1" | "P2" | "P3" | "P4" | "P5" | "P6" | "P7" | "P8" | "P9" | "P10";
 
 /** The only error a property run may fail with: the property found what it checks for. */
 class PropertyViolation extends Error {
@@ -312,6 +333,7 @@ const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prope
   check: async ([on, steps]) => violations((await play(on, steps, ghostPaths)).world, "P3"),
 };
 const p8 = overWorld("P8", (world) => violations(world, "P8"), outboxCommands);
+const p10 = overWorld("P10", (world) => violations(world, "P10"), sharedGhostCommands);
 const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateCommands);
 /**
  * P4 over `alphabet` on `platforms`: crashing at journal write N and
@@ -1019,6 +1041,32 @@ const p9: Definition<PathMergeCase> = {
     return found;
   },
 };
+
+describe("shared ghost property (design §9.3, PO-12)", () => {
+  // P10 (#816, INV-4, principle 1): document ids are shared, so after a restore another device can re-create a ghost
+  // this device re-creates too. This device commits on top of the other device's revision only once it had it (a merge,
+  // or a file here), never as if it were its own create. Fixed case (seed 563, shrunk): the other device re-creates one
+  // ghost at the path of this device's other ghost, whose re-create yields to a copy name and stays in the outbox (the
+  // push's commits do not get through); then the other device re-creates that ghost too, and the next pull finds it.
+  it("P10: this device never commits over another device's revision it never had", { timeout }, async () => {
+    const fixed = [
+      scripted(
+        "posix",
+        { type: "user-create", path: 0 },
+        { type: "user-rename", file: 0, mode: "pool", target: 1 },
+        { type: "user-create", path: 0 },
+        { type: "push" },
+        { type: "restore", fraction: 0 },
+        { type: "remote-recreate-lost", document: 1, path: 0 },
+        { type: "offline-push" },
+        { type: "remote-recreate-lost", document: 0, path: 2 },
+        { type: "user-edit", file: 0 },
+      ),
+    ];
+    for (const example of fixed) expect(await p10.check(example)).toEqual([]);
+    await holds(p10, fixed);
+  });
+});
 
 describe("path merge property (design §9.3, PO-9)", () => {
   // P9 path merge (#802): the user's unpushed rename of a document bound on its tombstone wins over another device's

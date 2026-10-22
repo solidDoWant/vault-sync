@@ -299,6 +299,12 @@ export interface RemoteRevision {
   /** Blob id (hex): for plaintext vaults the SHA-256 of the content (SPEC.md §5). */
   contentHash: string;
   size: bigint;
+  /**
+   * The device that committed the revision (the server's `device_id`, SPEC.md
+   * §6.1). Undefined for a revision stored before it was kept (an older
+   * journal's deferral): no device is known to have committed it.
+   */
+  deviceId?: string;
 }
 
 /**
