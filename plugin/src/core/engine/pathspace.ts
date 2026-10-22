@@ -82,6 +82,27 @@ export class PathSpace {
     return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
   }
 
+  /**
+   * `(path) => paths.some((other) => this.nested(other, path))`, with the
+   * keys of `paths` computed once: `path` is in the way of a file in
+   * `paths`, or one of them is in its way, when one of `path`'s folders is a
+   * file's `F` key, or `path`'s `F` key is a folder of a file. The lookup
+   * costs `path`'s own keys only, not one comparison per path (#854).
+   */
+  nestedIn(paths: readonly string[]): (path: string) => boolean {
+    const fileKeys = new Set<string>();
+    const folderKeys = new Set<string>();
+    for (const other of paths) {
+      const key = this.filesystemKey(other);
+      fileKeys.add(key);
+      for (const folder of ancestors(key)) folderKeys.add(folder);
+    }
+    return (path) => {
+      const key = this.filesystemKey(path);
+      return folderKeys.has(key) || ancestors(key).some((folder) => fileKeys.has(folder));
+    };
+  }
+
   /** The folders `path` is in, outermost first: its proper "/"-separated prefixes. */
   ancestors(path: string): string[] {
     return ancestors(path);

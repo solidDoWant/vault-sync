@@ -166,6 +166,43 @@ describe("PathSpace", () => {
     expect(posix.ancestors("a/b/c.md")).toEqual(["a", "a/b"]);
   });
 
+  describe("nesting under F (#843, #854)", () => {
+    // [a, b, nested on posix, nested on windows, nested on macos]: whether one is a folder of the other.
+    const cases: { name: string; a: string; b: string; nested: Record<"posix" | "windows" | "macos", boolean> }[] = [
+      { name: "a file in a folder at the other", a: "notes/a.md", b: "notes", nested: { posix: true, windows: true, macos: true } },
+      { name: "a file in a folder of another case", a: "notes/a.md", b: "NOTES", nested: { posix: false, windows: true, macos: true } },
+      { name: "a file deep in a folder of another case", a: "Notes/sub/a.md", b: "NOTES/SUB", nested: { posix: false, windows: true, macos: true } },
+      { name: "a file in a folder of another form", a: `${nfc("Café")}/a.md`, b: nfd("CAFÉ"), nested: { posix: false, windows: false, macos: true } },
+      { name: "one spelling", a: "notes", b: "notes", nested: { posix: false, windows: false, macos: false } },
+      { name: "case variants of one name", a: "notes", b: "NOTES", nested: { posix: false, windows: false, macos: false } },
+      { name: "a shared folder only", a: "notes/a.md", b: "notes/b.md", nested: { posix: false, windows: false, macos: false } },
+      { name: "a name prefix that is no folder", a: "notes2/a.md", b: "notes", nested: { posix: false, windows: false, macos: false } },
+    ];
+    const spaces = { posix, windows, macos };
+    for (const { name, a, b, nested } of cases) {
+      it(`${name}: ${String(nested.posix)} on posix, ${String(nested.windows)} on windows, ${String(nested.macos)} on macos`, () => {
+        for (const [platform, space] of Object.entries(spaces) as ["posix" | "windows" | "macos", PathSpace][]) {
+          // Both directions: a file in a folder at the other's path, and a file where the other needs a folder.
+          expect(space.nested(a, b), `${platform}: ${a} in ${b}`).toBe(nested[platform]);
+          expect(space.nested(b, a), `${platform}: ${b} over ${a}`).toBe(nested[platform]);
+          expect(space.nestedIn([a])(b), `${platform}: index of ${a}, looking up ${b}`).toBe(nested[platform]);
+          expect(space.nestedIn([b])(a), `${platform}: index of ${b}, looking up ${a}`).toBe(nested[platform]);
+        }
+      });
+    }
+
+    it("finds a path nested with any of several paths, and none in an empty list", () => {
+      const nestedWithAny = macos.nestedIn(["x.md", "NOTES", "Other/deep/c.md"]);
+      expect(nestedWithAny("notes/a.md")).toBe(true);
+      expect(nestedWithAny("OTHER")).toBe(true);
+      expect(nestedWithAny("other/DEEP")).toBe(true);
+      expect(nestedWithAny("notes")).toBe(false);
+      expect(nestedWithAny("x.md")).toBe(false);
+      expect(nestedWithAny("Other/deep/c.md")).toBe(false);
+      expect(macos.nestedIn([])("notes/a.md")).toBe(false);
+    });
+  });
+
   describe("collisions", () => {
     const cases: { name: string; a: string; b: string; server: boolean; file: Record<"posix" | "windows", boolean> }[] = [
       { name: "one spelling", a: "a.md", b: "a.md", server: true, file: { posix: true, windows: true } },
