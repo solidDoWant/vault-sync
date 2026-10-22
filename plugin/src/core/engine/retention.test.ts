@@ -77,6 +77,32 @@ describe("SyncEngine when blob garbage collection removes an upload before its c
 });
 
 describe("SyncEngine when retention purged a merge base (SPEC.md §8, §11)", () => {
+  // #719 (P1, design §4.6): a file still at its base's content holds no concurrent content edit, so the pulled edit,
+  // which descends from that base, is merged with the local rename even though the base's content is gone.
+  it("merges a remote edit with a local rename of an unchanged file, without a conflict copy or a new document", async () => {
+    const devices = twoDevices();
+    const { server, a, b } = devices;
+    await syncedOnBoth(devices, "plan.md", lines("one", "two", "three"));
+    await b.vault.rename("plan.md", "Renamed.md");
+    await b.engine.settled();
+    await a.vault.write("plan.md", bytes(lines("one (from a)", "two", "three")));
+    await a.engine.push();
+    const [document] = await a.journal.listDocuments();
+    const documentId = document?.documentId ?? "";
+    const [base] = server.history(documentId);
+    server.purge(base?.id ?? "");
+
+    await b.engine.push();
+    await a.engine.pull();
+
+    const expected = new Map([["Renamed.md", lines("one (from a)", "two", "three")]]);
+    expect(await files(b.vault)).toEqual(expected);
+    expect(await b.journal.listConflicts()).toEqual([]);
+    expect(server.liveFiles()).toEqual(expected);
+    expect(server.head(documentId)?.deleted).toBe(false);
+    expect(await files(a.vault)).toEqual(expected);
+  });
+
   it("finishes the pull, keeps the remote version in place and the local one as a logged conflict copy, and advances the cursor", async () => {
     const { server, a, b, documentId, base } = await purgedBase();
     server.purge(base.id);
