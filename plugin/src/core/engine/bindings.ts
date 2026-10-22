@@ -152,6 +152,22 @@ export class Bindings {
   }
 
   /**
+   * The push read `hash` in the file at `spelling` of a document it held
+   * back without an outbox (E4, #877): it is the binding's `seen` if the
+   * document is still bound to that file, so the start-up scan (E7) still
+   * finds the file by content after a rename made while the app was closed.
+   */
+  read(documentId: string, spelling: string, hash: string): Promise<void> {
+    return this.serialize(async () => {
+      const state = await this.journal.getDocument(documentId);
+      const binding = state?.binding;
+      if (state === undefined || binding === null || binding === undefined) return;
+      if (binding.fileKey !== this.space.filesystemKey(spelling) || binding.seen === hash) return;
+      await this.write({ putDocuments: [{ ...state, binding: { ...binding, seen: hash } }] });
+    });
+  }
+
+  /**
    * Applies the changes `build` returns, read and written in one turn of the
    * queue: the final transaction of an intent (intents.ts), which changes a
    * binding together with other rows.

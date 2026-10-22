@@ -1983,6 +1983,8 @@ export class SyncEngine {
     );
     // The user deleted the document's file, and its synced content is back at its path: that file is its own again.
     for (const { state, path } of plan.adopted) await this.putDocument(state, { kind: "adopted", path });
+    // A held-back document's edit the plan read: its binding's `seen` (E4, #877).
+    for (const { documentId, spelling, hash } of plan.read) await this.bindings.read(documentId, spelling, hash);
     if (plan.forgotten.length > 0) await this.bindings.transact(() => Promise.resolve({ removeDocuments: plan.forgotten }));
     // A document the restored server lacks yields its path to another claim: re-created at a copy name (design §4.6).
     const recreated = new Set<string>();
