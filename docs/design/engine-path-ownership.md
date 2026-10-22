@@ -1,6 +1,6 @@
 # Engine path-ownership model and refactor plan
 
-Status: **proposal for owner review** (#552). Nothing here is implemented. It is a spec for the implementers of the follow-up issues, not a description of today's engine. Where it describes today's engine, it cites `plugin/src/core/engine/engine.ts` at `cf0bb04` (2,872 lines).
+Status: **implemented** (#552; refactor steps R0–R12 of §9.2 have landed, R12 in #576). `SPEC.md` §7/§8 state the user-visible rules by the ids of §4.9 and §5.1, and this document is the reference for the engine's path-ownership state, decisions and invariants. The amendments below record where implementation refined the model. Where the text describes the engine before the refactor, it cites `plugin/src/core/engine/engine.ts` at `cf0bb04` (2,872 lines).
 
 ## Decisions (accepted 2026-10-20)
 
@@ -433,6 +433,8 @@ The shadow check stays until R7, but it is no longer independent for moves: `fol
 
 **Amendment (#758): the scan race decides by events, not content.** `Bindings.renamed` used to keep a missing document's binding on a rename event during the scan only when the moved file held the binding's `seen`. That content check stood in for "the document's own file", and it was wrong for a file edited while the app was closed: the user's rename (E1) was overridden, the document was deleted, and the file was pushed as a new document (PO-1, INV-3). `Bindings` now keeps the key of each binding the scan found missing until an event shows that another file is at that key. That event is a create (E5, `Bindings.appeared`, which the engine's `transition` calls for a create event) or a rename onto the key. A rename event from the key during the scan then moves the binding, whatever the file's content. `seen` stays as it was, so the push commits the edit and the rename under the document's id. This is the outcome the scan would have reached had it read the disk before the event: E7 takes a file at the binding's path as the document's. A new file made at the old path, or moved there, and then moved away is still another document. `scan-race.test.ts` pins both cases, and its §9.3 property generates them.
 
+**Amendment (R12, #576): SPEC restated, and INV-9 after a restore.** SPEC §7/§8 now cite the rules of §4.9 instead of listing cases (under a third of their earlier length). #576's scope note asked to amend INV-9 for a document the restored server lost that stays on the device unpushed until it changes, and to put the database restore back into P6. Since R7b (#700) no such end state exists: the push re-creates such a document under its own id (§4.6), so INV-9 needs no exemption and is unchanged. With restores in its alphabet P6 still fails, on an engine bug rather than an end state INV-9 should allow: an outbox operation the restored server refuses as "the document does not exist" stays forever (#829; INV-8, INV-9, PO-12). P6's main alphabet therefore still omits restores, and an `it.fails` P6 case with restores (`p6Restores` in `engine/properties.test.ts`) reproduces #829 until its fix flips it.
+
 ### 6.3 Protocol and server
 
 **No change is required.** Every rule above uses the existing `CommitRevision`/`ListChanges` semantics, error codes and anchors.
@@ -443,6 +445,8 @@ Optional changes, recommended for Phase 3 (decision 9):
 - In E2EE vaults (Phase 4), the server cannot enforce the folder rule (SPEC §5). C3 is then the only enforcement, and the client must keep it exactly. This is a Phase 4 note, not a Phase 2 change.
 
 ### 6.4 Deliberate behaviour changes (SPEC edits in refactor step R12)
+
+Recorded in `SPEC.md` §8 ("Deliberate changes") by R12 (#576), and stated in place in §7/§8 by the rule they follow.
 
 1. A rename or delete whose event was handled before a crash is kept as a rename or delete (bindings are durable). SPEC §8's "A rename is recognized from the vault's rename event. Without one (a change made while the app was closed, or one the app was killed before it recorded) it is a delete plus a create" narrows to "before it was persisted". With decision 4 it narrows further, to "unless the content match is unique".
 2. A file moved out of a server-assigned path is **renamed**, never copied and then deleted. This fixes #341 (two conflict copies when an open note's delete is refused), and the bytes are never in two places in an intermediate state.
@@ -703,7 +707,7 @@ Every step is one PR, touches about 10 non-test files or fewer, and keeps `make 
 | **R9** | Merge hook becomes content-only; the path merge moves into `decide.ts` (decision 6). | `engine/merge.ts`, `engine/decide.ts`, `sim/engine-observer.ts` | path logic in `threeWayMerge` | merge tests: the path assertions move to decide tests |
 | **R10** | Sim oracle on inodes: phantom-delete, resurrected-delete and the new `identity` check. Verdicts of §5.5 applied (X-1, X-2, X-4, X-5, X-7, X-10, X-11, X-14). `journal-holder` checked after every step. Closes #503, #531, #532, #540, #551, #346, #301. | `sim/invariants.ts`, `sim/engine-user.ts`, `sim/engine-observer.ts`, `sim/runner.ts`, `docs/testing/simulation.md`, `SPEC.md` §13 | `documentsAt` journal reads, `movedByEngine`, `writtenByEngine` (if #535 merged), `renameLostToCrash` content-matching | mutation tests for every check (§10.2 E4) |
 | **R11** | Start-up content-match rename detection (E7, decision 4), plus the E7b extension that removes X-8. | `engine/bindings.ts`, `SPEC.md` §8, `sim/invariants.ts` | X-8 | the seeds of #280, #531 and 100117 pass with X-8 removed |
-| **R12** | SPEC §7/§8 restated as the PO rules (target: under a third of today's length), with the `(#NNN)` exception lists replaced by rule ids and the deliberate changes of §6.4 recorded. `docs/plugin.md` touched where user-visible. | `SPEC.md`, `docs/plugin.md`, `docs/design/engine-path-ownership.md` (mark implemented) | — | docs review |
+| **R12** | **Done** (#576). SPEC §7/§8 restated as the PO rules (target: under a third of today's length), with the `(#NNN)` exception lists replaced by rule ids and the deliberate changes of §6.4 recorded. `docs/plugin.md` touched where user-visible. | `SPEC.md`, `docs/plugin.md`, `docs/design/engine-path-ownership.md` (mark implemented) | — | docs review |
 
 Order constraints:
 
@@ -734,7 +738,7 @@ The reference model is a tiny pure state machine over files with inodes, server 
 | P3 exclusivity | INV-1 and INV-2 after every command |
 | P4 crash equivalence | INV-7: for every prefix, crashing at every journal write and restarting reaches the same quiescent server and vault state as no crash (modulo copy names and times) |
 | P5 no lost write | INV-4 plus principle 1, against server history |
-| P6 convergence and progress | INV-8 and INV-9 after quiescence, with bounded push rounds. A second P6 case (#737) runs on the faithful filesystem over paths whose folders differ only in case, and also checks INV-10 with P7's oracle. |
+| P6 convergence and progress | INV-8 and INV-9 after quiescence, with bounded push rounds. Its alphabet omits database restores until #829 is fixed (§6.2, R12 amendment); a P6 case with restores is `it.fails` on it. A second P6 case (#737) runs on the faithful filesystem over paths whose folders differ only in case, and also checks INV-10 with P7's oracle. |
 | P7 echo independence | INV-10 with PO-10 on the faithful filesystem: the engine never reports its own write, rename or delete as a local change, over spellings whose `K` and `F` disagree (`Straße.md`/`STRASSE.md`, NFC/NFD `Café.md`; added for #738) |
 | P8 content references | INV-8 with PO-8: no outbox operation, and no blob request the engine sends (`BeginBlob`, `CommitRevision`, `DownloadBlob`), names a content hash at a size other than that content's, which the server would refuse on every push. Its alphabet adds a push whose commits never reach the server, so an outbox outlives it into later renames, edits and pulls (added for #775: a `displace` intent rewrote an unpushed create's outbox with the moved content's hash and the create's old size, which #770 fixed by recording the moved content's size with its hash). |
 | P9 path merge | PO-9 for a document bound on its tombstone (#802): against another device's re-create, the user's move of its file (or a later user move of a copy rule W's `displace` made) wins, and the push commits the document at the user's name. A file that only the engine moved aside takes the server's path. Edits survive and the vault converges. |

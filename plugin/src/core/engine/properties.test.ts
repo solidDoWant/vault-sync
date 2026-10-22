@@ -113,7 +113,7 @@ const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer
  * P6's alphabet: no database restore. Since R7b (#700) the push re-creates
  * a document the restored server lost (SPEC.md §8, divergence), but INV-9
  * after a restore is not proven yet: with restores, P6 still finds a run
- * that does not converge (a remote delete, edits during pulls, a restore).
+ * that does not converge (#829; the `it.fails` P6 case with restores).
  */
 const convergingCommands = allCommands.filter((command) => command !== restore);
 
@@ -529,6 +529,8 @@ const stalePageHolder: Definition<{ on: PathPlatform; list: WorldCommand[]; head
   },
 };
 const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
+/** P6 with database restores (#576, #829): INV-9 holds after a restore too, since the push re-creates a document the restored server lost (design §4.6). */
+const p6Restores = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], allCommands);
 
 describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
@@ -732,6 +734,18 @@ describe("engine properties (design §9.3)", () => {
     ];
     for (const example of fixed) expect(await p6.check(example)).toEqual([]);
     await holds(p6, fixed);
+  });
+
+  // P6 with restores (#576's scope note): INV-9 needs no exemption for a document the restored server lost, which the
+  // push re-creates (design §4.6, PO-12). Fails on #829: an operation the restored server refuses as "the document does
+  // not exist" stays in the outbox. Flip to `it` with `holds(p6Restores, [case])` once #829 is fixed.
+  it.fails("P6: after a database restore the device converges with the server (#829)", { timeout }, async () => {
+    const restored = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 });
+    // Only #829's symptom counts as the expected failure: a harness error, or a pass once #829 is fixed, returns
+    // without throwing, so `it.fails` reports this case as failing.
+    const found = await p6Restores.check(restored).catch(() => undefined);
+    if (found === undefined || !found.includes("pending operations left: r-1@A.md")) return;
+    expect(found).toEqual([]);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {
