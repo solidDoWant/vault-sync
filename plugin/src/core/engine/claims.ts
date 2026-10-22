@@ -135,7 +135,9 @@ export class PathClaims {
    *
    * `exempt`'s claims take no name except where it goes: neither its file
    * that it moves away from or deletes (#319) nor its synced path, unless its
-   * result goes there (#299). The folders of its result are folders whatever
+   * result goes there (#299). The file still takes its own name under `F`:
+   * it is on disk until the operation moves it, after any copy is written
+   * (#917). The folders of its result are folders whatever
    * else is named like them, so they never block (#352).
    */
   async freeCopyName(path: string, naming: CopyNaming, exempt?: Exempt): Promise<string | null> {
@@ -144,10 +146,17 @@ export class PathClaims {
     const names = new Set<string>();
     const files = new Set<string>();
     const listed = new Set<string>();
+    let leaving: string | undefined;
     for (const claim of this.claims) {
       switch (claim.kind) {
         case "disk":
-          if (claim.path === exempt?.file) continue;
+          // The exempt file is still there when a copy is written (the
+          // merge writes its copies before it moves the document's file
+          // away): it takes its own name under `F` (#917).
+          if (claim.path === exempt?.file) {
+            leaving = filesystemKey(claim.path);
+            continue;
+          }
           files.add(serverKey(claim.path));
           listed.add(filesystemKey(claim.path));
           break;
@@ -177,7 +186,7 @@ export class PathClaims {
           : conflictFolderPath(named, path.slice(named.length + 1), naming.deviceName, naming.date, attempt, naming.rules);
       if (candidate === null) return null;
       const key = serverKey(candidate);
-      if (names.has(key) || byKey.takes(key) || byFile.takes(filesystemKey(candidate))) continue;
+      if (names.has(key) || byKey.takes(key) || byFile.takes(filesystemKey(candidate)) || filesystemKey(candidate) === leaving) continue;
       // A file outside the sync scope is not listed, but it is there.
       if (!(this.vault.isSynced?.(candidate) ?? true) && (await this.vault.stat(candidate)) !== null) continue;
       return candidate;
