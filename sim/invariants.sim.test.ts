@@ -48,9 +48,11 @@ async function twoEngines(endpoints: SimEndpoints, mutate: (run: SimRun) => Prom
 }
 
 /**
- * A POSIX engine and a macOS one (#247). `e1` creates `straße.md` and
+ * A POSIX engine and a macOS one (#247). `e1` creates `strasse.md` and
  * `notes/b.md`; `e2` syncs both, then its user writes `STRASSE.md`, which
- * the macOS vault resolves to `straße.md` and reports as a modify of it.
+ * the macOS vault resolves to `strasse.md` and reports as a modify of it.
+ * (#247's seed respelled it by `ß`/`SS`, which APFS keeps as two files,
+ * #797.)
  * `mutate` gets the run after that write; then `e2` pushes and `e1` pulls.
  */
 async function macosUserWritesAnotherSpelling(endpoints: SimEndpoints, mutate: (run: SimRun) => Promise<string>): Promise<{ result: RunResult; run: SimRun }> {
@@ -61,7 +63,7 @@ async function macosUserWritesAnotherSpelling(endpoints: SimEndpoints, mutate: (
     await settle();
     await run.drain();
   };
-  run.context.log(await posix.edit("straße.md", encoder.encode("one\n")));
+  run.context.log(await posix.edit("strasse.md", encoder.encode("one\n")));
   run.context.log(await posix.edit("notes/b.md", encoder.encode("b\n")));
   run.context.log(posix.startPush());
   await drain();
@@ -424,9 +426,9 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
 
     expect(result.violations, trace).toEqual([]);
     // The write is an edit of the synced note, under the note's own spelling, on both engines.
-    expect(await run.observers[1]?.list(), trace).toEqual(["notes/b.md", "straße.md"]);
-    expect(await run.observers[0]?.list(), trace).toEqual(["notes/b.md", "straße.md"]);
-    expect(new TextDecoder().decode(await run.observers[0]?.read("straße.md")), trace).toBe("one\nedited on macos\n");
+    expect(await run.observers[1]?.list(), trace).toEqual(["notes/b.md", "strasse.md"]);
+    expect(await run.observers[0]?.list(), trace).toEqual(["notes/b.md", "strasse.md"]);
+    expect(new TextDecoder().decode(await run.observers[0]?.read("strasse.md")), trace).toBe("one\nedited on macos\n");
   });
 
   it("still catches an engine that reports its own write as a local change on a case-insensitive platform (engine-echo)", async () => {
