@@ -684,21 +684,29 @@ describe("engine properties (design §9.3)", () => {
   // P3 exclusivity: INV-1 and INV-2 after every command. Flipped in R7b (#700). Fixed cases: R7a's pin (a document the
   // restored server lost at a path key a pulled document then claims), and a document the restored server lost, then a
   // colliding local create, with its file kept and with it deleted (design §4.6: the push re-creates it, yielding the path).
+  // And #867's (seed 566): a pulled remote rename onto a ghost's synced path of a document whose local rename the merge
+  // keeps; the ghost yields in that pull.
   it("P3: no two live documents or live outboxes claim one path key", { timeout }, async () => {
     await holds(p3, [
       scripted("posix", { type: "remote-create", path: 5 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }),
       scripted("posix", { type: "user-create", path: 1 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "restore", fraction: 0 }),
       scripted("posix", { type: "remote-create", path: 5 }, { type: "edit-during-pull", file: 0 }, { type: "user-delete", file: 0 }, { type: "restore", fraction: 0 }, { type: "user-create", path: 5 }),
+      // #867 (seed 566): a pulled rename of a document moved locally onto a ghost's synced path; the ghost yields in the pull.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 7 }, { type: "user-create", path: 1 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-rename", file: 8, mode: "pool", target: 2 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }),
     ]);
   });
 
   // #768 (INV-2, PO-12): a restore re-derives the server view, so a deferred revision the restored server lost claims
   // no path any more. Fixed cases: #768's counterexamples, a rename deferred as unmaterializable on Windows and one
   // deferred as an `F`-alias on macOS, each lost by a restore before another document takes its path.
+  // And #867's (seed 566): another document's pulled rename onto the ghost's path while its local respelling keeps its
+  // file elsewhere.
   it("P3: a deferred revision a restore lost claims no path", { timeout }, async () => {
     await holds(p3Ghosts, [
       scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 2 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" }, { type: "restore", fraction: 0 }),
       scripted("macos", { type: "remote-create", path: 2 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 3 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+      // #867 (seed 566): a pulled rename of a document respelled locally onto a ghost's synced path; the ghost yields in the pull.
+      scripted("windows", { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "user-create", path: 2 }, { type: "remote-create", path: 3 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-rename", file: 1, mode: "pool", target: 2 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 0 }),
     ]);
     expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
   });
@@ -795,12 +803,15 @@ describe("engine properties (design §9.3)", () => {
   // #757 (INV-3, PO-1, PO-4(a)): a pull never adopts or merges a known document's file that the user moved onto the
   // path of a revision while the pull ran. Rule W displaces it under its own id, and the revision materializes.
   // Fixed case (#769, 20k cases): an unpushed case-only rename back to a spelling the document had wins over a later
-  // remote delete (§4 R5b).
+  // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853.
   it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
+      // #871 (seed 566, fixed by #853): a remote edit of a document whose local rename collides under the server's key
+      // with another document's spelling; the merge result moves to a copy name instead of waiting as `path-conflict`.
+      scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }, { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "push" }, { type: "user-rename", file: 3, mode: "pool", target: 6 }, { type: "remote-edit", document: 7 }),
     ];
-    for (const example of fixed) expect(await movedOntoIncoming.check(example)).toEqual([]);
+    for (const example of fixed) expect(await movedOntoIncoming.check(example), JSON.stringify(example[1])).toEqual([]);
     await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);
   });
 
@@ -839,8 +850,10 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
       scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-create", path: 14 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 1, path: 13 }, { type: "edit-during-pull", file: 15 }, { type: "pull" }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
+      // #872 (seed 566): X/b.md, held in x/, is moved to a path Windows refuses and keeps its edited file; the oracle matches it under `F`.
+      scripted("windows", { type: "remote-create", path: 8 }, { type: "remote-create", path: 9 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 3 }, { type: "push" }),
     ];
-    for (const example of fixed) expect(await p6.check(example)).toEqual([]);
+    for (const example of fixed) expect(await p6.check(example), JSON.stringify(example)).toEqual([]);
     await holds(p6, fixed);
   });
 

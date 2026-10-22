@@ -975,14 +975,20 @@ export class SyncEngine {
    * A create not acknowledged yet holds its file as an untracked file does:
    * the merge path keeps it as a conflict copy, or takes it if its content
    * is the revision's (supersedeCreates).
+   *
+   * `holders: "lost"` claims a path the revision's file does not go to (a
+   * merge result that keeps the document's local rename, whose base still
+   * moves to the server's path): only documents the server lost yield
+   * there, so that no two newest server claims collide under the server's
+   * key (INV-2, PO-4, PO-12, #867). A file there is in no one's way.
    */
-  private async claimPath(path: string, documentId: string): Promise<"free" | "held" | "taken" | "alias"> {
+  private async claimPath(path: string, documentId: string, holders: "all" | "lost" = "all"): Promise<"free" | "held" | "taken" | "alias"> {
     const resolved = new Set<string>();
     // Each turn moves one holder away, or resolves one once.
     for (let turn = 0; turn < 16; turn++) {
-      const holder = await this.nextHolder(path, documentId);
+      const holder = await this.nextHolder(path, documentId, holders);
       if (holder === undefined) {
-        await this.dropStaleOutboxes(path, documentId);
+        if (holders === "all") await this.dropStaleOutboxes(path, documentId);
         return "free";
       }
       const { state, spelling } = holder;
@@ -1094,10 +1100,11 @@ export class SyncEngine {
    * file key, folders included), with the spelling it is bound at; or
    * a document the server lost (seq 0 after a resync) whose synced path
    * collides with `path` under the server's key, with its file if it has
-   * one.
+   * one. With `holders: "lost"`, only the last (claimPath).
    */
-  private async nextHolder(path: string, documentId: string): Promise<{ state: DocumentState; spelling: string | undefined } | undefined> {
+  private async nextHolder(path: string, documentId: string, holders: "all" | "lost" = "all"): Promise<{ state: DocumentState; spelling: string | undefined } | undefined> {
     const documents = await this.bindings.documents();
+    if (holders === "lost") return this.lostHolder(documents, path, documentId);
     // A create not acknowledged yet holds its file as an untracked file does
     // (the merge path keeps it as a conflict copy, or takes it if its
     // content is the revision's, supersedeCreates), unless a local rename moved
@@ -1123,6 +1130,11 @@ export class SyncEngine {
       if (!this.pathSpace.collides(binding.spelling, path, "server") || (await this.vault.stat(binding.spelling)) === null) continue;
       return { state, spelling: binding.spelling };
     }
+    return this.lostHolder(documents, path, documentId);
+  }
+
+  /** A document other than `documentId` the server lost (seq 0 after a resync) whose synced path collides with `path` under the server's key (nextHolder). */
+  private async lostHolder(documents: readonly DocumentState[], path: string, documentId: string): Promise<{ state: DocumentState; spelling: string | undefined } | undefined> {
     for (const state of documents) {
       if (state.documentId === documentId || !hasBase(state) || state.deleted || state.seq !== 0n || !this.pathSpace.collides(state.path, path, "server")) continue;
       const spelling = state.binding?.spelling;
@@ -1501,6 +1513,15 @@ export class SyncEngine {
         claim = await this.claimPath(copy, remote.documentId);
       }
       if (claim !== "free") return claim === "taken" ? "held" : claim;
+      // The result keeps the local rename, but the base moves to the
+      // server's path, the document's newest server claim from now on: a
+      // document the server lost whose synced path that is under the
+      // server's key yields it in this step, not at the next push (INV-2,
+      // PO-4, PO-12, design §4.6, #867).
+      if (!remote.deleted && !this.pathSpace.collides(outcome.path, remote.path, "server")) {
+        const server = await this.claimPath(remote.path, remote.documentId, "lost");
+        if (server !== "free") return server === "taken" ? "held" : server;
+      }
     }
     const respelled = respells(outcome.path);
     // The document's own file, which the result moves away from (or
