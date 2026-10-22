@@ -9,7 +9,8 @@ import { files, harness } from "./testing";
 // (design §4.5 step 4): the merge path takes the bound file, which stays
 // the document's (PO-1, INV-3). Before #790 the engine wrote the revision
 // as a new file and left the bound file untracked, so the next push
-// committed the user's edit of it as another document (seed 100101).
+// committed the user's edit of it as another document (seed 100101). The
+// merge keeps the user's name for it (#802).
 
 const bytes = (content: string) => new TextEncoder().encode(content);
 
@@ -19,7 +20,7 @@ describe("SyncEngine, given a moved note deleted on the server and brought back 
     ["in one pull, edited", false, true],
     ["one pull per revision, unedited", true, false],
     ["one pull per revision, edited", true, true],
-  ] as const)("keeps the moved file the note's and commits its later edit as the note's (%s)", async (_variant, stepwise, edited) => {
+  ] as const)("keeps the moved file the note's at the user's name and commits its later edit as the note's (%s)", async (_variant, stepwise, edited) => {
     const h = harness({ merge: "default" });
     h.server.commit({ documentId: "b", path: "Café.md", content: "b\n" });
     await h.engine.pull();
@@ -40,6 +41,9 @@ describe("SyncEngine, given a moved note deleted on the server and brought back 
     const held = [...(await files(h.vault)).keys()].filter((path) => h.vault.inodeOf(path) === inode);
     expect(held).toHaveLength(1);
     const path = held[0] ?? "";
+    // The user's rename wins over the re-create as over any remote revision
+    // (PO-9; ruling on #52, #802): the note stays at the user's name.
+    expect(path).toBe("A.md");
     // The user's edit survives as a conflict copy (principle 1). An unedited
     // file is no local change: its bytes are the deleted revision's, which
     // the server's history holds, and no copy of them becomes another

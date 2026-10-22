@@ -140,7 +140,8 @@ export class Intents {
       const state = await this.host.journal.getDocument(intent.documentId);
       if (state === undefined) return { removeIntents: [intent.id] };
       const operations = (await this.host.journal.listPending()).filter((operation) => operation.documentId === intent.documentId);
-      const binding = { spelling: steps.to, fileKey: this.host.space.filesystemKey(steps.to), seen: steps.hash };
+      // The engine, not the user, put the file at `to` (design §4.1; #802).
+      const binding = { spelling: steps.to, fileKey: this.host.space.filesystemKey(steps.to), seen: steps.hash, displaced: true };
       const changes: JournalChanges = { putConflicts: [steps.record], removeIntents: [intent.id] };
       if (intent.kind === "detach") {
         // Its outbox goes: the file is a new document's now.

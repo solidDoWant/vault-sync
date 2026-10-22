@@ -312,7 +312,7 @@ export class Bindings {
         // file but for such folders (the server's `Notes/a.md` for the file
         // `notes/a.md`) keeps its spelling, or the push would take the
         // folder's disk spelling for the user's rename.
-        if (spellings.length === 1 && spellings[0] !== undefined && !this.space.sameButFolderSpelling(spellings[0], binding.spelling)) binding = { ...binding, spelling: spellings[0] };
+        if (spellings.length === 1 && spellings[0] !== undefined && !this.space.sameButFolderSpelling(spellings[0], binding.spelling)) binding = { spelling: spellings[0], fileKey: binding.fileKey, seen: binding.seen };
       }
       if (binding !== state.binding || absence !== (state.absence ?? null)) changes.set(state.documentId, { ...state, binding, absence });
     }
@@ -375,11 +375,13 @@ export class Bindings {
    * The binding of the file the engine wrote at `path` with content `seen`.
    * A write into the file the document is bound to under another spelling
    * of one file (a case-only rename on a case-insensitive platform) keeps
-   * the file's name, so the binding keeps its spelling.
+   * the file's name, so the binding keeps its spelling, and who put the
+   * file there (Binding.displaced).
    */
   private written(kept: Binding | null | undefined, path: string, seen: string): Binding {
     const binding = this.bound(path, seen);
-    return kept !== undefined && kept !== null && kept.fileKey === binding.fileKey ? { ...binding, spelling: kept.spelling } : binding;
+    if (kept === undefined || kept === null || kept.fileKey !== binding.fileKey) return binding;
+    return kept.displaced === true ? { ...binding, spelling: kept.spelling, displaced: true } : { ...binding, spelling: kept.spelling };
   }
 
   /**

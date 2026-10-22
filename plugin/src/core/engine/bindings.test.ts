@@ -178,6 +178,36 @@ describe("Bindings", () => {
     expect(await row(h, "A")).toEqual({ binding: { spelling: "a.md", fileKey: "a.md", seen: hash("a1") }, absence: null });
   });
 
+  it("finds at start-up a user's case-only rename of a file the engine moved aside, which is the user's move then (#802)", async () => {
+    const h = await synced("windows");
+    await h.engine.settled();
+    h.engine.dispose();
+    const state = await h.journal.getDocument("A");
+    if (state?.binding == null) throw new Error("no binding");
+    // As rule W's displace leaves it (design §4.1).
+    await h.journal.putDocument({ ...state, binding: { ...state.binding, displaced: true } });
+
+    await h.vault.rename("a.md", "A.md");
+    h.restart();
+
+    const found = await row(h, "A");
+    expect(found?.binding?.spelling).toBe("A.md");
+    expect(found?.binding?.displaced).toBeUndefined();
+  });
+
+  it("keeps at start-up the record that the engine moved a file it finds where it left it (#802)", async () => {
+    const h = await synced("windows");
+    await h.engine.settled();
+    h.engine.dispose();
+    const state = await h.journal.getDocument("A");
+    if (state?.binding == null) throw new Error("no binding");
+    await h.journal.putDocument({ ...state, binding: { ...state.binding, displaced: true } });
+
+    h.restart();
+
+    expect((await row(h, "A"))?.binding?.displaced).toBe(true);
+  });
+
   it("re-keys at start-up a binding recorded under another filesystem key than the platform's (#699)", async () => {
     // An Android journal from before its shared storage got a case-insensitive file key holds the spelling itself.
     const h = harness({ merge: "default", pathRules: { platform: "android" }, vault: new InMemoryVault({ pathRules: { platform: "android" } }) });
@@ -283,6 +313,22 @@ describe("Bindings rules", () => {
 
     expect((await journal.getDocument("A"))?.revisionId).toBe("A2");
     expect((await binding(journal, "A")).binding?.spelling).toBe("b.md");
+  });
+
+  // #802 (design §4.1): an engine write into the file rule W's displace moved aside keeps the record that the engine
+  // put it there; a write that moves the document to another file is a new binding, which has none.
+  it("keeps the displaced record through an engine write into the same file, not into another (#802)", async () => {
+    const journal = new InMemoryJournal();
+    const copy = "s (conflict laptop 1).md";
+    const tombstone = { ...base("D", "s.md", "s1"), deleted: true };
+    await journal.putDocument({ ...tombstone, binding: { spelling: copy, fileKey: space.filesystemKey(copy), seen: hash("s1"), displaced: true }, absence: null });
+    const owner = await bindings(journal);
+
+    await owner.put({ ...tombstone, revisionId: "D2", seq: 2n }, { kind: "merged", path: copy, hash: hash("merged") });
+    expect((await binding(journal, "D")).binding).toEqual({ spelling: copy, fileKey: space.filesystemKey(copy), seen: hash("merged"), displaced: true });
+
+    await owner.put({ ...tombstone, revisionId: "D3", seq: 3n }, { kind: "merged", path: "back.md", hash: hash("back") });
+    expect((await binding(journal, "D")).binding).toEqual({ spelling: "back.md", fileKey: space.filesystemKey("back.md"), seen: hash("back") });
   });
 
   it("unbinds the document bound to a file an engine write binds another document to (C1)", async () => {

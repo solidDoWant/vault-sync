@@ -47,7 +47,25 @@ describe("mergePath (design §4.7, PO-9)", () => {
     expect(mergePath(undefined, "other.md", remote({ path: "new.md" }))).toBe("new.md");
   });
 
-  it("takes the remote path for a tombstone brought back by a bound file elsewhere", () => {
+  // Ruling on #52 (#802): the user's unpushed rename wins over another device's re-create of a document bound on its
+  // tombstone, as over any remote revision.
+  it("keeps the user's rename of a document bound on its tombstone against a revision that brings it back", () => {
+    const bound = { spelling: "A.md", fileKey: "a.md", seen: "h1" };
+    expect(mergePath(state({ deleted: true, binding: bound }), "A.md", remote({ path: "notes/f.md" }))).toBe("A.md");
+  });
+
+  it("takes the remote path for a document bound on its tombstone at the tombstone's path", () => {
+    const bound = { spelling: "a.md", fileKey: "a.md", seen: "h1" };
+    expect(mergePath(state({ deleted: true, binding: bound }), "a.md", remote({ path: "back.md" }))).toBe("back.md");
+  });
+
+  it("takes the remote path for a document bound on its tombstone whose file the engine moved aside", () => {
+    const displaced = { spelling: "s (conflict laptop 1).md", fileKey: "s (conflict laptop 1).md", seen: "h1", displaced: true };
+    expect(mergePath(state({ path: "s.md", deleted: true, binding: displaced }), "s (conflict laptop 1).md", remote({ path: "ab:c.md" }))).toBe("ab:c.md");
+  });
+
+  it("takes the remote path for a tombstone with no file here", () => {
+    expect(mergePath(state({ deleted: true, binding: null }), "back.md", remote({ path: "back.md" }))).toBe("back.md");
     expect(mergePath(state({ deleted: true }), "copy.md", remote({ path: "back.md" }))).toBe("back.md");
   });
 });

@@ -103,12 +103,19 @@ export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined
  *   path than its synced one (a local rename, a case-only or respelled one
  *   included): the local path. The local rename survives a remote edit and
  *   wins over a concurrent remote rename.
- * - Otherwise (no local rename, a local delete, a tombstone or a document
- *   this device never synced): the remote revision's path, the remote rename
- *   applied.
+ * - A document bound on its tombstone (boundLocalChange) whose file the
+ *   user moved off the tombstone's path: the local path. The user's rename
+ *   wins over another device's revision that brings the document back, as
+ *   over any remote revision (ruling on decision #52, #802). A file rule
+ *   W's `displace` moved aside (`binding.displaced`) is no user's rename.
+ * - Otherwise (no local rename, a local delete, a tombstone with no file
+ *   here or one the engine moved aside, or a document this device never
+ *   synced): the remote revision's path, the remote rename applied.
  */
 export function mergePath(state: DocumentState | undefined, localPath: string, remote: RemoteRevision): string {
   if (remote.deleted) return localPath;
-  const ownFile = state !== undefined && !state.deleted;
-  return ownFile && localPath !== state.path ? localPath : remote.path;
+  if (state === undefined || localPath === state.path) return remote.path;
+  if (!state.deleted) return localPath;
+  const binding = state.binding;
+  return binding !== undefined && binding !== null && binding.displaced !== true && binding.spelling === localPath ? localPath : remote.path;
 }

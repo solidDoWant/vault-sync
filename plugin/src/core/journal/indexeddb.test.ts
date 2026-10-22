@@ -507,7 +507,7 @@ describe("IndexedDbJournal", () => {
       await v3.addPending(samplePending({ revisionId: "p-delete", documentId: "unrecorded", path: "plain.md", deleted: true }));
       v3.close();
 
-      const v4 = await IndexedDbJournal.open(factory, name, journalMigrations, { fileKey: (path) => path.toUpperCase() });
+      const v4 = await IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 4), { fileKey: (path) => path.toUpperCase() });
       expect(await v4.getDocument("stale")).toEqual({ ...stale, binding: { spelling: "now.md", fileKey: "NOW.MD", seen: "h-now" }, absence: null });
       expect(await v4.getDocument("unrecorded")).toEqual({ ...unrecorded, binding: null, absence: "user-deleted" });
       expect(await v4.getDocument("tombstone")).toEqual({ ...tombstone, binding: null, absence: "never" });
@@ -540,11 +540,33 @@ describe("IndexedDbJournal", () => {
       }
       v4.close();
 
-      const v5 = await IndexedDbJournal.open(factory, name);
+      const v5 = await IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 5));
       expect(await v5.getDocument("released")).toEqual({ ...released, deleted: false });
       for (const state of [tombstone, unbound, userDeleted, undeferred, create]) expect(await v5.getDocument(state.documentId)).toEqual(state);
       expect(await snapshot(v5)).toBe(await snapshot(expected));
       v5.close();
+    });
+
+    // #802: a binding records whether rule W's displace put the file there
+    // (design §4.1). A v6 journal did not, so v7 takes every binding for the
+    // engine's, which keeps the path merge of a tombstone as it was.
+    it("marks every binding displaced from v6 to v7, leaving unbound documents as they are", async () => {
+      const factory = new FakeIDBFactory();
+      const v6 = await IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 6));
+      const live = { ...sampleDocument({ documentId: "live", path: "a.md" }), binding: { spelling: "a.md", fileKey: "a.md", seen: "h" }, absence: null };
+      const moved = { ...sampleDocument({ documentId: "moved", path: "gone.md", deleted: true }), binding: { spelling: "Moved.md", fileKey: "moved.md", seen: "h" }, absence: null };
+      const tombstone = { ...sampleDocument({ documentId: "tombstone", path: "old.md", deleted: true }), binding: null, absence: "never" as const };
+      for (const state of [live, moved, tombstone]) await v6.putDocument(state);
+      await v6.setCursor(7n);
+      v6.close();
+
+      const v7 = await IndexedDbJournal.open(factory, name, journalMigrations.slice(0, 7));
+      expect(await v7.getDocument("live")).toEqual({ ...live, binding: { ...live.binding, displaced: true } });
+      expect(await v7.getDocument("moved")).toEqual({ ...moved, binding: { ...moved.binding, displaced: true } });
+      expect(await v7.getDocument("tombstone")).toEqual(tombstone);
+      expect((await v7.documentByFileKey("moved.md"))?.documentId).toBe("moved");
+      expect(await v7.getCursor()).toBe(7n);
+      v7.close();
     });
 
     describe("from v2 to v3 (path ownership)", () => {
@@ -606,14 +628,15 @@ describe("IndexedDbJournal", () => {
 
         const upgraded = await IndexedDbJournal.open(factory, name, journalMigrations, { fileKey });
         const fields = Object.fromEntries((await upgraded.listDocuments()).map((state) => [state.documentId, [state.binding, state.absence]]));
+        // v7 then marks every binding the engine's (Binding.displaced, #802): a v2 journal never recorded who moved a file.
         expect(fields).toEqual({
-          live: [{ spelling: "Notes/Ä.md", fileKey: "NOTES/Ä.MD", seen: "h-live" }, null],
+          live: [{ spelling: "Notes/Ä.md", fileKey: "NOTES/Ä.MD", seen: "h-live", displaced: true }, null],
           tombstone: [null, "never"],
           released: [null, "released"],
-          edited: [{ spelling: "edited.md", fileKey: "EDITED.MD", seen: "h-edit" }, null],
-          renamed: [{ spelling: "New.md", fileKey: "NEW.MD", seen: "h-2" }, null],
+          edited: [{ spelling: "edited.md", fileKey: "EDITED.MD", seen: "h-edit", displaced: true }, null],
+          renamed: [{ spelling: "New.md", fileKey: "NEW.MD", seen: "h-2", displaced: true }, null],
           "deleted-locally": [null, "user-deleted"],
-          recreated: [{ spelling: "back.md", fileKey: "BACK.MD", seen: "h-back" }, null],
+          recreated: [{ spelling: "back.md", fileKey: "BACK.MD", seen: "h-back", displaced: true }, null],
         });
         // A pending create gets no document row: the engine still reads every row as a synced base.
         expect(await upgraded.getDocument("created")).toBeUndefined();
@@ -628,7 +651,7 @@ describe("IndexedDbJournal", () => {
         await populateV2(factory);
 
         const upgraded = await IndexedDbJournal.open(factory, name);
-        expect((await upgraded.getDocument("live"))?.binding).toEqual({ spelling: "Notes/Ä.md", fileKey: "Notes/Ä.md", seen: "h-live" });
+        expect((await upgraded.getDocument("live"))?.binding).toEqual({ spelling: "Notes/Ä.md", fileKey: "Notes/Ä.md", seen: "h-live", displaced: true });
         upgraded.close();
       });
 
