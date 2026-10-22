@@ -38,7 +38,8 @@ concurrency:
 
 jobs:
   # Two shapes, each on its own runner: CI's default (3 scripted clients, 2
-  # engine users) with every suite, and an engine-heavy one (4 scripted
+  # engine users) with every suite, named explicitly because `restores` is
+  # out of the default suites until #861 is fixed, and an engine-heavy one (4 scripted
   # clients, 3 engine users, so every seed has all three platforms' path
   # rules among the engines) with the seeded suites only, which caught the
   # case-insensitive engine bugs the default shape missed (#379, #380, #381).
@@ -54,7 +55,7 @@ jobs:
       fail-fast: false
       matrix:
         shape:
-          - { name: default, clients: 3, engines: 2, suites: "", artifact: sim-regressions }
+          - { name: default, clients: 3, engines: 2, suites: "seeds,retention,members,restores,regressions,scenarios,determinism", artifact: sim-regressions }
           - { name: engine-heavy, clients: 4, engines: 3, suites: "seeds,retention", artifact: sim-regressions-engine-heavy }
     env:
       # Inputs reach the scripts only through the environment, never
