@@ -3007,8 +3007,8 @@ export interface RestoredServerResult {
 /**
  * A server restored from a database backup whose head_seq then passes a
  * device's cursor again (#155, SPEC.md §6.1, §8). The first engine writes a
- * note and the database is backed up; it then writes two more revisions,
- * which the second engine pulls (its cursor is 3). The backup is restored
+ * note and the database is backed up; the second engine then edits it, the
+ * first writes another note, and the second engine pulls (its cursor is 3). The backup is restored
  * (head_seq 1), and a third engine, new to the vault, writes three notes:
  * the restored server numbers them 2 to 4, past the second engine's cursor.
  * The second engine's next pull must detect the divergence and resync: it
@@ -3037,7 +3037,11 @@ export async function restoredServer(endpoints: SimEndpoints): Promise<RestoredS
   await push(first);
   if ((await run.snapshot()) !== 1n) throw new Error("expected the backup at seq 1");
 
-  log(await first.edit("notes/kept.md", encoder.encode(textLines("kept", "edited before the restore"))));
+  // The second engine's own edit, acknowledged: a revision it only pulled is
+  // its writer's to send again after a restore (#874, design §4.6).
+  await pull(second);
+  log(await second.edit("notes/kept.md", encoder.encode(textLines("kept", "edited before the restore"))));
+  await push(second);
   log(await first.edit("notes/lost.md", encoder.encode(textLines("only before the restore"))));
   await push(first);
   await pull(second);
@@ -3498,8 +3502,9 @@ export interface PurgedCursorResult extends RunResult {
  *
  * With `pruneMarkers`, the purges' markers then age past the marker horizon
  * and retention prunes them (#514) before the second engine pulls: its
- * anchor check finds neither the revision nor a marker, so it resyncs and
- * merges every note it holds, keeping every file.
+ * anchor check finds neither the revision nor a marker, so it resyncs: it
+ * pulls the heads over the notes it never changed at revisions it only
+ * pulled (#874) and merges the rest, losing no edit.
  *
  * With `localEdit`, the second engine's user edits the later note before
  * that pull, an edit not yet pushed (#519): it must survive (principle 1).

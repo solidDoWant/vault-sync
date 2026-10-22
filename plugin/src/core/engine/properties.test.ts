@@ -654,6 +654,9 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 2 }, { type: "user-rename", file: 0, mode: "pool", target: 3 }),
       // #770 (seed 719): a document's file edited during a pull, renamed, then a create at its new path and an edit.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "remote-create", path: 2 }, { type: "remote-edit", document: 0 }),
+      // #874 (seed 566): an unchanged file at another device's revision the restore lost, then that device's edit on an
+      // older revision: the head is pulled, never this device's change (design §4.6).
+      scripted("posix", { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "remote-edit", document: 0 }, { type: "pull" }, { type: "restore", fraction: 0.25 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
     ]);
   });
 
@@ -667,11 +670,17 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }] }),
       // #868: two closed-app renames of one file and a third onto its intermediate path, before the first push.
       scripted("macos", { type: "user-create", path: 9 }, { type: "user-create", path: 8 }, { type: "closed", changes: [{ file: 3, delete: false, target: 5 }, { file: 3, delete: false, target: 0 }, { file: 0, delete: false, target: 8 }] }, { type: "push" }),
+      // #877 (seed 566): a closed-app rename of a file whose edit a deferred, unmaterializable remote rename held back.
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-edit", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "closed", changes: [{ file: 0, delete: false, target: 3 }] }, { type: "pull" }),
     ]);
   });
 
+  // Fixed case: #874 (seed 566), an unchanged file at another device's revision the restore lost, then that device's
+  // delete: the tombstone is pulled, never this device's resurrection (design §4.6).
   it("P2: tombstones come from user deletes, resurrections from user changes", { timeout }, async () => {
-    await holds(p2);
+    const fixed = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0.5 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "restore", fraction: 0 });
+    expect(await p2.check(fixed)).toEqual([]);
+    await holds(p2, [fixed]);
   });
 
   // P3 exclusivity: INV-1 and INV-2 after every command. Flipped in R7b (#700). Fixed cases: R7a's pin (a document the
@@ -780,12 +789,70 @@ describe("engine properties (design §9.3)", () => {
   // document in the same journal write, so a crash cannot leave it released at its restored base with nothing to
   // re-derive it. Fixed cases: a rename deferred as unmaterializable on Windows, lost by a restore that keeps its base,
   // crashed at each journal write of the resync.
+  // #870 (INV-7, INV-9, PO-8, PO-10): an `apply` intent's recovery finishes a remote respelling only if the file the
+  // vault holds at the revision's path has its spelling. Fixed case (seed 566): on macOS a crash right after the
+  // intent of `I.md` → `ı.md` (one file under `F`) is recovered by redoing the rename, never by recording the document
+  // at `ı.md` while its file stays `I.md`, which the push would send back as a local rename.
   it("P4: a crash during a restore that lost a released document's deferral reaches the state a run without it reaches", { timeout }, async () => {
     const lost: WorldCommand[] = [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" }, { type: "restore", fraction: 0.5 }, { type: "pull" }];
-    await holds(
-      p4Ghosts,
-      Array.from({ length: 12 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", lost, write + 1]),
-    );
+    const respelled: WorldCommand[] = [
+      { type: "remote-create", path: 3 },
+      { type: "user-create", path: 1 },
+      { type: "pull" },
+      { type: "user-rename", file: 0, mode: "pool", target: 0 },
+      { type: "user-rename", file: 0, mode: "pool", target: 3 },
+      { type: "restore", fraction: 0 },
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 0, path: 2 },
+      { type: "edit-during-pull", file: 1 },
+    ];
+    // The rename of the file an `alias` deferral waits for, not pushed yet, crashed at its journal write: a restarted
+    // engine keeps the deferral waiting while the moved document's synced path still claims the alias, as the live one does.
+    const aliasMoved: WorldCommand[] = [
+      { type: "user-create", path: 2 },
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "user-create", path: 1 },
+      { type: "restore", fraction: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 1, path: 3 },
+      { type: "push" },
+      { type: "user-rename", file: 1, mode: "pool", target: 1 },
+      { type: "push" },
+      { type: "edit-during-pull", file: 0 },
+    ];
+    // A pull whose later page moves the holder of an `alias` deferral away applies the deferred revision before it
+    // ends, as a pull whose one page holds both does: a crash in the first pull moves the page boundary, and the
+    // restore that follows loses the document unless this device holds it.
+    const aliasFreed: WorldCommand[] = [
+      { type: "remote-create", path: 0 },
+      { type: "remote-create", path: 3 },
+      { type: "remote-rename", document: 1, path: 2 },
+      { type: "remote-rename", document: 0, path: 0 },
+      { type: "pull" },
+      { type: "restore", fraction: 0 },
+    ];
+    // #884 (seed 566): a crash at the write that defers `a.md`'s new revision while W(b) postpones its holder's
+    // detach (#803) still has the end of the pull detach the holder, so the user edit that follows lands on the file
+    // it lands on in a run without the crash.
+    const postponed: WorldCommand[] = [
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 0, path: 1 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "remote-create", path: 0 },
+      { type: "pull" },
+      { type: "edit-during-pull", file: 1 },
+    ];
+    const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["windows", postponed, 5],
+      ["macos", respelled, 13],
+      ["macos", aliasMoved, 18],
+      ["windows", aliasFreed, 2],
+    ];
+    for (const example of fixed) expect(await p4Ghosts.check(example)).toEqual([]);
+    await holds(p4Ghosts, [...Array.from({ length: 12 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", lost, write + 1]), ...fixed]);
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.

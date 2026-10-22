@@ -9,7 +9,8 @@ import { files, harness, moveHeadBeforeCommit, text, type Harness } from "./test
 // is a plain forward revision, applied when its file is unchanged and merged
 // only when the user changed it (#480). A server without purge markers
 // reports the purge as divergence; the engine cannot tell that from a
-// restore, so it merges, which keeps every file (#488).
+// restore, so it merges every file with a change of this device's (#488),
+// and pulls over one it never changed at a revision it only pulled (#874).
 
 /** x.md and k.md synced at seqs 1 and 2; the cursor sits on k's revision. */
 async function synced(h: Harness) {
@@ -24,6 +25,13 @@ async function pullAfterPurge(h: Harness, purged: string[], resynced = false) {
   h.server.commit({ documentId: "k", path: "k.md", content: "k2" });
   for (const revisionId of ["k@2", ...purged]) h.server.purge(revisionId);
   expect(await h.engine.pull()).toMatchObject({ resynced, cursor: h.server.currentHeadSeq });
+}
+
+/** This device edits `path` and commits it: an acknowledged write of its own, with its anchor (#874). */
+async function commitHere(h: Harness, path: string, content: string) {
+  await h.vault.write(path, new TextEncoder().encode(content));
+  await h.engine.settled();
+  await h.engine.push();
 }
 
 /** The engine pushes: what it committed, and what the server holds afterwards. */
@@ -82,28 +90,28 @@ describe("SyncEngine pull after retention purged the cursor's revision (#480)", 
     expect(await pushed(h)).toMatchObject({ server: new Map([["k.md", "k2"], ["x.md", "mine"]]), x: false });
   });
 
-  it("keeps an unchanged note another device deleted when a server without purge markers reports the purge as divergence", async () => {
+  it("applies another device's delete of an unchanged note when a server without purge markers reports the purge as divergence", async () => {
     const h = harness({ merge: "default", server: new InMemoryServer({ maxPageSize: 2, maxDownloadBytes: 5, purgeMarkers: false }) });
     await synced(h);
     h.server.commit({ documentId: "x", path: "x.md", deleted: true }); // 3, carries x1's content
 
     await pullAfterPurge(h, ["x@1"], true);
 
-    // Merged as after a restore: the file stays, and the push brings the
-    // note back. k's purged merge base leaves a conflict copy of k1 too.
-    const local = await files(h.vault);
-    expect([local.get("x.md"), local.get("k.md")]).toEqual(["x1", "k2"]);
-    const { server, x } = await pushed(h);
-    expect([server.get("x.md"), server.get("k.md"), x]).toEqual(["x1", "k2", false]);
+    // As after a restore: x and k are unchanged files at revisions this
+    // device only pulled, so their heads are pulled (#874), the delete too.
+    expect(await files(h.vault)).toEqual(new Map([["k.md", "k2"]]));
+    expect(await h.journal.listConflicts()).toEqual([]);
+    expect(await pushed(h)).toEqual({ committed: 0, server: new Map([["k.md", "k2"]]), x: true });
   });
 });
 
 describe("SyncEngine resync after a server restore, whose deletes are merged (SPEC.md §8)", () => {
-  /** x synced at x2 (seq 3), the cursor on c's revision (seq 4); the restore then loses x2. */
+  /** x synced at x2 (seq 3), this device's own commit, the cursor on c's revision (seq 4); the restore then loses x2. */
   async function syncedThenRestored(h: Harness) {
     h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
     h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
-    h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+    await h.engine.pull();
+    await commitHere(h, "x.md", "x2"); // 3
     h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 4
     await h.engine.pull();
     h.server.restoreTo(2n);
@@ -144,8 +152,8 @@ describe("SyncEngine resync after a server restore, whose deletes are merged (SP
   it("keeps a note another device deleted on the restored server whose revision at the cursor's seq retention purged (#488)", async () => {
     const h = harness({ merge: "default" });
     h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 1
-    h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 2, the cursor's seq
     await h.engine.pull();
+    await commitHere(h, "x.md", "x2"); // 2, this device's, the cursor's seq
     h.server.restoreTo(1n);
     h.server.commit({ documentId: "o", path: "o.md", content: "o1" }); // 2, the cursor's seq
     h.server.commit({ documentId: "x", path: "x.md", deleted: true }); // 3
@@ -189,7 +197,8 @@ describe("SyncEngine resync after a server restore, whose deletes are merged (SP
     const h = harness({ merge: "default" });
     h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
     h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
-    h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+    await h.engine.pull();
+    await commitHere(h, "x.md", "x2"); // 3, this device's
     h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 4
     await h.engine.pull();
     h.server.restoreTo(2n);
@@ -213,7 +222,8 @@ describe("SyncEngine resync after a server restore, whose deletes are merged (SP
     const h = harness({ merge: "default" });
     h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
     h.server.commit({ documentId: "x", path: "x.md", content: "x1" }); // 2
-    h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+    await h.engine.pull();
+    await commitHere(h, "x.md", "x2"); // 3, this device's
     h.server.commit({ documentId: "w", path: "w.md", content: "w1" }); // 4
     h.server.commit({ documentId: "c", path: "c.md", content: "c1" }); // 5
     await h.engine.pull();
