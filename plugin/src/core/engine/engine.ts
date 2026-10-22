@@ -18,7 +18,7 @@ import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { boundLocalChange, mergePath, ownMovedCreate, ruleW } from "./decide";
 import { Intents } from "./intents";
-import { busyClaims, ghost, planPush, type Busy, type DirtyPaths } from "./push-plan";
+import { busyClaims, lost, planPush, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
@@ -1776,6 +1776,21 @@ export class SyncEngine {
       delete unproved.descendsFromBase;
       await this.journal.putDeferred(unproved);
     }
+    // An operation on a base the restored server lacks would be refused for
+    // good as "the document does not exist" (#829, PO-12, design §4.6): it is
+    // resolved against the restored server here. A live revision becomes a
+    // create under the document's own id, as a ghost's re-create is, under a
+    // new revision id since its fields change. A delete has nothing left to
+    // delete: it is dropped, and the document, with no file here, is
+    // forgotten below.
+    for (const operation of await this.journal.listPending()) {
+      if (operation.baseRevisionId === "" || heads.has(operation.documentId)) continue;
+      const state = await this.journal.getDocument(operation.documentId);
+      if (state === undefined || state.revisionId !== operation.baseRevisionId) continue;
+      const create = operation.deleted ? [] : [{ ...operation, revisionId: this.newId(), baseRevisionId: "" }];
+      await this.journal.transact({ removePending: [operation.revisionId], addPending: create });
+    }
+    const outbox = new Set((await this.journal.listPending()).map((operation) => operation.documentId));
     // A document the restored server lacks keeps the old server's seq, under
     // which the restored server's own revisions of it would look applied:
     // seq 0 is no revision of this server (see applyRevision). Marked before
@@ -1786,7 +1801,7 @@ export class SyncEngine {
     // forgets it, so it claims no path (design §4.6, PO-12, #768).
     for (const state of await this.journal.listDocuments()) {
       if (heads.has(state.documentId)) continue;
-      if (!pending.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId] }));
+      if (!outbox.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId] }));
       else if (state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
@@ -1987,11 +2002,12 @@ export class SyncEngine {
   /**
    * Whether `operation` is on its document's base: the base is still the
    * one it was derived from, or the document is one the restored server
-   * lacks (ghost), which the operation creates again.
+   * lacks (a ghost, or a tombstone it lost), which the operation creates
+   * again (#829).
    */
   private async onBase(operation: PendingOperation): Promise<boolean> {
     const state = await this.journal.getDocument(operation.documentId);
-    if (state !== undefined && operation.baseRevisionId === "" && ghost(state)) return true;
+    if (state !== undefined && operation.baseRevisionId === "" && lost(state)) return true;
     return (state?.revisionId ?? "") === operation.baseRevisionId;
   }
 
