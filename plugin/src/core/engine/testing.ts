@@ -698,6 +698,12 @@ export type WorldCommand =
   | { type: "push" }
   | { type: "offline-push" }
   | { type: "crash"; write: number }
+  /**
+   * The app pushes and quits, and the user renames (to a pool path) or
+   * deletes files while it is not running, so the engine sees no event of
+   * them: its start-up scan finds them (design §4.3 E7, R11).
+   */
+  | { type: "closed"; changes: { file: number; delete: boolean; target: number }[] }
   | { type: "restore"; fraction: number }
   | { type: "purge"; revision: number };
 
@@ -964,6 +970,17 @@ export class PropertyWorld {
         break;
       case "crash":
         this.armCrash(command.write);
+        break;
+      case "closed":
+        // The app quits after a push, which read every changed file: E7 matches by the content the engine last read
+        // (`seen`), so a rename of a file changed since is a delete plus a create by design (§4.3 E7).
+        await this.run(() => this.engine.push());
+        this.engine.dispose();
+        for (const change of command.changes) {
+          if (change.delete) await this.userDelete(change.file);
+          else await this.userRename(change.file, "pool", change.target);
+        }
+        this.engine = this.createEngine();
         break;
       case "restore": {
         const seq = BigInt(Math.floor(Number(this.server.currentHeadSeq) * command.fraction));

@@ -373,7 +373,7 @@ export class SyncEngine {
     this.maxDownloadBytes = BigInt(options.maxDownloadBytes ?? defaultMaxDownloadBytes);
     this.pathSpace = new PathSpace(this.pathRules);
     this.echoes = new EchoSuppressor((path) => this.pathSpace.filesystemKey(path));
-    this.bindings = new Bindings(this.journal, this.vault, this.pathSpace);
+    this.bindings = new Bindings(this.journal, this.vault, this.pathSpace, this.classify);
     this.intents = new Intents({
       journal: this.journal,
       bindings: this.bindings,
@@ -2478,7 +2478,7 @@ export class SyncEngine {
     // behind it and every push rejects with its error) until a restart,
     // whose scan reconciles bindings with the disk (PO-3).
     if (event.type === "rename") await this.bindings.renamed(event.oldPath, event.path, duringScan);
-    else if (event.type === "delete") await this.bindings.deleted(event.path, "user");
+    else if (event.type === "delete") await this.bindings.deleted(event.path, "user", duringScan);
   }
 
   private async readOrNull(path: string): Promise<Uint8Array | null> {

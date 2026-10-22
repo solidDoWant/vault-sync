@@ -149,7 +149,7 @@ describe("phantom-delete on inodes", () => {
       expect(check([synced, tombstone, create], late)).toEqual([identity(3n), phantom(2n)]);
     });
 
-    it("reports both when the engine committed the renamed file as an edit of an existing document whose own file was not lost to the crash (§5.5 X-8 is narrowed)", () => {
+    it("reports both when the engine committed the renamed file as an edit of an existing document (§5.5 X-8 removed by R11)", () => {
       const existing = revision({ documentId: "d2", seq: 0n, revisionId: "r0", path: "b.md", contentHash: "cc", deviceId: "scripted" });
       const edit = revision({ documentId: "d2", seq: 3n, path: "b.md" });
       expect(check([existing, synced, tombstone, edit], lost())).toEqual([identity(3n), phantom(2n)]);
@@ -164,18 +164,19 @@ describe("phantom-delete on inodes", () => {
 
 describe("identity on inodes", () => {
   // #793, seed 100117's shape: the user deletes d2's file and renames d1's onto its path, and the app is killed before either event is persisted.
-  it("accepts a lost rename committed as an edit of a document whose file the user also lost to the crash (§5.5 X-8, narrowed)", () => {
+  it("reports a lost rename committed as an edit of a document whose file the user also lost to the crash (§5.5 X-8 removed by R11)", () => {
     const both = () => created().user("create", "b.md", "2", 1n, "bb");
     const feed = [synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb" }), revision({ seq: 3n, deleted: true }), revision({ documentId: "d2", seq: 4n, path: "b.md" })];
+    const transfer = ["identity: e1 committed d2 at b.md (seq 4, r4) from inode 1, which is d1's file", phantom(3n)];
+    // Inside the window: the start-up scan's content match (E7b) follows the rename, so the transfer is the engine's bug.
     const lost = both().settled(2n).user("delete", "b.md", "2", 2n).rename("user", "a.md", "b.md", "1", 2n).crash(2n);
-    expect(check(feed, lost)).toEqual([]);
-    // Outside the window (the engine settled after both changes): an identity transfer and a phantom delete.
+    expect(check(feed, lost)).toEqual(transfer);
+    // Outside the window (the engine settled after both changes): the same.
     const seen = both().settled(2n).user("delete", "b.md", "2", 2n).rename("user", "a.md", "b.md", "1", 2n).settled(2n).crash(2n);
-    expect(check(feed, seen)).toEqual(["identity: e1 committed d2 at b.md (seq 4, r4) from inode 1, which is d1's file", phantom(3n)]);
-    // d2's own file was not lost: still a transfer.
-    const kept = both().settled(2n).rename("user", "a.md", "c.md", "1", 2n).crash(2n);
-    const elsewhere = [synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb" }), revision({ seq: 3n, deleted: true }), revision({ documentId: "d2", seq: 4n, path: "c.md" })];
-    expect(check(elsewhere, kept)).toEqual(["identity: e1 committed d2 at c.md (seq 4, r4) from inode 1, which is d1's file", phantom(3n)]);
+    expect(check(feed, seen)).toEqual(transfer);
+    // d1 kept at b.md under its own id, with d2 deleted by the user: no violation.
+    const kept = [synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb" }), revision({ documentId: "d2", seq: 3n, path: "b.md", deleted: true }), revision({ seq: 4n, path: "b.md" })];
+    expect(check(kept, lost)).toEqual([]);
   });
 
   it("accepts commits of a document from its own file, including after a rename", () => {

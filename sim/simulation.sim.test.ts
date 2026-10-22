@@ -861,28 +861,22 @@ describe.runIf(suites.has("scenarios"))("scripted path-holding scenarios (#264)"
 });
 
 describe.runIf(suites.has("scenarios"))("scripted lost-rename scenarios (#280)", () => {
-  it.each(["editor-first", "renamer-first"] as const)("never loses a concurrent edit to the delete a rename lost to a crash becomes (%s)", async (order) => {
+  it.each(["editor-first", "renamer-first"] as const)("keeps a rename lost to a crash as the note's rename, with a concurrent edit (%s)", async (order) => {
     const result = await renameLostToCrash(environment, order);
     const trace = tail(result.trace, 200);
 
     expect(result.violations, trace).toEqual([]);
     const note = result.before.get("note.md");
     expect(note, trace).toBeDefined();
-    // The edit wins over the delete: the note is live where it was, with the edit, under its own id.
-    const expected = new Map([
-      ["moved.md", "one\ntwo\n"],
-      ["note.md", result.edited],
-    ]);
+    // The start-up scan's content match finds the rename (E7, decision 4): the note moves under its own id, with the edit (local rename wins, §7).
+    const expected = new Map([["moved.md", result.edited]]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
-    expect(result.documents.get("note.md"), trace).toBe(note);
-    expect(result.documents.get("moved.md"), trace).toBeDefined();
-    expect(result.documents.get("moved.md"), trace).not.toBe(note);
-    // Only when the delete reached the server first did it land at all, as a tombstone the edit then overrode.
-    expect(result.tombstoned, trace).toEqual(order === "renamer-first" ? [note] : []);
+    expect(result.documents, trace).toEqual(new Map([["moved.md", note]]));
+    expect(result.tombstoned, trace).toEqual([]);
   });
 
-  it.each(["editor-first", "renamer-first"] as const)("never loses a concurrent edit to the delete a rename lost to a crash becomes, when the rename lands on a deleted note's id (%s)", async (order) => {
+  it.each(["editor-first", "renamer-first"] as const)("keeps a rename lost to a crash onto a deleted note's path as the note's rename, with a concurrent edit (#793, %s)", async (order) => {
     const result = await renameLostToCrash(environment, order, "deleted-note-path");
     const trace = `${tail(result.trace, 200)}\nconflicts: ${JSON.stringify(result.conflicts)}\nvaults: ${JSON.stringify(result.vaults.map((vault) => [...vault]))}\ndocuments: ${JSON.stringify([...result.documents])}\ntombstoned: ${JSON.stringify(result.tombstoned)}`;
 
@@ -891,17 +885,13 @@ describe.runIf(suites.has("scenarios"))("scripted lost-rename scenarios (#280)",
     const other = result.before.get("moved.md");
     expect(note, trace).toBeDefined();
     expect(other, trace).toBeDefined();
-    // The edit of the renamed-away note survives the delete: it is live where it was, with the edit, under its own id.
-    // The deleted note at moved.md now holds the renamed content, as the restarted engine took it for an edit of that note.
-    const expected = new Map([
-      ["moved.md", "one\ntwo\n"],
-      ["note.md", result.edited],
-    ]);
+    // The start-up scan finds the note's file at moved.md, which holds the note's content and not the other note's (E7b, #793):
+    // the note moves there under its own id, with the edit, and the other note, whose file the user deleted, is deleted.
+    const expected = new Map([["moved.md", result.edited]]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
-    expect(result.documents.get("note.md"), trace).toBe(note);
-    expect(result.documents.get("moved.md"), trace).toBe(other);
-    expect(result.tombstoned, trace).toEqual(order === "renamer-first" ? [note] : []);
+    expect(result.documents, trace).toEqual(new Map([["moved.md", note]]));
+    expect(result.tombstoned, trace).toEqual([other]);
   });
 });
 

@@ -87,6 +87,26 @@ const steadyCommands: fc.Arbitrary<WorldCommand>[] = [
   moveOntoIncoming,
 ];
 
+/**
+ * Renames and deletes made while the app is not running (design §4.3 E7,
+ * decision 4; R11, #793): every content is unique, so the start-up scan's
+ * content match is, and each document keeps its identity (P1, P2).
+ */
+/** The notes of the path pool (`worldPaths`): `x` and `b.md.` are of another kind, and a rename to another kind is a delete plus a create by design (E7 matches one kind). */
+const note = fc.constantFrom(...worldPaths.flatMap((path, at) => (path.endsWith(".md") ? [at] : [])));
+
+const closedCommands: fc.Arbitrary<WorldCommand>[] = [
+  note.map((path) => ({ type: "user-create", path })),
+  index.map((file) => ({ type: "user-edit", file })),
+  note.map((path) => ({ type: "remote-create", path })),
+  index.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(index, note).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  index.map((document) => ({ type: "remote-delete", document })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+  fc.array(fc.record({ file: index, delete: fc.boolean(), target: note }), { minLength: 1, maxLength: 3 }).map((changes) => ({ type: "closed", changes })),
+];
+
 const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write }))];
 
 /**
@@ -556,6 +576,16 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // P2 provenance: INV-5 and INV-6 (PO-6/7) on inodes.
+  // P1 and P2 over renames and deletes the engine never saw (design §4.3 E7, decision 4; R11): the start-up scan's unique
+  // content match keeps each renamed file its document's, also onto a path whose own file the user deleted (E7b, #793).
+  it("P1, P2: a rename or delete made while the app was not running keeps every document's identity", { timeout }, async () => {
+    const both = (world: PropertyWorld) => [...violations(world, "P1"), ...violations(world, "P2")];
+    await holds(overWorld("P1", both, closedCommands), [
+      scripted("posix", { type: "user-create", path: 0 }, { type: "user-create", path: 2 }, { type: "push" }, { type: "closed", changes: [{ file: 1, delete: true, target: 0 }, { file: 0, delete: false, target: 2 }] }),
+      scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "closed", changes: [{ file: 0, delete: false, target: 2 }] }),
+    ]);
+  });
+
   it("P2: tombstones come from user deletes, resurrections from user changes", { timeout }, async () => {
     await holds(p2);
   });

@@ -815,3 +815,205 @@ describe("the start-up scan of a journal written before R7b", () => {
     expect(await journal.getDeferred("released")).toBeDefined();
   });
 });
+
+// Refactor step R11 (design §4.3 E7, decision 4): the start-up scan finds a
+// rename the engine never saw (made while the app was not running, or lost
+// to a kill before its event was persisted) by a unique content match.
+describe("the start-up content match (E7, decision 4)", () => {
+  /** A harness whose server and device sync `files` (path, content) as documents named by `ids`. */
+  async function syncedFiles(files: [string, string, string][], vault?: InMemoryVault): Promise<Harness> {
+    const h = harness({ merge: "default", ...(vault === undefined ? {} : { vault }) });
+    for (const [documentId, path, content] of files) h.server.commit({ documentId, path, content });
+    await h.engine.pull();
+    await h.engine.settled();
+    h.engine.dispose();
+    return h;
+  }
+
+  it("transfers the binding of a missing file to the one untracked file with its content, and pushes a rename", async () => {
+    const h = await syncedFiles([["A", "a.md", "a1"]]);
+
+    await h.vault.rename("a.md", "b.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    await h.engine.push();
+    expect(h.server.liveDocuments()).toEqual(new Map([["b.md", "A"]]));
+    expect(h.server.deletedDocuments()).toEqual([]);
+  });
+
+  it("transfers no binding when two untracked files hold the missing file's content (delete plus create)", async () => {
+    const h = await syncedFiles([["A", "a.md", "a1"]]);
+
+    await h.vault.rename("a.md", "b.md");
+    await h.vault.write("c.md", bytes("a1"));
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("transfers no binding when two missing files had the untracked file's content", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "same"],
+      ["B", "b.md", "same"],
+    ]);
+
+    await h.vault.rename("a.md", "c.md");
+    await h.vault.delete("b.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
+    expect(await row(h, "B")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("transfers no binding to a file of another kind with the same content", async () => {
+    const h = await syncedFiles([["A", "a.md", "a1"]]);
+
+    await h.vault.rename("a.md", "a.bin");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("matches kinds by the engine's own classifier", async () => {
+    // A classifier that takes `.bin` files for text, as a user's text-extension setting may.
+    const h = harness({ merge: "default", classify: (path) => (path.endsWith(".md") || path.endsWith(".bin") ? "text" : "blob") });
+    h.server.commit({ documentId: "A", path: "a.md", content: "a1" });
+    await h.engine.pull();
+    await h.engine.settled();
+    h.engine.dispose();
+
+    await h.vault.rename("a.md", "a.bin");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "a.bin", fileKey: "a.bin", seen: hash("a1") }, absence: null });
+  });
+
+  it("transfers no binding to a file the vault does not sync", async () => {
+    class ScopedVault extends InMemoryVault {
+      isSynced(path: string): boolean {
+        return !path.startsWith("private/");
+      }
+    }
+    const h = await syncedFiles([["A", "a.md", "a1"]], new ScopedVault());
+
+    await h.vault.rename("a.md", "private/a.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("transfers no binding to a file whose content changed after the rename", async () => {
+    const h = await syncedFiles([["A", "a.md", "a1"]]);
+
+    await h.vault.rename("a.md", "b.md");
+    await h.vault.write("b.md", bytes("a2"));
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("transfers a missing file's binding to another document's bound file that now holds its content and not its own (E7b, #793)", async () => {
+    const h = await syncedFiles([
+      ["N", "note.md", "note"],
+      ["O", "moved.md", "other"],
+    ]);
+
+    // The user deletes O's file and renames N's onto its path, while the app is not running.
+    await h.vault.delete("moved.md");
+    await h.vault.rename("note.md", "moved.md");
+    h.restart();
+
+    expect(await row(h, "N")).toEqual({ binding: { spelling: "moved.md", fileKey: "moved.md", seen: hash("note") }, absence: null });
+    expect(await row(h, "O")).toEqual({ binding: null, absence: "user-deleted" });
+    await h.engine.push();
+    expect(h.server.liveDocuments()).toEqual(new Map([["moved.md", "N"]]));
+    expect(h.server.deletedDocuments()).toEqual(["O"]);
+  });
+
+  it("keeps a bound file that still holds its own content, even when it equals a missing file's (E7b)", async () => {
+    const h = await syncedFiles([
+      ["N", "note.md", "same"],
+      ["O", "other.md", "same"],
+    ]);
+
+    await h.vault.delete("note.md");
+    h.restart();
+
+    expect(await row(h, "N")).toEqual({ binding: null, absence: "user-deleted" });
+    expect(await row(h, "O")).toEqual({ binding: { spelling: "other.md", fileKey: "other.md", seen: hash("same") }, absence: null });
+  });
+
+  it("follows a rename chain made while the app was not running (E7 after E7b)", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+    ]);
+
+    await h.vault.rename("b.md", "c.md");
+    await h.vault.rename("a.md", "b.md");
+    h.restart();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "c.md", fileKey: "c.md", seen: hash("b1") }, absence: null });
+    await h.engine.push();
+    expect(h.server.liveDocuments()).toEqual(
+      new Map([
+        ["b.md", "A"],
+        ["c.md", "B"],
+      ]),
+    );
+    expect(h.server.deletedDocuments()).toEqual([]);
+  });
+});
+
+describe("the start-up content match races with events (E7, decision 4)", () => {
+  async function syncedFiles(files: [string, string, string][]): Promise<Harness> {
+    const h = harness({ merge: "default" });
+    for (const [documentId, path, content] of files) h.server.commit({ documentId, path, content });
+    await h.engine.pull();
+    await h.engine.settled();
+    return h;
+  }
+
+  it("keeps the binding the scan matched when the delete and rename it saw arrive as events while it runs (E7b)", async () => {
+    const h = await syncedFiles([
+      ["N", "note.md", "note"],
+      ["O", "moved.md", "other"],
+    ]);
+
+    h.restart();
+    await h.vault.delete("moved.md");
+    await h.vault.rename("note.md", "moved.md");
+    await h.engine.settled();
+
+    expect(await row(h, "N")).toEqual({ binding: { spelling: "moved.md", fileKey: "moved.md", seen: hash("note") }, absence: null });
+    expect(await row(h, "O")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+
+  it("keeps the bindings the scan matched when a rename chain's events arrive while it runs", async () => {
+    const h = await syncedFiles([
+      ["A", "a.md", "a1"],
+      ["B", "b.md", "b1"],
+    ]);
+
+    h.restart();
+    await h.vault.rename("b.md", "c.md");
+    await h.vault.rename("a.md", "b.md");
+    await h.engine.settled();
+
+    expect(await row(h, "A")).toEqual({ binding: { spelling: "b.md", fileKey: "b.md", seen: hash("a1") }, absence: null });
+    expect(await row(h, "B")).toEqual({ binding: { spelling: "c.md", fileKey: "c.md", seen: hash("b1") }, absence: null });
+  });
+
+  it("unbinds the matched document when the user deletes its new file while the scan runs", async () => {
+    const h = await syncedFiles([["A", "a.md", "a1"]]);
+
+    h.restart();
+    await h.vault.rename("a.md", "b.md");
+    await h.vault.delete("b.md");
+    await h.engine.settled();
+
+    expect(await row(h, "A")).toEqual({ binding: null, absence: "user-deleted" });
+  });
+});
