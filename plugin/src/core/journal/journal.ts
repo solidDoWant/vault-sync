@@ -200,6 +200,15 @@ export interface Binding {
    * displaced (§4.7, PO-9; #802). Absent means false.
    */
   displaced?: boolean;
+  /**
+   * For a `displaced` binding: the spelling the user moved the file to,
+   * which rule W's `displace` moved it off (design §4.1, §4.7; #882). A
+   * remote delete at that path (under the server's key) already carries the
+   * user's move, so the displaced spelling is no local change against it.
+   * Absent for a binding displaced before it was recorded (a journal before
+   * #882), which keeps the path merge as it was.
+   */
+  userSpelling?: string;
 }
 
 /**

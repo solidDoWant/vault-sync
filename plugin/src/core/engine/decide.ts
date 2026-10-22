@@ -42,13 +42,35 @@ export function ownMovedCreate(state: DocumentState | undefined, remote: RemoteR
  *   path, never as a document with no file here (#790). Writing the
  *   revision as a new file would leave the bound file untracked, and the
  *   next push would commit the document's file as another document.
+ * - Not a remote delete whose path the user moved the file to before rule
+ *   W's `displace` moved it on (carriedDisplacement): the server carried
+ *   the user's move before the delete, and the copy name is the engine's,
+ *   so the delete wins (PO-9, #882).
  */
-export function boundLocalChange(state: DocumentState | undefined, remote: RemoteRevision): string | undefined {
+export function boundLocalChange(state: DocumentState | undefined, remote: RemoteRevision, space: PathSpace): string | undefined {
   const binding = state?.binding;
   if (state === undefined || binding === undefined || binding === null) return undefined;
   if (state.deleted) return binding.spelling;
   if (!remote.deleted || binding.spelling === state.path) return undefined;
+  if (carriedDisplacement(state, remote, space) !== undefined) return undefined;
   return binding.spelling;
+}
+
+/**
+ * The bound file of a live document that rule W's `displace` moved off the
+ * path the user had moved it to (`Binding.userSpelling`), when `remote` is
+ * a delete at that path under the server's key (PO-9, #882): the device
+ * that deleted the document had the user's move, so the move is no local
+ * change against the delete, and the copy name it is bound at is the
+ * engine's, not the user's. That file is what the delete removes (or, if
+ * the user edited it, what the merge path meets: an edit still wins).
+ * Otherwise undefined.
+ */
+export function carriedDisplacement(state: DocumentState | undefined, remote: RemoteRevision, space: PathSpace): string | undefined {
+  const binding = state?.binding;
+  if (state === undefined || state.deleted || !remote.deleted || binding === undefined || binding === null) return undefined;
+  if (binding.displaced !== true || binding.userSpelling === undefined) return undefined;
+  return space.collides(binding.userSpelling, remote.path, "server") ? binding.spelling : undefined;
 }
 
 /**

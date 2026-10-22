@@ -557,12 +557,13 @@ export class Bindings {
    * A write into the file the document is bound to under another spelling
    * of one file (a case-only rename on a case-insensitive platform) keeps
    * the file's name, so the binding keeps its spelling, and who put the
-   * file there (Binding.displaced).
+   * file there (Binding.displaced, Binding.userSpelling).
    */
   private written(kept: Binding | null | undefined, path: string, seen: string): Binding {
     const binding = this.bound(path, seen);
     if (kept === undefined || kept === null || kept.fileKey !== binding.fileKey) return binding;
-    return kept.displaced === true ? { ...binding, spelling: kept.spelling, displaced: true } : { ...binding, spelling: kept.spelling };
+    if (kept.displaced !== true) return { ...binding, spelling: kept.spelling };
+    return { ...binding, spelling: kept.spelling, displaced: true, ...(kept.userSpelling === undefined ? {} : { userSpelling: kept.userSpelling }) };
   }
 
   /**
