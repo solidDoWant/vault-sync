@@ -557,6 +557,7 @@ export class SyncEngine {
    * first.
    */
   private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause, descends: boolean): Promise<"deferred"> {
+    await this.yieldLostClaims(remote);
     await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason, ...descent(descends) });
     await this.leaveBlockedFile(remote.documentId);
     const document = await this.unmaterializableDocument(remote, reason);
@@ -1850,7 +1851,22 @@ export class SyncEngine {
     return !remote.deleted && remote.size > this.maxDownloadBytes;
   }
 
+  /**
+   * A deferred revision is its document's newest server claim (`ahead`,
+   * design §4.2), whatever its blocker: a document the server lost whose
+   * synced path collides with it under the server's key yields in the step
+   * that defers it, as to a revision applied, merged or rolled back there
+   * (claimPath, `lost`; INV-2, PO-4, PO-12, design §4.6, #867, #913). A
+   * deferral is written only by defer and deferUnmaterializable, which call
+   * this first. The revision waits either way: a ghost that cannot yield (no
+   * copy name fits) keeps its file where it is.
+   */
+  private async yieldLostClaims(remote: RemoteRevision): Promise<void> {
+    if (!remote.deleted) await this.claimPath(remote.path, remote.documentId, "lost");
+  }
+
   private async defer(remote: RemoteRevision, reason: DeferReason, descends: boolean): Promise<"deferred"> {
+    await this.yieldLostClaims(remote);
     // A deferral W(b) postponed is marked in the write that moves the cursor past it (#884).
     const postponed = reason === "path-conflict" && this.postponed?.has(remote.documentId) === true ? { postponed: true as const } : {};
     await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends), ...postponed }], ...this.feedCursor(remote.revisionId) }));

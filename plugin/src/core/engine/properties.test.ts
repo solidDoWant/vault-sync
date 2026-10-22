@@ -458,6 +458,56 @@ const ghostsCollideAfterRestore: WorldCommand[] = [
   { type: "pull" },
   { type: "remote-edit", document: 0 },
 ];
+/**
+ * #913's class (INV-2, PO-12, PO-4, design §4.6): a document synced at `I.md`,
+ * renamed locally or not, that a restore to nothing makes a ghost, then a
+ * head of another document at a path colliding with `I.md` under `K` that
+ * the pull defers: another document's file holds its one file name (`ı.md`
+ * on Windows and macOS, an `F`-alias). The deferral is that document's newest
+ * server claim, so the ghost yields in that pull. The commands around the
+ * head vary.
+ */
+const deferredOnGhost: fc.Arbitrary<[PathPlatform, WorldCommand[]]> = fc
+  .tuple(fc.constantFrom<PathPlatform>("windows", "macos"), fc.constantFrom(0, 1, 2, 3, 4), fc.array(fc.oneof(...ghostCommands), { maxLength: 4 }), ghost, fc.array(fc.oneof(...ghostCommands), { maxLength: 4 }))
+  .map(([on, target, before, document, after]) => [
+    on,
+    [
+      { type: "remote-create", path: 3 },
+      { type: "push" },
+      { type: "user-rename", file: 0, mode: "pool", target },
+      { type: "restore", fraction: 0 },
+      { type: "remote-create", path: 2 },
+      ...before,
+      { type: "remote-create", path: 0 },
+      { type: "remote-rename", document, path: 3 },
+      { type: "pull" },
+      ...after,
+    ],
+  ]);
+const p3DeferredOnGhost: Definition<[PathPlatform, WorldCommand[]]> = {
+  property: "P3",
+  cases: deferredOnGhost,
+  check: async ([on, list]) => {
+    const world = new PropertyWorld(on, ghostPaths);
+    for (const command of list) await world.apply(command);
+    await world.quiesce();
+    return violations(world, "P3");
+  },
+};
+/** #913's counterexample (nightly seed 566, case 60,114 after #909). */
+const deferredOnGhostPath: WorldCommand[] = [
+  { type: "remote-create", path: 3 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 4 },
+  { type: "restore", fraction: 0 },
+  { type: "remote-create", path: 0 },
+  { type: "edit-during-pull", file: 0 },
+  { type: "remote-rename", document: 0, path: 2 },
+  { type: "remote-create", path: 0 },
+  { type: "remote-rename", document: 0, path: 3 },
+  { type: "pull" },
+  { type: "remote-create", path: 0 },
+];
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
@@ -841,7 +891,11 @@ describe("engine properties (design §9.3)", () => {
       // #886 (seed 566, the run after the fix): a restore rolls a document back along this device's history onto a
       // ghost's synced path; the ghost yields in the resync.
       scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }),
+      // #913 (seed 566, after #909): a pulled head at a locally renamed ghost's synced path, deferred as an `F`-alias of
+      // another document's file; the ghost yields in the pull.
+      scripted("windows", ...deferredOnGhostPath),
     ]);
+    expect(await p3Ghosts.check(scripted("windows", ...deferredOnGhostPath))).toEqual([]);
     expect(await p3Ghosts.check(scripted("windows", ...ghostsCollideAfterRestore))).toEqual([]);
     expect(await p3Ghosts.check(scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }))).toEqual([]);
     expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
@@ -855,6 +909,14 @@ describe("engine properties (design §9.3)", () => {
     expect(await p3CollidingGhosts.check(ghostsCollideAfterRestore)).toEqual([]);
     await holds(p3CollidingGhosts, [ghostsCollideAfterRestore]);
     await holds(p4CollidingGhosts, Array.from({ length: 24 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", ghostsCollideAfterRestore, write + 1]));
+  });
+
+  // #913 (INV-2, PO-12, PO-4, design §4.6): a pulled head deferred at a ghost's synced path (an `F`-alias of another
+  // document's file holds it) is its document's newest server claim, so the ghost yields in that pull, as it does to an
+  // applied, merged or rolled-back head. Fixed case: #913's counterexample (nightly seed 566).
+  it("P3: a ghost yields its synced path to a head the pull defers there", { timeout }, async () => {
+    expect(await p3DeferredOnGhost.check(["windows", deferredOnGhostPath])).toEqual([]);
+    await holds<[PathPlatform, WorldCommand[]]>(p3DeferredOnGhost, [["windows", deferredOnGhostPath]]);
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
