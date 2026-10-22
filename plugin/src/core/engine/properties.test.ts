@@ -782,12 +782,57 @@ describe("engine properties (design §9.3)", () => {
   // document in the same journal write, so a crash cannot leave it released at its restored base with nothing to
   // re-derive it. Fixed cases: a rename deferred as unmaterializable on Windows, lost by a restore that keeps its base,
   // crashed at each journal write of the resync.
+  // #870 (INV-7, INV-9, PO-8, PO-10): an `apply` intent's recovery finishes a remote respelling only if the file the
+  // vault holds at the revision's path has its spelling. Fixed case (seed 566): on macOS a crash right after the
+  // intent of `I.md` → `ı.md` (one file under `F`) is recovered by redoing the rename, never by recording the document
+  // at `ı.md` while its file stays `I.md`, which the push would send back as a local rename.
   it("P4: a crash during a restore that lost a released document's deferral reaches the state a run without it reaches", { timeout }, async () => {
     const lost: WorldCommand[] = [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" }, { type: "restore", fraction: 0.5 }, { type: "pull" }];
-    await holds(
-      p4Ghosts,
-      Array.from({ length: 12 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", lost, write + 1]),
-    );
+    const respelled: WorldCommand[] = [
+      { type: "remote-create", path: 3 },
+      { type: "user-create", path: 1 },
+      { type: "pull" },
+      { type: "user-rename", file: 0, mode: "pool", target: 0 },
+      { type: "user-rename", file: 0, mode: "pool", target: 3 },
+      { type: "restore", fraction: 0 },
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 0, path: 2 },
+      { type: "edit-during-pull", file: 1 },
+    ];
+    // The rename of the file an `alias` deferral waits for, not pushed yet, crashed at its journal write: a restarted
+    // engine keeps the deferral waiting while the moved document's synced path still claims the alias, as the live one does.
+    const aliasMoved: WorldCommand[] = [
+      { type: "user-create", path: 2 },
+      { type: "user-create", path: 0 },
+      { type: "push" },
+      { type: "user-create", path: 1 },
+      { type: "restore", fraction: 0 },
+      { type: "push" },
+      { type: "remote-rename", document: 1, path: 3 },
+      { type: "push" },
+      { type: "user-rename", file: 1, mode: "pool", target: 1 },
+      { type: "push" },
+      { type: "edit-during-pull", file: 0 },
+    ];
+    // A pull whose later page moves the holder of an `alias` deferral away applies the deferred revision before it
+    // ends, as a pull whose one page holds both does: a crash in the first pull moves the page boundary, and the
+    // restore that follows loses the document unless this device holds it.
+    const aliasFreed: WorldCommand[] = [
+      { type: "remote-create", path: 0 },
+      { type: "remote-create", path: 3 },
+      { type: "remote-rename", document: 1, path: 2 },
+      { type: "remote-rename", document: 0, path: 0 },
+      { type: "pull" },
+      { type: "restore", fraction: 0 },
+    ];
+    const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["macos", respelled, 13],
+      ["macos", aliasMoved, 18],
+      ["windows", aliasFreed, 2],
+    ];
+    for (const example of fixed) expect(await p4Ghosts.check(example)).toEqual([]);
+    await holds(p4Ghosts, [...Array.from({ length: 12 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", lost, write + 1]), ...fixed]);
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
@@ -798,12 +843,15 @@ describe("engine properties (design §9.3)", () => {
   // #757 (INV-3, PO-1, PO-4(a)): a pull never adopts or merges a known document's file that the user moved onto the
   // path of a revision while the pull ran. Rule W displaces it under its own id, and the revision materializes.
   // Fixed case (#769, 20k cases): an unpushed case-only rename back to a spelling the document had wins over a later
-  // remote delete (§4 R5b).
+  // remote delete (§4 R5b). #871's (seed 566), a path-conflict deferral left for good before #853.
   it("P1–P3, P5, P6: a known document's file moved onto an incoming revision's path stays the document's", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 8 }, { type: "user-rename", file: 3, mode: "case", target: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "case", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "remote-delete", document: 0 }, { type: "user-edit", file: 0 }),
+      // #871 (seed 566, fixed by #853): a remote edit of a document whose local rename collides under the server's key
+      // with another document's spelling; the merge result moves to a copy name instead of waiting as `path-conflict`.
+      scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 6 }, { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "push" }, { type: "user-rename", file: 3, mode: "pool", target: 6 }, { type: "remote-edit", document: 7 }),
     ];
-    for (const example of fixed) expect(await movedOntoIncoming.check(example)).toEqual([]);
+    for (const example of fixed) expect(await movedOntoIncoming.check(example), JSON.stringify(example[1])).toEqual([]);
     await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);
   });
 
