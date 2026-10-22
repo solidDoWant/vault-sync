@@ -1019,6 +1019,36 @@ describe("engine properties (design §9.3)", () => {
     }
   });
 
+  // #922 (INV-7, §4.5 step 3, decision #52): a push that frees an `alias` deferral by committing its holder's move
+  // applies the deferred revision right after that commit, before it commits the user's untracked file at the alias
+  // spelling as a new document, as the push a crash right after the commit restarts does at its start. Generated
+  // cases on macOS: `I.md` deferred behind `ı.md`, the user moves `ı.md`'s file off (onto a path free or not) and
+  // creates either spelling again, with other documents on the device or not, then one push, crashed at any write.
+  it("P4: a push that frees an alias deferral and creates a file at the alias reaches the state a crash in it reaches", { timeout }, async () => {
+    const aliasRetaken = crashEquivalence(
+      fc.constant<PathPlatform>("macos"),
+      fc.tuple(fc.subarray([1, 4]), fc.constantFrom(0, 1, 4), fc.constantFrom(2, 3), fc.boolean()).map(([others, target, alias, remoteFirst]): WorldCommand[] => [
+        { type: "user-create", path: 2 },
+        ...(remoteFirst ? others.map((path): WorldCommand => ({ type: "remote-create", path })) : []),
+        { type: "push" },
+        { type: "remote-create", path: 3 },
+        ...(remoteFirst ? [] : others.map((path): WorldCommand => ({ type: "remote-create", path }))),
+        { type: "pull" },
+        // `ı.md` sorts after the ASCII paths.
+        { type: "user-rename", file: others.length, mode: "pool", target },
+        { type: "user-create", path: alias },
+        { type: "push" },
+      ]),
+      ghostPaths,
+    );
+    const fixed: [PathPlatform, WorldCommand[], number][] = [];
+    for (let write = 1; write <= 12; write++) {
+      const list: WorldCommand[] = [{ type: "user-create", path: 2 }, { type: "push" }, { type: "remote-create", path: 3 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "user-create", path: 2 }, { type: "push" }];
+      fixed.push(["macos", list, write]);
+    }
+    await holds(aliasRetaken, fixed);
+  });
+
   // #801 (INV-7, PO-8): a push that displaces a ghost the restore lost to a copy name commits its re-create in the
   // same push, as the push a crash restarts does when it recovers the intent and resumes the outbox. Otherwise a
   // remote edit in between reaches a different copy. Fixed cases: on every platform, crashed at
@@ -1109,7 +1139,26 @@ describe("engine properties (design §9.3)", () => {
       { type: "push" },
       { type: "restore", fraction: 0 },
     ];
+    // #922 (seed 566): a push commits the move of an `alias` deferral's holder off `ı.md` and then the user's untracked
+    // `ı.md` on macOS, crashed at journal write 14, between the two: the deferred `I.md` takes the file either way.
+    const aliasUntracked: WorldCommand[] = [
+      { type: "remote-create", path: 0 },
+      { type: "user-create", path: 0 },
+      { type: "user-rename", file: 0, mode: "pool", target: 2 },
+      { type: "push" },
+      { type: "remote-create", path: 3 },
+      { type: "user-rename", file: 0, mode: "pool", target: 1 },
+      { type: "edit-during-pull", file: 0 },
+      { type: "user-rename", file: 3, mode: "pool", target: 0 },
+      { type: "user-create", path: 2 },
+      { type: "remote-rename", document: 1, path: 0 },
+      { type: "push" },
+    ];
+    // Its variant with the create and the remote rename swapped.
+    const aliasUntrackedLater = [...aliasUntracked.slice(0, 8), aliasUntracked[9], aliasUntracked[8], aliasUntracked[10]].filter((command) => command !== undefined);
     const fixed: [PathPlatform, WorldCommand[], number][] = [
+      ["macos", aliasUntracked, 14],
+      ["macos", aliasUntrackedLater, 14],
       ["windows", recreated, 17],
       ["windows", postponed, 5],
       ["macos", respelled, 13],
