@@ -2383,11 +2383,11 @@ export class SyncEngine {
     // Only an untracked file in the way keeps a revision waiting here: a
     // document's file is rule W's to move when the revision is applied.
     const bound = new Set((await this.journal.listDocuments()).flatMap((state) => (state.binding && hasBase(state) ? [state.binding.fileKey] : [])));
-    const files = (await this.vault.list()).filter((file) => !bound.has(this.pathSpace.filesystemKey(file)));
+    const inTheWay = this.pathSpace.nestedIn((await this.vault.list()).filter((file) => !bound.has(this.pathSpace.filesystemKey(file))));
     let progress = false;
     for (const deferred of deferrals) {
       const { path } = deferred.revision;
-      if (!deferred.revision.deleted && files.some((file) => this.pathSpace.nested(file, path))) continue;
+      if (!deferred.revision.deleted && inTheWay(path)) continue;
       this.retried.add(deferred.revision.revisionId);
       const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true }, deferred.descendsFromBase === true);
       // Already superseded: a newer revision of the document was applied.
