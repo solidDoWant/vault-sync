@@ -27,6 +27,7 @@ function required(name: string): string {
   return value;
 }
 
+// `restores` is left out until #861 is fixed; the nightly runs it explicitly.
 const suites = (process.env.VAULT_SYNC_SIM_SUITES ?? "seeds,retention,members,regressions,scenarios,determinism").split(",");
 
 // The Go driver passes the directory it writes failing seeds to (an absolute

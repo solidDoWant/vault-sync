@@ -737,6 +737,25 @@ describe("engine properties (design §9.3)", () => {
       ],
       // #801's: a crash at the displace intent that re-creates a ghost at a copy name after a restore.
       ["posix", restoredGhostYields, 17],
+      // #869's (nightly seed 566): a crash at a journal write changed which of `Straße.md` and `STRASSE.md` (one path under `K`) got the conflict name.
+      [
+        "posix",
+        [
+          { type: "remote-create", path: 0 },
+          { type: "pull" },
+          { type: "user-rename", file: 0, mode: "pool", target: 1 },
+          { type: "remote-delete", document: 0 },
+          { type: "user-create", path: 2 },
+          { type: "move-onto-incoming", file: 0, path: 0 },
+          { type: "user-create", path: 6 },
+          { type: "user-create", path: 7 },
+          { type: "remote-delete", document: 0 },
+          { type: "push" },
+          { type: "restore", fraction: 0 },
+          { type: "user-rename", file: 6, mode: "pool", target: 5 },
+        ],
+        16,
+      ],
     ]);
   });
 

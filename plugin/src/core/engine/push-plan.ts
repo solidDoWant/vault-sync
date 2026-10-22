@@ -269,9 +269,14 @@ export async function planPush(
   // Each ghost is re-created at its bound spelling, under its own id, unless
   // another claim takes that path (C3): the newest server claim of a document
   // the server has, or another outgoing operation. Then it yields, re-created
-  // at a copy name by a displace intent (`yielding`), never refused.
+  // at a copy name by a displace intent (`yielding`), never refused. Of ghosts
+  // that collide with each other under `K`, the first by bound spelling takes
+  // the path: a spelling is the disk's and survives a crash, whereas the
+  // document ids that order the journal are drawn anew by a restarted push's
+  // creates (INV-7, #869).
   const yielding: { state: DocumentState; spelling: string }[] = [];
   if (ghosts.length > 0) {
+    ghosts.sort((a, b) => (a.spelling < b.spelling ? -1 : a.spelling > b.spelling ? 1 : 0));
     const ahead = new Map(source.deferred.map((deferred) => [deferred.revision.documentId, deferred.revision]));
     const claims: string[] = [];
     for (const state of source.documents) {

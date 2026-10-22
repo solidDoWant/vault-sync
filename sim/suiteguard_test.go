@@ -16,9 +16,10 @@ import (
 
 // knownSuites are the suites VAULT_SYNC_SIM_SUITES may select; a full run
 // (the variable unset or empty) runs all of them but `shrink`, the targeted
-// shrink of one saved case (#822), which runs only when selected. They mirror
-// the default of plugin/vitest.sim.config.ts.
-var knownSuites = []string{"seeds", "retention", "members", "regressions", "scenarios", "determinism", "shrink"}
+// shrink of one saved case (#822), and `restores`, left out until the engine
+// bug it finds is fixed (#861); those run only when selected. Apart from
+// those two they mirror the default of plugin/vitest.sim.config.ts.
+var knownSuites = []string{"seeds", "retention", "members", "restores", "regressions", "scenarios", "determinism", "shrink"}
 
 // vitestReport is the part of vitest's JSON report the driver checks.
 type vitestReport struct {
@@ -213,7 +214,7 @@ func TestCheckSuiteRun(t *testing.T) {
 		{
 			name:     "a run that selects every suite explicitly",
 			report:   report(assertion("seeded schedules", "seed 1", "passed")),
-			selected: "seeds,retention,members,regressions,scenarios,determinism",
+			selected: "seeds,retention,members,restores,regressions,scenarios,determinism",
 		},
 		{
 			name:     "a run of the targeted shrink alone (#822)",
