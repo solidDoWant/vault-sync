@@ -72,6 +72,22 @@ describe("phantom-delete on inodes", () => {
     expect(check([synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb" }), revision({ seq: 3n, deleted: true })], other)).toEqual([phantom(3n)]);
   });
 
+  it("reports a tombstone after the document came back in another file, when only its earlier file was deleted (#822 item 3)", () => {
+    // The user deleted d1's file (the engine's tombstone at seq 2), re-created it in inode 2 (back at seq 3), and the engine deleted d1 again although inode 2 is still there.
+    const feed = [synced, revision({ seq: 2n, deleted: true, contentHash: "" }), revision({ seq: 3n, contentHash: "bb" }), revision({ seq: 4n, deleted: true })];
+    const recreated = created().user("delete", "a.md", "1", 1n).user("create", "a.md", "2", 2n, "bb");
+    expect(check(feed, recreated)).toEqual([phantom(4n)]);
+    // Once the user deletes the new file too, the second tombstone is theirs.
+    expect(check(feed, recreated.user("delete", "a.md", "2", 3n))).toEqual([]);
+  });
+
+  it("reports a tombstone when the deleted file was rebound to another document before it (#822 item 3)", () => {
+    // The user deletes d1's file, and the engine commits what it had read from it as d2 (the file is d2's now), then deletes d1.
+    const timeline = created().user("delete", "a.md", "1", 1n);
+    const feed = [synced, revision({ documentId: "d2", seq: 2n, path: "a.md" }), revision({ seq: 3n, deleted: true })];
+    expect(check(feed, timeline).filter((line) => line.startsWith("phantom-delete"))).toEqual([phantom(3n)]);
+  });
+
   it("reports a tombstone the engine committed before the user's delete", () => {
     expect(check([synced, revision({ seq: 2n, deleted: true })], created().user("delete", "a.md", "1", 2n))).toEqual([phantom(2n)]);
   });
@@ -153,6 +169,12 @@ describe("phantom-delete on inodes", () => {
       const existing = revision({ documentId: "d2", seq: 0n, revisionId: "r0", path: "b.md", contentHash: "cc", deviceId: "scripted" });
       const edit = revision({ documentId: "d2", seq: 3n, path: "b.md" });
       expect(check([existing, synced, tombstone, edit], lost())).toEqual([identity(3n), phantom(2n)]);
+    });
+
+    it("reports the tombstone the engine pushed before the crash, even when the renamed file's create came after it (#822 item 2)", () => {
+      // The rename, then the tombstone at seq 2, then the crash, then the create at seq 3: the create is in the window, the tombstone is not.
+      const crashAfterTombstone = created().rename("user", "a.md", "b.md", "1", 1n).crash(2n);
+      expect(check([synced, tombstone, create], crashAfterTombstone)).toEqual([phantom(2n)]);
     });
 
     it("reports the tombstone when the engine committed nothing from the renamed file", () => {
@@ -253,6 +275,11 @@ describe("resurrected-delete on inodes", () => {
     expect(check(deletedThenBack(), pulled().user("delete", "a.md", "1", 2n).user("create", "a.md", "2", 2n, "bb"))).toEqual([]);
     // Renamed to a new path, where it comes back.
     expect(check(deletedThenBack({ path: "c.md", contentHash: "aa" }), pulled().rename("user", "a.md", "c.md", "1", 1n))).toEqual([]);
+  });
+
+  it("does not count a change of a file that is neither the document's nor at its path (PO-13, #822 item 1)", () => {
+    // The engine brings d1 back at a.md with bb, the content the user wrote into a new file b.md after the delete: that file is not d1's, and d1's own file at a.md is unchanged.
+    expect(check(deletedThenBack(), pulled().user("create", "b.md", "2", 2n, "bb"))).toEqual([resurrected()]);
   });
 
   it("accepts a document the user restored after its delete", () => {

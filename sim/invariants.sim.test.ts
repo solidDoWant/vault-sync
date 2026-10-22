@@ -470,3 +470,63 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(phantom?.detail).toContain("at notes/b.md");
   });
 });
+
+/**
+ * A rename chain lost to a crash (#531, #822 item 4; ported from #579's
+ * chain test): two POSIX engines sync `notes/a.md`. The second engine's user
+ * renames it to `notes/b.md`, edits it, renames it on to `notes/c.md` and
+ * edits it again, and the app is killed before the engine records any of it;
+ * after the restart the user edits it once more, before the engine's push
+ * commits the file. `mutate` gets the run then; then the second engine
+ * pushes and the first pulls. The restarted engine's full scan sees the
+ * synced note gone and a new file at `notes/c.md`: a delete plus a create
+ * (§5.5 X-2), and the user's file is the same inode throughout.
+ */
+async function renameChainLostToCrash(endpoints: SimEndpoints, mutate: (run: SimRun) => Promise<string>): Promise<{ result: RunResult; run: SimRun }> {
+  const run = await SimRun.start(endpoints, { seed: 0, clients: 0, engines: 2, platforms: ["posix", "posix"] });
+  const [first, second] = run.observers;
+  if (first === undefined || second === undefined) throw new Error("the run has two engines");
+  const drain = async () => {
+    await settle();
+    await run.drain();
+  };
+  run.context.log(await first.edit("notes/a.md", encoder.encode("a\n")));
+  run.context.log(first.startPush());
+  await drain();
+  run.context.log(second.startPull());
+  await drain();
+  run.context.log(await second.move("notes/a.md", "notes/b.md"));
+  run.context.log(await second.edit("notes/b.md", encoder.encode("a\nat b\n")));
+  run.context.log(await second.move("notes/b.md", "notes/c.md"));
+  run.context.log(await second.edit("notes/c.md", encoder.encode("a\nat b\nat c\n")));
+  run.context.log(second.crash());
+  run.context.log(await second.edit("notes/c.md", encoder.encode("a\nat b\nat c\nafter the crash\n")));
+  run.context.log(await mutate(run));
+  run.context.log(second.startPush());
+  await drain();
+  run.context.log(first.startPull());
+  await drain();
+  return { result: await run.finish(), run };
+}
+
+describe.runIf(suites.has("scenarios"))("rename chains lost to a crash (#531, #822)", () => {
+  it("tracks the user's file through a rename chain lost to a crash: no phantom-delete, the file where the user put it", async () => {
+    const { result, run } = await renameChainLostToCrash(environment, nothing);
+    const trace = tail(result.trace);
+    expect(result.violations, trace).toEqual([]);
+    for (const engine of run.observers) {
+      expect(await engine.list(), trace).toEqual(["notes/c.md"]);
+      expect(new TextDecoder().decode(await engine.read("notes/c.md")), trace).toBe("a\nat b\nat c\nafter the crash\n");
+    }
+  });
+
+  it("still reports an engine that drops the renamed file after the chain (phantom-delete)", async () => {
+    const { result } = await renameChainLostToCrash(environment, async (run) => run.observers[1]?.deleteBehindUser("notes/c.md") ?? "");
+    const trace = tail(result.trace);
+    expect(invariants(result), trace).toContain("phantom-delete");
+    expect(
+      result.violations.filter((violation) => violation.invariant === "phantom-delete").map((violation) => violation.detail),
+      trace,
+    ).toEqual([expect.stringMatching(/^e1 deleted .* at notes\/a\.md .* although its user never deleted a file bound to it$/)]);
+  });
+});

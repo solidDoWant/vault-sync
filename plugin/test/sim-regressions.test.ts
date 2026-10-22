@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { loadRegressionCases, resolveRegressionDir } from "../scripts/sim-regressions";
+import { loadRegressionCases, loadShrinkTarget, resolveRegressionDir } from "../scripts/sim-regressions";
 
 // The directory vitest.sim.config.ts reads its regression cases with (#131).
 const repoRoot = fileURLToPath(new URL("../..", import.meta.url));
@@ -83,5 +83,25 @@ describe("loading regression cases", () => {
   it("allows a missing or empty directory when the regression cases are not replayed", () => {
     expect(loadRegressionCases(path.join(scratchDir(), "absent"), { required: false })).toEqual([]);
     expect(loadRegressionCases(scratchDir(), { required: false })).toEqual([]);
+  });
+});
+
+describe("the targeted shrink's case and violation (#822 item 7)", () => {
+  it("loads the case relative to the repository root with the named violation and pattern", () => {
+    const target = loadShrinkTarget({ SIM_SHRINK_CASE: "sim/regressions/simfault-stale-base.json", SIM_SHRINK_INVARIANT: "stale-base", SIM_SHRINK_MATCH: "seq \\d+" }, repoRoot);
+
+    expect(target.invariant).toBe("stale-base");
+    expect(target.pattern).toBe("seq \\d+");
+    expect((target.regression as { name: string }).name).toBe("simfault-stale-base");
+  });
+
+  it("leaves the pattern out when SIM_SHRINK_MATCH is unset or empty", () => {
+    expect(loadShrinkTarget({ SIM_SHRINK_CASE: "sim/regressions/simfault-stale-base.json", SIM_SHRINK_INVARIANT: "stale-base", SIM_SHRINK_MATCH: "" }, repoRoot)).not.toHaveProperty("pattern");
+  });
+
+  it("fails naming the variable when the case or the violation is missing, or the pattern is invalid", () => {
+    expect(() => loadShrinkTarget({ SIM_SHRINK_INVARIANT: "stale-base" }, repoRoot)).toThrow(/SIM_SHRINK_CASE/u);
+    expect(() => loadShrinkTarget({ SIM_SHRINK_CASE: "sim/regressions/simfault-stale-base.json" }, repoRoot)).toThrow(/SIM_SHRINK_INVARIANT/u);
+    expect(() => loadShrinkTarget({ SIM_SHRINK_CASE: "sim/regressions/simfault-stale-base.json", SIM_SHRINK_INVARIANT: "stale-base", SIM_SHRINK_MATCH: "(" }, repoRoot)).toThrow(/SIM_SHRINK_MATCH/u);
   });
 });

@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
 
 import { faithfulFilesystemEnv, parseFaithfulFilesystem } from "./scripts/sim-filesystem.ts";
-import { loadRegressionCases, regressionDirEnv, resolveRegressionDir } from "./scripts/sim-regressions.ts";
+import { loadRegressionCases, loadShrinkTarget, regressionDirEnv, resolveRegressionDir } from "./scripts/sim-regressions.ts";
 
 // The networked simulation suite (../sim/*.sim.test.ts, SPEC.md §13). `make
 // test-sim` runs it through the `sim`-tagged Go driver (sim/simulation_test.go),
@@ -35,6 +35,10 @@ const suites = (process.env.VAULT_SYNC_SIM_SUITES ?? "seeds,retention,members,re
 // or empty directory fails the run instead of skipping the suite (#131).
 const repoRoot = fileURLToPath(new URL("..", import.meta.url));
 const regressions = loadRegressionCases(resolveRegressionDir(process.env[regressionDirEnv], repoRoot), { required: suites.includes("regressions") });
+
+// The `shrink` suite (never part of a full run) minimizes one saved case to
+// the steps that still reproduce one named violation (#822 item 7).
+const shrinkTarget = suites.includes("shrink") ? loadShrinkTarget(process.env, repoRoot) : undefined;
 
 const firstSeed = integer("SIM_FIRST_SEED", 1);
 const single = process.env.SIM_SEED;
@@ -71,6 +75,7 @@ export default defineConfig({
         faithfulFilesystem,
         shrinkRuns: integer("SIM_SHRINK_RUNS", 150),
         regressions,
+        ...(shrinkTarget === undefined ? {} : { shrinkTarget }),
         suites,
       },
     },
