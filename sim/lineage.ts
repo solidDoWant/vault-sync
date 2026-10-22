@@ -196,6 +196,9 @@ class Replay {
           this.userChanges.push({ inode: entry.inode, at: this.position, hash: entry.hash, path: entry.path, rename: false });
           return;
         }
+        // The engine wrote content of the document the file is already bound to (a merge or an applied head of it at a path its user moved it to): it stays that document's, even if another document once had a revision of that content at this path (seed 10 with members).
+        const owner = this.bound.get(entry.inode);
+        if (owner !== undefined && this.applied.some((candidate) => candidate.documentId === owner && !candidate.deleted && candidate.contentHash === entry.hash)) return;
         // The engine materialized a revision at its document's path: the file is that document's.
         const key = this.key(entry.path);
         const revision = lastOf(this.applied, (candidate) => !candidate.deleted && candidate.contentHash === entry.hash && this.key(candidate.path) === key);

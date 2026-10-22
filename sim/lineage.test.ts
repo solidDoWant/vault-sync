@@ -76,6 +76,13 @@ describe("phantom-delete on inodes", () => {
     expect(check([synced, revision({ seq: 2n, deleted: true })], created().user("delete", "a.md", "1", 2n))).toEqual([phantom(2n)]);
   });
 
+  it("keeps a file bound when the engine writes its own document's content where another document once had that content", () => {
+    // d1 (inode 5) is the user's moved file at b.md; d2 once had content cc at b.md; the engine writes d1's newest content, also cc, into inode 5.
+    const feed = [revision({ deviceId: "scripted", contentHash: "bb" }), revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "cc", deviceId: "scripted" }), revision({ seq: 3n, contentHash: "cc", deviceId: "scripted" }), revision({ seq: 4n, path: "b.md", contentHash: "cc" })];
+    const timeline = new Timeline().engine("create", "a.md", "5", 1n, "bb").rename("user", "a.md", "b.md", "5", 1n).engine("modify", "b.md", "5", 3n, "cc");
+    expect(check(feed, timeline)).toEqual([]);
+  });
+
   it("binds the file the engine wrote from a pulled revision to that revision's document", () => {
     const pulled = revision({ deviceId: "scripted", contentHash: "bb" });
     const timeline = new Timeline().engine("create", "a.md", "5", 1n, "bb").user("delete", "a.md", "5", 1n);
