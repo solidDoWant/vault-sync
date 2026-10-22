@@ -557,6 +557,7 @@ export class SyncEngine {
    * first.
    */
   private async deferUnmaterializable(remote: RemoteRevision, reason: UnmaterializableCause, descends: boolean): Promise<"deferred"> {
+    await this.yieldLostClaims(remote);
     await this.journal.putDeferred({ revision: remote, reason: "unmaterializable", unmaterializable: reason, ...descent(descends) });
     await this.leaveBlockedFile(remote.documentId);
     const document = await this.unmaterializableDocument(remote, reason);
@@ -906,6 +907,10 @@ export class SyncEngine {
     // its local rename wins, so the merge path decides where its result
     // lands, and claims that path (applyMerge, #473).
     const claims = !remote.deleted && !movedLocally(state);
+    // Its base still moves to the revision's path, its newest server claim
+    // from now on: a document the server lost whose synced path collides
+    // with it yields in this step too (#913).
+    if (!remote.deleted && !claims) await this.yieldLostClaims(remote);
     // Download before looking at the disk, so the check-then-write window is short.
     const needsContent = !remote.deleted && (!liveHere(state) || state.baseHash !== remote.contentHash);
     let content: Uint8Array | undefined;
@@ -1857,7 +1862,24 @@ export class SyncEngine {
     return !remote.deleted && remote.size > this.maxDownloadBytes;
   }
 
+  /**
+   * A deferred revision is its document's newest server claim (`ahead`,
+   * design §4.2), whatever its blocker: a document the server lost whose
+   * synced path collides with it under the server's key yields in the step
+   * that defers it, as to a revision applied, merged or rolled back there
+   * (claimPath, `lost`; INV-2, PO-4, PO-12, design §4.6, #867, #913). A
+   * deferral is written only by defer and deferUnmaterializable, which call
+   * this first; applyRevision calls it for a head whose document's local
+   * move it keeps, which claims no path for the file but still moves the
+   * base. The revision waits either way: a ghost that cannot yield (no copy
+   * name fits) keeps its file where it is.
+   */
+  private async yieldLostClaims(remote: RemoteRevision): Promise<void> {
+    if (!remote.deleted) await this.claimPath(remote.path, remote.documentId, "lost");
+  }
+
   private async defer(remote: RemoteRevision, reason: DeferReason, descends: boolean): Promise<"deferred"> {
+    await this.yieldLostClaims(remote);
     // A deferral W(b) postponed is marked in the write that moves the cursor past it (#884).
     const postponed = reason === "path-conflict" && this.postponed?.has(remote.documentId) === true ? { postponed: true as const } : {};
     await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends), ...postponed }], ...this.feedCursor(remote.revisionId) }));
