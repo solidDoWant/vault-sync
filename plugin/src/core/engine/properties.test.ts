@@ -28,7 +28,7 @@ import { sha256Hex } from "../hash";
 import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
 import { kindValue } from "./remote";
-import { PropertyWorld, testDeviceId, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import { PropertyWorld, testDeviceId, withoutCopyNames, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
 import { uploadContent } from "./upload";
 
 declare module "vitest" {
@@ -304,13 +304,17 @@ describe("engine properties (design §9.3)", () => {
   // Flipped in #719. Fixed cases (#700, design §4.6): a restore that rolled a document back along this device's own
   // history, to a revision it synced as its base, and to its base's parent; #690's 20k-case counterexample (a blocked
   // document keeps its moved file, never a new document's); and #719's pin, a base retention purged under an unchanged
-  // (renamed) file, which merges the pulled edit with the rename instead of keeping a conflict copy.
+  // (renamed) file, which merges the pulled edit with the rename instead of keeping a conflict copy; and #770's (seed 719, 20k
+  // cases), an unmaterializable document's edited kept file that a remote create's path needs, detached as a new document's
+  // (PO-4(b), §5.5 X-20).
   it("P1: a document's committed content comes from its own file", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-create", path: 3 }, { type: "remote-edit", document: 7 }, { type: "remote-rename", document: 0, path: 2 }, { type: "pull" }, { type: "restore", fraction: 0.25 }, { type: "pull" }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "remote-create", path: 2 }, { type: "restore", fraction: 0.25 }, { type: "pull" }),
       scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "purge", revision: 0 }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
+      // #770 (seed 719): a known document's file edited during a pull, then a create at its old path.
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "push" }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 0 }, { type: "remote-create", path: 0 }, { type: "user-create", path: 0 }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
     await holds(p1, fixed);
@@ -322,7 +326,8 @@ describe("engine properties (design §9.3)", () => {
   // takes: it is displaced under its own id, not kept as a new document's copy; and one whose respelled file another
   // document the server has holds under the server's key (20k cases), re-created at a copy name under its own id,
   // whether a later revision of that document comes or not; and a re-create kept in place whose create a remote
-  // rename's path refuses (#722), moved to a copy name under its own id.
+  // rename's path refuses (#722), moved to a copy name under its own id; and one displaced, edited and renamed onto a later
+  // remote create's path (#770, seed 719), displaced again under its own id with its edited content's size.
   it("P1: a restore along this device's own history commits the lost revision under its own id", { timeout }, async () => {
     await holds(overWorld("P1", (world) => violations(world, "P1"), rollbackCommands), [
       scripted("posix", { type: "remote-create", path: 3 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }),
@@ -330,6 +335,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-create", path: 2 }, { type: "push" }, { type: "edit-during-pull", file: 0 }),
       // #722: the re-create, kept in place, is refused because a remote rename took its path meanwhile.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 2 }, { type: "user-rename", file: 0, mode: "pool", target: 3 }),
+      // #770 (seed 719): a document's file edited during a pull, renamed, then a create at its new path and an edit.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "pull" }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "remote-create", path: 2 }, { type: "remote-edit", document: 0 }),
     ]);
   });
 
@@ -486,5 +493,45 @@ describe("P2 oracle (design §5.4)", () => {
     await commitAsDevice(world, documentId, "a.md", "user 3");
     await world.apply({ type: "pull" });
     expect(violations(world, "P2")).toEqual([]);
+  });
+});
+
+// The P1 oracle unbinds an inode the engine detached (design §4.5 W(b),
+// PO-4(b), §5.5 X-20): a blocked document's file at its synced path, moved to
+// a copy name because a server claim needs the path, is a new document's.
+// These pin that it credits exactly that, and still flags a displaced
+// document's file (W(a), a local move) committed as a new document.
+describe("P1 oracle (design §5.4)", () => {
+  it("credits a detached file, kept by an unmaterializable document, pushed as a new document", async () => {
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "user-edit", file: 0 });
+    // Step 4: the server moves the document to `no:te.md`, which Windows cannot hold; the device keeps the edited a.md.
+    await world.apply({ type: "remote-rename", document: 0, path: 11 });
+    await world.apply({ type: "pull" });
+    // Step 6: another document takes a.md, so the kept file is detached to a copy name.
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "push" });
+    const copies = [...world.server.liveFiles()].filter(([path]) => withoutCopyNames(path) !== path);
+    expect(copies).toEqual([[expect.stringMatching(/^a \(conflict .*\)\.md$/), "user 3"]]);
+    expect(violations(world, "P1")).toEqual([]);
+  });
+
+  it("flags a displaced document's file committed as a new document", async () => {
+    const world = new PropertyWorld("posix");
+    await world.apply({ type: "user-create", path: 0 });
+    await world.apply({ type: "push" });
+    // Step 3: a local move of the document to Café.md, which a remote create then takes: the file is displaced under its own id.
+    await world.apply({ type: "user-rename", file: 0, mode: "pool", target: 3 });
+    await world.apply({ type: "remote-create", path: 3 });
+    await world.apply({ type: "pull" });
+    const copy = (await world.vault.list()).find((path) => withoutCopyNames(path) !== path) ?? "";
+    expect(copy).toMatch(/^Café \(conflict .*\)\.md$/);
+    await commitAsDevice(world, "forged-new", copy, "user 1");
+    // A restore to the head changes nothing; the world records the forged create while the copy is still inode 1.
+    await world.apply({ type: "restore", fraction: 1 });
+    expect(violations(world, "P1")).toEqual([expect.stringMatching(/create of forged-new at .* from inode 1, bound to /)]);
   });
 });
