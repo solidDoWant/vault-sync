@@ -727,6 +727,9 @@ export class SyncEngine {
     const state = await this.journal.getDocument(remote.documentId);
     const pending = (await this.journal.listPending()).filter((operation) => operation.documentId === remote.documentId);
     if (pending.some((operation) => operation.revisionId === remote.revisionId)) {
+      // A released document holds nothing here: its own live revision is
+      // decided as a new document's, from the same feed position (#800).
+      if (await this.forgetOnAcknowledge(remote.documentId, remote.revisionId, remote.deleted)) return this.applyRevision(incoming, fromFeed);
       // This device's own commit, whose response was lost. The disk already
       // holds it, or a newer local edit, which the next push sends on top.
       // The `commit` step's final transaction (design §4.4): the outbox goes
@@ -2008,6 +2011,13 @@ export class SyncEngine {
       throw new RemoteContentError(`CommitRevision for ${operation.revisionId} returned another revision`);
     }
     const remote = toIncoming(revision).remote;
+    // A released document holds nothing here: the cursor stays before its
+    // revision, so the next pull decides it as a new document's (#800).
+    if (await this.forgetOnAcknowledge(operation.documentId, operation.revisionId, operation.deleted)) {
+      summary.committed++;
+      this.onAcknowledged(remote);
+      return;
+    }
     await this.putDocument({
       documentId: operation.documentId,
       path: operation.path,
@@ -2029,6 +2039,29 @@ export class SyncEngine {
     // Changes made while the operation was pending were left for after it.
     this.markDirty(operation.path);
     this.onAcknowledged(remote);
+  }
+
+  /**
+   * The acknowledgement of `revisionId`, a live revision of a `released`
+   * document with no other operation and no deferral, forgets the document
+   * and removes the operation in one transaction; returns whether it did
+   * (design §4.6, PO-12, INV-9, #800). The device holds no file of it and
+   * nothing would re-derive one: a release normally comes with a deferral
+   * (PO-11) and never with an outbox, but `Bindings.unbindOthers` releases a
+   * document without dropping its outbox (the documents a v2 journal's
+   * migration bound to one file), and a restore drops a lost deferral while
+   * the outbox keeps the document. The revision itself is then decided like
+   * a new document's head: materialized at its path, or deferred if it
+   * cannot be. A tombstone is acknowledged as before: nothing is held.
+   */
+  private async forgetOnAcknowledge(documentId: string, revisionId: string, deleted: boolean): Promise<boolean> {
+    if (deleted) return false;
+    const state = await this.journal.getDocument(documentId);
+    if (state === undefined || !released(state)) return false;
+    if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId && operation.revisionId !== revisionId)) return false;
+    if ((await this.journal.getDeferred(documentId)) !== undefined) return false;
+    await this.bindings.transact(() => Promise.resolve({ removePending: [revisionId], removeDocuments: [documentId] }));
+    return true;
   }
 
   /**

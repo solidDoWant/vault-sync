@@ -691,6 +691,26 @@ describe("P1 oracle (design §5.4)", () => {
     expect(violations(world, "P1")).toEqual([]);
   });
 
+  it("credits a detached file, kept by a document whose head is another live document's F-alias, pushed as a new document", async () => {
+    const world = new PropertyWorld("windows");
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "remote-create", path: 13 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "user-edit", file: 0 });
+    // Step 5: the server moves the a.md document to I.md, which Windows can
+    // hold but which is one file with the other document's ı.md here (an
+    // F-alias, design §3.1); the device keeps the edited a.md.
+    await world.apply({ type: "remote-rename", document: 0, path: 14 });
+    await world.apply({ type: "pull" });
+    // Step 7: another document takes a.md, so the kept file is detached to a copy name.
+    await world.apply({ type: "remote-create", path: 0 });
+    await world.apply({ type: "pull" });
+    await world.apply({ type: "push" });
+    const copies = [...world.server.liveFiles()].filter(([path]) => withoutCopyNames(path) !== path);
+    expect(copies).toEqual([[expect.stringMatching(/^a \(conflict .*\)\.md$/), "user 4"]]);
+    expect(violations(world, "P1")).toEqual([]);
+  });
+
   it("flags a file a document that could follow its head was moved off, committed as a new document", async () => {
     const world = new PropertyWorld("windows");
     await world.apply({ type: "remote-create", path: 0 });

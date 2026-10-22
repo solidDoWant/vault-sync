@@ -154,3 +154,77 @@ describe("a restore that lost the deferral of a released document with an outbox
     expect(await files(h.vault)).toEqual(new Map());
   });
 });
+
+// #800 (INV-9, INV-7, PO-12, design §4.6): the same state with an outbox
+// rename. The push sends it, so the server has the document live at the
+// rename's path, which this device can hold, while the device holds no file
+// of it and no deferral. Once its operation is acknowledged, the document
+// must end up materialized there, not stay released with nothing to re-derive it.
+describe("a restore that lost the deferral of a released document with an outbox rename", () => {
+  it("materializes the document at the rename's path once the push sends it", async () => {
+    const h = windows();
+    h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
+    await h.engine.pull();
+    h.server.commit({ documentId: "a", path: "no:te.md" }); // 2: the device releases a's file
+    await h.engine.pull();
+    await h.engine.settled();
+    expect(await files(h.vault)).toEqual(new Map());
+    const state = await h.journal.getDocument("a");
+    expect(state).toMatchObject({ binding: null, absence: "released" });
+    // A rename of a to b.md, recorded against its base, that never reached the server.
+    h.engine.dispose();
+    await h.journal.addPending({ revisionId: "rename-a", documentId: "a", baseRevisionId: state?.revisionId ?? "", path: "b.md", contentHash: state?.baseHash ?? "", size: state?.size ?? 0n, kind: "text", deleted: false });
+    h.restart();
+
+    // The restore keeps a's base and loses the rename to no:te.md (its deferral).
+    h.server.restoreTo(1n);
+    await h.engine.pull();
+    expect(await h.journal.getDeferred("a")).toBeUndefined();
+    await h.engine.push();
+    await h.engine.settled();
+    await h.engine.pull();
+    await h.engine.settled();
+
+    expect(await h.journal.listPending()).toEqual([]);
+    expect(text(h.server.head("a")?.path ?? null)).toBe("b.md");
+    expect(await files(h.vault)).toEqual(new Map([["b.md", "a1\n"]]));
+    expect(await h.journal.getDocument("a")).toMatchObject({ path: "b.md", binding: { spelling: "b.md" }, absence: null });
+    expect(await h.journal.listDeferred()).toEqual([]);
+  });
+
+  it("materializes the document at the rename's path when the pull finds the rename whose response was lost", async () => {
+    const h = windows();
+    h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
+    await h.engine.pull();
+    h.server.commit({ documentId: "a", path: "no:te.md" }); // 2: the device releases a's file
+    await h.engine.pull();
+    await h.engine.settled();
+    const state = await h.journal.getDocument("a");
+    expect(state).toMatchObject({ binding: null, absence: "released" });
+    h.engine.dispose();
+    await h.journal.addPending({ revisionId: "rename-a", documentId: "a", baseRevisionId: state?.revisionId ?? "", path: "b.md", contentHash: state?.baseHash ?? "", size: state?.size ?? 0n, kind: "text", deleted: false });
+    h.restart();
+    h.server.restoreTo(1n);
+    await h.engine.pull();
+    expect(await h.journal.getDeferred("a")).toBeUndefined();
+
+    // The server commits the rename, and its response is lost.
+    let lose = true;
+    h.server.responseInterceptor = (method) => {
+      if (method !== "CommitRevision" || !lose) return;
+      lose = false;
+      throw new Error("response lost");
+    };
+    await h.engine.push().catch(() => undefined);
+    await h.engine.settled();
+    expect(text(h.server.head("a")?.path ?? null)).toBe("b.md");
+    expect((await h.journal.listPending()).map((operation) => operation.revisionId)).toEqual(["rename-a"]);
+    await h.engine.pull();
+    await h.engine.settled();
+
+    expect(await h.journal.listPending()).toEqual([]);
+    expect(await files(h.vault)).toEqual(new Map([["b.md", "a1\n"]]));
+    expect(await h.journal.getDocument("a")).toMatchObject({ path: "b.md", binding: { spelling: "b.md" }, absence: null });
+    expect(await h.journal.listDeferred()).toEqual([]);
+  });
+});
