@@ -1752,12 +1752,15 @@ export class SyncEngine {
     }
     // The restore may have lost a deferred revision, or the base it
     // descends from: no deferral is known to descend any more (design §4.6).
-    // A blocker's deferral (any but `local-changes`) that is not its
-    // document's restored head is no server revision any more and claims no
-    // path (PO-11, PO-12, #768): it is dropped, and a head other than the
-    // base is re-derived below, deferred again if it must be. This device
-    // never held its bytes. A `local-changes` deferral is a merge still owed
-    // to a file here, which keeps both versions (#719). A released document
+    // A deferral that is not its document's restored head is no server
+    // revision any more and claims no path (PO-11, PO-12, #768): it is
+    // dropped, whatever its blocker, and a head other than the base is
+    // re-derived below, deferred again if it must be. This device never held
+    // its bytes. A `local-changes` one owed a merge with a version the
+    // restored server lost (#848): this device's version stays in the bound
+    // file, which the push sends (merged with a head other than the base,
+    // as the next revision on a head that is the base, or as a ghost's
+    // re-create), and the lost version is its writer's to send again. A released document
     // whose deferral is dropped holds nothing here: when the server has a
     // head of it, the journal forgets it in the same write, so the head comes
     // below as a new document's and a crash cannot leave it released with
@@ -1765,7 +1768,7 @@ export class SyncEngine {
     const pending = new Set((await this.journal.listPending()).map((operation) => operation.documentId));
     for (const deferred of await this.journal.listDeferred()) {
       const { documentId } = deferred.revision;
-      if (deferred.reason !== "local-changes" && heads.get(documentId)?.remote.revisionId !== deferred.revision.revisionId) {
+      if (heads.get(documentId)?.remote.revisionId !== deferred.revision.revisionId) {
         const state = await this.journal.getDocument(documentId);
         const forget = heads.has(documentId) && !pending.has(documentId) && state !== undefined && released(state);
         await this.bindings.transact(() => Promise.resolve({ removeDeferred: [documentId], ...(forget ? { removeDocuments: [documentId] } : {}) }));
