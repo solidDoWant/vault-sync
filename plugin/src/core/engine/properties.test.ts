@@ -611,7 +611,7 @@ const p6Keys: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Propert
   },
 };
 /** A push during which a restore lands, after the push's own pull and before its first commit (#861). */
-const restoreDuringPush: fc.Arbitrary<WorldCommand> = fc.double({ min: 0, max: 1, noNaN: true }).map((fraction) => ({ type: "restore-during-push", fraction }));
+const restoreDuringPush: fc.Arbitrary<WorldCommand> = fc.tuple(fc.double({ min: 0, max: 1, noNaN: true }), fc.boolean()).map(([fraction, lost]) => ({ type: "restore-during-push", fraction, lost }));
 /** P6 with database restores (#576, #829): INV-9 holds after a restore too, since the push re-creates a document the restored server lost (design §4.6), and after a restore during a push (#861). */
 const p6Restores = overWorld(
   "P6",
@@ -658,7 +658,7 @@ describe("engine properties (design §9.3)", () => {
   // rename's path refuses (#722), moved to a copy name under its own id; and one displaced, edited and renamed onto a later
   // remote create's path (#770, seed 719), displaced again under its own id with its edited content's size.
   it("P1: a restore along this device's own history commits the lost revision under its own id", { timeout }, async () => {
-    await holds(overWorld("P1", (world) => violations(world, "P1"), rollbackCommands), [
+    await holds(overWorld("P1", async (world) => [...violations(world, "P1"), ...(await world.restoredWritesLost())], [...rollbackCommands, restoreDuringPush]), [
       scripted("posix", { type: "remote-create", path: 3 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-edit", document: 0 }),
       scripted("posix", { type: "remote-create", path: 3 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "respell", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 0 }, { type: "remote-create", path: 2 }, { type: "push" }, { type: "edit-during-pull", file: 0 }),
@@ -669,6 +669,9 @@ describe("engine properties (design §9.3)", () => {
       // #874 (seed 566): an unchanged file at another device's revision the restore lost, then that device's edit on an
       // older revision: the head is pulled, never this device's change (design §4.6).
       scripted("posix", { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "remote-edit", document: 0 }, { type: "pull" }, { type: "restore", fraction: 0.25 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
+      // #892: this device's edit lands on a restored server and its response is lost, so only the resync's head
+      // acknowledges it; a second restore loses it under an unchanged file: this device commits it again.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-create", path: 3 }, { type: "pull" }, { type: "user-edit", file: 1 }, { type: "restore-during-push", fraction: 0.5, lost: true }, { type: "pull" }, { type: "restore", fraction: 0.5 }, { type: "pull" }),
       // #875 (seed 566): a restore lost this device's own merge commit, which carried another device's edit, then that
       // device edited the restored head: the file's content is merged as its document's, never a new document's.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "folder", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-edit", file: 0 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "remote-edit", document: 0 }, { type: "remote-create", path: 0 }),

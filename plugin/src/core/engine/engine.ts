@@ -831,8 +831,9 @@ export class SyncEngine {
       // with the base's move and the cursor's.
       // Its anchor, as a commit response records it: the base is this
       // device's own commit, which a restore resync never pulls over
-      // (cachedOnly, design §4.6).
-      const anchor = this.feed?.revisionId === remote.revisionId ? this.feed.anchor : undefined;
+      // (cachedOnly, design §4.6). A restore resync's head carries it too
+      // (#892), so no acknowledgement of an own commit leaves it unanchored.
+      const { anchor } = incoming;
       const done: JournalChanges = { removePending: [remote.revisionId], ...this.feedCursor(remote.revisionId) };
       const cachedPath = anchor === undefined ? undefined : pathOfCachedContent(state, remote.parentRevisionId, remote.contentHash, remote.deleted);
       if (state?.revisionId !== remote.revisionId) await this.putDocument({ ...syncedState(remote), ...(anchor === undefined ? {} : { anchor }), ...(cachedPath === undefined ? {} : { cachedPath }) }, { kind: "acknowledged", hash: remote.contentHash }, done);
@@ -1879,13 +1880,18 @@ export class SyncEngine {
     // (cachedOnly); without them nothing proves a base only cached.
     const anchored = (await this.journal.getCursorAnchor()) !== undefined;
     const heads = new Map<string, IncomingRevision>();
+    // The revisions of this device's outbox the restored server holds, by document, in feed order.
+    const sent = new Set((await this.journal.listPending()).map((operation) => operation.revisionId));
+    const owned = new Map<string, IncomingRevision[]>();
     let seq = 0n;
     let anchor: Uint8Array | undefined;
     for (;;) {
       const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: seq, pageSize: this.pageSize });
       for (const revision of response.revisions) {
         if (revision.seq <= seq) throw new RemoteContentError(`change feed went from seq ${String(seq)} back to ${String(revision.seq)}`);
-        heads.set(revision.documentId, toIncoming(revision));
+        const incoming = toIncoming(revision);
+        heads.set(revision.documentId, incoming);
+        if (sent.has(revision.id)) owned.set(revision.documentId, [...(owned.get(revision.documentId) ?? []), incoming]);
         seq = revision.seq;
         anchor = cursorAnchor(revision);
       }
@@ -1958,6 +1964,13 @@ export class SyncEngine {
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
+      // This device's own commits of the document the restored server holds
+      // and whose responses were lost (the head, or revisions the head
+      // descends from): the `commit` step acknowledges each, in feed order,
+      // with its anchor, as a pull from the feed would, before the head is
+      // decided. Never merged as another device's revision, and a later
+      // restore never takes one for a base only cached (#892, design §4.6).
+      for (const own of owned.get(remote.documentId) ?? []) this.count(summary, await this.applyRevision(own, false));
       const state = await this.journal.getDocument(remote.documentId);
       if (state === undefined || !hasBase(state)) {
         this.count(summary, await this.applyRevision(incoming, false));
