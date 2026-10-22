@@ -684,15 +684,34 @@ export class SyncEngine {
    * page moved off the path has followed that revision; one still blocked
    * is detached now. A crash before this leaves an ordinary `path-conflict`
    * deferral, which the push retries (retryRefusedPaths).
+   *
+   * So is every `alias` deferral whose alias the pull's revisions removed
+   * (decision #52; #870, INV-7): a holder a later page moved or deleted no
+   * longer claims the revision's file, as when one page held both and rule
+   * W(b) followed the holder's newer revision first. Every such deferral,
+   * not only this pull's, so a crash between the deferral and here, which
+   * moved the cursor past it, changes nothing.
    */
   private async retryPostponed(postponed: ReadonlySet<string>): Promise<void> {
     for (const documentId of postponed) {
       const deferred = await this.journal.getDeferred(documentId);
       if (deferred?.reason !== "path-conflict") continue;
-      const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true }, deferred.descendsFromBase === true);
-      // Already superseded: a newer revision of the document was applied.
-      if (outcome === "skipped") await this.journal.removeDeferred(documentId);
+      await this.retryDeferred(deferred);
     }
+    const listed = await this.journal.listDeferred();
+    const aliased = await this.aliasedPaths(listed);
+    for (const deferred of listed) {
+      if (deferred.reason !== "unmaterializable" || deferred.unmaterializable !== "alias" || aliased(deferred.revision)) continue;
+      // An earlier retry here may have applied or superseded it.
+      if ((await this.journal.getDeferred(deferred.revision.documentId))?.revision.revisionId !== deferred.revision.revisionId) continue;
+      await this.retryDeferred(deferred);
+    }
+  }
+
+  /** Applies a deferred revision again; one a newer revision of its document already superseded is dropped. */
+  private async retryDeferred(deferred: DeferredRevision): Promise<void> {
+    const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true }, deferred.descendsFromBase === true);
+    if (outcome === "skipped") await this.journal.removeDeferred(deferred.revision.documentId);
   }
 
   private async drainFeed(): Promise<PullSummary> {
@@ -927,6 +946,14 @@ export class SyncEngine {
    * of the document's left), the apply is finished; otherwise it is dropped,
    * and the pull applies the revision again, as the cursor did not pass it
    * (or its deferral is still there).
+   *
+   * A revision that moves the document is shown only by a file spelled as
+   * its path (PO-8, PO-10; folder segments under `F`, as the engine never
+   * respells a folder): the vault reads `ı.md` as the file `I.md` on macOS,
+   * and a rename keeps the content, so a file still at the old spelling
+   * would pass for the moved one. Finished there, the document would sit at
+   * the new path with its file at the old spelling, which the push sends as
+   * a local rename back (#870, INV-7).
    */
   private async recoverApply(intent: Intent): Promise<void> {
     const remote = (intent.steps as { revision: RemoteRevision }).revision;
@@ -937,6 +964,10 @@ export class SyncEngine {
       done = binding == null || (await this.vault.stat(binding.spelling)) === null;
     } else {
       done = sameHash(await this.readOrNull(remote.path), remote.contentHash);
+      if (done && liveHere(state) && state.path !== remote.path) {
+        const held = await this.heldSpelling(remote.path);
+        done = held === remote.path || this.pathSpace.sameButFolderSpelling(held, remote.path);
+      }
     }
     if (done && state?.revisionId !== remote.revisionId) await this.finishApply(remote, intent.id);
     else await this.bindings.transact(() => Promise.resolve({ removeIntents: [intent.id] }));
@@ -2415,7 +2446,10 @@ export class SyncEngine {
         ? deferred.reason === "path-conflict"
         : (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
           (deferred.reason === "unmaterializable" && deferred.unmaterializable === "alias" && !aliased(deferred.revision)) ||
-          (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
+          // An `alias` deferral's path is one the platform allows: the claim
+          // above alone decides it, so a restarted engine, which has tried
+          // nothing yet, never applies one the live engine still holds (#870, INV-7).
+          (deferred.reason === "unmaterializable" && deferred.unmaterializable !== "alias" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
           (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)) ||
           (deferred.reason === "too-large" && !this.retried.has(deferred.revision.revisionId) && !this.overCap(deferred.revision)),
     );
