@@ -1798,10 +1798,13 @@ export class SyncEngine {
     // document, so a head at its path takes the path (claimPath). One with
     // no file here (the user deleted it, or the engine released it or never
     // wrote it) and nothing to send has nothing left anywhere: the journal
-    // forgets it, so it claims no path (design §4.6, PO-12, #768).
+    // forgets it, so it claims no path (design §4.6, PO-12, #768). Its
+    // deferral goes with it in the same write: a `local-changes` one is a
+    // merge owed to a file this document no longer has, of a revision the
+    // restored server lost, and nothing would ever resolve it (#838, INV-9).
     for (const state of await this.journal.listDocuments()) {
       if (heads.has(state.documentId)) continue;
-      if (!outbox.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId] }));
+      if (!outbox.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId], removeDeferred: [state.documentId] }));
       else if (state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
