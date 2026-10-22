@@ -19,6 +19,7 @@ import { interruptedConflictMove } from "./scenarios";
 import { parkedEditAtReusedPath } from "./scenarios";
 import { recreatedNoteMergeCrash } from "./scenarios";
 import { purgedCursor } from "./scenarios";
+import { stalePageHolder } from "./scenarios";
 import { historyRestores } from "./history-scenarios";
 import { restoreWindow } from "./restore-scenarios";
 import { uploadLimitReached, uploadSessionCallsRefused } from "./upload-scenarios";
@@ -495,6 +496,23 @@ describe.runIf(suites.has("scenarios"))("platform path rules (#20)", () => {
     // The renamed notes are still the same documents.
     expect(result.documents.get("plan 2.md"), trace).toBe(result.before.get("plan.md"));
     expect(result.documents.get("ok 2.md"), trace).toBe(result.before.get("ok.md"));
+  });
+
+  // #792 (PO-4(b), PO-11; INV-1, INV-3).
+  it("lets an edited note follow its newest revision on the feed page instead of detaching it on a name Windows cannot hold", async () => {
+    const result = await stalePageHolder(environment);
+    const trace = tail(result.trace, 200);
+
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([
+      ["plan 2.md", "one\ntwo (edited on windows)\n"],
+      ["plan.md", "another plan\n"],
+    ]);
+    expect(result.vaults[0], trace).toEqual(expected);
+    expect(result.vaults[1], trace).toEqual(expected);
+    // The edited note is still the same document; nothing became a new document's conflict copy.
+    expect(result.documents.size, trace).toBe(expected.size);
+    expect(result.documents.get("plan 2.md"), trace).toBe(result.before.get("plan.md"));
   });
 
   it("never takes what is later at a path an unmaterializable rename freed for the renamed note's file", async () => {

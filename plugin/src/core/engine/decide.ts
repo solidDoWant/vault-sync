@@ -48,20 +48,27 @@ export function movedBeforeDelete(state: DocumentState | undefined, remote: Remo
  *   two live documents: the holder keeps its file, and the document is
  *   unmaterializable here (`alias`), a non-disk blocker that claims no path,
  *   until the server moves the holder away (decision #52).
+ * - `follow` (W(b), #792): the pull has a newer revision of the holder in
+ *   hand (`newer`, later on the feed page it is applying) than its synced
+ *   one and its deferral. That revision is the holder's newest server claim
+ *   (§4.5 step 3), so it is decided first: the holder follows it under its
+ *   own id, with its local changes, which may move its file off the path. A
+ *   deferral it supersedes is stale and never detaches the holder.
  * - `keep` (W(c)): the holder's newest server claim is the path under the
  *   server's key: the path stays its own, and the document waits, listed
  *   (`path-conflict`). So does a holder whose own revision the vault
  *   refused (`path-conflict`: an untracked file is in that revision's way).
  */
-export type HolderMove = "displace" | "recreate" | "resolve" | "detach" | "alias" | "keep";
+export type HolderMove = "displace" | "recreate" | "follow" | "resolve" | "detach" | "alias" | "keep";
 
-export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined, outbox: readonly PendingOperation[], path: string, space: PathSpace): HolderMove {
+export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined, outbox: readonly PendingOperation[], path: string, space: PathSpace, newer?: RemoteRevision): HolderMove {
   // A create not acknowledged yet that a local rename moved: a local move.
   if (holder.revisionId === "") return "displace";
   if (!holder.deleted && holder.seq === 0n) return "recreate";
   const binding = holder.binding;
   const moved = holder.deleted || (binding !== undefined && binding !== null && binding.spelling !== holder.path) || outbox.some((operation) => !operation.deleted && operation.path !== holder.path);
   if (moved) return "displace";
+  if (newer !== undefined && newer.seq > holder.seq && (ahead === undefined || newer.seq > ahead.revision.seq)) return "follow";
   if (ahead === undefined || (!ahead.revision.deleted && space.collides(ahead.revision.path, path, "file"))) {
     const claim = ahead === undefined ? holder.path : ahead.revision.path;
     return space.collides(claim, path, "server") ? "keep" : "alias";

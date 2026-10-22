@@ -304,6 +304,12 @@ export class SyncEngine {
   private readonly resolving = new Set<string>();
   /** The feed revision the pull is applying, whose step's final transaction moves the cursor (feedCursor). */
   private feed: { revisionId: string; seq: bigint; anchor: Uint8Array | undefined } | undefined;
+  /**
+   * The newest revision of each document on the feed page the pull is
+   * applying that rule W has not followed yet: a holder's newest server claim
+   * the pull has in hand (ruleW, `follow`; design §4.5, #792).
+   */
+  private page: Map<string, IncomingRevision> | undefined;
   /** The displace and detach intents of rule W (design §4.4). */
   private readonly intents: Intents;
   private readonly unsubscribe: () => void;
@@ -674,23 +680,29 @@ export class SyncEngine {
         await this.resync(summary);
         return summary;
       }
-      for (const revision of response.revisions) {
-        if (revision.seq <= summary.cursor) {
-          throw new RemoteContentError(`change feed went from seq ${String(summary.cursor)} back to ${String(revision.seq)}`);
+      const incoming = response.revisions.map(toIncoming);
+      this.page = new Map(incoming.map((revision) => [revision.remote.documentId, revision]));
+      try {
+        for (const [index, revision] of response.revisions.entries()) {
+          if (revision.seq <= summary.cursor) {
+            throw new RemoteContentError(`change feed went from seq ${String(summary.cursor)} back to ${String(revision.seq)}`);
+          }
+          anchor = cursorAnchor(revision);
+          // The step that applies, merges or defers the revision moves the
+          // cursor in its own final transaction (feedCursor); one that changes
+          // nothing leaves it to here.
+          const feed = { revisionId: revision.id, seq: revision.seq, anchor };
+          this.feed = feed;
+          try {
+            this.count(summary, await this.applyRevision(incoming[index] ?? toIncoming(revision), true));
+            if (this.feed === feed) await this.journal.setCursor(revision.seq, anchor);
+          } finally {
+            this.feed = undefined;
+          }
+          summary.cursor = revision.seq;
         }
-        anchor = cursorAnchor(revision);
-        // The step that applies, merges or defers the revision moves the
-        // cursor in its own final transaction (feedCursor); one that changes
-        // nothing leaves it to here.
-        const feed = { revisionId: revision.id, seq: revision.seq, anchor };
-        this.feed = feed;
-        try {
-          this.count(summary, await this.applyRevision(toIncoming(revision), true));
-          if (this.feed === feed) await this.journal.setCursor(revision.seq, anchor);
-        } finally {
-          this.feed = undefined;
-        }
-        summary.cursor = revision.seq;
+      } finally {
+        this.page = undefined;
       }
       if (!response.hasMore) return summary;
       if (response.revisions.length === 0) throw new RemoteContentError("change feed page claims more revisions but has none");
@@ -916,8 +928,26 @@ export class SyncEngine {
       const { state, spelling } = holder;
       const ahead = await this.journal.getDeferred(state.documentId);
       const outbox = (await this.journal.listPending()).filter((operation) => operation.documentId === state.documentId);
-      const move = ruleW(state, ahead, outbox, path, this.pathSpace);
+      const newer = this.page?.get(state.documentId);
+      const move = ruleW(state, ahead, outbox, path, this.pathSpace, newer?.remote);
       if (move === "keep" || move === "alias") return move === "keep" ? "held" : "alias";
+      if (move === "follow" && newer !== undefined) {
+        // W(b) on the holder's newest server claim (#792): its newer revision
+        // on the page is decided first, under its own id, which may move its
+        // file off the path. A deferral it supersedes is stale, so the
+        // holder is never detached on it. Each page revision is followed at
+        // most once (no loop); the feed skips it once it is applied, and the
+        // cursor stays with the revision being applied.
+        this.page?.delete(state.documentId);
+        const feed = this.feed;
+        this.feed = undefined;
+        try {
+          await this.applyRevision(newer, true);
+        } finally {
+          this.feed = feed;
+        }
+        continue;
+      }
       if (move === "resolve") {
         // W(b): the holder's own remote revision first, which may move its
         // file away. If the merge path cannot finish it now (the hook
