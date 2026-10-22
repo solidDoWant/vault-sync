@@ -692,11 +692,7 @@ export class SyncEngine {
    * comes before the next push (#884, INV-7).
    *
    * So is every `alias` deferral whose alias the pull's revisions removed
-   * (decision #52; #870, INV-7): a holder a later page moved or deleted no
-   * longer claims the revision's file, as when one page held both and rule
-   * W(b) followed the holder's newer revision first. Every such deferral,
-   * not only this pull's, so a crash between the deferral and here, which
-   * moved the cursor past it, changes nothing.
+   * (retryFreedAliases).
    */
   private async retryPostponed(): Promise<void> {
     for (const { revision } of (await this.journal.listDeferred()).filter((deferred) => deferred.postponed === true)) {
@@ -705,6 +701,24 @@ export class SyncEngine {
       if (deferred?.postponed !== true || deferred.reason !== "path-conflict") continue;
       await this.retryDeferred(deferred);
     }
+    await this.retryFreedAliases();
+  }
+
+  /**
+   * Applies every `alias` deferral whose alias is gone (decision #52): no
+   * other live document's newest server claim is an `F`-alias of its path
+   * any more. Run wherever this device learns of a holder's move or delete:
+   * at the end of every pull, whose revisions may move or delete a holder (a
+   * later page than the deferral's, as when one page held both and rule W(b)
+   * followed the holder's newer revision first; #870, INV-7), and after a
+   * push's commits, which may move or delete a holder this device moved or
+   * deleted (#878, INV-7). Every such deferral, not only the pull's or the
+   * push's, so a crash in between, which moved the cursor past it or
+   * committed the move, changes nothing: the restarted push applies it at
+   * its start (retryRefusedPaths' alias claim), the push without the crash
+   * at its end.
+   */
+  private async retryFreedAliases(): Promise<void> {
     const listed = await this.journal.listDeferred();
     // The claims scan reads every document: only a pull with an alias deferral needs it.
     if (!listed.some((deferred) => deferred.reason === "unmaterializable" && deferred.unmaterializable === "alias")) return;
@@ -2032,8 +2046,11 @@ export class SyncEngine {
       // Changes made or found during the round (a merge, an acknowledged commit, an upload superseded) are the next round's.
       changed = [...this.dirty.paths].some(([path, clock]) => seen.get(path) !== clock);
     }
+    // A commit may have moved or deleted an `alias` deferral's holder (#878).
+    const clock = this.dirtyClock;
+    if (summary.committed > 0) await this.retryFreedAliases();
     summary.pending = (await this.journal.listPending()).length;
-    if (changed) this.schedulePush();
+    if (changed || this.dirtyClock !== clock) this.schedulePush();
     return summary;
   }
 
