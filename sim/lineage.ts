@@ -33,7 +33,9 @@
 // - `identity` (INV-3, PO-1): an engine commit of D never comes from an
 //   inode bound to another document, except a crash-lost rename's create
 //   (X-2) and a detached file (PO-4(b), X-20), each committed as a new
-//   document.
+//   document, and, inside the same crash window, a lost rename's file
+//   committed as an edit of a document whose own file the user also deleted
+//   or renamed away there (X-8, narrowed until R11's E7b removes it).
 //
 // The checks are pure functions over recorded data, unit tested in
 // lineage.test.ts.
@@ -291,7 +293,9 @@ class Replay {
     const create = this.firstSeq.get(revision.documentId) === revision.seq;
     // The document the inode was the file of, also if the engine moved it to a copy since (X-3: a lost rename's create there is still the renamed file).
     const previous = owner ?? this.unboundFrom.get(inode);
-    const lostRename = create && previous !== undefined && previous !== revision.documentId && this.inCrashWindow(inode, previous);
+    // X-2: a lost rename's file committed as a new document. X-8 (narrowed to the window until R11): as an edit of an existing document whose own file the user also deleted or renamed away inside an unpersisted window, which the start-up scan (PO-3) sees as that document's file holding new content.
+    const inWindow = previous !== undefined && previous !== revision.documentId && this.inCrashWindow(inode, previous);
+    const lostRename = inWindow && (create || this.fileLostToCrash(revision.documentId));
     if (lostRename) {
       const lost = this.lostRenames.get(previous) ?? new Set<string>();
       lost.add(revision.documentId);
@@ -347,6 +351,22 @@ class Replay {
     return this.renames.some((rename) => {
       if (rename.inode !== inode || !rename.documents.has(documentId)) return false;
       const crash = this.crashAfter(rename.at);
+      return crash !== undefined && crash <= this.position;
+    });
+  }
+
+  /**
+   * Whether the user deleted or renamed away a file bound to `documentId`
+   * at a point a crash followed before the engine's next settled point, and
+   * before now (§5.5 X-8: the change's event was not persisted).
+   */
+  private fileLostToCrash(documentId: string): boolean {
+    const changes = [
+      ...this.userDeleted.filter((deleted) => this.everBound.get(deleted.inode)?.has(documentId) === true).map((deleted) => deleted.at),
+      ...this.renames.filter((rename) => rename.documents.has(documentId)).map((rename) => rename.at),
+    ];
+    return changes.some((at) => {
+      const crash = this.crashAfter(at);
       return crash !== undefined && crash <= this.position;
     });
   }
