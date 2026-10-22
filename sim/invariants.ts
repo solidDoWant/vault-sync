@@ -40,7 +40,6 @@
 import { bytesToHex } from "@noble/hashes/utils.js";
 
 import { sha256Hex } from "../plugin/src/core/hash";
-import { pathKey } from "../plugin/src/core/pathkey/pathkey";
 import type { ProtocolClient } from "../plugin/src/core/protocol/client";
 import type { VaultEvent } from "../plugin/src/core/vault/adapter";
 import { filesystemKey, type PathPlatform } from "../plugin/src/core/vaultpath/platform";
@@ -125,9 +124,8 @@ export class UserLedger {
 
   constructor(
     readonly platform: PathPlatform = "posix",
-    filesystem: "folded" | "faithful" = "folded",
   ) {
-    this.match = pathMatcher(platform, filesystem);
+    this.match = pathMatcher(platform);
   }
 
   write(write: UserWrite): void {
@@ -461,16 +459,15 @@ export interface EngineChanges {
 /**
  * How `platform`'s vault matches paths: exactly under posix; where it
  * ignores case and Unicode form (windows, macos) by the filesystem's name
- * with the faithful filesystem, and by the path key of that name with the
- * folded one, as InMemoryVault looks files up. The vault decides which
+ * (`F`), as InMemoryVault looks files up. The vault decides which
  * file a write lands in: a write to `ı.md` on Windows is a write to the file
- * `I.md`, and with the faithful filesystem `Straße.md` and `STRASSE.md` are
+ * `I.md`, and `Straße.md` and `STRASSE.md` are
  * two files (design §3.1, PO-10, decision #52), so a write is judged by its
  * file, not by its spelling or path key (#736).
  */
-export function pathMatcher(platform: PathPlatform, filesystem: "folded" | "faithful" = "folded"): (path: string) => string {
+export function pathMatcher(platform: PathPlatform): (path: string) => string {
   if (platform === "posix") return (path: string) => path;
-  return filesystem === "faithful" ? (path: string) => filesystemKey(path, platform) : (path: string) => pathKey(filesystemKey(path, platform));
+  return (path: string) => filesystemKey(path, platform);
 }
 
 /**

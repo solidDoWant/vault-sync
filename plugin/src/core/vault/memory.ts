@@ -10,30 +10,16 @@ export interface InMemoryVaultOptions {
    * The file-name rules of the platform the vault models (SPEC.md §8).
    * Writes and renames to a path the platform cannot hold reject with
    * "unmaterializable". Under `windows` and `macos` rules, paths are matched
-   * as those platforms' filesystems match them, ignoring case and Unicode
-   * form (see `filesystem`), and a file keeps the spelling it was created
-   * with. Defaults to `posix`, which is case-sensitive.
+   * as those platforms' filesystems match them (PathSpace.filesystemKey,
+   * `F`, docs/design/engine-path-ownership.md §3.1), as NTFS and APFS do:
+   * `Straße.md` and `STRASSE.md` are two files, so are NFC and NFD
+   * `Café.md` under `windows`, while `ı.md` and `I.md` are one. A file keeps
+   * the spelling it was created with. A folder, too, has one spelling: a
+   * file written or moved into another spelling of an existing folder lands
+   * in it, under the spelling it already has (#377). Defaults to `posix`,
+   * which is case-sensitive.
    */
   pathRules?: PathRules;
-  /**
-   * Which spellings name one file under `windows` and `macos` rules
-   * (docs/design/engine-path-ownership.md §3.1):
-   *
-   * - `folded` (the default): those with one engine file key
-   *   (PathSpace.fileKey, the path key of the filesystem's name), so
-   *   `Straße.md` and `STRASSE.md` are one file. Coarser than any real
-   *   filesystem (the design's X-18).
-   * - `faithful`: those the platform's filesystem takes for one
-   *   (PathSpace.filesystemKey, `F`), as NTFS and APFS do: `Straße.md` and
-   *   `STRASSE.md` are two files, so are NFC and NFD `Café.md` under
-   *   `windows`, while `ı.md` and `I.md` are one. A folder, too, has one
-   *   spelling, as on those filesystems: a file written or moved into
-   *   another spelling of an existing folder lands in it, under the
-   *   spelling it already has (#377). The folded vault holds folders the
-   *   same way, matched under `F` too, so it never holds `Notes/C.md`
-   *   next to `notes/c.md`, which no real filesystem can (#659).
-   */
-  filesystem?: "folded" | "faithful";
 }
 
 /** Who made a change, as the simulation harness tells them apart (InMemoryVault.handle). */
@@ -67,7 +53,7 @@ interface StoredFile {
  * Preconditions are checked synchronously with the change, so atomically.
  */
 export class InMemoryVault implements VaultAdapter {
-  /** Files by lookup key: the path itself, or (on a case-insensitive platform) its file key or filesystem key (PathSpace), per `filesystem`. */
+  /** Files by lookup key: the path itself, or (on a case-insensitive platform) its filesystem key (PathSpace.filesystemKey, `F`). */
   private readonly files = new Map<string, StoredFile>();
   private readonly listeners = new Set<VaultListener>();
   private readonly inodeTaps = new Set<(event: InodeEvent) => void>();
@@ -76,11 +62,8 @@ export class InMemoryVault implements VaultAdapter {
   private actor: VaultActor = "user";
   private readonly now: () => number;
   private readonly pathRules: PathRules;
+  /** The key a file's or a folder's spellings share, as on a real filesystem (PathSpace.filesystemKey, `F`). */
   private readonly key: (path: string) => string;
-  /** The key a folder's spellings share, as on a real filesystem: the platform filesystem's own (PathSpace.filesystemKey, `F`) on either filesystem. */
-  private readonly folderKey: (path: string) => string;
-  /** Whether files are keyed by `folderKey` too (the faithful filesystem), so a folder's files are found by key prefix. */
-  private readonly filesKeyedByFolderKey: boolean;
 
   /**
    * Called when a listener throws. The change itself has already been applied
@@ -97,9 +80,7 @@ export class InMemoryVault implements VaultAdapter {
     this.now = options.now ?? Date.now;
     this.pathRules = options.pathRules ?? posixPathRules;
     const space = new PathSpace(this.pathRules);
-    this.key = options.filesystem === "faithful" ? (path) => space.filesystemKey(path) : space.fileKey;
-    this.folderKey = (path) => space.filesystemKey(path);
-    this.filesKeyedByFolderKey = options.filesystem === "faithful";
+    this.key = (path) => space.filesystemKey(path);
   }
 
   /**
@@ -259,22 +240,13 @@ export class InMemoryVault implements VaultAdapter {
    * `path` with its first `folders` segments, each a folder, spelled as the
    * folder of that name already is (under the vault's matching), so a
    * folder has one spelling as on a case-insensitive filesystem. Files whose
-   * key `skip` accepts do not count. Folders match under the platform
-   * filesystem's `F` on both filesystems, as on NTFS and APFS, even where the
-   * folded vault folds file names further (#659). Under posix rules this is
-   * `path`.
+   * key `skip` accepts do not count. Under posix rules this is `path`.
    */
   private spelled(path: string, folders: number, skip: (key: string) => boolean = () => false): string {
     const segments = path.split("/");
     for (let depth = 1; depth <= Math.min(folders, segments.length); depth++) {
-      const folder = this.folderKey(segments.slice(0, depth).join("/"));
-      const inFolder = this.filesKeyedByFolderKey
-        ? (key: string) => key.startsWith(`${folder}/`)
-        : (_key: string, file: { path: string }) => {
-            const fileSegments = file.path.split("/");
-            return fileSegments.length > depth && this.folderKey(fileSegments.slice(0, depth).join("/")) === folder;
-          };
-      const inside = [...this.files.entries()].find(([key, file]) => !skip(key) && inFolder(key, file))?.[1];
+      const folder = `${this.key(segments.slice(0, depth).join("/"))}/`;
+      const inside = [...this.files.entries()].find(([key]) => !skip(key) && key.startsWith(folder))?.[1];
       // A folder that does not exist has no folders in it either.
       if (inside === undefined) break;
       segments.splice(0, depth, ...inside.path.split("/").slice(0, depth));

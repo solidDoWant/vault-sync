@@ -213,8 +213,8 @@ function commands(alphabet: fc.Arbitrary<WorldCommand>[]) {
 }
 
 /** Runs the commands on a fresh world and brings it to quiescence. */
-async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, filesystem: "folded" | "faithful" = "folded", paths?: readonly string[]): Promise<{ world: PropertyWorld; quiet: boolean }> {
-  const world = new PropertyWorld(on, filesystem, paths);
+async function play(on: PathPlatform, steps: Iterable<fc.AsyncCommand<object, PropertyWorld>>, paths?: readonly string[]): Promise<{ world: PropertyWorld; quiet: boolean }> {
+  const world = new PropertyWorld(on, paths);
   await fc.asyncModelRun(() => ({ model: {}, real: world }), steps);
   const quiet = await world.quiesce();
   return { world, quiet };
@@ -309,7 +309,7 @@ const p3 = overWorld("P3", (world) => violations(world, "P3"));
 const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
   property: "P3",
   cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(ghostCommands)),
-  check: async ([on, steps]) => violations((await play(on, steps, "folded", ghostPaths)).world, "P3"),
+  check: async ([on, steps]) => violations((await play(on, steps, ghostPaths)).world, "P3"),
 };
 const p8 = overWorld("P8", (world) => violations(world, "P8"), outboxCommands);
 const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateCommands);
@@ -322,10 +322,10 @@ function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Ar
     property: "P4",
     cases: fc.tuple(platforms, fc.array(fc.oneof(...alphabet), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
     check: async ([on, list, write]) => {
-      const baseline = new PropertyWorld(on, "folded", paths);
+      const baseline = new PropertyWorld(on, paths);
       for (const command of list) await baseline.apply(command);
       await baseline.quiesce();
-      const crashed = new PropertyWorld(on, "folded", paths);
+      const crashed = new PropertyWorld(on, paths);
       crashed.armCrash(write);
       for (const command of list) await crashed.apply(command);
       await crashed.quiesce();
@@ -363,14 +363,14 @@ const echoCommands: fc.Arbitrary<WorldCommand>[] = [
 const p7: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
   property: "P7",
   cases: fc.tuple(platform, commands(echoCommands)),
-  check: async ([on, steps]) => (await play(on, steps, "faithful")).world.ownChangesReported(),
+  check: async ([on, steps]) => (await play(on, steps)).world.ownChangesReported(),
 };
 /** P6 where a folder has one spelling on disk (#737): INV-9 with folders compared under `F`, and INV-10 (P7's oracle), no own write reported as the user's. */
 const p6Folders: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
   property: "P6",
   cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(folderCommands)),
   check: async ([on, steps]) => {
-    const { world, quiet } = await play(on, steps, "faithful", folderPaths);
+    const { world, quiet } = await play(on, steps, folderPaths);
     return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence()), ...world.ownChangesReported()];
   },
 };

@@ -16,7 +16,7 @@ const decoder = new TextDecoder();
 /** With `recordMerges`, the harness's merge hook, which defers every merge, instead of the engine's default. */
 function faithful(platform: "macos" | "windows", recordMerges = false): Harness {
   const pathRules = { platform };
-  return harness({ ...(recordMerges ? {} : { merge: "default" as const }), pathRules, vault: new InMemoryVault({ pathRules, filesystem: "faithful" }) });
+  return harness({ ...(recordMerges ? {} : { merge: "default" as const }), pathRules, vault: new InMemoryVault({ pathRules }) });
 }
 
 async function rounds(h: Harness): Promise<void> {

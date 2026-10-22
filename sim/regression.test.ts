@@ -25,14 +25,14 @@ describe("regression cases", () => {
     expect(replayOptions(regression)).toEqual(seededOptions(true));
   });
 
-  it("replay a case recorded on the folded vault folded", () => {
+  it("replay a case recorded with the plain pool with the plain pool", () => {
     const regression = throughDisk(recordedCase("seed-42", seededOptions(false), violations, steps));
 
     expect(regression).not.toHaveProperty("faithfulFilesystem");
     expect(replayOptions(regression)).toEqual(seededOptions(false));
   });
 
-  it("replay a case recorded before the faithful filesystem was recorded folded", () => {
+  it("replay a case recorded before the faithful filesystem was recorded with the plain pool", () => {
     // The shape of the cases committed under sim/regressions before #598.
     const legacy = throughDisk({ name: "seed-16", seed: 16, clients: 3, engines: 2, commitRetryBackoff: 30, violations, steps });
 

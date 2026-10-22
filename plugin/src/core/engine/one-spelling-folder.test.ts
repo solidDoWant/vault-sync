@@ -15,7 +15,7 @@ const bytes = (value: string) => encoder.encode(value);
 const lines = (...values: string[]) => values.map((value) => `${value}\n`).join("");
 
 function faithful(platform: "windows" | "macos" | "android"): Harness {
-  return harness({ merge: "default", pathRules: { platform }, vault: new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" }) });
+  return harness({ merge: "default", pathRules: { platform }, vault: new InMemoryVault({ pathRules: { platform } }) });
 }
 
 describe.each(["windows", "macos", "android"] as const)("a folder with one spelling on disk on %s (#737)", (platform) => {
@@ -130,7 +130,7 @@ describe.each(["windows", "macos", "android"] as const)("a folder with one spell
     async function scenario(crashAfter: number) {
       const server = new InMemoryServer();
       const points = new CrashPoints();
-      const vault = new InMemoryVault({ pathRules: { platform }, filesystem: "faithful" });
+      const vault = new InMemoryVault({ pathRules: { platform } });
       const h = harness({ merge: "default", server, vault, journal: new CrashingJournal(points), pathRules: { platform }, wrapVault: (inner) => new CrashingVault(inner, points) });
       server.commit({ documentId: "a", path: "notes/a.md", content: lines("one", "two", "three") });
       await h.engine.pull();

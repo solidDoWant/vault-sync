@@ -49,14 +49,14 @@ describe("checkLostWrites", () => {
   });
 
   it("judges a write through an alias spelling by its file: overwriting I.md replaces a write to ı.md on Windows (#736)", () => {
-    const ledger = new UserLedger("windows", "faithful");
+    const ledger = new UserLedger("windows");
     ledger.write({ hash: "xx", path: "ı.md", at });
     ledger.replace("xx", "I.md");
     expect(checkLostWrites("e1", ledger, new Set())).toEqual([]);
   });
 
   it("keeps following a write in Straße.md when the user deletes the separate file STRASSE.md on the faithful filesystem (#736)", () => {
-    const ledger = new UserLedger("windows", "faithful");
+    const ledger = new UserLedger("windows");
     ledger.write({ hash: "xx", path: "Straße.md", at });
     ledger.deleted("STRASSE.md");
     ledger.renamed("Straße.md", "notes/f.md", new Set(), "xx");
