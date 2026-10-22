@@ -2120,11 +2120,8 @@ export class SyncEngine {
       // Changes made or found during the round (a merge, an acknowledged commit, an upload superseded) are the next round's.
       changed = [...this.dirty.paths].some(([path, clock]) => seen.get(path) !== clock);
     }
-    // A commit may have moved or deleted an `alias` deferral's holder (#878).
-    const clock = this.dirtyClock;
-    if (summary.committed > 0) await this.retryFreedAliases();
     summary.pending = (await this.journal.listPending()).length;
-    if (changed || this.dirtyClock !== clock) this.schedulePush();
+    if (changed) this.schedulePush();
     return summary;
   }
 
@@ -2152,7 +2149,7 @@ export class SyncEngine {
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
         const followed = await this.createFollowsBinding(operation);
-        if (followed !== undefined) await this.commitOperation(followed, summary);
+        if (followed !== undefined) await this.commitInPush(followed, summary);
         busy = await this.busy();
       }
     }
@@ -2210,7 +2207,7 @@ export class SyncEngine {
       if (operation.baseRevisionId === "" && !(await this.known(operation.documentId))) await this.bindings.created(operation);
       else if (plan.revivals.has(operation.revisionId)) await this.bindings.revived(operation);
       else await this.journal.addPending(operation);
-      await this.commitOperation(operation, summary);
+      await this.commitInPush(operation, summary);
     }
     // The re-creates the displaces above put in the outbox are this push's,
     // as they are when a restart recovers the intent and resumes the outbox
@@ -2223,9 +2220,24 @@ export class SyncEngine {
         continue;
       }
       const followed = await this.createFollowsBinding(operation);
-      if (followed !== undefined) await this.commitOperation(followed, summary);
+      if (followed !== undefined) await this.commitInPush(followed, summary);
     }
     return plan.waiting;
+  }
+
+  /**
+   * Commits one of the push's operations, then applies every `alias`
+   * deferral the commit freed (retryFreedAliases): the commit may have moved
+   * or deleted the holder (#878). Right after the commit, before the push
+   * commits anything else, which may re-take the alias spelling (the user's
+   * untracked file there, created as a new document), as a push a crash right
+   * after this commit restarts does at its start (#922, INV-7). The push's
+   * later operations re-check their file before committing.
+   */
+  private async commitInPush(operation: PendingOperation, summary: PushSummary): Promise<void> {
+    const committed = summary.committed;
+    await this.commitOperation(operation, summary);
+    if (summary.committed > committed) await this.retryFreedAliases();
   }
 
   /**
