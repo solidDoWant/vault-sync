@@ -228,3 +228,45 @@ describe("a restore that lost the deferral of a released document with an outbox
     expect(await h.journal.listDeferred()).toEqual([]);
   });
 });
+
+// #886 (INV-2, PO-12, design §4.6): a resync that drops a deferral can expose
+// a ghost's stale synced path, which another ghost's synced path collides
+// with under K. The ghost whose file left its synced path yields in the
+// resync, re-created at the spelling it is bound at; the ghost still at its
+// synced path keeps it.
+describe("a restore that leaves two ghosts at one synced path", () => {
+  it("re-creates the ghost whose file moved away at its file, and the other keeps the path", async () => {
+    const h = windows();
+    h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
+    await h.engine.pull();
+    // The user renames a's file; the server renames a to a path Windows refuses, so the local rename waits behind it.
+    await h.vault.rename("a.md", "moved.md");
+    await h.engine.settled();
+    h.server.commit({ documentId: "a", path: "no:te.md" }); // 2
+    await h.engine.pull();
+    expect((await h.journal.getDeferred("a"))?.revision.path).toBe("no:te.md");
+    // The user creates a new note at a's old path, and the push sends it.
+    await h.vault.write("a.md", new TextEncoder().encode("new\n"));
+    await h.engine.settled();
+    await h.engine.push();
+    const created = h.server.liveDocuments().get("a.md");
+    expect(created).toBeDefined();
+    expect(created).not.toBe("a");
+
+    // A restore to nothing loses both.
+    h.server.restoreTo(0n);
+    await h.engine.pull();
+
+    const keys = await claimKeys(h);
+    expect(new Set(keys).size).toBe(keys.length);
+    expect(await h.journal.getDocument("a")).toMatchObject({ revisionId: "", path: "moved.md", binding: { spelling: "moved.md" } });
+    expect((await h.journal.listPending()).filter((operation) => operation.documentId === "a")).toMatchObject([{ baseRevisionId: "", path: "moved.md", deleted: false }]);
+    expect(await h.journal.getDocument(created ?? "")).toMatchObject({ path: "a.md", binding: { spelling: "a.md" } });
+    expect(await files(h.vault)).toEqual(new Map([["a.md", "new\n"], ["moved.md", "a1\n"]]));
+
+    // The push re-creates both, each under its own id at its file.
+    await h.engine.push();
+    expect(h.server.liveDocuments()).toEqual(new Map([["a.md", created], ["moved.md", "a"]]));
+    expect(await files(h.vault)).toEqual(new Map([["a.md", "new\n"], ["moved.md", "a1\n"]]));
+  });
+});
