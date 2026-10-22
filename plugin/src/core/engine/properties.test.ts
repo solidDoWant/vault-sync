@@ -791,7 +791,45 @@ describe("engine properties (design §9.3)", () => {
         ],
         8,
       ],
+      // #878's second: the push that commits the move of `I.md`'s file off its path applies `ı.md`'s alias deferral
+      // in that push, as the push a crash restarts does at its start.
+      [
+        "macos",
+        [
+          { type: "user-create", path: 0 },
+          { type: "push" },
+          { type: "move-onto-incoming", file: 0, path: 5 },
+          { type: "remote-create", path: 14 },
+          { type: "move-onto-incoming", file: 0, path: 13 },
+          { type: "move-onto-incoming", file: 0, path: 2 },
+          { type: "push" },
+          { type: "user-edit", file: 4 },
+        ],
+        20,
+      ],
     ]);
+  });
+
+  // #878 (INV-7, §4.5 step 3, decision #52): an `alias` deferral waits until the holder's newest server claim leaves
+  // the alias. Moving the holder's file off the path locally is not enough, whether or not the engine restarted since.
+  // Fixed cases: `I.md` deferred behind `ı.md`, whose file the user moves away, then an offline push, with and without
+  // a crash right after the move.
+  it("an alias deferral waits for the server to move its holder, across a restart", { timeout }, async () => {
+    const steps: WorldCommand[] = [
+      { type: "user-create", path: 0 },
+      { type: "remote-create", path: 13 },
+      { type: "remote-create", path: 14 },
+      { type: "push" },
+      { type: "move-onto-incoming", file: 3, path: 5 },
+      { type: "offline-push" },
+    ];
+    for (const write of [0, 8]) {
+      const world = new PropertyWorld("macos");
+      if (write > 0) world.armCrash(write);
+      for (const command of steps) await world.apply(command);
+      expect(await world.vault.list(), `crash at write ${String(write)}`).not.toContain("I.md");
+      expect((await world.journal.listDeferred()).map((deferred) => [deferred.revision.path, deferred.unmaterializable]), `crash at write ${String(write)}`).toEqual([["I.md", "alias"]]);
+    }
   });
 
   // #801 (INV-7, PO-8): a push that displaces a ghost the restore lost to a copy name commits its re-create in the
