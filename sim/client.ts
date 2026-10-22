@@ -81,6 +81,17 @@ export interface RunContext {
    * each refusal against the user's role (Members.check). Unset: no client.
    */
   mayLoseAccess?: (client: number) => boolean;
+  /**
+   * How many times the run has restored the database to a backup (#650).
+   * A client accepts a diverged server, or a lost commit, only if this
+   * moved since its last complete pull.
+   */
+  restores: () => number;
+  /**
+   * The revisions restores removed, by id, with the seq they had (#650,
+   * docs/design/engine-path-ownership.md §5.5 X-23, X-24).
+   */
+  restoredAway: ReadonlyMap<string, string>;
 }
 
 /**
@@ -155,6 +166,19 @@ export class ScriptedClient {
   /** Whether the client has pulled since it (re)started; it pulls before doing anything else. */
   private synced = false;
   private cursor = 0n;
+  /** The anchor of the revision at the cursor (Revision.anchor), sent as since_anchor so a restored server reports divergence (SPEC.md §6.1). */
+  private cursorAnchor: Uint8Array = new Uint8Array();
+  /** The client's latest acknowledged commit above the cursor, sent as own_commit_seq and own_commit_anchor (SPEC.md §6.1). */
+  private ownCommit: { seq: bigint; anchor: Uint8Array } | undefined;
+  /**
+   * The client's acknowledged commits the feed has not delivered yet, by
+   * revision id, with their seq. After a complete pull, one at or below the
+   * cursor, or above the head, is a commit the server lost: only a restore
+   * does that (SPEC.md §8), and the client then pulls everything again.
+   */
+  private unconfirmed = new Map<string, bigint>();
+  /** The run's restores and purges as of the start of this client's last complete pull (or its start): a divergence needs one since. */
+  private historyEvents = { restores: 0, purges: 0 };
   private documents = new Map<string, KnownDocument>();
   private contentCounter = 0;
 
@@ -192,7 +216,21 @@ export class ScriptedClient {
     this.context.network.crash(this.index);
     this.busy = false;
     this.synced = false;
+    this.forget();
+  }
+
+  /** Whether the run restored the database since this client's last complete pull. */
+  private restoredSincePull(): boolean {
+    return this.context.restores() > this.historyEvents.restores;
+  }
+
+  /** Forgets what the client pulled, as on a restart or a resync after the server diverged. */
+  private forget(): void {
     this.cursor = 0n;
+    this.cursorAnchor = new Uint8Array();
+    this.ownCommit = undefined;
+    this.unconfirmed = new Map();
+    this.historyEvents = { restores: 0, purges: 0 };
     this.documents = new Map();
   }
 
@@ -281,14 +319,25 @@ export class ScriptedClient {
    * against the database (SimRun.finish).
    */
   private async pull(): Promise<void> {
+    // As of the pull's first request: the server may answer it from before a restore whose step comes before the reply's delivery.
+    const events = { restores: this.context.restores(), purges: this.context.purgedSeqs.size };
     for (let page = 0; page < maxPages; page++) {
       let response;
       try {
-        response = await this.api.sync.listChanges({ vaultId: this.context.vaultId, sinceSeq: this.cursor, pageSize });
+        const own = this.ownCommit !== undefined && this.ownCommit.seq > this.cursor ? { ownCommitSeq: this.ownCommit.seq, ownCommitAnchor: this.ownCommit.anchor } : {};
+        response = await this.api.sync.listChanges({ vaultId: this.context.vaultId, sinceSeq: this.cursor, sinceAnchor: this.cursorAnchor, pageSize, ...own });
       } catch (error) {
         if (!this.accessRefused(error)) this.unexpectedUnless(error, "ListChanges", [Code.Unavailable]);
         this.context.log(`${this.name} pull interrupted: ${Code[errorCode(error)]}`);
         return;
+      }
+      if (response.diverged) {
+        // The server lost revisions this client saw (a restored backup, SPEC.md §6.1, §8): pull everything again.
+        this.context.log(`${this.name} resyncs: the server diverged from seq ${String(this.cursor)}`);
+        // Retention may also lose the revision at the cursor once its purge marker is pruned (§11).
+        if (!this.restoredSincePull() && this.context.purgedSeqs.size === this.historyEvents.purges) this.violation("seq", `${this.name} was told the server diverged from seq ${String(this.cursor)}, although it was neither restored nor purged since its last complete pull`);
+        this.forget();
+        continue;
       }
       for (const revision of response.revisions) {
         if (revision.seq <= this.cursor) {
@@ -300,13 +349,25 @@ export class ScriptedClient {
           break;
         }
         this.cursor = revision.seq;
+        this.cursorAnchor = revision.anchor;
+        this.unconfirmed.delete(revision.id);
         this.learn(revision);
       }
       if (response.headSeq < this.cursor) {
         this.violation("seq", `${this.name} pulled seq ${String(this.cursor)} beyond head_seq ${String(response.headSeq)}`);
       }
       if (!response.hasMore) {
+        // One retention purged is not lost: the feed skips it (§11).
+        const lost = [...this.unconfirmed].find(([id, seq]) => !this.context.purgedRevisions.has(id) && (seq <= this.cursor || seq > response.headSeq));
+        if (lost !== undefined) {
+          // The feed passed (or never reached) one of this client's acknowledged commits without delivering it.
+          this.context.log(`${this.name} resyncs: the server lost its commit ${this.context.ids.label(lost[0])} at seq ${String(lost[1])}`);
+          if (this.context.restoredAway.get(lost[0]) !== String(lost[1])) this.violation("seq", `${this.name}'s acknowledged commit ${this.context.ids.label(lost[0])} at seq ${String(lost[1])} is not in the feed, although no restore removed it`);
+          this.forget();
+          continue;
+        }
         this.synced = true;
+        this.historyEvents = events;
         this.context.log(`${this.name} pulled up to seq ${String(this.cursor)}`);
         return;
       }
@@ -336,6 +397,12 @@ export class ScriptedClient {
       const { error } = result;
       if (error.code === Code.FailedPrecondition && fields.baseRevisionId !== "") {
         const head = error.findDetails(DocumentSchema)[0]?.headRevId;
+        if ((head === undefined || head === "") && this.context.restoredAway.has(fields.baseRevisionId)) {
+          // A restore removed the document (SPEC.md §8): it is gone from the server, as is what this client knew of it.
+          // X-24 (docs/design/engine-path-ownership.md §5.5): only for a base a restore removed.
+          this.context.log(`${this.name} ${operation} ${document}: the document is gone after a restore, giving up`);
+          return;
+        }
         if (head === undefined || head === "") {
           this.violation("protocol", `FAILED_PRECONDITION for ${document} carried no Document detail with the head`);
           return;
@@ -416,6 +483,8 @@ export class ScriptedClient {
       blobId: bytesToHex(revision.contentRef?.blobId ?? new Uint8Array()),
       size: String(revision.contentRef?.size ?? 0n),
     });
+    if (revision.seq > (this.ownCommit?.seq ?? 0n)) this.ownCommit = { seq: revision.seq, anchor: revision.anchor };
+    if (revision.seq > this.cursor) this.unconfirmed.set(revision.id, revision.seq);
     this.learn(revision);
   }
 

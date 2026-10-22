@@ -97,6 +97,12 @@ export interface RunOptions {
    * schedule carries its membership steps.
    */
   membership?: boolean;
+  /**
+   * Whether a seeded schedule backs up and restores the vault's database
+   * between steps (ScheduleOptions.restores, #650). Only runSeed reads it: a
+   * recorded schedule carries its snapshot and restore steps.
+   */
+  restores?: boolean;
 }
 
 /**
@@ -128,6 +134,8 @@ export interface RunResult {
   purged: string[];
   /** The role changes membership steps made (#35), by kind. */
   membershipChanges: Members["changes"];
+  /** How many restore steps put the vault back to a backup (#650). */
+  restores: number;
 }
 
 /** Bound on deliveries while draining, far above what any schedule needs. */
@@ -141,6 +149,17 @@ export class SimRun {
   readonly purged = new Map<string, FeedRevision>();
   /** Whether the run had retention purge (SimRun.purge) or restored a backup (SimRun.restore). */
   private purgedOrRestored = { purged: false, restored: false };
+  /** Whether the run backed up the database (SimRun.snapshot), so a restore step has a backup to restore. */
+  private snapshotTaken = false;
+  /** How many restore steps restored a backup. */
+  private restores = 0;
+  /**
+   * The revisions restores removed, by id, with the seq they had: their
+   * acknowledgements were lost by the operator's restore, not by the system
+   * (SPEC.md §8), so the server-side history check excuses exactly those
+   * (docs/design/engine-path-ownership.md §5.5 X-23, PO-12).
+   */
+  private restoredAway = new Map<string, string>();
 
   private constructor(
     readonly context: RunContext,
@@ -174,7 +193,8 @@ export class SimRun {
     const ids = new Ids();
     const trace: string[] = [];
     let serverSeq = 0n;
-    const run: { stepNumber: () => number } = { stepNumber: () => 0 };
+    const run: { stepNumber: () => number; restores: () => number } = { stepNumber: () => 0, restores: () => 0 };
+    const restoredAway = new Map<string, string>();
     const log = (entry: string) => trace.push(`${String(run.stepNumber())}: ${entry}`);
     const violations: Violation[] = [];
     const purges = { seqs: new Set<bigint>(), revisions: new Set<string>() };
@@ -211,6 +231,8 @@ export class SimRun {
       purgedRevisions: purges.revisions,
       pathPool: options.faithfulFilesystem === true ? faithfulPathPool : pathPool,
       mayLoseAccess: (client) => access.members?.mayLoseAccess(client) === true,
+      restores: () => run.restores(),
+      restoredAway,
     };
     const members = await Members.join(http, vault.id, tokens, options.clients);
     access.members = members;
@@ -233,6 +255,9 @@ export class SimRun {
     }
     const simRun = new SimRun(context, clients, observers, control, setup, trace, purges, options.notificationPulls === true, members);
     run.stepNumber = () => simRun.stepNumber;
+    run.restores = () => simRun.restores;
+    // The run context's read-only view, shared with the scripted clients.
+    simRun.restoredAway = restoredAway;
     return simRun;
   }
 
@@ -337,14 +362,16 @@ export class SimRun {
   /** Backs up the run's vault in the database (Control.snapshot). */
   async snapshot(): Promise<bigint> {
     const headSeq = await this.control.snapshot(this.context.vaultId);
+    this.snapshotTaken = true;
     this.context.log(`database snapshot at seq ${String(headSeq)}`);
     return headSeq;
   }
 
   /**
-   * Restores the snapshot (Control.restore). The invariants of finish()
-   * assume the server keeps every acknowledged write, so a run that
-   * restores checks its own outcome instead.
+   * Restores the snapshot (Control.restore). A scenario that calls it
+   * directly checks its own outcome; the schedule's restore step also
+   * records what the restore removed (`restoredAway`), which finish()
+   * excuses from the history check (X-23).
    */
   async restore(): Promise<bigint> {
     this.purgedOrRestored.restored = true;
@@ -391,7 +418,9 @@ export class SimRun {
       this.context.violations.push(violation);
       this.context.log(`VIOLATION ${violation.invariant}: ${violation.detail}`);
     }
-    const violations = await this.control.check(this.context.vaultId, this.context.acknowledged, clientHeads);
+    // An acknowledgement of a revision a restore removed is no longer the server's to keep; an engine still holds its content (checkUsers).
+    const kept = this.context.acknowledged.filter((ack) => this.restoredAway.get(ack.revisionId) !== ack.seq);
+    const violations = await this.control.check(this.context.vaultId, kept, clientHeads);
     for (const violation of violations) {
       this.context.violations.push({ invariant: violation.invariant, detail: this.context.ids.relabel(violation.detail) });
       this.context.log(`VIOLATION ${violation.invariant}: ${this.context.ids.relabel(violation.detail)}`);
@@ -403,6 +432,7 @@ export class SimRun {
       violations: this.context.violations,
       purged: [...this.purged.keys()].map((id) => this.context.ids.label(id)),
       membershipChanges: { ...this.members.changes },
+      restores: this.restores,
     };
   }
 
@@ -523,6 +553,20 @@ export class SimRun {
       case "membership":
         // Fault-free, like the owner's own device making the change between two deliveries.
         return this.members.change(step.pick);
+      case "snapshot":
+        // Fault-free, like the operator's backup: it runs against the database, not through a client's network.
+        return `snapshot at seq ${String(await this.snapshot())}`;
+      case "restore": {
+        if (!this.snapshotTaken) return "restore: no backup";
+        // The feed just before: what the restore removes is everything above the backup's head.
+        const before = await serverFeed(this.direct, this.context.vaultId);
+        const headSeq = await this.restore();
+        const removed = before.filter((revision) => revision.seq > headSeq);
+        for (const revision of removed) this.restoredAway.set(revision.revisionId, String(revision.seq));
+        this.context.network.recordRestored(removed.map((revision) => revision.revisionId));
+        this.restores++;
+        return `restore to seq ${String(headSeq)} removed ${String(removed.length)} revisions`;
+      }
       case "engine-operation": {
         const observer = this.observers[step.engine % this.observers.length];
         if (observer === undefined) return "engine-operation: no engine";
@@ -548,7 +592,7 @@ export async function runSteps(endpoints: SimEndpoints, options: RunOptions, ste
 /** Runs the schedule generated from `seed`, with seededCommitRetryBackoff unless `options` sets another. */
 export async function runSeed(endpoints: SimEndpoints, options: RunOptions & { steps: number }): Promise<RunResult & { steps: Step[] }> {
   // Without `engines` the engine has no user, as before #22.
-  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention, membership: options.membership });
+  const steps = generateSchedule({ seed: options.seed, steps: options.steps, clients: options.clients, engines: options.engines ?? 0, retention: options.retention, membership: options.membership, restores: options.restores });
   return { ...(await runSteps(endpoints, { commitRetryBackoff: seededCommitRetryBackoff, ...options }, steps)), steps };
 }
 
