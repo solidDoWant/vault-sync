@@ -2,6 +2,7 @@ import { fileURLToPath } from "node:url";
 
 import { defineConfig } from "vitest/config";
 
+import { faithfulFilesystemEnv, parseFaithfulFilesystem } from "./scripts/sim-filesystem.ts";
 import { loadRegressionCases, regressionDirEnv, resolveRegressionDir } from "./scripts/sim-regressions.ts";
 
 // The networked simulation suite (../sim/*.sim.test.ts, SPEC.md §13). `make
@@ -47,9 +48,9 @@ if (engines < 0) throw new Error("SIM_ENGINES must not be negative");
 
 // The seeded suites run on the faithful filesystem by default (refactor step
 // R7 of docs/design/engine-path-ownership.md); 0 opts into the folded vault,
-// for replaying a seed recorded before R7.
-const faithful = process.env.SIM_FAITHFUL_FS ?? "";
-if (!["", "0", "1"].includes(faithful)) throw new Error(`SIM_FAITHFUL_FS must be 0 or 1, got ${JSON.stringify(faithful)}`);
+// for replaying a seed recorded before R7. test/sim-filesystem.test.ts pins
+// the default (#782).
+const faithfulFilesystem = parseFaithfulFilesystem(process.env[faithfulFilesystemEnv]);
 
 export default defineConfig({
   test: {
@@ -67,7 +68,7 @@ export default defineConfig({
         steps: integer("SIM_STEPS", 1000),
         clients,
         engines,
-        faithfulFilesystem: faithful !== "0",
+        faithfulFilesystem,
         shrinkRuns: integer("SIM_SHRINK_RUNS", 150),
         regressions,
         suites,
