@@ -105,6 +105,13 @@ While signed in and connected, the plugin syncs on its own:
 
 The server limits how many requests one account may have in progress at once (`VAULT_SYNC_MAX_CONCURRENT_RPCS_PER_USER`, see `docs/configuration.md`). A single device stays far below the limit, but many devices syncing at once can reach it. When the server refuses a sync for that reason, the status shows **error** with the server's message. The plugin then waits before its next pull or push contacts the server, including **Sync now**. The wait is random, between half of a ceiling and the whole of it. The ceiling starts at 1 second and doubles with every refusal in a row, up to 1 minute. Once the wait is over, the plugin pushes, and the first sync that succeeds resets the ceiling. Nothing is lost while it waits: changes stay on disk and in the journal, and the plugin sends them again with the same revision ids.
 
+Renames and deletes keep a note's identity and history (`SPEC.md` §8):
+
+- A renamed or moved file stays the same note on every device, with its history, also when the rename changes only letter case. A rename made while Obsidian was closed is recognized when the file's content is unchanged and no other file has the same content; otherwise it syncs as a delete and a new note.
+- A file you create where a deleted or renamed note used to be is a new note, not an edit of the old one.
+- An edit, or a rename not synced yet, wins over another device's delete of the same note: the note comes back, under your name for it, with your edit.
+- When another device puts a note at a path this device has a different file at, the file here is moved to a conflict-copy name and kept; vault-sync renames files to make room, never deletes them.
+
 Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.
 
 Downgrading Vault Sync is not supported. The sync journal records the schema version that wrote it, and an older Vault Sync refuses to open a journal written by a newer one (sync does not start) rather than misread it. For example, a create that has not reached the server yet is recorded in a form that a version before the path-ownership refactor would take for a deleted note.
