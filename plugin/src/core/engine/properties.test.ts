@@ -30,7 +30,7 @@ import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
 import { errorCode } from "./errors";
 import { kindValue } from "./remote";
-import { files, harness, PropertyWorld, remoteDeviceId, testDeviceId, withoutCopyNames, worldPaths, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
+import { copyOf, files, harness, PropertyWorld, remoteDeviceId, testDeviceId, withoutCopyNames, worldPaths, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
 import { uploadContent } from "./upload";
 
 declare module "vitest" {
@@ -592,6 +592,55 @@ const p6BlockedHolder: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object
   },
 };
 /**
+ * #917's class (INV-9, PO-14): a document D bound at a conflict-copy name is
+ * moved by the server onto the path the copy name was made from, where the
+ * user's untracked file sits. The merge path keeps that file as a
+ * `concurrent-create` copy, whose first name is D's own file: exactly, or
+ * under `F` only (`ı (conflict …).md` is the file `I (conflict …).md` on
+ * Windows). The copies are written before D's file leaves, so the file
+ * still holds its name then. Generated over the platforms, the target and
+ * D's copy name, whether D came from this device or another, whether the
+ * untracked file is there before the server's move, and whether the user
+ * edited D's file or the untracked one.
+ */
+const ownCopyPaths: readonly string[] = ["a.md", copyOf("a", ".md"), copyOf("A", ".md"), "ı.md", copyOf("I", ".md"), copyOf("ı", ".md"), "I.md"];
+const ownCopyCases = fc
+  .record({
+    on: platform,
+    pair: fc.constantFrom<[number, number]>([0, 1], [0, 2], [3, 4], [3, 5], [6, 4], [6, 5]),
+    remote: fc.boolean(),
+    createFirst: fc.boolean(),
+    editDocument: fc.boolean(),
+    editUntracked: fc.boolean(),
+  })
+  .map(({ on, pair: [target, document], remote, createFirst, editDocument, editUntracked }) => {
+    const path = (index: number) => ownCopyPaths[index] ?? "";
+    // The world picks the file a user edit changes by its index among the vault's files sorted by path.
+    const file = (at: number) => [path(document), path(target)].sort().indexOf(path(at));
+    const list: WorldCommand[] = remote ? [{ type: "remote-create", path: document }, { type: "pull" }] : [{ type: "user-create", path: document }, { type: "push" }];
+    const create: WorldCommand = { type: "user-create", path: target };
+    const rename: WorldCommand = { type: "remote-rename", document: 0, path: target };
+    list.push(...(createFirst ? [create, rename] : [rename, create]));
+    if (editUntracked) list.push({ type: "user-edit", file: file(target) });
+    if (editDocument) list.push({ type: "user-edit", file: file(document) });
+    list.push({ type: "pull" });
+    return { on, list };
+  });
+const copyOntoOwnFile: Definition<{ on: PathPlatform; list: WorldCommand[] }> = {
+  property: "P6",
+  cases: ownCopyCases,
+  check: async ({ on, list }) => {
+    const { world, quiet } = await play(on, scripted(on, ...list)[1], ownCopyPaths);
+    return [
+      ...violations(world, "P1"),
+      ...(await world.lostWrites()),
+      ...world.errors.map((error) => `error: ${String(error)}`),
+      ...(quiet ? [] : ["no quiescence within the round bound"]),
+      ...(await world.convergence()),
+    ];
+  },
+};
+/**
  * #757: P1, P2, P3, P5 and P6 over movedOntoIncomingCommands, with no
  * harness errors (P6 since #769, whose convergence check excuses the kept
  * file of a document deferred as an `F`-alias, §5.5 X-15).
@@ -1091,6 +1140,9 @@ describe("engine properties (design §9.3)", () => {
       // #882 (seed 566): rule W's displaced spelling is no user change, so the remote delete after the server took the
       // user's move wins; the document stays deleted.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 6 }, { type: "remote-delete", document: 0 }, { type: "remote-rename", document: 0, path: 6 }, { type: "remote-delete", document: 0 }, { type: "move-onto-incoming", file: 1, path: 0 }),
+      // #917 (seed 566, PO-14): the merge's copy of the user's untracked ı.md was named ı (conflict …).md, on Windows
+      // the merged document's own file I (conflict …).md, so the merge never finished and the revision stayed deferred.
+      scripted("windows", { type: "user-create", path: 0 }, { type: "user-create", path: 5 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 14 }, { type: "remote-delete", document: 0 }, { type: "push" }, { type: "user-create", path: 13 }, { type: "remote-rename", document: 0, path: 13 }, { type: "move-onto-incoming", file: 0, path: 0 }),
     ];
     for (const example of fixed) expect(await movedOntoIncoming.check(example), JSON.stringify(example[1])).toEqual([]);
     await holds(movedOntoIncoming, [scripted("posix", { type: "remote-create", path: 0 }, { type: "pull" }, { type: "move-onto-incoming", file: 0, path: 2 }), ...fixed]);
@@ -1223,6 +1275,18 @@ describe("engine properties (design §9.3)", () => {
     const fixed = scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-create", path: 2 }, { type: "pull" }, { type: "user-delete", file: 1 }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" });
     expect(await p6BlockedHolder.check(fixed)).toEqual([]);
     await holds(p6BlockedHolder, [fixed]);
+  });
+
+  // #917 (INV-9, PO-14): a merge's conflict copy of an untracked file in the way is never named onto the merged
+  // document's own file, which is still on disk when the copy is written. Fixed cases: the POSIX form (the copy name is
+  // the bound file's exactly) and the Windows form (`ı (conflict …).md` is the file `I (conflict …).md`).
+  it("P6: a document moved from a conflict-copy name onto an untracked file at the name's path converges", { timeout }, async () => {
+    const fixed = [
+      { on: "posix" as const, list: [{ type: "user-create", path: 1 }, { type: "push" }, { type: "user-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "pull" }] as WorldCommand[] },
+      { on: "windows" as const, list: [{ type: "user-create", path: 4 }, { type: "push" }, { type: "user-create", path: 3 }, { type: "remote-rename", document: 0, path: 3 }, { type: "pull" }] as WorldCommand[] },
+    ];
+    for (const example of fixed) expect(await copyOntoOwnFile.check(example), JSON.stringify(example)).toEqual([]);
+    await holds(copyOntoOwnFile, fixed);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {

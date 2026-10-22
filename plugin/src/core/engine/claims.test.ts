@@ -148,13 +148,25 @@ describe("PathClaims.freeCopyName", () => {
 
   describe("exempt document", () => {
     // A remote rename of the previous copy `Plan (conflict …).md` back to
-    // `Plan.md`, where a file is in the way: the copy of that file may take
-    // the name the merged document vacates.
-    it("lets the file the operation moves away from take no name (#319)", async () => {
+    // `Plan.md`, where a file is in the way: the copy of that file is
+    // written before the merged document's file leaves, so the file still
+    // holds its own name then (#917), under `F` too.
+    it("lets the file the operation moves away from take no name but its own (#319, #917)", async () => {
       const vacated = `Plan (conflict ${stamp}).md`;
       const { claims: table, naming } = await claims({ files: [vacated, "Plan.md"] });
-      expect(await table.freeCopyName("Plan.md", naming, { documentId: "moved", file: vacated, result: "Plan.md" })).toBe(vacated);
+      expect(await table.freeCopyName("Plan.md", naming, { documentId: "moved", file: vacated, result: "Plan.md" })).toBe(`Plan (conflict ${stamp} 2).md`);
       expect(await table.freeCopyName("Plan.md", naming, { documentId: "moved", file: undefined, result: "Plan.md" })).toBe(`Plan (conflict ${stamp} 2).md`);
+      // Its folders hold no name: `Plan (conflict …).md/x.md` is free for another file it vacates.
+      expect(await table.freeCopyName(`${vacated}/x.md`, naming, { documentId: "moved", file: vacated, result: "Plan.md" })).toBe(`${vacated}/x (conflict ${stamp}).md`);
+    });
+
+    it("lets the file the operation moves away from hold its own name under the filesystem's equivalence (#917)", async () => {
+      // `ı (conflict …).md` is the NTFS file `I (conflict …).md`, the merged document's own.
+      const vacated = `I (conflict ${stamp}).md`;
+      const windows = await claims({ rules: { platform: "windows" }, files: [vacated, "ı.md"] });
+      expect(await windows.claims.freeCopyName("ı.md", windows.naming, { documentId: "moved", file: vacated, result: "ı.md" })).toBe(`ı (conflict ${stamp} 2).md`);
+      const posix = await claims({ files: [vacated, "ı.md"] });
+      expect(await posix.claims.freeCopyName("ı.md", posix.naming, { documentId: "moved", file: vacated, result: "ı.md" })).toBe(`ı (conflict ${stamp}).md`);
     });
 
     it("lets its synced path take no name where its result does not go (#299)", async () => {
