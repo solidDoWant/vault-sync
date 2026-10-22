@@ -1,3 +1,4 @@
+import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
 import type { FeedRevision } from "./invariants";
@@ -248,6 +249,52 @@ describe("identity on inodes", () => {
   it("ignores scripted clients' revisions", () => {
     const timeline = created().user("create", "b.md", "2", 1n, "bb");
     expect(check([synced, revision({ documentId: "d2", seq: 2n, path: "b.md", contentHash: "bb", deviceId: "scripted" })], timeline)).toEqual([]);
+  });
+
+  // #844 (seeds 100160 and 100197 with members): the engine read a file, the user then deleted, overwrote or moved it, and
+  // the same bytes landed in another document's file (an applied revision, or the user's paste). The commit of what the
+  // engine read came from the file that held those bytes at the commit's path (§5.4), not from the other document's file.
+  describe("given bytes the engine read from a file that has changed since, which also landed in another document's file (#844)", () => {
+    it("binds the commit to the file that held them at its path, which the user then deleted (seed 100160)", () => {
+      // d2 is synced at e.md (inode 2). The user creates b.md (inode 1, hh); the engine reads it; d2's next revision, also hh, is applied into inode 2; the user deletes b.md; the engine commits b.md as d1, then its delete.
+      const feed = [revision({ documentId: "d2", path: "e.md", contentHash: "qq", deviceId: "scripted" }), revision({ documentId: "d2", seq: 2n, path: "e.md", contentHash: "hh", deviceId: "scripted" }), revision({ seq: 3n, path: "b.md", contentHash: "hh" }), revision({ seq: 4n, path: "b.md", deleted: true })];
+      const timeline = new Timeline().engine("create", "e.md", "2", 1n, "qq").user("create", "b.md", "1", 1n, "hh").engine("modify", "e.md", "2", 2n, "hh").user("delete", "b.md", "1", 2n);
+      expect(check(feed, timeline)).toEqual([]);
+    });
+
+    it("binds the commit to the file that held them at its path, which the user then edited, and keeps the other file its own document's (seed 100197)", () => {
+      // d2 is synced at d.md (inode 2). The engine reads copy.md (inode 1, hh) as d1's create; the user edits it to zz and writes hh into d.md; the engine commits d1's create, its edit, and later d2's edit from d.md.
+      const feed = [revision({ documentId: "d2", path: "d.md", contentHash: "qq", deviceId: "scripted" }), revision({ seq: 2n, path: "copy.md", contentHash: "hh" }), revision({ seq: 3n, path: "copy.md", contentHash: "zz" }), revision({ documentId: "d2", seq: 4n, path: "d.md", contentHash: "ww" })];
+      const timeline = new Timeline().engine("create", "d.md", "2", 1n, "qq").user("create", "copy.md", "1", 1n, "hh").user("modify", "copy.md", "1", 1n, "zz").user("modify", "d.md", "2", 1n, "hh").user("modify", "d.md", "2", 3n, "ww");
+      expect(check(feed, timeline)).toEqual([]);
+    });
+
+    it("keeps every document's identity whatever the order of the changes (property)", () => {
+      const away = fc.constantFrom("delete", "modify", "rename");
+      const other = fc.constantFrom("engine", "user");
+      fc.assert(
+        fc.property(fc.boolean(), away, other, fc.integer({ min: 0, max: 2 }), (movedIn, gone, writer, otherAt) => {
+          // d2 is synced at e.md (inode 2). The user creates b.md (inode 1, hh), or creates x.md and renames it to b.md, which the engine reads as d1's create, and then deletes, overwrites or moves it; at `otherAt` among those, hh lands in d2's file.
+          const feed: FeedRevision[] = [revision({ documentId: "d2", path: "e.md", contentHash: "qq", deviceId: "scripted" })];
+          if (writer === "engine") feed.push(revision({ documentId: "d2", seq: 2n, path: "e.md", contentHash: "hh", deviceId: "scripted" }));
+          feed.push(revision({ seq: 3n, path: "b.md", contentHash: "hh" }));
+          if (gone === "delete") feed.push(revision({ seq: 4n, path: "b.md", deleted: true }));
+          if (gone === "modify") feed.push(revision({ seq: 4n, path: "b.md", contentHash: "zz" }));
+          if (gone === "rename") feed.push(revision({ seq: 4n, path: "c.md", contentHash: "hh" }));
+          // d2's later edit from its own file.
+          feed.push(revision({ documentId: "d2", seq: 5n, path: "e.md", contentHash: "ww" }));
+          const steps: ((timeline: Timeline) => Timeline)[] = [
+            (timeline) => (movedIn ? timeline.user("create", "x.md", "1", 1n, "hh").rename("user", "x.md", "b.md", "1", 1n) : timeline.user("create", "b.md", "1", 1n, "hh")),
+            (timeline) => (gone === "delete" ? timeline.user("delete", "b.md", "1", 2n) : gone === "modify" ? timeline.user("modify", "b.md", "1", 2n, "zz") : timeline.rename("user", "b.md", "c.md", "1", 2n)),
+          ];
+          const landed = (timeline: Timeline) => (writer === "engine" ? timeline.engine("modify", "e.md", "2", 2n, "hh") : timeline.user("modify", "e.md", "2", 2n, "hh"));
+          steps.splice(otherAt, 0, landed);
+          const timeline = steps.reduce((built, step) => step(built), new Timeline().engine("create", "e.md", "2", 1n, "qq"));
+          timeline.user("modify", "e.md", "2", 4n, "ww");
+          expect(check(feed, timeline)).toEqual([]);
+        }),
+      );
+    });
   });
 });
 
