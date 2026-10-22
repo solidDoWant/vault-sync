@@ -733,23 +733,12 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
     expect(result.prunedMarkers, trace).toBe(2);
     // Neither the cursor's revision nor its marker is left: a false-positive divergence.
     expect(result.resynced, trace).toBe(true);
-    // The resync merges every note the device holds (SPEC.md §8): its
-    // unchanged copy of the note the first engine deleted wins over the
-    // delete, so the next push brings it back (the only invariant the
-    // resync breaks, as documented), and the other note, whose merge base
-    // was purged, keeps the device's version as a conflict copy next to the
-    // first engine's edit. Nothing is lost.
-    expect(
-      result.violations.map((violation) => violation.invariant),
-      trace,
-    ).toEqual(["resurrected-delete"]);
-    const copy = "notes/kept (conflict e1 2026-01-02 030405).md";
-    const expected = new Map([
-      ["notes/gone.md", "deleted by the first engine\n"],
-      [copy, "one\n"],
-      ["notes/kept.md", "two\n"],
-    ]);
-    expect(result.live, trace).toEqual(["notes/gone.md", copy, "notes/kept.md"]);
+    // The resync pulls the server's heads over the notes the device never
+    // changed at revisions it only pulled (SPEC.md §8, #874): the first
+    // engine's delete and its edit are applied, and nothing is resurrected.
+    expect(result.violations, trace).toEqual([]);
+    const expected = new Map([["notes/kept.md", "two\n"]]);
+    expect(result.live, trace).toEqual(["notes/kept.md"]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
   });
@@ -760,22 +749,18 @@ describe.runIf(suites.has("scenarios"))("scripted retention scenarios (#26)", ()
 
     expect(result.prunedMarkers, trace).toBe(2);
     expect(result.resynced, trace).toBe(true);
-    // As without the edit, the resync brings back the deleted note; the
-    // only invariant it breaks, as documented (SPEC.md §11).
-    expect(
-      result.violations.map((violation) => violation.invariant),
-      trace,
-    ).toEqual(["resurrected-delete"]);
+    // As without the edit, the resync applies the delete of the note the
+    // device never changed (#874): nothing is resurrected.
+    expect(result.violations, trace).toEqual([]);
     // The edit's merge base was purged: the first engine's version stays in
     // place, and the device's edit is kept next to it as a conflict copy on
     // both devices and the server (principle 1).
     const copy = "notes/kept (conflict e1 2026-01-02 030405).md";
     const expected = new Map([
-      ["notes/gone.md", "deleted by the first engine\n"],
       [copy, "one\nedited offline\n"],
       ["notes/kept.md", "two\n"],
     ]);
-    expect(result.live, trace).toEqual(["notes/gone.md", copy, "notes/kept.md"]);
+    expect(result.live, trace).toEqual([copy, "notes/kept.md"]);
     expect(result.vaults[0], trace).toEqual(expected);
     expect(result.vaults[1], trace).toEqual(expected);
   });
