@@ -89,6 +89,9 @@ describe("phantom-delete on inodes", () => {
     // The engine read a.md, the user deleted it, the engine committed it as d1 and then its delete.
     const timeline = new Timeline().user("create", "a.md", "1", 0n, "aa").user("delete", "a.md", "1", 0n);
     expect(check([synced, revision({ seq: 2n, deleted: true })], timeline)).toEqual([]);
+    // Also when the user wrote other content into the file before deleting it.
+    const edited = new Timeline().user("create", "a.md", "1", 0n, "aa").user("modify", "a.md", "1", 0n, "zz").user("delete", "a.md", "1", 0n).user("create", "a.md", "2", 0n, "yy");
+    expect(check([synced, revision({ seq: 2n, deleted: true })], edited)).toEqual([]);
     // Not when the deleted file was at another path.
     const elsewhere = new Timeline().user("create", "b.md", "1", 0n, "aa").user("delete", "b.md", "1", 0n);
     expect(check([synced, revision({ seq: 2n, deleted: true })], elsewhere)).toEqual([phantom(2n)]);

@@ -254,14 +254,14 @@ class Replay {
 
   /** The inode an engine commit of `revision` was read from, if the oracle can tell. */
   private source(revision: FeedRevision): string | undefined {
-    // The file at the commit's path if it holds the content; else the file the content was last written into, if it still exists (the file at the path changed since the engine read it) or the user deleted it at the commit's path since (the engine read it before the delete); else the file at the path.
+    // The file at the commit's path if it holds the content; else the file the content was last written into, if it still exists (the file at the path changed since the engine read it) or the user deleted it at the commit's path since (the engine read it before the delete, and maybe before a later write of the user's); else the file at the path.
     const key = this.key(revision.path);
     const holder = this.byKey.get(key);
     if (holder !== undefined && this.files.get(holder)?.hash === revision.contentHash) return holder;
     const origin = this.origins.get(revision.contentHash);
     if (origin !== undefined && this.files.has(origin)) return origin;
     const gone = origin === undefined ? undefined : this.gone.get(origin);
-    if (gone !== undefined && gone.hash === revision.contentHash && this.key(gone.path) === key) return origin;
+    if (gone !== undefined && this.key(gone.path) === key) return origin;
     return holder;
   }
 
