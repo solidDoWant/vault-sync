@@ -2272,8 +2272,9 @@ export class SyncEngine {
    * an operation with a base (a live one's blob uploaded again): the document does not
    * exist, so a restore lost the base after the pull that started the push
    * (#861, PO-12, design §4.6). Pull: the pull finds the divergence and its
-   * resync resolves the operation against the restored server. The
-   * operation stays pending until then, never failing the push.
+   * resync resolves the operation against the restored server, or an
+   * earlier resync of this push already did; the push goes on. A refusal
+   * the pull does not explain rejects the push.
    * INVALID_ARGUMENT: recorded as rejected. Anything else rejects the push.
    */
   private async commitFailed(operation: PendingOperation, error: unknown, summary: PushSummary): Promise<void> {
@@ -2290,8 +2291,13 @@ export class SyncEngine {
       return;
     }
     if (baseLost(error, operation)) {
-      await this.pullOnce();
-      return;
+      const pulled = await this.pullOnce();
+      // A refusal the pull does not explain (no resync, the operation still
+      // pending on a base the journal holds) is a blob the server lacks: it
+      // rejects the push, as before.
+      const state = await this.journal.getDocument(operation.documentId);
+      const stillPending = (await this.journal.listPending()).some((candidate) => candidate.revisionId === operation.revisionId);
+      if (pulled.resynced || !stillPending || state === undefined || lost(state)) return;
     }
     if (error.code === Code.InvalidArgument) {
       summary.rejected.push({ operation, reason: "refused", error });
