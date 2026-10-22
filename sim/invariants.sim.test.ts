@@ -438,6 +438,29 @@ describe.runIf(suites.has("scenarios"))("engine users (#22)", () => {
     expect(result.violations.map((violation) => violation.detail)).toEqual(["e2 reported its own modify of notes/b.md as a local change"]);
   });
 
+  // §5.4, INV-3: the inode oracle, not the engine's journal, says which document a file is.
+  it("catches an engine that takes one document's file for another's (identity)", async () => {
+    const result = await twoEngines(environment, async (run) => run.observers[1]?.swapBindingsBehindEngine("notes/a.md", "notes/b.md") ?? "");
+    const identity = result.violations.filter((violation) => violation.invariant === "identity");
+    expect(identity.length, tail(result.trace)).toBeGreaterThan(0);
+    expect(identity[0]?.detail).toContain("e2 committed");
+  });
+
+  // INV-1, design §5.2: two documents never hold one file in the journal.
+  it("catches a journal in which two documents hold one file (journal-holder)", async () => {
+    // The scenario runs no schedule steps, so the check runs at the durable point right after the mutation, as it would after a step.
+    const result = await twoEngines(environment, async (run) => {
+      const observer = run.observers[1];
+      if (observer === undefined) throw new Error("the run has two engines");
+      const entry = await observer.bindTwiceBehindEngine("notes/b.md", "notes/a.md");
+      await observer.checkJournalHolder();
+      return entry;
+    });
+    const holder = result.violations.filter((violation) => violation.invariant === "journal-holder");
+    expect(holder.length, tail(result.trace)).toBeGreaterThan(0);
+    expect(holder[0]?.detail).toContain("e2's bindings");
+  });
+
   it("catches an engine that drops a file its user never deleted (phantom-delete)", async () => {
     const result = await twoEngines(environment, async (run) => run.observers[1]?.deleteBehindUser("notes/b.md") ?? "");
     // The engine also reported its own delete as a local change, which engine-echo catches; the delete it pushed is phantom-delete's.

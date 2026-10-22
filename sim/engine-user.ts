@@ -9,7 +9,6 @@
 // not the app's.
 
 import { sha256Hex } from "../plugin/src/core/hash";
-import type { Journal } from "../plugin/src/core/journal/journal";
 import { isVaultError, type VaultAdapter } from "../plugin/src/core/vault/adapter";
 import { copiedFrom, type UserLedger } from "./invariants";
 import type { Random } from "./random";
@@ -25,12 +24,9 @@ const encoder = new TextEncoder();
 export interface EngineUserOptions {
   name: string;
   vault: VaultAdapter;
-  journal: Journal;
   ledger: UserLedger;
   /** Where the user is, for the ledger: e.g. `step 120`. */
   now: () => string;
-  /** The server's head seq, recorded with each write and rename for the resurrected-delete check. */
-  serverSeq: () => bigint;
   /** The paths the user creates files at and renames them to (RunContext.pathPool). */
   pathPool: readonly string[];
 }
@@ -81,58 +77,34 @@ export class EngineUser {
     if (current !== undefined) this.replaced(sha256Hex(current), path);
     const hash = sha256Hex(content);
     this.options.ledger.write({ hash, path, at: this.options.now() });
-    this.options.ledger.changed({ paths: [path], result: { path, hash }, serverSeq: this.options.serverSeq(), at: this.options.now() });
     return `${this.options.name} user ${verb} ${path} (${hash.slice(0, 8)}, ${String(content.length)} B)`;
   }
 
   async rename(from: string, to: string): Promise<string> {
-    const documents = await this.documentsAt(from);
     await this.options.vault.rename(from, to);
-    const serverSeq = this.options.serverSeq();
-    this.recordRename(from, to);
-    const hash = sha256Hex(await this.options.vault.read(to));
-    this.options.ledger.renamed(from, to, documents, hash);
-    this.options.ledger.changed({ paths: [from, to], result: { path: to, hash }, serverSeq, at: this.options.now() });
+    this.options.ledger.renamed(from, to);
     return `${this.options.name} user renames ${from} to ${to}`;
   }
 
-  /** Deletes `path`, recording the document the engine knows there (synced or pending) as deleted by the user. */
+  /** Deletes `path`; the inode oracle (sim/lineage.ts) sees which file it was. */
   async remove(path: string): Promise<string> {
-    const documents = await this.documentsAt(path);
     const deleted = this.snapshot(path);
     await this.options.vault.delete(path);
     const current = await deleted;
     if (current !== undefined) this.replaced(sha256Hex(current), path);
-    for (const document of documents) this.options.ledger.deletedDocuments.add(document);
     this.options.ledger.deleted(path);
-    // Deleted, the moved file is followed no further: a file created there later is another one.
-    this.movedDocuments.delete(path);
     return `${this.options.name} user deletes ${path}`;
   }
 
   /**
-   * Runs `rename`, the engine's own move of the file at `from` to `to`. A
-   * move to the engine's conflict copy of `from` (a path a remote document
-   * takes, SPEC.md §6.3) keeps the user's file: the copy is followed like a
-   * rename of the user's, with the documents the engine could take the file
-   * for before the move, so the user's delete of the copy is the user's
-   * delete of them (#509).
+   * Runs `rename`, the engine's own move of the file at `from` to `to` (a
+   * remote rename, or a move to its conflict copy of a path a remote document
+   * takes, SPEC.md §6.3): the same file, so the user's writes it holds go
+   * with it. Which document the file is, the inode oracle follows by itself.
    */
   async engineRenamed(from: string, to: string, rename: () => Promise<void>): Promise<void> {
-    const key = this.options.ledger.match;
-    if (!copiedFrom(to, this.options.name).some((original) => key(original) === key(from))) {
-      await rename();
-      // The same file, wherever the engine moved it (a remote rename): the user's writes it holds go with it.
-      this.options.ledger.fileMoved(from, to);
-      return;
-    }
-    const documents = await this.documentsAt(from);
     await rename();
-    this.movedDocuments.set(to, documents);
-    // The file the user's renames brought to `from` is no longer there: what the engine writes there next is another document's.
-    this.renamedFrom.delete(from);
-    this.movedDocuments.delete(from);
-    this.options.ledger.movedByEngine(from, to);
+    this.options.ledger.fileMoved(from, to);
   }
 
   /**
@@ -145,53 +117,6 @@ export class EngineUser {
   async engineWrote(path: string, write: () => Promise<void>): Promise<void> {
     await write();
     for (const original of copiedFrom(path, this.options.name)) this.options.ledger.forkCopy(original, path);
-  }
-
-  /**
-   * The documents the engine may take the file at `path` for: the one its
-   * journal synced there and any with a pending operation there. A rename the
-   * engine has not recorded yet leaves the document under its old path, so
-   * every document the user's earlier renames moved to `path` counts too:
-   * the check must not blame the engine for the user's own delete. So do
-   * those of a file the engine moved to its conflict copy at `path` (#509).
-   * So does the document whose binding names the file: a released row keeps
-   * its synced path, so the journal's document at `path` may be another one
-   * than the file's (#700, seed 100039).
-   */
-  private async documentsAt(path: string): Promise<Set<string>> {
-    const documents = new Set<string>();
-    const pending = await this.options.journal.listPending();
-    const states = await this.options.journal.listDocuments();
-    // A binding names its file by the vault's matching, not by spelling: a
-    // folder has one spelling on disk, so the binding of the server's
-    // notes/f.md may name the file the vault lists as Notes/f.md (INV-9,
-    // #737, #659).
-    const key = this.options.ledger.match;
-    for (const candidate of [path, ...(this.renamedFrom.get(path) ?? [])]) {
-      const synced = await this.options.journal.findDocumentByPath(candidate);
-      if (synced !== undefined) documents.add(synced.documentId);
-      for (const state of states) {
-        const spelling = state.binding?.spelling;
-        if (spelling !== undefined && key(spelling) === key(candidate)) documents.add(state.documentId);
-      }
-      for (const operation of pending) if (operation.path === candidate) documents.add(operation.documentId);
-      for (const document of this.movedDocuments.get(candidate) ?? []) documents.add(document);
-    }
-    return documents;
-  }
-
-  /** For each conflict copy the engine moved a file to, the documents the engine could take that file for (engineRenamed). */
-  private readonly movedDocuments = new Map<string, Set<string>>();
-
-  /** For each path, every path the user renamed a file from to reach it. */
-  private readonly renamedFrom = new Map<string, Set<string>>();
-
-  /** Records a rename for documentsAt, once it took effect. */
-  private recordRename(from: string, to: string): void {
-    const origins = this.renamedFrom.get(to) ?? new Set<string>();
-    origins.add(from);
-    for (const origin of this.renamedFrom.get(from) ?? []) origins.add(origin);
-    this.renamedFrom.set(to, origins);
   }
 
   /**

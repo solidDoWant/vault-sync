@@ -54,44 +54,6 @@ export interface UserWrite {
   at: string;
 }
 
-/**
- * A user's write or rename, for the resurrected-delete check. `serverSeq` is
- * the server's head seq when it happened (every commit goes through the
- * simulated network, so the harness knows it exactly), which orders the
- * change against the revisions of the change feed without any clock: the
- * revisions with a greater seq were committed after it.
- */
-export interface UserChange {
-  /** The paths it changed: a write's path, a rename's old and new path. */
-  paths: string[];
-  /** What the file held afterwards, if the user knows: its path and content hash. */
-  result: { path: string; hash: string } | undefined;
-  serverSeq: bigint;
-  at: string;
-}
-
-/**
- * A user's rename, for the phantom-delete check, with what became of the
- * renamed file: every path the user's later renames moved it to and every
- * content it held there, until the user deleted it.
- */
-export interface UserRename {
-  /** The documents the engine could take the renamed file for: its journal's at the old path, as the user's delete records them. */
-  documents: ReadonlySet<string>;
-  /** Every path the file had since, by path key on a case-insensitive platform. */
-  paths: Set<string>;
-  /** SHA-256 (hex) of every content the file held since. */
-  hashes: Set<string>;
-  /** Where the file is now (path key), or undefined once the user deleted it. */
-  current: string | undefined;
-}
-
-/** The app was killed: the server's head seq then, and how many renames the user had made by then. */
-export interface EngineCrash {
-  serverSeq: bigint;
-  renames: number;
-}
-
 /** What one engine's user did to its vault, and what the merge path made of local content. */
 export class UserLedger {
   readonly writes: UserWrite[] = [];
@@ -110,14 +72,6 @@ export class UserLedger {
   private readonly tracks: { write: number; paths: Set<string>; current: string | undefined }[] = [];
   /** Local content handed to the merge hook, to the contents it became (the merged result and the conflict copy). */
   readonly mergedInto = new Map<string, Set<string>>();
-  /** Documents whose file the user deleted. */
-  readonly deletedDocuments = new Set<string>();
-  /** Every write and rename, in order. */
-  readonly changes: UserChange[] = [];
-  /** Every rename, in order, for the phantom-delete check. */
-  readonly renames: UserRename[] = [];
-  /** Every time the app was killed, in order. */
-  readonly crashes: EngineCrash[] = [];
 
   /** `platform`'s path matching, to follow a renamed file as its vault does. */
   readonly match: (path: string) => string;
@@ -132,37 +86,11 @@ export class UserLedger {
     const key = this.match(write.path);
     this.writes.push(write);
     this.tracks.push({ write: this.writes.length - 1, paths: new Set([key]), current: key });
-    for (const rename of this.at(write.path)) rename.hashes.add(write.hash);
   }
 
-  changed(change: UserChange): void {
-    this.changes.push(change);
-  }
-
-  /** The user renamed the file at `from`, which the engine could take for `documents`, to `to`, where it holds `hash`. */
-  renamed(from: string, to: string, documents: ReadonlySet<string>, hash: string): void {
-    const key = this.match(to);
-    this.follow(from, key);
-    for (const rename of this.at(from)) {
-      rename.current = key;
-      rename.paths.add(key);
-      rename.hashes.add(hash);
-    }
-    this.renames.push({ documents, paths: new Set([key]), hashes: new Set([hash]), current: key });
-  }
-
-  /**
-   * The engine moved the file at `from` to `to`, its own conflict copy
-   * (#509): the renamed file is followed there, as through a rename of the
-   * user's, with the content it already had.
-   */
-  movedByEngine(from: string, to: string): void {
-    const key = this.match(to);
-    this.follow(from, key);
-    for (const rename of this.at(from)) {
-      rename.current = key;
-      rename.paths.add(key);
-    }
+  /** The user renamed the file at `from` to `to`: the writes it holds are followed there. */
+  renamed(from: string, to: string): void {
+    this.follow(from, this.match(to));
   }
 
   /**
@@ -202,17 +130,6 @@ export class UserLedger {
   deleted(path: string): void {
     const key = this.match(path);
     for (const track of this.tracks) if (track.current === key) track.current = undefined;
-    for (const rename of this.at(path)) rename.current = undefined;
-  }
-
-  /** The renames whose file is at `path` now. */
-  private at(path: string): UserRename[] {
-    const key = this.match(path);
-    return this.renames.filter((rename) => rename.current === key);
-  }
-
-  crashed(serverSeq: bigint): void {
-    this.crashes.push({ serverSeq, renames: this.renames.length });
   }
 
   /** The user overwrote or deleted the file at `path`, which held `hash`. */
@@ -360,74 +277,22 @@ export interface FeedRevision {
   size: bigint;
 }
 
-/** An engine's device, with the documents its user deleted, its user's renames and its crashes. */
-export interface EngineDeletes {
-  name: string;
-  deviceId: string;
-  deletedDocuments: ReadonlySet<string>;
-  platform: PathPlatform;
-  renames: readonly UserRename[];
-  crashes: readonly EngineCrash[];
-}
-
 /**
- * `phantom-delete`: the tombstones that no delete explains. A scripted
- * client's tombstone always is one (it deletes only when told to); an
- * engine's must be for a document its user deleted, or be the delete half of
- * a rename lost to a crash (renameLostToCrash).
+ * `phantom-delete` for the devices no client of the run uses: every
+ * tombstone in the change feed was committed by a scripted client (which
+ * deletes only when its schedule says so) or by an engine, whose tombstones
+ * the inode oracle judges (sim/lineage.ts, design §5.4).
  */
-export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevices: ReadonlySet<string>, engines: readonly EngineDeletes[], label: (id: string) => string): Violation[] {
-  const byDevice = new Map(engines.map((engine) => [engine.deviceId, engine]));
-  const firstSeq = new Map<string, bigint>();
-  for (const revision of feed) {
-    const first = firstSeq.get(revision.documentId);
-    if (first === undefined || revision.seq < first) firstSeq.set(revision.documentId, revision.seq);
-  }
+export function checkPhantomDeletes(feed: readonly FeedRevision[], scriptedDevices: ReadonlySet<string>, engineDevices: ReadonlySet<string>, label: (id: string) => string): Violation[] {
   const violations: Violation[] = [];
   for (const revision of feed) {
-    if (!revision.deleted || scriptedDevices.has(revision.deviceId)) continue;
-    const engine = byDevice.get(revision.deviceId);
-    if (engine?.deletedDocuments.has(revision.documentId) === true) continue;
-    if (engine !== undefined && renameLostToCrash(revision, engine, feed, firstSeq)) continue;
+    if (!revision.deleted || scriptedDevices.has(revision.deviceId) || engineDevices.has(revision.deviceId)) continue;
     violations.push({
       invariant: "phantom-delete",
-      detail: `${engine?.name ?? `unknown device ${revision.deviceId}`} deleted ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) although ${engine === undefined ? "no client" : "its user never"} deleted it`,
+      detail: `unknown device ${revision.deviceId} deleted ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) although no client deleted it`,
     });
   }
   return violations;
-}
-
-/**
- * Whether `tombstone` is the delete half of a rename the engine lost to a
- * crash (#167 item 2): its user renamed the document's file away, the app was
- * killed after that and before the tombstone was committed, and after the
- * crash the engine committed the renamed file (a content it held, at a path
- * the user's renames gave it) as another document: a new one (its first
- * revision), or one whose file the user deleted, which the engine took the
- * file for at that path (#254). The user sees the same file at the same path;
- * only the document id changed. Nothing else is excused: not a rename the
- * running engine lost, not a delete without that create.
- */
-function renameLostToCrash(tombstone: FeedRevision, engine: EngineDeletes, feed: readonly FeedRevision[], firstSeq: ReadonlyMap<string, bigint>): boolean {
-  const key = pathMatcher(engine.platform);
-  return engine.renames.some((rename, index) => {
-    if (!rename.documents.has(tombstone.documentId)) return false;
-    return engine.crashes.some(
-      (crash) =>
-        crash.renames > index &&
-        crash.serverSeq < tombstone.seq &&
-        feed.some(
-          (create) =>
-            create.deviceId === engine.deviceId &&
-            !create.deleted &&
-            create.documentId !== tombstone.documentId &&
-            rename.hashes.has(create.contentHash) &&
-            [create.path, ...copiedFrom(create.path, engine.name)].some((path) => rename.paths.has(key(path))) &&
-            create.seq > crash.serverSeq &&
-            (firstSeq.get(create.documentId) === create.seq || engine.deletedDocuments.has(create.documentId)),
-        ),
-    );
-  });
 }
 
 /**
@@ -448,14 +313,6 @@ export function copiedFrom(path: string, device: string): string[] {
   });
 }
 
-/** An engine's device, with its platform and what its user wrote and renamed. */
-export interface EngineChanges {
-  name: string;
-  deviceId: string;
-  platform: PathPlatform;
-  changes: readonly UserChange[];
-}
-
 /**
  * How `platform`'s vault matches paths: exactly under posix; where it
  * ignores case and Unicode form (windows, macos) by the filesystem's name
@@ -471,57 +328,24 @@ export function pathMatcher(platform: PathPlatform): (path: string) => string {
 }
 
 /**
- * `resurrected-delete`: the live revisions after a tombstone that no user
- * change explains. A scripted client's always is one (it writes only when
- * told to). An engine's must carry a change of its user at one of the
- * document's paths (any it held up to the revision): one made before the
- * revision was committed, and not already carried by an earlier revision of
- * the same document from that engine. That earlier revision carries it if it
- * is a tombstone (the user deleted the file since) or if it holds what the
- * file held after that change or a later one at the document's paths. A
- * change the engine already pushed, followed by another device's delete,
- * does not explain the engine bringing the document back: that is the
- * engine failing to apply the delete.
+ * `resurrected-delete` for the devices no client of the run uses: every live
+ * revision that follows a tombstone of the same document was committed by a
+ * scripted client (it writes only when told to) or by an engine, whose
+ * revisions the inode oracle judges (sim/lineage.ts, design §5.4).
  */
-export function checkResurrections(feed: readonly FeedRevision[], scriptedDevices: ReadonlySet<string>, engines: readonly EngineChanges[], label: (id: string) => string): Violation[] {
-  const byDevice = new Map(engines.map((engine) => [engine.deviceId, engine]));
-  const byDocument = new Map<string, FeedRevision[]>();
-  for (const revision of feed) {
-    const revisions = byDocument.get(revision.documentId) ?? [];
-    revisions.push(revision);
-    byDocument.set(revision.documentId, revisions);
-  }
+export function checkResurrections(feed: readonly FeedRevision[], scriptedDevices: ReadonlySet<string>, engineDevices: ReadonlySet<string>, label: (id: string) => string): Violation[] {
+  const previous = new Map<string, FeedRevision>();
   const violations: Violation[] = [];
-  for (const revisions of byDocument.values()) {
-    revisions.sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0));
-    for (let index = 1; index < revisions.length; index++) {
-      const revision = revisions[index];
-      const previous = revisions[index - 1];
-      if (revision === undefined || previous === undefined || revision.deleted || !previous.deleted) continue;
-      if (scriptedDevices.has(revision.deviceId)) continue;
-      const engine = byDevice.get(revision.deviceId);
-      if (engine !== undefined && explained(engine, revisions.slice(0, index + 1))) continue;
-      violations.push({
-        invariant: "resurrected-delete",
-        detail: `${engine?.name ?? `unknown device ${revision.deviceId}`} brought back ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) after its delete at ${previous.path} (seq ${String(previous.seq)}) ${engine === undefined ? "although no client of the run uses that device" : "although its user changed no file of it since"}`,
-      });
-    }
+  for (const revision of [...feed].sort((a, b) => (a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))) {
+    const before = previous.get(revision.documentId);
+    previous.set(revision.documentId, revision);
+    if (revision.deleted || before?.deleted !== true || scriptedDevices.has(revision.deviceId) || engineDevices.has(revision.deviceId)) continue;
+    violations.push({
+      invariant: "resurrected-delete",
+      detail: `unknown device ${revision.deviceId} brought back ${label(revision.documentId)} at ${revision.path} (seq ${String(revision.seq)}, ${label(revision.revisionId)}) after its delete at ${before.path} (seq ${String(before.seq)}) although no client of the run uses that device`,
+    });
   }
   return violations;
-}
-
-/** Whether a change of `engine`'s user explains the last of `revisions` (one document's, by seq), which follows a tombstone. */
-function explained(engine: EngineChanges, revisions: readonly FeedRevision[]): boolean {
-  const resurrection = revisions[revisions.length - 1];
-  if (resurrection === undefined) return false;
-  const key = pathMatcher(engine.platform);
-  const paths = new Set(revisions.map((revision) => key(revision.path)));
-  const relevant = engine.changes.filter((change) => change.serverSeq < resurrection.seq && change.paths.some((path) => paths.has(key(path))));
-  const own = revisions.filter((revision) => revision !== resurrection && revision.deviceId === engine.deviceId);
-  return relevant.some((change, index) => {
-    const carried = new Set(relevant.slice(index).flatMap((later) => (later.result === undefined ? [] : [`${later.result.hash}:${key(later.result.path)}`])));
-    return !own.some((revision) => revision.seq > change.serverSeq && (revision.deleted || carried.has(`${revision.contentHash}:${key(revision.path)}`)));
-  });
 }
 
 /**
