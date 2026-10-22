@@ -25,6 +25,24 @@ describe("busyClaims", () => {
     expect(busy.paths).toEqual(new Set(["d.md", "q.md"]));
   });
 
+  // #887 (PO-11, decision #52): an `F`-alias deferral's path is the holder's file here, so it holds no claim on it,
+  // and the holder's respelling onto it is sent (the server's refusal moves it to a copy name, §4.5).
+  it("does not hold the path of a revision deferred as an `F`-alias of another document's file", () => {
+    const alias: DeferredRevision = { revision: { ...remote, documentId: "A", path: "ı.md" }, reason: "unmaterializable", unmaterializable: "alias" };
+    const holder: DocumentState = { ...moved, path: "I.md", binding: { spelling: "ı.md", fileKey: "i.md", seen: "h1" } };
+
+    const busy = busyClaims([holder], [alias]);
+
+    expect(busy.documents).toEqual(new Set(["A"]));
+    expect(busy.paths).toEqual(new Set());
+  });
+
+  it("still holds the path of a revision deferred as unmaterializable for another cause", () => {
+    const busy = busyClaims([moved], [{ revision: { ...remote, path: "a:b.md" }, reason: "unmaterializable", unmaterializable: "forbidden-character" }]);
+
+    expect(busy.paths).toEqual(new Set(["a:b.md", "q.md"]));
+  });
+
   it("holds the deferred path alone for a document with no file here", () => {
     const busy = busyClaims([{ ...moved, binding: null, absence: "user-deleted" }], [{ revision: remote, reason: "local-changes" }]);
 

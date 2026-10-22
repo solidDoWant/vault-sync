@@ -161,7 +161,9 @@ export async function planPush(
         !source.inScope(state.path)
       )
         continue;
-      if (busyDocuments.has(state.documentId) || busyPaths.has(state.path)) {
+      // A delete waits for its own busy state only: it leaves its synced
+      // path, so no busy path is its claim (waits, #862).
+      if (busyDocuments.has(state.documentId)) {
         wait(state.path);
         continue;
       }
@@ -382,16 +384,33 @@ export interface Busy {
 export function busyClaims(documents: readonly DocumentState[], deferred: readonly DeferredRevision[]): Busy {
   const busy: Busy = { documents: new Set(), paths: new Set() };
   const states = new Map(documents.map((state) => [state.documentId, state]));
-  for (const { revision, reason } of deferred) {
+  for (const { revision, reason, unmaterializable: cause } of deferred) {
     if (reason === "invalid-path" || reason === "path-conflict") continue;
     busy.documents.add(revision.documentId);
-    busy.paths.add(revision.path);
+    // The deferred revision's path waits with it, unless the revision is an
+    // `F`-alias of another document's file (decision #52): that path is then
+    // the holder's file here, and a blocker holds no disk claim (PO-11). The
+    // holder's own change onto it, a respelling of its file, is sent, and
+    // the server's refusal (C3) moves it to a copy name under its own id
+    // (§4.5, local commits refused with `ALREADY_EXISTS`; #887).
+    if (reason !== "unmaterializable" || cause !== "alias") busy.paths.add(revision.path);
     // Its file waits with it where the file is: a path its file left is
     // free for the document the server has there (PO-11).
     const spelling = states.get(revision.documentId)?.binding?.spelling;
     if (spelling !== undefined) busy.paths.add(spelling);
   }
   return busy;
+}
+
+/**
+ * Whether an outbox operation waits (design §6.2, #847, #862): for its
+ * document's busy state, or for a busy path it claims. A live revision
+ * claims its path; a tombstone claims none, since a delete leaves its path,
+ * so a blocked document's file kept there never holds it off the server
+ * (PO-11, INV-8).
+ */
+export function waits(busy: Busy, operation: PendingOperation): boolean {
+  return busy.documents.has(operation.documentId) || (!operation.deleted && busy.paths.has(operation.path));
 }
 
 /** A new revision of a known document: `content` at `path`, or a tombstone (null). */

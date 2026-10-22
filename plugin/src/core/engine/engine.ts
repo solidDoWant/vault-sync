@@ -18,7 +18,7 @@ import { PathClaims, type CopyNaming, type Exempt } from "./claims";
 import { PathSpace } from "./pathspace";
 import { boundLocalChange, mergePath, ownMovedCreate, ruleW } from "./decide";
 import { Intents } from "./intents";
-import { busyClaims, lost, planPush, type Busy, type DirtyPaths } from "./push-plan";
+import { busyClaims, lost, planPush, waits, type Busy, type DirtyPaths } from "./push-plan";
 import { baseContent, classifyByExtension, downloadContent, kindValue, RemoteContentError, toIncoming, type IncomingRevision, type PullApi } from "./remote";
 import { uploadContent } from "./upload";
 
@@ -706,6 +706,8 @@ export class SyncEngine {
       await this.retryDeferred(deferred);
     }
     const listed = await this.journal.listDeferred();
+    // The claims scan reads every document: only a pull with an alias deferral needs it.
+    if (!listed.some((deferred) => deferred.reason === "unmaterializable" && deferred.unmaterializable === "alias")) return;
     const aliased = await this.aliasedPaths(listed);
     for (const deferred of listed) {
       if (deferred.reason !== "unmaterializable" || deferred.unmaterializable !== "alias" || aliased(deferred.revision)) continue;
@@ -818,7 +820,8 @@ export class SyncEngine {
       // (cachedOnly, design §4.6).
       const anchor = this.feed?.revisionId === remote.revisionId ? this.feed.anchor : undefined;
       const done: JournalChanges = { removePending: [remote.revisionId], ...this.feedCursor(remote.revisionId) };
-      if (state?.revisionId !== remote.revisionId) await this.putDocument({ ...syncedState(remote), ...(anchor === undefined ? {} : { anchor }) }, { kind: "acknowledged", hash: remote.contentHash }, done);
+      const cachedPath = anchor === undefined ? undefined : pathOfCachedContent(state, remote.parentRevisionId, remote.contentHash, remote.deleted);
+      if (state?.revisionId !== remote.revisionId) await this.putDocument({ ...syncedState(remote), ...(anchor === undefined ? {} : { anchor }), ...(cachedPath === undefined ? {} : { cachedPath }) }, { kind: "acknowledged", hash: remote.contentHash }, done);
       else await this.bindings.transact(() => Promise.resolve(done));
       // Changes left for after the operation (a newer edit, a rename that
       // waited for it) are pushed now, as after an acknowledged commit.
@@ -1932,6 +1935,11 @@ export class SyncEngine {
       } else if (this.overCap(remote)) {
         this.count(summary, await this.defer(remote, "too-large", false));
       } else if (await this.cachedOnly(state, anchored)) {
+        // A lost own commit that kept cached content changed only the path
+        // (cachedPath, #875): the base goes back to where this device cached
+        // the content, so that path change is the file's local rename, which
+        // the pull keeps (PO-9).
+        if (state.anchor !== undefined && state.cachedPath !== undefined) await this.putDocument({ ...state, anchor: undefined, cachedPath: undefined, path: state.cachedPath }, { kind: "kept" });
         this.count(summary, await this.applyRevision(incoming, false, true));
       } else if (await this.rolledBack(state, remote)) {
         // The head becomes the base, a newest server claim: a ghost the
@@ -1986,8 +1994,9 @@ export class SyncEngine {
    * Whether the document's base is a revision this device only cached, under
    * a bound file it never changed (design §4.6, #874): the base is no
    * acknowledged commit of this device's (it has no `anchor`, which every
-   * commit this device saw acknowledged records), the file still hashes to
-   * it, and nothing is in the outbox or deferred. Then this device holds no
+   * commit this device saw acknowledged records) or one that only moved
+   * content this device cached (`cachedPath`, #875), the file still hashes
+   * to it, and nothing is in the outbox or deferred. Then this device holds no
    * write of its own the restore could have lost: the lost base is its
    * writer's to send again (#848), and the restored head is pulled as an
    * ordinary revision (applyRevision), a local rename kept (PO-9). Against a
@@ -1995,7 +2004,7 @@ export class SyncEngine {
    * merged as before.
    */
   private async cachedOnly(state: DocumentState, anchored: boolean): Promise<boolean> {
-    if (!anchored || !liveHere(state) || state.anchor !== undefined || state.binding == null) return false;
+    if (!anchored || !liveHere(state) || (state.anchor !== undefined && state.cachedPath === undefined) || state.binding == null) return false;
     if ((await this.journal.getDeferred(state.documentId)) !== undefined) return false;
     if ((await this.journal.listPending()).some((operation) => operation.documentId === state.documentId)) return false;
     return sameHash(await this.readOrNull(state.binding.spelling), state.baseHash);
@@ -2026,7 +2035,7 @@ export class SyncEngine {
    */
   private async fastForward(state: DocumentState, remote: RemoteRevision): Promise<void> {
     // The anchor was the lost revision's: no commit of this device's above the cursor remains.
-    await this.putDocument({ ...state, anchor: undefined, path: remote.path, revisionId: remote.revisionId, seq: remote.seq, baseHash: remote.contentHash, size: remote.size }, { kind: "kept" });
+    await this.putDocument({ ...state, anchor: undefined, cachedPath: undefined, path: remote.path, revisionId: remote.revisionId, seq: remote.seq, baseHash: remote.contentHash, size: remote.size }, { kind: "kept" });
     this.markDirty(remote.path);
     if (state.binding != null) this.markDirty(state.binding.spelling);
     this.schedulePush();
@@ -2077,7 +2086,7 @@ export class SyncEngine {
     let busy = await this.busy();
     if (resume) {
       for (const operation of await this.journal.listPending()) {
-        if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) continue;
+        if (waits(busy, operation)) continue;
         // Recorded while its path was in scope: it waits until it is again.
         if (!this.inScope(operation.path)) continue;
         const followed = await this.createFollowsBinding(operation);
@@ -2116,7 +2125,7 @@ export class SyncEngine {
     for (const operation of plan.operations) {
       // An earlier commit's pull may have handed this document or path to the merge path.
       busy = await this.busy();
-      if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) {
+      if (waits(busy, operation)) {
         plan.waiting.add(operation.path);
         continue;
       }
@@ -2147,7 +2156,7 @@ export class SyncEngine {
     for (const operation of await this.journal.listPending()) {
       if (!recreated.has(operation.documentId)) continue;
       busy = await this.busy();
-      if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path) || !this.inScope(operation.path)) {
+      if (waits(busy, operation) || !this.inScope(operation.path)) {
         plan.waiting.add(operation.path);
         continue;
       }
@@ -2301,6 +2310,8 @@ export class SyncEngine {
       this.onAcknowledged(remote);
       return;
     }
+    const before = await this.journal.getDocument(operation.documentId);
+    const cachedPath = pathOfCachedContent(before, remote.parentRevisionId, operation.contentHash, operation.deleted);
     await this.putDocument({
       documentId: operation.documentId,
       path: operation.path,
@@ -2311,6 +2322,7 @@ export class SyncEngine {
       kind: operation.kind,
       deleted: operation.deleted,
       anchor: cursorAnchor(revision),
+      ...(cachedPath === undefined ? {} : { cachedPath }),
       prior: remote.parentRevisionId === "" ? [] : [remote.parentRevisionId],
     }, { kind: "acknowledged", hash: operation.contentHash }, { removePending: [operation.revisionId], ...(await this.pastOwnCommit(revision)) });
     // A delete of the file the user made before the commit landed stays
@@ -2443,10 +2455,10 @@ export class SyncEngine {
       // document (a local rename onto that one's path), the document's
       // operation now stands at the conflict-copy path: committed there.
       const moved = pending.find((candidate) => candidate.documentId === operation.documentId && !candidate.deleted);
-      if (moved !== undefined && !busy.documents.has(moved.documentId) && !busy.paths.has(moved.path)) await this.commitOperation(moved, summary);
+      if (moved !== undefined && !waits(busy, moved)) await this.commitOperation(moved, summary);
       return;
     }
-    if (busy.documents.has(operation.documentId) || busy.paths.has(operation.path)) return;
+    if (waits(busy, operation)) return;
     // A record whose copy is its own path names no move: a document the
     // restored server lacks, re-created where its file is (design §4.6). Its
     // refused create still moves to a copy name under its own id (#722).
@@ -2779,6 +2791,20 @@ function cursorAnchor(revision: Revision): Uint8Array | undefined {
 function movedLocally(state: DocumentState | undefined): boolean {
   const binding = state?.binding;
   return state !== undefined && binding !== undefined && binding !== null && binding.spelling !== state.path;
+}
+
+/**
+ * Where this device cached the content its own commit of `hash` on `parent`
+ * keeps (DocumentState.cachedPath; design §4.6, #875), or undefined if the
+ * commit wrote content of its own: the document's base must still be
+ * `parent`, live, with that content, and be a revision this device pulled
+ * (no anchor; its own path) or itself such a commit (its cachedPath). The
+ * commit then changed the path alone and carries no content this device
+ * wrote.
+ */
+function pathOfCachedContent(base: DocumentState | undefined, parent: string, hash: string, deleted: boolean): string | undefined {
+  if (base === undefined || deleted || base.deleted || parent === "" || base.revisionId !== parent || base.baseHash !== hash) return undefined;
+  return base.anchor === undefined ? base.path : base.cachedPath;
 }
 
 function syncedState(remote: RemoteRevision): DocumentState {

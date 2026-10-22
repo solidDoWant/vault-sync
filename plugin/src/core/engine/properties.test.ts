@@ -524,6 +524,8 @@ const p6RefusedPaths: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object,
  * its old path, which the server then gives another document that a local
  * rename moved away. Few paths and documents, so the deferral, the remote
  * rename onto the kept file's path and the local rename away from it meet.
+ * With user deletes (#862): a delete leaves its synced path as a rename does,
+ * so the blocked document's file the user moved there never holds it.
  */
 const blockedHolderPaths: readonly string[] = ["a.md", "no:te.md", "b.md", "c.md"];
 const blockedHolder = fc.nat({ max: 3 });
@@ -531,6 +533,7 @@ const blockedHolderCommands: fc.Arbitrary<WorldCommand>[] = [
   blockedHolder.map((path) => ({ type: "user-create", path })),
   blockedHolder.map((file) => ({ type: "user-edit", file })),
   fc.tuple(blockedHolder, blockedHolder).map(([file, target]) => ({ type: "user-rename", file, mode: "pool", target })),
+  blockedHolder.map((file) => ({ type: "user-delete", file })),
   blockedHolder.map((path) => ({ type: "remote-create", path })),
   blockedHolder.map((document) => ({ type: "remote-edit", document })),
   fc.tuple(blockedHolder, blockedHolder).map(([document, path]) => ({ type: "remote-rename", document, path })),
@@ -682,6 +685,9 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #866 (seed 566): a pushed create moved onto incoming paths around a restore, then another file renamed and deleted.
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "user-rename", file: 1, mode: "pool", target: 0 }, { type: "restore", fraction: 0 }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "user-rename", file: 1, mode: "pool", target: 3 }, { type: "user-delete", file: 1 }, { type: "pull" }),
+      // #875 (seed 566): a restore lost this device's rename-only commit over another device's edit, then that device
+      // committed over the restored head and the user renamed the file back: the file's content is merged as its document's.
+      scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "restore", fraction: 1 / 3 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
     await holds(p1, fixed);
@@ -707,6 +713,9 @@ describe("engine properties (design §9.3)", () => {
       // #874 (seed 566): an unchanged file at another device's revision the restore lost, then that device's edit on an
       // older revision: the head is pulled, never this device's change (design §4.6).
       scripted("posix", { type: "remote-create", path: 3 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "remote-edit", document: 0 }, { type: "pull" }, { type: "restore", fraction: 0.25 }, { type: "remote-edit", document: 0 }, { type: "purge", revision: 0 }),
+      // #875 (seed 566): a restore lost this device's own merge commit, which carried another device's edit, then that
+      // device edited the restored head: the file's content is merged as its document's, never a new document's.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "folder", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-edit", file: 0 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "remote-edit", document: 0 }, { type: "remote-create", path: 0 }),
     ]);
   });
 
@@ -980,6 +989,8 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #872 (seed 566): X/b.md, held in x/, is moved to a path Windows refuses and keeps its edited file; the oracle matches it under `F`.
       scripted("windows", { type: "remote-create", path: 8 }, { type: "remote-create", path: 9 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 11 }, { type: "edit-during-pull", file: 3 }, { type: "push" }),
+      // #887 (seed 566): an edited file respelled onto the path of an `F`-alias deferred as unmaterializable; the edit and the rename are not held off the server for good.
+      scripted("macos", { type: "user-create", path: 0 }, { type: "push" }, { type: "remote-rename", document: 0, path: 14 }, { type: "move-onto-incoming", file: 0, path: 13 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 13 }),
     ];
     for (const example of fixed) expect(await p6.check(example), JSON.stringify(example)).toEqual([]);
     await holds(p6, fixed);
@@ -1057,6 +1068,15 @@ describe("engine properties (design §9.3)", () => {
   // path the server then gives the document renamed.
   it("P6: a local rename away from a path a blocked document's file holds converges", { timeout }, async () => {
     const fixed = scripted("windows", { type: "remote-create", path: 3 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-create", path: 2 }, { type: "user-edit", file: 0 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-rename", document: 0, path: 3 }, { type: "pull" });
+    expect(await p6BlockedHolder.check(fixed)).toEqual([]);
+    await holds(p6BlockedHolder, [fixed]);
+  });
+
+  // #862 (INV-8, PO-11): the delete counterpart of #847. The user deletes b.md and moves a.md's file onto it, while
+  // another device moves a.md's document to no:te.md, which this device cannot hold: that document keeps its file at
+  // b.md, and the delete of b.md's document, which leaves the path, must still reach the server.
+  it("P6: a local delete of a path a blocked document's file holds converges", { timeout }, async () => {
+    const fixed = scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-create", path: 2 }, { type: "pull" }, { type: "user-delete", file: 1 }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" });
     expect(await p6BlockedHolder.check(fixed)).toEqual([]);
     await holds(p6BlockedHolder, [fixed]);
   });

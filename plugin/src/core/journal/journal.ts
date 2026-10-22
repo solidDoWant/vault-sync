@@ -239,6 +239,19 @@ export interface DocumentState {
    */
   anchor?: Uint8Array;
   /**
+   * Set when the base is this device's own acknowledged commit (it has an
+   * `anchor`) that kept the content of the revision it was committed on,
+   * and that content is no write of this device's either: the revision was
+   * one this device only cached (pulled), or another such commit. The
+   * commit changed the path alone, such as a rename of a file that holds
+   * another device's edit (design §4.6, #875). The value is the path of the
+   * revision this device cached that content at, before its own commits
+   * moved it: a restore that loses the base lost no content this device
+   * wrote, only those path changes, which the resync keeps as a local
+   * rename. Absent for every other base, which proves nothing.
+   */
+  cachedPath?: string;
+  /**
    * The local file that is this document, or null if it has none
    * (`absence` then says why). Undefined where not recorded: a state the
    * engine wrote before it maintains bindings (refactor step R4).
