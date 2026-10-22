@@ -1961,6 +1961,7 @@ export class SyncEngine {
       if (!outbox.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId], removeDeferred: [state.documentId] }));
       else if (state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
+    await this.settleGhostClaims(heads);
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {
       const { remote } = incoming;
@@ -1989,6 +1990,10 @@ export class SyncEngine {
         if (state.anchor !== undefined && state.cachedPath !== undefined) await this.putDocument({ ...state, anchor: undefined, cachedPath: undefined, path: state.cachedPath }, { kind: "kept" });
         this.count(summary, await this.applyRevision(incoming, false, true));
       } else if (await this.rolledBack(state, remote)) {
+        // The head becomes the base, a newest server claim: a ghost the
+        // restored server lost at its path yields to it, as to a pulled head
+        // (claimPath, `lost`; INV-2, PO-12, #867, #886).
+        if (!remote.deleted) await this.claimPath(remote.path, remote.documentId, "lost");
         await this.fastForward(state, remote);
       } else {
         this.count(summary, await this.handToMerge(remote, state, false));
@@ -1996,6 +2001,41 @@ export class SyncEngine {
     }
     await this.journal.resetCursor(seq, anchor);
     summary.cursor = seq;
+  }
+
+  /**
+   * Ghosts whose synced paths collide under the server's key (INV-2, PO-12,
+   * design §4.6, #886): a deferral the resync dropped can expose a ghost's
+   * stale base path, which another ghost's base path collides with. One of
+   * them keeps the claim and the others yield, each displaced as a create of
+   * its own id (claimPath, `lost`): in place at its bound spelling, or at a
+   * copy name if that spelling is in the keeper's way. The keeper is a ghost
+   * still bound at its synced path, so the ghost whose binding left it
+   * yields, as the push's rule W would make it one step later. Of several
+   * such ghosts, or of none, the first by bound spelling (code-unit order)
+   * keeps, as the push orders colliding ghosts (#869): spellings survive a
+   * crash, which reruns the resync. A ghost with no bound file comes last.
+   */
+  private async settleGhostClaims(heads: ReadonlyMap<string, IncomingRevision>): Promise<void> {
+    const ghost = (state: DocumentState | undefined): state is DocumentState => state !== undefined && !heads.has(state.documentId) && hasBase(state) && !state.deleted && state.seq === 0n;
+    const ghosts = (await this.journal.listDocuments()).filter(ghost);
+    if (ghosts.length < 2) return;
+    const order = (state: DocumentState): [number, string] => {
+      const spelling = state.binding?.spelling;
+      if (spelling === undefined) return [2, ""];
+      return [this.pathSpace.collides(spelling, state.path, "server") ? 0 : 1, spelling];
+    };
+    ghosts.sort((left, right) => {
+      const [leftRank, leftSpelling] = order(left);
+      const [rightRank, rightSpelling] = order(right);
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return leftSpelling < rightSpelling ? -1 : leftSpelling > rightSpelling ? 1 : 0;
+    });
+    for (const candidate of ghosts) {
+      const state = await this.journal.getDocument(candidate.documentId);
+      if (!ghost(state)) continue;
+      await this.claimPath(state.path, state.documentId, "lost");
+    }
   }
 
   /**

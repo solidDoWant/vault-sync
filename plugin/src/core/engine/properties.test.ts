@@ -379,10 +379,11 @@ const p1Recreate = overWorld("P1", (world) => violations(world, "P1"), recreateC
  * P4 over `alphabet` on `platforms`: crashing at journal write N and
  * restarting reaches the quiescent state the run without the crash reaches.
  */
-function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[], paths?: readonly string[]): Definition<[PathPlatform, WorldCommand[], number]> {
+function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[] | fc.Arbitrary<WorldCommand[]>, paths?: readonly string[]): Definition<[PathPlatform, WorldCommand[], number]> {
+  const lists = Array.isArray(alphabet) ? fc.array(fc.oneof(...alphabet), { maxLength: maxCommands, size: "max" }) : alphabet;
   return {
     property: "P4",
-    cases: fc.tuple(platforms, fc.array(fc.oneof(...alphabet), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
+    cases: fc.tuple(platforms, lists, fc.integer({ min: 1, max: 40 })),
     check: async ([on, list, write]) => {
       const baseline = new PropertyWorld(on, paths);
       for (const command of list) await baseline.apply(command);
@@ -413,6 +414,49 @@ const restoredGhostYields: WorldCommand[] = [
   { type: "push" },
   { type: "remote-edit", document: 0 },
   { type: "move-onto-incoming", file: 0, path: 0 },
+];
+/**
+ * #886's class (INV-2, PO-12, design §4.6): on Windows, a synced document
+ * renamed locally whose remote rename to a path Windows refuses is deferred,
+ * so the local rename waits; a new document at its synced path, pushed; a
+ * restore to nothing makes both ghosts, and its resync drops the deferral,
+ * so both ghosts' synced paths collide under `K`. The local rename's target
+ * and the commands after the restore vary.
+ */
+const collidingGhosts: fc.Arbitrary<WorldCommand[]> = fc
+  .tuple(fc.constantFrom(2, 3, 4), fc.array(fc.oneof(...ghostCommands), { maxLength: 8 }))
+  .map(([target, after]) => [
+    { type: "user-create", path: 0 },
+    { type: "push" },
+    { type: "user-rename", file: 0, mode: "pool", target },
+    { type: "remote-rename", document: 0, path: 1 },
+    { type: "user-create", path: 0 },
+    { type: "push" },
+    { type: "restore", fraction: 0 },
+    ...after,
+  ]);
+const p3CollidingGhosts: Definition<WorldCommand[]> = {
+  property: "P3",
+  cases: collidingGhosts,
+  check: async (list) => {
+    const world = new PropertyWorld("windows", ghostPaths);
+    for (const command of list) await world.apply(command);
+    await world.quiesce();
+    return violations(world, "P3");
+  },
+};
+const p4CollidingGhosts = crashEquivalence(fc.constant<PathPlatform>("windows"), collidingGhosts, ghostPaths);
+/** #886's counterexample (nightly seed 566), the first case of collidingGhosts' class. */
+const ghostsCollideAfterRestore: WorldCommand[] = [
+  { type: "user-create", path: 0 },
+  { type: "push" },
+  { type: "user-rename", file: 0, mode: "pool", target: 2 },
+  { type: "remote-rename", document: 0, path: 1 },
+  { type: "user-create", path: 0 },
+  { type: "push" },
+  { type: "restore", fraction: 0 },
+  { type: "pull" },
+  { type: "remote-edit", document: 0 },
 ];
 /** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
 const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
@@ -734,8 +778,26 @@ describe("engine properties (design §9.3)", () => {
       scripted("macos", { type: "remote-create", path: 2 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 3 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 3 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #867 (seed 566): a pulled rename of a document respelled locally onto a ghost's synced path; the ghost yields in the pull.
       scripted("windows", { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "user-create", path: 2 }, { type: "remote-create", path: 3 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-rename", file: 1, mode: "pool", target: 2 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 0 }),
+      // #886 (seed 566): a restore drops a deferral of a document renamed locally, exposing its stale base path, which a
+      // new ghost's base path collides with under K; the ghost whose binding left its base path yields in the resync.
+      scripted("windows", ...ghostsCollideAfterRestore),
+      // #886 (seed 566, the run after the fix): a restore rolls a document back along this device's history onto a
+      // ghost's synced path; the ghost yields in the resync.
+      scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }),
     ]);
+    expect(await p3Ghosts.check(scripted("windows", ...ghostsCollideAfterRestore))).toEqual([]);
+    expect(await p3Ghosts.check(scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 0, path: 2 }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "pull" }))).toEqual([]);
     expect(await p3.check(scripted("macos", { type: "remote-create", path: 13 }, { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 14 }, { type: "push" }, { type: "restore", fraction: 0 }, { type: "remote-create", path: 14 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }))).toEqual([]);
+  });
+
+  // #886 (INV-2, PO-12, design §4.6): a restore's resync drops a deferral and exposes a ghost's stale synced path, which
+  // another ghost's synced path collides with under K. The ghost whose binding left its synced path yields in the resync,
+  // re-created in place at its bound spelling, so no two newest server claims collide, and a crash at any journal write
+  // reaches the same state. Fixed case: #886's counterexample (nightly seed 566).
+  it("P3, P4: of two ghosts whose synced paths collide, the one whose file moved away yields in the resync", { timeout }, async () => {
+    expect(await p3CollidingGhosts.check(ghostsCollideAfterRestore)).toEqual([]);
+    await holds(p3CollidingGhosts, [ghostsCollideAfterRestore]);
+    await holds(p4CollidingGhosts, Array.from({ length: 24 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", ghostsCollideAfterRestore, write + 1]));
   });
 
   // P4 crash equivalence: INV-7. Crashing at journal write N and restarting reaches the same quiescent state, modulo copy names.
