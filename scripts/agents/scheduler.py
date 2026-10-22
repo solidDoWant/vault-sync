@@ -1634,17 +1634,17 @@ class Scheduler:
                     pass
         if self.due("docker", hk["docker_check_s"]):
             self.remove_orphan_stacks()
-        if self.due("gocache", hk["gocache_check_s"]) and not self.state.get("maintenance"):
+        if self.state.get("maintenance") == "gocache":
+            self.state["maintenance"] = None  # from the old blocking full clear
+        if self.due("gocache", hk["gocache_check_s"]):
             size = self.gocache_size()
             if size is not None and size > hk["gocache_max_gib"] * 1024 ** 3:
-                # A full clear under a running build breaks it: stop launching
-                # until the running jobs have finished, then clear.
-                self.state["maintenance"] = "gocache"
-                self.event("maintenance", what="gocache", size_bytes=size, running=running)
-        if self.state.get("maintenance") == "gocache" and running == 0:
-            self.sh(f"source '{env_file}' >/dev/null 2>&1; go clean -cache", timeout=1800)
-            self.event("cleanup", what="gocache cleared")
-            self.state["maintenance"] = None
+                # Trim entries unused for 6 h instead of a full clear: Go
+                # refreshes an entry's mtime when a build uses it, so running
+                # builds keep theirs and nothing has to stop launching.
+                self.sh(f"source '{env_file}' >/dev/null 2>&1; "
+                        "find \"$(go env GOCACHE)\" -type f -mmin +360 -delete", timeout=1800)
+                self.event("cleanup", what="gocache trimmed", size_bytes=size, after_bytes=self.gocache_size())
         if running == 0 and self.due("volume_prune", hk["volume_prune_s"]):
             self.sh("docker volume prune -f >/dev/null 2>&1")
         self.prune_logs()
