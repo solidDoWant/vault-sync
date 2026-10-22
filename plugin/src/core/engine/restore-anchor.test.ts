@@ -23,8 +23,11 @@ function recordListChanges(h: Harness): ListChangesRequest[] {
 async function restoredPastTheCursor(h: Harness): Promise<void> {
   h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
   h.server.commit({ documentId: "b", path: "b.md", content: "b1\n" }); // 2
-  h.server.commit({ documentId: "a", path: "a.md", content: "a2 from this device's sync\n" }); // 3
   await h.engine.pull();
+  // This device's own edit, acknowledged (#874: one it only pulled is its writer's to send again).
+  await h.vault.write("a.md", encoder.encode("a2 from this device's sync\n")); // 3
+  await h.engine.settled();
+  await h.engine.push();
   expect(await h.journal.getCursor()).toBe(3n);
 
   // The restore loses seq 2 and 3; other devices commit seq 2 to 4 anew.

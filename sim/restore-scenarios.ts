@@ -21,8 +21,8 @@ export interface RestoreWindowResult {
  * The shapes of a restore whose loss the cursor anchor alone cannot tell
  * from a retention purge.
  *
- * - `deleted-after-restore` (#488): the device (second engine) syncs a note
- *   at seq 2, its cursor. The database is restored to seq 1, losing that
+ * - `deleted-after-restore` (#488): the device (second engine) commits an
+ *   edit of a note at seq 2, its cursor. The database is restored to seq 1, losing that
  *   revision; a third engine new to the vault then writes another note at
  *   seq 2, deletes the device's note at seq 3 and edits the other note at
  *   seq 4, and retention purges the revision at seq 2: the device's cursor
@@ -89,8 +89,11 @@ export async function restoreWindow(endpoints: SimEndpoints, shape: "deleted-aft
     await push(first);
   } else {
     if ((await run.snapshot()) !== 1n) throw new Error("expected the backup at seq 1");
-    log(await first.edit("notes/a.md", write("acknowledged edit")));
-    await push(first);
+    // The device's own edit, acknowledged: a revision it only pulled is its
+    // writer's to send again after a restore (#874, design §4.6).
+    await pull(second);
+    log(await second.edit("notes/a.md", write("acknowledged edit")));
+    await push(second);
     await pull(second);
     if (second.lastPull?.cursor !== 2n) throw new Error(`expected the second engine at seq 2, it is at ${String(second.lastPull?.cursor)}`);
     await run.restore();

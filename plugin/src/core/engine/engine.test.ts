@@ -507,7 +507,11 @@ describe("SyncEngine pull", () => {
       const h = harness();
       h.server.commit({ documentId: "a", path: "a.md", content: "a1" });
       h.server.commit({ documentId: "b", path: "b.md", content: "b1" });
-      h.server.commit({ documentId: "a", path: "a.md", content: "a2" });
+      await h.engine.pull();
+      // This device's own edit, acknowledged (#874: one it only pulled is its writer's to send again).
+      await h.vault.write("a.md", new TextEncoder().encode("a2"));
+      await h.engine.settled();
+      await h.engine.push();
       h.server.commit({ documentId: "c", path: "c.md", content: "c1" });
       await h.engine.pull();
       // A database restore loses seq 3 and 4, which this device already applied.
