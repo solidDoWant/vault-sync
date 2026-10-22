@@ -111,6 +111,11 @@ const closedCommands: fc.Arbitrary<WorldCommand>[] = [
 
 const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write }))];
 
+/**
+ * P6's alphabet: no database restore. P6 with restores is its own case
+ * (`p6Restores`, #829), so a run that finds a restore bug names it.
+ */
+const convergingCommands = allCommands.filter((command) => command !== restore);
 
 /**
  * The one-spelling-folder alphabet (#737): paths whose folders differ only in
@@ -523,7 +528,9 @@ const stalePageHolder: Definition<{ on: PathPlatform; list: WorldCommand[]; head
     return found;
   },
 };
-const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())]);
+const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
+/** P6 with database restores (#576, #829): INV-9 holds after a restore too, since the push re-creates a document the restored server lost (design §4.6). */
+const p6Restores = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], allCommands);
 
 describe("engine properties (design §9.3)", () => {
   // P1 identity: INV-3 and PO-1. A document's committed content always comes from the inode bound to it.
@@ -719,19 +726,24 @@ describe("engine properties (design §9.3)", () => {
   // Flipped in R7b (#700; #583, PO-11). Fixed case: the pin before it (the engine's own file of a remote note held the
   // folder that note's next path needs); #769's, an `F`-alias deferral's kept file with the user's edit (decision #52),
   // and a remote rename onto another document's file with equal bytes that an unpushed rename put there.
-  // Database restores are in the alphabet since #829 (INV-8, INV-9, PO-12, design §4.6): an operation on a base the
-  // restored server lost is re-created under its own id, never refused as "the document does not exist" for good, so
-  // INV-9 needs no exemption after a restore (#576's scope note). Fixed case: #829's counterexample, a file at the path
-  // of a tombstone the restore lost, which revives it.
   it("P6: the device converges with the server within bounded rounds", { timeout }, async () => {
     const fixed = [
       scripted("posix", { type: "user-create", path: 8 }, { type: "remote-create", path: 8 }, { type: "remote-rename", document: 0, path: 7 }, { type: "user-edit", file: 0 }),
       scripted("macos", { type: "remote-create", path: 0 }, { type: "remote-create", path: 14 }, { type: "edit-during-pull", file: 0 }, { type: "remote-rename", document: 1, path: 13 }, { type: "edit-during-pull", file: 15 }, { type: "pull" }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
-      scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 }),
     ];
     for (const example of fixed) expect(await p6.check(example)).toEqual([]);
     await holds(p6, fixed);
+  });
+
+  // P6 with restores (#576's scope note): INV-9 needs no exemption for a document the restored server lost, which the
+  // push re-creates (design §4.6, PO-12). Flipped in #829 (INV-8, INV-9, PO-12): an operation on a base the restored
+  // server lost is re-created under its own id, never refused as "the document does not exist" for good. Fixed case:
+  // #829's counterexample, a file at the path of a tombstone the restore lost, which revives it.
+  it("P6: after a database restore the device converges with the server", { timeout }, async () => {
+    const restored = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 });
+    expect(await p6Restores.check(restored)).toEqual([]);
+    await holds(p6Restores, [restored]);
   });
 
   // #829 (INV-8, INV-9, PO-12): an operation already in the outbox when a restore lost its base is resolved against
