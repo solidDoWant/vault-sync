@@ -7,6 +7,7 @@ import type { Violation } from "./client";
 import type { RegressionCase } from "./control";
 import { runSteps, seededPlatforms, type RunOptions, type RunResult, type SimEndpoints } from "./runner";
 import type { Step } from "./schedule";
+import { shrink, type ShrinkProgress } from "./shrink";
 
 /**
  * The regression case of a failing seeded run with `options`: the minimized
@@ -62,4 +63,47 @@ export function replayOptions(regression: RegressionCase): RunOptions {
  */
 export function replayRegression(endpoints: SimEndpoints, regression: RegressionCase, run: typeof runSteps = runSteps): Promise<RunResult> {
   return run(endpoints, replayOptions(regression), regression.steps);
+}
+
+/** One named violation a targeted shrink keeps (SIM_SHRINK_INVARIANT, SIM_SHRINK_MATCH). */
+export interface ShrinkTarget {
+  /** The violation's kind, e.g. `phantom-delete`. */
+  invariant: string;
+  /** A regular expression its detail must match; any detail when unset. */
+  pattern?: string;
+}
+
+/** Whether `violations` hold the `target` violation: one of its kind whose detail matches its pattern. */
+export function reproduces(target: ShrinkTarget, violations: readonly Violation[]): boolean {
+  const pattern = target.pattern === undefined || target.pattern === "" ? undefined : new RegExp(target.pattern, "u");
+  return violations.some((violation) => violation.invariant === target.invariant && (pattern === undefined || pattern.test(violation.detail)));
+}
+
+/**
+ * Minimizes the saved `regression` case to the steps that still reproduce
+ * the `target` violation, within `maxRuns` re-runs (#822 item 7): unlike
+ * the seeded suites' shrink, which keeps any violation of the kinds the run
+ * had, a candidate that fails only for another reason is not kept, so the
+ * shrink cannot drift to another mechanism (#381, #498). It replays the
+ * case first and throws if that does not reproduce the target. The result
+ * is the case named `<name>-min`, with the minimized steps and the
+ * violations they produce; `run` is runSteps but for tests.
+ */
+export async function shrinkCase(
+  endpoints: SimEndpoints,
+  regression: RegressionCase,
+  target: ShrinkTarget,
+  maxRuns: number,
+  progress?: (state: ShrinkProgress) => void,
+  run: typeof runSteps = runSteps,
+): Promise<{ regression: RegressionCase; runs: number }> {
+  const options = replayOptions(regression);
+  const full = await run(endpoints, options, regression.steps);
+  if (!reproduces(target, full.violations)) {
+    const found = full.violations.map((violation) => `${violation.invariant}: ${violation.detail}`).join("; ");
+    throw new Error(`${regression.name} does not reproduce ${target.invariant}${target.pattern === undefined ? "" : ` matching /${target.pattern}/`}; its replay violated: ${found === "" ? "nothing" : found}`);
+  }
+  const minimized = await shrink(regression.steps, async (steps) => reproduces(target, (await run(endpoints, options, steps)).violations), maxRuns, progress);
+  const final = await run(endpoints, options, minimized.items);
+  return { regression: recordedCase(`${regression.name}-min`, options, final.violations, minimized.items), runs: minimized.runs };
 }

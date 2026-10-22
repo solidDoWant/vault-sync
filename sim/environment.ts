@@ -5,6 +5,7 @@
 import { inject } from "vitest";
 
 import type { RegressionCase } from "./control";
+import type { ShrinkTarget } from "./regression";
 import type { SimEndpoints } from "./runner";
 
 export interface SimEnvironment extends SimEndpoints {
@@ -32,6 +33,12 @@ export interface SimEnvironment extends SimEndpoints {
   shrinkRuns: number;
   /** Committed regression cases (sim/regressions/*.json), replayed every run. */
   regressions: RegressionCase[];
+  /**
+   * The saved case and the violation the `shrink` suite keeps
+   * (SIM_SHRINK_CASE, SIM_SHRINK_INVARIANT, SIM_SHRINK_MATCH); set only when
+   * that suite runs.
+   */
+  shrinkTarget?: ShrinkTarget & { regression: RegressionCase };
   /** Which suites to run; the broken-server check runs only `seeds`. */
   suites: string[];
 }
