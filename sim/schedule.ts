@@ -59,7 +59,21 @@ export type Step =
    * membership changes, so every other schedule, and every regression case
    * recorded before it, is unchanged.
    */
-  | { kind: "membership"; pick: number };
+  | { kind: "membership"; pick: number }
+  /**
+   * The operator backs up the vault's database (#650): a later `restore`
+   * step puts the vault back to it. Generated only for schedules with
+   * restores, so every other schedule, and every regression case recorded
+   * before it, is unchanged.
+   */
+  | { kind: "snapshot" }
+  /**
+   * The operator restores the last backup of the vault's database (#650,
+   * SPEC.md §6.1, §8): every revision committed since is gone and head_seq
+   * goes back, so the server reuses seqs devices have applied. Without a
+   * backup yet it does nothing. Generated only for schedules with restores.
+   */
+  | { kind: "restore" };
 
 export type StepKind = Step["kind"];
 
@@ -73,6 +87,8 @@ export interface ScheduleOptions {
   retention?: boolean;
   /** Whether the owner changes members' roles between steps (#35); without it (the default) no membership step is generated. */
   membership?: boolean;
+  /** Whether the operator backs up and restores the vault's database between steps (#650); without it (the default) no snapshot or restore step is generated. */
+  restores?: boolean;
 }
 
 /** Relative frequency of each step kind in a generated schedule. */
@@ -99,6 +115,9 @@ export const stepWeights: Readonly<Record<StepKind, number>> = {
   retention: 0,
   // Never drawn either: withMembership inserts membership steps (#35).
   membership: 0,
+  // Never drawn either: withRestores inserts snapshot and restore steps (#650).
+  snapshot: 0,
+  restore: 0,
   // Last, and drawn only when the run has engines: with weight 0 every other
   // kind's draws, and so every engine-less schedule, are exactly as before #22.
   "engine-operation": 10,
@@ -139,7 +158,8 @@ export function generateSchedule(options: ScheduleOptions): Step[] {
     steps.push(generateStep(random, weights, options.clients, engines));
   }
   const retained = options.retention === true ? withRetention(options.seed, steps) : steps;
-  return options.membership === true ? withMembership(options.seed, retained) : retained;
+  const members = options.membership === true ? withMembership(options.seed, retained) : retained;
+  return options.restores === true ? withRestores(options.seed, members) : members;
 }
 
 /** On average, a schedule with retention runs the retention job once in this many steps (#229). */
@@ -168,6 +188,22 @@ function withMembership(seed: number, steps: readonly Step[]): Step[] {
   return withInserted(Random.derive(seed, "membership"), membershipInterval, steps, (random) => ({ kind: "membership", pick: random.uint32() }));
 }
 
+/** On average, a schedule with restores backs up the vault's database once in this many steps (#650). */
+export const snapshotInterval = 150;
+/** On average, a schedule with restores restores the last backup once in this many steps (#650). */
+export const restoreInterval = 250;
+
+/**
+ * `steps` with the operator backing up and restoring the vault's database
+ * between them (#650), as withRetention inserts the retention job: backups
+ * and restores each from their own stream of the seed, so a restore puts
+ * the vault back by a seed-chosen number of steps.
+ */
+function withRestores(seed: number, steps: readonly Step[]): Step[] {
+  const snapshots = withInserted(Random.derive(seed, "snapshot"), snapshotInterval, steps, () => ({ kind: "snapshot" }));
+  return withInserted(Random.derive(seed, "restore"), restoreInterval, snapshots, () => ({ kind: "restore" }));
+}
+
 /** `steps` with a step from `make` after each one with probability 1/interval, drawn from `random` alone. */
 function withInserted(random: Random, interval: number, steps: readonly Step[], make: (random: Random) => Step): Step[] {
   const result: Step[] = [];
@@ -185,6 +221,8 @@ function generateStep(random: Random, weights: Readonly<Record<StepKind, number>
       return { kind, client: random.int(clients), operation: random.weighted(operationWeights), arg: random.uint32() };
     case "deliver-request":
     case "deliver-response":
+    case "snapshot":
+    case "restore":
       return { kind };
     case "reorder":
     case "drop-request":

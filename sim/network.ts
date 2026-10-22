@@ -174,6 +174,20 @@ export class SimNetwork {
     this.purgedRevisions.add(revisionId);
   }
 
+  /**
+   * Records that a restore of the database removed `revisionIds` (SimRun's
+   * restore step, #650): the server no longer has them, so a retry of one
+   * delivered from now on is a new commit, as after a purge, and each
+   * document's head is as far as the remaining applied commits show.
+   */
+  recordRestored(revisionIds: Iterable<string>): void {
+    for (const id of revisionIds) this.appliedRevisions.delete(id);
+    this.documentSeqs.clear();
+    for (const applied of this.appliedRevisions.values()) {
+      if (applied.seq > (this.documentSeqs.get(applied.documentId) ?? 0n)) this.documentSeqs.set(applied.documentId, applied.seq);
+    }
+  }
+
   /** A Transport for `client` that routes every unary call through this network. */
   transport(client: number, inner: Transport): Transport {
     return {

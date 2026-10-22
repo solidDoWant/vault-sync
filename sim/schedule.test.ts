@@ -107,6 +107,33 @@ describe("generateSchedule", () => {
     expect(both.filter((step) => step.kind !== "membership")).toEqual(generateSchedule({ ...options, retention: true }));
   });
 
+  it("generates exactly the schedules of before #650 when the run has no restores", () => {
+    // The pinned digest above, now with snapshot and restore steps known to the generator.
+    const schedule = generateSchedule({ seed: 4242, steps: 2000, clients: 3, engines: 2, restores: false });
+    expect(bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(schedule))))).toBe("9570346746379d65eb865a659dfcdfe58c6cde458990d5be7cb21b11971effd5");
+    expect(schedule.some((step) => step.kind === "snapshot" || step.kind === "restore")).toBe(false);
+  });
+
+  it("backs up and restores the vault's database between the steps of the seed's plain schedule when the run has restores", () => {
+    const options = { seed: 99, steps: 3000, clients: 3, engines: 2 };
+    const plain = generateSchedule(options);
+    const schedule = generateSchedule({ ...options, restores: true });
+    const snapshots = schedule.filter((step) => step.kind === "snapshot");
+    const restores = schedule.filter((step) => step.kind === "restore");
+    // About one backup in 150 steps and one restore in 250.
+    expect(snapshots.length).toBeGreaterThanOrEqual(8);
+    expect(snapshots.length).toBeLessThanOrEqual(45);
+    expect(restores.length).toBeGreaterThanOrEqual(4);
+    expect(restores.length).toBeLessThanOrEqual(30);
+    // Some restore comes after a backup, so it puts the vault back.
+    expect(schedule.findIndex((step) => step.kind === "snapshot")).toBeLessThan(schedule.length - 1 - [...schedule].reverse().findIndex((step) => step.kind === "restore"));
+    expect(schedule.filter((step) => step.kind !== "snapshot" && step.kind !== "restore")).toEqual(plain);
+    expect(generateSchedule({ ...options, restores: true })).toEqual(schedule);
+    // With retention and membership changes too, those steps are unchanged.
+    const all = generateSchedule({ ...options, restores: true, membership: true, retention: true });
+    expect(all.filter((step) => step.kind !== "snapshot" && step.kind !== "restore")).toEqual(generateSchedule({ ...options, membership: true, retention: true }));
+  });
+
   it("has every engine's user make every kind of change when the run has engines", () => {
     const schedule = generateSchedule({ seed: 99, steps: 3000, clients: 3, engines: 2 });
     const engineSteps = schedule.flatMap((step) => (step.kind === "engine-operation" ? [step] : []));

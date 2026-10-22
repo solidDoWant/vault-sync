@@ -27,7 +27,7 @@ function required(name: string): string {
   return value;
 }
 
-const suites = (process.env.VAULT_SYNC_SIM_SUITES ?? "seeds,retention,members,regressions,scenarios,determinism").split(",");
+const suites = (process.env.VAULT_SYNC_SIM_SUITES ?? "seeds,retention,members,restores,regressions,scenarios,determinism").split(",");
 
 // The Go driver passes the directory it writes failing seeds to (an absolute
 // path); by default it is the committed sim/regressions. A relative value is

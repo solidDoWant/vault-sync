@@ -137,6 +137,50 @@ describe.runIf(suites.has("retention"))("seeded schedules with retention purges 
   });
 });
 
+describe.runIf(suites.has("restores"))("seeded schedules with server restores (#650)", () => {
+  // The same seeds, with the operator backing up the vault's database and
+  // restoring a backup between steps (SPEC.md §6.1, §8): the server loses
+  // what was committed since and reuses its seqs. Every invariant is checked
+  // across the restores; only the server's own history of what a restore
+  // removed is excused, and every engine must keep and push again what it
+  // holds (no acknowledged write lost on the devices, principle 1).
+  let restores = 0;
+
+  it.each(environment.seeds)("seed %i keeps every invariant across server restores", async (seed) => {
+    const engines = environment.engines === 0 ? undefined : environment.engines;
+    const options = { seed, clients: environment.clients, engines, platforms: seededPlatforms(seed, engines ?? 1), commitRetryBackoff: seededCommitRetryBackoff, restores: true, faithfulFilesystem: environment.faithfulFilesystem, notificationPulls: true };
+    const result = await runSeed(environment, { ...options, steps: environment.steps });
+    restores += result.restores;
+    console.log(`seed ${String(seed)} with restores (${options.platforms.join(", ")} path rules): ${String(result.restores)} restores, ${summarize(result.trace)}`);
+    if (result.violations.length === 0) return;
+
+    const invariants = new Set(result.violations.map((violation) => violation.invariant));
+    const stillFails = async (steps: Step[]) => (await runSteps(environment, options, steps)).violations.some((violation) => invariants.has(violation.invariant));
+    console.log(`seed ${String(seed)} with restores failed; shrinking its ${String(result.steps.length)} steps in up to ${String(environment.shrinkRuns)} runs`);
+    const minimized = await shrink(result.steps, stillFails, environment.shrinkRuns, shrinkProgress(`seed ${String(seed)} with restores`));
+    const replay = await runSteps(environment, options, minimized.items);
+    const [steps, final] = replay.violations.length > 0 ? [minimized.items, replay] : [result.steps, result];
+    const written = await new Control(environment.controlUrl).report(recordedCase(`seed-${String(seed)}-restores${faithfulSuffix}`, options, final.violations, steps));
+
+    expect.fail(
+      [
+        `SIM FAILURE: seed ${String(seed)} with restores violated invariants (${String(environment.steps)} steps, ${String(options.clients)} clients):`,
+        describeViolations(result),
+        `Minimized to ${String(steps.length)} steps in ${String(minimized.runs)} runs, which violate:`,
+        describeViolations(final),
+        `Regression case written to ${written}.`,
+        `Replay with: VAULT_SYNC_SIM_SUITES=restores make test-sim SIM_SEED=${String(seed)} SIM_STEPS=${String(environment.steps)} SIM_CLIENTS=${String(options.clients)} SIM_ENGINES=${String(environment.engines)}${environment.faithfulFilesystem ? "" : " SIM_FAITHFUL_FS=0"}`,
+        "Trace of the minimized schedule (last lines):",
+        tail(final.trace),
+      ].join("\n"),
+    );
+  });
+
+  it("restored a backup at least once", () => {
+    expect(restores, `no seed restored a backup; run more steps (SIM_STEPS=${String(environment.steps)})`).toBeGreaterThan(0);
+  });
+});
+
 /**
  * Users of a members-suite run (#35): the owner and two members, as far as
  * the run has scripted clients for them (client i belongs to user i % users).
