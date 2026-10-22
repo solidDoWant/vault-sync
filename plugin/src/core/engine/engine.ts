@@ -1670,13 +1670,18 @@ export class SyncEngine {
     // path (PO-11, PO-12, #768): it is dropped, and a head other than the
     // base is re-derived below, deferred again if it must be. This device
     // never held its bytes. A `local-changes` deferral is a merge still owed
-    // to a file here, which keeps both versions (#719).
-    const lost = new Set<string>();
+    // to a file here, which keeps both versions (#719). A released document
+    // whose deferral is dropped holds nothing here: when the server has a
+    // head of it, the journal forgets it in the same write, so the head comes
+    // below as a new document's and a crash cannot leave it released with
+    // nothing to re-derive it (#784). One without a head is a ghost, below.
+    const pending = new Set((await this.journal.listPending()).map((operation) => operation.documentId));
     for (const deferred of await this.journal.listDeferred()) {
       const { documentId } = deferred.revision;
       if (deferred.reason !== "local-changes" && heads.get(documentId)?.remote.revisionId !== deferred.revision.revisionId) {
-        lost.add(documentId);
-        await this.journal.removeDeferred(documentId);
+        const state = await this.journal.getDocument(documentId);
+        const forget = heads.has(documentId) && !pending.has(documentId) && state !== undefined && released(state);
+        await this.bindings.transact(() => Promise.resolve({ removeDeferred: [documentId], ...(forget ? { removeDocuments: [documentId] } : {}) }));
         continue;
       }
       if (deferred.descendsFromBase === undefined) continue;
@@ -1690,16 +1695,12 @@ export class SyncEngine {
     // the heads are applied: the server has no claim of its own for such a
     // document, so a head at its path takes the path (claimPath). One with
     // no file here (the user deleted it, or the engine released it or never
-    // wrote it) and nothing to send has nothing left anywhere, and a released
-    // one whose deferral the restore lost holds nothing here: the journal
-    // forgets either, so it claims no path, and the server's head, if any,
-    // comes below as a new document's (design §4.6, PO-12, #768).
-    const pending = new Set((await this.journal.listPending()).map((operation) => operation.documentId));
+    // wrote it) and nothing to send has nothing left anywhere: the journal
+    // forgets it, so it claims no path (design §4.6, PO-12, #768).
     for (const state of await this.journal.listDocuments()) {
-      const head = heads.has(state.documentId);
-      const forget = !pending.has(state.documentId) && (head ? released(state) && lost.has(state.documentId) : !state.deleted && state.binding == null);
-      if (forget) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId] }));
-      else if (!head && state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
+      if (heads.has(state.documentId)) continue;
+      if (!pending.has(state.documentId) && !state.deleted && state.binding == null) await this.bindings.transact(() => Promise.resolve({ removeDocuments: [state.documentId] }));
+      else if (state.seq !== 0n) await this.putDocument({ ...state, seq: 0n }, { kind: "kept" });
     }
     const ordered = [...heads.values()].sort((left, right) => (left.remote.seq < right.remote.seq ? -1 : 1));
     for (const incoming of ordered) {

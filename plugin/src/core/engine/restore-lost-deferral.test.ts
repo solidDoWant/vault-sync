@@ -73,3 +73,44 @@ describe("a restore that lost a deferred revision", () => {
     expect(await claimKeys(h)).toEqual(["a.md"]);
   });
 });
+
+// #784 (PO-12, design §4.6): the resync forgets only a ghost with nothing to
+// send. A ghost the user deleted whose delete is still in the outbox keeps its
+// row, so the push resolves the operation against the restored server instead
+// of finding it orphaned.
+describe("a restore that lost a document whose delete is still pending", () => {
+  it("keeps the ghost until the push resolves its delete, and the push syncs on", async () => {
+    const h = harness();
+    h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
+    h.server.commit({ documentId: "b", path: "b.md", content: "b1\n" }); // 2
+    await h.engine.pull();
+    await h.vault.delete("a.md");
+    await h.engine.settled();
+    // The delete is recorded, but the server never receives it.
+    h.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new Error("offline");
+    };
+    await expect(h.engine.push()).rejects.toThrow();
+    expect((await h.journal.listPending()).map((operation) => [operation.documentId, operation.deleted])).toEqual([["a", true]]);
+    h.server.interceptor = undefined;
+
+    // The restore loses both documents; another device creates c at a's old path.
+    h.server.restoreTo(0n);
+    h.server.commit({ documentId: "c", path: "a.md", content: "c1\n" });
+    await h.engine.push();
+
+    expect(await h.journal.listPending()).toEqual([]);
+    expect(h.server.head("a")).toBeUndefined();
+    // b, which the restore lost and this device still holds, is on the server again.
+    expect([...h.server.liveDocuments()].sort()).toEqual([
+      ["a.md", "c"],
+      ["b.md", "b"],
+    ]);
+    expect(await files(h.vault)).toEqual(
+      new Map([
+        ["a.md", "c1\n"],
+        ["b.md", "b1\n"],
+      ]),
+    );
+  });
+});

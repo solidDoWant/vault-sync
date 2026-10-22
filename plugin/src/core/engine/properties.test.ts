@@ -265,21 +265,30 @@ const p3Ghosts: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prope
   cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(ghostCommands)),
   check: async ([on, steps]) => violations((await play(on, steps, "folded", ghostPaths)).world, "P3"),
 };
-const p4: Definition<[PathPlatform, WorldCommand[], number]> = {
-  property: "P4",
-  cases: fc.tuple(platform, fc.array(fc.oneof(...steadyCommands), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
-  check: async ([on, list, write]) => {
-    const baseline = new PropertyWorld(on);
-    for (const command of list) await baseline.apply(command);
-    await baseline.quiesce();
-    const crashed = new PropertyWorld(on);
-    crashed.armCrash(write);
-    for (const command of list) await crashed.apply(command);
-    await crashed.quiesce();
-    const [without, crashing] = [await baseline.outcome(), await crashed.outcome()];
-    return without === crashing ? [] : [`a crash at journal write ${String(write)} reaches ${crashing}, the run without it ${without}`];
-  },
-};
+/**
+ * P4 over `alphabet` on `platforms`: crashing at journal write N and
+ * restarting reaches the quiescent state the run without the crash reaches.
+ */
+function crashEquivalence(platforms: fc.Arbitrary<PathPlatform>, alphabet: fc.Arbitrary<WorldCommand>[], paths?: readonly string[]): Definition<[PathPlatform, WorldCommand[], number]> {
+  return {
+    property: "P4",
+    cases: fc.tuple(platforms, fc.array(fc.oneof(...alphabet), { maxLength: maxCommands, size: "max" }), fc.integer({ min: 1, max: 40 })),
+    check: async ([on, list, write]) => {
+      const baseline = new PropertyWorld(on, "folded", paths);
+      for (const command of list) await baseline.apply(command);
+      await baseline.quiesce();
+      const crashed = new PropertyWorld(on, "folded", paths);
+      crashed.armCrash(write);
+      for (const command of list) await crashed.apply(command);
+      await crashed.quiesce();
+      const [without, crashing] = [await baseline.outcome(), await crashed.outcome()];
+      return without === crashing ? [] : [`a crash at journal write ${String(write)} reaches ${crashing}, the run without it ${without}`];
+    },
+  };
+}
+const p4 = crashEquivalence(platform, steadyCommands);
+/** P4 over ghostCommands (#784): a restore that loses a released document's deferred revision, crashed at any write. */
+const p4Ghosts = crashEquivalence(fc.constantFrom<PathPlatform>("windows", "macos"), ghostCommands, ghostPaths);
 const p5 = overWorld("P5", (world) => world.lostWrites());
 /**
  * P7's alphabet: the steady one over the paths of `worldPaths` whose `K` and
@@ -415,6 +424,18 @@ describe("engine properties (design §9.3)", () => {
         12,
       ],
     ]);
+  });
+
+  // #784 (INV-7, INV-9, PO-12): a resync that drops a released document's deferral the restore lost forgets the
+  // document in the same journal write, so a crash cannot leave it released at its restored base with nothing to
+  // re-derive it. Fixed cases: a rename deferred as unmaterializable on Windows, lost by a restore that keeps its base,
+  // crashed at each journal write of the resync.
+  it("P4: a crash during a restore that lost a released document's deferral reaches the state a run without it reaches", { timeout }, async () => {
+    const lost: WorldCommand[] = [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" }, { type: "restore", fraction: 0.5 }, { type: "pull" }];
+    await holds(
+      p4Ghosts,
+      Array.from({ length: 12 }, (_, write): [PathPlatform, WorldCommand[], number] => ["windows", lost, write + 1]),
+    );
   });
 
   // P5 no lost write: INV-4 plus principle 1, against server history.
