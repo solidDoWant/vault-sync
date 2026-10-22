@@ -19,6 +19,7 @@
 // test-properties`: 100,000 cases a night); fast-check prints the
 // counterexample and its replay path.
 
+import { Code } from "@connectrpc/connect";
 import fc from "fast-check";
 import { describe, expect, inject, it } from "vitest";
 
@@ -27,6 +28,7 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 import { sha256Hex } from "../hash";
 import { createProtocolClient } from "../protocol/client";
 import type { PathPlatform } from "../vaultpath/platform";
+import { errorCode } from "./errors";
 import { kindValue } from "./remote";
 import { files, harness, PropertyWorld, remoteDeviceId, testDeviceId, withoutCopyNames, worldPaths, type PropertyId, type RenameMode, type WorldCommand } from "./testing";
 import { uploadContent } from "./upload";
@@ -110,10 +112,8 @@ const closedCommands: fc.Arbitrary<WorldCommand>[] = [
 const allCommands: fc.Arbitrary<WorldCommand>[] = [...steadyCommands, fc.integer({ min: 1, max: 12 }).map((write) => ({ type: "crash", write }))];
 
 /**
- * P6's alphabet: no database restore. Since R7b (#700) the push re-creates
- * a document the restored server lost (SPEC.md §8, divergence), but INV-9
- * after a restore is not proven yet: with restores, P6 still finds a run
- * that does not converge (#829; the `it.fails` P6 case with restores).
+ * P6's alphabet: no database restore. P6 with restores is its own case
+ * (`p6Restores`, #829), so a run that finds a restore bug names it.
  */
 const convergingCommands = allCommands.filter((command) => command !== restore);
 
@@ -737,15 +737,33 @@ describe("engine properties (design §9.3)", () => {
   });
 
   // P6 with restores (#576's scope note): INV-9 needs no exemption for a document the restored server lost, which the
-  // push re-creates (design §4.6, PO-12). Fails on #829: an operation the restored server refuses as "the document does
-  // not exist" stays in the outbox. Flip to `it` with `holds(p6Restores, [case])` once #829 is fixed.
-  it.fails("P6: after a database restore the device converges with the server (#829)", { timeout }, async () => {
+  // push re-creates (design §4.6, PO-12). Flipped in #829 (INV-8, INV-9, PO-12): an operation on a base the restored
+  // server lost is re-created under its own id, never refused as "the document does not exist" for good. Fixed case:
+  // #829's counterexample, a file at the path of a tombstone the restore lost, which revives it.
+  it("P6: after a database restore the device converges with the server", { timeout }, async () => {
     const restored = scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 });
-    // Only #829's symptom counts as the expected failure: a harness error, or a pass once #829 is fixed, returns
-    // without throwing, so `it.fails` reports this case as failing.
-    const found = await p6Restores.check(restored).catch(() => undefined);
-    if (found === undefined || !found.includes("pending operations left: r-1@A.md")) return;
-    expect(found).toEqual([]);
+    expect(await p6Restores.check(restored)).toEqual([]);
+    await holds(p6Restores, [restored]);
+  });
+
+  // #829 (INV-8, INV-9, PO-12): an operation already in the outbox when a restore lost its base is resolved against
+  // the restored server: a revival of a tombstone or an edit re-creates the document under its own id, and a delete of
+  // a document the restored server lacks has nothing left to delete. Only the offline push's own refusal is an error.
+  it("P6: an outbox operation whose base a restore lost converges with the restored server", { timeout }, async () => {
+    const outboxes: WorldCommand[][] = [
+      [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "remote-delete", document: 0 }, { type: "pull" }, { type: "user-create", path: 0 }],
+      [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-edit", file: 0 }],
+      [{ type: "remote-create", path: 0 }, { type: "pull" }, { type: "user-delete", file: 0 }],
+    ];
+    for (const outbox of outboxes) {
+      const { world, quiet } = await play("posix", scripted("posix", ...outbox, { type: "offline-push" }, { type: "restore", fraction: 0 })[1]);
+      const label = JSON.stringify(outbox);
+      expect(quiet, label).toBe(true);
+      expect(world.errors.filter((error) => errorCode(error) !== Code.Unavailable).map(String), label).toEqual([]);
+      expect(await world.convergence(), label).toEqual([]);
+      // A delete has nothing left to delete: the restored server gets no tombstone of a document it never had.
+      if (outbox.some((command) => command.type === "user-delete")) expect(world.server.head("r-1"), label).toBeUndefined();
+    }
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {

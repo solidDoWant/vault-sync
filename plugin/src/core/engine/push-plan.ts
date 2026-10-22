@@ -324,7 +324,18 @@ export async function planPush(
  * next push re-creates it under its own id.
  */
 export function ghost(state: DocumentState): boolean {
-  return hasBase(state) && !state.deleted && state.seq === 0n;
+  return lost(state) && !state.deleted;
+}
+
+/**
+ * A document whose base, live or a tombstone, the restored server lacks: a
+ * resync found no head of it (`seq` 0, design §4.6). Its document does not
+ * exist on the server, so an operation on it is a create under its own id,
+ * with no base (PO-12, #829): a ghost, or a tombstone a file at its path
+ * revives.
+ */
+export function lost(state: DocumentState): boolean {
+  return hasBase(state) && state.seq === 0n;
 }
 
 /** Documents a deferred remote revision keeps from pushing, and the server claims they hold (busyClaims). */
@@ -368,7 +379,8 @@ function operation(
   return {
     revisionId: source.newId(),
     documentId: state.documentId,
-    baseRevisionId: state.revisionId,
+    // On a base the restored server lost: a create under the document's own id (#829).
+    baseRevisionId: lost(state) ? "" : state.revisionId,
     path,
     contentHash: content === null ? state.baseHash : sha256Hex(content),
     size: content === null ? state.size : BigInt(content.length),
