@@ -397,8 +397,8 @@ export class SyncEngine {
     this.timers = options.timers ?? globalTimers;
     this.random = options.random ?? Math.random;
     this.unsubscribe = this.vault.watch((event) => {
-      // Whether the start-up scan may have read the disk after this event (Bindings.renamed).
-      const duringScan = this.bindings.scanning;
+      // Whether the start-up scan may have read the disk after this event (Bindings.renamed, Bindings.observe).
+      const duringScan = this.bindings.observe(event);
       this.events = this.events.then(() => this.handleEvent(event, duringScan));
       // A failed transition rejects every later push (pushOnce awaits the
       // chain); the chain itself is handled here, so it is no unhandled rejection.
