@@ -638,6 +638,9 @@ describe("engine properties (design §9.3)", () => {
       scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 10 }, { type: "push" }, { type: "user-delete", file: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-rename", file: 15, mode: "pool", target: 7 }, { type: "remote-rename", document: 8, path: 7 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
       // #866 (seed 566): a pushed create moved onto incoming paths around a restore, then another file renamed and deleted.
       scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "user-rename", file: 1, mode: "pool", target: 0 }, { type: "restore", fraction: 0 }, { type: "move-onto-incoming", file: 0, path: 2 }, { type: "user-rename", file: 1, mode: "pool", target: 3 }, { type: "user-delete", file: 1 }, { type: "pull" }),
+      // #875 (seed 566): a restore lost this device's rename-only commit over another device's edit, then that device
+      // committed over the restored head and the user renamed the file back: the file's content is merged as its document's.
+      scripted("posix", { type: "user-create", path: 0 }, { type: "push" }, { type: "user-rename", file: 0, mode: "pool", target: 1 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "restore", fraction: 1 / 3 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-rename", file: 0, mode: "pool", target: 0 }),
     ];
     for (const example of fixed) expect(await p1.check(example)).toEqual([]);
     await holds(p1, fixed);
@@ -666,6 +669,9 @@ describe("engine properties (design §9.3)", () => {
       // #892: this device's edit lands on a restored server and its response is lost, so only the resync's head
       // acknowledges it; a second restore loses it under an unchanged file: this device commits it again.
       scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-create", path: 3 }, { type: "pull" }, { type: "user-edit", file: 1 }, { type: "restore-during-push", fraction: 0.5, lost: true }, { type: "pull" }, { type: "restore", fraction: 0.5 }, { type: "pull" }),
+      // #875 (seed 566): a restore lost this device's own merge commit, which carried another device's edit, then that
+      // device edited the restored head: the file's content is merged as its document's, never a new document's.
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "edit-during-pull", file: 0 }, { type: "user-rename", file: 0, mode: "folder", target: 0 }, { type: "remote-rename", document: 0, path: 0 }, { type: "user-edit", file: 0 }, { type: "remote-edit", document: 0 }, { type: "push" }, { type: "restore", fraction: 0.2 }, { type: "remote-edit", document: 0 }, { type: "remote-create", path: 0 }),
     ]);
   });
 
