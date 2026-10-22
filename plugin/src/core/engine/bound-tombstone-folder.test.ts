@@ -6,12 +6,14 @@ import { files, harness } from "./testing";
 // another device deleted it is brought back on its tombstone at the moved
 // spelling, bound to that file (PO-7, PO-9). When another device brings it
 // back too, the pulled revision meets that file as a local change (design
-// §4.5 step 4, boundLocalChange, #798): the merge path moves the bound file
-// to the server's path under the document's id (PO-1, INV-3), and a local
-// edit is kept in a conflict copy written as a new file; a file only moved
-// has no edit to keep. The seed's shape: the file was moved into a folder
-// (`Notes/C.md`) that the path it comes back at (`NOTES`) collides with
-// under the server's key, so the folder is in the way of the result.
+// §4.5 step 4, boundLocalChange, #798): the merge keeps the bound file the
+// document's (PO-1, INV-3) at the user's spelling, since the user's rename
+// wins over the re-create as over any remote revision (PO-9; amended ruling
+// on decision #52, #802), and a local edit is kept in a conflict copy
+// written as a new file; a file only moved has no edit to keep. The seed's
+// shape: the file was moved into a folder (`Notes/C.md`) that the path it
+// comes back at (`NOTES`) collides with under the server's key; the user's
+// path wins, so the folder stays and nothing lands at `NOTES`.
 
 const bytes = (content: string) => new TextEncoder().encode(content);
 const quiet = { committed: 0, conflicts: 0, pending: 0, rejected: [] };
@@ -43,7 +45,7 @@ describe("SyncEngine, given a moved note another device deleted and then brought
       true,
     ],
   ] as const)(
-    "keeps the moved file the document's, at the server's path, with any local edit in a new copy (%s)",
+    "keeps the moved file the document's, at the user's path with the server's content, with any local edit in a new copy (%s)",
     async (_variant, moved, back, edited) => {
       const h = harness({ merge: "default", maxDownloadBytes: 1000 });
       h.server.commit({ documentId: "d", path: "ab.md", content: "c\n" });
@@ -62,13 +64,14 @@ describe("SyncEngine, given a moved note another device deleted and then brought
         await h.engine.push();
       }
 
-      // The document keeps its file: the one the user moved is now at the
-      // server's path with the server's content.
-      expect(h.server.liveDocuments().get(back)).toBe("d");
-      expect(h.server.liveFiles().get(back)).toBe("other\n");
-      expect(h.vault.inodeOf(back)).toBe(inode);
+      // The document keeps its file at the user's path (#802), with the
+      // server's content; nothing is left at the path it came back at.
+      expect(h.server.liveDocuments().get(moved)).toBe("d");
+      expect(h.server.liveFiles().get(moved)).toBe("other\n");
+      expect(h.vault.inodeOf(moved)).toBe(inode);
+      expect(h.server.liveDocuments().has(back)).toBe(false);
       const copies = [...h.server.liveFiles()].filter(
-        ([path]) => path !== back,
+        ([path]) => path !== moved,
       );
       if (edited) {
         // The local edit survives in a conflict copy, a new file and a new document.

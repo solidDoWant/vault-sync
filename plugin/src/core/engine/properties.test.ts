@@ -819,15 +819,19 @@ const bytes = (content: string) => new TextEncoder().encode(content);
  */
 const p9: Definition<PathMergeCase> = {
   property: "P9",
-  cases: fc.record({
-    on: platform,
-    move: fc.constantFrom<"user" | "engine">("user", "engine"),
-    target: fc.constantFrom("A.md", "notes/m.md", "Moved note.md"),
-    edited: fc.boolean(),
-    stepwise: fc.boolean(),
-    renamed: fc.boolean(),
-    recreate: fc.constantFrom("s.md", "back.md", "notes/f.md"),
-  }),
+  // `Notes/C.md` and `NOTES`: a user's move into a folder the re-created path collides with under the server's key
+  // (seed-5-retention, #804). The engine's displace always follows an edit, so `edited` is the user's move's only.
+  cases: fc
+    .record({
+      on: platform,
+      move: fc.constantFrom<"user" | "engine">("user", "engine"),
+      target: fc.constantFrom("A.md", "notes/m.md", "Moved note.md", "Notes/C.md"),
+      edited: fc.boolean(),
+      stepwise: fc.boolean(),
+      renamed: fc.boolean(),
+      recreate: fc.constantFrom("s.md", "back.md", "notes/f.md", "NOTES"),
+    })
+    .map((generated) => (generated.move === "engine" ? { ...generated, edited: true } : generated)),
   check: async ({ on, move, target, edited, stepwise, renamed, recreate }) => {
     const h = harness({ merge: "default", pathRules: { platform: on } });
     h.server.commit({ documentId: "d", path: "s.md", content: "s\n" });
@@ -877,12 +881,14 @@ describe("path merge property (design §9.3, PO-9)", () => {
   // P9 path merge (#802): the user's unpushed rename of a document bound on its tombstone wins over another device's
   // re-create; a file rule W's displace moved aside takes the server's path (decision #52 as amended), unless the user
   // moved it since. Fixed cases: seed 100101's shape, seed 100039's displace on posix (Windows defers the
-  // unmaterializable path the seed used), and that displaced copy moved by the user.
+  // unmaterializable path the seed used), that displaced copy moved by the user, and seed-5-retention's move into a folder
+  // the re-created path collides with (#804).
   it("P9: a document bound on its tombstone keeps the user's rename, and only the user's, against a re-create", { timeout }, async () => {
     await holds<PathMergeCase>(p9, [
       { on: "macos", move: "user", target: "A.md", edited: true, stepwise: false, renamed: false, recreate: "notes/f.md" },
       { on: "posix", move: "engine", target: "A.md", edited: true, stepwise: false, renamed: false, recreate: "back.md" },
       { on: "windows", move: "engine", target: "notes/m.md", edited: true, stepwise: false, renamed: true, recreate: "back.md" },
+      { on: "posix", move: "user", target: "Notes/C.md", edited: true, stepwise: false, renamed: false, recreate: "NOTES" },
     ]);
   });
 });
