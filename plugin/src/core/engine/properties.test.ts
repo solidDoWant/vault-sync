@@ -819,9 +819,14 @@ describe("engine properties (design §9.3)", () => {
   // server lost is re-created under its own id, never refused as "the document does not exist" for good. Fixed case:
   // #829's counterexample, a file at the path of a tombstone the restore lost, which revives it. #838's (INV-9, PO-12):
   // a ghost the resync forgets because the user deleted its file takes its `local-changes` deferral with it, so no
-  // deferral of a revision the restored server lost is left to be re-derived against another document's path.
+  // deferral of a revision the restored server lost is left to be re-derived against another document's path. #848's
+  // (INV-9, PO-12): a ghost the resync keeps because its file is still bound drops its `local-changes` deferral of a
+  // revision the restore lost, and so does a document whose restored head is its base (the same script restored to
+  // its first revision, the base); the push sends the bound file's version.
   it("P6: after a database restore the device converges with the server", { timeout }, async () => {
     const fixed = [
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-rename", document: 0, path: 8 }, { type: "pull" }, { type: "restore", fraction: 0 }, { type: "remote-delete", document: 0 }),
+      scripted("posix", { type: "remote-create", path: 0 }, { type: "push" }, { type: "edit-during-pull", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-rename", document: 0, path: 8 }, { type: "pull" }, { type: "restore", fraction: 0.5 }),
       scripted("posix", { type: "remote-create", path: 0 }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-delete", document: 0 }, { type: "remote-create", path: 0 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-create", path: 1 }, { type: "restore", fraction: 0 }, { type: "user-delete", file: 9 }),
       scripted("posix", { type: "remote-create", path: 8 }, { type: "move-onto-incoming", file: 0, path: 0 }, { type: "user-delete", file: 0 }, { type: "user-create", path: 7 }, { type: "remote-edit", document: 0 }, { type: "edit-during-pull", file: 0 }, { type: "restore", fraction: 0 }, { type: "purge", revision: 0 }),
     ];

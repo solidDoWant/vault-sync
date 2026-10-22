@@ -125,8 +125,11 @@ describe("SyncEngine resync after a server restore", () => {
       expect(contents).toContain("other device");
     });
 
-    // #719 (design §4.6): a revision deferred before the restore proves nothing about a base the restore lost.
-    it("keeps both versions of a revision deferred before the restore, once the file is back at the lost base", async () => {
+    // #719 (design §4.6): a revision deferred before the restore proves nothing about a base the restore lost, so it
+    // never overwrites the file at the lost base. #848 (PO-12, INV-9, principle 1; decision log #52): the restored
+    // server lost that revision, so the resync drops its deferral rather than merge a revision no server holds; this
+    // device's file is re-created under the document's own id, and the lost revision is its writer's to send again.
+    it("keeps this device's file at the lost base and drops a revision deferred before the restore", async () => {
       let deferring = true;
       const h = harness({ merge: (request) => (deferring ? Promise.resolve({ status: "deferred" }) : threeWayMerge(request)) });
       h.server.commit({ documentId: "k", path: "k.md", content: "k1" }); // 1
@@ -134,20 +137,25 @@ describe("SyncEngine resync after a server restore", () => {
       await h.engine.pull();
       await h.vault.write("x.md", new TextEncoder().encode("local edit"));
       await h.engine.settled();
-      h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
+      const lost = h.server.commit({ documentId: "x", path: "x.md", content: "x2" }); // 3
       await h.engine.pull();
-      expect((await h.journal.getDeferred("x"))?.revision.revisionId).toBe(h.server.head("x")?.id);
+      expect((await h.journal.getDeferred("x"))?.revision.revisionId).toBe(lost.id);
       await h.vault.write("x.md", new TextEncoder().encode("x1"));
       await h.engine.settled();
       h.server.restoreTo(1n);
+      const before = h.merges.length;
       expect(await h.engine.pull()).toMatchObject({ resynced: true });
+      expect(await h.journal.getDeferred("x")).toBeUndefined();
       deferring = false;
 
       await h.engine.push();
 
-      const contents = [...(await files(h.vault)).values()];
-      expect(contents).toContain("x1");
-      expect(contents).toContain("x2");
+      expect(text(await h.vault.read("x.md"))).toBe("x1");
+      const head = h.server.head("x");
+      expect(head).toBeDefined();
+      if (head !== undefined) expect(text(h.server.contentOf(head))).toBe("x1");
+      expect(await h.journal.getDeferred("x")).toBeUndefined();
+      expect(h.merges.slice(before).map((request) => request.remote.revisionId)).not.toContain(lost.id);
     });
 
     it("applies a later revision of one this device had deleted", async () => {
