@@ -2700,11 +2700,14 @@ export class SyncEngine {
    * spelling of a folder is no move: a folder has one spelling on disk, the
    * engine never respells one (INV-9), and the vault would report no event
    * to match the expectation, which would then wait to swallow a user's
-   * later rename of the file (#737).
+   * later rename of the file (#737). So is a move to the spelling the vault
+   * already holds the file at (`from` spells its folder otherwise): the
+   * vault reports no event for it either, and a stale expectation would
+   * swallow the user's later case-only rename of the file (#873).
    */
   private async moveFile(from: string, to: string): Promise<void> {
     const held = await this.heldSpelling(from);
-    if (this.pathRules.platform !== "posix" && held !== to && this.pathSpace.sameButFolderSpelling(held, to)) return;
+    if (held === to || (this.pathRules.platform !== "posix" && this.pathSpace.sameButFolderSpelling(held, to))) return;
     await this.echoed(this.echoes.expectRename(held, to), () => this.vault.rename(from, to));
   }
 
