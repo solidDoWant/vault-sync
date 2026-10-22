@@ -705,6 +705,12 @@ export type WorldCommand =
    */
   | { type: "closed"; changes: { file: number; delete: boolean; target: number }[] }
   | { type: "restore"; fraction: number }
+  /**
+   * A push during which the operator restores the database to a fraction of
+   * its head seq, just before the push's first commit reaches the server,
+   * after the pull that started the push (#861).
+   */
+  | { type: "restore-during-push"; fraction: number }
   | { type: "purge"; revision: number };
 
 /**
@@ -776,6 +782,8 @@ export class PropertyWorld {
   readonly sizes = new Map<string, bigint>();
   /** Whether CommitRevision is unreachable (the `offline-push` command). */
   private offline = false;
+  /** The restore the next CommitRevision lands after (the `restore-during-push` command). */
+  private restoreAtCommit: number | undefined;
   /** Every content hash any revision ever carried on the server, purged or rolled back since or not. */
   readonly everOnServer = new Set<string>();
   /** The document each inode is bound to, as far as the oracle can tell. */
@@ -835,6 +843,10 @@ export class PropertyWorld {
     this.server.interceptor = (method, request) => {
       this.checkBlobRequest(method, request);
       if (method === "CommitRevision" && this.offline) throw new ConnectError("offline", Code.Unavailable);
+      if (method === "CommitRevision" && this.restoreAtCommit !== undefined) {
+        this.restoreServer(this.restoreAtCommit);
+        this.restoreAtCommit = undefined;
+      }
     };
     this.engine = this.createEngine();
   }
@@ -982,12 +994,17 @@ export class PropertyWorld {
         }
         this.engine = this.createEngine();
         break;
-      case "restore": {
-        const seq = BigInt(Math.floor(Number(this.server.currentHeadSeq) * command.fraction));
-        this.server.restoreTo(seq);
-        if (this.scanned > seq) this.scanned = seq;
+      case "restore":
+        this.restoreServer(command.fraction);
         break;
-      }
+      case "restore-during-push":
+        this.restoreAtCommit = command.fraction;
+        try {
+          await this.run(() => this.engine.push());
+        } finally {
+          this.restoreAtCommit = undefined;
+        }
+        break;
       case "purge": {
         const purgeable = this.retained().filter((revision) => this.server.head(revision.documentId)?.id !== revision.id);
         const victim = purgeable.length === 0 ? undefined : purgeable[command.revision % purgeable.length];
@@ -998,6 +1015,13 @@ export class PropertyWorld {
     await this.settle();
     await this.checkExclusivity();
     await this.checkOutboxContent();
+  }
+
+  /** Restores the server's database to `fraction` of its head seq. */
+  private restoreServer(fraction: number): void {
+    const seq = BigInt(Math.floor(Number(this.server.currentHeadSeq) * fraction));
+    this.server.restoreTo(seq);
+    if (this.scanned > seq) this.scanned = seq;
   }
 
   /**

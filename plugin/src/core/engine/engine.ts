@@ -10,7 +10,7 @@ import { isVaultError, type DeletePrecondition, type VaultAdapter, type VaultEve
 import { posixPathRules, unmaterializableReason, type PathRules, type UnmaterializableCause } from "../vaultpath/platform";
 import { isVaultRelativePath, pathProblem, type PathProblem } from "../vaultpath/vaultpath";
 import { EchoSuppressor } from "./echo";
-import { blobMissing, errorCode, headMoved } from "./errors";
+import { baseLost, blobMissing, errorCode, headMoved } from "./errors";
 import { commitRestore, documentHistory, readRevision, restorePathProblem, type HistoryEntry, type HistoryPage } from "./history";
 import { threeWayMerge, type MergeHook, type MergeOutcome } from "./merge";
 import { Bindings, hasBase, liveHere, released, type BindingChange } from "./bindings";
@@ -2074,11 +2074,13 @@ export class SyncEngine {
    * Whether `operation` is on its document's base: the base is still the
    * one it was derived from, or the document is one the restored server
    * lacks (a ghost, or a tombstone it lost), which the operation creates
-   * again (#829).
+   * again (#829). An operation derived on the base before a resync found the
+   * restored server lacks it is not: a restore during the push lost it
+   * (#861, PO-12), and the next round derives the create.
    */
   private async onBase(operation: PendingOperation): Promise<boolean> {
     const state = await this.journal.getDocument(operation.documentId);
-    if (state !== undefined && operation.baseRevisionId === "" && lost(state)) return true;
+    if (state !== undefined && lost(state)) return operation.baseRevisionId === "";
     return (state?.revisionId ?? "") === operation.baseRevisionId;
   }
 
@@ -2253,8 +2255,13 @@ export class SyncEngine {
    * so that document arrives. If its revision lands at the same path, the pull
    * hands it to the merge hook, which keeps the local file as a conflict copy;
    * otherwise (the paths differ only by case or Unicode form, or the hook
-   * deferred) see moveToConflictPath. INVALID_ARGUMENT: recorded as rejected.
-   * Anything else rejects the push.
+   * deferred) see moveToConflictPath. FAILED_PRECONDITION without a head on
+   * an operation with a base (a live one's blob uploaded again): the document does not
+   * exist, so a restore lost the base after the pull that started the push
+   * (#861, PO-12, design §4.6). Pull: the pull finds the divergence and its
+   * resync resolves the operation against the restored server. The
+   * operation stays pending until then, never failing the push.
+   * INVALID_ARGUMENT: recorded as rejected. Anything else rejects the push.
    */
   private async commitFailed(operation: PendingOperation, error: unknown, summary: PushSummary): Promise<void> {
     if (!(error instanceof ConnectError)) throw error;
@@ -2267,6 +2274,10 @@ export class SyncEngine {
       summary.conflicts++;
       await this.pullOnce();
       await this.moveToConflictPath(operation, error, summary);
+      return;
+    }
+    if (baseLost(error, operation)) {
+      await this.pullOnce();
       return;
     }
     if (error.code === Code.InvalidArgument) {

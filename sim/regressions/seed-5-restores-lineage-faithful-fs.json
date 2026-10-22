@@ -1,0 +1,549 @@
+{
+  "name": "seed-5-restores-lineage-faithful-fs",
+  "seed": 5,
+  "clients": 3,
+  "engines": 2,
+  "commitRetryBackoff": 30,
+  "faithfulFilesystem": true,
+  "notificationPulls": true,
+  "violations": [
+    {
+      "invariant": "identity",
+      "detail": "e3 committed e3.x7 at notes/f (conflict e3 2026-01-02 030405).md (seq 5, e3.x6) from inode v1, which is c1.d1's file"
+    }
+  ],
+  "steps": [
+    {
+      "kind": "snapshot"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 1742097818
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 4172031649
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 2402566887
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "edit",
+      "arg": 1958255682
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "crash",
+      "client": 1
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 1099484638
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 3463022789
+    },
+    {
+      "kind": "drop-request",
+      "pick": 1832340288
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 1083011512
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 3787742766
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 1246982222
+    },
+    {
+      "kind": "drop-request",
+      "pick": 3351337111
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 3484724769
+    },
+    {
+      "kind": "restore"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 3756561567
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 2024611630
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 2849801930
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 1226972787
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 2498401630
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 4157832387
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 901353158
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 1860979570
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "crash",
+      "client": 0
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "edit",
+      "arg": 1140910567
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "push",
+      "arg": 3319795410
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "drop-request",
+      "pick": 464471942
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "rename",
+      "arg": 3616141529
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "reorder",
+      "pick": 3624928186
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "pull",
+      "arg": 2955025171
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 1736283894
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "create",
+      "arg": 126222163
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "rename",
+      "arg": 1638868968
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "rename",
+      "arg": 2345060193
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "create",
+      "arg": 104432273
+    },
+    {
+      "kind": "drop-response",
+      "pick": 343421508
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "create",
+      "arg": 3618877558
+    },
+    {
+      "kind": "drop-response",
+      "pick": 291755281
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "rename",
+      "arg": 3071222159
+    },
+    {
+      "kind": "operation",
+      "client": 2,
+      "operation": "edit",
+      "arg": 3336092544
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "create",
+      "arg": 633375194
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "drop-response",
+      "pick": 3574043409
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "edit",
+      "arg": 414840398
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "operation",
+      "client": 0,
+      "operation": "edit",
+      "arg": 2570392549
+    },
+    {
+      "kind": "operation",
+      "client": 1,
+      "operation": "delete",
+      "arg": 4224926134
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 0,
+      "operation": "rename",
+      "arg": 1481823905
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "engine-operation",
+      "engine": 1,
+      "operation": "delete",
+      "arg": 4100255745
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-response"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "deliver-request"
+    },
+    {
+      "kind": "restore"
+    }
+  ]
+}
