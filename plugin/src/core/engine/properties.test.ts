@@ -994,6 +994,24 @@ describe("engine properties (design §9.3)", () => {
         ],
         20,
       ],
+      // #906's (nightly seed 566): after a purge, a restore to nothing and a push, a crash dropped the conflict copy of `no:te.md`.
+      [
+        "posix",
+        [
+          { type: "remote-create", path: 0 },
+          { type: "remote-edit", document: 0 },
+          { type: "remote-create", path: 11 },
+          { type: "remote-delete", document: 0 },
+          { type: "purge", revision: 0 },
+          { type: "edit-during-pull", file: 0 },
+          { type: "restore", fraction: 0 },
+          { type: "push" },
+          { type: "user-rename", file: 0, mode: "pool", target: 0 },
+          { type: "remote-delete", document: 0 },
+          { type: "move-onto-incoming", file: 0, path: 11 },
+        ],
+        14,
+      ],
     ]);
   });
 
