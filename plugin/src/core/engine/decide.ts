@@ -86,11 +86,15 @@ export function boundLocalChange(state: DocumentState | undefined, remote: Remot
  *   own id, with its local changes, which may move its file off the path. A
  *   deferral it supersedes is stale and never detaches the holder.
  * - `keep` (W(c)): the holder's newest server claim is the path under the
- *   server's key: the path stays its own, and the document waits, listed
- *   (`path-conflict`). So does a holder whose own revision the vault
- *   refused (`path-conflict`: an untracked file is in that revision's way).
+ *   server's key: the path stays its own. A revision the server gave the
+ *   path waits, listed (`path-conflict`); a merge result at the document's
+ *   local rename moves on to a copy name instead (PO-4(a) from its side,
+ *   #846).
+ * - `wait`: the vault refused the holder's own revision (`path-conflict`:
+ *   an untracked file is in that revision's way), so it keeps its file for
+ *   now, and the document waits, listed (`path-conflict`).
  */
-export type HolderMove = "displace" | "recreate" | "follow" | "resolve" | "detach" | "alias" | "keep";
+export type HolderMove = "displace" | "recreate" | "follow" | "resolve" | "detach" | "alias" | "keep" | "wait";
 
 export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined, outbox: readonly PendingOperation[], path: string, space: PathSpace, newer?: RemoteRevision): HolderMove {
   // A create not acknowledged yet that a local rename moved: a local move.
@@ -107,7 +111,7 @@ export function ruleW(holder: DocumentState, ahead: DeferredRevision | undefined
   // The vault refused the holder's own revision: an untracked file is in its
   // way, which a retry (SyncEngine.retryRefusedPaths) or the user clears.
   // The holder's file stays meanwhile.
-  if (ahead.reason === "path-conflict") return "keep";
+  if (ahead.reason === "path-conflict") return "wait";
   return ahead.reason === "local-changes" ? "resolve" : "detach";
 }
 

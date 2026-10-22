@@ -136,6 +136,26 @@ const folderCommands: fc.Arbitrary<WorldCommand>[] = [
   fc.constant({ type: "push" }),
 ];
 
+/**
+ * The key-collision alphabet (#846): notes whose paths are one under the
+ * server's key but two files on disk (`Straße.md`, `STRASSE.md`), so a local
+ * rename onto one while another document holds the other is a path the
+ * server will never give the renamed document, and a remote edit of it goes
+ * to the merge path, which keeps the local rename.
+ */
+const keyPaths: readonly string[] = ["Straße.md", "STRASSE.md", "a.md", "b.md"];
+const keyCommands: fc.Arbitrary<WorldCommand>[] = [
+  index.map((path) => ({ type: "user-create", path })),
+  index.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(index, index).map(([file, target]) => ({ type: "user-rename", file, mode: "pool" as const, target })),
+  index.map((path) => ({ type: "remote-create", path })),
+  index.map((document) => ({ type: "remote-edit", document })),
+  index.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(index, index).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+];
+
 /** P1's restore alphabet: few paths and documents, so restores roll the same documents back along their history, and purges remove bases a restore may have kept or lost (#719). */
 const few = fc.nat({ max: 3 });
 const rollbackCommands: fc.Arbitrary<WorldCommand>[] = [
@@ -529,6 +549,15 @@ const stalePageHolder: Definition<{ on: PathPlatform; list: WorldCommand[]; head
   },
 };
 const p6 = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], convergingCommands);
+/** P6 over the key-collision alphabet (#846) on the case-insensitive platforms, where the two paths are two files under one server key. */
+const p6Keys: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P6",
+  cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(keyCommands)),
+  check: async ([on, steps]) => {
+    const { world, quiet } = await play(on, steps, keyPaths);
+    return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())];
+  },
+};
 /** P6 with database restores (#576, #829): INV-9 holds after a restore too, since the push re-creates a document the restored server lost (design §4.6). */
 const p6Restores = overWorld("P6", async (world, quiet) => [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())], allCommands);
 
@@ -769,6 +798,16 @@ describe("engine properties (design §9.3)", () => {
       // A delete has nothing left to delete: the restored server gets no tombstone of a document it never had.
       if (outbox.some((command) => command.type === "user-delete")) expect(world.server.head("r-1"), label).toBeUndefined();
     }
+  });
+
+  // #846 (seeds 100163, 100198; INV-9, PO-4(a)): a remote edit of a document whose local rename collides under the
+  // server's key with another document's path, two files on disk. The merge result moves on to a copy name under its
+  // own id instead of waiting as `path-conflict` for good.
+  it("P6: a merge result at a local rename onto another document's path under the server's key converges", { timeout }, async () => {
+    // The counterexample before the fix: a.md is renamed onto STRASSE.md beside Straße.md, then edited elsewhere.
+    const renamed = scripted("windows", { type: "user-create", path: 0 }, { type: "user-create", path: 6 }, { type: "push" }, { type: "user-rename", file: 3, mode: "pool", target: 13 }, { type: "remote-edit", document: 3 }, { type: "push" });
+    expect(await p6Keys.check(renamed)).toEqual([]);
+    await holds(p6Keys, [renamed]);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {
