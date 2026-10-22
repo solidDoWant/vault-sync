@@ -174,10 +174,13 @@ export async function planPush(
     const at = binding.spelling;
     const moved = !live || at !== state.path;
     if (!moved && !isDirty(at)) continue;
+    // It waits for its own busy state or a busy path it claims (its file),
+    // never for its synced path: a rename leaves that path, so it is no
+    // claim on it, and a blocked document's file kept there must not hold
+    // it off the server's path for good (PO-11, INV-8, #847).
     if (
       busyDocuments.has(state.documentId) ||
-      busyPaths.has(at) ||
-      (live && busyPaths.has(state.path))
+      busyPaths.has(at)
     ) {
       wait(at, ...(live ? [state.path] : []));
       continue;

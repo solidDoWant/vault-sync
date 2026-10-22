@@ -455,6 +455,34 @@ const p6RefusedPaths: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object,
   },
 };
 /**
+ * The alphabet of #847's class (INV-8, INV-9, PO-11): a document whose newest
+ * revision this device cannot hold (a path Windows refuses) keeps its file at
+ * its old path, which the server then gives another document that a local
+ * rename moved away. Few paths and documents, so the deferral, the remote
+ * rename onto the kept file's path and the local rename away from it meet.
+ */
+const blockedHolderPaths: readonly string[] = ["a.md", "no:te.md", "b.md", "c.md"];
+const blockedHolder = fc.nat({ max: 3 });
+const blockedHolderCommands: fc.Arbitrary<WorldCommand>[] = [
+  blockedHolder.map((path) => ({ type: "user-create", path })),
+  blockedHolder.map((file) => ({ type: "user-edit", file })),
+  fc.tuple(blockedHolder, blockedHolder).map(([file, target]) => ({ type: "user-rename", file, mode: "pool", target })),
+  blockedHolder.map((path) => ({ type: "remote-create", path })),
+  blockedHolder.map((document) => ({ type: "remote-edit", document })),
+  fc.tuple(blockedHolder, blockedHolder).map(([document, path]) => ({ type: "remote-rename", document, path })),
+  fc.constant({ type: "pull" }),
+  fc.constant({ type: "push" }),
+];
+/** P6 over blockedHolderCommands on Windows rules (#847). */
+const p6BlockedHolder: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P6",
+  cases: fc.tuple(fc.constant<PathPlatform>("windows"), commands(blockedHolderCommands)),
+  check: async ([on, steps]) => {
+    const { world, quiet } = await play(on, steps, blockedHolderPaths);
+    return [...(quiet ? [] : ["no quiescence within the round bound"]), ...world.errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())];
+  },
+};
+/**
  * #757: P1, P2, P3, P5 and P6 over movedOntoIncomingCommands, with no
  * harness errors (P6 since #769, whose convergence check excuses the kept
  * file of a document deferred as an `F`-alias, §5.5 X-15).
@@ -797,6 +825,16 @@ describe("engine properties (design §9.3)", () => {
     const fixed = [scripted("macos", { type: "remote-create", path: 0 }, { type: "user-create", path: 1 }, { type: "pull" }, { type: "offline-push" }, { type: "user-delete", file: 0 })];
     for (const example of fixed) expect(await p6RefusedPaths.check(example)).toEqual([]);
     await holds(p6RefusedPaths, fixed);
+  });
+
+  // #847 (INV-8, INV-9, PO-11): a document's local rename away from its synced path is pushed while another document,
+  // whose newest revision is deferred as unmaterializable, still has its file at that path. Fixed case: fast-check's
+  // counterexample before the fix: a document moved to no:te.md keeps its edited file, and a local rename leaves the
+  // path the server then gives the document renamed.
+  it("P6: a local rename away from a path a blocked document's file holds converges", { timeout }, async () => {
+    const fixed = scripted("windows", { type: "remote-create", path: 3 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-create", path: 2 }, { type: "user-edit", file: 0 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-rename", document: 0, path: 3 }, { type: "pull" });
+    expect(await p6BlockedHolder.check(fixed)).toEqual([]);
+    await holds(p6BlockedHolder, [fixed]);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {
