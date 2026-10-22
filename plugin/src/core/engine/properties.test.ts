@@ -434,6 +434,27 @@ const p6Folders: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, Prop
   },
 };
 /**
+ * #843's class (INV-9, PO-4(b)): a file whose name is a folder's of another
+ * spelling (`NOTES` and `Notes/`), on a case-folding faithful filesystem, so
+ * an untracked file in the folder keeps a remote revision of the file off
+ * the disk (a `path-conflict` deferral), and a holder whose own revision
+ * waits so keeps another document's revision waiting too. A push whose
+ * commits never reach the server retries those revisions while the file is
+ * still in the way, before the user removes or moves it.
+ */
+const refusedPaths: readonly string[] = ["NOTES", "Notes/c.md", "notes/a.md", "h.md", "c.md"];
+const refusedPathCommands: fc.Arbitrary<WorldCommand>[] = [...folderCommands, fc.constant({ type: "offline-push" })];
+const p6RefusedPaths: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object, PropertyWorld>>]> = {
+  property: "P6",
+  cases: fc.tuple(fc.constantFrom<PathPlatform>("windows", "macos"), commands(refusedPathCommands)),
+  check: async ([on, steps]) => {
+    const { world, quiet } = await play(on, steps, refusedPaths);
+    // The offline push's own refusal is no error.
+    const errors = world.errors.filter((error) => errorCode(error) !== Code.Unavailable);
+    return [...(quiet ? [] : ["no quiescence within the round bound"]), ...errors.map((error) => `error: ${String(error)}`), ...(await world.convergence())];
+  },
+};
+/**
  * #757: P1, P2, P3, P5 and P6 over movedOntoIncomingCommands, with no
  * harness errors (P6 since #769, whose convergence check excuses the kept
  * file of a document deferred as an `F`-alias, §5.5 X-15).
@@ -769,6 +790,13 @@ describe("engine properties (design §9.3)", () => {
       // A delete has nothing left to delete: the restored server gets no tombstone of a document it never had.
       if (outbox.some((command) => command.type === "user-delete")) expect(world.server.head("r-1"), label).toBeUndefined();
     }
+  });
+
+  it("P6: a revision an untracked file in a folder of another spelling kept off the disk is applied once the file is gone", { timeout }, async () => {
+    // #843: NOTES waits for Notes/c.md, and the offline push spends its retry while the file is still there.
+    const fixed = [scripted("macos", { type: "remote-create", path: 0 }, { type: "user-create", path: 1 }, { type: "pull" }, { type: "offline-push" }, { type: "user-delete", file: 0 })];
+    for (const example of fixed) expect(await p6RefusedPaths.check(example)).toEqual([]);
+    await holds(p6RefusedPaths, fixed);
   });
 
   it("P6: a device whose folder has one spelling on disk converges without taking its own writes for the user's", { timeout }, async () => {

@@ -70,6 +70,18 @@ export class PathSpace {
     return slashA < 0 ? slashB < 0 : slashB >= 0 && this.filesystemKey(a.slice(0, slashA)) === this.filesystemKey(b.slice(0, slashB));
   }
 
+  /**
+   * Whether one of `a` and `b` is a folder of the other on this device: the
+   * folder relation (§3.2) under `F`, so a file where the other needs a
+   * folder, of any spelling the filesystem takes for that folder's name
+   * (`notes/c.md` and `NOTES` where case folds, #843).
+   */
+  nested(a: string, b: string): boolean {
+    const left = this.filesystemKey(a);
+    const right = this.filesystemKey(b);
+    return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+  }
+
   /** The folders `path` is in, outermost first: its proper "/"-separated prefixes. */
   ancestors(path: string): string[] {
     return ancestors(path);
