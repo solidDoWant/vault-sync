@@ -2315,32 +2315,58 @@ export class SyncEngine {
    * allow (the vault refused it although they did, or the vault moved to a
    * shorter folder). So are, once per engine, out-of-scope revisions now in
    * scope and too-large revisions the download cap now fits.
+   *
+   * A revision waits untried while an untracked file is in its way, as `F`
+   * decides (PathSpace): a file where its path needs a folder, or one in a
+   * folder at its path, of any spelling the platform takes for the same name
+   * (`notes/c.md` in the way of `NOTES` where case folds, #843). An exact
+   * comparison spent its one retry while such a file was still there, and
+   * the revision then waited for good (INV-9). A revision that applies may
+   * free the path another revision waits for (a holder whose own revision
+   * moves it off, rule W(b), PO-4(b)): the revisions still waiting are tried
+   * again, also those tried before, while a pass applies any.
    */
   private async retryRefusedPaths(again = false): Promise<void> {
+    // Each further pass follows one that applied a revision, which removed its
+    // deferral, so the passes are bounded by the deferrals there are.
+    let passes = (await this.journal.listDeferred()).length;
+    for (let later = false; passes > 0 && (await this.retryRefusedPass(again, later)); later = true) passes--;
+  }
+
+  /**
+   * One pass of retryRefusedPaths. A later pass (`later`), after one that
+   * applied a revision, tries every revision deferred for its path again,
+   * whether tried before or not. Returns whether any revision it tried was
+   * applied or merged.
+   */
+  private async retryRefusedPass(again: boolean, later: boolean): Promise<boolean> {
     const listed = await this.journal.listDeferred();
     const aliased = await this.aliasedPaths(listed);
-    const deferrals = listed.filter(
-      (deferred) =>
-        (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
-        (deferred.reason === "unmaterializable" && deferred.unmaterializable === "alias" && !aliased(deferred.revision)) ||
-        (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
-        (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)) ||
-        (deferred.reason === "too-large" && !this.retried.has(deferred.revision.revisionId) && !this.overCap(deferred.revision)),
+    const deferrals = listed.filter((deferred) =>
+      later
+        ? deferred.reason === "path-conflict"
+        : (deferred.reason === "path-conflict" && (again || !this.retried.has(deferred.revision.revisionId))) ||
+          (deferred.reason === "unmaterializable" && deferred.unmaterializable === "alias" && !aliased(deferred.revision)) ||
+          (deferred.reason === "unmaterializable" && !this.retried.has(deferred.revision.revisionId) && unmaterializableReason(deferred.revision.path, this.pathRules) === undefined) ||
+          (deferred.reason === "out-of-scope" && !this.retried.has(deferred.revision.revisionId) && this.inScope(deferred.revision.path)) ||
+          (deferred.reason === "too-large" && !this.retried.has(deferred.revision.revisionId) && !this.overCap(deferred.revision)),
     );
-    if (deferrals.length === 0) return;
+    if (deferrals.length === 0) return false;
     // Only an untracked file in the way keeps a revision waiting here: a
     // document's file is rule W's to move when the revision is applied.
     const bound = new Set((await this.journal.listDocuments()).flatMap((state) => (state.binding && hasBase(state) ? [state.binding.fileKey] : [])));
-    const files = new Set((await this.vault.list()).filter((file) => !bound.has(this.pathSpace.filesystemKey(file))));
-    const folders = new Set([...files].flatMap((file) => this.pathSpace.ancestors(file)));
+    const files = (await this.vault.list()).filter((file) => !bound.has(this.pathSpace.filesystemKey(file)));
+    let progress = false;
     for (const deferred of deferrals) {
       const { path } = deferred.revision;
-      if (!deferred.revision.deleted && (folders.has(path) || this.pathSpace.ancestors(path).some((ancestor) => files.has(ancestor)))) continue;
+      if (!deferred.revision.deleted && files.some((file) => this.pathSpace.nested(file, path))) continue;
       this.retried.add(deferred.revision.revisionId);
       const outcome = await this.applyRevision({ remote: deferred.revision, pathAllowed: true }, deferred.descendsFromBase === true);
       // Already superseded: a newer revision of the document was applied.
       if (outcome === "skipped") await this.journal.removeDeferred(deferred.revision.documentId);
+      if (outcome === "applied" || outcome === "merged") progress = true;
     }
+    return progress;
   }
 
   /**
