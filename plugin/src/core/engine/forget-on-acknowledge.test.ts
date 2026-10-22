@@ -10,7 +10,8 @@ import { files, harness, text, type Harness } from "./testing";
 // nothing else is left of it here. These pin when it must not: another
 // outbox operation still to send, or a tombstone. Each runs at both places
 // an acknowledgement happens: the commit's response, and a pull that finds
-// the commit whose response was lost.
+// the commit whose response was lost. A deferral of the document does not
+// keep it: the only one that can exist then is stale (design §4.6).
 
 const encoder = new TextEncoder();
 
@@ -149,6 +150,58 @@ describe("acknowledging an operation of a released document", () => {
       const live = [...h.server.liveDocuments()];
       expect(live.map(([path]) => path)).toEqual(["a.md"]);
       expect(live[0]?.[1]).not.toBe("a");
+    },
+  );
+
+  // An injected state: no engine path records an operation on a revision it
+  // deferred (operations are on the journal's base), and every other way to a
+  // deferral at an acknowledgement is closed (design §4.6). It is the one
+  // state in which a deferral meets an acknowledgement: a stale one, at or
+  // before the acknowledged revision.
+  it.each(sites)(
+    "forgets the document past a stale deferral, so the acknowledged rename is materialized and nothing is left deferred (%s)",
+    async (site) => {
+      const h = harness({ merge: "default" });
+      h.server.commit({ documentId: "a", path: "a.md", content: "a1\n" }); // 1
+      await h.engine.pull();
+      const invalid = h.server.commitRawPath(
+        "a",
+        new Uint8Array([0x61, 0xff, 0x2e, 0x6d, 0x64]),
+        "a1\n",
+      ); // 2
+      await h.engine.pull();
+      await h.engine.settled();
+      expect(
+        (await h.journal.listDeferred()).map((deferred) => [
+          deferred.revision.revisionId,
+          deferred.reason,
+        ]),
+      ).toEqual([[invalid.id, "invalid-path"]]);
+      const state = await h.journal.getDocument("a");
+      if (state === undefined) throw new Error("a is not in the journal");
+      h.engine.dispose();
+      await h.vault.delete("a.md");
+      await h.journal.putDocument({
+        ...state,
+        binding: null,
+        absence: "released",
+      });
+      await h.journal.addPending(
+        operation(state, "rename-a", invalid.id, "b.md"),
+      );
+      h.restart();
+
+      await acknowledge(h, site);
+
+      expect(await h.journal.listPending()).toEqual([]);
+      expect(text(h.server.head("a")?.path ?? null)).toBe("b.md");
+      expect(await files(h.vault)).toEqual(new Map([["b.md", "a1\n"]]));
+      expect(await h.journal.getDocument("a")).toMatchObject({
+        revisionId: "rename-a",
+        binding: { spelling: "b.md" },
+        absence: null,
+      });
+      expect(await h.journal.listDeferred()).toEqual([]);
     },
   );
 });

@@ -2116,23 +2116,26 @@ export class SyncEngine {
 
   /**
    * The acknowledgement of `revisionId`, a live revision of a `released`
-   * document with no other operation and no deferral, forgets the document
-   * and removes the operation in one transaction; returns whether it did
-   * (design §4.6, PO-12, INV-9, #800). The device holds no file of it and
+   * document with no other operation, forgets the document and removes the
+   * operation in one transaction; returns whether it did
+   * (design §4.6, PO-12, INV-9, #800, #810). The device holds no file of it and
    * nothing would re-derive one: a release normally comes with a deferral
    * (PO-11) and never with an outbox, but `Bindings.unbindOthers` releases a
    * document without dropping its outbox (the documents a v2 journal's
    * migration bound to one file), and a restore drops a lost deferral while
    * the outbox keeps the document. The revision itself is then decided like
    * a new document's head: materialized at its path, or deferred if it
-   * cannot be. A tombstone is acknowledged as before: nothing is held.
+   * cannot be. A tombstone is acknowledged as before: nothing is held. A
+   * deferral here can only be stale (at or before `revisionId`: a newer one
+   * would have kept the commit from being sent or accepted). The cursor stays
+   * before `revisionId`, so the pull re-decides the head, and that apply
+   * step removes the stale deferral.
    */
   private async forgetOnAcknowledge(documentId: string, revisionId: string, deleted: boolean): Promise<boolean> {
     if (deleted) return false;
     const state = await this.journal.getDocument(documentId);
     if (state === undefined || !released(state)) return false;
     if ((await this.journal.listPending()).some((operation) => operation.documentId === documentId && operation.revisionId !== revisionId)) return false;
-    if ((await this.journal.getDeferred(documentId)) !== undefined) return false;
     await this.bindings.transact(() => Promise.resolve({ removePending: [revisionId], removeDocuments: [documentId] }));
     return true;
   }
