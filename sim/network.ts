@@ -149,6 +149,13 @@ export class SimNetwork {
   private readonly appliedRevisions = new Map<string, AppliedCommit>();
   /** The seq of each document's latest commit the server applied, by document id: whether a retry comes after its head moved. */
   private readonly documentSeqs = new Map<string, bigint>();
+  /**
+   * Revision ids retention purged (SimRun.purge records each one it purged
+   * that was not its document's head). The server has no record of such a
+   * revision, so a retry of it is a new commit (SPEC.md §6.2, §11; X-22 in
+   * docs/design/engine-path-ownership.md §5.5).
+   */
+  private readonly purgedRevisions = new Set<string>();
   /** Revision ids of every CommitRevision request sent so far (for the retry backoff). */
   private readonly sentRevisions = new Set<string>();
   /** The clients' timers (SimNetwork.timers), on a clock that follows `now` and that draining moves on. */
@@ -161,6 +168,11 @@ export class SimNetwork {
   readonly timerDelays: { client: number; ms: number }[] = [];
 
   constructor(private readonly options: NetworkOptions) {}
+
+  /** Records that retention purged `revisionId` (SimRun.purge): a retry delivered from now on may be refused as a new commit (#845). */
+  recordPurged(revisionId: string): void {
+    this.purgedRevisions.add(revisionId);
+  }
 
   /** A Transport for `client` that routes every unary call through this network. */
   transport(client: number, inner: Transport): Transport {
@@ -465,13 +477,15 @@ export class SimNetwork {
   private async send(message: Message): Promise<string> {
     this.activity++;
     const marker = this.retriedAfterHeadMoved(message) ? ` ${retryAfterHeadMovedMarker}` : "";
+    // Whether retention purged the revision before this delivery: the server's answer reflects only purges made before it.
+    const purgedBefore = message.revisionId !== undefined && this.purgedRevisions.has(message.revisionId);
     message.outcome = await message.send().then(
       (value): Outcome => ({ ok: true, value }),
       (error: unknown): Outcome => ({ ok: false, error }),
     );
     message.phase = "response";
     this.options.observeOutcome?.(message.method, message.outcome, message.client);
-    this.checkRetry(message, message.outcome);
+    this.checkRetry(message, message.outcome, purgedBefore);
     return `${this.label(message)} -> ${this.options.describeOutcome(message.method, message.outcome)}${marker}`;
   }
 
@@ -489,8 +503,15 @@ export class SimNetwork {
    * retry with the same revision id was refused as stale or as a path
    * collision. The client would then rebase or move the change and commit it
    * again as a second revision.
+   *
+   * One refusal is correct (#845; X-22 in docs/design/engine-path-ownership.md
+   * §5.5, PO-12): retention purged the revision before the retry was
+   * delivered (`purgedBefore`) and the document's head had moved past it. The
+   * server no longer has the revision, so it judges the retry as a new
+   * commit against the head and refuses it with FAILED_PRECONDITION
+   * (SPEC.md §6.2, §11). Any other code is still a violation.
    */
-  private checkRetry(message: Message, outcome: Outcome): void {
+  private checkRetry(message: Message, outcome: Outcome, purgedBefore: boolean): void {
     if (message.method !== "CommitRevision" || message.revisionId === undefined) return;
     if (outcome.ok) {
       // A reply without a revision is the client's protocol violation to report; it still counts as applied.
@@ -500,12 +521,14 @@ export class SimNetwork {
       return;
     }
     const code = errorCode(outcome.error);
-    if (refusedRetryCodes.includes(code) && this.appliedRevisions.has(message.revisionId)) {
-      this.options.violation(
-        "protocol",
-        `${this.label(message)} was refused with ${Code[code]}, although the server already applied this revision id (a retry must get the revision back)`,
-      );
-    }
+    const firstAttempt = this.appliedRevisions.get(message.revisionId);
+    if (firstAttempt === undefined || !refusedRetryCodes.includes(code)) return;
+    const headMovedPast = (this.documentSeqs.get(firstAttempt.documentId) ?? 0n) > firstAttempt.seq;
+    if (purgedBefore && code === Code.FailedPrecondition && headMovedPast) return;
+    this.options.violation(
+      "protocol",
+      `${this.label(message)} was refused with ${Code[code]}, although the server already applied this revision id (a retry must get the revision back)`,
+    );
   }
 
   /** A request from `client` must neither ignore a RESOURCE_EXHAUSTED it was told nor go out during the backoff that followed (#146). */
