@@ -317,7 +317,9 @@ export class SyncEngine {
    * (`path-conflict`) because rule W would detach a holder on knowledge the
    * pull has so far. W(b) detaches only once the feed is drained, on the
    * holder's newest server claim the pull has then (retryPostponed; design
-   * §4.5, PO-4, #803).
+   * §4.5, PO-4, #803). Their deferrals are marked `postponed` in the same
+   * write, so a crash before the end of the pull leaves the retry to the end
+   * of the next one (#884).
    */
   private postponed: Set<string> | undefined;
   /** The displace and detach intents of rule W (design §4.4). */
@@ -665,15 +667,14 @@ export class SyncEngine {
   private async pullRound(): Promise<PullSummary> {
     // Rule W's moves a crash interrupted are finished first (design §4.4).
     await this.intents.recover();
-    const postponed = new Set<string>();
-    this.postponed = postponed;
+    this.postponed = new Set<string>();
     let summary: PullSummary;
     try {
       summary = await this.drainFeed();
     } finally {
       this.postponed = undefined;
     }
-    await this.retryPostponed(postponed);
+    await this.retryPostponed();
     return summary;
   }
 
@@ -682,8 +683,11 @@ export class SyncEngine {
    * for a holder's detach while the feed was drained are decided again, now
    * on each holder's newest server claim the pull has. A holder a later
    * page moved off the path has followed that revision; one still blocked
-   * is detached now. A crash before this leaves an ordinary `path-conflict`
-   * deferral, which the push retries (retryRefusedPaths).
+   * is detached now. Every deferral marked `postponed`, not only this
+   * pull's: a crash between the postponing write and here, which moved the
+   * cursor past the revision, leaves the decision to the end of the next
+   * pull, as in a run without the crash, never to whatever local change
+   * comes before the next push (#884, INV-7).
    *
    * So is every `alias` deferral whose alias the pull's revisions removed
    * (decision #52; #870, INV-7): a holder a later page moved or deleted no
@@ -692,10 +696,11 @@ export class SyncEngine {
    * not only this pull's, so a crash between the deferral and here, which
    * moved the cursor past it, changes nothing.
    */
-  private async retryPostponed(postponed: ReadonlySet<string>): Promise<void> {
-    for (const documentId of postponed) {
-      const deferred = await this.journal.getDeferred(documentId);
-      if (deferred?.reason !== "path-conflict") continue;
+  private async retryPostponed(): Promise<void> {
+    for (const { revision } of (await this.journal.listDeferred()).filter((deferred) => deferred.postponed === true)) {
+      // An earlier retry here may have applied or superseded it.
+      const deferred = await this.journal.getDeferred(revision.documentId);
+      if (deferred?.postponed !== true || deferred.reason !== "path-conflict") continue;
       await this.retryDeferred(deferred);
     }
     const listed = await this.journal.listDeferred();
@@ -1805,7 +1810,9 @@ export class SyncEngine {
   }
 
   private async defer(remote: RemoteRevision, reason: DeferReason, descends: boolean): Promise<"deferred"> {
-    await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends) }], ...this.feedCursor(remote.revisionId) }));
+    // A deferral W(b) postponed is marked in the write that moves the cursor past it (#884).
+    const postponed = reason === "path-conflict" && this.postponed?.has(remote.documentId) === true ? { postponed: true as const } : {};
+    await this.bindings.transact(() => Promise.resolve({ putDeferred: [{ revision: remote, reason, ...descent(descends), ...postponed }], ...this.feedCursor(remote.revisionId) }));
     return "deferred";
   }
 

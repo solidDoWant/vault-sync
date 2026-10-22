@@ -157,3 +157,46 @@ describe("a crash while a document follows its newer revision on the feed page",
     }
   });
 });
+
+// #884 (PO-4(b), INV-7): W(b)'s postponement of a holder's detach (#803) is
+// durable. A crash at any journal write of the pull, including the one that
+// defers the revision claiming the holder's path and moves the cursor past
+// it, still has the end of a pull detach the holder before the next push, as
+// in the run without the crash: a user change made in between lands on the
+// same file in both runs. The class: a crash at each write, then each kind of
+// user change on each file before the next push.
+describe("a crash while W(b) postpones a holder's detach", () => {
+  // The paths of the property suite's ghost alphabet: path 1 is `no:te.md`, which Windows cannot hold.
+  const paths = ["a.md", "no:te.md", "ı.md", "I.md", "b.md"];
+  const prefix: WorldCommand[] = [
+    { type: "user-create", path: 0 }, // D at a.md
+    { type: "push" },
+    { type: "remote-rename", document: 0, path: 1 }, // D -> no:te.md
+    { type: "edit-during-pull", file: 0 }, // D's unsynced edit
+    { type: "remote-create", path: 0 }, // E takes a.md: its revision waits for D's detach (postponed)
+    { type: "pull" },
+  ];
+  const changes: [string, (file: number) => WorldCommand[]][] = [
+    ["an edit during the next pull", (file) => [{ type: "edit-during-pull", file }]],
+    ["an edit before the next push", (file) => [{ type: "user-edit", file }, { type: "push" }]],
+    ["a delete before the next push", (file) => [{ type: "user-delete", file }, { type: "push" }]],
+  ];
+  for (const [name, change] of changes) {
+    it(`reaches the state the run without the crash reaches, with ${name}`, async () => {
+      for (let file = 0; file < 3; file++) {
+        const commands = [...prefix, ...change(file)];
+        const baseline = new PropertyWorld("windows", paths);
+        for (const command of commands) await baseline.apply(command);
+        await baseline.quiesce();
+        const without = await baseline.outcome();
+        for (let write = 1; write <= 12; write++) {
+          const crashed = new PropertyWorld("windows", paths);
+          crashed.armCrash(write);
+          for (const command of commands) await crashed.apply(command);
+          await crashed.quiesce();
+          expect(await crashed.outcome(), `file ${String(file)}, crash at write ${String(write)}`).toBe(without);
+        }
+      }
+    });
+  }
+});
