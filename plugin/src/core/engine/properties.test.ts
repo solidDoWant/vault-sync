@@ -480,6 +480,8 @@ const p6RefusedPaths: Definition<[PathPlatform, Iterable<fc.AsyncCommand<object,
  * its old path, which the server then gives another document that a local
  * rename moved away. Few paths and documents, so the deferral, the remote
  * rename onto the kept file's path and the local rename away from it meet.
+ * With user deletes (#862): a delete leaves its synced path as a rename does,
+ * so the blocked document's file the user moved there never holds it.
  */
 const blockedHolderPaths: readonly string[] = ["a.md", "no:te.md", "b.md", "c.md"];
 const blockedHolder = fc.nat({ max: 3 });
@@ -487,6 +489,7 @@ const blockedHolderCommands: fc.Arbitrary<WorldCommand>[] = [
   blockedHolder.map((path) => ({ type: "user-create", path })),
   blockedHolder.map((file) => ({ type: "user-edit", file })),
   fc.tuple(blockedHolder, blockedHolder).map(([file, target]) => ({ type: "user-rename", file, mode: "pool", target })),
+  blockedHolder.map((file) => ({ type: "user-delete", file })),
   blockedHolder.map((path) => ({ type: "remote-create", path })),
   blockedHolder.map((document) => ({ type: "remote-edit", document })),
   fc.tuple(blockedHolder, blockedHolder).map(([document, path]) => ({ type: "remote-rename", document, path })),
@@ -965,6 +968,15 @@ describe("engine properties (design §9.3)", () => {
   // path the server then gives the document renamed.
   it("P6: a local rename away from a path a blocked document's file holds converges", { timeout }, async () => {
     const fixed = scripted("windows", { type: "remote-create", path: 3 }, { type: "pull" }, { type: "remote-rename", document: 0, path: 1 }, { type: "remote-create", path: 2 }, { type: "user-edit", file: 0 }, { type: "pull" }, { type: "user-rename", file: 0, mode: "pool", target: 0 }, { type: "remote-rename", document: 0, path: 3 }, { type: "pull" });
+    expect(await p6BlockedHolder.check(fixed)).toEqual([]);
+    await holds(p6BlockedHolder, [fixed]);
+  });
+
+  // #862 (INV-8, PO-11): the delete counterpart of #847. The user deletes b.md and moves a.md's file onto it, while
+  // another device moves a.md's document to no:te.md, which this device cannot hold: that document keeps its file at
+  // b.md, and the delete of b.md's document, which leaves the path, must still reach the server.
+  it("P6: a local delete of a path a blocked document's file holds converges", { timeout }, async () => {
+    const fixed = scripted("windows", { type: "remote-create", path: 0 }, { type: "remote-create", path: 2 }, { type: "pull" }, { type: "user-delete", file: 1 }, { type: "user-rename", file: 0, mode: "pool", target: 2 }, { type: "remote-rename", document: 0, path: 1 }, { type: "pull" });
     expect(await p6BlockedHolder.check(fixed)).toEqual([]);
     await holds(p6BlockedHolder, [fixed]);
   });
