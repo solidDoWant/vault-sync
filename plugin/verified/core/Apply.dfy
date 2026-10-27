@@ -121,7 +121,10 @@ abstract module ApplyCore refines PushCore {
   // G6: a side that left the content as it was takes the other's; two
   // changed notes are merged when the merge combines them; otherwise the
   // remote stays in place and the content read here is saved next to it as
-  // an untracked copy, at the name the path-conflict function picks.
+  // an untracked copy, at the name the path-conflict function picks. A file
+  // that reads as the base but not as `seen` (changed back before its event
+  // arrived) is also saved as a copy before the remote is written over it:
+  // G2 lets the round overwrite only content it keeps.
   function Settle(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, rev: RevId): Applied
     requires document.binding.Some? && document.base.Some?
   {
@@ -132,7 +135,7 @@ abstract module ApplyCore refines PushCore {
       Applied(Settled(document, r, r.content, rev), [Write(Some(doc), spelling, r.content, r.kind, Some(l))])
     else if r.content == b then
       Applied(Settled(document, r, l, rev), [])
-    else if read.1 == Note && r.kind == Note && Merge(b, l, r.content).Some? then
+    else if l != b && read.1 == Note && r.kind == Note && Merge(b, l, r.content).Some? then
       var m := Merge(b, l, r.content).value;
       Applied(Settled(document, r, m, rev), [Write(Some(doc), spelling, m, Note, Some(l))])
     else
@@ -625,7 +628,7 @@ abstract module ApplyCore refines PushCore {
       return;
     } else if r.content == b {
       return;
-    } else if l.1 == Note && r.kind == Note && Merge(b, l.0, r.content).Some? {
+    } else if l.0 != b && l.1 == Note && r.kind == Note && Merge(b, l.0, r.content).Some? {
       var m := Merge(b, l.0, r.content).value;
       assert applied.document == Settled(document, r, m, rev);
       assert LocalChange(device, doc) by {
@@ -666,6 +669,112 @@ abstract module ApplyCore refines PushCore {
         }
       }
       assert ReadKept(step, doc, l.0);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G6 on the step that requests the apply's effects
+  // ---------------------------------------------------------------------
+
+  // Every concurrent change the apply settles satisfies G6_Settle: the
+  // apply settles only a live remote edit against a bound file whose
+  // contents it read (a remote delete, a user's delete and a commit in
+  // flight wait), and keeps the side that changed, the merge, or the remote
+  // with the local version saved next to it.
+  lemma AppliedG6(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, rev)
+    ensures forall d, doc', remote :: SettlesConcurrent(step, d, doc', remote) ==> G6_Settle(step, d, doc', remote)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var platform := device.platform;
+    var document := device.journal.documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var after := step.post.devices[d];
+    assert input.listing == ListingOf(device);
+    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    forall d', doc', remote | SettlesConcurrent(step, d', doc', remote)
+      ensures G6_Settle(step, d', doc', remote)
+    {
+      if d' != d || doc' != doc {
+        assert step.post.devices[d'].journal.documents[doc'] == step.pre.devices[d'].journal.documents[doc'];
+        assert false;
+      }
+      assert applied.document.base == Some(BaseOf(r));
+      assert remote == r;
+      SettledByApply(step, doc, r, input, bound, rev);
+    }
+  }
+
+  lemma SettledByApply(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, rev)
+    requires SettlesConcurrent(step, step.event.device, doc, r)
+    ensures G6_Settle(step, step.event.device, doc, r)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var platform := device.platform;
+    var document := device.journal.documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var after := step.post.devices[d];
+    assert input.listing == ListingOf(device);
+    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    assert Newer(document, r);
+    if document.binding.None? {
+      assert !LocalChange(device, doc);
+      return;
+    }
+    var spelling := document.binding.value.spelling;
+    var read := ListedRead(platform, input.listing, spelling);
+    ListedReadOnDisk(device, spelling);
+    assert !UnsavedAt(platform, input.unsaved, spelling);
+    if !Concurrent(document, read, r) {
+      assert Clean(platform, document, read);
+      var q :| Holds(platform, device.disk, q, spelling, read.value.0);
+      FileAtIs(device, spelling, q);
+      assert BoundFile(device, doc) == Some(device.disk[q]);
+      assert !LocalChange(device, doc);
+      return;
+    }
+    var l := read.value;
+    var q :| Holds(platform, device.disk, q, spelling, l.0);
+    FileAtIs(device, spelling, q);
+    assert BoundFile(device, doc) == Some(device.disk[q]);
+    assert device.disk[q].content == l.0 && device.disk[q].kind == l.1 by {
+      var x := ListedAt(platform, input.listing, spelling);
+      if x != q { SameFIsEquivalence(platform, x, spelling, q); SameFIsEquivalence(platform, q, spelling, q); assert CollideF(platform, x, q); }
+    }
+    var b := document.base.value.content;
+    var settledContent := applied.document.binding.value.seen;
+    assert Outgoing(after, doc) == Some(settledContent) by {
+      if applied.document.outbox.None? {
+        if applied.effects == [] {
+          assert after.disk == device.disk;
+          FileAtIs(after, spelling, q);
+          assert BoundFile(after, doc) == Some(after.disk[q]);
+        } else {
+          var p :| Holds(platform, after.disk, p, spelling, settledContent);
+          FileAtIs(after, spelling, p);
+          assert BoundFile(after, doc) == Some(after.disk[p]);
+        }
+      }
+    }
+    if !(l.0 == b && l.0 == document.binding.value.seen) && r.content != b
+       && !(l.0 != b && l.1 == Note && r.kind == Note && Merge(b, l.0, r.content).Some?) {
+      var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, spelling, spelling);
+      var w1 := Write(None, copy, l.0, l.1, None);
+      assert w1 in applied.effects;
+      assert !Tracked(after, copy) by {
+        forall other | BoundTo(after, other, copy) ensures false {
+          if other == doc {
+            assert spelling in bound;
+          } else {
+            assert after.journal.documents[other] == device.journal.documents[other];
+            assert device.journal.documents[other].binding.value.spelling in bound;
+          }
+        }
+      }
+      assert SavedNextToIt(after, l.0);
     }
   }
 
