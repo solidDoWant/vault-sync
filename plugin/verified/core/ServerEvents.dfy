@@ -457,4 +457,116 @@ abstract module ServerEvents refines StepContracts {
     assert MirrorAtCursor(post);
     assert G1_OnlyRetentionRemoves(step);
   }
+
+  // ---------------------------------------------------------------------
+  // A restore from history
+  // ---------------------------------------------------------------------
+
+  // Every feed entry is an accepted id (Appended adds to both, a restore
+  // cuts the feed and keeps `accepted`). Not a clause of CoreReachable:
+  // reported as a design gap on #950; until it is settled the proof takes it
+  // as an explicit hypothesis.
+  ghost predicate FeedAccepted(server: Server) {
+    forall i :: 0 <= i < |server.feed| ==> server.feed[i] in server.accepted
+  }
+
+  lemma KeepAppendOut(s: seq<RevId>, x: RevId, ids: set<RevId>)
+    requires x !in ids
+    ensures Keep(s + [x], ids) == Keep(s, ids)
+  {
+    if |s| == 0 {
+      assert [x][1..] == [];
+    } else {
+      assert (s + [x])[1..] == s[1..] + [x];
+      KeepAppendOut(s[1..], x, ids);
+    }
+  }
+
+  lemma KeepAll(s: seq<RevId>, ids: set<RevId>)
+    requires forall e :: e in s ==> e in ids
+    ensures Keep(s, ids) == s
+  {
+    if |s| > 0 {
+      KeepAll(s[1..], ids);
+      assert s == [s[0]] + s[1..];
+    }
+  }
+
+  // The appended id is named by no journal, so no device's divergence
+  // changes.
+  lemma AppendSameDivergence(step: Step, d: DeviceId)
+    requires ServerEventStep(step) && step.event.RestoreFromHistory?
+    requires CoreReachable(step.pre) && d in step.pre.devices
+    ensures Diverged(step.post, d) == Diverged(step.pre, d)
+  {
+    var r := step.event.revision;
+    var journal := step.pre.devices[d].journal;
+    var pre := step.pre.server;
+    var post := step.post.server;
+    assert r.id !in pre.accepted;
+    assert JournalOnServer(post, journal) == JournalOnServer(pre, journal) by {
+      forall doc | doc in journal.documents
+        ensures (journal.documents[doc].base.Some? ==> journal.documents[doc].base.value.rev in post.revisions)
+             == (journal.documents[doc].base.Some? ==> journal.documents[doc].base.value.rev in pre.revisions)
+        ensures (journal.documents[doc].ahead.Some? ==> journal.documents[doc].ahead.value.revision.id in post.revisions)
+             == (journal.documents[doc].ahead.Some? ==> journal.documents[doc].ahead.value.revision.id in pre.revisions)
+      {
+      }
+    }
+    if journal.cursor == |post.feed| {
+      assert post.feed[journal.cursor - 1] == r.id;
+    } else if 0 < journal.cursor <= |pre.feed| {
+      assert post.feed[journal.cursor - 1] == pre.feed[journal.cursor - 1];
+    }
+  }
+
+  // A cut of the appended server short of the new entry is a cut of the
+  // server before; the cut at the whole feed has the appended server's heads.
+  lemma AppendCuts(step: Step, cut: Server)
+    requires ServerEventStep(step) && step.event.RestoreFromHistory?
+    requires CoreReachable(step.pre) && FeedAccepted(step.pre.server)
+    requires EarlierServer(step.post.server, cut)
+    ensures |cut.feed| <= |step.pre.server.feed| ==> EarlierServer(step.pre.server, cut)
+    ensures |cut.feed| > |step.pre.server.feed| ==> forall x :: Head(cut, x) == Head(step.post.server, x)
+  {
+    var pre := step.pre.server;
+    var post := step.post.server;
+    var r := step.event.revision;
+    var doc := step.event.doc;
+    var kept := FeedIds(cut.feed);
+    if |cut.feed| <= |pre.feed| {
+      assert cut.feed == pre.feed[..|cut.feed|];
+      assert r.id !in kept;
+      assert cut.revisions == (map id | id in pre.revisions && id in kept :: pre.revisions[id]);
+      var h := if doc in pre.history then pre.history[doc] else [];
+      KeepAppendOut(h, r.id, kept);
+      assert Keep([], kept) == [];
+      assert cut.history == (map x | x in pre.history && |Keep(pre.history[x], kept)| > 0 :: Keep(pre.history[x], kept));
+    } else {
+      assert cut.feed == post.feed;
+      forall x | x in post.history ensures Keep(post.history[x], kept) == post.history[x] {
+        forall e | e in post.history[x] ensures e in kept {
+          if e != r.id {
+            assert e in pre.revisions;
+            var dx := pre.revisions[e].doc;
+            assert x in pre.history && e in pre.history[x];
+            var j :| 0 <= j < |pre.history[x]| && pre.history[x][j] == e;
+            assert e in pre.feed;
+            var i :| 0 <= i < |pre.feed| && pre.feed[i] == e;
+            assert post.feed[i] == e;
+          } else {
+            assert post.feed[|pre.feed|] == r.id;
+          }
+        }
+        KeepAll(post.history[x], kept);
+      }
+      forall x ensures Head(cut, x) == Head(post, x) {
+        if x in post.history && |post.history[x]| > 0 {
+          var last := post.history[x][|post.history[x]| - 1];
+          assert x in cut.history && cut.history[x] == post.history[x];
+          assert last in post.revisions ==> last in kept;
+        }
+      }
+    }
+  }
 }
