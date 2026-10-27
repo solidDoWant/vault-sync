@@ -248,6 +248,11 @@ class Snapshot:
 
 
 VERDICT_RE = re.compile(r"verdict\s*:?\**\s*:?\s*(.*)", re.I)
+VERDICT_KEYWORDS = (
+    ("changes", re.compile(r"request(ed)? changes|changes requested|rebase needed|\bblocking finding")),
+    ("reject", re.compile(r"\breject")),
+    ("merge", re.compile(r"\bmerge|approve|\bno blocking")),
+)
 
 
 def parse_verdict(body: str) -> tuple[str | None, str]:
@@ -259,15 +264,11 @@ def parse_verdict(body: str) -> tuple[str | None, str]:
             continue
         text = m.group(1).lower()
         headline = line.strip()[:200]
-        if re.search(r"request(ed)? changes|changes requested|rebase needed|\bblocking finding", text) and not re.search(
-            r"\bno blocking", text
-        ):
-            return "changes", headline
-        if re.search(r"\breject", text):
-            return "reject", headline
-        if re.search(r"\bmerge|approve|no blocking", text):
-            return "merge", headline
-        return None, headline
+        # The verdict keyword that appears first decides: "request changes (...
+        # found no blocking defects)" is a change request, "merge (no blocking
+        # findings)" a merge (#1059).
+        found = [(hit.start(), verdict) for verdict, pattern in VERDICT_KEYWORDS if (hit := pattern.search(text))]
+        return (min(found)[1] if found else None), headline
     return None, ""
 
 
