@@ -315,12 +315,32 @@ abstract module ApplyCore refines StepContracts {
             [Report(Some(doc), path, "conflict: no copy name fits")])
   }
 
+  // A pulled revision whose id is the document's outbox's, sealed or not (a
+  // reopened outbox keeps its id, §3.5), is that outbox's acknowledgement:
+  // the server accepted it, and its answer was lost or came back
+  // "unavailable" (verified-core.md §4.1).
+  predicate Acknowledges(document: Document, r: Revision) {
+    document.outbox.Some? && document.outbox.value.rev == r.id
+  }
+
+  // Who made a revision the round pulls: the device itself exactly when it
+  // is its outbox's acknowledgement, another device otherwise (every other
+  // revision of the device's own it already acknowledged, so it is not
+  // newer).
+  predicate PulledBy(document: Document, r: Revision, d: DeviceId) {
+    if Acknowledges(document, r) then r.device == d else r.device != d
+  }
+
   // One pulled revision `r` of document `doc`, whose row is `document`,
   // against the round's input.
   function ApplyRevision(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId): Applied
     requires ListingDistinct(platform, input.listing)
   {
     if !Newer(document, r) then Applied(document, [])
+    else if Acknowledges(document, r) then
+      // The outbox's own revision (verified-core.md §4.1): its
+      // acknowledgement, taken as §3.5's "accepted". Nothing on disk changes.
+      Applied(Accept(document, r, rev), [])
     else if document.binding.Some? then
       var spelling := document.binding.value.spelling;
       var read := ListedRead(platform, input.listing, spelling);
@@ -397,7 +417,7 @@ abstract module ApplyCore refines StepContracts {
   lemma NoNameNoCopy(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
-      (document.binding.Some? && Newer(document, r)
+      (document.binding.Some? && Newer(document, r) && !Acknowledges(document, r)
        && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
        && var spelling := document.binding.value.spelling;
        var read := ListedRead(platform, input.listing, spelling);
@@ -830,8 +850,9 @@ abstract module ApplyCore refines StepContracts {
                                              disk := disk')])
   }
 
-  // A round step of device d whose effects are the apply of revision r,
-  // another device's revision the server accepted, to document doc, with
+  // A round step of device d whose effects are the apply of revision r, a
+  // revision the server accepted from another device or, as its outbox's
+  // acknowledgement, from d itself (`PulledBy`), to document doc, with
   // the round's input read from the step's state before (RoundInputOf) on a
   // disk with one file per name, `bound` every name a document is bound to,
   // and the step's state after as the effects leave it. The claims only
@@ -848,7 +869,7 @@ abstract module ApplyCore refines StepContracts {
     && (forall other :: other in device.journal.documents && device.journal.documents[other].binding.Some? ==>
           device.journal.documents[other].binding.value.spelling in bound)
     && r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
-    && r.doc == doc && r.device != d
+    && r.doc == doc && PulledBy(device.journal.documents[doc], r, d)
     && var applied := ApplyRevision(device.platform, doc, device.journal.documents[doc], r, input, bound, claims, rev);
     step.effects == applied.effects && d in step.post.devices
     && EffectsTake(device.platform, device.disk, applied.effects, step.post.devices[d].disk)
@@ -907,7 +928,8 @@ abstract module ApplyCore refines StepContracts {
     UnsavedSeen(device, input.unsaved, spelling);
     assert BoundTo(device, doc, spelling);
     var read := ListedRead(platform, input.listing, spelling);
-    if !(Newer(document, r) && !UnsavedAt(platform, input.unsaved, spelling) && Concurrent(document, read, r)) {
+    if !(Newer(document, r) && !Acknowledges(document, r) && !UnsavedAt(platform, input.unsaved, spelling)
+         && Concurrent(document, read, r)) {
       return;
     }
     ListedReadOnDisk(device, spelling);
@@ -1258,12 +1280,29 @@ abstract module ApplyCore refines StepContracts {
     requires RowInv(document)
     ensures RowInv(ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document)
   {
-    if Newer(document, r) && document.binding.Some? {
+    if Newer(document, r) && Acknowledges(document, r) {
+      AcceptRow(document, r, rev);
+    } else if Newer(document, r) && document.binding.Some? {
       var read := ListedRead(platform, input.listing, document.binding.value.spelling);
       if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && Concurrent(document, read, r) {
         SettleKeepsRowInv(platform, doc, document, read.value, r, input, bound, claims, rev);
       }
     }
+  }
+
+  // The outbox's own revision is its acknowledgement (verified-core.md §4.1,
+  // ApplySettlesContract): a newer pulled revision whose id is the outbox's,
+  // sealed or not and whatever the listing reads, becomes the base, nothing
+  // waits, and nothing on disk changes. The row is §3.5's accept of it
+  // (AcceptKeepsLaterChange: a change made after the commit was sealed is
+  // sent on top of it), so it keeps RowInv (AppliedKeepsRowInv).
+  lemma AcknowledgementSettles(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(document, r) && Acknowledges(document, r)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      applied.document == Accept(document, r, rev) && applied.effects == []
+      && applied.document.base == Some(BaseOf(r)) && applied.document.ahead.None?
+  {
   }
 
   lemma SettleKeepsRowInv(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)

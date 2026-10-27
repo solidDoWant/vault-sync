@@ -740,6 +740,19 @@ abstract module PathRuleCore refines ApplyCore {
     }
   }
 
+  // The rule is the pull apply on the outbox's own revision: its
+  // acknowledgement leaves nothing waiting for a name, so the rule's row is
+  // the accept of it and it requests no effect (ApplySettlesContract).
+  lemma RuleAcknowledges(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(documents[doc], r) && Acknowledges(documents[doc], r)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+      ruled.documents == documents[doc := Accept(documents[doc], r, revs[doc])] && ruled.effects == []
+  {
+    AcknowledgementSettles(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+  }
+
   // Where the apply leaves nothing waiting for a name, the rule's step is the
   // pull apply's step (§3.9's `ApplyStep`, with every binding's name and
   // every row's claims), so the apply's guarantees hold for it: G2's step
@@ -752,7 +765,7 @@ abstract module PathRuleCore refines ApplyCore {
       OneFilePerName(device.platform, device.disk)
       && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
     requires r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
-    requires r.doc == doc && r.device != step.event.device
+    requires r.doc == doc && PulledBy(step.pre.devices[step.event.device].journal.documents[doc], r, step.event.device)
     requires var device := step.pre.devices[step.event.device];
       var documents := device.journal.documents;
       !HeldForName(documents[doc], ApplyRevision(device.platform, doc, documents[doc], r, input, BoundNames(documents),
