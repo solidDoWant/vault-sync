@@ -71,6 +71,11 @@ class VerdictTest(unittest.TestCase):
             "**Verdict: request changes** (one blocking finding, in the plugin's handling": "changes",
             "**Verdict: reject.** The approach is out of scope.": "reject",
             "**Verdict: merge (light review).** Auto-merge armed at `9a5aa16f`.": "merge",
+            # PR #1056: a "request changes" verdict that also says "no blocking" (#1059).
+            "**Verdict: request changes** (rebase needed; the content review of `9a230111` found no blocking "
+            "defects)": "changes",
+            "**Verdict: rebase needed** (no blocking findings in the content).": "changes",
+            "**Verdict: merge (no blocking findings)**": "merge",
             "Thanks, addressed in abc123": None,
         }
         for body, want in cases.items():
