@@ -163,4 +163,104 @@ abstract module ServerEvents refines StepContracts {
     }
     assert G1_OnlyRetentionRemoves(step);
   }
+
+  // ---------------------------------------------------------------------
+  // A restore from backup
+  // ---------------------------------------------------------------------
+
+  ghost function FeedIds(feed: seq<RevId>): set<RevId> {
+    set i | 0 <= i < |feed| :: feed[i]
+  }
+
+  lemma KeepMember(s: seq<RevId>, ids: set<RevId>, x: RevId)
+    ensures x in Keep(s, ids) <==> x in s && x in ids
+  {
+    if |s| > 0 {
+      KeepMember(s[1..], ids, x);
+      assert s == [s[0]] + s[1..];
+    }
+  }
+
+  lemma KeepKeep(s: seq<RevId>, a: set<RevId>, b: set<RevId>)
+    requires b <= a
+    ensures Keep(Keep(s, a), b) == Keep(s, b)
+  {
+    if |s| > 0 {
+      KeepKeep(s[1..], a, b);
+      var rest := Keep(s[1..], a);
+      if s[0] in a {
+        var kept := [s[0]] + rest;
+        assert Keep(s, a) == kept;
+        assert kept[0] == s[0] && kept[1..] == rest;
+        assert Keep(kept, b) == (if s[0] in b then [s[0]] else []) + Keep(rest, b);
+      } else {
+        assert s[0] !in b;
+        assert Keep(s, a) == [] + rest == rest;
+        assert Keep(s, b) == [] + Keep(s[1..], b);
+      }
+    }
+  }
+
+  lemma KeepOrder(s: seq<RevId>, ids: set<RevId>, j: int, k: int) returns (j': int, k': int)
+    requires 0 <= j < k < |Keep(s, ids)|
+    ensures 0 <= j' < k' < |s| && s[j'] == Keep(s, ids)[j] && s[k'] == Keep(s, ids)[k]
+  {
+    var rest := Keep(s[1..], ids);
+    if s[0] in ids {
+      assert Keep(s, ids) == [s[0]] + rest;
+      if j == 0 {
+        assert Keep(s, ids)[k] == rest[k - 1];
+        KeepMember(s[1..], ids, rest[k - 1]);
+        assert rest[k - 1] in s[1..];
+        var m :| 0 <= m < |s[1..]| && s[1..][m] == rest[k - 1];
+        j', k' := 0, m + 1;
+      } else {
+        var a, b := KeepOrder(s[1..], ids, j - 1, k - 1);
+        j', k' := a + 1, b + 1;
+      }
+    } else {
+      assert Keep(s, ids) == rest;
+      var a, b := KeepOrder(s[1..], ids, j, k);
+      j', k' := a + 1, b + 1;
+    }
+  }
+
+  // A cut of an earlier server is a cut of the server it was cut from.
+  lemma CutOfCut(server: Server, restored: Server, cut: Server)
+    requires EarlierServer(server, restored) && EarlierServer(restored, cut)
+    ensures EarlierServer(server, cut)
+  {
+    var outer := FeedIds(restored.feed);
+    var inner := FeedIds(cut.feed);
+    assert cut.feed == server.feed[..|cut.feed|];
+    assert inner <= outer;
+    forall doc | doc in server.history
+      ensures Keep(Keep(server.history[doc], outer), inner) == Keep(server.history[doc], inner)
+    {
+      KeepKeep(server.history[doc], outer, inner);
+    }
+    assert cut.revisions == (map id | id in server.revisions && id in inner :: server.revisions[id]);
+    forall doc ensures (doc in cut.history) == (doc in server.history && |Keep(server.history[doc], inner)| > 0) {
+      if doc in server.history && doc !in restored.history {
+        assert Keep(server.history[doc], outer) == [];
+        assert Keep([], inner) == [];
+      }
+    }
+    assert cut.history == (map doc | doc in server.history && |Keep(server.history[doc], inner)| > 0
+                             :: Keep(server.history[doc], inner));
+  }
+
+  // The restored server, its ghost records apart, is an earlier server.
+  lemma RestoredIsCut(step: Step)
+    requires ServerEventStep(step) && step.event.Restore?
+    ensures EarlierServer(step.pre.server, step.post.server)
+    ensures forall cut :: EarlierServer(step.post.server, cut) ==> EarlierServer(step.pre.server, cut)
+    ensures forall doc :: Head(step.post.server, doc) == Head(step.event.restored, doc)
+  {
+    var restored := step.event.restored;
+    forall cut | EarlierServer(step.post.server, cut) ensures EarlierServer(step.pre.server, cut) {
+      assert EarlierServer(restored, cut);
+      CutOfCut(step.pre.server, restored, cut);
+    }
+  }
 }
