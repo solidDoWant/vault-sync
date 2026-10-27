@@ -13,6 +13,9 @@
 //   outbox only for a change made after the commit was sealed; a refusal or
 //   "unavailable" unseals the outbox, which then carries the document as the
 //   device last saw it (OutboxCurrent), to be sent again.
+//
+// It also states the invariant behind G9 (#992, §3.7): a finished device's
+// in-scope files mirror the server's live heads (MirrorInv).
 include "LocalEvents.dfy"
 
 abstract module RemoteCore {
@@ -267,6 +270,7 @@ abstract module RemoteCore {
     requires revision.id in pre.server.feed
     ensures var step := RemoteStep(pre, d, revision);
       StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+      && KeepsFinished(step)
   {
     var step := RemoteStep(pre, d, revision);
     var journal := pre.devices[d].journal;
@@ -290,6 +294,7 @@ abstract module RemoteCore {
     requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre)
     ensures var step := RefusedStep(pre, d, result, nextRev);
       StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+      && KeepsFinished(step)
   {
     var step := RefusedStep(pre, d, result, nextRev);
     var journal := pre.devices[d].journal;
@@ -309,6 +314,7 @@ abstract module RemoteCore {
     requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre)
     ensures var step := AcceptStep(pre, d, doc, r, nextRev);
       StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+      && KeepsFinished(step)
   {
     var step := AcceptStep(pre, d, doc, r, nextRev);
     var journal := pre.devices[d].journal;
@@ -530,6 +536,7 @@ abstract module RemoteCore {
       && (forall doc :: doc in journal.documents ==> QuietRow(journal.documents[doc], journal'.documents[doc]))
       && (forall doc :: doc in journal'.documents && doc !in journal.documents ==> NewAheadRow(journal'.documents[doc]))
     ensures StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+    ensures KeepsFinished(step)
   {
     var pre := step.pre;
     var post := step.post;
@@ -590,6 +597,7 @@ abstract module RemoteCore {
     // G9: either nothing changed, or d is not finished.
     if journal' == journal {
       assert post == pre;
+      AfterKeepsFinished(step, d, journal');
     } else {
       var doc :| doc in journal'.documents && (doc !in journal.documents || journal'.documents[doc] != journal.documents[doc]) by {
         if forall doc :: doc in journal'.documents ==> doc in journal.documents && journal'.documents[doc] == journal.documents[doc] {
@@ -598,6 +606,7 @@ abstract module RemoteCore {
         }
       }
       assert !FinishedSyncing(post, d);
+      AfterKeepsFinished(step, d, journal');
       forall d1, d2, p | FinishedSyncing(post, d1) && FinishedSyncing(post, d2)
         && p in post.devices[d1].disk && p !in post.devices[d1].outOfScope && p !in post.devices[d2].outOfScope
         ensures (exists q :: q in post.devices[d2].disk
@@ -615,5 +624,183 @@ abstract module RemoteCore {
     assert EffectTakes(before.platform, disk, PersistJournal(journal'), disk);
     assert EffectsTake(before.platform, disk, step.effects[1..], disk);
     assert EffectsTake(before.platform, disk, step.effects, disk);
+  }
+
+  // ---------------------------------------------------------------------
+  // The mirror invariant behind G9 (#992, verified-core.md §3.7)
+  // ---------------------------------------------------------------------
+
+  // A device that has finished syncing mirrors the server's live heads. Two
+  // devices that mirror the same server agree with each other, which is G9.
+  // The invariant holds initially and every transition of the core so far
+  // keeps it: local events and the start-up scan (#948), remote revisions and
+  // push results (#949), with CoreInv as #984 left it. None of them makes a
+  // device finish (KeepsFinished). The sync round, the step that finishes a
+  // device, is assumed to keep it until #982 proves that it does.
+
+  // A document the server has live, and its head.
+  ghost predicate LiveHead(server: Server, doc: DocId) {
+    Head(server, doc).Some? && !Head(server, doc).value.deleted
+  }
+
+  // Every in-scope file on the device holds the content of a live head
+  // whose path is exactly the file's name.
+  ghost predicate FilesMirrorHeads(state: State, device: Device) {
+    forall p :: p in device.disk && p !in device.outOfScope ==>
+      exists doc :: LiveHead(state.server, doc)
+        && Head(state.server, doc).value.path == p
+        && Head(state.server, doc).value.content == device.disk[p].content
+  }
+
+  // Every live head is on the device: a file at exactly its path holds its
+  // content, or its path is one the device does not sync, or the device
+  // reports that it cannot hold it (G9's exceptions).
+  ghost predicate HeadsMirrored(state: State, device: Device) {
+    forall doc :: LiveHead(state.server, doc) ==>
+      var head := Head(state.server, doc).value;
+      (head.path in device.disk && device.disk[head.path].content == head.content)
+      || head.path in device.outOfScope
+      || ReportedCannotHold(state, device, head.path)
+  }
+
+  // "A finished device's in-scope files mirror the server's live heads."
+  ghost predicate MirrorInv(state: State) {
+    forall d :: d in state.devices && FinishedSyncing(state, d) ==>
+      FilesMirrorHeads(state, state.devices[d]) && HeadsMirrored(state, state.devices[d])
+  }
+
+  // ---------------------------------------------------------------------
+  // The invariant implies G9
+  // ---------------------------------------------------------------------
+
+  // Two finished devices: a file in scope on both is on the other device,
+  // with its content, under the same name, or the other device reports
+  // that it cannot hold it.
+  lemma MirrorG9(state: State, d1: DeviceId, d2: DeviceId, p: Path)
+    requires MirrorInv(state) && FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
+    requires p in state.devices[d1].disk
+    requires p !in state.devices[d1].outOfScope && p !in state.devices[d2].outOfScope
+    ensures var one := state.devices[d1];
+      var other := state.devices[d2];
+      (exists q :: q in other.disk
+         && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
+         && other.disk[q].content == one.disk[p].content)
+      || ReportedCannotHold(state, other, p)
+  {
+    var one := state.devices[d1];
+    var other := state.devices[d2];
+    // The file mirrors a live head at its name (d1), which d2 holds there
+    // too, unless it reports it cannot hold it (p is in scope on d2).
+    var doc :| LiveHead(state.server, doc)
+      && Head(state.server, doc).value.path == p
+      && Head(state.server, doc).value.content == one.disk[p].content;
+    var head := Head(state.server, doc).value;
+    assert HeadsMirrored(state, other);
+    if p in other.disk && other.disk[p].content == one.disk[p].content {
+      // d2 holds it under the same name: the witness is p itself.
+      SameNameModuloFoldersRefl(one.platform, p);
+      assert p in other.disk && SameNameModuloFolders(one.platform, p, p)
+        && other.disk[p].content == one.disk[p].content;
+    } else {
+      // Not out of scope on d2, so d2 reports it cannot hold it.
+      assert head.path == p && p !in other.outOfScope;
+      assert ReportedCannotHold(state, other, p);
+    }
+  }
+
+  lemma MirrorImpliesG9(state: State)
+    requires MirrorInv(state)
+    ensures G9(state)
+  {
+    forall d1, d2, p | FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
+      && p in state.devices[d1].disk
+      && p !in state.devices[d1].outOfScope && p !in state.devices[d2].outOfScope
+      ensures var one := state.devices[d1];
+        var other := state.devices[d2];
+        (exists q :: q in other.disk
+           && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
+           && other.disk[q].content == one.disk[p].content)
+        || ReportedCannotHold(state, other, p)
+    {
+      MirrorG9(state, d1, d2, p);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // The invariant holds initially and every transition so far keeps it
+  // ---------------------------------------------------------------------
+
+  // Initially the server has no head and every disk is empty.
+  lemma InitialMirror(platforms: map<DeviceId, Platform>)
+    ensures MirrorInv(Initial(platforms))
+  {}
+
+  // A step that makes no device finish keeps the invariant: a device
+  // finished after it was finished before, unchanged, on the same server.
+  lemma KeepsFinishedKeepsMirror(step: Step)
+    requires MirrorInv(step.pre) && KeepsFinished(step)
+    ensures MirrorInv(step.post)
+  {
+    forall d | d in step.post.devices && FinishedSyncing(step.post, d)
+      ensures FilesMirrorHeads(step.post, step.post.devices[d]) && HeadsMirrored(step.post, step.post.devices[d])
+    {
+      assert FinishedSyncing(step.pre, d);
+      assert step.post.devices[d] == step.pre.devices[d] && step.post.server == step.pre.server;
+      assert FilesMirrorHeads(step.pre, step.pre.devices[d]) && HeadsMirrored(step.pre, step.pre.devices[d]);
+    }
+  }
+
+  // Local events (#948).
+  lemma LocalEventKeepsMirror(pre: State, d: DeviceId, local: LocalEvent, revs: FreshRevs)
+    requires d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys
+    requires StateInvariants(pre) && CoreInv(pre) && MirrorInv(pre)
+    ensures MirrorInv(LocalStep(pre, d, local, revs).post)
+  {
+    LocalEventSafe(pre, d, local, revs);
+    KeepsFinishedKeepsMirror(LocalStep(pre, d, local, revs));
+  }
+
+  // The start-up scan (#948).
+  lemma ScanKeepsMirror(pre: State, d: DeviceId, revs: FreshRevs)
+    requires d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys
+    requires StateInvariants(pre) && CoreInv(pre) && MirrorInv(pre)
+    ensures ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d]))
+    ensures MirrorInv(ScanStep(pre, d, revs).post)
+  {
+    ScanSafe(pre, d, revs);
+    KeepsFinishedKeepsMirror(ScanStep(pre, d, revs));
+  }
+
+  // A remote revision delivered outside a sync round (#949).
+  lemma RemoteRevisionKeepsMirror(pre: State, d: DeviceId, revision: Revision)
+    requires d in pre.devices
+    requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre) && MirrorInv(pre)
+    requires revision.id in pre.server.revisions && pre.server.revisions[revision.id] == revision
+    requires revision.id in pre.server.feed
+    ensures MirrorInv(RemoteStep(pre, d, revision).post)
+  {
+    RemoteRevisionSafe(pre, d, revision);
+    KeepsFinishedKeepsMirror(RemoteStep(pre, d, revision));
+  }
+
+  // A push refused or not answered (#949).
+  lemma RefusedKeepsMirror(pre: State, d: DeviceId, result: PushResult, nextRev: RevId)
+    requires d in pre.devices && !result.Accepted?
+    requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre) && MirrorInv(pre)
+    ensures MirrorInv(RefusedStep(pre, d, result, nextRev).post)
+  {
+    RefusedSafe(pre, d, result, nextRev);
+    KeepsFinishedKeepsMirror(RefusedStep(pre, d, result, nextRev));
+  }
+
+  // An accepted push (#949): the feed grows, so no device is finished
+  // after it.
+  lemma AcceptKeepsMirror(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r)
+    requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre) && MirrorInv(pre)
+    ensures MirrorInv(AcceptStep(pre, d, doc, r, nextRev).post)
+  {
+    AcceptSafe(pre, d, doc, r, nextRev);
+    KeepsFinishedKeepsMirror(AcceptStep(pre, d, doc, r, nextRev));
   }
 }
