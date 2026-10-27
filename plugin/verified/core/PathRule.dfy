@@ -12,6 +12,8 @@
 //   (PathHeld, which UserMustAct reports), where another document's newest
 //   server claim still holds the name (Unmaterializable(alias := true)),
 //   and where no copy name is free (Unmaterializable(alias := false)).
+//   A document bound in the way whose file is missing (the user removed it,
+//   and its local event has not arrived) records the user's delete (#1032).
 //
 // The rule runs where the pull apply (`ApplyRevision`, Apply.dfy) leaves a
 // revision `PathHeld`, and only there: every other outcome of the apply is
@@ -187,10 +189,41 @@ abstract module PathRuleCore refines ApplyCore {
       match Aside(platform, input.listing, avoid, claims, way, r.path)
       case None => Defer(documents, doc, r, false)
       case Some(moves) =>
-        var moved := MoveRows(platform, documents, doc, moves, revs);
-        var row := document.(base := Some(BaseOf(r)), ahead := None,
-                             binding := Some(Binding(r.path, r.content, false, None)), absence := Never);
-        Ruled(moved[doc := row], MoveEffects(platform, documents, doc, moves) + Arrive(platform, doc, document, r, own))
+        Ruled(ClearRows(platform, documents, doc, r, input, moves, revs),
+              MoveEffects(platform, documents, doc, moves) + Arrive(platform, doc, document, r, own))
+  }
+
+  // Another document bound at a name in the way of `p` whose file is not
+  // listed: the user removed or moved the file, and its local event has not
+  // reached the core yet. No file of it is in the way, so nothing moves;
+  // its binding would otherwise name the head's file (G5_NeverMixedUp).
+  predicate MissingInTheWay(platform: Platform, listing: Listing, documents: map<DocId, Document>, doc: DocId, e: DocId, p: Path) {
+    e in documents && e != doc && MissingIn(platform, listing, documents[e])
+    && CollideF(platform, documents[e].binding.value.spelling, p)
+  }
+
+  // Each such document records the user's delete (`Unbind`, as the local
+  // delete does), as rule W's intents do for a file gone from both names
+  // (engine-path-ownership.md §4.4, `displace` and `detach`: "user deleted
+  // it"). G3_DeleteSeen allows it: no file is at the binding's name.
+  function RecordMissing(platform: Platform, listing: Listing, documents: map<DocId, Document>, doc: DocId, p: Path,
+                         rows: map<DocId, Document>, revs: FreshRevs): map<DocId, Document>
+  {
+    map e | e in rows :: if MissingInTheWay(platform, listing, documents, doc, e, p) && rows[e].binding.Some? && e in revs
+                         then Unbind(rows[e], revs[e]) else rows[e]
+  }
+
+  // The rows where the rule clears the way with `moves`: each document in
+  // the way moves aside (MoveRows), each missing one in the way records the
+  // user's delete (RecordMissing), and the head is the document's base, at
+  // its name.
+  function ClearRows(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                     moves: seq<(Path, Path, Hash)>, revs: FreshRevs): map<DocId, Document>
+    requires doc in documents && documents.Keys <= revs.Keys
+  {
+    RecordMissing(platform, input.listing, documents, doc, r.path, MoveRows(platform, documents, doc, moves, revs), revs)
+      [doc := documents[doc].(base := Some(BaseOf(r)), ahead := None,
+                              binding := Some(Binding(r.path, r.content, false, None)), absence := Never)]
   }
 
   // The rows after the files in the way moved aside.
@@ -263,7 +296,8 @@ abstract module PathRuleCore refines ApplyCore {
   lemma MoveEffectsShape(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>)
     ensures var effects := MoveEffects(platform, documents, doc, moves);
       |effects| == |moves|
-      && forall i | 0 <= i < |effects| :: effects[i].Move? && effects[i].from == moves[i].0 && effects[i].to == moves[i].1
+      && forall i | 0 <= i < |effects| ::
+           effects[i].Move? && effects[i].from == moves[i].0 && effects[i].to == moves[i].1 && effects[i].expected == moves[i].2
     decreases |moves|
   {
     if moves != [] { MoveEffectsShape(platform, documents, doc, moves[1..]); }
@@ -989,6 +1023,638 @@ abstract module PathRuleCore refines ApplyCore {
     if own.Some? {
       SameFIsEquivalence(platform, own.value, document.binding.value.spelling, own.value);
       assert BoundTo(device, doc, own.value);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G5 and G7 where the rule clears the way (#1032): the disk after the
+  // whole sequence of moves
+  // ---------------------------------------------------------------------
+
+  // The moves Aside picks: each takes a distinct file in the way, with its
+  // listed content, to a name free in the listing, the same under F as no
+  // name to avoid, out of the wanted name's way, and colliding with no
+  // other copy.
+  lemma AsideFacts(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, way: set<Path>, wanted: Path)
+    requires way <= listing.Keys
+    ensures var moves := Aside(platform, listing, avoid, claims, way, wanted);
+      moves.Some? ==>
+        (forall i | 0 <= i < |moves.value| ::
+           moves.value[i].0 in way && moves.value[i].2 == listing[moves.value[i].0].0
+           && FreeIn(platform, listing, moves.value[i].1)
+           && (forall t | t in avoid :: !SameF(platform, t, moves.value[i].1))
+           && !CollideF(platform, moves.value[i].1, wanted))
+        && (forall i, j | 0 <= i < j < |moves.value| ::
+              moves.value[i].0 != moves.value[j].0 && !CollideF(platform, moves.value[i].1, moves.value[j].1))
+    decreases |way|
+  {
+    var moves := Aside(platform, listing, avoid, claims, way, wanted);
+    if way == {} || moves.None? { return; }
+    var q := LeastPath(way);
+    var c := PathConflictCopy(platform, listing, avoid, claims, q, wanted).value;
+    var listing' := listing[c := listing[q]];
+    assert c !in listing by { assert CollideF(platform, c, c); }
+    AsideFacts(platform, listing', avoid, claims, way - {q}, wanted);
+    var rest := Aside(platform, listing', avoid, claims, way - {q}, wanted).value;
+    var all := moves.value;
+    assert all == [(q, c, listing[q].0)] + rest;
+    forall i | 0 <= i < |all|
+      ensures all[i].0 in way && all[i].2 == listing[all[i].0].0
+           && FreeIn(platform, listing, all[i].1)
+           && (forall t | t in avoid :: !SameF(platform, t, all[i].1))
+           && !CollideF(platform, all[i].1, wanted)
+    {
+      if i > 0 {
+        assert all[i] == rest[i - 1];
+        assert all[i].0 in listing && all[i].0 != c;
+      }
+    }
+    forall i, j | 0 <= i < j < |all|
+      ensures all[i].0 != all[j].0 && !CollideF(platform, all[i].1, all[j].1)
+    {
+      assert all[j] == rest[j - 1];
+      if i == 0 {
+        assert c in listing';
+      } else {
+        assert all[i] == rest[i - 1];
+      }
+    }
+  }
+
+  // Every file in the way moves.
+  lemma AsideCovers(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, way: set<Path>, wanted: Path)
+    requires way <= listing.Keys
+    ensures var moves := Aside(platform, listing, avoid, claims, way, wanted);
+      moves.Some? ==> forall q | q in way :: exists i | 0 <= i < |moves.value| :: moves.value[i].0 == q
+    decreases |way|
+  {
+    var moves := Aside(platform, listing, avoid, claims, way, wanted);
+    if way == {} || moves.None? { return; }
+    var q := LeastPath(way);
+    var c := PathConflictCopy(platform, listing, avoid, claims, q, wanted).value;
+    var listing' := listing[c := listing[q]];
+    AsideCovers(platform, listing', avoid, claims, way - {q}, wanted);
+    assert Aside(platform, listing', avoid, claims, way - {q}, wanted).Some?;
+    var rest := Aside(platform, listing', avoid, claims, way - {q}, wanted).value;
+    var all := moves.value;
+    assert all == [(q, c, listing[q].0)] + rest;
+    forall q' | q' in way ensures exists i | 0 <= i < |all| :: all[i].0 == q' {
+      if q' == q { assert all[0].0 == q; }
+      else {
+        assert q' in way - {q};
+        assert exists k | 0 <= k < |rest| :: rest[k].0 == q';
+        var k :| 0 <= k < |rest| && rest[k].0 == q';
+        assert all[k + 1] == rest[k];
+      }
+    }
+  }
+
+  // The moves aside take effect in order on a disk with one file per name
+  // where each file to move holds the move's content and each copy name is
+  // free: each copy then holds the file it moved, and every other file stays
+  // as it was.
+  lemma {:isolate_assertions} MovesTake(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>,
+                  disk: map<Path, DiskFile>, disk': map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk)
+    requires forall i | 0 <= i < |moves| ::
+      moves[i].0 in disk && disk[moves[i].0].content == moves[i].2 && FreeOn(platform, disk, moves[i].1)
+    requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0 && !CollideF(platform, moves[i].1, moves[j].1)
+    requires EffectsTake(platform, disk, MoveEffects(platform, documents, doc, moves), disk')
+    ensures OneFilePerName(platform, disk')
+    ensures forall i | 0 <= i < |moves| :: moves[i].1 in disk' && disk'[moves[i].1] == disk[moves[i].0]
+    ensures forall x | x in disk' ::
+      (x in disk && disk'[x] == disk[x] && forall i | 0 <= i < |moves| :: x != moves[i].0)
+      || exists i | 0 <= i < |moves| :: x == moves[i].1
+    ensures forall x | x in disk && (forall i | 0 <= i < |moves| :: x != moves[i].0) :: x in disk' && disk'[x] == disk[x]
+    decreases |moves|
+  {
+    if moves == [] { return; }
+    MoveEffectsShape(platform, documents, doc, moves);
+    var effects := MoveEffects(platform, documents, doc, moves);
+    var q := moves[0].0;
+    var c := moves[0].1;
+    var content := moves[0].2;
+    assert effects[1..] == MoveEffects(platform, documents, doc, moves[1..]);
+    var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk');
+    assert c !in disk by { assert CollideF(platform, c, c); }
+    assert MovableTo(platform, disk, q, q, c, content);
+    var q': Path :| MovableTo(platform, disk, q', q, c, content) && mid == (disk - {q'})[c := disk[q']];
+    if q' != q { assert CollideF(platform, q', q); }
+    EffectKeepsOneFilePerName(platform, disk, effects[0], mid);
+    var rest := moves[1..];
+    forall i | 0 <= i < |rest|
+      ensures rest[i].0 in mid && mid[rest[i].0].content == rest[i].2 && FreeOn(platform, mid, rest[i].1)
+    {
+      assert rest[i] == moves[i + 1];
+      forall x | x in mid ensures !CollideF(platform, x, rest[i].1) {
+        if x == c { assert !CollideF(platform, moves[0].1, moves[i + 1].1); }
+      }
+    }
+    forall i, j | 0 <= i < j < |rest| ensures rest[i].0 != rest[j].0 && !CollideF(platform, rest[i].1, rest[j].1) {
+      assert rest[i] == moves[i + 1] && rest[j] == moves[j + 1];
+    }
+    MovesTake(platform, documents, doc, rest, mid, disk');
+    forall i | 0 <= i < |moves| ensures moves[i].1 in disk' && disk'[moves[i].1] == disk[moves[i].0] {
+      if i == 0 {
+        forall k | 0 <= k < |rest| ensures c != rest[k].0 {
+          assert rest[k] == moves[k + 1];
+        }
+      } else {
+        assert moves[i] == rest[i - 1];
+      }
+    }
+    forall x | x in disk'
+      ensures (x in disk && disk'[x] == disk[x] && forall i | 0 <= i < |moves| :: x != moves[i].0)
+           || exists i | 0 <= i < |moves| :: x == moves[i].1
+    {
+      if exists k | 0 <= k < |rest| :: x == rest[k].1 {
+        var k :| 0 <= k < |rest| && x == rest[k].1;
+        assert x == moves[k + 1].1;
+      } else if x == c {
+        assert x == moves[0].1;
+      } else {
+        forall i | 0 <= i < |moves| ensures x != moves[i].0 {
+          if i > 0 { assert moves[i] == rest[i - 1]; }
+        }
+      }
+    }
+    forall x | x in disk && (forall i | 0 <= i < |moves| :: x != moves[i].0) ensures x in disk' && disk'[x] == disk[x] {
+      forall k | 0 <= k < |rest| ensures x != rest[k].0 { assert rest[k] == moves[k + 1]; }
+    }
+  }
+
+  // The head then arrives at its name, on a disk where the document's own
+  // file (if any) holds what it last saw and no other file is in the way:
+  // the head is at its name with its content, and every other file stays as
+  // it was.
+  lemma ArriveTakes(platform: Platform, doc: DocId, document: Document, r: Revision, own: Option<Path>,
+                    disk: map<Path, DiskFile>, disk': map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk)
+    requires document.binding.Some? <==> own.Some?
+    requires own.Some? ==> own.value in disk && disk[own.value].content == document.binding.value.seen
+    requires forall x | x in disk && Some(x) != own :: !CollideF(platform, x, r.path)
+    requires EffectsTake(platform, disk, Arrive(platform, doc, document, r, own), disk')
+    ensures OneFilePerName(platform, disk')
+    ensures r.path in disk' && disk'[r.path].content == r.content
+    ensures forall x | x in disk' :: x == r.path || (x in disk && Some(x) != own && disk'[x] == disk[x])
+    ensures forall x | x in disk && Some(x) != own :: x in disk' && disk'[x] == disk[x]
+  {
+    var effects := Arrive(platform, doc, document, r, own);
+    if own.None? {
+      var write := Write(Some(doc), r.path, r.content, r.kind, None);
+      assert effects == [write];
+      Unroll1(platform, disk, write, disk');
+      EffectKeepsOneFilePerName(platform, disk, write, disk');
+      return;
+    }
+    var o := own.value;
+    var seen := document.binding.value.seen;
+    // The file found at `o` under F is `o` itself.
+    forall q' | q' in disk && SameF(platform, q', o) ensures q' == o {
+      if q' != o { assert CollideF(platform, q', o); }
+    }
+    if CollideF(platform, o, r.path) && !SameF(platform, o, r.path) {
+      var remove := Remove(doc, o, seen);
+      var write := Write(Some(doc), r.path, r.content, r.kind, None);
+      assert effects == [remove, write];
+      Unroll2(platform, disk, remove, write, disk');
+      var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, remove, mid) && EffectTakes(platform, mid, write, disk');
+      assert Holds(platform, disk, o, o, seen);
+      assert mid == disk - {o};
+      assert FreeOn(platform, mid, r.path);
+      EffectKeepsOneFilePerName(platform, disk, remove, mid);
+      EffectKeepsOneFilePerName(platform, mid, write, disk');
+    } else {
+      var move := Move(Some(doc), o, r.path, r.content);
+      assert FreeOn(platform, disk - {o}, r.path);
+      if r.content == seen {
+        assert effects == [move];
+        Unroll1(platform, disk, move, disk');
+        assert MovableTo(platform, disk, o, o, r.path, seen);
+        assert disk' == (disk - {o})[r.path := disk[o]];
+        EffectKeepsOneFilePerName(platform, disk, move, disk');
+      } else {
+        var write := Write(Some(doc), o, r.content, r.kind, Some(seen));
+        assert effects == [write, move];
+        Unroll2(platform, disk, write, move, disk');
+        var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, write, mid) && EffectTakes(platform, mid, move, disk');
+        assert Holds(platform, disk, o, o, seen);
+        assert mid == disk[o := DiskFile(r.content, r.kind, disk[o].identity)];
+        EffectKeepsOneFilePerName(platform, disk, write, mid);
+        forall q' | q' in mid && SameF(platform, q', o) ensures q' == o {
+          if q' != o { assert CollideF(platform, q', o); }
+        }
+        assert MovableTo(platform, mid, o, o, r.path, r.content);
+        assert disk' == (mid - {o})[r.path := mid[o]];
+        EffectKeepsOneFilePerName(platform, mid, move, disk');
+      }
+    }
+  }
+
+  lemma EffectsTakeSplit(platform: Platform, disk: map<Path, DiskFile>, a: seq<Effect>, b: seq<Effect>, disk': map<Path, DiskFile>)
+    requires EffectsTake(platform, disk, a + b, disk')
+    ensures exists mid :: EffectsTake(platform, disk, a, mid) && EffectsTake(platform, mid, b, disk')
+    decreases |a|
+  {
+    if |a| == 0 {
+      assert a + b == b;
+      assert EffectsTake(platform, disk, a, disk);
+    } else {
+      var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, (a + b)[0], mid) && EffectsTake(platform, mid, (a + b)[1..], disk');
+      assert (a + b)[0] == a[0];
+      assert (a + b)[1..] == a[1..] + b;
+      EffectsTakeSplit(platform, mid, a[1..], b, disk');
+      var mid2: map<Path, DiskFile> :| EffectsTake(platform, mid, a[1..], mid2) && EffectsTake(platform, mid2, b, disk');
+      assert EffectsTake(platform, disk, a, mid2);
+    }
+  }
+
+  // No two rows are bound to one file (G5_NeverJoined on one journal).
+  ghost predicate NeverJoinedRows(platform: Platform, documents: map<DocId, Document>) {
+    forall e1, e2 | e1 in documents && e2 in documents && e1 != e2
+                    && documents[e1].binding.Some? && documents[e2].binding.Some? ::
+      !SameF(platform, documents[e1].binding.value.spelling, documents[e2].binding.value.spelling)
+  }
+
+  // Each document bound to a file that moves aside gets the row MovedAside
+  // gives it for that file's copy, and every other row stays as it was.
+  lemma MoveRowsRow(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>,
+                    revs: FreshRevs, listing: Listing, e: DocId)
+    requires documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, listing) && NeverJoinedRows(platform, documents)
+    requires forall i | 0 <= i < |moves| :: moves[i].0 in listing
+    requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0
+    requires e in documents
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      e in rows
+      && (forall i | 0 <= i < |moves| && e != doc && FileOf(platform, documents, moves[i].0, e) ::
+            rows[e] == MovedAside(documents[e], moves[i].1, revs[e]))
+      && ((forall i | 0 <= i < |moves| :: !(e != doc && FileOf(platform, documents, moves[i].0, e))) ==> rows[e] == documents[e])
+    decreases |moves|
+  {
+    MoveRowsAheads(platform, documents, doc, moves, revs);
+    if moves == [] { return; }
+    var rest := moves[1..];
+    forall i | 0 <= i < |rest| ensures rest[i].0 in listing { assert rest[i] == moves[i + 1]; }
+    forall i, j | 0 <= i < j < |rest| ensures rest[i].0 != rest[j].0 { assert rest[i] == moves[i + 1] && rest[j] == moves[j + 1]; }
+    MoveRowsRow(platform, documents, doc, rest, revs, listing, e);
+    MoveRowsAheads(platform, documents, doc, rest, revs);
+    var q := moves[0].0;
+    var c := moves[0].1;
+    var restRows := MoveRows(platform, documents, doc, rest, revs);
+    var rows := MoveRows(platform, documents, doc, moves, revs);
+    var holders := set e' | e' in documents && e' != doc && FileOf(platform, documents, q, e');
+    if e != doc && FileOf(platform, documents, q, e) {
+      assert holders == {e} by {
+        forall e' | e' in holders ensures e' == e {
+          if e' != e {
+            assert SameF(platform, documents[e'].binding.value.spelling, documents[e].binding.value.spelling);
+          }
+        }
+      }
+      assert LeastDoc(holders) == e;
+      forall k | 0 <= k < |rest| ensures !(e != doc && FileOf(platform, documents, rest[k].0, e)) {
+        assert rest[k] == moves[k + 1];
+        if FileOf(platform, documents, rest[k].0, e) {
+          assert SameF(platform, q, rest[k].0);
+        }
+      }
+      assert restRows[e] == documents[e];
+      assert rows[e] == MovedAside(documents[e], c, revs[e]);
+      forall i | 0 <= i < |moves| && e != doc && FileOf(platform, documents, moves[i].0, e)
+        ensures rows[e] == MovedAside(documents[e], moves[i].1, revs[e])
+      {
+        if i > 0 { assert moves[i] == rest[i - 1]; }
+      }
+    } else {
+      if holders != {} {
+        var e0 := LeastDoc(holders);
+        assert e0 != e;
+      }
+      assert rows[e] == restRows[e];
+      forall i | 0 <= i < |moves| && e != doc && FileOf(platform, documents, moves[i].0, e)
+        ensures rows[e] == MovedAside(documents[e], moves[i].1, revs[e])
+      {
+        assert i > 0;
+        assert moves[i] == rest[i - 1];
+      }
+      if forall i | 0 <= i < |moves| :: !(e != doc && FileOf(platform, documents, moves[i].0, e)) {
+        forall k | 0 <= k < |rest| ensures !(e != doc && FileOf(platform, documents, rest[k].0, e)) {
+          assert rest[k] == moves[k + 1];
+        }
+      }
+    }
+  }
+
+  // The move of a file in the way is under the id of the document a local
+  // change put there (rule W(a)), the one document bound to it.
+  lemma MoveEffectsMover(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, i: nat, e: DocId)
+    requires i < |moves| && NeverJoinedRows(platform, documents)
+    requires e in documents && e != doc && FileOf(platform, documents, moves[i].0, e) && LocallyPlaced(documents[e])
+    ensures var effects := MoveEffects(platform, documents, doc, moves);
+      |effects| == |moves| && effects[i] == Move(Some(e), moves[i].0, moves[i].1, moves[i].2)
+    decreases |moves|
+  {
+    MoveEffectsShape(platform, documents, doc, moves);
+    if i > 0 {
+      MoveEffectsMover(platform, documents, doc, moves[1..], i - 1, e);
+      assert MoveEffects(platform, documents, doc, moves)[i] == MoveEffects(platform, documents, doc, moves[1..])[i - 1];
+    } else {
+      var q := moves[0].0;
+      var keepers := set e' | e' in documents && e' != doc && FileOf(platform, documents, q, e') && LocallyPlaced(documents[e']);
+      assert keepers == {e} by {
+        forall e' | e' in keepers ensures e' == e {
+          if e' != e {
+            assert SameF(platform, documents[e'].binding.value.spelling, documents[e].binding.value.spelling);
+          }
+        }
+      }
+      assert LeastDoc(keepers) == e;
+    }
+  }
+
+  // The rule clears the way for `r` with `moves`: ClearWay's conditions
+  // for moving hold, and Aside picked `moves`.
+  ghost predicate ClearsWith(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                             own: Option<Path>, moves: seq<(Path, Path, Hash)>)
+    requires doc in documents && ListingDistinct(platform, input.listing)
+  {
+    var document := documents[doc];
+    own == (if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+            then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None)
+    && var way := InTheWay(platform, input.listing, r.path, own);
+    !r.deleted && !(document.binding.Some? && own.None?)
+    && !(exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
+    && !(own.Some? && UnsavedCollides(platform, input.unsaved, own.value))
+    && !StillClaimed(platform, documents, doc, r.path)
+    && Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path) == Some(moves)
+  }
+
+  // On the disk the listing was read from, the rule's moves and the head's
+  // arrival leave: each copy holding the file it moved, the head at its
+  // name with its content, every file not in the way and not the
+  // document's own as it was, and nothing else.
+  lemma ClearWayDisk(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                     own: Option<Path>, moves: seq<(Path, Path, Hash)>, disk': map<Path, DiskFile>)
+    requires doc in documents && input.listing == ListingOf(device)
+    requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
+    requires ClearsWith(device.platform, documents, doc, r, input, own, moves)
+    requires documents[doc].binding.Some? ==>
+      var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
+      read.Some? && read.value.0 == documents[doc].binding.value.seen
+    requires EffectsTake(device.platform, device.disk,
+                         MoveEffects(device.platform, documents, doc, moves) + Arrive(device.platform, doc, documents[doc], r, own), disk')
+    ensures OneFilePerName(device.platform, disk')
+    ensures forall i | 0 <= i < |moves| ::
+      moves[i].0 in device.disk && moves[i].1 in disk' && disk'[moves[i].1] == device.disk[moves[i].0]
+      && device.disk[moves[i].0].content == moves[i].2 && moves[i].1 !in device.disk && !CollideF(device.platform, moves[i].1, r.path)
+      && forall t | t in BoundNames(documents) :: !SameF(device.platform, t, moves[i].1)
+    ensures r.path in disk' && disk'[r.path].content == r.content
+    ensures forall x | x in disk' ::
+      x == r.path || (exists i | 0 <= i < |moves| :: x == moves[i].1)
+      || (x in device.disk && Some(x) != own && disk'[x] == device.disk[x] && (forall i | 0 <= i < |moves| :: x != moves[i].0))
+    ensures forall x | x in device.disk && Some(x) != own && (forall i | 0 <= i < |moves| :: x != moves[i].0) ::
+      x in disk' && disk'[x] == device.disk[x]
+    ensures forall x | x in device.disk && Some(x) != own && CollideF(device.platform, x, r.path) ::
+      exists i | 0 <= i < |moves| :: x == moves[i].0
+  {
+    var platform := device.platform;
+    var disk := device.disk;
+    var listing := input.listing;
+    var document := documents[doc];
+    var way := InTheWay(platform, listing, r.path, own);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var claims := AllClaims(documents);
+    AsideFacts(platform, listing, avoid, claims, way, r.path);
+    AsideCovers(platform, listing, avoid, claims, way, r.path);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var back := Arrive(platform, doc, document, r, own);
+    EffectsTakeSplit(platform, disk, front, back, disk');
+    var mid: map<Path, DiskFile> :| EffectsTake(platform, disk, front, mid) && EffectsTake(platform, mid, back, disk');
+    forall i | 0 <= i < |moves|
+      ensures moves[i].0 in disk && disk[moves[i].0].content == moves[i].2 && FreeOn(platform, disk, moves[i].1)
+      ensures moves[i].1 !in disk
+    {
+      assert moves[i].0 in way;
+      assert CollideF(platform, moves[i].1, moves[i].1);
+    }
+    MovesTake(platform, documents, doc, moves, disk, mid);
+    if own.Some? {
+      assert own.value in listing;
+      assert ListedRead(platform, listing, document.binding.value.spelling) == Some(listing[own.value]);
+      forall i | 0 <= i < |moves| ensures own.value != moves[i].0 { assert moves[i].0 in way; }
+    }
+    forall x | x in mid && Some(x) != own ensures !CollideF(platform, x, r.path) {
+      if !(exists i | 0 <= i < |moves| :: x == moves[i].1) {
+        assert x in disk && forall i | 0 <= i < |moves| :: x != moves[i].0;
+        if CollideF(platform, x, r.path) { assert x in way; }
+      }
+    }
+    ArriveTakes(platform, doc, document, r, own, mid, disk');
+    forall x | x in disk && Some(x) != own && CollideF(platform, x, r.path)
+      ensures exists i | 0 <= i < |moves| :: x == moves[i].0
+    {
+      assert x in way;
+    }
+    forall i | 0 <= i < |moves| ensures moves[i].1 in disk' && disk'[moves[i].1] == disk[moves[i].0] {
+      assert own.Some? ==> own.value in disk;
+    }
+  }
+
+  // G7 on the device: every file moved aside arrives at its copy with its
+  // contents, and the document's own file at the head's name with the
+  // head's.
+  lemma ClearG7(device: Device, after: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                own: Option<Path>, moves: seq<(Path, Path, Hash)>)
+    requires doc in documents && input.listing == ListingOf(device) && after.platform == device.platform
+    requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
+    requires ClearsWith(device.platform, documents, doc, r, input, own, moves)
+    requires documents[doc].binding.Some? ==>
+      var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
+      read.Some? && read.value.0 == documents[doc].binding.value.seen
+    requires EffectsTake(device.platform, device.disk,
+                         MoveEffects(device.platform, documents, doc, moves) + Arrive(device.platform, doc, documents[doc], r, own), after.disk)
+    ensures forall e | e in MoveEffects(device.platform, documents, doc, moves) + Arrive(device.platform, doc, documents[doc], r, own) && e.Move? ::
+      HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
+  {
+    var platform := device.platform;
+    ClearWayDisk(device, documents, doc, r, input, own, moves, after.disk);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var back := Arrive(platform, doc, documents[doc], r, own);
+    var effects := front + back;
+    forall e: Effect | e in effects && e.Move?
+      ensures HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
+    {
+      var k :| 0 <= k < |effects| && effects[k] == e;
+      if k < |front| {
+        assert e == front[k];
+        FileAtIs(after, e.to, e.to);
+      } else {
+        assert e == back[k - |front|];
+        assert e.to == r.path && e.expected == r.content;
+        FileAtIs(after, r.path, r.path);
+      }
+    }
+  }
+
+  // The engine's own write or move of `doc'`'s file to its name after the
+  // step (clause (b) of G5_NeverMixedUp).
+  ghost predicate EngineBrought(effects: seq<Effect>, platform: Platform, doc': DocId, spelling: Path) {
+    exists effect :: effect in effects
+      && ((effect.Write? && effect.target == Some(doc') && SameF(platform, effect.path, spelling))
+          || (effect.Move? && effect.mover == Some(doc') && SameF(platform, effect.to, spelling)))
+  }
+
+  // G5 for one document: a document whose bound file changes is the one the
+  // head arrives for, or one rule W(a) moved under its own id. A document
+  // that lets its file go (W(b)), or whose binding names a file the user
+  // removed in the head's way, is bound to nothing after the step. Every
+  // other binding names the same file, or none: a copy takes no bound name,
+  // and no other document is bound to the head's name after the step.
+  lemma {:isolate_assertions} ClearG5Doc(device: Device, after: Device, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs,
+                   own: Option<Path>, moves: seq<(Path, Path, Hash)>, doc': DocId)
+    requires doc in device.journal.documents && device.journal.documents.Keys <= revs.Keys
+    requires input.listing == ListingOf(device) && after.platform == device.platform
+    requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
+    requires NeverJoinedRows(device.platform, device.journal.documents)
+    requires ClearsWith(device.platform, device.journal.documents, doc, r, input, own, moves)
+    requires var documents := device.journal.documents;
+      documents[doc].binding.Some? ==>
+        var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
+        read.Some? && read.value.0 == documents[doc].binding.value.seen
+    requires EffectsTake(device.platform, device.disk,
+                         MoveEffects(device.platform, device.journal.documents, doc, moves)
+                         + Arrive(device.platform, doc, device.journal.documents[doc], r, own), after.disk)
+    requires after.journal.documents == ClearRows(device.platform, device.journal.documents, doc, r, input, moves, revs)
+    requires BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
+    ensures EngineBrought(MoveEffects(device.platform, device.journal.documents, doc, moves)
+                          + Arrive(device.platform, doc, device.journal.documents[doc], r, own),
+                          device.platform, doc', after.journal.documents[doc'].binding.value.spelling)
+  {
+    var platform := device.platform;
+    var disk := device.disk;
+    var documents := device.journal.documents;
+    var document := documents[doc];
+    var listing := input.listing;
+    ClearWayDisk(device, documents, doc, r, input, own, moves, after.disk);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var back := Arrive(platform, doc, document, r, own);
+    var effects := front + back;
+    var way := InTheWay(platform, listing, r.path, own);
+    AsideFacts(platform, listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+    var moved := MoveRows(platform, documents, doc, moves, revs);
+    MoveRowsAheads(platform, documents, doc, moves, revs);
+    if doc' == doc {
+      var arrival := back[|back| - 1];
+      assert effects[|front| + |back| - 1] == arrival;
+      assert after.journal.documents[doc].binding.value.spelling == r.path;
+      return;
+    }
+    assert doc' in documents;
+    forall i | 0 <= i < |moves| ensures moves[i].0 in listing { assert moves[i].0 in way; }
+    MoveRowsRow(platform, documents, doc, moves, revs, listing, doc');
+    if i :| 0 <= i < |moves| && FileOf(platform, documents, moves[i].0, doc') {
+      assert moves[i].0 in listing;
+      assert Listed(platform, listing, documents[doc'].binding.value.spelling);
+      assert !MissingInTheWay(platform, listing, documents, doc, doc', r.path);
+      if LocallyPlaced(documents[doc']) {
+        assert after.journal.documents[doc'].binding.value.spelling == moves[i].1;
+        MoveEffectsMover(platform, documents, doc, moves, i, doc');
+        assert effects[i] == front[i];
+      } else {
+        assert after.journal.documents[doc'].binding.None?;
+      }
+      return;
+    }
+    assert moved[doc'] == documents[doc'];
+    if MissingInTheWay(platform, listing, documents, doc, doc', r.path) {
+      assert after.journal.documents[doc'].binding.None?;
+      return;
+    }
+    var row := documents[doc'];
+    assert after.journal.documents[doc'] == row;
+    var spelling := row.binding.value.spelling;
+    assert spelling in BoundNames(documents);
+    if HasFile(device, spelling) {
+      var x :| x in disk && SameF(platform, x, spelling);
+      FileAtIs(device, spelling, x);
+      forall i | 0 <= i < |moves| ensures x != moves[i].0 {
+        if x == moves[i].0 { assert FileOf(platform, documents, moves[i].0, doc'); }
+      }
+      if own.Some? && own.value == x {
+        assert SameF(platform, document.binding.value.spelling, spelling);
+      }
+      FileAtIs(after, spelling, x);
+      assert false;
+    } else {
+      var y :| y in after.disk && SameF(platform, y, spelling);
+      if y == r.path {
+        assert !Listed(platform, listing, spelling);
+        assert CollideF(platform, spelling, r.path);
+        assert MissingInTheWay(platform, listing, documents, doc, doc', r.path);
+      } else if i :| 0 <= i < |moves| && y == moves[i].1 {
+        assert !SameF(platform, spelling, moves[i].1);
+      } else {
+        assert y in disk;
+      }
+      assert false;
+    }
+  }
+
+  // G5_NeverMixedUp and G7_MoveKeepsContents where the rule clears the way
+  // (#1032), on a round step whose effects are the rule's, from a disk with
+  // one file per name and a journal in which no two rows are bound to one
+  // file (G5_NeverJoined). Where the rule defers instead, it changes no
+  // binding and nothing on disk.
+  lemma ClearWayG5G7(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires RuleStep(step, doc, r, input, revs)
+    requires var device := step.pre.devices[step.event.device];
+      OneFilePerName(device.platform, device.disk)
+      && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
+    requires G5_NeverJoined(step.pre)
+    requires var device := step.pre.devices[step.event.device];
+      var documents := device.journal.documents;
+      HeldForName(documents[doc], ApplyRevision(device.platform, doc, documents[doc], r, input, BoundNames(documents),
+                                                AllClaims(documents), revs[doc]), r)
+      && !UnsavedCollides(device.platform, input.unsaved, r.path)
+    ensures G5_NeverMixedUp(step) && G7_MoveKeepsContents(step)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var platform := device.platform;
+    var disk := device.disk;
+    var documents := device.journal.documents;
+    var document := documents[doc];
+    var after := step.post.devices[d];
+    var listing := input.listing;
+    assert listing == ListingOf(device);
+    assert NeverJoinedRows(platform, documents);
+    var ruled := PathRule(platform, documents, doc, r, input, revs);
+    assert ruled == ClearWay(platform, documents, doc, r, input, revs);
+    var own := if document.binding.Some? && Listed(platform, listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, listing, r.path, own);
+    var aside := Aside(platform, listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, own, aside.value) {
+      // The rule defers: one report, nothing on disk changes, and no binding.
+      assert |ruled.effects| == 1 && ruled.effects[0].Report?;
+      Unroll1(platform, disk, ruled.effects[0], after.disk);
+      assert after.disk == disk;
+      assert forall e | e in after.journal.documents :: e in documents && after.journal.documents[e].binding == documents[e].binding;
+      assert forall e :: BoundIdentity(after, e) == BoundIdentity(device, e);
+      return;
+    }
+    var moves := aside.value;
+    HeldReadsSeen(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    assert step.effects == MoveEffects(platform, documents, doc, moves) + Arrive(platform, doc, document, r, own);
+    assert after.journal.documents == ClearRows(platform, documents, doc, r, input, moves, revs);
+    ClearG7(device, after, documents, doc, r, input, own, moves);
+    forall doc' | BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
+      ensures EngineBrought(step.effects, platform, doc', after.journal.documents[doc'].binding.value.spelling)
+    {
+      ClearG5Doc(device, after, doc, r, input, revs, own, moves, doc');
     }
   }
 }
