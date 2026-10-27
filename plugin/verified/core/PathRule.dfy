@@ -798,4 +798,72 @@ abstract module PathRuleCore refines ApplyCore {
       |ruled.effects| == 1 && ruled.effects[0].Report?
       && ruled.documents == documents[doc := documents[doc].(ahead := Some(Ahead(r, Unmaterializable(ruled.documents[doc].ahead.value.blocker.alias), false)))]
   {}
+
+  // ---------------------------------------------------------------------
+  // One file per name (G7's device half) on the rule's disk
+  // ---------------------------------------------------------------------
+
+  // Every effect keeps one file per name: a create and a move land only
+  // where no other file collides, an overwrite keeps the names, and a
+  // remove only takes a name away.
+  lemma EffectKeepsOneFilePerName(platform: Platform, disk: map<Path, DiskFile>, effect: Effect, disk': map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk) && EffectTakes(platform, disk, effect, disk')
+    ensures OneFilePerName(platform, disk')
+  {
+    match effect
+    case Move(_, from, to, expected) =>
+      if exists q :: MovableTo(platform, disk, q, from, to, expected) {
+        var q := var q :| MovableTo(platform, disk, q, from, to, expected) && disk' == (disk - {q})[to := disk[q]]; q;
+        forall x, y | x in disk' && y in disk' && x != y ensures !CollideF(platform, x, y) {
+          if x == to { assert y in disk - {q}; assert !CollideF(platform, y, to); CollideSymmetric(platform, y, to); }
+          else if y == to { assert x in disk - {q}; }
+        }
+      }
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.None? && FreeOn(platform, disk, path) {
+        var identity: FileIdentity := var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
+          && disk' == disk[path := DiskFile(content, kind, identity)]; identity;
+        forall x, y | x in disk' && y in disk' && x != y ensures !CollideF(platform, x, y) {
+          if x == path { assert !CollideF(platform, y, path); CollideSymmetric(platform, y, path); }
+        }
+      } else if precondition.Some? && exists q :: Holds(platform, disk, q, path, precondition.value) {
+        var q := var q :| Holds(platform, disk, q, path, precondition.value) && disk' == disk[q := DiskFile(content, kind, disk[q].identity)]; q;
+        assert disk'.Keys == disk.Keys;
+      }
+    case Remove(_, path, expected) =>
+      if exists q :: Holds(platform, disk, q, path, expected) {
+        var q := var q :| Holds(platform, disk, q, path, expected) && disk' == disk - {q}; q;
+      }
+    case _ =>
+  }
+
+  lemma CollideSymmetric(platform: Platform, p: Path, q: Path)
+    ensures CollideF(platform, p, q) == CollideF(platform, q, p)
+  {}
+
+  lemma EffectsKeepOneFilePerName(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk) && EffectsTake(platform, disk, effects, disk')
+    ensures OneFilePerName(platform, disk')
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var mid := var mid :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk'); mid;
+      EffectKeepsOneFilePerName(platform, disk, effects[0], mid);
+      EffectsKeepOneFilePerName(platform, mid, effects[1..], disk');
+    }
+  }
+
+  // On a rule step from a disk with one file per name, the disk after has
+  // one file per name.
+  lemma RuleOneFilePerName(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires RuleStep(step, doc, r, input, revs)
+    requires var device := step.pre.devices[step.event.device];
+      OneFilePerName(device.platform, device.disk)
+      && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
+    ensures var after := step.post.devices[step.event.device];
+      OneFilePerName(after.platform, after.disk)
+  {
+    var device := step.pre.devices[step.event.device];
+    EffectsKeepOneFilePerName(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk);
+  }
 }
