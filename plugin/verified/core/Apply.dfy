@@ -384,49 +384,35 @@ abstract module ApplyCore refines StepContracts {
     if Acknowledges(document, r) then r.device == d else r.device != d
   }
 
-  // One pulled revision `r` of document `doc`, whose row is `document`,
-  // against the round's input.
-  function ApplyRevision(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId): Applied
+  // The user's delete, or a bound file missing from the listing with no
+  // unsaved text at its name (the round records it as the user's delete,
+  // which G3_DeleteSeen allows: no file is at the name), against a live
+  // remote revision, with no commit in flight (#1023's): the file comes back
+  // (verified-core.md §4.2, SPEC.md §6.3).
+  predicate Revives(platform: Platform, document: Document, r: Revision, input: RoundInput)
     requires ListingDistinct(platform, input.listing)
   {
-    if !Newer(document, r) then Applied(document, [])
-    else if SettlesIdentical(platform, document, r, input) then
-      // The file already holds the revision (verified-core.md §4.1): it
-      // becomes the base, and nothing is written or copied.
-      Applied(IdenticalRow(document, r), [])
-    else if Acknowledges(document, r) then
-      // The outbox's own revision (verified-core.md §4.1): its
-      // acknowledgement, taken as §3.5's "accepted". Nothing on disk changes.
-      Applied(Accept(document, r, rev), [])
-    else if document.binding.Some? then
-      var spelling := document.binding.value.spelling;
-      var read := ListedRead(platform, input.listing, spelling);
-      if UnsavedAt(platform, input.unsaved, spelling) then Hold(document, r, LocalChanges)
-      else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, claims, rev)
-      else if EditedAgainstDelete(document, read, r) then
-        // A remote delete against a change the server lacks: an edit beats a
-        // delete (SPEC.md §6.3). The file stays, untouched.
-        Applied(KeptAgainstDelete(document, read.value, r, rev), [])
-      else if !Clean(platform, document, read) then
-        Hold(document, r, if JournalChange(document) || read.None? || read.value.0 != document.binding.value.seen
-                          then LocalChanges else PathHeld)
-      else if r.deleted then
-        // A remote delete of a file nobody changed here: the file goes.
-        Applied(document.(base := Some(BaseOf(r)), ahead := None, binding := None, absence := Released),
-                [Remove(doc, spelling, read.value.0)])
-      else if r.path == spelling then
-        // A remote edit in place: written over the content the round read.
-        Applied(document.(base := Some(BaseOf(r)), ahead := None,
-                          binding := Some(document.binding.value.(seen := r.content))),
-                [Write(Some(doc), spelling, r.content, r.kind, Some(read.value.0))])
-      else Hold(document, r, PathHeld)
-    else if JournalChange(document) || r.deleted then
-      // A user's delete against a remote revision, or a tombstone of a
-      // document with no file here: recorded, nothing on disk.
-      if r.deleted && !JournalChange(document) then
-        Applied(document.(base := Some(BaseOf(r)), ahead := None), [])
-      else Hold(document, r, LocalChanges)
-    else if UnsavedAt(platform, input.unsaved, r.path) || BoundName(platform, bound, r.path) then Hold(document, r, PathHeld)
+    !r.deleted && (document.outbox.None? || !document.outbox.value.sealed)
+    && ((document.binding.None? && document.absence == UserDeleted)
+        || (document.binding.Some?
+            && ListedRead(platform, input.listing, document.binding.value.spelling).None?
+            && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)))
+  }
+
+  // The revived row: the user's delete loses to the remote edit, so its
+  // binding and its unsent delete are dropped, and the document is one with
+  // no file here.
+  function Revived(document: Document): Document {
+    document.(binding := None, absence := Never, outbox := None)
+  }
+
+  // A document with no file here: created where no file collides, adopting
+  // an untracked file holding exactly the head, or moving one untracked
+  // file aside; any other collision waits for the path rule (#962).
+  function Create(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId): Applied
+    requires ListingDistinct(platform, input.listing)
+  {
+    if UnsavedAt(platform, input.unsaved, r.path) || BoundName(platform, bound, r.path) then Hold(document, r, PathHeld)
     else if FreeIn(platform, input.listing, r.path) then
       // A document with no file here: created where no file collides.
       Applied(document.(base := Some(BaseOf(r)), ahead := None,
@@ -456,6 +442,116 @@ abstract module ApplyCore refines StepContracts {
       else Hold(document, r, PathHeld)
   }
 
+  // One pulled revision `r` of document `doc`, whose row is `document`,
+  // against the round's input.
+  function ApplyRevision(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId): Applied
+    requires ListingDistinct(platform, input.listing)
+  {
+    if !Newer(document, r) then Applied(document, [])
+    else if SettlesIdentical(platform, document, r, input) then
+      // The file already holds the revision (verified-core.md §4.1): it
+      // becomes the base, and nothing is written or copied.
+      Applied(IdenticalRow(document, r), [])
+    else if Acknowledges(document, r) then
+      // The outbox's own revision (verified-core.md §4.1): its
+      // acknowledgement, taken as §3.5's "accepted". Nothing on disk changes.
+      Applied(Accept(document, r, rev), [])
+    else if Revives(platform, document, r, input) then
+      // The user's delete, or a bound file missing from the listing (the
+      // user's delete, G3_DeleteSeen), against a live remote revision: an
+      // edit beats a delete (SPEC.md §6.3, verified-core.md §4.2). The file
+      // comes back as for a document with no file here.
+      Create(platform, doc, Revived(document), r, input, bound, claims, rev)
+    else if document.binding.Some? then
+      var spelling := document.binding.value.spelling;
+      var read := ListedRead(platform, input.listing, spelling);
+      if UnsavedAt(platform, input.unsaved, spelling) then Hold(document, r, LocalChanges)
+      else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, claims, rev)
+      else if EditedAgainstDelete(document, read, r) then
+        // A remote delete against a change the server lacks: an edit beats a
+        // delete (SPEC.md §6.3). The file stays, untouched.
+        Applied(KeptAgainstDelete(document, read.value, r, rev), [])
+      else if !Clean(platform, document, read) then
+        Hold(document, r, if JournalChange(document) || read.None? || read.value.0 != document.binding.value.seen
+                          then LocalChanges else PathHeld)
+      else if r.deleted then
+        // A remote delete of a file nobody changed here: the file goes.
+        Applied(document.(base := Some(BaseOf(r)), ahead := None, binding := None, absence := Released),
+                [Remove(doc, spelling, read.value.0)])
+      else if r.path == spelling then
+        // A remote edit in place: written over the content the round read.
+        Applied(document.(base := Some(BaseOf(r)), ahead := None,
+                          binding := Some(document.binding.value.(seen := r.content))),
+                [Write(Some(doc), spelling, r.content, r.kind, Some(read.value.0))])
+      else Hold(document, r, PathHeld)
+    else if JournalChange(document) || r.deleted then
+      // A user's delete against a commit in flight (#1023's) or a remote
+      // tombstone, or a tombstone of a document with no file here: recorded,
+      // nothing on disk.
+      if r.deleted && !JournalChange(document) then
+        Applied(document.(base := Some(BaseOf(r)), ahead := None), [])
+      else Hold(document, r, LocalChanges)
+    else Create(platform, doc, document, r, input, bound, claims, rev)
+  }
+
+  // What the revive leaves alone (#1056 review): a bound file missing from
+  // the listing whose name an open editor holds unsaved text at keeps its
+  // binding, and the revision waits for the user (LocalChanges).
+  lemma UnsavedMissingFileWaits(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(document, r) && !Acknowledges(document, r) && document.binding.Some?
+    requires ListedRead(platform, input.listing, document.binding.value.spelling).None?
+    requires UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev) == Hold(document, r, LocalChanges)
+  {}
+
+  // A commit in flight (a sealed outbox) against another device's live
+  // revision, where the user deleted the file or it is missing from the
+  // listing, keeps its outbox exactly as sealed until its answer (§3.2;
+  // its settlement is #1023's): the revision waits.
+  lemma CommitInFlightNotRevived(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(document, r) && !Acknowledges(document, r) && InFlight(document) && !r.deleted
+    requires (document.binding.None? && document.absence == UserDeleted)
+             || (document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).None?)
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev) == Hold(document, r, LocalChanges)
+  {}
+
+  // The row the apply decides from: the revived row where the file comes
+  // back (Revives), the document's row otherwise.
+  function ApplyingRow(platform: Platform, document: Document, r: Revision, input: RoundInput): Document
+    requires ListingDistinct(platform, input.listing)
+  {
+    if Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input) then Revived(document)
+    else document
+  }
+
+  // Where the file comes back, the apply is the apply of the revived row, a
+  // document with no file here and no change the server lacks.
+  lemma RevivedApplies(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input)
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev)
+            == ApplyRevision(platform, doc, Revived(document), r, input, bound, claims, rev)
+            == Create(platform, doc, Revived(document), r, input, bound, claims, rev)
+    ensures Newer(Revived(document), r) && !Acknowledges(Revived(document), r)
+            && !Revives(platform, Revived(document), r, input)
+            && Revived(document).binding.None? && !JournalChange(Revived(document)) && !r.deleted
+  {}
+
+  // A bound file the listing does not read is not on the disk.
+  lemma UnlistedNotOnDisk(device: Device, p: Path)
+    requires ListingDistinct(device.platform, ListingOf(device))
+    requires ListedRead(device.platform, ListingOf(device), p).None?
+    ensures p !in device.disk && !HasFile(device, p)
+  {
+    SameFIsEquivalence(device.platform, p, p, p);
+    if HasFile(device, p) {
+      var q := var q :| q in device.disk && SameF(device.platform, q, p); q;
+      assert q in ListingOf(device);
+    }
+  }
+
   // A report is requested only where no copy name is free, and then the
   // revision waits as `ahead`, blocked by `Unmaterializable(alias := false)`,
   // the row is otherwise unchanged, and the report is the only effect: no
@@ -467,8 +563,8 @@ abstract module ApplyCore refines StepContracts {
        || (applied.document.ahead != document.ahead && applied.document.ahead.Some?
            && applied.document.ahead.value.blocker == Unmaterializable(false)))
       ==> && |applied.effects| == 1 && applied.effects[0].Report?
-          && applied == NoCopy(doc, document, r, applied.effects[0].path)
-          && applied.document == document.(ahead := Some(Ahead(r, Unmaterializable(false), false)))
+          && applied == NoCopy(doc, ApplyingRow(platform, document, r, input), r, applied.effects[0].path)
+          && applied.document == ApplyingRow(platform, document, r, input).(ahead := Some(Ahead(r, Unmaterializable(false), false)))
           && Untouched(applied.effects)
   {}
 
@@ -586,10 +682,16 @@ abstract module ApplyCore refines StepContracts {
     requires ListingDistinct(device.platform, input.listing)
     ensures PreconditionsInOrder(device.platform, device.disk,
                                  ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects)
+    decreases if Newer(document, r) && !Acknowledges(document, r) && Revives(device.platform, document, r, input) then 1 else 0
   {
     var platform := device.platform;
     var disk := device.disk;
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    if Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input) {
+      RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
+      AppliedPreconditionsHold(device, doc, Revived(document), r, input, bound, claims, rev);
+      return;
+    }
     if |applied.effects| == 0 {
       return;
     }
@@ -721,11 +823,21 @@ abstract module ApplyCore refines StepContracts {
             x in device.disk && disk'[x].identity == device.disk[x].identity)
       && (forall x :: x in device.disk && !Departs(device.platform, applied.effects, x) ==>
             x in disk' && disk'[x].identity == device.disk[x].identity)
+    decreases if ListingDistinct(device.platform, input.listing) && Newer(document, r) && !Acknowledges(document, r)
+                 && Revives(device.platform, document, r, input) then 1 else 0
   {
     DistinctDisk(device);
     var platform := device.platform;
     var disk := device.disk;
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    if Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input) {
+      RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
+      AppliedTakesEffect(device, doc, Revived(document), r, input, bound, claims, rev, disk');
+      if document.binding.Some? {
+        UnlistedNotOnDisk(device, document.binding.value.spelling);
+      }
+      return;
+    }
     AppliedPreconditionsHold(device, doc, document, r, input, bound, claims, rev);
     if |applied.effects| == 0 {
       assert disk' == disk;
@@ -820,7 +932,7 @@ abstract module ApplyCore refines StepContracts {
     requires input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk)
     requires ListingDistinct(device.platform, input.listing)
-    requires document.binding.Some?
+    requires document.binding.Some? && !(Newer(document, r) && !Acknowledges(document, r) && Revives(device.platform, document, r, input))
     requires |ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects| == 2
     requires EffectsTake(device.platform, device.disk,
                          ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects, disk')
@@ -1109,6 +1221,30 @@ abstract module ApplyCore refines StepContracts {
     assert input.listing == ListingOf(device);
     AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     assert Newer(document, r);
+    if Revives(platform, document, r, input) {
+      // A local delete against a remote edit: the file comes back, with the
+      // remote's content, and nothing else is sent.
+      assert !Acknowledges(document, r);
+      RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
+      if document.binding.Some? {
+        UnlistedNotOnDisk(device, document.binding.value.spelling);
+      }
+      assert BoundFile(device, doc).None?;
+      assert applied.document.base != document.base;
+      assert applied.document.outbox.None? && applied.document.binding == Some(Binding(r.path, r.content, false, None));
+      assert after.journal.documents[doc] == applied.document;
+      if applied.effects == [] {
+        assert after.disk == device.disk;
+        assert r.path in device.disk && device.disk[r.path].content == r.content;
+        SameFIsEquivalence(platform, r.path, r.path, r.path);
+        FileAtIs(after, r.path, r.path);
+      } else {
+        var p := var p :| Holds(platform, after.disk, p, r.path, r.content); p;
+        FileAtIs(after, r.path, p);
+      }
+      assert Outgoing(after, doc) == Some(r.content);
+      return;
+    }
     if document.binding.None? {
       assert !LocalChange(device, doc);
       return;
@@ -1260,7 +1396,14 @@ abstract module ApplyCore refines StepContracts {
     assert input.listing == ListingOf(device);
     AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     // Every name a file arrives at is no binding's name.
-    assert forall x :: Arrives(applied.effects, x) ==> !BoundName(platform, bound, x) || (document.binding.None? && x == r.path);
+    var revived := Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input);
+    if revived {
+      RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
+      if document.binding.Some? {
+        UnlistedNotOnDisk(device, document.binding.value.spelling);
+      }
+    }
+    assert forall x :: Arrives(applied.effects, x) ==> !BoundName(platform, bound, x) || ((document.binding.None? || revived) && x == r.path);
     forall doc' | BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
       ensures var spelling := after.journal.documents[doc'].binding.value.spelling;
         var file := BoundFile(after, doc').value;
@@ -1278,7 +1421,7 @@ abstract module ApplyCore refines StepContracts {
             && file.content == after.journal.documents[doc'].base.value.content)
     {
       var spelling' := after.journal.documents[doc'].binding.value.spelling;
-      if doc' != doc || document.binding.Some? {
+      if doc' != doc || (document.binding.Some? && !revived) {
         assert after.journal.documents[doc'].binding.Some?;
         assert device.journal.documents[doc'].binding.value.spelling == spelling';
         assert spelling' in bound;
