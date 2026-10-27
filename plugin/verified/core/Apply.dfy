@@ -10,7 +10,11 @@
 // file, a create on the name being free in the listing. The lemmas prove, on
 // the function itself, that each precondition holds on the disk the listing
 // was read from (`AppliedPreconditionsHold`), and that on that disk the
-// effects take effect as the new row records (`AppliedTakesEffect`).
+// effects take effect as the new row records (`AppliedTakesEffect`). On a
+// round step whose effects are the apply's (`ApplyStep`) they prove G2's
+// step predicates (`AppliedG2`), `G5_NeverMixedUp` (`AppliedG5`),
+// `G6_Settle` (`AppliedG6`), G7 (`AppliedG7`), and that every other
+// document keeps its bound file (`AppliedKeepsOtherFiles`).
 //
 // A path conflict (the revision's name is held by an untracked file) is
 // resolved only by `PathConflictCopy`, whose contract is stated here as its
@@ -382,6 +386,8 @@ abstract module ApplyCore refines PushCore {
             e.to in disk' && e.from in device.disk && disk'[e.to] == device.disk[e.from])
       && (forall x :: x in disk' && !Arrives(applied.effects, x) ==>
             x in device.disk && disk'[x].identity == device.disk[x].identity)
+      && (forall x :: x in device.disk && !Departs(device.platform, applied.effects, x) ==>
+            x in disk' && disk'[x].identity == device.disk[x].identity)
   {
     DistinctDisk(device);
     var platform := device.platform;
@@ -487,6 +493,8 @@ abstract module ApplyCore refines PushCore {
       && (forall e :: e in applied.effects ==> !e.Move?)
       && (forall x :: x in disk' && !Arrives(applied.effects, x) ==>
             x in device.disk && disk'[x].identity == device.disk[x].identity)
+      && (forall x :: x in device.disk && !Departs(device.platform, applied.effects, x) ==>
+            x in disk' && disk'[x].identity == device.disk[x].identity)
   {
     var platform := device.platform;
     var disk := device.disk;
@@ -530,6 +538,11 @@ abstract module ApplyCore refines PushCore {
   // conditional on no file) or moved there.
   ghost predicate Arrives(effects: seq<Effect>, x: Path) {
     exists e :: e in effects && ((e.Write? && e.precondition.None? && e.path == x) || (e.Move? && e.to == x))
+  }
+
+  // A file leaves name x by one of the effects: removed or moved away.
+  ghost predicate Departs(platform: Platform, effects: seq<Effect>, x: Path) {
+    exists e :: e in effects && ((e.Remove? && SameF(platform, e.path, x)) || (e.Move? && SameF(platform, e.from, x)))
   }
 
   // A file is at `p` under F on `disk`.
@@ -880,6 +893,51 @@ abstract module ApplyCore refines PushCore {
       }
       var e := Write(Some(doc), r.path, r.content, r.kind, None);
       assert e in step.effects;
+    }
+  }
+
+  // Every other document's bound file stays where it is, the same file: the
+  // apply removes only the document's own file (no other document is bound
+  // to its name, G5_NeverJoined) and moves aside only an untracked file.
+  lemma AppliedKeepsOtherFiles(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, rev)
+    requires G5_NeverJoined(step.pre)
+    ensures var d := step.event.device;
+      forall other :: other != doc && BoundIdentity(step.pre.devices[d], other).Some? ==>
+        BoundIdentity(step.post.devices[d], other) == BoundIdentity(step.pre.devices[d], other)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var platform := device.platform;
+    var document := device.journal.documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var after := step.post.devices[d];
+    assert input.listing == ListingOf(device);
+    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    forall other | other != doc && BoundIdentity(device, other).Some?
+      ensures BoundIdentity(after, other) == BoundIdentity(device, other)
+    {
+      var s' := device.journal.documents[other].binding.value.spelling;
+      assert s' in bound;
+      var x :| x in device.disk && SameF(platform, x, s');
+      FileAtIs(device, s', x);
+      assert !Departs(platform, applied.effects, x) by {
+        forall e | e in applied.effects
+          ensures !((e.Remove? && SameF(platform, e.path, x)) || (e.Move? && SameF(platform, e.from, x)))
+        {
+          if e.Remove? && SameF(platform, e.path, x) {
+            assert e.path == document.binding.value.spelling;
+            SameFIsEquivalence(platform, e.path, x, s');
+          }
+          if e.Move? && SameF(platform, e.from, x) {
+            SameFIsEquivalence(platform, e.from, x, s');
+            SameFIsEquivalence(platform, s', e.from, e.from);
+            assert BoundName(platform, bound, e.from);
+          }
+        }
+      }
+      assert after.journal.documents[other] == device.journal.documents[other];
+      FileAtIs(after, s', x);
     }
   }
 
