@@ -126,12 +126,32 @@ abstract module Guarantees refines EngineModel {
 
   // What the core last saw at the bound file `path` of `doc` is `content`:
   // the binding's `seen`, or, in a sync round, the round's read of the file
-  // (its listing, verified-core.md §2.3), which is newer than `seen`.
+  // (its listing, verified-core.md §2.3), which is newer than `seen`. The
+  // round's read counts only where the step keeps what it read (`ReadKept`):
+  // an overwrite of a user's change the core read but did not keep would
+  // destroy what the user wrote.
   ghost predicate LastSaw(step: Step, device: Device, doc: DocId, path: Path, content: Hash)
     requires BoundTo(device, doc, path)
   {
     content == device.journal.documents[doc].binding.value.seen
-    || (step.event.SyncRound? && HasFile(device, path) && FileAt(device, path).content == content)
+    || (step.event.SyncRound? && step.event.device in step.pre.devices
+        && RoundRead(step, path).Some? && RoundRead(step, path).value.0 == content
+        && ReadKept(step, doc, content))
+  }
+
+  // A sync round keeps the content it read in doc's file: after the step it
+  // is what the document will have on the server (`Outgoing`), or it is in
+  // an untracked file on the device, or the step settles another device's
+  // revision of doc against it, where G6_Settle says how it is kept
+  // (combined, in place, or next to it).
+  ghost predicate ReadKept(step: Step, doc: DocId, content: Hash)
+    requires step.event.SyncRound?
+  {
+    var d := step.event.device;
+    d in step.post.devices
+    && (Outgoing(step.post.devices[d], doc) == Some(content)
+        || SavedNextToIt(step.post.devices[d], content)
+        || exists remote :: SettlesConcurrent(step, d, doc, remote))
   }
 
   // The adapter performs a disk effect only if its precondition holds: a

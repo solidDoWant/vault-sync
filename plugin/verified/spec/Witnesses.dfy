@@ -152,8 +152,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
   // G2's step predicates, G2_UnsavedSafe included.
   lemma RoundSettlesUnreportedEdit(
     d: DeviceId, platform: Platform, p: Path, c: Path, e: Path, doc: DocId,
-    f: DiskFile, copyId: FileIdentity, baseRev: Revision, remote: Revision, next: RevId, u: Hash)
-    requires baseRev.doc == doc && remote.doc == doc && baseRev.id != remote.id
+    f: DiskFile, copyId: FileIdentity, baseRev: Revision, remote: Revision, next: RevId, u: Hash, newDoc: DocId)
+    requires baseRev.doc == doc && remote.doc == doc && baseRev.id != remote.id && newDoc != doc
     requires remote.device != d && !remote.deleted && remote.path == p && remote.kind == Binary
     requires baseRev.path == p && baseRev.kind == Binary && !baseRev.deleted
     requires f.kind == Binary && f.content != baseRev.content && remote.content != baseRev.content
@@ -172,7 +172,7 @@ abstract module GuaranteeWitnesses refines Guarantees {
       var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
                                         map[p := f, c := DiskFile(r, Binary, copyId)], editors, {})], server);
       var step := Step(pre, SyncRound(d), [Pull(1), Write(None, c, r, Binary, None)], post);
-      RoundInputOf(pre, d, RoundInput(map[p := (l, Binary)], {e}, []))
+      RoundInputOf(pre, d, RoundInput(map[p := (l, Binary)], {e}, [newDoc]))
       && RoundRead(step, p) == Some((l, Binary))
       && DisksFollowEffects(step)
       && SettlesConcurrent(step, d, doc, remote) && G6_Settle(step, d, doc, remote)
@@ -196,6 +196,7 @@ abstract module GuaranteeWitnesses refines Guarantees {
     // The input.
     assert DiskListing(device) == map[p := (l, Binary)];
     assert UnsavedPaths(device) == {e};
+    assert !DocIdUsed(pre, newDoc);
     assert p in device.disk && SameF(platform, p, p);
     assert HasFile(device, p) && FileAt(device, p) == f;
     // The disk.
@@ -376,6 +377,56 @@ abstract module GuaranteeWitnesses refines Guarantees {
     var write := Write(Some(doc), p, m, f.kind, Some(f.content));
     assert write in [write];
     assert BoundTo(pre.devices[d], doc, p);
+  }
+
+  // A sync round that pulls nothing and overwrites a user's edit l, which it
+  // read but no event reported yet, with the stale content b fails
+  // G2_OnlyWhatItSaw: the round's read counts as what it last saw only where
+  // the step keeps l (`ReadKept`), and here l is gone from the disk, the
+  // journal and the outbox. A delete of the edited file fails the same way.
+  lemma G2RejectsRoundRevertingUnreadEdit(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, b: Hash)
+    requires f.content != b
+    ensures
+      var before := Document(None, None, Some(Binding(p, b, false, None)), Never, None);
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[p := f], {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []),
+                                        map[p := DiskFile(b, f.kind, f.identity)], {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      var postGone := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[], {}, {})],
+                            Server(map[], map[], [], {}, map[]));
+      !G2_OnlyWhatItSaw(Step(pre, SyncRound(d), [Write(Some(doc), p, b, f.kind, Some(f.content))], post))
+      && !G2_OnlyWhatItSaw(Step(pre, SyncRound(d), [Remove(doc, p, f.content)], postGone))
+  {
+    var before := Document(None, None, Some(Binding(p, b, false, None)), Never, None);
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[p := f], {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []),
+                                      map[p := DiskFile(b, f.kind, f.identity)], {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    var postGone := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[], {}, {})],
+                          Server(map[], map[], [], {}, map[]));
+    var write := Write(Some(doc), p, b, f.kind, Some(f.content));
+    var remove := Remove(doc, p, f.content);
+    var step := Step(pre, SyncRound(d), [write], post);
+    var stepGone := Step(pre, SyncRound(d), [remove], postGone);
+    assert write in step.effects && remove in stepGone.effects;
+    assert BoundTo(pre.devices[d], doc, p);
+    // The overwrite: l is in no file and is not what the document sends.
+    var device' := post.devices[d];
+    assert p in device'.disk && SameF(platform, p, p);
+    assert BoundFile(device', doc) == Some(DiskFile(b, f.kind, f.identity));
+    assert Outgoing(device', doc) == Some(b);
+    assert !SavedNextToIt(device', f.content);
+    assert !ReadKept(step, doc, f.content);
+    assert !LastSaw(step, pre.devices[d], doc, p, f.content);
+    // The delete: no file is left, and nothing is sent.
+    var gone := postGone.devices[d];
+    assert !HasFile(gone, p);
+    assert Outgoing(gone, doc) == None;
+    assert !ReadKept(stepGone, doc, f.content);
+    assert !LastSaw(stepGone, pre.devices[d], doc, p, f.content);
   }
 
   // ---------------------------------------------------------------------
