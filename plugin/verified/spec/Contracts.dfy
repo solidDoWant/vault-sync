@@ -230,8 +230,11 @@ abstract module StepContracts refines PushCore {
   // A server event (a restore from backup, a purge, a restore from history)
   // changes no device. From a reachable state it keeps CoreInv, MirrorInv
   // (a device it unfinishes stays out of MirrorInv's reach) and the
-  // StepGuarantees; a purge and a restore from history keep StateInvariants
-  // and ServerInv too. A restore keeps them apart from what it lost
+  // StepGuarantees (a restore leaves every device whose journal names a
+  // revision it lost, or whose cursor is past the restored feed, unfinished:
+  // EarlierServer, JournalOnServer); a purge and a restore from history keep
+  // StateInvariants and ServerInv too. A restore keeps them apart from what
+  // it lost
   // (owner question on #1011: G1_Retained across a restore that loses a
   // version no device holds; ServerInv's cursor clause until the device's
   // resync).
@@ -371,8 +374,10 @@ abstract module StepContracts refines PushCore {
   ghost predicate CoreStep(step: Step)
 
   // The shell's obligation over a run (#952): after a restore from backup,
-  // each device resyncs before its next sync round, and no local event is
-  // delivered that an earlier scan's listing already reflects (§3.4).
+  // each device resyncs before its next sync round. (That no local event is
+  // delivered which an earlier scan's listing already reflects, §3.4, is
+  // #952's tested obligation, not part of this predicate: the model has no
+  // record of which listing an event postdates.)
   ghost predicate ShellRun(trace: Trace) {
     forall j, k, d :: 0 <= j < k < |trace| && trace[j].event.Restore?
       && trace[k].event == SyncRound(d)
