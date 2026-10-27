@@ -13,20 +13,6 @@ abstract module Guarantees refines EngineModel {
   // Helpers
   // ---------------------------------------------------------------------
 
-  // The device whose disk and journal a step's effects act on.
-  ghost function EventDevice(event: Event): Option<DeviceId> {
-    match event
-    case User(d, _) => Some(d)
-    case Local(d, _) => Some(d)
-    case Scan(d, _) => Some(d)
-    case RemoteRevision(d, _) => Some(d)
-    case Pushed(d, _) => Some(d)
-    case Crash(d) => Some(d)
-    case Restart(d) => Some(d)
-    case SyncRound(d) => Some(d)
-    case _ => None
-  }
-
   // The line-level three-way merge of a note (SPEC.md §7): the combined
   // content, or None when the two changes touch the same lines. Abstract:
   // which edits combine is the merge's business, not the guarantees'.
@@ -35,16 +21,6 @@ abstract module Guarantees refines EngineModel {
 
   // A conflict-copy name (SPEC.md §7, `<name> (conflict <device> <date>).<ext>`).
   ghost predicate IsCopyName(p: Path)
-
-  // The file at `path` on a device, found under the device's F.
-  ghost predicate HasFile(device: Device, path: Path) {
-    exists q :: q in device.disk && SameF(device.platform, q, path)
-  }
-  ghost function FileAt(device: Device, path: Path): DiskFile
-    requires HasFile(device, path)
-  {
-    var q :| q in device.disk && SameF(device.platform, q, path); device.disk[q]
-  }
 
   // The file a document is bound to on a device, if it is on disk.
   ghost function BoundFile(device: Device, doc: DocId): Option<DiskFile> {

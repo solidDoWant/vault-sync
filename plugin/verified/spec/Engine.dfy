@@ -232,6 +232,142 @@ abstract module EngineModel {
   }
 
   // ---------------------------------------------------------------------
+  // What an effect does to the disk (verified-core.md §2.3)
+  // ---------------------------------------------------------------------
+
+  // The device whose disk and journal a step's effects act on.
+  ghost function EventDevice(event: Event): Option<DeviceId> {
+    match event
+    case User(d, _) => Some(d)
+    case Local(d, _) => Some(d)
+    case Scan(d, _) => Some(d)
+    case RemoteRevision(d, _) => Some(d)
+    case Pushed(d, _) => Some(d)
+    case Crash(d) => Some(d)
+    case Restart(d) => Some(d)
+    case SyncRound(d) => Some(d)
+    case _ => None
+  }
+
+  // The file at `path` on a device, found under the device's F.
+  ghost predicate HasFile(device: Device, path: Path) {
+    exists q :: q in device.disk && SameF(device.platform, q, path)
+  }
+  ghost function FileAt(device: Device, path: Path): DiskFile
+    requires HasFile(device, path)
+  {
+    var q :| q in device.disk && SameF(device.platform, q, path); device.disk[q]
+  }
+
+
+  // What the shell reads at `path` when it hands the core an event: the
+  // content and kind of the file there under the device's F, or None when no
+  // file is there.
+  ghost function ReadAt(device: Device, path: Path): Option<(Hash, Kind)> {
+    if HasFile(device, path) then Some((FileAt(device, path).content, FileAt(device, path).kind)) else None
+  }
+
+  // The paths a local event names.
+  ghost function LocalEventPaths(local: LocalEvent): set<Path> {
+    match local
+    case Created(p) => {p}
+    case Modified(p) => {p}
+    case Deleted(p) => {p}
+    case Renamed(from, to) => {from, to}
+  }
+
+  // How file contents reach the core: a local event's input is the event
+  // together with the shell's read of every path it names, taken from the
+  // step's pre disk (there is no read-result event). The start-up scan's
+  // input is its listing.
+  ghost function LocalReads(step: Step): map<Path, Option<(Hash, Kind)>>
+    requires step.event.Local? && step.event.device in step.pre.devices
+  {
+    map p | p in LocalEventPaths(step.event.local) :: ReadAt(step.pre.devices[step.event.device], p)
+  }
+
+  // No file on `disk` collides with `path` under F (design §3.2: the same
+  // name, or a file where a folder of the name is, or under the name).
+  ghost predicate FreeOn(platform: Platform, disk: map<Path, DiskFile>, path: Path) {
+    forall q :: q in disk ==> !CollideF(platform, q, path)
+  }
+
+  // The file found at spelling q (under F) holds `content`.
+  ghost predicate Holds(platform: Platform, disk: map<Path, DiskFile>, q: Path, path: Path, content: Hash) {
+    q in disk && SameF(platform, q, path) && disk[q].content == content
+  }
+
+  // One effect acting on one device's disk, from `disk` to `disk'`. A disk
+  // effect takes effect only when its precondition matches the disk under
+  // the device's F, and otherwise does nothing (SPEC.md §8 "Conditional
+  // writes"):
+  // - a Write conditional on content h overwrites the file holding h in
+  //   place: the same file (identity) and spelling, with the new content and
+  //   kind;
+  // - a Write conditional on no file creates a new file (an identity no file
+  //   on the disk has) at `path`, if no file collides with `path`;
+  // - a Remove deletes the file holding `expected`;
+  // - a Move takes the file holding `expected` (the same file, with its
+  //   content and kind) to `to`, if no other file collides with `to` and
+  //   neither name is a folder of the other (a rename that changes only the
+  //   case of the name is allowed).
+  // Every other effect leaves the disk unchanged.
+  ghost predicate EffectTakes(platform: Platform, disk: map<Path, DiskFile>, effect: Effect, disk': map<Path, DiskFile>) {
+    match effect
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.Some? then
+        if exists q :: Holds(platform, disk, q, path, precondition.value)
+        then exists q :: Holds(platform, disk, q, path, precondition.value)
+               && disk' == disk[q := DiskFile(content, kind, disk[q].identity)]
+        else disk' == disk
+      else
+        if FreeOn(platform, disk, path)
+        then exists identity: FileIdentity :: (forall q :: q in disk ==> disk[q].identity != identity)
+               && disk' == disk[path := DiskFile(content, kind, identity)]
+        else disk' == disk
+    case Remove(_, path, expected) =>
+      if exists q :: Holds(platform, disk, q, path, expected)
+      then exists q :: Holds(platform, disk, q, path, expected) && disk' == disk - {q}
+      else disk' == disk
+    case Move(_, from, to, expected) =>
+      if exists q :: MovableTo(platform, disk, q, from, to, expected)
+      then exists q :: MovableTo(platform, disk, q, from, to, expected) && disk' == (disk - {q})[to := disk[q]]
+      else disk' == disk
+    case _ => disk' == disk
+  }
+
+  ghost predicate MovableTo(platform: Platform, disk: map<Path, DiskFile>, q: Path, from: Path, to: Path, expected: Hash) {
+    Holds(platform, disk, q, from, expected)
+    && FreeOn(platform, disk - {q}, to)
+    && (CollideF(platform, q, to) ==> SameF(platform, q, to))
+  }
+
+  // The effects act in the order requested, each on the disk the earlier
+  // ones left.
+  ghost predicate EffectsTake(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>)
+    decreases |effects|
+  {
+    if |effects| == 0 then disk' == disk
+    else exists mid :: EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk')
+  }
+
+  // A step's disks follow its effects. In a step that is not the user's,
+  // the event's device's disk after the step is its disk before with the
+  // step's effects applied in order, and no other device's disk changes.
+  // (A user's step changes the disk by the user's action, not by effects.)
+  // A crash cuts a step short: that step does not complete, and the
+  // device's Crash step lists, as its effects, the prefix of the
+  // interrupted step's effects the shell had performed, which therefore
+  // act on the disk as any step's effects do.
+  ghost predicate DisksFollowEffects(step: Step) {
+    !step.event.User? ==>
+      forall d :: d in step.pre.devices && d in step.post.devices ==>
+        if EventDevice(step.event) == Some(d)
+        then EffectsTake(step.pre.devices[d].platform, step.pre.devices[d].disk, step.effects, step.post.devices[d].disk)
+        else step.post.devices[d].disk == step.pre.devices[d].disk
+  }
+
+  // ---------------------------------------------------------------------
   // Derived notions used by the guarantees
   // ---------------------------------------------------------------------
 

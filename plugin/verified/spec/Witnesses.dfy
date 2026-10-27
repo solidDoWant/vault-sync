@@ -131,6 +131,171 @@ abstract module GuaranteeWitnesses refines Guarantees {
   }
 
   // ---------------------------------------------------------------------
+  // Effect semantics (Engine.dfy, verified-core.md §2.3)
+  // ---------------------------------------------------------------------
+
+  // A device holds a synced file at p; a remote revision arrives and the
+  // core overwrites the file, conditional on the content it last saw there.
+  // The write applies: the same file holds the new content. The step's disk
+  // follows its effects and the step keeps G2's step predicates.
+  lemma ConditionalWriteFollowsEffects(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, h: Hash, kind: Kind, rev: Revision)
+    ensures
+      var before := Document(None, None, Some(Binding(p, f.content, false, None)), Never, None);
+      var after := Document(None, None, Some(Binding(p, h, false, None)), Never, None);
+      var server := Server(map[], map[], [], {}, map[]);
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[p := f], {}, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[doc := after], 0, [], []),
+                                        map[p := DiskFile(h, kind, f.identity)], {}, {})], server);
+      var step := Step(pre, RemoteRevision(d, rev), [Write(Some(doc), p, h, kind, Some(f.content))], post);
+      DisksFollowEffects(step)
+      && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
+  {
+    var before := Document(None, None, Some(Binding(p, f.content, false, None)), Never, None);
+    var after := Document(None, None, Some(Binding(p, h, false, None)), Never, None);
+    var server := Server(map[], map[], [], {}, map[]);
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[p := f], {}, {})], server);
+    var post := State(map[d := Device(platform, true, Journal(map[doc := after], 0, [], []),
+                                      map[p := DiskFile(h, kind, f.identity)], {}, {})], server);
+    var write := Write(Some(doc), p, h, kind, Some(f.content));
+    var step := Step(pre, RemoteRevision(d, rev), [write], post);
+    var disk := map[p := f];
+    var disk' := map[p := DiskFile(h, kind, f.identity)];
+    assert Holds(platform, disk, p, p, f.content);
+    assert disk' == disk[p := DiskFile(h, kind, disk[p].identity)];
+    assert EffectTakes(platform, disk, write, disk');
+    assert EffectsTake(platform, disk', [write][1..], disk');
+    assert EffectsTake(platform, disk, [write], disk');
+    assert BoundTo(pre.devices[d], doc, p);
+    assert G2_OnlyWhatItSaw(step);
+    assert write in step.effects;
+    assert G2_Conditional(step);
+  }
+
+  // The same write, when the file no longer holds what the core last saw:
+  // a post disk where it was performed anyway does not follow the effects.
+  lemma DisksFollowEffectsRejectsUnmatchedWrite(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, seen: Hash, h: Hash, kind: Kind,
+    rev: Revision, journal: Journal)
+    requires f.content != seen && h != f.content
+    ensures
+      var server := Server(map[], map[], [], {}, map[]);
+      var pre := State(map[d := Device(platform, true, journal, map[p := f], {}, {})], server);
+      var post := State(map[d := Device(platform, true, journal, map[p := DiskFile(h, kind, f.identity)], {}, {})], server);
+      !DisksFollowEffects(Step(pre, RemoteRevision(d, rev), [Write(Some(doc), p, h, kind, Some(seen))], post))
+  {
+    var server := Server(map[], map[], [], {}, map[]);
+    var pre := State(map[d := Device(platform, true, journal, map[p := f], {}, {})], server);
+    var post := State(map[d := Device(platform, true, journal, map[p := DiskFile(h, kind, f.identity)], {}, {})], server);
+    var write := Write(Some(doc), p, h, kind, Some(seen));
+    var step := Step(pre, RemoteRevision(d, rev), [write], post);
+    var disk := map[p := f];
+    var disk' := map[p := DiskFile(h, kind, f.identity)];
+    assert !exists q :: Holds(platform, disk, q, p, seen);
+    forall mid: map<Path, DiskFile> | EffectTakes(platform, disk, write, mid) ensures mid != disk' {
+      assert mid == disk;
+      assert disk'[p] != disk[p];
+    }
+    assert !EffectsTake(platform, disk, [write], disk');
+    assert d in step.pre.devices && d in step.post.devices && EventDevice(step.event) == Some(d);
+  }
+
+  // A write whose precondition holds, but which the post disk does not show
+  // (the effect silently dropped), does not follow the effects either. The
+  // step's guarantees alone do not rule this out: nothing on the disk
+  // changed.
+  lemma DisksFollowEffectsRejectsDroppedWrite(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, h: Hash, kind: Kind,
+    rev: Revision, journal: Journal)
+    requires h != f.content
+    ensures
+      var pre := State(map[d := Device(platform, true, journal, map[p := f], {}, {})], Server(map[], map[], [], {}, map[]));
+      !DisksFollowEffects(Step(pre, RemoteRevision(d, rev), [Write(Some(doc), p, h, kind, Some(f.content))], pre))
+  {
+    var write := Write(Some(doc), p, h, kind, Some(f.content));
+    var disk := map[p := f];
+    assert Holds(platform, disk, p, p, f.content);
+    forall mid: map<Path, DiskFile> | EffectTakes(platform, disk, write, mid) ensures mid != disk {
+      var q :| Holds(platform, disk, q, p, f.content) && mid == disk[q := DiskFile(h, kind, disk[q].identity)];
+      assert q == p;
+      assert mid[p].content == h;
+    }
+    assert !EffectsTake(platform, disk, [write], disk);
+    var pre := State(map[d := Device(platform, true, journal, map[p := f], {}, {})], Server(map[], map[], [], {}, map[]));
+    var step := Step(pre, RemoteRevision(d, rev), [write], pre);
+    assert d in step.pre.devices && EventDevice(step.event) == Some(d);
+  }
+
+  // The effect semantics keep G2_Conditional's disk half: in a step that is
+  // not the user's and keeps its devices, every file the effects change or
+  // remove was named by an effect whose precondition matched it before the
+  // step.
+  // `effect` names the file at p (under F), conditional on its content.
+  ghost predicate MatchedBy(platform: Platform, effect: Effect, p: Path, content: Hash) {
+    (effect.Write? && SameF(platform, effect.path, p) && effect.precondition == Some(content))
+    || (effect.Remove? && SameF(platform, effect.path, p) && effect.expected == content)
+    || (effect.Move? && SameF(platform, effect.from, p) && effect.expected == content)
+  }
+
+  lemma EffectsChangeOnlyMatchedFiles(
+    platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>, p: Path)
+    requires EffectsTake(platform, disk, effects, disk')
+    requires p in disk && (p !in disk' || disk'[p] != disk[p])
+    ensures exists effect :: effect in effects && MatchedBy(platform, effect, p, disk[p].content)
+    decreases |effects|
+  {
+    var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk');
+    if p in mid && mid[p] == disk[p] {
+      EffectsChangeOnlyMatchedFiles(platform, mid, effects[1..], disk', p);
+      var effect :| effect in effects[1..] && MatchedBy(platform, effect, p, mid[p].content);
+      assert effect in effects;
+    } else {
+      var effect := effects[0];
+      assert effect in effects;
+      match effect
+      case Write(_, path, content, kind, precondition) =>
+        if precondition.Some? {
+          var q :| Holds(platform, disk, q, path, precondition.value)
+                   && mid == disk[q := DiskFile(content, kind, disk[q].identity)];
+          assert q == p;
+        } else {
+          assert CollideF(platform, p, p);
+        }
+      case Remove(_, path, expected) =>
+        var q :| Holds(platform, disk, q, path, expected) && mid == disk - {q};
+        assert q == p;
+      case Move(_, from, to, expected) =>
+        var q :| MovableTo(platform, disk, q, from, to, expected) && mid == (disk - {q})[to := disk[q]];
+        if q != p {
+          assert p in disk - {q};
+          assert CollideF(platform, p, p);
+          assert p != to;
+        }
+      case _ =>
+    }
+  }
+
+  // Hence a step whose disks follow its effects, that is not the user's and
+  // keeps its devices, satisfies G2_Conditional.
+  lemma DisksFollowEffectsKeepsConditional(step: Step)
+    requires DisksFollowEffects(step) && step.pre.devices.Keys == step.post.devices.Keys
+    ensures G2_Conditional(step)
+  {
+    if !step.event.User? {
+      forall d, p | (d in step.pre.devices && p in step.pre.devices[d].disk
+        && (d !in step.post.devices || p !in step.post.devices[d].disk
+            || step.post.devices[d].disk[p] != step.pre.devices[d].disk[p]))
+        ensures EventDevice(step.event) == Some(d)
+          && exists effect :: effect in step.effects
+               && MatchedBy(step.pre.devices[d].platform, effect, p, step.pre.devices[d].disk[p].content)
+      {
+        EffectsChangeOnlyMatchedFiles(step.pre.devices[d].platform, step.pre.devices[d].disk, step.effects,
+                                      step.post.devices[d].disk, p);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // Rejections
   // ---------------------------------------------------------------------
 
