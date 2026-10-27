@@ -2847,6 +2847,11 @@ let LocalCoreJs = (function() {
       $dt.device = device;
       return $dt;
     }
+    static create_Resync(device) {
+      let $dt = new Event(11);
+      $dt.device = device;
+      return $dt;
+    }
     get is_User() { return this.$tag === 0; }
     get is_Local() { return this.$tag === 1; }
     get is_Scan() { return this.$tag === 2; }
@@ -2858,6 +2863,7 @@ let LocalCoreJs = (function() {
     get is_Crash() { return this.$tag === 8; }
     get is_Restart() { return this.$tag === 9; }
     get is_SyncRound() { return this.$tag === 10; }
+    get is_Resync() { return this.$tag === 11; }
     get dtor_device() { return this.device; }
     get dtor_action() { return this.action; }
     get dtor_local() { return this.local; }
@@ -2892,6 +2898,8 @@ let LocalCoreJs = (function() {
         return "LocalCoreJs.Event.Restart" + "(" + this.device.toVerbatimString(true) + ")";
       } else if (this.$tag === 10) {
         return "LocalCoreJs.Event.SyncRound" + "(" + this.device.toVerbatimString(true) + ")";
+      } else if (this.$tag === 11) {
+        return "LocalCoreJs.Event.Resync" + "(" + this.device.toVerbatimString(true) + ")";
       } else  {
         return "<unexpected>";
       }
@@ -2921,6 +2929,8 @@ let LocalCoreJs = (function() {
         return other.$tag === 9 && _dafny.areEqual(this.device, other.device);
       } else if (this.$tag === 10) {
         return other.$tag === 10 && _dafny.areEqual(this.device, other.device);
+      } else if (this.$tag === 11) {
+        return other.$tag === 11 && _dafny.areEqual(this.device, other.device);
       } else  {
         return false; // unexpected
       }

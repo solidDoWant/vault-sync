@@ -202,6 +202,11 @@ abstract module EngineModel {
     // with the round's input (`RoundInput`, `RoundInputOf`). The push's
     // answers arrive as later `Pushed` events.
     | SyncRound(device: DeviceId)
+    // The resync the shell runs on the server's divergence signal after a
+    // restore from backup (SPEC.md §8 "Divergence"): a round that re-reads
+    // every head instead of the feed after the cursor (verified-core.md
+    // §4.1). Its step includes its input as a sync round's does.
+    | Resync(device: DeviceId)
 
   ghost predicate IsUserAction(event: Event) { event.User? }
 
@@ -262,6 +267,7 @@ abstract module EngineModel {
     case Crash(d, _) => Some(d)
     case Restart(d) => Some(d)
     case SyncRound(d) => Some(d)
+    case Resync(d) => Some(d)
     case _ => None
   }
 
@@ -520,10 +526,34 @@ abstract module EngineModel {
     case Purge(revisions) =>
       (forall rev :: rev in revisions ==> rev in pre.revisions && !IsHead(pre, rev))
       && post == pre.(purged := pre.purged + revisions)
-    case Restore(restored) => post == restored
+    // A backup is the server as it was when its feed was shorter
+    // (EarlierServer). The ghost record of what the server accepted is not
+    // restored (verified-core.md §4.1).
+    case Restore(restored) =>
+      EarlierServer(pre, restored) && post == restored.(accepted := pre.accepted)
     case RemoteRevision(_, rev) =>
       post == pre && rev.id in pre.revisions && pre.revisions[rev.id] == rev && rev.id in pre.feed
     case _ => post == pre
+  }
+
+  // The ids of `s` that are in `ids`, in order.
+  ghost function Keep(s: seq<RevId>, ids: set<RevId>): seq<RevId> {
+    if |s| == 0 then [] else (if s[0] in ids then [s[0]] else []) + Keep(s[1..], ids)
+  }
+
+  // `restored` is `server` as it was when its feed had |restored.feed|
+  // entries: the feed cut there, every history and the revisions restricted
+  // to what that feed names, and the purges made by then (a subset of
+  // today's, none of them a head then).
+  ghost predicate EarlierServer(server: Server, restored: Server) {
+    |restored.feed| <= |server.feed| && restored.feed == server.feed[..|restored.feed|]
+    && var kept := set i | 0 <= i < |restored.feed| :: restored.feed[i];
+    restored.revisions == (map id | id in server.revisions && id in kept :: server.revisions[id])
+    && restored.history == (map doc | doc in server.history && |Keep(server.history[doc], kept)| > 0
+                              :: Keep(server.history[doc], kept))
+    && restored.purged <= server.purged * kept
+    && (forall doc :: doc in restored.history && |restored.history[doc]| > 0 ==>
+          restored.history[doc][|restored.history[doc]| - 1] !in restored.purged)
   }
 
   // ---------------------------------------------------------------------
@@ -601,8 +631,8 @@ abstract module EngineModel {
 
   // A device has finished syncing (quiescence, INV-9): it runs, has read the
   // whole feed, has no open intent, nothing to send, every revision not
-  // applied is one it reports it cannot hold, and its disk is in step with
-  // its journal.
+  // applied is one it reports it cannot hold, every revision it records is
+  // still on the server, and its disk is in step with its journal.
   ghost predicate FinishedSyncing(state: State, d: DeviceId) {
     d in state.devices
     && var device := state.devices[d];
@@ -612,7 +642,19 @@ abstract module EngineModel {
     && (forall doc :: doc in device.journal.documents ==>
          device.journal.documents[doc].outbox.None?
          && (device.journal.documents[doc].ahead.Some? ==> CannotHold(device.journal.documents[doc].ahead.value.blocker)))
+    && JournalOnServer(state.server, device.journal)
     && InStep(device)
+  }
+
+  // Every revision the journal records as a base or an ahead is one the
+  // server holds. A restore from backup that lost one leaves the device with
+  // a resync to do (SPEC.md §8 "Divergence": the anchor check), so it has
+  // not finished syncing, even once the feed grows back past its cursor
+  // (verified-core.md §4.1). Revision ids are never reused (Appendable).
+  ghost predicate JournalOnServer(server: Server, journal: Journal) {
+    forall doc :: doc in journal.documents ==>
+      (journal.documents[doc].base.Some? ==> journal.documents[doc].base.value.rev in server.revisions)
+      && (journal.documents[doc].ahead.Some? ==> journal.documents[doc].ahead.value.revision.id in server.revisions)
   }
 
   // The blockers that mean "this device cannot hold the file" (G9's
