@@ -54,13 +54,16 @@ abstract module EngineModel {
   // oldest first; its last element is the head. `purged` are revisions the
   // retention policy removed (SPEC.md §11). `accepted` is ghost bookkeeping:
   // every revision the server ever acknowledged, by id, even one a restore
-  // from backup later lost.
+  // from backup later lost. `lost` is ghost bookkeeping too: every accepted
+  // revision a restore from backup removed from the server's history
+  // (verified-core.md §2.2, #1015).
   datatype Server = Server(
     revisions: map<RevId, Revision>,
     history: map<DocId, seq<RevId>>,
     feed: seq<RevId>,
     purged: set<RevId>,
-    ghost accepted: map<RevId, Revision>)
+    ghost accepted: map<RevId, Revision>,
+    ghost lost: set<RevId> := {})
 
   // ---------------------------------------------------------------------
   // The device: journal (documents, bindings, outbox, server view), intents
@@ -528,12 +531,20 @@ abstract module EngineModel {
       && post == pre.(purged := pre.purged + revisions)
     // A backup is the server as it was when its feed was shorter
     // (EarlierServer). The ghost record of what the server accepted is not
-    // restored (verified-core.md §4.1).
+    // restored (verified-core.md §4.1), and the ghost record of what restores
+    // removed gains every accepted revision this one removed from the history.
     case Restore(restored) =>
-      EarlierServer(pre, restored) && post == restored.(accepted := pre.accepted)
+      EarlierServer(pre, restored)
+      && post == restored.(accepted := pre.accepted, lost := pre.lost + RestoreRemoves(pre, restored))
     case RemoteRevision(_, rev) =>
       post == pre && rev.id in pre.revisions && pre.revisions[rev.id] == rev && rev.id in pre.feed
     case _ => post == pre
+  }
+
+  // The accepted revisions a restore of `restored` over `server` removes
+  // from the server's history.
+  ghost function RestoreRemoves(server: Server, restored: Server): set<RevId> {
+    set rev | rev in server.accepted && InHistory(server, rev) && !InHistory(restored, rev)
   }
 
   // The ids of `s` that are in `ids`, in order.

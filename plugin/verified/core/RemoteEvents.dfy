@@ -155,18 +155,31 @@ abstract module RemoteCore {
   // - no device has read past the feed;
   // - the server's history and purges name only revisions it holds;
   // - every accepted revision is in the history, or its bytes are in a file
-  //   on some device, or retention purged it (and it is no head). This is
-  //   G1_Retained without "the content of some live head": that way out
-  //   does not survive a later accept of that head's document.
+  //   on some device, or retention purged it (and it is no head), or a
+  //   restore from backup removed it (`lost`). This is G1_Retained without
+  //   "the content of some live head": that way out does not survive a
+  //   later accept of that head's document.
   ghost predicate ServerInv(state: State) {
-    (forall d :: d in state.devices ==> state.devices[d].journal.cursor <= |state.server.feed|)
-    && state.server.purged <= state.server.revisions.Keys
+    CursorsOnFeed(state) && ServerRetains(state)
+  }
+
+  // ServerInv's first clause: no device has read past the feed. A restore
+  // from backup breaks it for a device whose cursor is past the restored
+  // feed until that device's resync (SPEC.md §8 "Divergence").
+  ghost predicate CursorsOnFeed(state: State) {
+    forall d :: d in state.devices ==> state.devices[d].journal.cursor <= |state.server.feed|
+  }
+
+  // ServerInv's other clauses, which a restore from backup keeps.
+  ghost predicate ServerRetains(state: State) {
+    state.server.purged <= state.server.revisions.Keys
     && (forall doc, rev :: doc in state.server.history && rev in state.server.history[doc] ==> rev in state.server.revisions)
     && (forall rev :: rev in state.server.accepted ==>
           InHistory(state.server, rev)
           || (!state.server.accepted[rev].deleted
               && exists d :: d in state.devices && OnDisk(state.devices[d], state.server.accepted[rev].content))
-          || (rev in state.server.purged && !IsHead(state.server, rev)))
+          || (rev in state.server.purged && !IsHead(state.server, rev))
+          || rev in state.server.lost)
   }
 
   lemma InitialServerInv(platforms: map<DeviceId, Platform>)
@@ -377,6 +390,7 @@ abstract module RemoteCore {
           || (!server'.accepted[rev].deleted
               && exists x :: x in post.devices && OnDisk(post.devices[x], server'.accepted[rev].content))
           || (rev in server'.purged && !IsHead(server', rev))
+          || rev in server'.lost
     {
       if rev != r.id {
         assert rev in server.accepted;
@@ -393,6 +407,8 @@ abstract module RemoteCore {
     assert G1_LatestNeverPurged(post);
     forall rev | rev in server.accepted && rev in server'.accepted && Retrievable(pre, rev) && !Retrievable(post, rev)
       ensures rev in server.purged
+          || (rev in server.lost
+              && !exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content))
     {
       if exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content) {
         var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], server.accepted[rev].content); x0;

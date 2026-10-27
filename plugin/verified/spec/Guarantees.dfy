@@ -61,11 +61,18 @@ abstract module Guarantees refines EngineModel {
             || (exists d :: d in state.devices && OnDisk(state.devices[d], version.content))))
   }
 
-  // "Only the operator's history-retention policy ever removes old versions,
-  // and never the latest one."
+  // "Only the operator (retention, or a restore from an older backup) ever
+  // removes old versions, and retention never the latest one."
+  //
+  // A version the operator removed is excused: one retention purged (never a
+  // head), or one a restore from backup removed from the server's history
+  // (`lost`, SPEC.md §13). The excuse is only the server's: devices still
+  // keep and push again what they hold (G1_OnlyRetentionRemoves, G2, G9,
+  // G10).
   ghost predicate G1_Retained(state: State) {
     forall rev :: rev in state.server.accepted ==>
       Retrievable(state, rev) || (rev in state.server.purged && !IsHead(state.server, rev))
+      || rev in state.server.lost
   }
 
   ghost predicate G1_LatestNeverPurged(state: State) {
@@ -77,6 +84,11 @@ abstract module Guarantees refines EngineModel {
   // - in a purge step that names it, if it is not its file's latest version;
   // - if retention already purged it (its bytes were only coincidentally
   //   elsewhere as well);
+  // - if a restore from backup already removed it (`lost`) and no device
+  //   held its bytes: they were only coincidentally the content of a live
+  //   head on the server, which a later accept may replace. A device's copy
+  //   of a lost version is not excused: the device keeps it and pushes it
+  //   again (#1015);
   // - in a restore from backup that removed it from the server's history
   //   (SPEC.md §13, restore runs: only the server's own history of the
   //   revisions the restore removed is excused). A restore changes no
@@ -90,6 +102,8 @@ abstract module Guarantees refines EngineModel {
       && Retrievable(step.pre, rev) && !Retrievable(step.post, rev)) ==>
         (step.event.Purge? && rev in step.event.revisions && !IsHead(step.pre.server, rev))
         || rev in step.pre.server.purged
+        || (rev in step.pre.server.lost
+            && !exists d :: d in step.pre.devices && OnDisk(step.pre.devices[d], step.pre.server.accepted[rev].content))
         || (step.event.Restore? && !InHistory(step.post.server, rev))
         || (step.event.User? && step.post.server == step.pre.server)
   }

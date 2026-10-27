@@ -232,19 +232,20 @@ abstract module StepContracts refines PushCore {
   // (a device it unfinishes stays out of MirrorInv's reach) and the
   // StepGuarantees (a restore leaves every device whose journal names a
   // revision it lost, or whose cursor is past the restored feed, unfinished:
-  // EarlierServer, JournalOnServer); a purge and a restore from history keep
-  // StateInvariants and ServerInv too. A restore keeps them apart from what
-  // it lost
-  // (owner question on #1011: G1_Retained across a restore that loses a
-  // version no device holds; ServerInv's cursor clause until the device's
-  // resync).
+  // EarlierServer, JournalOnServer). Each keeps StateInvariants (G1_Retained
+  // excuses what a restore removed, `lost`) and ServerRetains. A purge and a
+  // restore from history keep ServerInv's cursor clause too; a restore keeps
+  // it for every device but one whose cursor is past the restored feed,
+  // which only that device's resync can bring back (a server event changes
+  // no device).
   ghost predicate ServerEventContract(step: Step) {
     (step.event.Restore? || step.event.Purge? || step.event.RestoreFromHistory?)
     && CoreReachable(step.pre) && ServerFollowsEvent(step)
     && step.post.devices == step.pre.devices && step.effects == []
     ==>
       CoreInv(step.post) && MirrorInv(step.post) && StepGuarantees(step)
-      && (!step.event.Restore? ==> StateInvariants(step.post) && ServerInv(step.post))
+      && StateInvariants(step.post) && ServerRetains(step.post)
+      && (!step.event.Restore? ==> CursorsOnFeed(step.post))
   }
 
   // What a crash leaves (settled here, verified-core.md §4.1): the app stops,
