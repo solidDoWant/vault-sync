@@ -941,6 +941,36 @@ abstract module ApplyCore refines PushCore {
     }
   }
 
+  // ---------------------------------------------------------------------
+  // The applied row keeps the row invariant (CoreInv, one row at a time)
+  // ---------------------------------------------------------------------
+
+  // Whatever ApplyRevision decides, the document's new row keeps RowInv:
+  // a user's delete is still sent or already the base, a bound file that
+  // differs from the new base has an outbox (AheadOfBase), and an unsealed
+  // outbox carries the file as last seen (OutboxCurrent).
+  lemma AppliedKeepsRowInv(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires RowInv(document)
+    ensures RowInv(ApplyRevision(platform, doc, document, r, input, bound, rev).document)
+  {
+    if Newer(document, r) && document.binding.Some? {
+      var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+      if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && Concurrent(document, read, r) {
+        SettleKeepsRowInv(platform, doc, document, read.value, r, input, bound, rev);
+      }
+    }
+  }
+
+  lemma SettleKeepsRowInv(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires Concurrent(document, Some(read), r)
+    ensures RowInv(Settle(platform, doc, document, read, r, input, bound, rev).document)
+  {
+    var settled := Settle(platform, doc, document, read, r, input, bound, rev).document;
+    assert settled.binding.Some? && settled.base == Some(BaseOf(r)) && !r.deleted;
+    assert settled.binding.value.spelling == document.binding.value.spelling;
+  }
+
   lemma SubsetCard<T>(a: set<T>, b: set<T>)
     requires a <= b
     ensures |a| <= |b|
