@@ -263,4 +263,127 @@ abstract module ServerEvents refines StepContracts {
       CutOfCut(step.pre.server, restored, cut);
     }
   }
+
+  // A device the restore leaves undiverged was undiverged before it: its
+  // cursor is on the restored feed (a prefix), every revision its journal
+  // names is one the restored server holds (a subset), and its anchor is
+  // the restored feed's entry, which is the one before.
+  lemma RestoreUndiverged(step: Step, d: DeviceId)
+    requires ServerEventStep(step) && step.event.Restore?
+    requires d in step.post.devices && !Diverged(step.post, d)
+    ensures !Diverged(step.pre, d)
+  {
+    RestoredIsCut(step);
+    var journal := step.pre.devices[d].journal;
+    assert JournalOnServer(step.pre.server, journal) by {
+      forall doc | doc in journal.documents
+        ensures (journal.documents[doc].base.Some? ==> journal.documents[doc].base.value.rev in step.pre.server.revisions)
+          && (journal.documents[doc].ahead.Some? ==> journal.documents[doc].ahead.value.revision.id in step.pre.server.revisions)
+      {
+        assert JournalOnServer(step.post.server, journal);
+      }
+    }
+    if journal.cursor > 0 {
+      assert step.post.server.feed[journal.cursor - 1] == step.pre.server.feed[journal.cursor - 1];
+    }
+  }
+
+  // A restore keeps what the server retains: a revision it removes from
+  // the history or the revisions is `lost` (RestoreRemoves), and one it
+  // keeps but no longer marks purged is back in its document's history
+  // (HistoryFollowsFeed).
+  // Every revision is stored under its own id (Appended does so). Not a
+  // clause of CoreReachable: reported as a design gap on #950; until it is
+  // settled the restore's proof takes it as an explicit hypothesis.
+  ghost predicate RevisionsKeyed(server: Server) {
+    forall id :: id in server.revisions ==> server.revisions[id].id == id
+  }
+
+  lemma {:isolate_assertions} RestoreRetains(step: Step)
+    requires ServerEventStep(step) && step.event.Restore?
+    requires CoreReachable(step.pre) && RevisionsKeyed(step.pre.server)
+    ensures ServerRetains(step.post)
+  {
+    var pre := step.pre.server;
+    var post := step.post.server;
+    var restored := step.event.restored;
+    RestoredIsCut(step);
+    var kept := FeedIds(post.feed);
+    assert post.purged <= post.revisions.Keys;
+    forall doc, rev | doc in post.history && rev in post.history[doc] ensures rev in post.revisions {
+      KeepMember(pre.history[doc], kept, rev);
+    }
+    forall rev | rev in post.accepted
+      ensures InHistory(post, rev)
+          || (!post.accepted[rev].deleted
+              && exists d :: d in step.post.devices && OnDisk(step.post.devices[d], post.accepted[rev].content))
+          || (rev in post.purged && !IsHead(post, rev))
+          || rev in post.lost
+    {
+      if rev in pre.lost || rev in RestoreRemoves(pre, restored) {
+      } else if InHistory(pre, rev) {
+        assert InHistory(post, rev);
+      } else if rev in pre.purged && !IsHead(pre, rev) {
+        assert rev in pre.revisions;
+        assert rev in post.revisions;
+        assert rev in kept;
+        var i :| 0 <= i < |post.feed| && post.feed[i] == rev;
+        assert pre.feed[i] == rev;
+        var doc := pre.revisions[rev].doc;
+        assert doc in pre.history && rev in pre.history[doc];
+        KeepMember(pre.history[doc], kept, rev);
+        assert doc in post.history && rev in post.history[doc];
+        if rev !in post.purged {
+          assert InHistory(post, rev);
+        } else {
+          if IsHead(post, rev) {
+            var x :| Head(post, x).Some? && Head(post, x).value.id == rev;
+            var last := post.history[x][|post.history[x]| - 1];
+            assert post.revisions[last].id == rev && last in post.revisions;
+            assert last == rev;
+            assert false;
+          }
+        }
+      }
+    }
+  }
+
+  // A restore keeps each history in feed order: Keep keeps the order.
+  lemma {:isolate_assertions} RestoreHistoryFollowsFeed(step: Step)
+    requires ServerEventStep(step) && step.event.Restore?
+    requires CoreReachable(step.pre)
+    ensures HistoryFollowsFeed(step.post.server) && FeedPositioned(step.post.server) && RevisionsAccepted(step.post.server)
+  {
+    var pre := step.pre.server;
+    var post := step.post.server;
+    RestoredIsCut(step);
+    var kept := FeedIds(post.feed);
+    forall doc, j | doc in post.history && 0 <= j < |post.history[doc]| && post.history[doc][j] in post.revisions
+      ensures post.revisions[post.history[doc][j]].doc == doc && post.history[doc][j] in post.feed
+    {
+      var rev := post.history[doc][j];
+      KeepMember(pre.history[doc], kept, rev);
+      var m :| 0 <= m < |pre.history[doc]| && pre.history[doc][m] == rev;
+    }
+    forall i | 0 <= i < |post.feed| && post.feed[i] in post.revisions
+      ensures var doc := post.revisions[post.feed[i]].doc;
+              doc in post.history && post.feed[i] in post.history[doc]
+    {
+      var rev := post.feed[i];
+      assert pre.feed[i] == rev;
+      var doc := pre.revisions[rev].doc;
+      KeepMember(pre.history[doc], kept, rev);
+    }
+    forall doc, j, k | doc in post.history && 0 <= j < k < |post.history[doc]|
+      && post.history[doc][j] in post.revisions && post.history[doc][k] in post.revisions
+      ensures post.revisions[post.history[doc][j]].position < post.revisions[post.history[doc][k]].position
+    {
+      var j', k' := KeepOrder(pre.history[doc], kept, j, k);
+    }
+    forall i | 0 <= i < |post.feed| && post.feed[i] in post.revisions
+      ensures post.revisions[post.feed[i]].position == i
+    {
+      assert pre.feed[i] == post.feed[i];
+    }
+  }
 }
