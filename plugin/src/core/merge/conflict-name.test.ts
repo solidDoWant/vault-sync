@@ -126,6 +126,15 @@ describe("copyCandidate (the verified core's CopyCandidate)", () => {
     expect(copyCandidate(`dir/${fits}x.md`, null, 1, naming)).toBe(`dir/${fits}x${suffix}`);
   });
 
+  it("keeps the platform's limits when the suffix is on a folder", () => {
+    const rules = { platform: "windows" as const, root: "C:\\v" };
+    const suffix = " (conflict Pixel 7 2026-10-18 040506)";
+    const fits = "f".repeat(259 - 5 - suffix.length - "/c.md".length);
+    expect(copyCandidate(`${fits}/c.md`, fits, 1, { ...naming, rules })).toBe(`${fits}${suffix}/c.md`);
+    expect(copyCandidate(`${fits}x/c.md`, `${fits}x`, 1, { ...naming, rules })).toBe(`${fits}${suffix}/c.md`);
+    expect(copyCandidate(`${fits}x/c.md`, `${fits}x`, 1, naming)).toBe(`${fits}x${suffix}/c.md`);
+  });
+
   it("gives no name when no shortened name fits", () => {
     const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/${"g".repeat(60)}/`;
     expect(copyCandidate(`${folder}a.md`, null, 1, naming)).toBeNull();

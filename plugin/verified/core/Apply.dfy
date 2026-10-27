@@ -384,6 +384,20 @@ abstract module ApplyCore refines PushCore {
       ==> applied == NoCopy(doc, document, r, document.binding.value.spelling)
   {}
 
+  // Where the one untracked file holding a new document's name has no free
+  // name to move aside to, the apply defers the revision without a copy.
+  lemma NoNameNoMove(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      (document.binding.None? && Newer(document, r) && !JournalChange(document) && !r.deleted
+       && !UnsavedAt(platform, input.unsaved, r.path) && !BoundName(platform, bound, r.path)
+       && !FreeIn(platform, input.listing, r.path)
+       && var held := Colliders(platform, input.listing, r.path);
+       |held| == 1 && !BoundName(platform, bound, LeastPath(held))
+       && PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, LeastPath(held), r.path).None?)
+      ==> applied == NoCopy(doc, document, r, r.path)
+  {}
+
   // ---------------------------------------------------------------------
   // Every precondition holds on the disk the listing was read from
   // ---------------------------------------------------------------------
