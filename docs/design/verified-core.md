@@ -168,8 +168,24 @@ The tests left out, and why:
 | Old rule: the engine's match also compares kinds (its classifier) and skips unsynced files. §3.3 matches by content alone, over the listing the shell hands it | "transfers no binding to a file of another kind with the same content", "matches kinds by the engine's own classifier", "transfers no binding to a file the vault does not sync" |
 | Old rule: the engine's scan reads files lazily, by size and kind, and runs concurrently with events (`Bindings.renamed`'s `duringScan`). The core's scan is one step with its listing | "leaves the matched document user-deleted when a delete of its new file, really gone, arrives while the scan runs", "keeps the matched binding when the delete arriving while the scan runs was of the file there before it (E7b)", "reads no file of a kind or size the missing documents' content cannot have", "follows a rename chain whose files differ in size, …", "matches a create not acknowledged yet, whose row knows no size, by content alone"; `scan-race.test.ts`: "binds each document to its own file only, whatever the interleaving" |
 
-### 3.5 Remote revisions (`RemoteEvents.dfy`, #949, in progress)
+### 3.5 Remote revisions and push results (`RemoteEvents.dfy`, #949, in progress)
 
-A remote revision delivered outside a sync round is recorded, not yet applied. If it is newer than everything the device knows of its document (its position is past the `ahead`, or else the `base`), it becomes the document's `ahead`: blocked by `LocalChanges` when the journal has a change of the document the server lacks (an outbox, or a user's delete), and otherwise postponed until the apply that needs the path-conflict function (#962). An older revision changes nothing. The core requests no disk effect, only `PersistJournal`, and changes no `base`, binding or outbox. A device with a waiting revision it can hold has not finished syncing, so G9 is not at stake.
+**Remote revisions.** A remote revision delivered outside a sync round is recorded, not yet applied. If it is newer than everything the device knows of its document (its position is past the `ahead`, or else the `base`), it becomes the document's `ahead`. It is blocked by `LocalChanges` when the journal has a change of the document the server lacks (an outbox, or a user's delete), and is otherwise postponed until the apply that needs the path-conflict function (#962). An older revision changes nothing.
 
-The theorem `RemoteRevisionSafe` proves that from any state satisfying `StateInvariants` and `CoreInv`, the step keeps both and satisfies `StepGuarantees`. The lemma `AheadOnlyStep` proves this for any step that only records waiting revisions. The apply to disk, push results and the `SyncRound` wrapper are not here yet. Push results need the server's accept semantics, which the specification does not state (design gap on #949).
+**Push results.** A result answers a document's sealed outbox, the commit in flight. A result for a document with no commit in flight changes nothing.
+
+- **Accepted:** the revision becomes the document's `base`, and an `ahead` no newer than it is dropped. The outbox goes, unless the user changed the document after the commit was sealed. In that case a new outbox on top of the accepted revision carries the change: the bound file's name and `seen`, or a tombstone for a user's delete.
+- **Head moved, already exists, unavailable:** the outbox is unsealed and carries the document as the device last saw it (`OutboxCurrent`), to be sent again. "Unavailable" answers every commit in flight.
+- **Invalid argument:** the same, and the outbox is marked `rejected` until a local change clears it (`SPEC.md` §6.2).
+
+None of these requests a disk effect, only `PersistJournal`, and none changes a binding.
+
+**`ServerInv`.** The proofs need more of the server than `StateInvariants`:
+
+- no device has read past the feed;
+- history and purges name only revisions the server holds;
+- every accepted revision is in the history, or in a file on some device, or purged and no head.
+
+The last clause is `G1_Retained` without its "content of some live head" way out. That way out does not survive a later accept of that head's document: the head's content then lives on only as an old revision, which does not make the other version retrievable. Every reachable state must satisfy `ServerInv`: the initial state does, the steps here and local events keep it (they change neither the server nor a disk), and #950 (restore, purge) and #966 (whole runs) must keep it.
+
+The theorems `RemoteRevisionSafe`, `RefusedSafe` and `AcceptSafe` prove that from any state satisfying `StateInvariants`, `CoreInv` and `ServerInv`, the step keeps all three and satisfies `StepGuarantees` (with `ServerFollowsEvent`). The lemma `QuietStep` proves this for any step that leaves the server and the disks as they are and changes rows only by recording a waiting revision or reopening an outbox. The sync round, which applies pulled revisions to disk and sends commits, is not here yet.
