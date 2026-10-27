@@ -1,6 +1,6 @@
 # Verified engine core
 
-Status: §1 approved by the owner (#945), §2 added by #947, effect semantics and file contents (§2.3) by #964; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
+Status: §1 approved by the owner (#945), §2 added by #947, effect semantics and file contents (§2.3) by #964, the core (§3) by #948; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
 
 ## 1. Guarantees
 
@@ -112,3 +112,26 @@ G10's "never … stalls forever" is stated as a safety property: two sync rounds
 ### 2.5 Changing the specification
 
 The specification is changed only through `design` issues (`docs/agents/engine-designer.md`), never by a fix or refactor PR. A change to what a guarantee's predicate means, or to the guarantees themselves, needs the owner, as §1 does. A predicate may be made more precise only where its English sentence already says so, and a reviewer checks every predicate against its sentence.
+
+## 3. The core
+
+The verified core lives in `plugin/verified/core/`. It refines the specification of §2: it adds code and proofs, and never changes a predicate. `make verify` proves it. Compiling it to JavaScript and running it against the engine's tests is #965; the shell that executes its effects is #952.
+
+### 3.1 Shape
+
+Each handler is a non-ghost function from what the shell hands the core to the new journal and the effects. The input is the device's platform and journal, the event, the event's input (§2.3: for a local event, the shell's read of every path it names; for the start-up scan, the listing), and the revision id the shell assigns to each document's next outbox. A step of the core is the state before, the event, the effects, and the state after, in which only the event's device's journal is replaced and every disk follows the effects (`DisksFollowEffects`).
+
+### 3.2 The core's invariant
+
+`CoreInv`, which every handler keeps and which #949 and #950 must keep too: **a user's delete is never forgotten.** A document whose binding is gone with `absence = UserDeleted` has an outbox, or a base that is a tombstone. The one commit a document sends therefore carries the delete until the server has it.
+
+### 3.3 Local events and the start-up scan (`LocalEvents.dfy`, #948)
+
+A local file event or the scan reports a change the user already made on disk, so the core requests no disk effect for them, only `PersistJournal`. Every document row the core changes gets an outbox (a sealed outbox, a commit in flight, is never edited, but it counts as one). Base and ahead are never changed here.
+
+- **Created / Modified** of a bound file whose content differs from `seen`: `seen` becomes the new content, and the outbox carries it. A new file stays untracked: the push creates its document (#949), and `PendingPush` counts untracked files.
+- **Deleted** of a bound file that is gone: the binding goes, `absence = UserDeleted`, and the outbox carries the tombstone. If the read finds a file again (a new one was created there before the event arrived), nothing changes, and the later create event decides.
+- **Renamed:** the document bound to the old name is bound to the new one, with the content read there (G5_RenameKeepsDocument). Another document bound to the new name had its file replaced by the user, so it is unbound as a user's delete, as above.
+- **Start-up scan:** a bound file present in the listing whose content differs from `seen`, or that the server does not have as it is, gets an outbox. A bound file missing from the listing is matched to another file only by the one-to-one exact-content rule (E7, §1.3, owner decision 4): exactly one untracked listed file holds exactly `seen`, and no other document whose file is missing last saw that content. Otherwise the document counts as deleted by the user while the app was closed (G8_PicksUpOfflineChanges).
+
+The theorems `LocalEventSafe` and `ScanSafe` prove that from any state satisfying `StateInvariants` and `CoreInv`, the step keeps both and satisfies every step predicate of `Guarantees.dfy` (`StepGuarantees`). `G10_NoLoop`, which relates two sync rounds, does not apply to these steps. The trace guarantees (G3, G4, G6, G10, `G8_AsIfNoCrash`) are proved over whole runs once every transition exists (#966).
