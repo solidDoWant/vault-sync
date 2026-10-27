@@ -11,6 +11,12 @@
 // the journal (bindings, absences, outboxes) and asks for the journal to be
 // persisted. New files stay untracked until a push creates their document
 // (#949); `PendingPush` counts them.
+//
+// The proofs pick witnesses with `var x := var x0 :| P(x0); x0;` rather than
+// the statement `var x :| P(x);`: Dafny 4.11's precedence linter crashes
+// (NullReferenceException in FunctionCallExpr.SubExpressions) on that
+// statement, when x is a call argument, in a module that refines this one
+// (LocalCoreJs.dfy, #965).
 include "../spec/Guarantees.dfy"
 
 abstract module LocalCore refines Guarantees {
@@ -449,8 +455,8 @@ abstract module LocalCore refines Guarantees {
     ensures HasFile(before, s) ==> FileAt(before, s) == FileAt(after, s)
   {
     if HasFile(before, s) {
-      var p :| p in before.disk && SameF(before.platform, p, s) && FileAt(before, s) == before.disk[p];
-      var q :| q in after.disk && SameF(after.platform, q, s) && FileAt(after, s) == after.disk[q];
+      var p := var p0 :| p0 in before.disk && SameF(before.platform, p0, s) && FileAt(before, s) == before.disk[p0]; p0;
+      var q := var q0 :| q0 in after.disk && SameF(after.platform, q0, s) && FileAt(after, s) == after.disk[q0]; q0;
       if p != q { assert CollideF(before.platform, p, q); }
     }
   }
@@ -523,7 +529,7 @@ abstract module LocalCore refines Guarantees {
         assert BoundTo(before, doc, q);
       }
       if Tracked(before, q) {
-        var doc :| BoundTo(before, doc, q);
+        var doc := var doc0 :| BoundTo(before, doc0, q); doc0;
         assert BoundAt(platform, docs[doc], q);
       }
     }
@@ -599,7 +605,7 @@ abstract module LocalCore refines Guarantees {
       assert q in after.disk && SameF(platform, q, q);
       assert BoundFile(after, doc).value == FileAt(after, q);
       assert FileAt(after, q) == after.disk[q] by {
-        var r :| r in after.disk && SameF(platform, r, q) && FileAt(after, q) == after.disk[r];
+        var r := var r0 :| r0 in after.disk && SameF(platform, r0, q) && FileAt(after, q) == after.disk[r0]; r0;
         if r != q { assert CollideF(platform, r, q); }
       }
       forall q' | q' in before.disk && Untracked(before, q') && before.disk[q'].content == seen
@@ -620,7 +626,7 @@ abstract module LocalCore refines Guarantees {
     {
       if !Untracked(after, p) {
         assert HasFile(after, p) by { assert SameF(platform, p, p); }
-        var doc :| BoundTo(after, doc, p);
+        var doc := var doc0 :| BoundTo(after, doc0, p); doc0;
         var s := docs'[doc].binding.value.spelling;
         if docs'[doc] != docs[doc] {
           assert LocalChange(after, doc);
