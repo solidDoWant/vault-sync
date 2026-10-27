@@ -534,9 +534,11 @@ abstract module Guarantees refines EngineModel {
 
   // A commit in flight that another device's revision overtook: the outbox
   // is sealed on a parent that is no longer the document's base, because a
-  // revision the server accepted after that parent became the base. The
-  // server answers it "head moved" (a commit is accepted only on the head,
-  // SPEC.md §6.2), so it is not what the document will have on the server.
+  // revision the server accepted after that parent became the base. Its
+  // content is not what the document will have on the server: the base is
+  // already past it, whether the server answers it "head moved" (a commit is
+  // accepted only on the head, SPEC.md §6.2) or "accepted" (the other
+  // device's revision was committed on top of it).
   ghost predicate Superseded(document: Document) {
     document.outbox.Some? && document.outbox.value.sealed
     && document.outbox.value.baseRev != (if document.base.Some? then Some(document.base.value.rev) else None)
