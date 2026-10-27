@@ -132,9 +132,11 @@ abstract module PathRuleCore refines ApplyCore {
 
   datatype Ruled = Ruled(documents: map<DocId, Document>, effects: seq<Effect>)
 
-  // The apply left `r` waiting for its name.
-  predicate HeldForName(applied: Applied, r: Revision) {
-    applied.document.ahead.Some? && applied.document.ahead.value.blocker.PathHeld?
+  // The apply left `r`, newer than what the row knew, waiting for its name.
+  // (A revision the row already holds as `ahead` is not newer: the apply
+  // leaves its row as it is.)
+  predicate HeldForName(document: Document, applied: Applied, r: Revision) {
+    Newer(document, r) && applied.document.ahead.Some? && applied.document.ahead.value.blocker.PathHeld?
     && applied.document.ahead.value.revision == r
   }
 
@@ -154,7 +156,7 @@ abstract module PathRuleCore refines ApplyCore {
   {
     var document := documents[doc];
     var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
-    if !HeldForName(applied, r) then Ruled(documents[doc := applied.document], applied.effects)
+    if !HeldForName(document, applied, r) then Ruled(documents[doc := applied.document], applied.effects)
     else if UnsavedCollides(platform, input.unsaved, r.path) then
       // A user must act: the revision waits, and the round reports it.
       Ruled(documents[doc := applied.document], [Report(Some(doc), r.path, "conflict: unsaved changes in the way")])
@@ -290,7 +292,7 @@ abstract module PathRuleCore refines ApplyCore {
     var document := documents[doc];
     AppliedMovesAndCopies(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
     var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
-    if HeldForName(applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       ClearWayNoMoveFromUnsaved(platform, documents, doc, r, input, revs);
     }
   }
@@ -348,7 +350,7 @@ abstract module PathRuleCore refines ApplyCore {
   {
     var document := documents[doc];
     var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
-    if HeldForName(applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
                  then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
       var way := InTheWay(platform, input.listing, r.path, own);
@@ -390,7 +392,7 @@ abstract module PathRuleCore refines ApplyCore {
     var claims := AllClaims(documents);
     AppliedMovesAndCopies(platform, doc, document, r, input, bound, claims, revs[doc]);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
-    if HeldForName(applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       ClearWayWritesNoCopy(platform, documents, doc, r, input, revs);
     }
     forall e | e in PathRule(platform, documents, doc, r, input, revs).effects && e.Write? && e.target.None?
@@ -429,6 +431,63 @@ abstract module PathRuleCore refines ApplyCore {
     var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
     if aside.Some? {
       MoveEffectsShape(platform, documents, doc, aside.value);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // The rule keeps every row's invariant (CoreInv one row at a time)
+  // ---------------------------------------------------------------------
+
+  // The apply leaves a revision waiting for its name only for a document
+  // with no change the server lacks.
+  lemma HeldHasNoChange(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r) ==> !JournalChange(document)
+  {}
+
+  lemma MovedAsideKeepsRowInv(document: Document, to: Path, rev: RevId)
+    requires document.binding.Some? && RowInv(document)
+    ensures RowInv(MovedAside(document, to, rev))
+  {}
+
+  lemma MoveRowsKeepRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs)
+    requires documents.Keys <= revs.Keys
+    requires forall e | e in documents :: RowInv(documents[e])
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      rows.Keys == documents.Keys && forall e | e in rows :: RowInv(rows[e])
+    decreases |moves|
+  {
+    if moves != [] {
+      MoveRowsKeepRowInv(platform, documents, doc, moves[1..], revs);
+      var rest := MoveRows(platform, documents, doc, moves[1..], revs);
+      forall e | e in rest && rest[e].binding.Some? ensures RowInv(MovedAside(rest[e], moves[0].1, revs[e])) {
+        MovedAsideKeepsRowInv(rest[e], moves[0].1, revs[e]);
+      }
+    }
+  }
+
+  // From rows that keep RowInv, every row the rule returns keeps it.
+  lemma RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires forall e | e in documents :: RowInv(documents[e])
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+      ruled.documents.Keys == documents.Keys && forall e | e in ruled.documents :: RowInv(ruled.documents[e])
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := AllClaims(documents);
+    AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, revs[doc]);
+    HeldHasNoChange(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+                 then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+      var way := InTheWay(platform, input.listing, r.path, own);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, claims, way, r.path);
+      if aside.Some? {
+        MoveRowsKeepRowInv(platform, documents, doc, aside.value, revs);
+      }
     }
   }
 }

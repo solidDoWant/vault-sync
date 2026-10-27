@@ -282,8 +282,11 @@ The lemmas, on the function:
 - `RuleNoMoveFromUnsaved` (`NoMoveFromUnsaved`): no effect moves a file that collides under F with a path an open editor holds unsaved text at.
 - `RuleCopiesTakeFreeNames` (`CopiesTakeFreeNames`): every copy the rule writes collides under F with nothing listed, bound or unsaved, and under K with no document's server claim.
 - `RuleHeldOnlyForUnsaved` (the `PathHeld` clause of `PathRuleContract`): the rule leaves the revision `PathHeld` only where unsaved text collides with its name, so `UserMustAct` holds, and it changes no other document's `ahead`.
+- `RuleKeepsRowInv`: from rows that keep `RowInv`, every row the rule returns keeps it. A document that keeps its moved file has an outbox carrying the new name and `seen`, and a released one has no binding.
 
-Removing the unsaved check on a file in the way, on the document's own file or in the pull apply's move, or computing the copy's claims without the applied document's own, makes `make verify` fail.
+The rule runs only on a revision newer than its row (`HeldForName`). A revision the row already holds as `ahead` leaves the row as it is.
+
+Removing the unsaved check on a file in the way, on the document's own file or in the pull apply's move, or computing the copy's claims without the applied document's own, makes `make verify` fail. So does leaving a moved document's unsealed outbox at its old name.
 
 Dafny 4.11's resolver crashes on a module that refines one whose lemma bodies hold a statement `var x :| P(x)` in which `P` calls a function (its precedence linter meets an unresolved call). `Apply.dfy` writes each such statement as the expression `var x := var x :| P(x); x;`, which proves the same, so `PathRuleCore` refines `ApplyCore`. `ApplyCore` refines `StepContracts` (§4), so the core's lemmas can state the contracts directly.
 
