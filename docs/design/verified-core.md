@@ -1,6 +1,6 @@
 # Verified engine core
 
-Status: §1 approved by the owner (#945), §2 added by #947, effect semantics and file contents (§2.3) by #964, the core (§3) by #948, G5 on user steps, `G3_DeleteSeen`, the outbox clause of `CoreInv` and the server's step semantics by #974, parity with the engine and the server-step rejections (§3.6) by #980; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
+Status: §1 approved by the owner (#945), §2 added by #947, effect semantics and file contents (§2.3) by #964, the core (§3) by #948, G5 on user steps, `G3_DeleteSeen`, the outbox clause of `CoreInv` and the server's step semantics by #974, parity with the engine and the server-step rejections (§3.6) by #980, the change clause of `CoreInv` by #984; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
 
 ## 1. Guarantees
 
@@ -125,10 +125,11 @@ Each handler is a non-ghost function from what the shell hands the core to the n
 
 ### 3.2 The core's invariant
 
-`CoreInv`, which every handler keeps and which #949 and #950 must keep too, has two clauses:
+`CoreInv`, which every handler keeps and which #949 and #950 must keep too, has three clauses. The initial state satisfies it (`InitialCoreInv`).
 
 - **A user's delete is never forgotten.** A document whose binding is gone with `absence = UserDeleted` has an outbox, or a base that is a tombstone. The delete is therefore sent until the server has it: if the user deletes the file after a live commit was sealed, the accept of that commit opens a tombstone outbox on top of it (§3.5, `AcceptKeepsUserDelete`).
-- **An unsealed outbox is the document as the device last saw it** (`OutboxCurrent`). A bound document's unsealed outbox is live and carries `seen`, the content last seen in its file; a user-deleted document's is a tombstone. A sealed outbox, a commit in flight, carries what it carried when it was sealed. So an outbox not yet in flight never holds content older than the last change the core recorded.
+- **A change to a bound file is never forgotten.** A bound document whose file as last seen differs from its base has an outbox (`AheadOfBase`): it has no base, its base is a tombstone, or the base's path or content differs from the binding's `spelling` or `seen`. With the next clause, an unsealed outbox carries that change; a sealed one is followed by it. So if the user edits or renames the file after a commit was sealed, the accept of that commit opens a new outbox on top of it with the file's name and `seen` (§3.5, `AcceptKeepsLaterChange`): the accepted revision is now the base, and it differs from the file. Every transition must keep this, the sync round (#982) included, so no transition can drop a change the server has not got.
+- **An unsealed outbox is the document as the device last saw it** (`OutboxCurrent`). A bound document's unsealed outbox is live and carries `spelling` and `seen`, the name and content last seen in its file; a user-deleted document's is a tombstone. A sealed outbox, a commit in flight, carries what it carried when it was sealed. So an outbox not yet in flight never holds content older than the last change the core recorded.
 
 With `CoreInv`, every step from #949 on keeps `ServerInv`, the core's view of the server (§3.5): no cursor past the feed; history and purges name only held revisions; every accepted revision is in history, in a file on a device, or purged and no head. #950 and #966 must keep it too.
 
@@ -175,7 +176,7 @@ The tests left out, and why:
 
 **Push results.** A result answers a document's sealed outbox, the commit in flight. A result for a document with no commit in flight changes nothing.
 
-- **Accepted:** the revision becomes the document's `base`, and an `ahead` no newer than it is dropped. The outbox goes, unless the user changed the document after the commit was sealed. In that case a new outbox on top of the accepted revision carries the change: the bound file's name and `seen`, or a tombstone for a user's delete.
+- **Accepted:** the revision becomes the document's `base`, and an `ahead` no newer than it is dropped. The outbox goes, unless the user changed the document after the commit was sealed. In that case a new outbox on top of the accepted revision carries the change: the bound file's name and `seen`, or a tombstone for a user's delete. `CoreInv` forces both (§3.2); `AcceptKeepsLaterChange` and `AcceptKeepsUserDelete` state them.
 - **Head moved, already exists, unavailable:** the outbox is unsealed and carries the document as the device last saw it (`OutboxCurrent`), to be sent again. "Unavailable" answers every commit in flight.
 - **Invalid argument:** the same, and the outbox is marked `rejected` until a local change clears it (`SPEC.md` §6.2).
 
