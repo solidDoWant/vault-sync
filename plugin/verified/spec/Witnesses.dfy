@@ -730,6 +730,91 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert r.id in post.server.revisions;
   }
 
+  // The device that sends `o` as `doc`'s outbox, with nothing else.
+  ghost function Sender(platform: Platform, doc: DocId, o: Outbox): Device {
+    Device(platform, true, Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {})
+  }
+
+  // The revision that is `o` exactly, sent by d as `doc`.
+  ghost predicate IsOutbox(r: Revision, doc: DocId, o: Outbox, d: DeviceId) {
+    r.doc == doc && r.id == o.rev && r.parent == o.baseRev && r.path == o.path && r.content == o.content
+    && r.kind == o.kind && r.deleted == o.deleted && r.device == d
+  }
+
+  // A tombstone accepted for a document the server has no head of follows
+  // its event (verified-core.md §2.3: SPEC.md §6.2 accepts any commit on an
+  // empty base, and the server records such a document as deleted).
+  lemma AcceptsTombstoneOfNewDocument(d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision)
+    requires o.sealed && o.baseRev.None? && o.deleted
+    requires r == Revision(o.rev, doc, 0, None, o.path, o.content, o.kind, o.deleted, d)
+    ensures
+      var pre := State(map[d := Sender(platform, doc, o)], Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Sender(platform, doc, o)],
+        Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    AcceptAppendsOutbox(d, platform, doc, o, r);
+  }
+
+  // The accepted revision is the device's sealed outbox: an accept of
+  // another revision (other content, path, kind, delete flag or id), of the
+  // outbox as another device's, or while the outbox is not sealed, does not
+  // follow its event, whatever the server becomes.
+  lemma ServerFollowsEventRejectsAcceptNotOutbox(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, server: Server, post: State)
+    requires !o.sealed || !IsOutbox(r, doc, o, d)
+    ensures !ServerFollowsEvent(Step(State(map[d := Sender(platform, doc, o)], server), Pushed(d, Accepted(doc, r)), [], post))
+  {
+  }
+
+  // The parent is the document's head: the device's sealed outbox based on
+  // a revision the server does not have as the head (here, a document the
+  // server has no head of) is not accepted.
+  lemma ServerFollowsEventRejectsParentNotHead(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, post: State)
+    requires o.sealed && o.baseRev.Some? && IsOutbox(r, doc, o, d)
+    ensures
+      var pre := State(map[d := Sender(platform, doc, o)], Server(map[], map[], [], {}, map[]));
+      !ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    assert Head(Server(map[], map[], [], {}, map[]), doc).None?;
+  }
+
+  // No live K collision: the device's sealed live outbox whose path collides
+  // under K with another document's live head is not accepted.
+  lemma ServerFollowsEventRejectsKCollision(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, head: Revision, post: State)
+    requires o.sealed && o.baseRev.None? && !o.deleted && IsOutbox(r, doc, o, d)
+    requires head.doc != doc && !head.deleted && head.id != r.id && CollideK(head.path, r.path)
+    ensures
+      var server := Server(map[head.id := head], map[head.doc := [head.id]], [head.id], {}, map[head.id := head]);
+      var pre := State(map[d := Sender(platform, doc, o)], server);
+      !ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var server := Server(map[head.id := head], map[head.doc := [head.id]], [head.id], {}, map[head.id := head]);
+    assert Head(server, head.doc) == Some(head);
+    assert Head(server, doc).None?;
+  }
+
+  // A delivered revision is on the feed, as the server has it: a remote
+  // revision the feed does not list, or that differs from the server's
+  // copy, does not follow its event.
+  lemma ServerFollowsEventRejectsRemoteNotOnFeed(d: DeviceId, rev: Revision, s: State, post: State)
+    requires rev.id !in s.server.feed || rev.id !in s.server.revisions || s.server.revisions[rev.id] != rev
+    ensures !ServerFollowsEvent(Step(s, RemoteRevision(d, rev), [], post))
+  {
+  }
+
+  // A purge never removes a head: a purge of a document's head revision
+  // does not follow its event.
+  lemma ServerFollowsEventRejectsPurgeOfHead(head: Revision, s: State, post: State)
+    requires s.server == Server(map[head.id := head], map[head.doc := [head.id]], [head.id], {}, map[head.id := head])
+    ensures !ServerFollowsEvent(Step(s, Purge({head.id}), [], post))
+  {
+    assert Head(s.server, head.doc) == Some(head);
+    assert IsHead(s.server, head.id);
+  }
+
   // G4: device A edits its file, then deletes it and pushes the tombstone;
   // A's later live commit on that tombstone, with nothing else in between,
   // fails it: A's own delete overruled the edit (m <= k).

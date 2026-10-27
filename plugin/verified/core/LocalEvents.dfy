@@ -66,6 +66,17 @@ abstract module LocalCore refines Guarantees {
               outbox := Send(document, spelling, content, kind, false, rev))
   }
 
+  // The user moved the document's file to `spelling`: the binding follows,
+  // and no longer records that the engine displaced the file (#802's
+  // ruling, verified-core.md §3.3: a user's move observed afterwards clears
+  // the record).
+  function Moved(document: Document, spelling: Path, content: Hash, kind: Kind, rev: RevId): Document
+    requires document.binding.Some?
+  {
+    var moved := Rebind(document, spelling, content, kind, rev);
+    moved.(binding := Some(moved.binding.value.(displaced := false, userSpelling := None)))
+  }
+
   // The document's file was removed by the user: the delete is sent.
   function Unbind(document: Document, rev: RevId): Document
     requires document.binding.Some?
@@ -85,8 +96,8 @@ abstract module LocalCore refines Guarantees {
     case Renamed(from, to) =>
       if BoundAt(platform, document, from) then
         var r := ReadOf(input, to);
-        if r.Some? then Rebind(document, to, r.value.0, r.value.1, rev)
-        else Rebind(document, to, document.binding.value.seen, KindOf(document), rev)
+        if r.Some? then Moved(document, to, r.value.0, r.value.1, rev)
+        else Moved(document, to, document.binding.value.seen, KindOf(document), rev)
       // Another file was renamed over this document's file: the user
       // replaced it, so this document's file is gone.
       else if BoundAt(platform, document, to) then Unbind(document, rev)
@@ -159,7 +170,8 @@ abstract module LocalCore refines Guarantees {
 
   // A file moved while the app was closed (E7, verified-core.md §1.3, owner
   // decision 4): matched only when exactly one untracked file holds exactly
-  // what the document last saw, and no other missing document saw it.
+  // what the document last saw, and no other missing document saw it. The
+  // scan also requires that file to be of the document's kind (ScanDoc).
   predicate Matched(platform: Platform, docs: map<DocId, Document>, listing: Listing, doc: DocId)
     requires doc in docs && docs[doc].binding.Some?
   {
@@ -193,16 +205,24 @@ abstract module LocalCore refines Guarantees {
     else
       var b := document.binding.value;
       if Listed(platform, listing, b.spelling) then
-        var file := listing[ListedAt(platform, listing, b.spelling)];
-        if file.0 == b.seen
+        var listed := ListedAt(platform, listing, b.spelling);
+        var file := listing[listed];
+        // The user respelled the file (a case-only rename on a platform
+        // where that is the same file), other than in its folders alone
+        // (#737): the binding takes the listed spelling (SPEC.md §8).
+        if !SameNameModuloFolders(platform, listed, b.spelling) then Moved(document, listed, file.0, file.1, rev)
+        else if file.0 == b.seen
            && (document.outbox.Some?
                || (document.base.Some? && !document.base.value.deleted && document.base.value.content == file.0))
         then document
         // An offline edit, or a file the server does not have as it is.
         else Rebind(document, b.spelling, file.0, file.1, rev)
-      else if Matched(platform, docs, listing, doc) then
+      // The match must hold a file of the document's kind: a document's kind
+      // never changes (SPEC.md §6), so the server refuses a commit of another.
+      else if Matched(platform, docs, listing, doc)
+              && listing[MatchOf(platform, docs, listing, doc)].1 == KindOf(document) then
         var q := MatchOf(platform, docs, listing, doc);
-        Rebind(document, q, b.seen, listing[q].1, rev)
+        Moved(document, q, b.seen, listing[q].1, rev)
       // Missing and not matched: the user deleted it while the app was closed.
       else Unbind(document, rev)
   }
@@ -559,13 +579,18 @@ abstract module LocalCore refines Guarantees {
         Matched(platform, docs, listing, doc)
         && docs'[doc].binding.value.spelling == MatchOf(platform, docs, listing, doc)
       ensures !MissingIn(platform, listing, docs[doc]) ==>
-        docs'[doc].binding.value.spelling == docs[doc].binding.value.spelling
+        SameF(platform, docs'[doc].binding.value.spelling, docs[doc].binding.value.spelling)
       ensures HasFile(after, docs'[doc].binding.value.spelling)
     {
       if MissingIn(platform, listing, docs[doc]) && Matched(platform, docs, listing, doc) {
         var q := MatchOf(platform, docs, listing, doc);
         assert q in listing;
         assert SameF(platform, q, q);
+      }
+      if !MissingIn(platform, listing, docs[doc]) {
+        var listed := ListedAt(platform, listing, docs[doc].binding.value.spelling);
+        assert listed in listing && SameF(platform, listed, docs[doc].binding.value.spelling);
+        assert SameF(platform, listed, listed);
       }
     }
 
