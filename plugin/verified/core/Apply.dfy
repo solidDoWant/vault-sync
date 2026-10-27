@@ -338,6 +338,36 @@ abstract module ApplyCore refines StepContracts {
             [Report(Some(doc), path, "conflict: no copy name fits")])
   }
 
+  // A live pulled revision at the bound name whose content and kind the
+  // listing reads there is no conflict (verified-core.md §4.1, #1028): the
+  // file already holds it, whether both devices made the same change away
+  // from the base or nothing changed here. A commit in flight (a sealed
+  // outbox) is #1023's settlement and still waits, unless the revision is
+  // its own: then the outbox is acknowledged and nothing is left to send.
+  predicate Identical(document: Document, read: Read, r: Revision) {
+    document.binding.Some? && !r.deleted && r.path == document.binding.value.spelling
+    && read == Some((r.content, r.kind)) && (!InFlight(document) || Acknowledges(document, r))
+  }
+
+  // The apply takes the identical settlement: the revision is identical to
+  // the file and no unsaved text is at it (an unsaved editor makes the user
+  // act, and its text may differ from the file).
+  predicate SettlesIdentical(platform: Platform, document: Document, r: Revision, input: RoundInput)
+    requires ListingDistinct(platform, input.listing)
+  {
+    document.binding.Some? && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+    && Identical(document, ListedRead(platform, input.listing, document.binding.value.spelling), r)
+  }
+
+  // The identical row: the revision is the base, the binding has seen its
+  // content, and nothing is left to send (the file is what the server has).
+  function IdenticalRow(document: Document, r: Revision): Document
+    requires document.binding.Some?
+  {
+    document.(base := Some(BaseOf(r)), ahead := None, outbox := None,
+              binding := Some(document.binding.value.(seen := r.content)))
+  }
+
   // A pulled revision whose id is the document's outbox's, sealed or not (a
   // reopened outbox keeps its id, §3.5), is that outbox's acknowledgement:
   // the server accepted it, and its answer was lost or came back
@@ -360,6 +390,10 @@ abstract module ApplyCore refines StepContracts {
     requires ListingDistinct(platform, input.listing)
   {
     if !Newer(document, r) then Applied(document, [])
+    else if SettlesIdentical(platform, document, r, input) then
+      // The file already holds the revision (verified-core.md §4.1): it
+      // becomes the base, and nothing is written or copied.
+      Applied(IdenticalRow(document, r), [])
     else if Acknowledges(document, r) then
       // The outbox's own revision (verified-core.md §4.1): its
       // acknowledgement, taken as §3.5's "accepted". Nothing on disk changes.
@@ -445,6 +479,7 @@ abstract module ApplyCore refines StepContracts {
     requires ListingDistinct(platform, input.listing)
     ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
       (document.binding.Some? && Newer(document, r) && !Acknowledges(document, r)
+       && !SettlesIdentical(platform, document, r, input)
        && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
        && var spelling := document.binding.value.spelling;
        var read := ListedRead(platform, input.listing, spelling);
@@ -955,7 +990,8 @@ abstract module ApplyCore refines StepContracts {
     UnsavedSeen(device, input.unsaved, spelling);
     assert BoundTo(device, doc, spelling);
     var read := ListedRead(platform, input.listing, spelling);
-    if !(Newer(document, r) && !Acknowledges(document, r) && !UnsavedAt(platform, input.unsaved, spelling)
+    if !(Newer(document, r) && !SettlesIdentical(platform, document, r, input) && !Acknowledges(document, r)
+         && !UnsavedAt(platform, input.unsaved, spelling)
          && Concurrent(document, read, r)) {
       return;
     }
@@ -1081,6 +1117,23 @@ abstract module ApplyCore refines StepContracts {
     var read := ListedRead(platform, input.listing, spelling);
     ListedReadOnDisk(device, spelling);
     assert !UnsavedAt(platform, input.unsaved, spelling);
+    if SettlesIdentical(platform, document, r, input) {
+      // Both sides hold the same content (G6_Settle's first case): it stays
+      // in place, and nothing is saved next to it.
+      assert applied.document == IdenticalRow(document, r) && applied.effects == [];
+      var q := var q :| Holds(platform, device.disk, q, spelling, read.value.0); q;
+      assert after.disk == device.disk;
+      FileAtIs(device, spelling, q);
+      FileAtIs(after, spelling, q);
+      assert device.disk[q].content == r.content by {
+        var x := ListedAt(platform, input.listing, spelling);
+        if x != q { SameFIsEquivalence(platform, x, spelling, q); SameFIsEquivalence(platform, q, spelling, q); assert CollideF(platform, x, q); }
+      }
+      assert BoundFile(device, doc) == Some(device.disk[q]);
+      assert BoundFile(after, doc) == Some(after.disk[q]);
+      assert Outgoing(after, doc) == Some(r.content);
+      return;
+    }
     if EditedAgainstDelete(document, read, r) && !Concurrent(document, read, r) {
       // An edit beats a delete: the document sends the file as read.
       assert applied.document == KeptAgainstDelete(document, read.value, r, rev);
@@ -1332,14 +1385,70 @@ abstract module ApplyCore refines StepContracts {
   // sealed or not and whatever the listing reads, becomes the base, nothing
   // waits, and nothing on disk changes. The row is §3.5's accept of it
   // (AcceptKeepsLaterChange: a change made after the commit was sealed is
-  // sent on top of it), so it keeps RowInv (AppliedKeepsRowInv).
+  // sent on top of it), so it keeps RowInv (AppliedKeepsRowInv); where the
+  // file already holds the revision, it is the identical row
+  // (IdenticalRevisionSettles): there is nothing left to send.
   lemma AcknowledgementSettles(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     requires Newer(document, r) && Acknowledges(document, r)
     ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
-      applied.document == Accept(document, r, rev) && applied.effects == []
+      && applied.document == (if SettlesIdentical(platform, document, r, input) then IdenticalRow(document, r)
+                              else Accept(document, r, rev))
+      && applied.effects == []
       && applied.document.base == Some(BaseOf(r)) && applied.document.ahead.None?
   {
+  }
+
+  // A revision identical to the file is no conflict (verified-core.md
+  // §4.1, ApplySettlesContract's last clause, #1028): a newer live revision
+  // at the bound name, whose content and kind the listing reads there, with
+  // no unsaved text at it and no commit in flight other than its own,
+  // becomes the base; nothing waits, nothing is left to send, the binding
+  // has seen the revision's content, and nothing on disk is written or
+  // copied. The file's content may differ from the base (both sides made
+  // the same change, G6_Settle's first case) or not.
+  lemma IdenticalRevisionSettles(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires RowInv(document)
+    requires Newer(document, r) && !r.deleted && document.binding.Some?
+    requires document.binding.value.spelling == r.path
+    requires ListedRead(platform, input.listing, r.path) == Some((r.content, r.kind))
+    requires !UnsavedAt(platform, input.unsaved, r.path)
+    requires !InFlight(document) || Acknowledges(document, r)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      && applied.effects == []
+      && applied.document.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+      && applied.document.ahead.None? && applied.document.outbox.None?
+      && applied.document.binding == Some(document.binding.value.(seen := r.content))
+      && RowInv(applied.document)
+  {
+    AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, rev);
+  }
+
+  // #1007's trace (regression, verified-core.md §4.1): device d has document
+  // doc bound at n with base b and no outbox; the file was changed to x (any
+  // kind, whatever Merge3(b, x, x) is); another device's revision with
+  // content x at n arrives, and the round reads x at n. The apply makes the
+  // revision the base and requests no effect: no merge, no conflict copy.
+  lemma IdenticalTraceSettles(platform: Platform, doc: DocId, n: Path, b: Hash, x: Hash, kind: Kind, base: Base,
+                              r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires x != b
+    requires base.path == n && base.content == b && base.kind == kind && !base.deleted
+    requires base.rev != r.id && base.position < r.position
+    requires r.path == n && r.content == x && r.kind == kind && !r.deleted
+    requires n in input.listing && input.listing[n] == (x, kind) && input.unsaved == {}
+    ensures var document := Document(Some(base), None, Some(Binding(n, b, false, None)), Never, None);
+      var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      && applied.effects == []
+      && applied.document == document.(base := Some(BaseOf(r)), binding := Some(Binding(n, x, false, None)))
+  {
+    var document := Document(Some(base), None, Some(Binding(n, b, false, None)), Never, None);
+    assert Listed(platform, input.listing, n) by { SameFIsEquivalence(platform, n, n, n); }
+    assert ListedAt(platform, input.listing, n) == n by {
+      var q := ListedAt(platform, input.listing, n);
+      if q != n { SameFIsEquivalence(platform, q, n, n); assert CollideF(platform, q, n); }
+    }
   }
 
   // A remote delete against a change the server lacks keeps the file
