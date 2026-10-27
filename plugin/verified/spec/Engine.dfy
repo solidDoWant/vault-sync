@@ -82,7 +82,10 @@ abstract module EngineModel {
     content: Hash,
     kind: Kind,
     deleted: bool,
-    sealed: bool)
+    sealed: bool,
+    // The server refused it with INVALID_ARGUMENT: it stays, is reported as
+    // rejected, and is dropped only when its file is gone (SPEC.md §6.2).
+    rejected: bool)
 
   // One row per document the journal knows.
   datatype Document = Document(
@@ -270,18 +273,40 @@ abstract module EngineModel {
     else None
   }
 
+  // A device's disk is in step with its journal: every in-scope file is
+  // bound to a document whose live base, and whose last-seen content, are
+  // exactly the file's content; every binding names a file on disk; and a
+  // document the server has live but the device holds no file of is one it
+  // reports it cannot hold. A user change the engine has not yet handled
+  // (or not yet learned of) breaks this.
+  ghost predicate InStep(device: Device) {
+    (forall p :: p in device.disk && p !in device.outOfScope ==>
+       exists doc :: BoundTo(device, doc, p)
+         && device.journal.documents[doc].binding.value.seen == device.disk[p].content
+         && device.journal.documents[doc].base.Some?
+         && !device.journal.documents[doc].base.value.deleted
+         && device.journal.documents[doc].base.value.content == device.disk[p].content)
+    && (forall doc :: doc in device.journal.documents && device.journal.documents[doc].binding.Some? ==>
+          exists p :: p in device.disk && SameF(device.platform, p, device.journal.documents[doc].binding.value.spelling))
+    && (forall doc :: (doc in device.journal.documents && device.journal.documents[doc].binding.None?
+          && device.journal.documents[doc].base.Some? && !device.journal.documents[doc].base.value.deleted) ==>
+          device.journal.documents[doc].ahead.Some? && CannotHold(device.journal.documents[doc].ahead.value.blocker))
+  }
+
   // A device has finished syncing (quiescence, INV-9): it runs, has read the
-  // whole feed, has no open intent, nothing to send, and every revision not
-  // applied is one it reports it cannot hold.
+  // whole feed, has no open intent, nothing to send, every revision not
+  // applied is one it reports it cannot hold, and its disk is in step with
+  // its journal.
   ghost predicate FinishedSyncing(state: State, d: DeviceId) {
     d in state.devices
     && var device := state.devices[d];
     device.running
     && device.journal.cursor == |state.server.feed|
     && |device.journal.intents| == 0
-    && forall doc :: doc in device.journal.documents ==>
+    && (forall doc :: doc in device.journal.documents ==>
          device.journal.documents[doc].outbox.None?
-         && (device.journal.documents[doc].ahead.Some? ==> CannotHold(device.journal.documents[doc].ahead.value.blocker))
+         && (device.journal.documents[doc].ahead.Some? ==> CannotHold(device.journal.documents[doc].ahead.value.blocker)))
+    && InStep(device)
   }
 
   // The blockers that mean "this device cannot hold the file" (G9's

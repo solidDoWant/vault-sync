@@ -1,6 +1,6 @@
 # Verified engine core
 
-Status: §1 approved by the owner (#945), §2 added by #947; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates (#947). The formal specification (§2) states these guarantees as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
+Status: §1 approved by the owner (#945), §2 added by #947; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
 
 ## 1. Guarantees
 
@@ -92,14 +92,18 @@ Each guarantee is a predicate, with a comment quoting the sentence of §1.1 it f
 |---|---|
 | G1 | `G1_Retained`, `G1_LatestNeverPurged` (state), `G1_OnlyRetentionRemoves` (step), `G1` |
 | G2 | `G2_OnlyWhatItSaw`, `G2_Conditional`, `G2_NoUntrackedDelete`, `G2_UnsavedSafe` (step), `G2` |
-| G3 | `G3` (trace) |
+| G3 | `G3` with `UserRemovedFileOf` and `JustifiedTombstone` (trace) |
 | G4 | `G4` (trace) |
 | G5 | `G5_RenameKeepsDocument`, `G5_NeverMixedUp` (step), `G5_NeverJoined` (state), `G5` |
 | G6 | `G6_Settle` (step), `G6` |
 | G7 | `G7_OneFilePerName` (state), `G7_MoveKeepsContents` (step), `G7` |
 | G8 | `G8_Recovers`, `G8_PicksUpOfflineChanges` (step), `G8`, `G8_AsIfNoCrash` (two traces) |
-| G9 | `G9` (state) |
-| G10 | `G10_SettledOrReported` (step), `G10_NoLoop` (two consecutive steps), `G10` |
+| G9 | `G9` (state), with `FinishedSyncing` and `InStep` (`Engine.dfy`) |
+| G10 | `G10_SettledOrReported` (step), `G10_NoLoop` (two consecutive steps), `G10_NeverStalls` (trace), `G10` |
+
+G10's "never … stalls forever" is stated as a safety property: two sync rounds of a device with nothing in between but answers to its own commits leave it finished apart from what a user has to act on (`G10_NeverStalls`). That a single round ends is a property of the core's code, proved with it. G6's "stays in place" and "saved next to it" are read as the content the document keeps and an untracked file on the device, whatever its name: the copy's name and the result's path are `SPEC.md` §7's rules, not guarantees.
+
+`Witnesses.dfy` checks the predicates both ways. Its witnesses show that a non-trivial state (two devices holding the same synced file) and run (a user's write) satisfy them, so they rule out no correct core. Its rejections show that a predicate fails on the failure its sentence rules out (devices that disagree, a delete nobody made, a conflict merely reported, a missing file forgotten at start-up), so a broken core cannot pass it. `Guarantees.dfy` has three more rejections (G2, G5, G7).
 
 ### 2.5 Changing the specification
 

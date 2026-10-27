@@ -71,6 +71,9 @@ abstract module Guarantees refines EngineModel {
   // content of a live file on the server (a conflict copy is one), or a
   // device still holds its bytes in a file (a conflict copy not yet pushed,
   // or the writer's file after a restore from backup lost the version).
+  // Versions are compared by content: a file anywhere that holds exactly the
+  // version's bytes gives the version back, whatever its name, so any such
+  // file counts, not only one with a conflict-copy name.
   ghost predicate Retrievable(state: State, rev: RevId)
     requires rev in state.server.accepted
   {
@@ -94,12 +97,25 @@ abstract module Guarantees refines EngineModel {
   }
 
   // "Only the operator's history-retention policy ever removes old versions":
-  // a version stops being retrievable only in a purge step that names it,
-  // and only if it is not its file's latest version.
+  // a version stops being retrievable only
+  // - in a purge step that names it, if it is not its file's latest version;
+  // - if retention already purged it (its bytes were only coincidentally
+  //   elsewhere as well);
+  // - in a restore from backup that removed it from the server's history
+  //   (SPEC.md §13, restore runs: only the server's own history of the
+  //   revisions the restore removed is excused). A restore changes no
+  //   device's disk (G2_Conditional), so every engine still holds what it
+  //   held, and pushes it again (G9, G10);
+  // - in the user's own step, which deletes or overwrites a device's copy of
+  //   bytes the server no longer has (a write the user replaced themselves).
+  //   A user step never changes the server.
   ghost predicate G1_OnlyRetentionRemoves(step: Step) {
     forall rev :: (rev in step.pre.server.accepted && rev in step.post.server.accepted
       && Retrievable(step.pre, rev) && !Retrievable(step.post, rev)) ==>
-        step.event.Purge? && rev in step.event.revisions && !IsHead(step.pre.server, rev)
+        (step.event.Purge? && rev in step.event.revisions && !IsHead(step.pre.server, rev))
+        || rev in step.pre.server.purged
+        || (step.event.Restore? && !InHistory(step.post.server, rev))
+        || (step.event.User? && step.post.server == step.pre.server)
   }
 
   ghost predicate G1(trace: Trace) {
@@ -180,26 +196,68 @@ abstract module Guarantees refines EngineModel {
   // ---------------------------------------------------------------------
 
   // A user deleted document `doc`'s file in step j: the user's own delete of
-  // the file a binding names (on some device, app running or not).
-  ghost predicate UserDeletedFileOf(step: Step, doc: DocId) {
-    step.event.User? && step.event.action.DeleteFile?
-    && step.event.device in step.pre.devices
-    && BoundTo(step.pre.devices[step.event.device], doc, step.event.action.path)
+  // the file a binding names (on some device, app running or not), or the
+  // user's rename of it away from that name. A rename made while the app is
+  // closed, or in the crash window before the engine learned of it, without a
+  // unique content match is a delete plus a new file (verified-core.md §1.3,
+  // owner decision 4; SPEC.md §13 `phantom-delete`, #167 item 2).
+  ghost predicate UserRemovedFileOf(step: Step, doc: DocId) {
+    step.event.User? && step.event.device in step.pre.devices
+    && var device := step.pre.devices[step.event.device];
+    ((step.event.action.DeleteFile? && BoundTo(device, doc, step.event.action.path))
+     || (step.event.action.RenameFile? && BoundTo(device, doc, step.event.action.from)
+         && !SameF(device.platform, step.event.action.from, step.event.action.to)))
+  }
+
+  // Document `doc` started a new life in this step: the server accepted a
+  // live revision of it, or a user restored it from history.
+  ghost predicate LiveAgain(step: Step, doc: DocId) {
+    (step.event.Pushed? && step.event.result.Accepted? && step.event.result.doc == doc
+     && !step.event.result.revision.deleted)
+    || (step.event.RestoreFromHistory? && step.event.doc == doc)
+  }
+
+  // The tombstone of `doc` accepted in step k follows a user's removal of
+  // the document's file in its current life: no live revision of it was
+  // accepted, and no restore from history happened, between the two.
+  ghost predicate JustifiedTombstone(trace: Trace, k: int, doc: DocId)
+    requires 0 <= k < |trace|
+  {
+    exists j :: 0 <= j < k && UserRemovedFileOf(trace[j], doc)
+      && !exists m :: j < m < k && LiveAgain(trace[m], doc)
+  }
+
+  ghost predicate AcceptsTombstone(step: Step, doc: DocId, rev: RevId) {
+    step.event.Pushed? && step.event.result.Accepted? && step.event.result.doc == doc
+    && step.event.result.revision.deleted && step.event.result.revision.id == rev
   }
 
   // "Sync deletes a file on other devices only after a user deleted that file
   // on some device. A crash, a missed notification or a file sync itself
   // moved never counts as a delete."
   //
-  // Every delete sync requests, and every tombstone the server accepts, is
-  // preceded by a user's delete of that document's file. Only a User step
-  // counts: a crash, a lost local event or an engine move is no such step.
+  // Every tombstone the server accepts follows a user's removal of that
+  // document's file in its current life (JustifiedTombstone). Every delete
+  // sync requests on a device applies such a tombstone: after the step, the
+  // document's newest claim on the device, or an open apply intent of it,
+  // is that tombstone. Only a User step counts: a crash, a lost local event
+  // or an engine move is no such step, and a delete from an earlier life of
+  // the document (before a restore or a re-create) does not count.
   ghost predicate G3(trace: Trace) {
     forall i :: 0 <= i < |trace| ==>
-      (forall effect :: effect in trace[i].effects && effect.Remove? ==>
-         exists j :: 0 <= j < i && UserDeletedFileOf(trace[j], effect.doc))
-      && (trace[i].event.Pushed? && trace[i].event.result.Accepted? && trace[i].event.result.revision.deleted ==>
-         exists j :: 0 <= j < i && UserDeletedFileOf(trace[j], trace[i].event.result.doc))
+      (forall doc, rev :: AcceptsTombstone(trace[i], doc, rev) ==> JustifiedTombstone(trace, i, doc))
+      && (forall effect :: effect in trace[i].effects && effect.Remove? ==>
+            var d := EventDevice(trace[i].event);
+            d.Some? && d.value in trace[i].post.devices &&
+            var journal := trace[i].post.devices[d.value].journal;
+            exists k, rev :: 0 <= k < i && AcceptsTombstone(trace[k], effect.doc, rev)
+              && JustifiedTombstone(trace, k, effect.doc)
+              && ((effect.doc in journal.documents
+                   && ((journal.documents[effect.doc].ahead.Some? && journal.documents[effect.doc].ahead.value.revision.id == rev)
+                       || (journal.documents[effect.doc].ahead.None? && journal.documents[effect.doc].base.Some?
+                           && journal.documents[effect.doc].base.value.rev == rev)))
+                  || (exists intent :: intent in journal.intents && intent.kind.ApplyIntent?
+                        && intent.kind.doc == effect.doc && intent.kind.revision.id == rev)))
   }
 
   // ---------------------------------------------------------------------
@@ -240,7 +298,9 @@ abstract module Guarantees refines EngineModel {
   // On the server: a live revision on top of a tombstone (accepted in step
   // k) needs such a cause in some step j before it. An edit or rename that
   // the server already had before the delete (its device committed it
-  // between j and k) was overruled by the delete and does not count. On a
+  // after j, up to and including k, which covers the device whose own
+  // tombstone overruled its edit) was overruled by the delete and does not
+  // count. On a
   // device: the engine creates a file for a document whose newest server
   // claim it knows is a tombstone only if, after the step, that claim is a
   // live revision.
@@ -254,7 +314,7 @@ abstract module Guarantees refines EngineModel {
            && trace[k].event.result.revision.id == tombstone.id
            && WantedBack(trace[j], doc, tombstone.path)
            && (k < j || trace[j].event.RestoreFromHistory?
-               || !exists m :: j < m < k && CommittedBy(trace[m], trace[j].event.device, doc)))
+               || !exists m :: j < m <= k && CommittedBy(trace[m], trace[j].event.device, doc)))
       && (forall effect :: (effect in trace[i].effects && effect.Write? && effect.target.Some?
             && effect.precondition.None?) ==>
             var d := EventDevice(trace[i].event);
@@ -295,39 +355,82 @@ abstract module Guarantees refines EngineModel {
                state.devices[d].journal.documents[doc2].binding.value.spelling)
   }
 
-  // Mixed up: a document's binding moves from one existing file to another
-  // only by the user's rename (reported by the vault), by the engine's own
-  // write or move of that document's file in the same step, or by the two
-  // content matches the owner approved (verified-core.md §1.3): the start-up
-  // scan's one-to-one match of a file moved while the app was closed, and
-  // the adoption of a file whose bytes equal a remote create's.
+  // The identity of the file a document is bound to on a device, if the file
+  // is there.
+  ghost function BoundIdentity(device: Device, doc: DocId): Option<FileIdentity> {
+    if BoundFile(device, doc).Some? then Some(BoundFile(device, doc).value.identity) else None
+  }
+
+  ghost predicate Untracked(device: Device, p: Path) {
+    HasFile(device, p) && !Tracked(device, p)
+  }
+
+  // The document's binding names a file that is not on disk.
+  ghost predicate FileMissing(device: Device, doc: DocId) {
+    doc in device.journal.documents && device.journal.documents[doc].binding.Some?
+    && !HasFile(device, device.journal.documents[doc].binding.value.spelling)
+  }
+
+  // Mixed up or joined: whenever a document becomes bound to a file it was
+  // not bound to before (coming from another file, from a missing file, or
+  // from no binding at all), the step is one of these, and nothing else:
+  //  (a) the user's rename of the document's file onto that name, reported
+  //      by the vault (E1);
+  //  (b) the engine's own write or move of that document's file to that
+  //      name in this step;
+  //  (c) the start-up scan's match of a file moved while the app was closed
+  //      (verified-core.md §1.3, owner decision 4): the document's file was
+  //      missing, the new file holds exactly what the engine last saw in it,
+  //      and the match is one-to-one: no other file untracked before the
+  //      step holds that content, and no other document whose file is
+  //      missing last saw it;
+  //  (d) adoption (design §4.5 step 3): the document had no file, the file
+  //      was untracked, and the step applied a revision whose content is
+  //      exactly the file's;
+  //  (e) a new document for an untracked file (its first push): the journal
+  //      did not know the document, and the file was untracked;
+  //  (f) tombstone re-creation (verified-core.md §1.3, decision #17): the
+  //      document had no file, its newest claim was a tombstone whose path
+  //      is the file's name under K, and the file was untracked.
+  // In (c), (d) and (f) contents or names decide, and only these
+  // owner-approved rules let them.
   ghost predicate G5_NeverMixedUp(step: Step) {
     var d := EventDevice(step.event);
     d.Some? && d.value in step.pre.devices && d.value in step.post.devices ==>
-      forall doc :: (BoundFile(step.pre.devices[d.value], doc).Some? && BoundFile(step.post.devices[d.value], doc).Some?
-        && BoundFile(step.pre.devices[d.value], doc).value.identity != BoundFile(step.post.devices[d.value], doc).value.identity) ==>
-          (step.event.Local? && step.event.local.Renamed?
-           && BoundTo(step.pre.devices[d.value], doc, step.event.local.from))
-          // The start-up scan: the file holds exactly what the document's
-          // missing file held (decision 4).
-          || (step.event.Scan?
-              && BoundFile(step.post.devices[d.value], doc).value.content
-                 == step.pre.devices[d.value].journal.documents[doc].binding.value.seen)
-          // The engine wrote or moved this document's file there itself.
-          || (exists effect :: effect in step.effects
-                && ((effect.Write? && effect.target == Some(doc)
-                     && SameF(step.post.devices[d.value].platform, effect.path,
-                              step.post.devices[d.value].journal.documents[doc].binding.value.spelling))
-                    || (effect.Move? && effect.mover == Some(doc)
-                     && SameF(step.post.devices[d.value].platform, effect.to,
-                              step.post.devices[d.value].journal.documents[doc].binding.value.spelling))))
-          // Adoption: the file holds exactly the revision the step applied.
-          || (step.post.devices[d.value].journal.documents[doc].base.Some?
-              && (step.pre.devices[d.value].journal.documents[doc].base.None?
-                  || step.pre.devices[d.value].journal.documents[doc].base.value.rev
-                     != step.post.devices[d.value].journal.documents[doc].base.value.rev)
-              && BoundFile(step.post.devices[d.value], doc).value.content
-                 == step.post.devices[d.value].journal.documents[doc].base.value.content)
+      var before := step.pre.devices[d.value];
+      var after := step.post.devices[d.value];
+      forall doc :: (BoundIdentity(after, doc).Some? && BoundIdentity(after, doc) != BoundIdentity(before, doc)) ==>
+        var spelling := after.journal.documents[doc].binding.value.spelling;
+        var file := BoundFile(after, doc).value;
+        var known := doc in before.journal.documents;
+        var hadFile := known && BoundFile(before, doc).Some?;
+        // (a)
+        (step.event.Local? && step.event.local.Renamed?
+         && BoundTo(before, doc, step.event.local.from) && SameF(after.platform, step.event.local.to, spelling))
+        // (b)
+        || (exists effect :: effect in step.effects
+              && ((effect.Write? && effect.target == Some(doc) && SameF(after.platform, effect.path, spelling))
+                  || (effect.Move? && effect.mover == Some(doc) && SameF(after.platform, effect.to, spelling))))
+        // (c)
+        || (step.event.Scan? && FileMissing(before, doc)
+            && file.content == before.journal.documents[doc].binding.value.seen
+            && (forall q :: (q in before.disk && Untracked(before, q)
+                  && before.disk[q].content == file.content) ==> SameF(after.platform, q, spelling))
+            && (forall other :: other != doc && FileMissing(before, other) ==>
+                  before.journal.documents[other].binding.value.seen != file.content))
+        // (d)
+        || (!hadFile && Untracked(before, spelling)
+            && after.journal.documents[doc].base.Some?
+            && (!known || before.journal.documents[doc].base.None?
+                || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
+            && file.content == after.journal.documents[doc].base.value.content)
+        // (e)
+        || (!known && Untracked(before, spelling))
+        // (f)
+        || (!hadFile && known && Untracked(before, spelling)
+            && NewestClaim(before.journal.documents[doc]).Some?
+            && NewestClaim(before.journal.documents[doc]).value.1
+            && SameK(NewestClaim(before.journal.documents[doc]).value.0, spelling))
   }
 
   ghost predicate G5(trace: Trace) {
@@ -388,6 +491,12 @@ abstract module Guarantees refines EngineModel {
   // parts of a note are combined. Otherwise one version stays in place and
   // the other is saved next to it as a conflict copy. An edit or a rename
   // always beats a delete."
+  //
+  // Approximation: "stays in place" is read as "is the content the document
+  // keeps" (Outgoing: content only, not its path; the path merge is not a
+  // guarantee), and "saved next to it" as "is in an untracked file on the
+  // device" (SavedNextToIt: any name, which the next push sends as a new
+  // document). The copy's name is SPEC.md §7's business (§1.3).
   ghost predicate G6_Settle(step: Step, d: DeviceId, doc: DocId, remote: Revision)
     requires SettlesConcurrent(step, d, doc, remote)
   {
@@ -447,11 +556,11 @@ abstract module Guarantees refines EngineModel {
     var d := EventDevice(step.event);
     forall effect :: (effect in step.effects && effect.Move?
       && d.Some? && d.value in step.pre.devices
-      && effect.from in step.pre.devices[d.value].disk
-      && step.pre.devices[d.value].disk[effect.from].content == effect.expected) ==>
+      && HasFile(step.pre.devices[d.value], effect.from)
+      && FileAt(step.pre.devices[d.value], effect.from).content == effect.expected) ==>
       d.value in step.post.devices &&
-      effect.to in step.post.devices[d.value].disk
-      && step.post.devices[d.value].disk[effect.to].content == effect.expected
+      HasFile(step.post.devices[d.value], effect.to)
+      && FileAt(step.post.devices[d.value], effect.to).content == effect.expected
   }
 
   ghost predicate G7(trace: Trace) {
@@ -469,24 +578,53 @@ abstract module Guarantees refines EngineModel {
       |step.post.devices[step.event.device].journal.intents| == 0
   }
 
-  // "Changes made while the app was closed are picked up when it starts."
-  // After the start-up scan every binding names a listed file: a file moved
-  // while the app was closed is followed (or its document counts as deleted
-  // by the user), and every other file is untracked, so the next push sends
-  // it.
-  ghost predicate G8_PicksUpOfflineChanges(step: Step) {
-    step.event.Scan? && step.event.device in step.post.devices ==>
-      var device := step.post.devices[step.event.device];
-      forall doc :: doc in device.journal.documents && device.journal.documents[doc].binding.Some? ==>
-        HasFile(device, device.journal.documents[doc].binding.value.spelling)
+  // A file is as the server has it: bound to a document whose live base
+  // holds exactly its content.
+  ghost predicate AsServerHas(device: Device, p: Path) {
+    p in device.disk
+    && (exists doc :: BoundTo(device, doc, p)
+          && device.journal.documents[doc].base.Some?
+          && !device.journal.documents[doc].base.value.deleted
+          && device.journal.documents[doc].base.value.content == device.disk[p].content)
   }
 
-  // Two traces see the same outside world when they have the same events
-  // once crashes and restarts are left out.
-  ghost function WithoutCrashes(trace: Trace): seq<Event> {
+  // The next push sends this file: it is untracked (a new document), or its
+  // document has a local change (LocalChange: it differs from the base, was
+  // moved, or has an outgoing commit).
+  ghost predicate PendingPush(device: Device, p: Path) {
+    Untracked(device, p) || exists doc :: BoundTo(device, doc, p) && LocalChange(device, doc)
+  }
+
+  // "Changes made while the app was closed are picked up when it starts."
+  // After the start-up scan:
+  // - every in-scope file is either as the server has it, or recorded as a
+  //   change the next push sends (an offline edit, a moved file, a new file);
+  // - every binding names a listed file;
+  // - a document whose file went missing and is not matched to another file
+  //   counts as deleted by the user, so the delete is sent.
+  ghost predicate G8_PicksUpOfflineChanges(step: Step) {
+    step.event.Scan? && step.event.device in step.pre.devices && step.event.device in step.post.devices ==>
+      var before := step.pre.devices[step.event.device];
+      var device := step.post.devices[step.event.device];
+      (forall p :: p in device.disk && p !in device.outOfScope ==> AsServerHas(device, p) || PendingPush(device, p))
+      && (forall doc :: doc in device.journal.documents && device.journal.documents[doc].binding.Some? ==>
+            HasFile(device, device.journal.documents[doc].binding.value.spelling))
+      && (forall doc :: (FileMissing(before, doc) && doc in device.journal.documents
+            && device.journal.documents[doc].binding.None?) ==>
+            device.journal.documents[doc].absence == UserDeleted)
+  }
+
+  // The outside world of a run: what users and the operator do. Everything
+  // else (local file events, the scan, sync rounds, pulled revisions, push
+  // results) is the engine's own doing or its reaction to these, and may
+  // differ between a run with crashes and one without.
+  ghost predicate Outside(event: Event) {
+    event.User? || event.Restore? || event.Purge? || event.RestoreFromHistory?
+  }
+
+  ghost function OutsideWorld(trace: Trace): seq<Event> {
     if |trace| == 0 then []
-    else (if trace[0].event.Crash? || trace[0].event.Restart? then [] else [trace[0].event])
-         + WithoutCrashes(trace[1..])
+    else (if Outside(trace[0].event) then [trace[0].event] else []) + OutsideWorld(trace[1..])
   }
 
   // Equal apart from the names and times of conflict copies: the same files
@@ -517,12 +655,13 @@ abstract module Guarantees refines EngineModel {
   // "... and ends up as if it had not crashed (apart from the names and
   // times of conflict copies)."
   // A run with crashes and a run without them, from the same state and with
-  // the same outside events, that both finish syncing end up equal apart
-  // from conflict copies.
+  // the same outside world (the same user, restore, purge and
+  // restore-from-history events, in the same order), that both finish
+  // syncing end up equal apart from conflict copies.
   ghost predicate G8_AsIfNoCrash(crashed: Trace, clean: Trace) {
     |crashed| > 0 && |clean| > 0
     && crashed[0].pre == clean[0].pre
-    && WithoutCrashes(crashed) == WithoutCrashes(clean)
+    && OutsideWorld(crashed) == OutsideWorld(clean)
     && (forall i :: 0 <= i < |clean| ==> !clean[i].event.Crash? && !clean[i].event.Restart?)
     && AllFinishedSyncing(crashed[|crashed| - 1].post)
     && AllFinishedSyncing(clean[|clean| - 1].post) ==>
@@ -581,12 +720,29 @@ abstract module Guarantees refines EngineModel {
         || device.journal.documents[doc].ahead.value.blocker.PathHeld?)
   }
 
+  // A user has to act on a document before sync can settle it: its file has
+  // text not yet saved in an open editor (G2_UnsavedSafe keeps sync from
+  // replacing it), or the server refused its commit as invalid (SPEC.md
+  // §6.2: it stays, reported as rejected, until the user changes it).
+  ghost predicate UserMustAct(device: Device, doc: DocId) {
+    doc in device.journal.documents
+    && ((device.journal.documents[doc].binding.Some?
+         && HasUnsavedEdits(device, device.journal.documents[doc].binding.value.spelling))
+        || (device.journal.documents[doc].outbox.Some? && device.journal.documents[doc].outbox.value.rejected))
+  }
+
   // "Every conflict is settled within one sync, unless a user has to act on
   // it, which the plugin then reports."
+  // After a sync round, a conflict left unsettled, and a commit left
+  // rejected, is one a user has to act on, and the round reports it.
   ghost predicate G10_SettledOrReported(step: Step) {
     step.event.SyncRound? && step.event.device in step.post.devices ==>
-      forall doc :: Unsettled(step.post.devices[step.event.device], doc) ==>
-        exists effect :: effect in step.effects && effect.Report? && effect.subject == Some(doc)
+      var device := step.post.devices[step.event.device];
+      forall doc :: (Unsettled(device, doc)
+                     || (doc in device.journal.documents && device.journal.documents[doc].outbox.Some?
+                         && device.journal.documents[doc].outbox.value.rejected)) ==>
+        UserMustAct(device, doc)
+        && exists effect :: effect in step.effects && effect.Report? && effect.subject == Some(doc)
   }
 
   // "Sync never loops or stalls forever."
@@ -598,9 +754,50 @@ abstract module Guarantees refines EngineModel {
       forall effect :: effect in second.effects ==> !IsDiskEffect(effect) && !effect.Commit?
   }
 
+  // Steps [from, to) are quiet for device d: only answers to d's own
+  // commits, none of them "server unavailable".
+  ghost predicate QuietFor(trace: Trace, d: DeviceId, from: int, to: int)
+    requires 0 <= from && to <= |trace|
+  {
+    forall m :: from <= m < to ==>
+      trace[m].event.Pushed? && trace[m].event.device == d && !trace[m].event.result.Unavailable?
+  }
+
+  // Device d has finished syncing apart from what a user has to act on: it
+  // has read the whole feed, has no open intent, and every document and
+  // in-scope file is as the server has it, except documents it cannot hold
+  // (G9) and those a user has to act on (reported, G10_SettledOrReported).
+  ghost predicate SettledExceptReported(state: State, d: DeviceId) {
+    d in state.devices
+    && var device := state.devices[d];
+    device.running
+    && device.journal.cursor == |state.server.feed|
+    && |device.journal.intents| == 0
+    && (forall doc :: doc in device.journal.documents ==>
+          (device.journal.documents[doc].outbox.None? || UserMustAct(device, doc))
+          && (device.journal.documents[doc].ahead.Some? ==>
+                CannotHold(device.journal.documents[doc].ahead.value.blocker) || UserMustAct(device, doc)))
+    && (forall p :: p in device.disk && p !in device.outOfScope ==>
+          AsServerHas(device, p) || exists doc :: BoundTo(device, doc, p) && UserMustAct(device, doc))
+  }
+
+  // "Sync never ... stalls forever", as a safety property: two sync rounds
+  // of a device with nothing in between but answers to its own commits (none
+  // of them "unavailable"), and nothing else after them, leave the device
+  // finished apart from what a user has to act on. A core that never
+  // commits, or never applies what it pulled, breaks this.
+  ghost predicate G10_NeverStalls(trace: Trace) {
+    forall d, i, i2, n :: (0 <= i < i2 <= n < |trace|
+      && trace[i].event == SyncRound(d) && trace[i2].event == SyncRound(d)
+      && QuietFor(trace, d, i + 1, i2) && QuietFor(trace, d, i2 + 1, n + 1)
+      && (n + 1 == |trace| || !QuietFor(trace, d, n + 1, n + 2))) ==>
+        SettledExceptReported(trace[n].post, d)
+  }
+
   ghost predicate G10(trace: Trace) {
     (forall i :: 0 <= i < |trace| ==> G10_SettledOrReported(trace[i]))
     && (forall i :: 0 < i < |trace| ==> G10_NoLoop(trace[i - 1], trace[i]))
+    && G10_NeverStalls(trace)
   }
 
   // ---------------------------------------------------------------------
