@@ -453,6 +453,10 @@ abstract module StepContractWitnesses refines StepContracts {
       assert cut.history == map[];
       forall doc ensures Head(cut, doc).None? {}
     }
+    forall cut: Server | EarlierServer(s.server, cut) ensures LiveHeadsApart(cut) {
+      assert cut.history == map[];
+      forall doc ensures Head(cut, doc).None? {}
+    }
   }
 
   // The new clauses are not vacuous: a device that holds the head of a
@@ -571,5 +575,118 @@ abstract module StepContractWitnesses refines StepContracts {
     assert w !in stranger.journal.documents;
     assert !ClaimsCoverCursor(post);
     assert r.id !in server.accepted;
+  }
+
+  // #950's gap 2.1 (regression): retention purged `a` (not a head), and a
+  // restore to the empty feed drops it from the revisions and its purge
+  // mark with it. Before #1050 RestoreRemoves counted only revisions in the
+  // history, so `a` was neither purged nor lost after the restore and
+  // G1_Retained failed. The restore now records `a` as lost: G1_Retained
+  // and ServerRetains hold after it, and the post the old definition gave
+  // (only `b` lost) is not the server's step.
+  lemma RestoreAfterPurgeKeepsG1(x: DocId, a: Revision, b: Revision)
+    requires a.id != b.id && a.doc == x && b.doc == x && a.position == 0 && b.position == 1
+    ensures
+      var accepted := map[a.id := a, b.id := b];
+      var pre := State(map[], Server(accepted, map[x := [a.id, b.id]], [a.id, b.id], {a.id}, accepted));
+      var restored := Server(map[], map[], [], {}, map[]);
+      var post := State(map[], restored.(accepted := accepted, lost := {a.id, b.id}));
+      var oldPost := State(map[], restored.(accepted := accepted, lost := {b.id}));
+      ServerFollowsEvent(Step(pre, Restore(restored), [], post))
+      && G1_Retained(post) && ServerRetains(post)
+      && !ServerFollowsEvent(Step(pre, Restore(restored), [], oldPost))
+  {
+    var accepted := map[a.id := a, b.id := b];
+    var pre := State(map[], Server(accepted, map[x := [a.id, b.id]], [a.id, b.id], {a.id}, accepted));
+    var restored := Server(map[], map[], [], {}, map[]);
+    var post := State(map[], restored.(accepted := accepted, lost := {a.id, b.id}));
+    var kept: set<RevId> := set i | 0 <= i < |restored.feed| :: restored.feed[i];
+    assert kept == {};
+    assert Keep([b.id], kept) == [];
+    assert [a.id, b.id][1..] == [b.id];
+    assert Keep(pre.server.history[x], kept) == [];
+    assert restored.revisions == (map id | id in pre.server.revisions && id in kept :: pre.server.revisions[id]);
+    assert restored.history == (map doc | doc in pre.server.history && |Keep(pre.server.history[doc], kept)| > 0
+                                  :: Keep(pre.server.history[doc], kept));
+    assert EarlierServer(pre.server, restored);
+    assert InHistory(pre.server, b.id) by { assert b.id in pre.server.history[x]; }
+    assert RestoreRemoves(pre.server, restored) == {a.id, b.id};
+  }
+
+  // #950's gap 2.2 (regression): a diverged device d (cursor 2 past the
+  // feed [r0]) has as its anchor an id the server never accepted. A
+  // restore from history appends r with that id, after which d is no
+  // longer Diverged but knows nothing of r0's document: ClaimsCoverCursor
+  // fails. A journal's anchor names only accepted ids, so the state before
+  // the restore is not reachable.
+  lemma RestoreFromHistoryUndivergesExcluded(
+    d: DeviceId, e: DeviceId, platform: Platform, y: DocId, r0: Revision, r: Revision)
+    requires d != e && r0.id != r.id && r0.doc == y && r0.position == 0 && !r0.deleted
+    requires r == Revision(r.id, y, 1, Some(r0.id), r0.path, r0.content, r0.kind, false, e)
+    ensures
+      var device := Device(platform, true, Journal(map[], 2, [], [], Some(r.id)), map[], {}, {});
+      var pre := State(map[d := device],
+        Server(map[r0.id := r0], map[y := [r0.id]], [r0.id], {}, map[r0.id := r0]));
+      var step := Step(pre, RestoreFromHistory(y, r0.id, r), [], pre.(server := Appended(pre.server, y, r)));
+      ServerFollowsEvent(step) && Diverged(pre, d) && !Diverged(step.post, d) && !ClaimsCoverCursor(step.post)
+      && !ClaimsReachable(pre) && !CoreReachable(pre)
+  {
+    var device := Device(platform, true, Journal(map[], 2, [], [], Some(r.id)), map[], {}, {});
+    var pre := State(map[d := device],
+      Server(map[r0.id := r0], map[y := [r0.id]], [r0.id], {}, map[r0.id := r0]));
+    var step := Step(pre, RestoreFromHistory(y, r0.id, r), [], pre.(server := Appended(pre.server, y, r)));
+    assert Diverged(pre, d);
+    assert Head(pre.server, y) == Some(r0);
+    assert Appendable(pre.server, y, r);
+    assert ServerFollowsEvent(step);
+    var post := step.post;
+    assert post.server.feed == [r0.id, r.id];
+    assert !Diverged(post, d);
+    assert post.server.feed[0] == r0.id && r0.id in post.server.revisions;
+    assert !ClaimsCoverCursor(post);
+    assert r.id !in pre.server.accepted;
+  }
+
+  // #950's gap 2.3 (regression): x's history is [a@p, b@q], y's is [c@p],
+  // and the feed is [a, c, b]. Today's live heads (b at q, c at p) are
+  // apart, but the cut at [a, c] has two live heads at p, so a restore to
+  // it would break G7_OneFilePerName's server clause. Every cut's heads are
+  // apart (CutsHeadsApart), so the state is not reachable; every other new
+  // clause holds of it.
+  lemma CollidingCutExcluded(x: DocId, y: DocId, a: Revision, b: Revision, c: Revision, p: Path, q: Path, cut: Server)
+    requires x != y && |{a.id, b.id, c.id}| == 3 && !CollideK(p, q) && !CollideK(q, p)
+    requires a.doc == x && a.position == 0 && a.path == p && !a.deleted
+    requires c.doc == y && c.position == 1 && c.path == p && !c.deleted
+    requires b.doc == x && b.position == 2 && b.path == q && !b.deleted
+    requires cut == Server(map[a.id := a, c.id := c], map[x := [a.id], y := [c.id]], [a.id, c.id], {}, map[])
+    ensures
+      var revisions := map[a.id := a, b.id := b, c.id := c];
+      var server := Server(revisions, map[x := [a.id, b.id], y := [c.id]], [a.id, c.id, b.id], {}, revisions);
+      LiveHeadsApart(server) && HistoryFollowsFeed(server) && RevisionsAccepted(server) && FeedPositioned(server)
+      && EarlierServer(server, cut) && !LiveHeadsApart(cut)
+      && !CutsHeadsApart(server) && !ClaimsReachable(State(map[], server))
+  {
+    var revisions := map[a.id := a, b.id := b, c.id := c];
+    var server := Server(revisions, map[x := [a.id, b.id], y := [c.id]], [a.id, c.id, b.id], {}, revisions);
+    assert Head(server, x) == Some(b) && Head(server, y) == Some(c);
+    forall doc | LiveHead(server, doc) ensures doc == x || doc == y {}
+    assert server.feed[0] == a.id && server.feed[1] == c.id && server.feed[2] == b.id;
+    assert server.history[x][0] == a.id && server.history[x][1] == b.id;
+    var kept := set i | 0 <= i < 2 :: cut.feed[i];
+    assert kept == {a.id, c.id} by { assert cut.feed[0] == a.id; assert cut.feed[1] == c.id; }
+    assert server.history[x][1..] == [b.id];
+    assert server.history[x][1..][1..] == [];
+    assert Keep([], kept) == [];
+    assert Keep([b.id], kept) == [];
+    assert Keep(server.history[x], kept) == [a.id];
+    assert server.history[y][1..] == [];
+    assert Keep(server.history[y], kept) == [c.id];
+    assert cut.revisions == (map id | id in server.revisions && id in kept :: server.revisions[id]);
+    assert cut.history == (map doc | doc in server.history && |Keep(server.history[doc], kept)| > 0 :: Keep(server.history[doc], kept));
+    assert EarlierServer(server, cut);
+    assert Head(cut, x) == Some(a) && Head(cut, y) == Some(c);
+    assert LiveHead(cut, x) && LiveHead(cut, y);
+    assert CollideK(p, p);
+    assert !LiveHeadsApart(cut);
   }
 }

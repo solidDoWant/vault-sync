@@ -579,10 +579,14 @@ abstract module EngineModel {
     Appendable(step.pre.server, doc, r) && step.post.server == Appended(step.pre.server, doc, r)
   }
 
-  // The accepted revisions a restore of `restored` over `server` removes
-  // from the server's history.
+  // The accepted revisions a restore of `restored` over `server` removes:
+  // from the server's history, or from its revisions (a revision retention
+  // had purged, whose purge mark the restore drops, #1050). Either was an
+  // operator's removal, which G1_Retained excuses.
   ghost function RestoreRemoves(server: Server, restored: Server): set<RevId> {
-    set rev | rev in server.accepted && InHistory(server, rev) && !InHistory(restored, rev)
+    set rev | rev in server.accepted
+      && ((InHistory(server, rev) && !InHistory(restored, rev))
+          || (rev in server.revisions && rev !in restored.revisions))
   }
 
   // The ids of `s` that are in `ids`, in order.

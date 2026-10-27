@@ -44,6 +44,7 @@ abstract module StepContracts refines PushCore {
     StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
     && FeedPositioned(state.server) && ClaimsCoverCursor(state)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
+    && CutsHeadsApart(state.server)
     && (forall d :: d in state.devices && !Diverged(state, d) ==> OwnRevisionsAcknowledged(state, d))
   }
 
@@ -80,24 +81,50 @@ abstract module StepContracts refines PushCore {
     && r.content == base.content && r.kind == base.kind && r.deleted == base.deleted
   }
 
-  // Every base and ahead a journal records is a revision of its row's
-  // document that the server accepted, as it accepted it (#1050, gaps A
-  // and B): a base comes only from a pulled or an acknowledged revision,
-  // an ahead only from a pulled one, and a restore from backup keeps
-  // `accepted`. With RevisionsAccepted, a base or ahead the server still
-  // holds matches the server's revision with that id; and a revision a
-  // later accept appends (Appendable: an id never accepted) is named by no
-  // journal before it is accepted. It holds of a diverged device too.
+  // Every revision id a journal names is one the server accepted (#1050,
+  // gaps 1.B and 2.2): its anchor, and each base and ahead, which is also
+  // a revision of its row's document recorded as accepted. A base comes
+  // only from a pulled or an acknowledged revision, an ahead only from a
+  // pulled one, the anchor only from a feed entry read, and `accepted`
+  // only grows (a restore from backup keeps it). With RevisionsAccepted, a
+  // base or ahead the server still holds matches the server's revision
+  // with that id. And since an append takes an id never accepted
+  // (Appendable), no append (an accept, a landed commit, a restore from
+  // history) can match a diverged device's anchor or journal, so none can
+  // switch Diverged off: only the device's resync does. It holds of a
+  // diverged device too.
   ghost predicate JournalsNameAccepted(state: State) {
-    forall d, doc :: d in state.devices && doc in state.devices[d].journal.documents ==>
-      var document := state.devices[d].journal.documents[doc];
-      (document.base.Some? ==>
-         document.base.value.rev in state.server.accepted
-         && BaseRecords(document.base.value, doc, state.server.accepted[document.base.value.rev]))
-      && (document.ahead.Some? ==>
-            document.ahead.value.revision.id in state.server.accepted
-            && document.ahead.value.revision.doc == doc
-            && state.server.accepted[document.ahead.value.revision.id] == document.ahead.value.revision)
+    forall d :: d in state.devices ==>
+      var journal := state.devices[d].journal;
+      (journal.anchor.Some? ==> journal.anchor.value in state.server.accepted)
+      && forall doc :: doc in journal.documents ==>
+        var document := journal.documents[doc];
+        (document.base.Some? ==>
+           document.base.value.rev in state.server.accepted
+           && BaseRecords(document.base.value, doc, state.server.accepted[document.base.value.rev]))
+        && (document.ahead.Some? ==>
+              document.ahead.value.revision.id in state.server.accepted
+              && document.ahead.value.revision.doc == doc
+              && state.server.accepted[document.ahead.value.revision.id] == document.ahead.value.revision)
+  }
+
+  // No two live heads collide under K: G7_OneFilePerName's server clause.
+  ghost predicate LiveHeadsApart(server: Server) {
+    forall doc1, doc2 :: doc1 != doc2 && LiveHead(server, doc1) && LiveHead(server, doc2)
+      ==> !CollideK(Head(server, doc1).value.path, Head(server, doc2).value.path)
+  }
+
+  // Every earlier server a restore from backup can give has no two live
+  // heads that collide (#1050, gap 2.3): a backup is the server as it was,
+  // and every append was Appendable when it was made. Without it a restore
+  // could make older revisions heads again that were never heads together
+  // (x: [a@p, b@q], y: [c@p], feed [a, c, b], restored to [a, c]), and
+  // G7_OneFilePerName would fail on the server. Appended keeps it (a cut of
+  // the appended server is a cut of the server before, or the whole of it,
+  // whose new head Appendable keeps apart), a purge changes no head of any
+  // cut, and a cut of a cut is a cut.
+  ghost predicate CutsHeadsApart(server: Server) {
+    forall cut :: EarlierServer(server, cut) ==> LiveHeadsApart(cut)
   }
 
   // #1031's proof obligation (#1050): the cursor's claims imply
