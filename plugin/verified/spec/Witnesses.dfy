@@ -1520,6 +1520,73 @@ abstract module GuaranteeWitnesses refines Guarantees {
     forall x ensures Head(post.server, x).None? {}
     assert !Retrievable(post, rev.id);
   }
+
+  // G1 (#1015): an accepted version that is gone from the server's history,
+  // with no copy of its bytes anywhere, and that neither retention purged
+  // nor a restore from backup removed, fails G1_Retained. Its loss is
+  // excused only once a restore records it (`lost`).
+  lemma G1RetainedRejectsUnexcusedLoss(rev: Revision)
+    ensures !G1_Retained(State(map[], Server(map[], map[], [], {}, map[rev.id := rev])))
+    ensures G1_Retained(State(map[], Server(map[], map[], [], {}, map[rev.id := rev], {rev.id})))
+  {
+    var post := State(map[], Server(map[], map[], [], {}, map[rev.id := rev]));
+    forall x ensures Head(post.server, x).None? {}
+    assert !Retrievable(post, rev.id);
+  }
+
+  // G1 (#1015): the restore's excuse is the server's only. A sync step that
+  // drops the last device's copy of a version a restore lost fails
+  // G1_OnlyRetentionRemoves, so a device still has to keep it.
+  lemma G1RejectsDroppingDeviceCopyOfLostVersion(rev: Revision, d: DeviceId, platform: Platform, p: Path, f: DiskFile)
+    requires !rev.deleted && f.content == rev.content
+    ensures
+      var server := Server(map[], map[], [], {}, map[rev.id := rev], {rev.id});
+      var pre := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := f], {}, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[], {}, {})], server);
+      !G1_OnlyRetentionRemoves(Step(pre, SyncRound(d), [], post))
+  {
+    var server := Server(map[], map[], [], {}, map[rev.id := rev], {rev.id});
+    var pre := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := f], {}, {})], server);
+    var post := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[], {}, {})], server);
+    assert p in pre.devices[d].disk && pre.devices[d].disk[p].content == rev.content;
+    assert OnDisk(pre.devices[d], rev.content);
+    assert Retrievable(pre, rev.id);
+    forall x ensures Head(post.server, x).None? {}
+    assert !Retrievable(post, rev.id);
+  }
+
+  // G1 (#1015): a restore from backup to before a version was accepted
+  // loses it, and no device holds its bytes. The restore follows the
+  // server's semantics, records the version in `lost`, and the run keeps G1.
+  lemma RestoreLosingUnheldVersionKeepsG1(rev: Revision)
+    ensures
+      var pre := State(map[], Server(map[rev.id := rev], map[rev.doc := [rev.id]], [rev.id], {}, map[rev.id := rev]));
+      var restored := Server(map[], map[], [], {}, map[]);
+      var post := State(map[], Server(map[], map[], [], {}, map[rev.id := rev], {rev.id}));
+      var step := Step(pre, Restore(restored), [], post);
+      ServerFollowsEvent(step) && G1([step])
+  {
+    var pre := State(map[], Server(map[rev.id := rev], map[rev.doc := [rev.id]], [rev.id], {}, map[rev.id := rev]));
+    var restored := Server(map[], map[], [], {}, map[]);
+    var post := State(map[], Server(map[], map[], [], {}, map[rev.id := rev], {rev.id}));
+    var step := Step(pre, Restore(restored), [], post);
+    var kept: set<RevId> := set i | 0 <= i < |restored.feed| :: restored.feed[i];
+    assert kept == {};
+    assert Keep(pre.server.history[rev.doc], kept) == [];
+    assert restored.revisions == (map id | id in pre.server.revisions && id in kept :: pre.server.revisions[id]);
+    assert restored.history == (map doc | doc in pre.server.history && |Keep(pre.server.history[doc], kept)| > 0
+                                  :: Keep(pre.server.history[doc], kept));
+    assert EarlierServer(pre.server, restored);
+    assert rev.doc in pre.server.history && pre.server.history[rev.doc][0] == rev.id;
+    assert InHistory(pre.server, rev.id);
+    assert RestoreRemoves(pre.server, restored) == {rev.id};
+    assert post.server == restored.(accepted := pre.server.accepted, lost := pre.server.lost + RestoreRemoves(pre.server, restored));
+    assert ServerFollowsEvent(step);
+    assert G1_Retained(post);
+    forall x ensures Head(post.server, x).None? {}
+    assert G1_LatestNeverPurged(post);
+    assert G1_OnlyRetentionRemoves(step);
+  }
 }
 
 // FreshIdentityExists is consistent: with natural numbers as identities,
