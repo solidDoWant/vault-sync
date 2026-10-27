@@ -296,6 +296,173 @@ abstract module GuaranteeWitnesses refines Guarantees {
   }
 
   // ---------------------------------------------------------------------
+  // Collisions, fresh identities and crashes (Engine.dfy)
+  // ---------------------------------------------------------------------
+
+  // A rename that changes only the case of a name (two spellings with one F)
+  // takes effect: the same file, with its content, is at the new spelling.
+  lemma CaseOnlyRenameTakesEffect(platform: Platform, p: Path, to: Path, f: DiskFile, mover: Option<DocId>)
+    requires p != to && SameF(platform, p, to)
+    ensures EffectsTake(platform, map[p := f], [Move(mover, p, to, f.content)], map[to := f])
+  {
+    var disk := map[p := f];
+    var move := Move(mover, p, to, f.content);
+    assert MovableTo(platform, disk, p, p, to, f.content);
+    assert map[to := f] == (disk - {p})[to := disk[p]];
+    assert EffectTakes(platform, disk, move, map[to := f]);
+    assert EffectsTake(platform, map[to := f], [move][1..], map[to := f]);
+  }
+
+  // A move of a file into a folder of its own name, or onto one of its own
+  // folders, does not take effect: the disk stays as it was, and a disk
+  // where the file moved does not follow the effect.
+  lemma MoveIntoOwnFolderDoesNotTakeEffect(
+    platform: Platform, p: Path, to: Path, f: DiskFile, mover: Option<DocId>, disk': map<Path, DiskFile>)
+    requires p in Ancestors(to) || to in Ancestors(p)
+    requires !SameF(platform, p, to)
+    ensures EffectsTake(platform, map[p := f], [Move(mover, p, to, f.content)], disk') <==> disk' == map[p := f]
+  {
+    var disk := map[p := f];
+    var move := Move(mover, p, to, f.content);
+    assert CollideF(platform, p, to) by {
+      if p in Ancestors(to) { assert SameF(platform, p, p); } else { assert SameF(platform, to, to); }
+    }
+    assert !exists q :: MovableTo(platform, disk, q, p, to, f.content);
+    assert [move][1..] == [];
+    if EffectsTake(platform, disk, [move], disk') {
+      var mid :| EffectTakes(platform, disk, move, mid) && EffectsTake(platform, mid, [move][1..], disk');
+      assert mid == disk;
+    }
+    if disk' == disk {
+      assert EffectTakes(platform, disk, move, disk);
+      assert EffectsTake(platform, disk, [move][1..], disk);
+    }
+  }
+
+  // A create next to a file it does not collide with takes effect: a new
+  // file, with an identity no file had, appears beside the other.
+  lemma CreateNextToFileTakesEffect(
+    platform: Platform, p: Path, to: Path, f: DiskFile, h: Hash, kind: Kind, target: Option<DocId>)
+    requires !CollideF(platform, p, to)
+    ensures exists identity: FileIdentity ::
+              identity != f.identity
+              && EffectsTake(platform, map[p := f], [Write(target, to, h, kind, None)],
+                             map[p := f, to := DiskFile(h, kind, identity)])
+  {
+    var disk := map[p := f];
+    var write := Write(target, to, h, kind, None);
+    FreshIdentityExists({f.identity});
+    var identity: FileIdentity :| identity !in {f.identity};
+    var disk' := map[p := f, to := DiskFile(h, kind, identity)];
+    assert FreeOn(platform, disk, to);
+    assert disk' == disk[to := DiskFile(h, kind, identity)];
+    assert EffectTakes(platform, disk, write, disk');
+    assert EffectsTake(platform, disk', [write][1..], disk');
+  }
+
+  // A create at a name that collides with an existing file (another
+  // spelling of its name under F, a folder of it, or a name under it) does
+  // not take effect.
+  lemma CreateCollidingDoesNotTakeEffect(
+    platform: Platform, p: Path, to: Path, f: DiskFile, h: Hash, kind: Kind, target: Option<DocId>,
+    disk': map<Path, DiskFile>)
+    requires CollideF(platform, p, to) && p != to
+    ensures EffectsTake(platform, map[p := f], [Write(target, to, h, kind, None)], disk') <==> disk' == map[p := f]
+  {
+    var disk := map[p := f];
+    var write := Write(target, to, h, kind, None);
+    assert !FreeOn(platform, disk, to);
+    assert [write][1..] == [];
+    if EffectsTake(platform, disk, [write], disk') {
+      var mid :| EffectTakes(platform, disk, write, mid) && EffectsTake(platform, mid, [write][1..], disk');
+      assert mid == disk;
+    }
+    if disk' == disk {
+      assert EffectTakes(platform, disk, write, disk);
+      assert EffectsTake(platform, disk, [write][1..], disk);
+    }
+  }
+
+  // Every effect has an outcome on every disk, so no step's effects make
+  // DisksFollowEffects unsatisfiable: a create that applies gets a fresh
+  // identity (FreshIdentityExists).
+  lemma EffectCanTake(platform: Platform, disk: map<Path, DiskFile>, effect: Effect)
+    ensures exists disk' :: EffectTakes(platform, disk, effect, disk')
+  {
+    match effect
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.Some? {
+        if exists q :: Holds(platform, disk, q, path, precondition.value) {
+          var q :| Holds(platform, disk, q, path, precondition.value);
+          assert EffectTakes(platform, disk, effect, disk[q := DiskFile(content, kind, disk[q].identity)]);
+        } else {
+          assert EffectTakes(platform, disk, effect, disk);
+        }
+      } else if FreeOn(platform, disk, path) {
+        var used := set q | q in disk :: disk[q].identity;
+        FreshIdentityExists(used);
+        var identity: FileIdentity :| identity !in used;
+        assert forall q :: q in disk ==> disk[q].identity in used;
+        assert EffectTakes(platform, disk, effect, disk[path := DiskFile(content, kind, identity)]);
+      } else {
+        assert EffectTakes(platform, disk, effect, disk);
+      }
+    case Remove(_, path, expected) =>
+      if exists q :: Holds(platform, disk, q, path, expected) {
+        var q :| Holds(platform, disk, q, path, expected);
+        assert EffectTakes(platform, disk, effect, disk - {q});
+      } else {
+        assert EffectTakes(platform, disk, effect, disk);
+      }
+    case Move(_, from, to, expected) =>
+      if exists q :: MovableTo(platform, disk, q, from, to, expected) {
+        var q :| MovableTo(platform, disk, q, from, to, expected);
+        assert EffectTakes(platform, disk, effect, (disk - {q})[to := disk[q]]);
+      } else {
+        assert EffectTakes(platform, disk, effect, disk);
+      }
+    case _ =>
+      assert EffectTakes(platform, disk, effect, disk);
+  }
+
+  lemma EffectsCanTake(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>)
+    ensures exists disk' :: EffectsTake(platform, disk, effects, disk')
+    decreases |effects|
+  {
+    if |effects| == 0 {
+      assert EffectsTake(platform, disk, effects, disk);
+    } else {
+      EffectCanTake(platform, disk, effects[0]);
+      var mid :| EffectTakes(platform, disk, effects[0], mid);
+      EffectsCanTake(platform, mid, effects[1..]);
+      var disk' :| EffectsTake(platform, mid, effects[1..], disk');
+      assert EffectsTake(platform, disk, effects, disk');
+    }
+  }
+
+  // A crash that cut a sync round short after the first of the two effects
+  // the core requested lists that one: a prefix of what was requested.
+  lemma CrashAfterFirstEffectCutsShort(pre: State, post: State, d: DeviceId, first: Effect, second: Effect)
+    ensures CrashCutsShort(Step(pre, Crash(d, Some(Cut(SyncRound(d), [first, second]))), [first], post))
+  {
+    assert [first] == [first, second][..1];
+  }
+
+  // A crash step fails CrashCutsShort when it lists an effect the core did
+  // not request at that place (the second effect without the first), an
+  // effect although it cut nothing short, or effects of another device's
+  // step.
+  lemma CrashCutsShortRejects(
+    pre: State, post: State, d: DeviceId, other: DeviceId, first: Effect, second: Effect)
+    requires first != second && other != d
+    ensures !CrashCutsShort(Step(pre, Crash(d, Some(Cut(SyncRound(d), [first, second]))), [second], post))
+    ensures !CrashCutsShort(Step(pre, Crash(d, None), [first], post))
+    ensures !CrashCutsShort(Step(pre, Crash(d, Some(Cut(SyncRound(other), [first]))), [first], post))
+  {
+    assert [first, second][..1] == [first];
+  }
+
+  // ---------------------------------------------------------------------
   // Rejections
   // ---------------------------------------------------------------------
 
@@ -447,5 +614,34 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert Retrievable(pre, rev.id);
     forall x ensures Head(post.server, x).None? {}
     assert !Retrievable(post, rev.id);
+  }
+}
+
+// FreshIdentityExists is consistent: with natural numbers as identities,
+// one more than the largest used is unused.
+abstract module NatIdentities refines EngineModel {
+  type FileIdentity = nat
+
+  lemma Bound(used: set<nat>) returns (bound: nat)
+    ensures forall i :: i in used ==> i < bound
+    decreases used
+  {
+    if used == {} {
+      bound := 0;
+    } else {
+      var i :| i in used;
+      var rest := Bound(used - {i});
+      bound := if i + 1 > rest then i + 1 else rest;
+      forall j | j in used ensures j < bound {
+        if j != i { assert j in used - {i}; }
+      }
+    }
+  }
+
+  lemma FreshIdentityExists(used: set<FileIdentity>)
+    ensures exists identity: FileIdentity :: identity !in used
+  {
+    var bound := Bound(used);
+    assert bound !in used;
   }
 }
