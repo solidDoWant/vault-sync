@@ -131,6 +131,254 @@ abstract module GuaranteeWitnesses refines Guarantees {
   }
 
   // ---------------------------------------------------------------------
+  // The sync round's input (Engine.dfy RoundInput, verified-core.md §2.3)
+  // ---------------------------------------------------------------------
+
+  // The server state of the round witnesses: document doc's base revision
+  // `baseRev` and another device's revision `remote` on top of it.
+  ghost function TwoRevisionServer(baseRev: Revision, remote: Revision): Server {
+    Server(map[baseRev.id := baseRev, remote.id := remote], map[remote.doc := [baseRev.id, remote.id]],
+           [baseRev.id, remote.id], {}, map[baseRev.id := baseRev, remote.id := remote])
+  }
+
+  // A device holds doc's file at p with content l. The engine last saw b
+  // there (its base, from revision `baseRev`); the user's edit to l has not
+  // been reported yet. Another device's revision `remote` brings r. The round
+  // reads l in its listing, keeps l in place, writes r next to it as an
+  // untracked file (a conflict copy at c) and records `remote` as the base,
+  // with an outbox carrying l. An editor holds unsaved text at another path
+  // e. The round's input exists (`RoundInputOf`), the step's disk follows its
+  // effects, it settles the concurrent change as G6 requires, and it keeps
+  // G2's step predicates, G2_UnsavedSafe included.
+  lemma RoundSettlesUnreportedEdit(
+    d: DeviceId, platform: Platform, p: Path, c: Path, e: Path, doc: DocId,
+    f: DiskFile, copyId: FileIdentity, baseRev: Revision, remote: Revision, next: RevId, u: Hash)
+    requires baseRev.doc == doc && remote.doc == doc && baseRev.id != remote.id
+    requires remote.device != d && !remote.deleted && remote.path == p && remote.kind == Binary
+    requires baseRev.path == p && baseRev.kind == Binary && !baseRev.deleted
+    requires f.kind == Binary && f.content != baseRev.content && remote.content != baseRev.content
+    requires f.content != remote.content && copyId != f.identity
+    requires !CollideF(platform, p, c) && !SameF(platform, e, p) && !SameF(platform, e, c)
+    ensures
+      var b := baseRev.content; var l := f.content; var r := remote.content;
+      var server := TwoRevisionServer(baseRev, remote);
+      var editors := {Editor(e, Some(u))};
+      var before := Document(Some(Base(baseRev.id, 0, p, b, Binary, false)), None,
+                             Some(Binding(p, b, false, None)), Never, None);
+      var after := Document(Some(Base(remote.id, 1, p, r, Binary, false)), None,
+                            Some(Binding(p, l, false, None)), Never,
+                            Some(Outbox(next, Some(remote.id), p, l, Binary, false, false, false)));
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], editors, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
+                                        map[p := f, c := DiskFile(r, Binary, copyId)], editors, {})], server);
+      var step := Step(pre, SyncRound(d), [Pull(1), Write(None, c, r, Binary, None)], post);
+      RoundInputOf(pre, d, RoundInput(map[p := (l, Binary)], {e}, []))
+      && RoundRead(step, p) == Some((l, Binary))
+      && DisksFollowEffects(step)
+      && SettlesConcurrent(step, d, doc, remote) && G6_Settle(step, d, doc, remote)
+      && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
+  {
+    var b := baseRev.content; var l := f.content; var r := remote.content;
+    var server := TwoRevisionServer(baseRev, remote);
+    var editors := {Editor(e, Some(u))};
+    var before := Document(Some(Base(baseRev.id, 0, p, b, Binary, false)), None,
+                           Some(Binding(p, b, false, None)), Never, None);
+    var after := Document(Some(Base(remote.id, 1, p, r, Binary, false)), None,
+                          Some(Binding(p, l, false, None)), Never,
+                          Some(Outbox(next, Some(remote.id), p, l, Binary, false, false, false)));
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], editors, {})], server);
+    var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
+                                      map[p := f, c := DiskFile(r, Binary, copyId)], editors, {})], server);
+    var write := Write(None, c, r, Binary, None);
+    var step := Step(pre, SyncRound(d), [Pull(1), write], post);
+    var device := pre.devices[d];
+    var device' := post.devices[d];
+    // The input.
+    assert DiskListing(device) == map[p := (l, Binary)];
+    assert UnsavedPaths(device) == {e};
+    assert p in device.disk && SameF(platform, p, p);
+    assert HasFile(device, p) && FileAt(device, p) == f;
+    // The disk.
+    var disk := map[p := f];
+    var disk' := map[p := f, c := DiskFile(r, Binary, copyId)];
+    assert EffectTakes(platform, disk, Pull(1), disk);
+    assert FreeOn(platform, disk, c);
+    assert disk' == disk[c := DiskFile(r, Binary, copyId)];
+    assert EffectTakes(platform, disk, write, disk');
+    assert EffectsTake(platform, disk', [write][1..], disk');
+    assert EffectsTake(platform, disk, [write], disk');
+    assert [Pull(1), write][1..] == [write];
+    assert EffectsTake(platform, disk, [Pull(1), write], disk');
+    // The settle.
+    assert BoundFile(device, doc) == Some(f);
+    assert LocalChange(device, doc);
+    assert SettlesConcurrent(step, d, doc, remote);
+    assert Outgoing(device', doc) == Some(l);
+    assert !Tracked(device', c) by {
+      forall other | BoundTo(device', other, c) ensures false {
+        assert other == doc;
+        assert CollideF(platform, p, c);
+      }
+    }
+    assert SavedNextToIt(device', r);
+    assert G6_Settle(step, d, doc, remote);
+    // G2.
+    assert !HasUnsavedEdits(device, c);
+    assert G2_UnsavedSafe(step);
+    assert G2_OnlyWhatItSaw(step);
+    forall d', x | (d' in step.pre.devices && x in step.pre.devices[d'].disk
+        && (d' !in step.post.devices || x !in step.post.devices[d'].disk
+            || step.post.devices[d'].disk[x] != step.pre.devices[d'].disk[x]))
+      ensures false
+    {
+      assert d' == d && x == p;
+    }
+    assert G2_Conditional(step);
+  }
+
+  // An editor holds unsaved text in doc's file at p when another device's
+  // revision of doc arrives. The round sees p among the input's unsaved
+  // paths, requests no write there, leaves the revision `ahead` blocked by
+  // `LocalChanges` and reports it: the user has to act (save the text),
+  // which G10_SettledOrReported accepts, and the step keeps G2_UnsavedSafe.
+  lemma RoundHoldsBackUnsavedFile(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, u: Hash,
+    baseRev: Revision, remote: Revision, reason: string)
+    requires baseRev.doc == doc && remote.doc == doc && baseRev.id != remote.id
+    requires baseRev.path == p && !baseRev.deleted && f.content == baseRev.content && f.kind == baseRev.kind
+    ensures
+      var server := TwoRevisionServer(baseRev, remote);
+      var editors := {Editor(p, Some(u))};
+      var base := Some(Base(baseRev.id, 0, p, f.content, f.kind, false));
+      var binding := Some(Binding(p, f.content, false, None));
+      var before := Document(base, None, binding, Never, None);
+      var after := Document(base, Some(Ahead(remote, LocalChanges, false)), binding, Never, None);
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], editors, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []), map[p := f], editors, {})], server);
+      var step := Step(pre, SyncRound(d), [Pull(1), Report(Some(doc), p, reason)], post);
+      RoundInputOf(pre, d, RoundInput(map[p := (f.content, f.kind)], {p}, []))
+      && DisksFollowEffects(step) && G10_SettledOrReported(step)
+      && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
+  {
+    var server := TwoRevisionServer(baseRev, remote);
+    var editors := {Editor(p, Some(u))};
+    var base := Some(Base(baseRev.id, 0, p, f.content, f.kind, false));
+    var binding := Some(Binding(p, f.content, false, None));
+    var before := Document(base, None, binding, Never, None);
+    var after := Document(base, Some(Ahead(remote, LocalChanges, false)), binding, Never, None);
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], editors, {})], server);
+    var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []), map[p := f], editors, {})], server);
+    var report := Report(Some(doc), p, reason);
+    var step := Step(pre, SyncRound(d), [Pull(1), report], post);
+    var device := pre.devices[d];
+    var device' := post.devices[d];
+    assert DiskListing(device) == map[p := (f.content, f.kind)];
+    assert UnsavedPaths(device) == {p};
+    var disk := map[p := f];
+    assert EffectTakes(platform, disk, Pull(1), disk);
+    assert EffectTakes(platform, disk, report, disk);
+    assert EffectsTake(platform, disk, [report][1..], disk);
+    assert EffectsTake(platform, disk, [report], disk);
+    assert [Pull(1), report][1..] == [report];
+    assert EffectsTake(platform, disk, [Pull(1), report], disk);
+    assert Editor(p, Some(u)) in device'.editors && SameF(platform, p, p);
+    assert HasUnsavedEdits(device', p);
+    assert UserMustAct(device', doc);
+    assert report in step.effects;
+    assert G10_SettledOrReported(step);
+  }
+
+  // A note edited on both sides, on lines the merge combines: the round
+  // reads the unreported local edit l and overwrites it with the merge m,
+  // conditional on the content it read (which is not `seen`). The step keeps
+  // G2_OnlyWhatItSaw because in a sync round the read is what the core last
+  // saw (`LastSaw`), and settles the change as G6 requires.
+  lemma RoundMergesUnreportedEdit(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId,
+    f: DiskFile, baseRev: Revision, remote: Revision, next: RevId)
+    requires baseRev.doc == doc && remote.doc == doc && baseRev.id != remote.id
+    requires remote.device != d && !remote.deleted && remote.path == p && remote.kind == Note
+    requires baseRev.path == p && baseRev.kind == Note && !baseRev.deleted
+    requires f.kind == Note && f.content != baseRev.content && remote.content != baseRev.content
+    requires f.content != remote.content
+    requires Merge3(baseRev.content, f.content, remote.content).Some?
+    ensures
+      var b := baseRev.content; var l := f.content; var r := remote.content;
+      var m := Merge3(b, l, r).value;
+      var server := TwoRevisionServer(baseRev, remote);
+      var before := Document(Some(Base(baseRev.id, 0, p, b, Note, false)), None,
+                             Some(Binding(p, b, false, None)), Never, None);
+      var after := Document(Some(Base(remote.id, 1, p, r, Note, false)), None,
+                            Some(Binding(p, m, false, None)), Never,
+                            Some(Outbox(next, Some(remote.id), p, m, Note, false, false, false)));
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], {}, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
+                                        map[p := DiskFile(m, Note, f.identity)], {}, {})], server);
+      var step := Step(pre, SyncRound(d), [Pull(1), Write(Some(doc), p, m, Note, Some(l))], post);
+      DisksFollowEffects(step)
+      && SettlesConcurrent(step, d, doc, remote) && G6_Settle(step, d, doc, remote)
+      && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
+  {
+    var b := baseRev.content; var l := f.content; var r := remote.content;
+    var m := Merge3(b, l, r).value;
+    var server := TwoRevisionServer(baseRev, remote);
+    var before := Document(Some(Base(baseRev.id, 0, p, b, Note, false)), None,
+                           Some(Binding(p, b, false, None)), Never, None);
+    var after := Document(Some(Base(remote.id, 1, p, r, Note, false)), None,
+                          Some(Binding(p, m, false, None)), Never,
+                          Some(Outbox(next, Some(remote.id), p, m, Note, false, false, false)));
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], {}, {})], server);
+    var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
+                                      map[p := DiskFile(m, Note, f.identity)], {}, {})], server);
+    var write := Write(Some(doc), p, m, Note, Some(l));
+    var step := Step(pre, SyncRound(d), [Pull(1), write], post);
+    var device := pre.devices[d];
+    var device' := post.devices[d];
+    var disk := map[p := f];
+    var disk' := map[p := DiskFile(m, Note, f.identity)];
+    assert EffectTakes(platform, disk, Pull(1), disk);
+    assert Holds(platform, disk, p, p, l);
+    assert disk' == disk[p := DiskFile(m, Note, disk[p].identity)];
+    assert EffectTakes(platform, disk, write, disk');
+    assert EffectsTake(platform, disk', [write][1..], disk');
+    assert EffectsTake(platform, disk, [write], disk');
+    assert [Pull(1), write][1..] == [write];
+    assert EffectsTake(platform, disk, [Pull(1), write], disk');
+    assert HasFile(device, p) && FileAt(device, p) == f;
+    assert BoundFile(device, doc) == Some(f);
+    assert LocalChange(device, doc);
+    assert SettlesConcurrent(step, d, doc, remote);
+    assert Outgoing(device', doc) == Some(m);
+    assert G6_Settle(step, d, doc, remote);
+    assert BoundTo(device, doc, p);
+    assert LastSaw(step, device, doc, p, l);
+    assert G2_OnlyWhatItSaw(step);
+    assert write in step.effects;
+    assert G2_Conditional(step);
+  }
+
+  // The same overwrite outside a sync round (a remote revision delivered on
+  // its own, which reads nothing) fails G2_OnlyWhatItSaw: the core never saw
+  // l there, only b.
+  lemma G2RejectsOverwriteOfUnreadContent(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, b: Hash, m: Hash, rev: Revision,
+    post: State)
+    requires f.content != b
+    ensures
+      var before := Document(None, None, Some(Binding(p, b, false, None)), Never, None);
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[p := f], {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      !G2_OnlyWhatItSaw(Step(pre, RemoteRevision(d, rev), [Write(Some(doc), p, m, f.kind, Some(f.content))], post))
+  {
+    var before := Document(None, None, Some(Binding(p, b, false, None)), Never, None);
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 0, [], []), map[p := f], {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var write := Write(Some(doc), p, m, f.kind, Some(f.content));
+    assert write in [write];
+    assert BoundTo(pre.devices[d], doc, p);
+  }
+
+  // ---------------------------------------------------------------------
   // Effect semantics (Engine.dfy, verified-core.md §2.3)
   // ---------------------------------------------------------------------
 

@@ -198,7 +198,8 @@ abstract module EngineModel {
     // One sync round the engine runs on its own: a pull, then a push. The
     // step includes the pull's results: the revisions on the feed after the
     // device's cursor when the round starts are handed to the core within
-    // the step (its `Pull` effect names where the pull starts). The push's
+    // the step (its `Pull` effect names where the pull starts), together
+    // with the round's input (`RoundInput`, `RoundInputOf`). The push's
     // answers arrive as later `Pushed` events.
     | SyncRound(device: DeviceId)
 
@@ -299,6 +300,55 @@ abstract module EngineModel {
     requires step.event.Local? && step.event.device in step.pre.devices
   {
     map p | p in LocalEventPaths(step.event.local) :: ReadAt(step.pre.devices[step.event.device], p)
+  }
+
+  // A sync round's input (verified-core.md §2.3): what the shell hands the
+  // core with a `SyncRound` besides the pulled revisions. `listing` is the
+  // device's vault listing, every file with its content and kind (as the
+  // start-up scan's), so the push can name untracked files and the round
+  // knows the content of every file it writes over. `unsaved` are the paths
+  // an open editor holds unsaved text at. `freshDocs` are document ids for
+  // the documents the push creates.
+  datatype RoundInput = RoundInput(listing: map<Path, (Hash, Kind)>, unsaved: set<Path>, freshDocs: seq<DocId>)
+
+  // The device's listing: every file on its disk, by spelling.
+  ghost function DiskListing(device: Device): map<Path, (Hash, Kind)> {
+    map p | p in device.disk :: (device.disk[p].content, device.disk[p].kind)
+  }
+
+  // The paths at which an open editor holds unsaved text.
+  ghost function UnsavedPaths(device: Device): set<Path> {
+    set editor | editor in device.editors && editor.unsaved.Some? :: editor.path
+  }
+
+  // A document id some device's journal or the server already uses.
+  ghost predicate DocIdUsed(state: State, doc: DocId) {
+    (exists d :: d in state.devices && doc in state.devices[d].journal.documents)
+    || doc in state.server.history
+    || (exists rev :: rev in state.server.revisions && state.server.revisions[rev].doc == doc)
+    || (exists rev :: rev in state.server.accepted && state.server.accepted[rev].doc == doc)
+  }
+
+  // `input` is device d's input for a round starting in `state`: the listing
+  // and the unsaved paths are read from the state before (the same disk the
+  // effects' preconditions are checked against), and the fresh document ids
+  // are distinct and used by no device and not by the server. Their freshness
+  // is a fact about other devices and the server, which the core cannot see;
+  // the shell meets it with random UUIDs.
+  ghost predicate RoundInputOf(state: State, d: DeviceId, input: RoundInput) {
+    d in state.devices
+    && input.listing == DiskListing(state.devices[d])
+    && input.unsaved == UnsavedPaths(state.devices[d])
+    && (forall i, j :: 0 <= i < j < |input.freshDocs| ==> input.freshDocs[i] != input.freshDocs[j])
+    && (forall i :: 0 <= i < |input.freshDocs| ==> !DocIdUsed(state, input.freshDocs[i]))
+  }
+
+  // What a sync round read at `path` (under the device's F): the content of
+  // the file there in the round's listing. It is ReadAt of the state before.
+  ghost function RoundRead(step: Step, path: Path): Option<(Hash, Kind)>
+    requires step.event.SyncRound? && step.event.device in step.pre.devices
+  {
+    ReadAt(step.pre.devices[step.event.device], path)
   }
 
   // No file on `disk` collides with `path` under F (design §3.2: the same

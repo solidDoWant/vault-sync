@@ -108,7 +108,8 @@ abstract module Guarantees refines EngineModel {
   //
   // Every overwrite or delete the core requests names a file bound to the
   // document it acts for, conditional on the content the engine last read or
-  // wrote there (`seen`). A write where no file is must be conditional on no
+  // wrote there: `seen`, or, in a sync round, the content the round read
+  // there (`LastSaw`). A write where no file is must be conditional on no
   // file being there.
   ghost predicate G2_OnlyWhatItSaw(step: Step) {
     var d := EventDevice(step.event);
@@ -117,10 +118,20 @@ abstract module Guarantees refines EngineModel {
       var device := step.pre.devices[d.value];
       (effect.Write? && effect.precondition.Some? ==>
          effect.target.Some? && BoundTo(device, effect.target.value, effect.path)
-         && effect.precondition.value == device.journal.documents[effect.target.value].binding.value.seen)
+         && LastSaw(step, device, effect.target.value, effect.path, effect.precondition.value))
       && (effect.Remove? ==>
          BoundTo(device, effect.doc, effect.path)
-         && effect.expected == device.journal.documents[effect.doc].binding.value.seen)
+         && LastSaw(step, device, effect.doc, effect.path, effect.expected))
+  }
+
+  // What the core last saw at the bound file `path` of `doc` is `content`:
+  // the binding's `seen`, or, in a sync round, the round's read of the file
+  // (its listing, verified-core.md §2.3), which is newer than `seen`.
+  ghost predicate LastSaw(step: Step, device: Device, doc: DocId, path: Path, content: Hash)
+    requires BoundTo(device, doc, path)
+  {
+    content == device.journal.documents[doc].binding.value.seen
+    || (step.event.SyncRound? && HasFile(device, path) && FileAt(device, path).content == content)
   }
 
   // The adapter performs a disk effect only if its precondition holds: a
