@@ -65,6 +65,15 @@ abstract module StepContractWitnesses refines StepContracts {
     }
   }
 
+  // CoreRequests' last arm: an event the core does not handle on a device
+  // (here another crash, or a user's action) requests nothing, so a cut on
+  // it fails CutRequestedByCore whatever it lists, even nothing.
+  lemma CrashOfUnhandledEventRejected(pre: State, post: State, d: DeviceId, action: UserAction, requested: seq<Effect>)
+    ensures !CutRequestedByCore(Step(pre, Crash(d, Some(Cut(Crash(d, None), requested))), [], post))
+    ensures !CutRequestedByCore(Step(pre, Crash(d, Some(Cut(User(d, action), requested))), [], post))
+  {
+  }
+
   // ---------------------------------------------------------------------
   // ApplySettlesContract: the row after the path rule
   // ---------------------------------------------------------------------
@@ -88,10 +97,10 @@ abstract module StepContractWitnesses refines StepContracts {
   {
   }
 
-  // The row ApplyRevision returns for the same move holds the revision for
-  // its name (PathHeld). Left there although no user must act, it fails
-  // ApplySettlesContract: the contract is about the rule's row, and the
-  // rule must settle the move.
+  // A row that holds the same move for its name (PathHeld, as
+  // ApplyRevision leaves a remote move it does not place itself) where no
+  // user must act fails ApplySettlesContract: the contract is about the
+  // rule's row, and the rule must settle the move.
   lemma HeldRemoteMoveRejected(rev0: RevId, rev1: RevId, doc: DocId, device: DeviceId, p: Path, q: Path, h: Hash)
     requires p != q
     ensures
@@ -101,4 +110,187 @@ abstract module StepContractWitnesses refines StepContracts {
       !ApplySettlesContract(before, held, r, Some((h, Note)), false)
   {
   }
+
+  // ---------------------------------------------------------------------
+  // ApplySettlesContract and G6_Settle: a revision identical to the file
+  // ---------------------------------------------------------------------
+
+  // #1007's trace (regression): device d has `doc` bound at `n`, base rev1
+  // with content `b`, and the user changed the file to `x`, a binary file
+  // (so no merge can combine anything), not yet reported. Another device's
+  // revision rev2 of `doc` at `n` with content `x` is accepted, and d's
+  // round pulls it while the listing reads `x` at `n`. The round takes it
+  // as the base and writes or copies nothing. That settles a concurrent
+  // change (SettlesConcurrent holds: the file differed from the base), and
+  // G6_Settle and ApplySettlesContract's identical clause both hold of it.
+  // Before #1025, G6_Settle demanded a conflict copy of `x` here, which the
+  // contract forbids.
+  function IdenticalTraceStep(d: DeviceId, other: DeviceId, doc: DocId, rev1: RevId, rev2: RevId,
+                              n: Path, b: Hash, x: Hash, platform: Platform, file: FileIdentity): Step
+  {
+    var r := Revision(rev2, doc, 2, Some(rev1), n, x, Binary, false, other);
+    var beforeRow := Document(Some(Base(rev1, 1, n, b, Binary, false)), None, Some(Binding(n, b, false, None)), Never, None);
+    var afterRow := Document(Some(Base(rev2, 2, n, x, Binary, false)), None, Some(Binding(n, x, false, None)), Never, None);
+    var disk := map[n := DiskFile(x, Binary, file)];
+    var journal := Journal(map[doc := beforeRow], 0, [], []);
+    var journal' := Journal(map[doc := afterRow], 1, [], []);
+    var server := Server(map[rev2 := r], map[doc := [rev2]], [rev2], {}, map[rev2 := r], {});
+    var pre := State(map[d := Device(platform, true, journal, disk, {}, {})], server);
+    var post := State(map[d := Device(platform, true, journal', disk, {}, {})], server);
+    Step(pre, SyncRound(d), [PersistJournal(journal')], post)
+  }
+
+  lemma IdenticalRevisionSettlesBoth(d: DeviceId, other: DeviceId, doc: DocId, rev1: RevId, rev2: RevId,
+                                     n: Path, b: Hash, x: Hash, platform: Platform, file: FileIdentity)
+    requires d != other && rev1 != rev2 && x != b
+    ensures
+      var step := IdenticalTraceStep(d, other, doc, rev1, rev2, n, b, x, platform, file);
+      var r := Revision(rev2, doc, 2, Some(rev1), n, x, Binary, false, other);
+      var beforeRow := step.pre.devices[d].journal.documents[doc];
+      var afterRow := step.post.devices[d].journal.documents[doc];
+      SettlesConcurrent(step, d, doc, r)
+      && G6_Settle(step, d, doc, r)
+      && ApplySettlesContract(beforeRow, afterRow, r, Some((x, Binary)), false)
+      // No conflict copy: every file on the device is the document's.
+      && (forall p :: p in step.post.devices[d].disk ==> Tracked(step.post.devices[d], p))
+  {
+    var step := IdenticalTraceStep(d, other, doc, rev1, rev2, n, b, x, platform, file);
+    var r := Revision(rev2, doc, 2, Some(rev1), n, x, Binary, false, other);
+    var before := step.pre.devices[d];
+    var after := step.post.devices[d];
+    SameFIsEquivalence(platform, n, n, n);
+    assert HasFile(before, n) && HasFile(after, n);
+    forall q | q in before.disk && SameF(platform, q, n) ensures q == n {}
+    assert FileAt(before, n) == DiskFile(x, Binary, file);
+    assert FileAt(after, n) == DiskFile(x, Binary, file);
+    assert BoundFile(before, doc) == Some(DiskFile(x, Binary, file));
+    assert BoundFile(after, doc) == Some(DiskFile(x, Binary, file));
+    assert LocalChange(before, doc);
+    assert Outgoing(after, doc) == Some(x);
+    assert BoundTo(after, doc, n);
+  }
+
+  // The new first case of G6_Settle has teeth: in the same trace, a round
+  // that settles on the base's content `b` instead (dropping both sides'
+  // identical change) fails it.
+  lemma IdenticalRevisionRevertRejected(d: DeviceId, other: DeviceId, doc: DocId, rev1: RevId, rev2: RevId,
+                                        n: Path, b: Hash, x: Hash, platform: Platform, file: FileIdentity)
+    requires d != other && rev1 != rev2 && x != b
+    ensures
+      var step0 := IdenticalTraceStep(d, other, doc, rev1, rev2, n, b, x, platform, file);
+      var r := Revision(rev2, doc, 2, Some(rev1), n, x, Binary, false, other);
+      var reverted := step0.post.devices[d].(disk := map[n := DiskFile(b, Binary, file)]);
+      var step := step0.(post := step0.post.(devices := map[d := reverted]));
+      SettlesConcurrent(step, d, doc, r) && !G6_Settle(step, d, doc, r)
+  {
+    var step0 := IdenticalTraceStep(d, other, doc, rev1, rev2, n, b, x, platform, file);
+    var reverted := step0.post.devices[d].(disk := map[n := DiskFile(b, Binary, file)]);
+    var step := step0.(post := step0.post.(devices := map[d := reverted]));
+    var before := step.pre.devices[d];
+    SameFIsEquivalence(platform, n, n, n);
+    assert HasFile(before, n) && HasFile(reverted, n);
+    assert FileAt(before, n) == DiskFile(x, Binary, file);
+    assert FileAt(reverted, n) == DiskFile(b, Binary, file);
+    assert BoundFile(before, doc) == Some(DiskFile(x, Binary, file));
+    assert BoundFile(reverted, doc) == Some(DiskFile(b, Binary, file));
+    assert LocalChange(before, doc);
+    assert Outgoing(reverted, doc) == Some(b);
+  }
+
+  // ---------------------------------------------------------------------
+  // ServerEventContract: a restore to a device's cursor (#950's gap)
+  // ---------------------------------------------------------------------
+
+  // Under MirrorAtCursor, a restore keeps MirrorInv: a device it finishes
+  // has its cursor at the restored feed's length, and the restored server
+  // is a cut there, so the device mirrors it already. (This is the clause
+  // of ServerEventContract that #950's trace broke; the rest of the
+  // contract is #950's proof.)
+  lemma RestoreKeepsMirror(step: Step)
+    requires step.event.Restore? && ServerFollowsEvent(step) && step.post.devices == step.pre.devices
+    requires MirrorAtCursor(step.pre)
+    ensures MirrorInv(step.post)
+  {
+    var cut := step.post.server;
+    assert EarlierServer(step.pre.server, step.event.restored);
+    assert EarlierServer(step.pre.server, cut);
+    assert step.pre.(server := cut) == step.post;
+    forall d | d in step.post.devices && FinishedSyncing(step.post, d)
+      ensures FilesMirrorHeads(step.post, step.post.devices[d]) && HeadsMirrored(step.post, step.post.devices[d])
+    {
+      assert step.pre.devices[d].journal.cursor == |cut.feed| <= |step.pre.server.feed|;
+    }
+  }
+
+  // #950's trace (regression): device d has read one revision of the feed
+  // [r1, r2] (cursor 1) and holds no row and no file, though r1 is a live
+  // head. Before #1025 that state was CoreReachable, and a restore to [r1]
+  // finished d while it mirrored nothing, so ServerEventContract was false.
+  // It now fails MirrorAtCursor (d would be finished against the server cut
+  // at its cursor and does not hold r1), so it is not CoreReachable, and
+  // ServerEventContract holds of the restore from it.
+  lemma RestoreTraceExcluded(
+    d: DeviceId, platform: Platform, x: DocId, y: DocId, r1: Revision, r2: Revision)
+    requires x != y && r1.id != r2.id && r1.doc == x && r2.doc == y && !r1.deleted && r2.deleted
+    ensures
+      var device := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {});
+      var accepted := map[r1.id := r1, r2.id := r2];
+      var pre := State(map[d := device],
+        Server(accepted, map[x := [r1.id], y := [r2.id]], [r1.id, r2.id], {}, accepted));
+      var restored := Server(map[r1.id := r1], map[x := [r1.id]], [r1.id], {}, map[]);
+      var post := State(map[d := device], restored.(accepted := accepted, lost := {r2.id}));
+      var step := Step(pre, Restore(restored), [], post);
+      !MirrorAtCursor(pre) && !CoreReachable(pre) && ServerEventContract(step)
+  {
+    var device := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {});
+    var accepted := map[r1.id := r1, r2.id := r2];
+    var pre := State(map[d := device],
+      Server(accepted, map[x := [r1.id], y := [r2.id]], [r1.id, r2.id], {}, accepted));
+    var restored := Server(map[r1.id := r1], map[x := [r1.id]], [r1.id], {}, map[]);
+    var kept: set<RevId> := set i | 0 <= i < |restored.feed| :: restored.feed[i];
+    assert restored.feed[0] == r1.id;
+    assert kept == {r1.id} by {
+      forall id | id in kept ensures id == r1.id {}
+      assert r1.id in kept;
+    }
+    assert Keep(pre.server.history[x], kept) == [r1.id];
+    assert Keep(pre.server.history[y], kept) == [];
+    assert restored.revisions == (map id | id in pre.server.revisions && id in kept :: pre.server.revisions[id]);
+    assert restored.history == (map doc | doc in pre.server.history && |Keep(pre.server.history[doc], kept)| > 0
+                                  :: Keep(pre.server.history[doc], kept));
+    assert EarlierServer(pre.server, restored);
+    var atCut := pre.(server := restored);
+    assert FinishedSyncing(atCut, d);
+    assert LiveHead(restored, x);
+    assert !ReportedCannotHold(atCut, device, r1.path);
+    assert !HeadsMirrored(atCut, device);
+  }
+
+  // ---------------------------------------------------------------------
+  // SavedNextToIt: a copy the round already sends (#1025, G6 vs G10_NoLoop)
+  // ---------------------------------------------------------------------
+
+  // A copy of `x` bound to a new document whose outbox creates it is saved
+  // next to the settled document; a file of `x` bound to a document the
+  // server already has, with nothing to send, is not a copy.
+  lemma CopyBoundToNewDocumentIsSaved(platform: Platform, p: Path, doc: DocId, rev0: RevId, rev: RevId, x: Hash, file: FileIdentity)
+    ensures
+      var row := Document(None, None, Some(Binding(p, x, false, None)), Never, Some(Outbox(rev, None, p, x, Binary, false, false, false)));
+      SavedNextToIt(Device(platform, true, Journal(map[doc := row], 0, [], []), map[p := DiskFile(x, Binary, file)], {}, {}), x)
+    ensures
+      var row := Document(Some(Base(rev0, 1, p, x, Binary, false)), None, Some(Binding(p, x, false, None)), Never, None);
+      !SavedNextToIt(Device(platform, true, Journal(map[doc := row], 0, [], []), map[p := DiskFile(x, Binary, file)], {}, {}), x)
+  {
+    SameFIsEquivalence(platform, p, p, p);
+    var row := Document(None, None, Some(Binding(p, x, false, None)), Never, Some(Outbox(rev, None, p, x, Binary, false, false, false)));
+    var device := Device(platform, true, Journal(map[doc := row], 0, [], []), map[p := DiskFile(x, Binary, file)], {}, {});
+    assert BoundTo(device, doc, p);
+    assert NewDocumentAt(device, p);
+    var row' := Document(Some(Base(rev0, 1, p, x, Binary, false)), None, Some(Binding(p, x, false, None)), Never, None);
+    var device' := Device(platform, true, Journal(map[doc := row'], 0, [], []), map[p := DiskFile(x, Binary, file)], {}, {});
+    assert BoundTo(device', doc, p);
+    assert Tracked(device', p);
+    assert !NewDocumentAt(device', p);
+  }
 }
+

@@ -25,9 +25,29 @@ abstract module StepContracts refines PushCore {
   // Shared vocabulary
   // ---------------------------------------------------------------------
 
-  // What every step theorem starts from and must keep (§3.2, §3.5, §3.7).
+  // What every step theorem starts from and must keep (§3.2, §3.5, §3.7,
+  // §4.1).
   ghost predicate CoreReachable(state: State) {
     StateInvariants(state) && CoreInv(state) && ServerInv(state) && MirrorInv(state)
+    && MirrorAtCursor(state)
+  }
+
+  // MirrorInv at each device's cursor (#1025, settling #950's restore
+  // gap): a device that would be finished against the server as it was
+  // when its feed was as long as the device's cursor (any `cut` a restore
+  // to that point could give, EarlierServer) mirrors that server's live
+  // heads. The device read that far, so it applied what it read: this
+  // holds of every reachable state, and a restore to exactly a device's
+  // cursor, which can finish it with no step of its own, leaves it
+  // mirroring the restored server. At a cursor equal to the feed's length
+  // it is MirrorInv. Every predicate it uses reads the server's
+  // revisions, histories and feed only, which every such cut shares.
+  ghost predicate MirrorAtCursor(state: State) {
+    forall d: DeviceId, cut: Server :: d in state.devices && state.devices[d].journal.cursor <= |state.server.feed|
+      && |cut.feed| == state.devices[d].journal.cursor && EarlierServer(state.server, cut)
+      && FinishedSyncing(state.(server := cut), d)
+      ==> FilesMirrorHeads(state.(server := cut), state.devices[d])
+          && HeadsMirrored(state.(server := cut), state.devices[d])
   }
 
   // A step keeps every invariant and satisfies every step predicate.
@@ -212,10 +232,22 @@ abstract module StepContracts refines PushCore {
          document.outbox.Some? && document.outbox.value.rev == id
   }
 
+  // The round's input carries enough fresh document ids (#1025) for every
+  // document it may create in one round: each untracked listed file, each
+  // file the path rule lets go (W(b)), and a conflict copy per document or
+  // pulled revision. With fewer, a file would wait for the next round's
+  // ids, which would then commit it, against G10_NoLoop. The shell
+  // supplies ids freely, so the bound only needs to be sufficient.
+  ghost predicate FreshDocsSuffice(state: State, d: DeviceId, input: RoundInput) {
+    d in state.devices
+    && |input.freshDocs| >= 2 * |input.listing| + |state.devices[d].journal.documents|
+                            + |state.server.feed| - state.devices[d].journal.cursor
+  }
+
   ghost predicate RoundContract(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
     (d in pre.devices && pre.devices[d].running && CoreReachable(pre)
      && OwnRevisionsAcknowledged(pre, d)
-     && RoundInputOf(pre, d, input)
+     && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
      && RevsCover(pre.devices[d].journal, input, revs))
     ==>
       var step := RoundStepOf(pre, d, input, revs);
@@ -227,7 +259,7 @@ abstract module StepContracts refines PushCore {
       && IntentsCoverDiskEffects(step.effects)
       // The round finishes what it can: a second round right after it has
       // nothing to do on disk or on the server.
-      && (forall input2, revs2 :: RoundInputOf(step.post, d, input2)
+      && (forall input2, revs2 :: RoundInputOf(step.post, d, input2) && FreshDocsSuffice(step.post, d, input2)
             && RevsCover(step.post.devices[d].journal, input2, revs2)
             ==> G10_NoLoop(step, RoundStepOf(step.post, d, input2, revs2)))
   }
@@ -429,7 +461,10 @@ abstract module StepContracts refines PushCore {
 
   ghost predicate OneRoundFinishes(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
     d in pre.devices && NoLocalChange(pre, d) && CoreReachable(pre) && OwnRevisionsAcknowledged(pre, d)
-    && RoundInputOf(pre, d, input)
+    // Every revision the journal names is on the server (#1025): after a
+    // restore that lost one, only the resync can finish the device.
+    && JournalOnServer(pre.server, pre.devices[d].journal)
+    && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
     && RevsCover(pre.devices[d].journal, input, revs)
     ==> FinishedSyncing(RoundStepOf(pre, d, input, revs).post, d)
   }

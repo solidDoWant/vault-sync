@@ -571,8 +571,22 @@ abstract module Guarantees refines EngineModel {
   }
 
   // An untracked file next to the document holds the content: a conflict copy.
+  // (#1025) A copy the same round already bound to a new document, to be
+  // sent as one (no base, an outbox that creates it), is still saved next
+  // to it: otherwise the round could not send its own copies, and the next
+  // round would, against G10_NoLoop.
   ghost predicate SavedNextToIt(device: Device, content: Hash) {
-    exists p :: p in device.disk && device.disk[p].content == content && !Tracked(device, p)
+    exists p :: p in device.disk && device.disk[p].content == content
+      && (!Tracked(device, p) || NewDocumentAt(device, p))
+  }
+
+  // The file at `p` is bound to a document the server has never had, which
+  // its outbox will create.
+  ghost predicate NewDocumentAt(device: Device, p: Path) {
+    exists doc :: BoundTo(device, doc, p)
+      && device.journal.documents[doc].base.None?
+      && device.journal.documents[doc].outbox.Some?
+      && !device.journal.documents[doc].outbox.value.deleted
   }
 
   // "When two devices change a file at the same time, edits to different
@@ -592,15 +606,22 @@ abstract module Guarantees refines EngineModel {
     var after := step.post.devices[d];
     var local := BoundFile(before, doc);
     var base := before.journal.documents[doc].base;
-    // Both sides live: a side that left the content as it was takes the
-    // other side's content; if both changed it, a note is combined when the
-    // merge combines the edits, and otherwise one version stays in place and
-    // the other is saved next to it.
+    // Both sides live: if both made the same content, that one version is
+    // both versions and stays, with nothing to save next to it (#1025; a
+    // note may still go through the merge, which combines the two edits);
+    // a side that left the content as it was takes the other side's content;
+    // if both changed it, a note is combined when the merge combines the
+    // edits, and otherwise one version stays in place and the other is
+    // saved next to it.
     (local.Some? && !remote.deleted && base.Some? ==>
        var b := base.value.content;
        var l := local.value.content;
        var r := remote.content;
-       if l == b then Outgoing(after, doc) == Some(r)
+       if l == r then
+         Outgoing(after, doc) == Some(r)
+         || (local.value.kind == Note && remote.kind == Note && Merge3(b, l, r).Some?
+             && Outgoing(after, doc) == Merge3(b, l, r))
+       else if l == b then Outgoing(after, doc) == Some(r)
        else if r == b then Outgoing(after, doc) == Some(l)
        else if local.value.kind == Note && remote.kind == Note && Merge3(b, l, r).Some? then
          Outgoing(after, doc) == Merge3(b, l, r)
