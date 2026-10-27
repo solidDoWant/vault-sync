@@ -742,13 +742,17 @@ abstract module PathRuleCore refines ApplyCore {
 
   // The rule is the pull apply on the outbox's own revision: its
   // acknowledgement leaves nothing waiting for a name, so the rule's row is
-  // the accept of it and it requests no effect (ApplySettlesContract).
+  // the accept of it (or, where the file already holds the revision, the
+  // identical row) and it requests no effect (ApplySettlesContract).
   lemma RuleAcknowledges(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires Newer(documents[doc], r) && Acknowledges(documents[doc], r)
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
-      ruled.documents == documents[doc := Accept(documents[doc], r, revs[doc])] && ruled.effects == []
+      && ruled.documents == documents[doc := if SettlesIdentical(platform, documents[doc], r, input)
+                                             then IdenticalRow(documents[doc], r)
+                                             else Accept(documents[doc], r, revs[doc])]
+      && ruled.effects == []
   {
     AcknowledgementSettles(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
   }
