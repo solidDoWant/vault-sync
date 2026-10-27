@@ -904,4 +904,35 @@ abstract module PathRuleCore refines ApplyCore {
       }
     }
   }
+
+  // G2_OnlyWhatItSaw and G2_NoUntrackedDelete for the rule's own effects:
+  // the only overwrite and the only remove name the document's own bound
+  // file, conditional on the content it last saw there.
+  lemma ClearWayOnlyWhatItSaw(device: Device, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in device.journal.documents && device.journal.documents.Keys <= revs.Keys
+    requires ListingDistinct(device.platform, input.listing)
+    ensures var effects := ClearWay(device.platform, device.journal.documents, doc, r, input, revs).effects;
+      forall e | e in effects ::
+        (e.Write? && e.precondition.Some? ==>
+           e.target == Some(doc) && BoundTo(device, doc, e.path)
+           && e.precondition.value == device.journal.documents[doc].binding.value.seen)
+        && (e.Remove? ==>
+           e.doc == doc && BoundTo(device, doc, e.path)
+           && e.expected == device.journal.documents[doc].binding.value.seen && Tracked(device, e.path))
+  {
+    var platform := device.platform;
+    var documents := device.journal.documents;
+    var document := documents[doc];
+    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, input.listing, r.path, own);
+    var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+    if aside.Some? {
+      MoveEffectsShape(platform, documents, doc, aside.value);
+    }
+    if own.Some? {
+      SameFIsEquivalence(platform, own.value, document.binding.value.spelling, own.value);
+      assert BoundTo(device, doc, own.value);
+    }
+  }
 }
