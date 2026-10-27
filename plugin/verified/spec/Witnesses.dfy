@@ -670,6 +670,66 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert HasFile(pre.devices[d], p);
   }
 
+  // The server's step semantics (Engine.dfy, ServerFollowsEvent): a device
+  // with a sealed outbox creating a new document gets it accepted; the
+  // server appends that revision to the document's history, the feed and
+  // what it accepted.
+  lemma AcceptAppendsOutbox(d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision)
+    requires o.sealed && o.baseRev.None?
+    requires r == Revision(o.rev, doc, 0, None, o.path, o.content, o.kind, o.deleted, d)
+    ensures
+      var empty := Server(map[], map[], [], {}, map[]);
+      var device := Device(platform, true,
+        Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {});
+      var pre := State(map[d := device], empty);
+      var post := State(map[d := device],
+        Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var empty := Server(map[], map[], [], {}, map[]);
+    forall x ensures Head(empty, x).None? {}
+    assert ParentIsHead(empty, doc, r.parent);
+    assert Appendable(empty, doc, r);
+    assert [] + [r.id] == [r.id];
+    assert Appended(empty, doc, r) == Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]);
+  }
+
+  // An accept that drops another revision from the server does not follow
+  // its event.
+  lemma ServerFollowsEventRejectsDroppingAccept(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, prior: Revision)
+    requires o.sealed && prior.id != r.id
+    ensures
+      var device := Device(platform, true,
+        Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {});
+      var pre := State(map[d := device],
+        Server(map[prior.id := prior], map[prior.doc := [prior.id]], [prior.id], {}, map[prior.id := prior]));
+      var post := State(map[d := device],
+        Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      !ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var device := Device(platform, true,
+      Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {});
+    var pre := State(map[d := device],
+      Server(map[prior.id := prior], map[prior.doc := [prior.id]], [prior.id], {}, map[prior.id := prior]));
+    var post := State(map[d := device],
+      Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+    assert prior.id in Appended(pre.server, doc, r).revisions;
+    assert prior.id !in post.server.revisions;
+  }
+
+  // A push answered "head moved" leaves the server unchanged: a step where
+  // the server gained a revision anyway does not follow its event.
+  lemma ServerFollowsEventRejectsChangeOnHeadMoved(d: DeviceId, doc: DocId, r: Revision, s: State)
+    ensures
+      var pre := s.(server := Server(map[], map[], [], {}, map[]));
+      var post := s.(server := Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      !ServerFollowsEvent(Step(pre, Pushed(d, HeadMoved(doc)), [], post))
+  {
+    var post := s.(server := Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+    assert r.id in post.server.revisions;
+  }
+
   // G4: device A edits its file, then deletes it and pushes the tombstone;
   // A's later live commit on that tombstone, with nothing else in between,
   // fails it: A's own delete overruled the edit (m <= k).

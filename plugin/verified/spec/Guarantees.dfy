@@ -208,17 +208,6 @@ abstract module Guarantees refines EngineModel {
     && step.event.result.revision.deleted && step.event.result.revision.id == rev
   }
 
-  // "Sync deletes a file on other devices only after a user deleted that file
-  // on some device. A crash, a missed notification or a file sync itself
-  // moved never counts as a delete."
-  //
-  // Every tombstone the server accepts follows a user's removal of that
-  // document's file in its current life (JustifiedTombstone). Every delete
-  // sync requests on a device applies such a tombstone: after the step, the
-  // document's newest claim on the device, or an open apply intent of it,
-  // is that tombstone. Only a User step counts: a crash, a lost local event
-  // or an engine move is no such step, and a delete from an earlier life of
-  // the document (before a restore or a re-create) does not count.
   // A step records a user's delete of document `doc`: the document was
   // bound before, and after the step it has no binding and counts as deleted
   // by the user.
@@ -248,6 +237,17 @@ abstract module Guarantees refines EngineModel {
             && SameF(device.platform, step.event.local.to, spelling))
   }
 
+  // "Sync deletes a file on other devices only after a user deleted that file
+  // on some device. A crash, a missed notification or a file sync itself
+  // moved never counts as a delete."
+  //
+  // Every tombstone the server accepts follows a user's removal of that
+  // document's file in its current life (JustifiedTombstone). Every delete
+  // sync requests on a device applies such a tombstone: after the step, the
+  // document's newest claim on the device, or an open apply intent of it,
+  // is that tombstone. Only a User step counts: a crash, a lost local event
+  // or an engine move is no such step, and a delete from an earlier life of
+  // the document (before a restore or a re-create) does not count.
   ghost predicate G3(trace: Trace) {
     forall i :: 0 <= i < |trace| ==>
       G3_DeleteSeen(trace[i])

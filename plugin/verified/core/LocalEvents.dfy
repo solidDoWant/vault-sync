@@ -276,7 +276,7 @@ abstract module LocalCore refines Guarantees {
     && G7_MoveKeepsContents(step)
     && G8_Recovers(step) && G8_PicksUpOfflineChanges(step)
     && G10_SettledOrReported(step)
-    && DisksFollowEffects(step)
+    && DisksFollowEffects(step) && ServerFollowsEvent(step)
   }
 
   // ---------------------------------------------------------------------
