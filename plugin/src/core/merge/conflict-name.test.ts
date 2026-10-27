@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { conflictCopyPath, conflictFolderPath } from "./conflict-name";
+import { conflictCopyPath, conflictFolderPath, copyCandidate } from "./conflict-name";
 
 const date = new Date(Date.UTC(2026, 9, 18, 4, 5, 6));
 const bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -65,5 +65,80 @@ describe("conflictCopyPath", () => {
   it("returns null when no copy name fits, so the caller keeps the local version in place", () => {
     const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/${"g".repeat(60)}/`;
     expect(conflictCopyPath(`${folder}a.md`, "laptop", date)).toBeNull();
+  });
+});
+
+describe("copyCandidate (the verified core's CopyCandidate)", () => {
+  const naming = { deviceName: "Pixel 7", date };
+
+  it("names the copy `<name> (conflict <device> <date>).<ext>` in the same folder, with the UTC date as YYYY-MM-DD HHmmss", () => {
+    expect(copyCandidate("notes/Plan.md", null, 1, naming)).toBe("notes/Plan (conflict Pixel 7 2026-10-18 040506).md");
+    // Another time zone's midnight is still the UTC date.
+    expect(copyCandidate("a.md", null, 1, { deviceName: "pc", date: new Date("2026-01-01T00:30:09+02:00") })).toBe("a (conflict pc 2025-12-31 223009).md");
+  });
+
+  it("cleans the device name: whitespace runs made one space, forbidden characters and parentheses made -, trimmed, cut to 40 characters, `device` if empty", () => {
+    expect(copyCandidate("a.md", null, 1, { deviceName: " my\t\tpc/\\:*?\"<>|\u0001(x) ", date })).toBe("a (conflict my pc-----------x- 2026-10-18 040506).md");
+    expect(copyCandidate("a.md", null, 1, { deviceName: "d".repeat(40), date })).toBe(`a (conflict ${"d".repeat(40)} 2026-10-18 040506).md`);
+    expect(copyCandidate("a.md", null, 1, { deviceName: "d".repeat(41), date })).toBe(`a (conflict ${"d".repeat(40)} 2026-10-18 040506).md`);
+    expect(copyCandidate("a.md", null, 1, { deviceName: " () ", date })).toBe("a (conflict -- 2026-10-18 040506).md");
+    expect(copyCandidate("a.md", null, 1, { deviceName: "\t ", date })).toBe("a (conflict device 2026-10-18 040506).md");
+  });
+
+  it("adds the counter n from 2 on, and none for 1", () => {
+    expect(copyCandidate("a.md", null, 1, naming)).toBe("a (conflict Pixel 7 2026-10-18 040506).md");
+    expect(copyCandidate("a.md", null, 2, naming)).toBe("a (conflict Pixel 7 2026-10-18 040506 2).md");
+    expect(copyCandidate("a.md", null, 100, naming)).toBe("a (conflict Pixel 7 2026-10-18 040506 100).md");
+    expect(() => copyCandidate("a.md", null, 0, naming)).toThrow(RangeError);
+  });
+
+  it("puts the suffix on the folder the core names (the outermost held one, #359), keeping the rest of the path", () => {
+    expect(copyCandidate("Notes/C.md", "Notes", 1, naming)).toBe("Notes (conflict Pixel 7 2026-10-18 040506)/C.md");
+    expect(copyCandidate("a/b/c.md", "a", 2, naming)).toBe("a (conflict Pixel 7 2026-10-18 040506 2)/b/c.md");
+    expect(copyCandidate("a/v1.2/c.md", "a/v1.2", 1, naming)).toBe("a/v1.2 (conflict Pixel 7 2026-10-18 040506)/c.md");
+    expect(() => copyCandidate("ab/c.md", "a", 1, naming)).toThrow(RangeError);
+  });
+
+  it("shortens `<name>` from its end until the file name fits 255 bytes, and only when it must", () => {
+    const suffix = " (conflict Pixel 7 2026-10-18 040506).md";
+    const longest = "n".repeat(255 - bytes(suffix));
+    expect(copyCandidate(`dir/${longest}.md`, null, 1, naming)).toBe(`dir/${longest}${suffix}`);
+    expect(copyCandidate(`dir/${longest}xy.md`, null, 1, naming)).toBe(`dir/${longest}${suffix}`);
+    const folderSuffix = " (conflict Pixel 7 2026-10-18 040506)";
+    const folder = "f".repeat(255 - bytes(folderSuffix));
+    expect(copyCandidate(`${folder}z/c.md`, `${folder}z`, 1, naming)).toBe(`${folder}${folderSuffix}/c.md`);
+  });
+
+  it("keeps §6.2's 4096-byte path limit", () => {
+    const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/`;
+    const copy = copyCandidate(`${folder}${"n".repeat(100)}.md`, null, 1, naming);
+    expect(bytes(copy ?? "")).toBe(4096);
+    expect(copy?.endsWith(" (conflict Pixel 7 2026-10-18 040506).md")).toBe(true);
+  });
+
+  it("keeps the platform's limits: Windows' 259-character path, root included", () => {
+    const rules = { platform: "windows" as const, root: "C:\\v" };
+    const suffix = " (conflict Pixel 7 2026-10-18 040506).md";
+    // "C:\v" and the separator take 5 of the 259 characters.
+    const fits = "n".repeat(259 - 5 - "dir/".length - suffix.length);
+    expect(copyCandidate(`dir/${fits}.md`, null, 1, { ...naming, rules })).toBe(`dir/${fits}${suffix}`);
+    expect(copyCandidate(`dir/${fits}x.md`, null, 1, { ...naming, rules })).toBe(`dir/${fits}${suffix}`);
+    expect(copyCandidate(`dir/${fits}x.md`, null, 1, naming)).toBe(`dir/${fits}x${suffix}`);
+  });
+
+  it("keeps the platform's limits when the suffix is on a folder", () => {
+    const rules = { platform: "windows" as const, root: "C:\\v" };
+    const suffix = " (conflict Pixel 7 2026-10-18 040506)";
+    const fits = "f".repeat(259 - 5 - suffix.length - "/c.md".length);
+    expect(copyCandidate(`${fits}/c.md`, fits, 1, { ...naming, rules })).toBe(`${fits}${suffix}/c.md`);
+    expect(copyCandidate(`${fits}x/c.md`, `${fits}x`, 1, { ...naming, rules })).toBe(`${fits}${suffix}/c.md`);
+    expect(copyCandidate(`${fits}x/c.md`, `${fits}x`, 1, naming)).toBe(`${fits}x${suffix}/c.md`);
+  });
+
+  it("gives no name when no shortened name fits", () => {
+    const folder = `${Array.from({ length: 16 }, () => "f".repeat(250)).join("/")}/${"g".repeat(60)}/`;
+    expect(copyCandidate(`${folder}a.md`, null, 1, naming)).toBeNull();
+    const rules = { platform: "windows" as const, root: `C:\\${"r".repeat(250)}` };
+    expect(copyCandidate("a.md", null, 1, { ...naming, rules })).toBeNull();
   });
 });

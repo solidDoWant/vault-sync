@@ -42,6 +42,30 @@ export function conflictFolderPath(folder: string, rest: string, device: string,
   return conflictName(folder, device, date, attempt, false, `/${rest}`, rules);
 }
 
+/** What the shell fixes for one sync round's copy names: the device's name, the round's date and the platform's rules. */
+export interface CopyCandidateNaming {
+  deviceName: string;
+  date: Date;
+  rules?: PathRules;
+}
+
+/**
+ * The shell's candidate generator for the verified core, `CopyCandidate(p,
+ * folder, n)` in plugin/verified/core/Apply.dfy: the name with counter `n`
+ * (1: none) for a copy of `path` (SPEC.md §7 "Copy names"). With `folder` (a
+ * folder of `path`, which the core picks as the outermost one a claim holds,
+ * #359), that folder takes the suffix instead of the file. Returns null when
+ * no shortened name fits 255 bytes, §6.2's limits and the platform. The
+ * core checks every candidate for freedom itself, so this only makes the
+ * name.
+ */
+export function copyCandidate(path: string, folder: string | null, n: number, naming: CopyCandidateNaming): string | null {
+  if (!Number.isInteger(n) || n < 1) throw new RangeError(`copy counter must be a positive integer, got ${String(n)}`);
+  if (folder === null) return conflictCopyPath(path, naming.deviceName, naming.date, n, naming.rules);
+  if (folder === "" || !path.startsWith(`${folder}/`)) throw new RangeError("the suffixed folder must be a folder of the path");
+  return conflictFolderPath(folder, path.slice(folder.length + 1), naming.deviceName, naming.date, n, naming.rules);
+}
+
 /**
  * The end of a file or folder name that conflictCopyPath or conflictFolderPath
  * produced: ` (conflict <device> <date>[ <counter>])`, then the extension, if
