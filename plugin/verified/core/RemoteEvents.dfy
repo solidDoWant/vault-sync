@@ -16,6 +16,11 @@
 //
 // It also states the invariant behind G9 (#992, §3.7): a finished device's
 // in-scope files mirror the server's live heads (MirrorInv).
+//
+// Its proofs pick witnesses with `var x := var x0 :| P(x0); x0;`, as
+// LocalEvents.dfy explains: the push half (Push.dfy, #991) refines this
+// module, and Dafny 4.11's precedence linter crashes on the statement form
+// in a refining module.
 include "LocalEvents.dfy"
 
 abstract module RemoteCore {
@@ -179,7 +184,7 @@ abstract module RemoteCore {
     forall rev | rev in post.server.accepted && exists x :: x in pre.devices && OnDisk(pre.devices[x], pre.server.accepted[rev].content)
       ensures exists x :: x in post.devices && OnDisk(post.devices[x], post.server.accepted[rev].content)
     {
-      var x :| x in pre.devices && OnDisk(pre.devices[x], pre.server.accepted[rev].content);
+      var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], pre.server.accepted[rev].content); x0;
       assert OnDisk(post.devices[x], post.server.accepted[rev].content);
     }
   }
@@ -354,7 +359,7 @@ abstract module RemoteCore {
     }
     forall rev | rev in server.accepted ensures IsHead(server', rev) ==> IsHead(server, rev) {
       if IsHead(server', rev) {
-        var x :| Head(server', x).Some? && Head(server', x).value.id == rev;
+        var x := var x0 :| Head(server', x0).Some? && Head(server', x0).value.id == rev; x0;
         assert x != doc;
       }
     }
@@ -362,7 +367,7 @@ abstract module RemoteCore {
       assert r.id in server'.history[doc];
     }
     forall rev | InHistory(server, rev) ensures InHistory(server', rev) {
-      var x :| x in server.history && rev in server.history[x];
+      var x := var x0 :| x0 in server.history && rev in server.history[x0]; x0;
       assert rev in server'.history[x];
     }
 
@@ -376,7 +381,7 @@ abstract module RemoteCore {
       if rev != r.id {
         assert rev in server.accepted;
         if exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content) {
-          var x :| x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content);
+          var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], server.accepted[rev].content); x0;
           assert OnDisk(post.devices[x], server.accepted[rev].content);
         }
       }
@@ -390,7 +395,7 @@ abstract module RemoteCore {
       ensures rev in server.purged
     {
       if exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content) {
-        var x :| x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content);
+        var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], server.accepted[rev].content); x0;
         assert OnDisk(post.devices[x], server.accepted[rev].content);
       }
     }
@@ -553,11 +558,11 @@ abstract module RemoteCore {
     {
       var version := pre.server.accepted[rev];
       if exists x :: x in pre.devices && OnDisk(pre.devices[x], version.content) {
-        var x :| x in pre.devices && OnDisk(pre.devices[x], version.content);
+        var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], version.content); x0;
         assert OnDisk(post.devices[x], version.content);
       }
       if exists x :: x in post.devices && OnDisk(post.devices[x], version.content) {
-        var x :| x in post.devices && OnDisk(post.devices[x], version.content);
+        var x := var x0 :| x0 in post.devices && OnDisk(post.devices[x0], version.content); x0;
         assert OnDisk(pre.devices[x], version.content);
       }
     }
@@ -570,8 +575,8 @@ abstract module RemoteCore {
       SameBound(before, after, doc);
     }
     forall p ensures Tracked(after, p) == Tracked(before, p) {
-      if Tracked(after, p) { var doc :| BoundTo(after, doc, p); assert BoundTo(before, doc, p); }
-      if Tracked(before, p) { var doc :| BoundTo(before, doc, p); assert BoundTo(after, doc, p); }
+      if Tracked(after, p) { var doc := var doc0 :| BoundTo(after, doc0, p); doc0; assert BoundTo(before, doc, p); }
+      if Tracked(before, p) { var doc := var doc0 :| BoundTo(before, doc0, p); doc0; assert BoundTo(after, doc, p); }
     }
     assert G5_NeverJoined(post);
     assert G5_NeverMixedUp(step);
@@ -599,12 +604,13 @@ abstract module RemoteCore {
       assert post == pre;
       AfterKeepsFinished(step, d, journal');
     } else {
-      var doc :| doc in journal'.documents && (doc !in journal.documents || journal'.documents[doc] != journal.documents[doc]) by {
+      assert exists doc :: doc in journal'.documents && (doc !in journal.documents || journal'.documents[doc] != journal.documents[doc]) by {
         if forall doc :: doc in journal'.documents ==> doc in journal.documents && journal'.documents[doc] == journal.documents[doc] {
           assert journal'.documents == journal.documents;
           assert journal' == journal;
         }
       }
+      var doc := var doc0 :| doc0 in journal'.documents && (doc0 !in journal.documents || journal'.documents[doc0] != journal.documents[doc0]); doc0;
       assert !FinishedSyncing(post, d);
       AfterKeepsFinished(step, d, journal');
       AfterKeepsG9(pre, d, journal');
@@ -682,9 +688,9 @@ abstract module RemoteCore {
     var other := state.devices[d2];
     // The file mirrors a live head at its name (d1), which d2 holds there
     // too, unless it reports it cannot hold it (p is in scope on d2).
-    var doc :| LiveHead(state.server, doc)
-      && Head(state.server, doc).value.path == p
-      && Head(state.server, doc).value.content == one.disk[p].content;
+    var doc := var doc0 :| LiveHead(state.server, doc0)
+      && Head(state.server, doc0).value.path == p
+      && Head(state.server, doc0).value.content == one.disk[p].content; doc0;
     var head := Head(state.server, doc).value;
     assert HeadsMirrored(state, other);
     if p in other.disk && other.disk[p].content == one.disk[p].content {
