@@ -1016,6 +1016,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
 
   // A crash that cut a sync round short after the first of the two effects
   // the core requested lists that one: a prefix of what was requested.
+  // (ContractWitnesses.dfy restates it with the round's own effects, as
+  // CrashContract's CutRequestedByCore requires.)
   lemma CrashAfterFirstEffectCutsShort(pre: State, post: State, d: DeviceId, first: Effect, second: Effect)
     ensures CrashCutsShort(Step(pre, Crash(d, Some(Cut(SyncRound(d), [first, second]))), [first], post))
   {

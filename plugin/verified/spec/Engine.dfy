@@ -451,7 +451,8 @@ abstract module EngineModel {
   // core handles (not a user's action or another crash) and that starts in
   // the crash step's pre state. A crash that cut nothing short performs no
   // effect. That `cut.requested` is what the core requests for `cut.event`
-  // in that state is a proof obligation of the verified core.
+  // in that state is stated over the core's step functions by
+  // CutRequestedByCore (Contracts.dfy), a hypothesis of CrashContract.
   ghost predicate CrashCutsShort(step: Step) {
     step.event.Crash? ==>
       if step.event.cut.Some? then

@@ -17,7 +17,8 @@ include "../core/Push.dfy"
 
 // It refines the push half's module, not the pull apply's: Dafny 4.11's
 // resolver crashes on a module refining ApplyCore. The apply's contract is
-// therefore stated on rows, which #1007 proves of ApplyRevision's result.
+// therefore stated on rows: the row the round's apply leaves after the
+// path rule (ApplySettlesContract).
 abstract module StepContracts refines PushCore {
 
   // ---------------------------------------------------------------------
@@ -124,13 +125,21 @@ abstract module StepContracts refines PushCore {
   // #1007: the pull apply settles the conflicts G6 decides
   // ---------------------------------------------------------------------
 
-  // The row the pull apply returns (`after`) for one pulled revision `r` of
-  // a document whose row is `before`, where the round's listing reads
+  // The row the round's apply leaves (`after`) for one pulled revision `r`
+  // of a document whose row is `before`, where the round's listing reads
   // `read` at its bound name and `mustAct` says whether a user must act on
-  // it (UserMustAct in the state after). #1007 proves it of ApplyRevision's
-  // row, with the lemmas of §3.9 (AppliedG2, AppliedG5, AppliedG6,
-  // AppliedG7, AppliedKeepsRowInv) extended to each settlement. The
-  // settlements (verified-core.md §4.2):
+  // it (UserMustAct in the state after). `after` is the row after #962's
+  // path rule (`PathRule(...).documents[doc]`, PathRule.dfy), not the row
+  // ApplyRevision returns: ApplyRevision leaves a revision PathHeld where
+  // the rule then settles it (a remote move of a clean file, a name
+  // another document is bound to, several colliding files), and only the
+  // rule decides where a user must act. Wherever ApplyRevision holds no
+  // name the two rows are the same. The layering stays: the rule refines
+  // the apply (PathRuleCore refines ApplyCore), ApplyRevision does not call
+  // the rule, and this module, below both, states the contract on rows.
+  // #1007 proves it with the lemmas of §3.9 (AppliedG2, AppliedG5,
+  // AppliedG6, AppliedG7, AppliedKeepsRowInv) extended to each settlement,
+  // and #1024 of the rule's row. The settlements (verified-core.md §4.2):
   // - a remote delete against a change the server lacks: the file stays,
   //   the tombstone becomes the base, and the outbox sends the file on top
   //   of it;
@@ -300,8 +309,71 @@ abstract module StepContracts refines PushCore {
       && (forall x :: x != d && x in pre.devices ==> x in step.post.devices && step.post.devices[x] == pre.devices[x])
   }
 
+  // The effects the core requests for `event` from `pre` (#1025): the
+  // effects of the core's step for that event, one of the step functions
+  // above or the merged ones, chosen by the event's kind. The step
+  // functions' other inputs (fresh revision ids, a push answer's next id)
+  // are the shell's choice, so each is existential; a round's and a
+  // resync's input is the one read from `pre` (RoundInputOf). The dispatch
+  // is on the event, not on a step's event field, so a step function whose
+  // body is not given yet cannot stand in for another kind of event. An
+  // event the core does not handle on a device (a user's action, a crash, a
+  // server event) requests nothing a crash could cut short.
+  ghost predicate CoreRequests(pre: State, event: Event, requested: seq<Effect>) {
+    match event
+    case Local(d, local) =>
+      d in pre.devices
+      && exists revs: FreshRevs :: pre.devices[d].journal.documents.Keys <= revs.Keys
+           && LocalStep(pre, d, local, revs).effects == requested
+    case Scan(d, listing) =>
+      d in pre.devices && ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d]))
+      && listing == ListingOf(pre.devices[d])
+      && exists revs: FreshRevs :: pre.devices[d].journal.documents.Keys <= revs.Keys
+           && ScanStep(pre, d, revs).effects == requested
+    case RemoteRevision(d, revision) =>
+      d in pre.devices && RemoteStep(pre, d, revision).effects == requested
+    case Pushed(d, result) =>
+      d in pre.devices
+      && if result.Accepted? then
+           exists nextRev: RevId :: AcceptStep(pre, d, result.doc, result.revision, nextRev).effects == requested
+         else
+           exists nextRev: RevId :: RefusedStep(pre, d, result, nextRev).effects == requested
+    case SyncRound(d) =>
+      d in pre.devices
+      && exists input: RoundInput, revs: FreshRevs :: RoundInputOf(pre, d, input)
+           && RevsCover(pre.devices[d].journal, input, revs)
+           && RoundStepOf(pre, d, input, revs).effects == requested
+    case Restart(d) =>
+      d in pre.devices
+      && exists revs: FreshRevs :: pre.devices[d].journal.documents.Keys <= revs.Keys
+           && RestartStepOf(pre, d, revs).effects == requested
+    case Resync(d) =>
+      d in pre.devices
+      && exists input: RoundInput, revs: FreshRevs :: RoundInputOf(pre, d, input)
+           && RevsCover(pre.devices[d].journal, input, revs)
+           && ResyncStepOf(pre, d, input, revs).effects == requested
+    case _ => false
+  }
+
+  // A crash's cut is the core's own step (#1025, verified-core.md §2's
+  // proof obligation): the effects it lists as requested are those the
+  // core's step for the cut event requests from the crash step's state
+  // before. With CrashCutsShort, the effects a crash performed are a prefix
+  // of them, so the journal CrashLeaves keeps is one the core persisted for
+  // that event, never an arbitrary one.
+  ghost predicate CutRequestedByCore(step: Step) {
+    step.event.Crash? && step.event.cut.Some? ==>
+      CoreRequests(step.pre, step.event.cut.value.event, step.event.cut.value.requested)
+  }
+
+  // A crash of the core's step (CutRequestedByCore), cut short by the shell
+  // (CrashCutsShort, CrashLeaves, DisksFollowEffects), from a reachable
+  // state leaves CrashInv. One contract over every step function, not one
+  // per function: CrashInv and RecoveryContract then have one statement,
+  // and a step function's PR adds no crash contract of its own.
   ghost predicate CrashContract(step: Step) {
-    step.event.Crash? && CrashCutsShort(step) && CrashLeaves(step) && DisksFollowEffects(step)
+    step.event.Crash? && CrashCutsShort(step) && CutRequestedByCore(step)
+    && CrashLeaves(step) && DisksFollowEffects(step)
     && CoreReachable(step.pre)
     ==> CrashInv(step.post) && StepGuarantees(step)
   }
@@ -371,7 +443,8 @@ abstract module StepContracts refines PushCore {
   // step functions above and the merged ones (LocalStep, ScanStep,
   // RemoteStep, RefusedStep, AcceptStep, RoundStepOf, RestartStepOf,
   // ResyncStepOf), user actions, server events (ServerFollowsEvent) and
-  // crashes (CrashCutsShort, CrashLeaves, DisksFollowEffects).
+  // crashes (CrashCutsShort, CutRequestedByCore, CrashLeaves,
+  // DisksFollowEffects).
   ghost predicate CoreStep(step: Step)
 
   // The shell's obligation over a run (#952): after a restore from backup,
