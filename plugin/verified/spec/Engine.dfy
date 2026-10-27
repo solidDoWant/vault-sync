@@ -411,12 +411,15 @@ abstract module EngineModel {
   }
 
   // `r` is a new revision of `doc` the server may append: an id the server
-  // never used, the document's head as its parent, and, if live, a path no
+  // never used, the document's head as its parent, the document's kind (a
+  // document's kind is chosen at creation and never changes: SPEC.md §6.2,
+  // the server refuses a commit of another kind), and, if live, a path no
   // other document's live head collides with under K (SPEC.md §5).
   ghost predicate Appendable(server: Server, doc: DocId, r: Revision) {
     r.doc == doc
     && r.id !in server.revisions && r.id !in server.accepted
     && ParentIsHead(server, doc, r.parent)
+    && (Head(server, doc).Some? ==> r.kind == Head(server, doc).value.kind)
     && (!r.deleted ==>
           forall other :: other != doc && Head(server, other).Some? && !Head(server, other).value.deleted ==>
             !CollideK(Head(server, other).value.path, r.path))

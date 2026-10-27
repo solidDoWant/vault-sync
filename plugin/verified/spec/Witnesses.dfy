@@ -780,6 +780,40 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert Head(Server(map[], map[], [], {}, map[]), doc).None?;
   }
 
+  // The parent is the head, not an older revision: the device's sealed
+  // outbox based on `prior`, after `head` has been accepted on top of it, is
+  // not accepted (the common "head moved" case, SPEC.md §6.2).
+  lemma ServerFollowsEventRejectsStaleParent(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, prior: Revision, head: Revision, post: State)
+    requires o.sealed && o.baseRev == Some(prior.id) && IsOutbox(r, doc, o, d)
+    requires prior.doc == doc && head.doc == doc && prior.id != head.id
+    ensures
+      var server := Server(map[prior.id := prior, head.id := head], map[doc := [prior.id, head.id]],
+                           [prior.id, head.id], {}, map[prior.id := prior, head.id := head]);
+      var pre := State(map[d := Sender(platform, doc, o)], server);
+      !ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var server := Server(map[prior.id := prior, head.id := head], map[doc := [prior.id, head.id]],
+                         [prior.id, head.id], {}, map[prior.id := prior, head.id := head]);
+    assert Head(server, doc) == Some(head);
+    assert !ParentIsHead(server, doc, r.parent);
+  }
+
+  // A document's kind never changes (SPEC.md §6.2): the device's sealed
+  // outbox on the head, of a kind other than the head's, is not accepted.
+  lemma ServerFollowsEventRejectsKindChange(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, head: Revision, post: State)
+    requires o.sealed && o.baseRev == Some(head.id) && IsOutbox(r, doc, o, d)
+    requires head.doc == doc && o.kind != head.kind
+    ensures
+      var server := Server(map[head.id := head], map[doc := [head.id]], [head.id], {}, map[head.id := head]);
+      var pre := State(map[d := Sender(platform, doc, o)], server);
+      !ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var server := Server(map[head.id := head], map[doc := [head.id]], [head.id], {}, map[head.id := head]);
+    assert Head(server, doc) == Some(head);
+  }
+
   // No live K collision: the device's sealed live outbox whose path collides
   // under K with another document's live head is not accepted.
   lemma ServerFollowsEventRejectsKCollision(

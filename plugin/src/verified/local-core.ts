@@ -458,8 +458,16 @@ export class CoreDevice {
     if (options.lost !== true) this.deliver({ kind: "deleted", path });
   }
 
-  /** The user renames a file (onto a free name, or only its case). */
-  rename(from: string, to: string, options: { lost?: boolean } = {}): void {
+  /**
+   * The user renames a file (onto a free name, or only its case). `kind` is
+   * the kind the new name reads as (another extension), the file's own by
+   * default.
+   */
+  rename(
+    from: string,
+    to: string,
+    options: { lost?: boolean; kind?: Kind } = {},
+  ): void {
     const spelling = this.spellingOf(from);
     const file = spelling === undefined ? undefined : this.disk.get(spelling);
     if (spelling === undefined || file === undefined)
@@ -467,7 +475,7 @@ export class CoreDevice {
     this.disk.delete(spelling);
     const target = this.spellingOf(to);
     if (target !== undefined) this.disk.delete(target);
-    this.disk.set(to, file);
+    this.disk.set(to, { ...file, kind: options.kind ?? file.kind });
     if (options.lost !== true) this.deliver({ kind: "renamed", from, to });
   }
 

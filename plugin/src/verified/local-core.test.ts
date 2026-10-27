@@ -62,6 +62,36 @@ describe("bindings.test.ts: Bindings", () => {
     expectOnlyPersists(device);
   });
 
+  // The core's rule (verified-core.md §3.6): a document's kind never
+  // changes, as the engine's push keeps it for every operation but a create.
+  it("keeps the document and its kind through a user's rename onto a name of another kind", () => {
+    const device = synchedA();
+
+    device.rename("a.md", "a.bin", { kind: "binary" });
+
+    expect(device.row("A").binding).toEqual(sameFile("a.bin", "a1"));
+    expect(device.row("A").outbox).toMatchObject({
+      baseRev: "A@1",
+      path: "a.bin",
+      content: "a1",
+      kind: "note",
+      deleted: false,
+    });
+    expectOnlyPersists(device);
+  });
+
+  it("keeps the document's kind when its file reads as another kind after an edit", () => {
+    const device = synchedA();
+
+    device.write("a.md", "a2", { kind: "binary" });
+
+    expect(device.row("A").outbox).toMatchObject({
+      path: "a.md",
+      content: "a2",
+      kind: "note",
+    });
+  });
+
   // Ported without its last step: the acknowledgement needs a push (#949).
   it("follows a rename chain and keeps the binding when the commit is acknowledged", () => {
     const device = synchedA();
