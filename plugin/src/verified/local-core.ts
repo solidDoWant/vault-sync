@@ -29,6 +29,7 @@ type DafnyDocument =
 type DafnyEffect = ReturnType<
   typeof verified.LocalCoreJs.__default.OnLocal
 >[1][number];
+type DafnyOutbox = DafnyEffect["dtor_outbox"];
 type DafnyKind = Parameters<typeof verified.LocalCoreJs.Base.create_Base>[4];
 
 export type Kind = "note" | "binary";
@@ -86,9 +87,35 @@ export type LocalEvent =
   | { kind: "deleted"; path: string }
   | { kind: "renamed"; from: string; to: string };
 
+/**
+ * An effect the core requests (spec/Engine.dfy `Effect`), which the shell
+ * runs in order (plugin/src/verified/executor.ts). A disk effect names its
+ * precondition: `precondition` and `expected` are the content the file must
+ * still hold (`null`: no file may be there).
+ */
 export type Effect =
+  | {
+      kind: "write";
+      target: string | null;
+      path: string;
+      content: string;
+      fileKind: Kind;
+      precondition: string | null;
+    }
+  | { kind: "remove"; doc: string; path: string; expected: string }
+  | {
+      kind: "move";
+      mover: string | null;
+      from: string;
+      to: string;
+      expected: string;
+    }
+  | { kind: "read-file"; path: string }
+  | { kind: "upload"; content: string }
+  | { kind: "commit"; doc: string; outbox: Outbox }
+  | { kind: "pull"; cursor: number }
   | { kind: "persist-journal"; journal: Journal }
-  | { kind: "other"; description: string };
+  | { kind: "report"; subject: string | null; path: string; reason: string };
 
 export interface Answer {
   journal: Journal;
@@ -228,21 +255,25 @@ function documentFrom(document: DafnyDocument): Document {
       : absence.is_Released
         ? "released"
         : "never",
-    outbox: outbox.is_Some
-      ? {
-          rev: text(outbox.dtor_value.dtor_rev),
-          baseRev: outbox.dtor_value.dtor_baseRev.is_Some
-            ? text(outbox.dtor_value.dtor_baseRev.dtor_value)
-            : null,
-          path: text(outbox.dtor_value.dtor_path),
-          content: text(outbox.dtor_value.dtor_content),
-          kind: kindFrom(outbox.dtor_value.dtor_kind),
-          deleted: outbox.dtor_value.dtor_deleted,
-          sealed: outbox.dtor_value.dtor_sealed,
-          rejected: outbox.dtor_value.dtor_rejected,
-        }
-      : null,
+    outbox: outbox.is_Some ? outboxFrom(outbox.dtor_value) : null,
   };
+}
+
+function outboxFrom(outbox: DafnyOutbox): Outbox {
+  return {
+    rev: text(outbox.dtor_rev),
+    baseRev: optionFrom(outbox.dtor_baseRev),
+    path: text(outbox.dtor_path),
+    content: text(outbox.dtor_content),
+    kind: kindFrom(outbox.dtor_kind),
+    deleted: outbox.dtor_deleted,
+    sealed: outbox.dtor_sealed,
+    rejected: outbox.dtor_rejected,
+  };
+}
+
+function optionFrom(value: { is_Some: boolean; dtor_value: Str }): string | null {
+  return value.is_Some ? text(value.dtor_value) : null;
 }
 
 function journalTo(journal: Journal): DafnyJournal {
@@ -268,10 +299,54 @@ function journalFrom(journal: DafnyJournal): Journal {
   return { documents, cursor: journal.dtor_cursor.toNumber() };
 }
 
-function effectFrom(effect: DafnyEffect): Effect {
-  return effect.is_PersistJournal
-    ? { kind: "persist-journal", journal: journalFrom(effect.dtor_journal) }
-    : { kind: "other", description: effect.toString() };
+/** An effect of the compiled core as a TypeScript value. */
+export function effectFrom(effect: DafnyEffect): Effect {
+  if (effect.is_Write)
+    return {
+      kind: "write",
+      target: optionFrom(effect.dtor_target),
+      path: text(effect.dtor_path),
+      content: text(effect.dtor_content),
+      fileKind: kindFrom(effect.dtor_kind),
+      precondition: optionFrom(effect.dtor_precondition),
+    };
+  if (effect.is_Remove)
+    return {
+      kind: "remove",
+      doc: text(effect.dtor_doc),
+      path: text(effect.dtor_path),
+      expected: text(effect.dtor_expected),
+    };
+  if (effect.is_Move)
+    return {
+      kind: "move",
+      mover: optionFrom(effect.dtor_mover),
+      from: text(effect.dtor_from),
+      to: text(effect.dtor_to),
+      expected: text(effect.dtor_expected),
+    };
+  if (effect.is_ReadFile)
+    return { kind: "read-file", path: text(effect.dtor_path) };
+  if (effect.is_Upload)
+    return { kind: "upload", content: text(effect.dtor_content) };
+  if (effect.is_Commit)
+    return {
+      kind: "commit",
+      doc: text(effect.dtor_doc),
+      outbox: outboxFrom(effect.dtor_outbox),
+    };
+  if (effect.is_Pull)
+    return { kind: "pull", cursor: effect.dtor_cursor.toNumber() };
+  if (effect.is_PersistJournal)
+    return { kind: "persist-journal", journal: journalFrom(effect.dtor_journal) };
+  if (effect.is_Report)
+    return {
+      kind: "report",
+      subject: optionFrom(effect.dtor_subject),
+      path: text(effect.dtor_path),
+      reason: text(effect.dtor_reason),
+    };
+  throw new Error(`local core: unknown effect ${effect.toString()}`);
 }
 
 function answerFrom(answer: ReturnType<typeof D.__default.OnLocal>): Answer {
