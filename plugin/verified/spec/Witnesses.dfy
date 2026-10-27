@@ -581,6 +581,155 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert BoundIdentity(pre.devices[d], doc).None?;
   }
 
+  // G5 on a user's step: the user renames an untracked file over a bound
+  // one. The document's binding now names another file, which the user put
+  // there; the run satisfies G5 (clause (g)), so the guarantee leaves the
+  // user free to change the disk.
+  lemma G5AllowsUserRenameOverBoundFile(
+    d: DeviceId, platform: Platform, p: Path, q: Path, doc: DocId, h: Hash, f: DiskFile, g: DiskFile)
+    requires !SameF(platform, p, q) && f.identity != g.identity
+    ensures
+      var journal := Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []);
+      var pre := State(map[d := Device(platform, true, journal, map[p := g, q := f], {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true, journal, map[p := f], {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      G5([Step(pre, User(d, RenameFile(q, p)), [], post)])
+  {
+    var journal := Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []);
+    var pre := State(map[d := Device(platform, true, journal, map[p := g, q := f], {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true, journal, map[p := f], {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    assert p in post.devices[d].disk && SameF(platform, p, p);
+    assert BoundFile(post.devices[d], doc) == Some(f);
+  }
+
+  // G5 on a user's step does not excuse a binding moved to another file: a
+  // user's step whose journal binds the document to a different file (an
+  // untracked one) fails G5_NeverMixedUp.
+  lemma G5RejectsRebindInUserStep(
+    d: DeviceId, platform: Platform, p: Path, q: Path, doc: DocId, h: Hash, f: DiskFile, g: DiskFile)
+    requires !SameF(platform, p, q) && f.identity != g.identity
+    ensures
+      var disk := map[p := g, q := f];
+      var pre := State(map[d := Device(platform, true,
+                         Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                         disk, {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true,
+                          Journal(map[doc := Document(None, None, Some(Binding(q, h, false, None)), Never, None)], 0, [], []),
+                          disk, {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      !G5_NeverMixedUp(Step(pre, User(d, EditBuffer(p, None)), [], post))
+  {
+    var disk := map[p := g, q := f];
+    var pre := State(map[d := Device(platform, true,
+                       Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                       disk, {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true,
+                        Journal(map[doc := Document(None, None, Some(Binding(q, h, false, None)), Never, None)], 0, [], []),
+                        disk, {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    assert SameF(platform, p, p) && SameF(platform, q, q);
+    assert BoundFile(pre.devices[d], doc) == Some(g) by {
+      forall r | r in disk && SameF(platform, r, p) ensures r == p {}
+    }
+    assert BoundFile(post.devices[d], doc) == Some(f) by {
+      forall r | r in disk && SameF(platform, r, q) ensures r == q {}
+    }
+  }
+
+  // G3: a reported delete of a bound file that is still at its name (a new
+  // file was created there before the event arrived), recorded as the
+  // user's delete, fails G3_DeleteSeen.
+  lemma G3RejectsDeleteOfPresentFile(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, h: Hash, f: DiskFile, outbox: Outbox)
+    ensures
+      var pre := State(map[d := Device(platform, true,
+                         Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                         map[p := f], {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true,
+                          Journal(map[doc := Document(None, None, None, UserDeleted, Some(outbox))], 0, [], []),
+                          map[p := f], {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      !G3_DeleteSeen(Step(pre, Local(d, Deleted(p)), [], post))
+  {
+    var pre := State(map[d := Device(platform, true,
+                       Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                       map[p := f], {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true,
+                        Journal(map[doc := Document(None, None, None, UserDeleted, Some(outbox))], 0, [], []),
+                        map[p := f], {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    assert RecordsUserDelete(Step(pre, Local(d, Deleted(p)), [], post), d, doc);
+    assert p in pre.devices[d].disk && SameF(platform, p, p);
+    assert HasFile(pre.devices[d], p);
+  }
+
+  // The server's step semantics (Engine.dfy, ServerFollowsEvent): a device
+  // with a sealed outbox creating a new document gets it accepted; the
+  // server appends that revision to the document's history, the feed and
+  // what it accepted.
+  lemma AcceptAppendsOutbox(d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision)
+    requires o.sealed && o.baseRev.None?
+    requires r == Revision(o.rev, doc, 0, None, o.path, o.content, o.kind, o.deleted, d)
+    ensures
+      var empty := Server(map[], map[], [], {}, map[]);
+      var device := Device(platform, true,
+        Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {});
+      var pre := State(map[d := device], empty);
+      var post := State(map[d := device],
+        Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var empty := Server(map[], map[], [], {}, map[]);
+    forall x ensures Head(empty, x).None? {}
+    assert ParentIsHead(empty, doc, r.parent);
+    assert Appendable(empty, doc, r);
+    assert [] + [r.id] == [r.id];
+    assert Appended(empty, doc, r) == Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]);
+  }
+
+  // An accept that drops another revision from the server does not follow
+  // its event.
+  lemma ServerFollowsEventRejectsDroppingAccept(
+    d: DeviceId, platform: Platform, doc: DocId, o: Outbox, r: Revision, prior: Revision)
+    requires o.sealed && prior.id != r.id
+    ensures
+      var device := Device(platform, true,
+        Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {});
+      var pre := State(map[d := device],
+        Server(map[prior.id := prior], map[prior.doc := [prior.id]], [prior.id], {}, map[prior.id := prior]));
+      var post := State(map[d := device],
+        Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      !ServerFollowsEvent(Step(pre, Pushed(d, Accepted(doc, r)), [], post))
+  {
+    var device := Device(platform, true,
+      Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []), map[], {}, {});
+    var pre := State(map[d := device],
+      Server(map[prior.id := prior], map[prior.doc := [prior.id]], [prior.id], {}, map[prior.id := prior]));
+    var post := State(map[d := device],
+      Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+    assert prior.id in Appended(pre.server, doc, r).revisions;
+    assert prior.id !in post.server.revisions;
+  }
+
+  // A push answered "head moved" leaves the server unchanged: a step where
+  // the server gained a revision anyway does not follow its event.
+  lemma ServerFollowsEventRejectsChangeOnHeadMoved(d: DeviceId, doc: DocId, r: Revision, s: State)
+    ensures
+      var pre := s.(server := Server(map[], map[], [], {}, map[]));
+      var post := s.(server := Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+      !ServerFollowsEvent(Step(pre, Pushed(d, HeadMoved(doc)), [], post))
+  {
+    var post := s.(server := Server(map[r.id := r], map[doc := [r.id]], [r.id], {}, map[r.id := r]));
+    assert r.id in post.server.revisions;
+  }
+
   // G4: device A edits its file, then deletes it and pushes the tombstone;
   // A's later live commit on that tombstone, with nothing else in between,
   // fails it: A's own delete overruled the edit (m <= k).

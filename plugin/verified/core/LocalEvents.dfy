@@ -224,14 +224,29 @@ abstract module LocalCore refines Guarantees {
   // The core's invariant
   // ---------------------------------------------------------------------
 
-  // A user's delete is never forgotten: a document whose file the user
-  // removed has no binding only while it has an outbox to send or the
-  // server already has its tombstone as its base.
+  // An unsealed outbox is the document as the device last saw it: a bound
+  // document's carries the content last seen in its file and is live; a
+  // document the user deleted sends a tombstone. (A sealed outbox, a commit
+  // in flight, carries what it carried when it was sealed.)
+  ghost predicate OutboxCurrent(document: Document) {
+    document.outbox.Some? && !document.outbox.value.sealed ==>
+      (document.binding.Some? ==>
+         document.outbox.value.content == document.binding.value.seen && !document.outbox.value.deleted)
+      && (document.binding.None? && document.absence == UserDeleted ==> document.outbox.value.deleted)
+  }
+
+  // The core's invariant (verified-core.md §3.2):
+  // - a user's delete is never forgotten: a document whose file the user
+  //   removed has no binding only while it has an outbox to send or the
+  //   server already has its tombstone as its base;
+  // - the commit a document will send carries its latest change
+  //   (OutboxCurrent).
   ghost predicate CoreInv(state: State) {
     forall d, doc :: d in state.devices && doc in state.devices[d].journal.documents ==>
       var document := state.devices[d].journal.documents[doc];
-      (document.binding.None? && document.absence == UserDeleted) ==>
-        document.outbox.Some? || (document.base.Some? && document.base.value.deleted)
+      ((document.binding.None? && document.absence == UserDeleted) ==>
+        document.outbox.Some? || (document.base.Some? && document.base.value.deleted))
+      && OutboxCurrent(document)
   }
 
   // ---------------------------------------------------------------------
@@ -261,12 +276,13 @@ abstract module LocalCore refines Guarantees {
   ghost predicate StepGuarantees(step: Step) {
     G1_OnlyRetentionRemoves(step)
     && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
+    && G3_DeleteSeen(step)
     && G5_RenameKeepsDocument(step) && G5_NeverMixedUp(step)
     && (forall d, doc, remote :: SettlesConcurrent(step, d, doc, remote) ==> G6_Settle(step, d, doc, remote))
     && G7_MoveKeepsContents(step)
     && G8_Recovers(step) && G8_PicksUpOfflineChanges(step)
     && G10_SettledOrReported(step)
-    && DisksFollowEffects(step)
+    && DisksFollowEffects(step) && ServerFollowsEvent(step)
   }
 
   // ---------------------------------------------------------------------
@@ -303,6 +319,7 @@ abstract module LocalCore refines Guarantees {
     && (after != before ==> after.outbox.Some?)
     && (after.binding.None? && after.absence == UserDeleted && after != before ==> after.outbox.Some?)
     && (after.binding.None? ==> before.binding.None? || after.absence == UserDeleted)
+    && (OutboxCurrent(before) ==> OutboxCurrent(after))
   }
 
   lemma LocalDocFacts(platform: Platform, document: Document, local: LocalEvent, input: map<Path, Read>, rev: RevId)

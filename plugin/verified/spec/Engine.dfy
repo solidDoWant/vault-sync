@@ -400,6 +400,75 @@ abstract module EngineModel {
   }
 
   // ---------------------------------------------------------------------
+  // What a step does to the server (verified-core.md §2.3)
+  // ---------------------------------------------------------------------
+
+  // A revision's parent is the document's head on `server` (None for a
+  // document the server has no head of): SPEC.md §6.2, a commit is accepted
+  // only on the head it was based on.
+  ghost predicate ParentIsHead(server: Server, doc: DocId, parent: Option<RevId>) {
+    if Head(server, doc).Some? then parent == Some(Head(server, doc).value.id) else parent.None?
+  }
+
+  // `r` is a new revision of `doc` the server may append: an id the server
+  // never used, the document's head as its parent, and, if live, a path no
+  // other document's live head collides with under K (SPEC.md §5).
+  ghost predicate Appendable(server: Server, doc: DocId, r: Revision) {
+    r.doc == doc
+    && r.id !in server.revisions && r.id !in server.accepted
+    && ParentIsHead(server, doc, r.parent)
+    && (!r.deleted ==>
+          forall other :: other != doc && Head(server, other).Some? && !Head(server, other).value.deleted ==>
+            !CollideK(Head(server, other).value.path, r.path))
+  }
+
+  // The server after appending `r` to `doc`'s history and to the feed;
+  // nothing is dropped.
+  ghost function Appended(server: Server, doc: DocId, r: Revision): Server {
+    server.(revisions := server.revisions[r.id := r],
+            history := server.history[doc := (if doc in server.history then server.history[doc] else []) + [r.id]],
+            feed := server.feed + [r.id],
+            accepted := server.accepted[r.id := r])
+  }
+
+  // A step's server follows its event:
+  // - an accepted commit appends one revision, which is the device's sealed
+  //   outbox of that document (the commit in flight) on the head it was
+  //   based on;
+  // - a restore from history appends one live revision with the restored
+  //   revision's content and kind;
+  // - a purge marks non-head revisions purged and changes nothing else;
+  // - a restore from backup leaves the server it names;
+  // - a remote revision is one on the feed, and every other event (a push
+  //   result other than an accept, a sync round, a user's action, a local
+  //   event, the scan, a crash, a restart) leaves the server unchanged.
+  ghost predicate ServerFollowsEvent(step: Step) {
+    var pre := step.pre.server;
+    var post := step.post.server;
+    match step.event
+    case Pushed(d, Accepted(doc, r)) =>
+      d in step.pre.devices && doc in step.pre.devices[d].journal.documents
+      && var outbox := step.pre.devices[d].journal.documents[doc].outbox;
+      outbox.Some? && outbox.value.sealed
+      && r.id == outbox.value.rev && r.parent == outbox.value.baseRev
+      && r.path == outbox.value.path && r.content == outbox.value.content
+      && r.kind == outbox.value.kind && r.deleted == outbox.value.deleted
+      && r.device == d
+      && Appendable(pre, doc, r) && post == Appended(pre, doc, r)
+    case RestoreFromHistory(doc, from, r) =>
+      from in pre.revisions && pre.revisions[from].doc == doc && !r.deleted
+      && r.content == pre.revisions[from].content && r.kind == pre.revisions[from].kind
+      && Appendable(pre, doc, r) && post == Appended(pre, doc, r)
+    case Purge(revisions) =>
+      (forall rev :: rev in revisions ==> rev in pre.revisions && !IsHead(pre, rev))
+      && post == pre.(purged := pre.purged + revisions)
+    case Restore(restored) => post == restored
+    case RemoteRevision(_, rev) =>
+      post == pre && rev.id in pre.revisions && pre.revisions[rev.id] == rev && rev.id in pre.feed
+    case _ => post == pre
+  }
+
+  // ---------------------------------------------------------------------
   // Derived notions used by the guarantees
   // ---------------------------------------------------------------------
 
