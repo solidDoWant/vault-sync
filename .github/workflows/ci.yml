@@ -32,6 +32,9 @@ jobs:
       code: ${{ steps.filter.outputs.code }}
       chart: ${{ steps.filter.outputs.chart }}
       npm: ${{ steps.filter.outputs.npm }}
+      # The Dafny proofs on PRs only when they, the flake (the pinned Dafny) or
+      # the workflows change; always on master.
+      dafny: ${{ github.event_name != 'pull_request' || steps.filter.outputs.dafny == 'true' }}
       # Windows/macOS e2e on PRs only when plugin-side files change; always on master.
       desktop: ${{ github.event_name != 'pull_request' || steps.filter.outputs.desktop == 'true' }}
     steps:
@@ -56,6 +59,8 @@ jobs:
               - '{plugin/**,.github/**,nix/**,flake.*}'
             npm:
               - '{plugin/package.json,plugin/package-lock.json,scripts/npm-audit.sh}'
+            dafny:
+              - '{plugin/verified/**,flake.*,.github/workflows/ci.yml,.github/actions/nix-dev-shell/**}'
 
   # The test tiers run as parallel jobs (they used to be sequential steps of
   # one ~9 minute job). Everything runs inside the flake's dev shell so CI
@@ -159,6 +164,20 @@ jobs:
       - uses: ./.github/actions/test-images
       - name: Simulation
         run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
+
+  # The proofs of the Dafny-verified modules (plugin/verified/, make verify).
+  # A failing proof fails `checks`. Compiling them to JavaScript is part of
+  # make build (the unit job) and make check-generate (the lint job).
+  verify:
+    needs: changes
+    if: needs.changes.outputs.dafny == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Dafny verification
+        run: nix develop -c make verify
 
   # npm advisories, only when the plugin's dependency manifests (or the check
   # itself) change. Fails only on fixable moderate+ advisories in dependencies
@@ -284,7 +303,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts, npm-audit]
+    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts, npm-audit, verify]
     if: always()
     runs-on: ubuntu-latest
     steps:
