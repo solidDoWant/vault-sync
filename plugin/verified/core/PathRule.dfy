@@ -490,4 +490,176 @@ abstract module PathRuleCore refines ApplyCore {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Moving aside: every move's precondition holds in order
+  // ---------------------------------------------------------------------
+
+  // A disk the moves can leave: each file is a file of the original disk
+  // that was not in the way, unchanged, or a copy at a new name that does
+  // not collide with the wanted name.
+  ghost predicate AsideLeaves(platform: Platform, disk0: map<Path, DiskFile>, way0: set<Path>, wanted: Path, keep: set<Path>, disk: map<Path, DiskFile>) {
+    (forall k | k in keep :: k in disk && k in disk0 && disk[k] == disk0[k])
+    && forall x | x in disk :: (x in disk0 && x !in way0 && disk[x] == disk0[x])
+                            || (x !in disk0 && !CollideF(platform, x, wanted) && forall y | y in disk0 :: !CollideF(platform, y, x))
+  }
+
+  lemma AsideInOrder(platform: Platform, documents: map<DocId, Document>, doc: DocId, listing: Listing, avoid: set<Path>, claims: Claims,
+                     way: set<Path>, wanted: Path, disk: map<Path, DiskFile>, disk0: map<Path, DiskFile>, way0: set<Path>, keep: set<Path>, tail: seq<Effect>)
+    requires way <= listing.Keys && disk.Keys <= listing.Keys && disk0.Keys <= listing.Keys
+    requires ListingDistinct(platform, listing)
+    requires way <= disk.Keys && way <= way0
+    requires forall q | q in way :: disk[q].content == listing[q].0
+    requires forall x | x in disk :: (x in disk0 && x !in way0 && disk[x] == disk0[x]) || x in way
+                                     || (x !in disk0 && !CollideF(platform, x, wanted) && forall y | y in disk0 :: !CollideF(platform, y, x))
+    requires forall x | x in way :: x in disk0
+    requires forall k | k in keep :: k in disk && k in disk0 && k !in way0 && disk[k] == disk0[k]
+    requires forall d' :: AsideLeaves(platform, disk0, way0, wanted, keep, d') ==> PreconditionsInOrder(platform, d', tail)
+    ensures var moves := Aside(platform, listing, avoid, claims, way, wanted);
+      moves.Some? ==> PreconditionsInOrder(platform, disk, MoveEffects(platform, documents, doc, moves.value) + tail)
+    decreases |way|
+  {
+    var moves := Aside(platform, listing, avoid, claims, way, wanted);
+    if moves.None? { return; }
+    if way == {} {
+      assert MoveEffects(platform, documents, doc, moves.value) + tail == tail;
+      assert AsideLeaves(platform, disk0, way0, wanted, keep, disk);
+      return;
+    }
+    var q := LeastPath(way);
+    var c := PathConflictCopy(platform, listing, avoid, claims, q, wanted).value;
+    var listing' := listing[c := listing[q]];
+    var rest := Aside(platform, listing', avoid, claims, way - {q}, wanted).value;
+    assert moves.value == [(q, c, listing[q].0)] + rest;
+    var effects := MoveEffects(platform, documents, doc, moves.value) + tail;
+    var move := effects[0];
+    assert move.Move? && move.from == q && move.to == c && move.expected == listing[q].0;
+    assert effects[1..] == MoveEffects(platform, documents, doc, rest) + tail;
+    assert c !in listing by { assert !CollideF(platform, c, c); }
+    assert MovableTo(platform, disk, q, q, c, listing[q].0);
+    assert ListingDistinct(platform, listing') by {
+      forall x, y | x in listing' && y in listing' && x != y ensures !SameF(platform, x, y) {
+        if x == c { assert !CollideF(platform, y, c); }
+        else if y == c { assert !CollideF(platform, x, c); }
+      }
+    }
+    forall mid | EffectTakes(platform, disk, move, mid)
+      ensures PreconditionsInOrder(platform, mid, effects[1..])
+    {
+      var q' := var q' :| MovableTo(platform, disk, q', q, c, listing[q].0) && mid == (disk - {q'})[c := disk[q']]; q';
+      assert q' == q;
+      assert c !in disk0;
+      AsideInOrder(platform, documents, doc, listing', avoid, claims, way - {q}, wanted, mid, disk0, way0, keep, tail);
+    }
+  }
+
+  // After the moves, the head arrives at its name: the precondition of each
+  // of Arrive's effects holds in order.
+  lemma ArriveInOrder(platform: Platform, doc: DocId, document: Document, r: Revision, own: Option<Path>,
+                      disk0: map<Path, DiskFile>, way0: set<Path>, keep: set<Path>, d': map<Path, DiskFile>)
+    requires document.binding.Some? <==> own.Some?
+    requires own.Some? ==> own.value in disk0 && disk0[own.value].content == document.binding.value.seen && own.value !in way0
+    requires forall x | x in disk0 && x !in way0 && Some(x) != own :: !CollideF(platform, x, r.path)
+    requires forall x, y | x in disk0 && y in disk0 && x != y :: !SameF(platform, x, y)
+    requires own.Some? ==> own.value in keep
+    requires AsideLeaves(platform, disk0, way0, r.path, keep, d')
+    ensures PreconditionsInOrder(platform, d', Arrive(platform, doc, document, r, own))
+  {
+    var effects := Arrive(platform, doc, document, r, own);
+    if own.None? {
+      OneEffect(platform, d', effects[0]);
+      return;
+    }
+    var o := own.value;
+    var seen := document.binding.value.seen;
+    assert Holds(platform, d', o, o, seen);
+    // The file found at `o` under F is `o` itself.
+    forall q' | q' in d' && SameF(platform, q', o) ensures q' == o {
+      if q' != o {
+        if q' in disk0 { } else { assert !CollideF(platform, o, q'); }
+      }
+    }
+    assert FreeOn(platform, d' - {o}, r.path);
+    if CollideF(platform, o, r.path) && !SameF(platform, o, r.path) {
+      var remove := Remove(doc, o, seen);
+      var write := Write(Some(doc), r.path, r.content, r.kind, None);
+      assert effects == [remove, write];
+      forall mid | EffectTakes(platform, d', remove, mid) ensures PreconditionsInOrder(platform, mid, [write]) {
+        OneEffect(platform, mid, write);
+      }
+      assert effects[1..] == [write];
+    } else {
+      var move := Move(Some(doc), o, r.path, seen);
+      assert MovableTo(platform, d', o, o, r.path, seen);
+      if r.content == seen {
+        assert effects == [move];
+        OneEffect(platform, d', move);
+      } else {
+        var write := Write(Some(doc), r.path, r.content, r.kind, Some(seen));
+        assert effects == [move, write];
+        forall mid | EffectTakes(platform, d', move, mid) ensures PreconditionsInOrder(platform, mid, [write]) {
+          assert Holds(platform, mid, r.path, r.path, seen);
+          OneEffect(platform, mid, write);
+        }
+        assert effects[1..] == [write];
+      }
+    }
+  }
+
+  // A bound document the apply leaves waiting for its name reads, in the
+  // listing, as last seen.
+  lemma HeldReadsSeen(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r) && document.binding.Some?
+      ==> var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+          read.Some? && read.value.0 == document.binding.value.seen
+  {}
+
+  // Every disk effect of the rule has a precondition that holds, in order,
+  // on the disk the round's listing was read from.
+  lemma RulePreconditionsHold(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires input.listing == ListingOf(device)
+    requires ListingDistinct(device.platform, input.listing)
+    ensures PreconditionsInOrder(device.platform, device.disk, PathRule(device.platform, documents, doc, r, input, revs).effects)
+  {
+    var platform := device.platform;
+    var disk := device.disk;
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := AllClaims(documents);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var effects := PathRule(platform, documents, doc, r, input, revs).effects;
+    if !HeldForName(document, applied, r) {
+      AppliedPreconditionsHold(device, doc, document, r, input, bound, claims, revs[doc]);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) {
+      OneEffect(platform, disk, effects[0]);
+      return;
+    }
+    HeldReadsSeen(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, input.listing, r.path, own);
+    var avoid := bound + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
+    if r.deleted || (document.binding.Some? && own.None?)
+       || (exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
+       || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value))
+       || StillClaimed(platform, documents, doc, r.path) || aside.None? {
+      OneEffect(platform, disk, effects[0]);
+      return;
+    }
+    var keep := if own.Some? then {own.value} else {};
+    var tail := Arrive(platform, doc, document, r, own);
+    if own.Some? {
+      assert ListedRead(platform, input.listing, document.binding.value.spelling) == Some(input.listing[own.value]);
+    }
+    forall d' | AsideLeaves(platform, disk, way, r.path, keep, d') ensures PreconditionsInOrder(platform, d', tail) {
+      ArriveInOrder(platform, doc, document, r, own, disk, way, keep, d');
+    }
+    AsideInOrder(platform, documents, doc, input.listing, avoid, claims, way, r.path, disk, disk, way, keep, tail);
+    assert effects == MoveEffects(platform, documents, doc, aside.value) + tail;
+  }
 }
