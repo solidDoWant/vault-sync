@@ -127,8 +127,10 @@ Each handler is a non-ghost function from what the shell hands the core to the n
 
 `CoreInv`, which every handler keeps and which #949 and #950 must keep too, has two clauses:
 
-- **A user's delete is never forgotten.** A document whose binding is gone with `absence = UserDeleted` has an outbox, or a base that is a tombstone. The one commit a document sends therefore carries the delete until the server has it.
+- **A user's delete is never forgotten.** A document whose binding is gone with `absence = UserDeleted` has an outbox, or a base that is a tombstone. The delete is therefore sent until the server has it: if the user deletes the file after a live commit was sealed, the accept of that commit opens a tombstone outbox on top of it (§3.5, `AcceptKeepsUserDelete`).
 - **An unsealed outbox is the document as the device last saw it** (`OutboxCurrent`). A bound document's unsealed outbox is live and carries `seen`, the content last seen in its file; a user-deleted document's is a tombstone. A sealed outbox, a commit in flight, carries what it carried when it was sealed. So an outbox not yet in flight never holds content older than the last change the core recorded.
+
+With `CoreInv`, every step from #949 on keeps `ServerInv`, the core's view of the server (§3.5): no cursor past the feed; history and purges name only held revisions; every accepted revision is in history, in a file on a device, or purged and no head. #950 and #966 must keep it too.
 
 Every step of #949 and #950 must also satisfy `G3_DeleteSeen` (§2.4) and `ServerFollowsEvent` (§2.3), as part of `StepGuarantees`. #949 must also show that the commit it requests for a document is its sealed outbox, persisted before the request and kept until the answer, so an accept in the model always answers it.
 
@@ -138,7 +140,7 @@ A local file event or the scan reports a change the user already made on disk, s
 
 - **Created / Modified** of a bound file whose content differs from `seen`: `seen` becomes the new content, and the outbox carries it. A new file stays untracked: the push creates its document (#949), and `PendingPush` counts untracked files.
 - **Deleted** of a bound file that is gone: the binding goes, `absence = UserDeleted`, and the outbox carries the tombstone. If the read finds a file again (a new one was created there before the event arrived), nothing changes, and the later create event decides.
-- **Renamed:** the document bound to the old name is bound to the new one, with the content read there (G5_RenameKeepsDocument). Another document bound to the new name had its file replaced by the user, so it is unbound as a user's delete, as above.
+- **Renamed:** the document bound to the old name is bound to the new one, with the content read there (G5_RenameKeepsDocument). Another document bound to the new name had its file replaced by the user, so it is unbound as a user's delete, as above. The document is rebound to the new name even when the read finds no file there (the file moved on again before the event arrived). The binding then keeps `seen`, and the next start-up scan finds the binding's file missing and settles it (§3.3, start-up scan): a one-to-one match, or a user's delete.
 - **Start-up scan:** a bound file present in the listing whose content differs from `seen`, or that the server does not have as it is, gets an outbox. A bound file missing from the listing is matched to another file only by the one-to-one exact-content rule (E7, §1.3, owner decision 4): exactly one untracked listed file holds exactly `seen`, and no other document whose file is missing last saw that content. Otherwise the document counts as deleted by the user while the app was closed (G8_PicksUpOfflineChanges).
 
 The theorems `LocalEventSafe` and `ScanSafe` prove that from any state satisfying `StateInvariants` and `CoreInv`, the step keeps both and satisfies every step predicate of `Guarantees.dfy` (`StepGuarantees`). `G10_NoLoop`, which relates two sync rounds, does not apply to these steps. The trace guarantees (G3, G4, G6, G10, `G8_AsIfNoCrash`) are proved over whole runs once every transition exists (#966).
@@ -167,3 +169,25 @@ The tests left out, and why:
 | Old rule E7c (#921): swaps and rotations matched as a cycle of bound files. Replaced by the one-to-one rule of §3.3 | "follows a swap of two files through a temporary name …", "follows a swap of two files of the same size", "follows a rotation of three files …", "keeps the bindings when one file holds another's content and that one holds new content (a chain, not a cycle)", the two "keeps the bindings of a swap when … (not one-to-one)" tests |
 | Old rule: the engine's match also compares kinds (its classifier) and skips unsynced files. §3.3 matches by content alone, over the listing the shell hands it | "transfers no binding to a file of another kind with the same content", "matches kinds by the engine's own classifier", "transfers no binding to a file the vault does not sync" |
 | Old rule: the engine's scan reads files lazily, by size and kind, and runs concurrently with events (`Bindings.renamed`'s `duringScan`). The core's scan is one step with its listing | "leaves the matched document user-deleted when a delete of its new file, really gone, arrives while the scan runs", "keeps the matched binding when the delete arriving while the scan runs was of the file there before it (E7b)", "reads no file of a kind or size the missing documents' content cannot have", "follows a rename chain whose files differ in size, …", "matches a create not acknowledged yet, whose row knows no size, by content alone"; `scan-race.test.ts`: "binds each document to its own file only, whatever the interleaving" |
+
+### 3.5 Remote revisions and push results (`RemoteEvents.dfy`, #949)
+
+**Remote revisions.** A remote revision delivered outside a sync round is recorded, not yet applied. If it is newer than everything the device knows of its document (its position is past the `ahead`, or else the `base`), it becomes the document's `ahead`. It is blocked by `LocalChanges` when the journal has a change of the document the server lacks (an outbox, or a user's delete), and is otherwise postponed until the sync round applies it with the path-conflict function (#982, #962). An older revision changes nothing.
+
+**Push results.** A result answers a document's sealed outbox, the commit in flight. A result for a document with no commit in flight changes nothing.
+
+- **Accepted:** the revision becomes the document's `base`, and an `ahead` no newer than it is dropped. The outbox goes, unless the user changed the document after the commit was sealed. In that case a new outbox on top of the accepted revision carries the change: the bound file's name and `seen`, or a tombstone for a user's delete.
+- **Head moved, already exists, unavailable:** the outbox is unsealed and carries the document as the device last saw it (`OutboxCurrent`), to be sent again. "Unavailable" answers every commit in flight.
+- **Invalid argument:** the same, and the outbox is marked `rejected` until a local change clears it (`SPEC.md` §6.2).
+
+None of these requests a disk effect, only `PersistJournal`, and none changes a binding.
+
+**`ServerInv`.** The proofs need more of the server than `StateInvariants`:
+
+- no device has read past the feed;
+- history and purges name only revisions the server holds;
+- every accepted revision is in the history, or in a file on some device, or purged and no head.
+
+The last clause is `G1_Retained` without its "content of some live head" way out. That way out does not survive a later accept of that head's document: the head's content then lives on only as an old revision, which does not make the other version retrievable. Every reachable state must satisfy `ServerInv`: the initial state does, the steps here and local events keep it (they change neither the server nor a disk), and #950 (restore, purge) and #966 (whole runs) must keep it.
+
+The theorems `RemoteRevisionSafe`, `RefusedSafe` and `AcceptSafe` prove that from any state satisfying `StateInvariants`, `CoreInv` and `ServerInv`, the step keeps all three and satisfies `StepGuarantees` (with `ServerFollowsEvent`). The lemma `QuietStep` proves this for any step that leaves the server and the disks as they are and changes rows only by recording a waiting revision or reopening an outbox. The sync round, which applies pulled revisions to disk and sends commits, is #982.
