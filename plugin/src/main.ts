@@ -29,6 +29,7 @@ import { createInvitation, joinVault, leaveVault, loadSharing, removeMember, rev
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
+import { clamp } from "./verified/clamp";
 
 /** How long after the last local change of a burst the engine pushes (#167 item 5: chosen here, not left to the engine's default). */
 const pushDebounceMs = 2000;
@@ -45,6 +46,12 @@ const formatDate = (date: Date) => date.toLocaleString();
 
 export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   data: PluginData = parsePluginData(undefined);
+  /**
+   * The Dafny-verified modules (plugin/verified/), through their typed
+   * wrappers. Nothing in the plugin uses them yet; the e2e suite calls them to
+   * prove that compiled Dafny runs in Obsidian, desktop and mobile (#946).
+   */
+  readonly verified = { clamp } as const;
   private tokens: TokenManager | undefined;
   private controller: SyncController | undefined;
   /** A session started directly with startSync (the e2e harness), outside the controller. */
