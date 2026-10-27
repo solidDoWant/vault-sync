@@ -748,23 +748,47 @@ abstract module Guarantees refines EngineModel {
       && SameK(Head(state.server, doc).value.path, p)
   }
 
+  // A file `p` on device `one` agrees with device `other`: `other` holds a
+  // file with its content under the same name, folders compared on either
+  // device's system; or `other` reports that it cannot hold `p`; or the two
+  // agree through the server (#995): `p` is a live head's path, folders
+  // compared on `one`'s system, with the head's content, and `other` holds
+  // that head under its path, folders compared on `other`'s system, or the
+  // head's path is out of `other`'s scope, or `other` reports that it cannot
+  // hold it. The last clause is what each device keeping its own folder
+  // spelling (INV-9) gives: each device's spelling and the server's are one
+  // folder on that device's system, which does not make the two devices'
+  // spellings one folder on either system.
+  ghost predicate G9Agrees(state: State, one: Device, other: Device, p: Path)
+    requires p in one.disk
+  {
+    (exists q :: q in other.disk
+       && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
+       && other.disk[q].content == one.disk[p].content)
+    || ReportedCannotHold(state, other, p)
+    || (exists doc :: Head(state.server, doc).Some? && !Head(state.server, doc).value.deleted
+          && SameNameModuloFolders(one.platform, p, Head(state.server, doc).value.path)
+          && Head(state.server, doc).value.content == one.disk[p].content
+          && ((exists q :: q in other.disk
+                 && SameNameModuloFolders(other.platform, q, Head(state.server, doc).value.path)
+                 && other.disk[q].content == one.disk[p].content)
+              || Head(state.server, doc).value.path in other.outOfScope
+              || ReportedCannotHold(state, other, Head(state.server, doc).value.path)))
+  }
+
   // "Two devices that have both finished syncing hold the same files, with
   // the same contents, under the same names. The exceptions are files a
   // device cannot hold (a name its system does not allow, a file too large
   // to download), which stay on the server and are reported on that device
   // instead of dropped; settings files a device has chosen not to sync; and
   // folder names that differ only in upper or lower case, where a device's
-  // system treats them as one folder."
+  // system treats them as one folder, or where each device's system treats
+  // its own spelling of the folder and the server's as one folder."
   ghost predicate G9(state: State) {
     forall d1, d2, p :: (FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
       && p in state.devices[d1].disk
       && p !in state.devices[d1].outOfScope && p !in state.devices[d2].outOfScope) ==>
-        var one := state.devices[d1];
-        var other := state.devices[d2];
-        (exists q :: q in other.disk
-           && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
-           && other.disk[q].content == one.disk[p].content)
-        || ReportedCannotHold(state, other, p)
+        G9Agrees(state, state.devices[d1], state.devices[d2], p)
   }
 
   // ---------------------------------------------------------------------
