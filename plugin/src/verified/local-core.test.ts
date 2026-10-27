@@ -223,6 +223,28 @@ describe("bindings.test.ts: the start-up content match (E7, decision 4)", () => 
     });
   });
 
+  it("drops the record that the engine moved a file when it finds at start-up that the user moved it while the app was closed (§3.3)", () => {
+    const row = synced("A", "a.md", "a1");
+    const device = new CoreDevice("posix", {
+      A: {
+        ...row,
+        binding: row.binding && { ...row.binding, displaced: true },
+      },
+    });
+
+    device.rename("a.md", "b.md", { lost: true });
+    device.scan();
+
+    expect(device.row("A").binding).toEqual(sameFile("b.md", "a1"));
+    expect(device.row("A").binding?.displaced).toBe(false);
+    expect(device.row("A").outbox).toMatchObject({
+      path: "b.md",
+      content: "a1",
+      deleted: false,
+    });
+    expectOnlyPersists(device);
+  });
+
   it("transfers no binding to a file of another kind with the same content", () => {
     const device = synchedA();
 
