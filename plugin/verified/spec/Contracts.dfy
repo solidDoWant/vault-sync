@@ -308,8 +308,20 @@ abstract module StepContracts refines PushCore {
   // - a remote revision whose path and content are what the file holds: no
   //   conflict, it becomes the base and nothing is written or copied.
   // Only a user's need to act, or a file the device cannot hold, leaves the
-  // revision waiting.
-  ghost predicate ApplySettlesContract(before: Document, after: Document, r: Revision, read: Option<(Hash, Kind)>, mustAct: bool) {
+  // revision waiting. Whatever the settlement (#1061):
+  // - a sealed outbox, a commit in flight, that the pulled revision does not
+  //   answer stays as it was sealed until its answer arrives (§3.2): a pull
+  //   apply never drops or edits it;
+  // - a bound file at whose name an open editor holds unsaved text
+  //   (`unsaved`, under F) keeps its binding: the round neither records it
+  //   missing nor moves it, whatever the listing reads.
+  // The remote-delete and identical clauses are about a file with no
+  // unsaved text at its name, and the remote-delete clause not about a
+  // tombstone in flight, which the first item keeps until its answer.
+  // The user's-delete clause is about a remote revision: the outbox's own
+  // revision is its acknowledgement, which keeps the user's delete
+  // (AcceptKeepsUserDelete) and sends it on top.
+  ghost predicate ApplySettlesContract(before: Document, after: Document, r: Revision, read: Option<(Hash, Kind)>, unsaved: bool, mustAct: bool) {
     var rBase := Base(r.id, r.position, r.path, r.content, r.kind, r.deleted);
     var newer := before.ahead.Some? ==> before.ahead.value.revision.position < r.position;
     var changed := before.outbox.Some? || (before.binding.Some? && read != Some((before.binding.value.seen, KindOf(before))));
@@ -317,11 +329,18 @@ abstract module StepContracts refines PushCore {
       RowInv(after)
       && (after.ahead.Some? && (after.ahead.value.blocker.LocalChanges? || after.ahead.value.blocker.PathHeld?) ==> mustAct)
       // A remote delete against a change the server lacks keeps the file.
-      && (newer && r.deleted && before.binding.Some? && changed && !mustAct
+      && (newer && r.deleted && before.binding.Some? && changed && !unsaved && !mustAct
+          && !(before.outbox.Some? && before.outbox.value.sealed && before.outbox.value.deleted)
           ==> after.binding.Some? && after.base == Some(rBase)
               && after.outbox.Some? && !after.outbox.value.deleted)
+      // A sealed outbox the revision does not answer survives the apply.
+      && (before.outbox.Some? && before.outbox.value.sealed && before.outbox.value.rev != r.id
+          ==> after.outbox == before.outbox)
+      // A bound file with unsaved text at its name keeps its binding.
+      && (before.binding.Some? && unsaved ==> after.binding == before.binding)
       // A live remote revision against the user's delete brings the file back.
       && (newer && !r.deleted && before.binding.None? && before.absence == UserDeleted
+          && !(before.outbox.Some? && before.outbox.value.rev == r.id)
           && (after.ahead.None? || !CannotHold(after.ahead.value.blocker)) && !mustAct
           ==> after.binding.Some? && after.base == Some(rBase))
       // The outbox's own revision is its acknowledgement.
@@ -329,7 +348,7 @@ abstract module StepContracts refines PushCore {
           ==> after.base == Some(rBase) && after.ahead.None?)
       // A revision identical to the file is no conflict.
       && (newer && !r.deleted && before.binding.Some? && before.binding.value.spelling == r.path
-          && read == Some((r.content, r.kind)) && !mustAct
+          && read == Some((r.content, r.kind)) && !unsaved && !mustAct
           ==> after.base == Some(rBase) && after.ahead.None?
               && after.binding == Some(before.binding.value.(seen := r.content)))
   }

@@ -93,7 +93,7 @@ abstract module StepContractWitnesses refines StepContracts {
       var r := Revision(rev1, doc, 1, Some(rev0), q, h, Note, false, device);
       var before := CleanRow(rev0, p, h);
       var after := Document(Some(Base(rev1, 1, q, h, Note, false)), None, Some(Binding(q, h, false, None)), Never, None);
-      ApplySettlesContract(before, after, r, Some((h, Note)), false)
+      ApplySettlesContract(before, after, r, Some((h, Note)), false, false)
   {
   }
 
@@ -107,7 +107,85 @@ abstract module StepContractWitnesses refines StepContracts {
       var r := Revision(rev1, doc, 1, Some(rev0), q, h, Note, false, device);
       var before := CleanRow(rev0, p, h);
       var held := before.(ahead := Some(Ahead(r, PathHeld, true)));
-      !ApplySettlesContract(before, held, r, Some((h, Note)), false)
+      !ApplySettlesContract(before, held, r, Some((h, Note)), false, false)
+  {
+  }
+
+  // ---------------------------------------------------------------------
+  // ApplySettlesContract: the user's delete and the outbox's own revision
+  // ---------------------------------------------------------------------
+
+  // #1061 note 3's trace (regression): a live commit `rev1` of `doc` at `p`
+  // is sealed and the server accepts it, but its answer is lost
+  // (CommitLanded). The user then deletes the file: no binding,
+  // `UserDeleted`, the outbox still sealed. The next round pulls `rev1`
+  // itself. It is the outbox's acknowledgement, taken as §3.5's accept
+  // (`Accept`), which keeps the user's delete and opens a tombstone outbox
+  // on top of it (AcceptKeepsUserDelete). The contract holds of that row;
+  // before #1061 its user's-delete clause demanded the file back here,
+  // which no row meeting the acknowledgement clause and the accept could do.
+  function LostAnswerDeletedRow(rev0: RevId, rev1: RevId, p: Path, h0: Hash, h1: Hash): Document {
+    Document(Some(Base(rev0, 0, p, h0, Note, false)), None, None, UserDeleted,
+             Some(Outbox(rev1, Some(rev0), p, h1, Note, false, true, false)))
+  }
+
+  lemma LostAnswerThenDeleteSettles(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, d: DeviceId, p: Path, h0: Hash, h1: Hash)
+    ensures
+      var r := Revision(rev1, doc, 1, Some(rev0), p, h1, Note, false, d);
+      var before := LostAnswerDeletedRow(rev0, rev1, p, h0, h1);
+      var after := Accept(before, r, rev2);
+      RowInv(before)
+      && after == PushedDoc(doc, before, Accepted(doc, r), rev2)
+      && after.binding.None? && after.outbox.Some? && after.outbox.value.deleted
+      && ApplySettlesContract(before, after, r, None, false, false)
+  {
+  }
+
+  // The settled clause still binds a remote revision (witness that it is
+  // not vacuous): against the same user's delete, with the tombstone not
+  // yet sealed, another device's live revision `rev2` must bring the file
+  // back. A row that does, at the revision's name and with the tombstone's
+  // outbox dropped, meets the contract; a row that takes the revision as its
+  // base but keeps the delete fails it.
+  lemma RemoteRevisionAgainstDeleteStillBinds(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId,
+                                              p: Path, h0: Hash, h2: Hash)
+    requires rev1 != rev2
+    ensures
+      var r := Revision(rev2, doc, 1, Some(rev0), p, h2, Note, false, other);
+      var before := Document(Some(Base(rev0, 0, p, h0, Note, false)), None, None, UserDeleted,
+                             Some(Outbox(rev1, Some(rev0), p, h0, Note, true, false, false)));
+      var back := Document(Some(Base(rev2, 1, p, h2, Note, false)), None, Some(Binding(p, h2, false, None)), Never, None);
+      var kept := before.(base := Some(Base(rev2, 1, p, h2, Note, false)));
+      RowInv(before)
+      && ApplySettlesContract(before, back, r, None, false, false)
+      && !ApplySettlesContract(before, kept, r, None, false, false)
+  {
+  }
+
+  // ---------------------------------------------------------------------
+  // ApplySettlesContract: a commit in flight, and unsaved text at the name
+  // ---------------------------------------------------------------------
+
+  // #1061 notes 1 and 2 (rejections). Against another device's live
+  // revision `rev2`, a row that drops a sealed outbox the revision does not
+  // answer fails the contract, and so does a row that drops the binding of a
+  // file with unsaved text at its name (here: missing from the listing,
+  // recorded as the user's delete). Witness: holding the revision with the
+  // row otherwise unchanged meets both clauses where a user must act.
+  lemma InFlightAndUnsavedKept(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId,
+                               p: Path, h0: Hash, h1: Hash, h2: Hash)
+    requires rev1 != rev2
+    ensures
+      var r := Revision(rev2, doc, 1, Some(rev0), p, h2, Note, false, other);
+      var sealed := Some(Outbox(rev1, Some(rev0), p, h1, Note, false, true, false));
+      var before := Document(Some(Base(rev0, 0, p, h0, Note, false)), None, Some(Binding(p, h1, false, None)), Never, sealed);
+      var dropped := Document(Some(Base(rev2, 1, p, h2, Note, false)), None, Some(Binding(p, h2, false, None)), Never, None);
+      var unbound := before.(binding := None, absence := UserDeleted);
+      var held := before.(ahead := Some(Ahead(r, LocalChanges, true)));
+      RowInv(before)
+      && !ApplySettlesContract(before, dropped, r, Some((h2, Note)), false, false)
+      && !ApplySettlesContract(before, unbound, r, None, true, true)
+      && ApplySettlesContract(before, held, r, None, true, true)
   {
   }
 
@@ -150,7 +228,7 @@ abstract module StepContractWitnesses refines StepContracts {
       var afterRow := step.post.devices[d].journal.documents[doc];
       SettlesConcurrent(step, d, doc, r)
       && G6_Settle(step, d, doc, r)
-      && ApplySettlesContract(beforeRow, afterRow, r, Some((x, Binary)), false)
+      && ApplySettlesContract(beforeRow, afterRow, r, Some((x, Binary)), false, false)
       // No conflict copy: every file on the device is the document's.
       && (forall p :: p in step.post.devices[d].disk ==> Tracked(step.post.devices[d], p))
   {
