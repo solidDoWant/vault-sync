@@ -36,7 +36,31 @@ abstract module StepContracts refines PushCore {
   // its resync (ShellRun), so its contracts assume it is not Diverged.
   ghost predicate CoreReachable(state: State) {
     StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
-    && MirrorAtCursor(state)
+    && MirrorAtCursor(state) && FeedPositioned(state.server) && ClaimsCoverCursor(state)
+    && (forall d :: d in state.devices && !Diverged(state, d) ==> OwnRevisionsAcknowledged(state, d))
+  }
+
+  // Every revision's position is its index in the feed (Appendable, #1025).
+  ghost predicate FeedPositioned(server: Server) {
+    forall i :: 0 <= i < |server.feed| && server.feed[i] in server.revisions
+      ==> server.revisions[server.feed[i]].position == i
+  }
+
+  // A device knows of every revision it read (#1025, gap 3.7): for each feed
+  // entry before its cursor that the server still holds, the journal has
+  // the revision's document, and the newest revision it knows of it (its
+  // ahead, or else its base) is that one or a later one. Without it a
+  // device could hold a base older than a head it already read, and
+  // neither the round (which pulls only past the cursor) nor convergence
+  // could correct it. A diverged device is excluded: its resync re-reads
+  // every head.
+  ghost predicate ClaimsCoverCursor(state: State) {
+    forall d, i :: d in state.devices && !Diverged(state, d) && 0 <= i < state.devices[d].journal.cursor
+      && i < |state.server.feed| && state.server.feed[i] in state.server.revisions
+      ==> var r := state.server.revisions[state.server.feed[i]];
+          r.doc in state.devices[d].journal.documents
+          && KnownPosition(state.devices[d].journal.documents[r.doc]).Some?
+          && KnownPosition(state.devices[d].journal.documents[r.doc]).value >= r.position
   }
 
   // MirrorInv at each device's cursor (#1025, settling #950's restore
@@ -50,7 +74,8 @@ abstract module StepContracts refines PushCore {
   // it is MirrorInv. Every predicate it uses reads the server's
   // revisions, histories and feed only, which every such cut shares.
   ghost predicate MirrorAtCursor(state: State) {
-    forall d: DeviceId, cut: Server :: d in state.devices && state.devices[d].journal.cursor <= |state.server.feed|
+    forall d: DeviceId, cut: Server :: d in state.devices && !Diverged(state, d)
+      && state.devices[d].journal.cursor <= |state.server.feed|
       && |cut.feed| == state.devices[d].journal.cursor && EarlierServer(state.server, cut)
       && FinishedSyncing(state.(server := cut), d)
       ==> FilesMirrorHeads(state.(server := cut), state.devices[d])
@@ -310,7 +335,7 @@ abstract module StepContracts refines PushCore {
       && !step.post.devices[d].running && step.post.devices[d].editors == {}
       && step.post.devices[d].platform == device.platform
       && step.post.devices[d].outOfScope == device.outOfScope
-      && step.post.server == step.pre.server
+      && (step.post.server == step.pre.server || CommitLanded(step, d))
       && (forall x :: x in step.pre.devices && x != d ==> x in step.post.devices && step.post.devices[x] == step.pre.devices[x])
       && step.post.devices.Keys == step.pre.devices.Keys
       && ((forall i :: 0 <= i < |step.effects| ==> !step.effects[i].PersistJournal?)
@@ -502,14 +527,16 @@ abstract module StepContracts refines PushCore {
   // #952's tested obligation, not part of this predicate: the model has no
   // record of which listing an event postdates.)
   // A device a restore diverged (#1025, SPEC.md §8 "Divergence"): its
-  // cursor is past the restored feed, or its journal names a revision the
-  // restore removed. That is what the server's divergence signal reports;
+  // cursor is past the restored feed, its journal names a revision the
+  // restore removed, or the feed entry it last read is no longer the
+  // server's at that place (the feed was cut and grew back, AnchorOnFeed). That is what the server's divergence signal reports;
   // a device that lags the restored feed with every revision it names
   // still there gets no signal and needs no resync.
   ghost predicate Diverged(state: State, d: DeviceId) {
     d in state.devices
     && (state.devices[d].journal.cursor > |state.server.feed|
-        || !JournalOnServer(state.server, state.devices[d].journal))
+        || !JournalOnServer(state.server, state.devices[d].journal)
+        || !AnchorOnFeed(state.server, state.devices[d].journal))
   }
 
   ghost predicate ShellRun(trace: Trace) {
@@ -523,11 +550,16 @@ abstract module StepContracts refines PushCore {
     ==> TraceGuarantees(trace)
   }
 
-  ghost predicate AsIfNoCrashContract(platforms: map<DeviceId, Platform>, crashed: Trace, clean: Trace) {
-    Run(platforms, crashed) && Run(platforms, clean) && ShellRun(crashed) && ShellRun(clean)
+  // G8's "as if it had not crashed": a run with crashes that finishes
+  // syncing has a crash-free counterpart the core and the shell can make,
+  // which finishes equal to it apart from conflict copies (#1025).
+  ghost predicate AsIfNoCrashContract(platforms: map<DeviceId, Platform>, crashed: Trace) {
+    Run(platforms, crashed) && ShellRun(crashed)
     && (forall i :: 0 <= i < |crashed| ==> CoreStep(crashed[i]))
-    && (forall i :: 0 <= i < |clean| ==> CoreStep(clean[i]))
-    ==> G8_AsIfNoCrash(crashed, clean)
+    && |crashed| > 0 && AllFinishedSyncing(crashed[|crashed| - 1].post)
+    ==> exists clean :: Run(platforms, clean) && ShellRun(clean)
+          && (forall i :: 0 <= i < |clean| ==> CoreStep(clean[i]))
+          && G8_AsIfNoCrash(crashed, clean)
   }
 
   // ---------------------------------------------------------------------
@@ -558,7 +590,19 @@ abstract module StepContracts refines PushCore {
   // non-ghost function with `ensures result == <predicate>(...)`, proved,
   // over finite states (every quantifier bounded by a map's keys or a
   // sequence's indices).
-  ghost predicate OracleContract(step: Step) {
-    CoreReachable(step.post) && StepGuarantees(step) && ShellStep(step)
+  //
+  // Stated over a run (#1025, gap 3.12): a predicate about every step is
+  // false of arbitrary steps, and a crash leaves CrashInv, not
+  // CoreReachable, until the restart. The compiled oracle evaluates it on a
+  // concrete twin of the state that also tracks the ghost fields
+  // (`accepted`, `lost`, file identities, the journal's anchor), with
+  // externs for Merge3 and IsCopyName and a finite set in place of
+  // G10_NeverStalls' `iset`.
+  ghost predicate OracleContract(platforms: map<DeviceId, Platform>, trace: Trace) {
+    Run(platforms, trace) && ShellRun(trace) && (forall i :: 0 <= i < |trace| ==> CoreStep(trace[i]))
+    ==> (forall i :: 0 <= i < |trace| ==>
+           (CoreReachable(trace[i].post) || CrashInv(trace[i].post))
+           && StepGuarantees(trace[i]) && ShellStep(trace[i]))
+        && TraceGuarantees(trace)
   }
 }

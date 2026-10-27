@@ -763,18 +763,25 @@ abstract module Guarantees refines EngineModel {
 
   // "... and ends up as if it had not crashed (apart from the names and
   // times of conflict copies)."
-  // A run with crashes and a run without them, from the same state and with
-  // the same outside world (the same user, restore, purge and
-  // restore-from-history events, in the same order), that both finish
-  // syncing end up equal apart from conflict copies.
+  // `clean` is a run without crashes, from the same state and with the
+  // same outside world (the same user, restore, purge and
+  // restore-from-history events, in the same order) as `crashed`, that
+  // finishes syncing equal to it apart from conflict copies. G8 holds of a
+  // crashed run that finishes when such a clean run exists among the runs
+  // the core and the shell can make (AsIfNoCrashContract, Contracts.dfy).
+  //
+  // Existential, not universal (#1025, owner's delegate's ruling on #52):
+  // the order in which devices sync is not part of the outside world, so
+  // two clean runs can finish differently (two devices each create `a.md`:
+  // whichever syncs first keeps its version in place), and no crashed run
+  // can equal both (ContractWitnesses.dfy, UniversalAsIfNoCrashUnsatisfiable).
   ghost predicate G8_AsIfNoCrash(crashed: Trace, clean: Trace) {
     |crashed| > 0 && |clean| > 0
     && crashed[0].pre == clean[0].pre
     && OutsideWorld(crashed) == OutsideWorld(clean)
     && (forall i :: 0 <= i < |clean| ==> !clean[i].event.Crash? && !clean[i].event.Restart?)
-    && AllFinishedSyncing(crashed[|crashed| - 1].post)
-    && AllFinishedSyncing(clean[|clean| - 1].post) ==>
-      EquivModuloCopyNames(crashed[|crashed| - 1].post, clean[|clean| - 1].post)
+    && AllFinishedSyncing(clean[|clean| - 1].post)
+    && EquivModuloCopyNames(crashed[|crashed| - 1].post, clean[|clean| - 1].post)
   }
 
   ghost predicate G8(trace: Trace) {

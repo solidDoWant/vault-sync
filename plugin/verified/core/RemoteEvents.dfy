@@ -743,8 +743,8 @@ abstract module RemoteCore {
       var document2 := Document(Some(Base(rev.id, 1, h, rev.content, rev.kind, false)), None,
                                 Some(Binding(p2, rev.content, false, None)), Never, None);
       var state := State(
-        map[d1 := Device(pl1, true, Journal(map[doc := document1], 1, [], []), map[p1 := f], {}, {}),
-            d2 := Device(pl2, true, Journal(map[doc := document2], 1, [], []), map[p2 := f], {}, {})],
+        map[d1 := Device(pl1, true, Journal(map[doc := document1], 1, [], [], Some(rev.id)), map[p1 := f], {}, {}),
+            d2 := Device(pl2, true, Journal(map[doc := document2], 1, [], [], Some(rev.id)), map[p2 := f], {}, {})],
         server);
       FinishedSyncing(state, d1) && FinishedSyncing(state, d2) && MirrorInv(state) && G9(state)
   {
@@ -754,8 +754,8 @@ abstract module RemoteCore {
     var document2 := Document(Some(Base(rev.id, 1, h, rev.content, rev.kind, false)), None,
                               Some(Binding(p2, rev.content, false, None)), Never, None);
     var state := State(
-      map[d1 := Device(pl1, true, Journal(map[doc := document1], 1, [], []), map[p1 := f], {}, {}),
-          d2 := Device(pl2, true, Journal(map[doc := document2], 1, [], []), map[p2 := f], {}, {})],
+      map[d1 := Device(pl1, true, Journal(map[doc := document1], 1, [], [], Some(rev.id)), map[p1 := f], {}, {}),
+          d2 := Device(pl2, true, Journal(map[doc := document2], 1, [], [], Some(rev.id)), map[p2 := f], {}, {})],
       server);
     assert Head(server, doc) == Some(rev);
     forall other | other != doc ensures Head(server, other).None? {}

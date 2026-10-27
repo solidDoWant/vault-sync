@@ -233,7 +233,7 @@ abstract module StepContractWitnesses refines StepContracts {
     d: DeviceId, platform: Platform, x: DocId, y: DocId, r1: Revision, r2: Revision)
     requires x != y && r1.id != r2.id && r1.doc == x && r2.doc == y && !r1.deleted && r2.deleted
     ensures
-      var device := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {});
+      var device := Device(platform, true, Journal(map[], 1, [], [], Some(r1.id)), map[], {}, {});
       var accepted := map[r1.id := r1, r2.id := r2];
       var pre := State(map[d := device],
         Server(accepted, map[x := [r1.id], y := [r2.id]], [r1.id, r2.id], {}, accepted));
@@ -242,7 +242,7 @@ abstract module StepContractWitnesses refines StepContracts {
       var step := Step(pre, Restore(restored), [], post);
       !MirrorAtCursor(pre) && !CoreReachable(pre) && ServerEventContract(step)
   {
-    var device := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {});
+    var device := Device(platform, true, Journal(map[], 1, [], [], Some(r1.id)), map[], {}, {});
     var accepted := map[r1.id := r1, r2.id := r2];
     var pre := State(map[d := device],
       Server(accepted, map[x := [r1.id], y := [r2.id]], [r1.id, r2.id], {}, accepted));
@@ -291,6 +291,144 @@ abstract module StepContractWitnesses refines StepContracts {
     assert BoundTo(device', doc, p);
     assert Tracked(device', p);
     assert !NewDocumentAt(device', p);
+  }
+
+  // ---------------------------------------------------------------------
+  // G8_AsIfNoCrash: existential, not universal (#1025, gap 3.11)
+  // ---------------------------------------------------------------------
+
+  // G8's former universal reading: `crashed` ends equal to EVERY crash-free
+  // run with its start and outside world that finishes.
+  ghost predicate UniversalAsIfNoCrash(crashed: Trace, clean: Trace) {
+    |crashed| > 0 && |clean| > 0
+    && crashed[0].pre == clean[0].pre
+    && OutsideWorld(crashed) == OutsideWorld(clean)
+    && (forall i :: 0 <= i < |clean| ==> !clean[i].event.Crash? && !clean[i].event.Restart?)
+    && AllFinishedSyncing(crashed[|crashed| - 1].post)
+    && AllFinishedSyncing(clean[|clean| - 1].post) ==>
+      EquivModuloCopyNames(crashed[|crashed| - 1].post, clean[|clean| - 1].post)
+  }
+
+  // Regression (two devices each create `a.md`, with x and y): two
+  // crash-free runs with the same start and outside world that differ only
+  // in which device syncs first end with `a.md` holding x in one and y in
+  // the other. No run, crashed or not, ends equal to both, so whenever the
+  // crashed run finishes, the universal reading fails against one of them,
+  // whatever the core does.
+  lemma UniversalAsIfNoCrashUnsatisfiable(crashed: Trace, clean1: Trace, clean2: Trace, d: DeviceId, a: Path, x: Hash, y: Hash)
+    requires |crashed| > 0 && |clean1| > 0 && |clean2| > 0
+    requires crashed[0].pre == clean1[0].pre == clean2[0].pre
+    requires OutsideWorld(crashed) == OutsideWorld(clean1) == OutsideWorld(clean2)
+    requires forall i :: 0 <= i < |clean1| ==> !clean1[i].event.Crash? && !clean1[i].event.Restart?
+    requires forall i :: 0 <= i < |clean2| ==> !clean2[i].event.Crash? && !clean2[i].event.Restart?
+    requires AllFinishedSyncing(crashed[|crashed| - 1].post)
+    requires AllFinishedSyncing(clean1[|clean1| - 1].post) && AllFinishedSyncing(clean2[|clean2| - 1].post)
+    requires !IsCopyName(a) && x != y
+    requires d in clean1[|clean1| - 1].post.devices && d in clean2[|clean2| - 1].post.devices
+    requires a in clean1[|clean1| - 1].post.devices[d].disk && clean1[|clean1| - 1].post.devices[d].disk[a].content == x
+    requires a in clean2[|clean2| - 1].post.devices[d].disk && clean2[|clean2| - 1].post.devices[d].disk[a].content == y
+    ensures !(UniversalAsIfNoCrash(crashed, clean1) && UniversalAsIfNoCrash(crashed, clean2))
+  {
+    if UniversalAsIfNoCrash(crashed, clean1) && UniversalAsIfNoCrash(crashed, clean2) {
+      var end := crashed[|crashed| - 1].post;
+      var end1 := clean1[|clean1| - 1].post;
+      var end2 := clean2[|clean2| - 1].post;
+      assert EquivModuloCopyNames(end, end1) && EquivModuloCopyNames(end, end2);
+      assert d in end.devices;
+      assert a in end.devices[d].disk;
+      assert end.devices[d].disk[a].content == x;
+      assert end.devices[d].disk[a].content == y;
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // The restore window: the anchor (#1025, gap 3.9)
+  // ---------------------------------------------------------------------
+
+  // Regression: d read [r1, r2] (cursor 2, anchor r2) and holds no row; a
+  // restore cut the feed to [r1] and another device committed r3, so the
+  // feed is [r1, r3]. The cursor is on the feed again and the journal names
+  // nothing lost, but d never read r3: only the anchor shows it, and d is
+  // Diverged (its resync must come first, ShellRun).
+  lemma GrownBackFeedDiverges(d: DeviceId, platform: Platform, r1: Revision, r2: Revision, r3: Revision)
+    requires r2.id != r3.id
+    ensures
+      var device := Device(platform, true, Journal(map[], 2, [], [], Some(r2.id)), map[], {}, {});
+      var server := Server(map[r1.id := r1, r3.id := r3], map[], [r1.id, r3.id], {}, map[]);
+      var state := State(map[d := device], server);
+      device.journal.cursor <= |server.feed| && JournalOnServer(server, device.journal)
+      && !AnchorOnFeed(server, device.journal) && Diverged(state, d)
+  {
+  }
+
+  // ---------------------------------------------------------------------
+  // Claims cover the cursor (#1025, gap 3.7)
+  // ---------------------------------------------------------------------
+
+  // Regression: d read both revisions of `doc` (cursor 2, anchor h2), yet
+  // its row's base is the older h1 with nothing ahead. The round pulls
+  // nothing past the cursor, so no core could bring d to h2: the state is
+  // not CoreReachable, though d is not Diverged.
+  lemma StaleBaseBehindCursorExcluded(d: DeviceId, platform: Platform, doc: DocId, h1: Revision, h2: Revision, p: Path)
+    requires h1.id != h2.id && h1.doc == doc && h2.doc == doc && h1.position == 0 && h2.position == 1
+    ensures
+      var row := Document(Some(Base(h1.id, 0, p, h1.content, h1.kind, false)), None, None, Never, None);
+      var device := Device(platform, true, Journal(map[doc := row], 2, [], [], Some(h2.id)), map[], {}, {});
+      var server := Server(map[h1.id := h1, h2.id := h2], map[doc := [h1.id, h2.id]], [h1.id, h2.id], {}, map[]);
+      var state := State(map[d := device], server);
+      !Diverged(state, d) && !ClaimsCoverCursor(state) && !CoreReachable(state)
+  {
+    var row := Document(Some(Base(h1.id, 0, p, h1.content, h1.kind, false)), None, None, Never, None);
+    var device := Device(platform, true, Journal(map[doc := row], 2, [], [], Some(h2.id)), map[], {}, {});
+    var server := Server(map[h1.id := h1, h2.id := h2], map[doc := [h1.id, h2.id]], [h1.id, h2.id], {}, map[]);
+    var state := State(map[d := device], server);
+    assert !Diverged(state, d);
+    assert server.feed[1] == h2.id && server.revisions[h2.id] == h2;
+    assert KnownPosition(row) == Some(0);
+  }
+
+  // ---------------------------------------------------------------------
+  // Own revisions (#1025, gaps 3.10 and 3.13)
+  // ---------------------------------------------------------------------
+
+  // A restore from history attributed to a syncing device does not follow
+  // the server's semantics: that device would hold a revision it never
+  // sent, with no outbox to acknowledge it.
+  lemma RestoreFromHistoryOwnedByDeviceRejected(pre: State, post: State, d: DeviceId, doc: DocId, from: RevId, r: Revision)
+    requires d in pre.devices && r.device == d
+    ensures !ServerFollowsEvent(Step(pre, RestoreFromHistory(doc, from, r), [], post))
+  {
+  }
+
+  // A commit the server accepted whose answer was lost: d crashed right
+  // after the Commit effect of its sealed outbox, and the server appended
+  // it. The crash follows the server's semantics, and d's sealed outbox
+  // still acknowledges the revision (OwnRevisionsAcknowledged), so its next
+  // round takes the pulled revision as "accepted" (§4.1).
+  lemma CrashAfterAcceptedCommit(d: DeviceId, platform: Platform, doc: DocId, o: Outbox)
+    requires o.sealed && o.baseRev.None?
+    ensures
+      var r := Revision(o.rev, doc, 0, None, o.path, o.content, o.kind, o.deleted, d);
+      var empty := Server(map[], map[], [], {}, map[]);
+      var journal := Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []);
+      var device := Device(platform, true, journal, map[], {}, {});
+      var pre := State(map[d := device], empty);
+      var post := State(map[d := device.(running := false)], Appended(empty, doc, r));
+      var step := Step(pre, Crash(d, Some(Cut(SyncRound(d), [Commit(doc, o)]))), [Commit(doc, o)], post);
+      ServerFollowsEvent(step) && OwnRevisionsAcknowledged(post, d)
+  {
+    var r := Revision(o.rev, doc, 0, None, o.path, o.content, o.kind, o.deleted, d);
+    var empty := Server(map[], map[], [], {}, map[]);
+    var journal := Journal(map[doc := Document(None, None, None, Never, Some(o))], 0, [], []);
+    var device := Device(platform, true, journal, map[], {}, {});
+    var pre := State(map[d := device], empty);
+    var post := State(map[d := device.(running := false)], Appended(empty, doc, r));
+    var step := Step(pre, Crash(d, Some(Cut(SyncRound(d), [Commit(doc, o)]))), [Commit(doc, o)], post);
+    forall x ensures Head(empty, x).None? {}
+    assert ParentIsHead(empty, doc, r.parent);
+    assert Appendable(empty, doc, r);
+    assert Commit(doc, o) in step.effects;
+    assert CommitLandedAs(step, d, doc, o);
   }
 }
 
