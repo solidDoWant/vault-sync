@@ -8,6 +8,9 @@
 # builds without Dafny (the native Windows/macOS e2e legs) still work, and
 # make check-generate fails when it is stale.
 set -euo pipefail
+# Byte-order collation and untranslated messages, so the output is the same
+# under every locale (the CI runner's C locale and a dev VM's en_US.UTF-8).
+export LC_ALL=C
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"

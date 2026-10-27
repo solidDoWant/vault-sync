@@ -1215,4 +1215,4 @@ let _module = (function() {
   return $module;
 })(); // end of module _module
 
-module.exports = { Clamp, _dafny, _System };
+module.exports = { Clamp, _System, _dafny };
