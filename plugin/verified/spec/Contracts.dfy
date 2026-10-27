@@ -44,7 +44,7 @@ abstract module StepContracts refines PushCore {
     StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
     && FeedPositioned(state.server) && ClaimsCoverCursor(state)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
-    && CutsHeadsApart(state.server)
+    && FeedAccepted(state.server) && CutsHeadsApart(state.server)
     && (forall d :: d in state.devices && !Diverged(state, d) ==> OwnRevisionsAcknowledged(state, d))
   }
 
@@ -73,6 +73,18 @@ abstract module StepContracts refines PushCore {
   // restricts the revisions and keeps `accepted`.
   ghost predicate RevisionsAccepted(server: Server) {
     forall id :: id in server.revisions ==> id in server.accepted && server.accepted[id] == server.revisions[id]
+  }
+
+  // Every feed entry is an id the server accepted (#1063, #950's gap B):
+  // Appended adds the id to both, a restore from backup cuts the feed and
+  // keeps `accepted`, and a purge changes neither. With Appendable's fresh
+  // id it keeps an appended id off the feed before it, so a cut of the
+  // appended server at a cursor is a cut of the server before: without it
+  // a restore from history could append a revision under an id an earlier
+  // feed entry already names, and every cut through that entry would hold
+  // it.
+  ghost predicate FeedAccepted(server: Server) {
+    forall i :: 0 <= i < |server.feed| ==> server.feed[i] in server.accepted
   }
 
   // A base records the revision `r` of document `doc` it was made from.
@@ -429,17 +441,27 @@ abstract module StepContracts refines PushCore {
   // excuses what a restore removed, `lost`), ServerRetains and
   // MirrorAtCursor (a restore's server is a cut of the one before, so a cut
   // of it at a cursor is one too: #950's gap, #1025), so it keeps
-  // CoreReachable. A purge and a restore from history keep ServerInv's
-  // cursor clause too; a restore keeps it for every device but one it
-  // diverged (Diverged), which only that device's resync can bring back
-  // (a server event changes no device).
+  // CoreReachable. A purge and a restore from history diverge no device
+  // and keep ServerInv's cursor clause where it held (#1063, #950's gap A:
+  // CoreReachable lets a diverged device's cursor run past the feed, and a
+  // server event changes no cursor); a restore can diverge a device, which
+  // only that device's resync brings back (a server event changes no
+  // device). ServerEventKeepsCursors proves the purge's and the restore
+  // from history's last clause.
   ghost predicate ServerEventContract(step: Step) {
     (step.event.Restore? || step.event.Purge? || step.event.RestoreFromHistory?)
     && CoreReachable(step.pre) && ServerFollowsEvent(step)
     && step.post.devices == step.pre.devices && step.effects == []
     ==>
       CoreReachable(step.post) && StepGuarantees(step)
-      && (!step.event.Restore? ==> CursorsOnFeed(step.post))
+      && (!step.event.Restore? ==> KeepsCursors(step))
+  }
+
+  // No device a step leaves unchanged becomes Diverged, and no cursor
+  // leaves the feed.
+  ghost predicate KeepsCursors(step: Step) {
+    (forall d :: d in step.pre.devices && !Diverged(step.pre, d) ==> !Diverged(step.post, d))
+    && (CursorsOnFeed(step.pre) ==> CursorsOnFeed(step.post))
   }
 
   // What a crash leaves (settled here, verified-core.md §4.1): the app stops,

@@ -805,7 +805,23 @@ abstract module Guarantees refines EngineModel {
       && SameK(Head(state.server, doc).value.path, p)
   }
 
-  // A file `p` on device `one` agrees with device `other`: `other` holds a
+  // A device keeps the file `p` of a document whose server head it cannot
+  // hold (#1031, decided on #52): `p` is bound to the document, whose
+  // waiting revision is that head and waits for a reason that means the
+  // device cannot hold it. SPEC.md §8 "Download cap": a revision above the
+  // cap is deferred and the cursor moves on, so the file stays as it was
+  // (a name the system does not allow, or a settings file not synced, the
+  // same). The newer revision stays on the server and is reported, which
+  // is G9's exception for a file the device cannot hold.
+  ghost predicate KeepsUnheld(state: State, device: Device, p: Path) {
+    exists doc :: BoundTo(device, doc, p)
+      && device.journal.documents[doc].ahead.Some?
+      && CannotHold(device.journal.documents[doc].ahead.value.blocker)
+      && Head(state.server, doc) == Some(device.journal.documents[doc].ahead.value.revision)
+  }
+
+  // A file `p` on device `one` agrees with device `other`: `one` keeps it
+  // as the older file of a document it cannot hold (KeepsUnheld); `other` holds a
   // file with its content under the same name, folders compared on either
   // device's system; or `other` reports that it cannot hold `p`; or the two
   // agree through the server (#995): `p` is a live head's path, folders
@@ -819,9 +835,10 @@ abstract module Guarantees refines EngineModel {
   ghost predicate G9Agrees(state: State, one: Device, other: Device, p: Path)
     requires p in one.disk
   {
-    (exists q :: q in other.disk
-       && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
-       && other.disk[q].content == one.disk[p].content)
+    KeepsUnheld(state, one, p)
+    || (exists q :: q in other.disk
+          && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
+          && other.disk[q].content == one.disk[p].content)
     || ReportedCannotHold(state, other, p)
     || (exists doc :: Head(state.server, doc).Some? && !Head(state.server, doc).value.deleted
           && SameNameModuloFolders(one.platform, p, Head(state.server, doc).value.path)

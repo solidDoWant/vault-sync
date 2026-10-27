@@ -767,4 +767,311 @@ abstract module StepContractWitnesses refines StepContracts {
     assert CollideK(p, p);
     assert !LiveHeadsApart(cut);
   }
+
+  // ---------------------------------------------------------------------
+  // #1063: a file kept under a revision the device cannot hold, and the
+  // cursor and feed clauses of the server events
+  // ---------------------------------------------------------------------
+
+  // #1031's trace (regression): d read x's r1 and r2 (cursor 2), and r2 is
+  // too large to download (SPEC.md §8 "Download cap": deferred too-large,
+  // nothing downloaded, the cursor moves on), so d keeps r1's file at p.
+  // The state is ClaimsReachable, and d is finished against the cut at its
+  // cursor. Before #1063 FilesMirrorHeads, and so MirrorAtCursor, failed at
+  // that cut; d now keeps p as the older file of a document whose head it
+  // cannot hold (KeepsUnheld), which is G9's exception, and mirrors the cut.
+  lemma {:isolate_assertions} TooLargeAheadKeepsOldFile(d: DeviceId, e: DeviceId, platform: Platform, x: DocId, y: DocId,
+                                  r1: Revision, r2: Revision, r3: Revision, p: Path, q: Path, id: FileIdentity, cut: Server)
+    requires d != e && x != y && |{r1.id, r2.id, r3.id}| == 3 && r1.content != r2.content
+    requires !CollideK(p, q) && !CollideK(q, p)
+    requires r1 == Revision(r1.id, x, 0, None, p, r1.content, Note, false, e)
+    requires r2 == Revision(r2.id, x, 1, Some(r1.id), p, r2.content, Note, false, e)
+    requires r3 == Revision(r3.id, y, 2, None, q, r3.content, Note, false, e)
+    requires cut == Server(map[r1.id := r1, r2.id := r2], map[x := [r1.id, r2.id]], [r1.id, r2.id], {}, map[])
+    ensures
+      var row := Document(Some(Base(r1.id, 0, p, r1.content, Note, false)), Some(Ahead(r2, TooLarge, false)),
+                          Some(Binding(p, r1.content, false, None)), Never, None);
+      var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[p := DiskFile(r1.content, Note, id)], {}, {});
+      var revisions := map[r1.id := r1, r2.id := r2, r3.id := r3];
+      var server := Server(revisions, map[x := [r1.id, r2.id], y := [r3.id]], [r1.id, r2.id, r3.id], {}, revisions);
+      var state := State(map[d := device], server);
+      !Diverged(state, d) && ClaimsCoverCursor(state) && FeedPositioned(server) && FeedAccepted(server)
+      && HistoryFollowsFeed(server) && RevisionsAccepted(server) && JournalsNameAccepted(state)
+      && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
+      && (forall x0 :: x0 in state.devices && !Diverged(state, x0) ==> OwnRevisionsAcknowledged(state, x0))
+      && EarlierServer(server, cut) && FinishedSyncing(state.(server := cut), d)
+      && KeepsUnheld(state.(server := cut), device, p)
+      && FilesMirrorHeads(state.(server := cut), device) && HeadsMirrored(state.(server := cut), device)
+  {
+    var row := Document(Some(Base(r1.id, 0, p, r1.content, Note, false)), Some(Ahead(r2, TooLarge, false)),
+                        Some(Binding(p, r1.content, false, None)), Never, None);
+    var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[p := DiskFile(r1.content, Note, id)], {}, {});
+    var revisions := map[r1.id := r1, r2.id := r2, r3.id := r3];
+    var server := Server(revisions, map[x := [r1.id, r2.id], y := [r3.id]], [r1.id, r2.id, r3.id], {}, revisions);
+    var state := State(map[d := device], server);
+    assert server.feed[0] == r1.id && server.feed[1] == r2.id && server.feed[2] == r3.id;
+    assert server.history[x][0] == r1.id && server.history[x][1] == r2.id;
+    assert !Diverged(state, d);
+    assert JournalsNameAccepted(state) by {
+      assert state.devices.Keys == {d};
+      assert device.journal.documents.Keys == {x};
+      assert r1.id in server.accepted && server.accepted[r1.id] == r1;
+      assert r2.id in server.accepted && server.accepted[r2.id] == r2;
+      assert BaseRecords(row.base.value, x, r1);
+    }
+    var kept := set i | 0 <= i < 2 :: cut.feed[i];
+    assert kept == {r1.id, r2.id} by { assert cut.feed[0] == r1.id; assert cut.feed[1] == r2.id; }
+    assert server.history[x][1..] == [r2.id];
+    assert server.history[x][1..][1..] == [];
+    assert Keep([], kept) == [];
+    assert Keep([r2.id], kept) == [r2.id];
+    assert Keep(server.history[x], kept) == [r1.id, r2.id];
+    assert server.history[y][1..] == [];
+    assert Keep(server.history[y], kept) == [];
+    assert cut.history == (map doc | doc in server.history && |Keep(server.history[doc], kept)| > 0 :: Keep(server.history[doc], kept));
+    assert EarlierServer(server, cut);
+    SameNameModuloFoldersRefl(platform, p);
+    SameFIsEquivalence(platform, p, p, p);
+    assert BoundTo(device, x, p);
+    assert InStep(device);
+    assert FinishedSyncing(state.(server := cut), d);
+    assert Head(cut, x) == Some(r2);
+    assert KeepsUnheld(state.(server := cut), device, p);
+    assert FilesMirrorHeads(state.(server := cut), device);
+    forall doc | LiveHead(cut, doc) ensures doc == x {}
+    assert ReportedCannotHold(state.(server := cut), device, r2.path);
+    assert HeadsMirrored(state.(server := cut), device);
+  }
+
+  // The rest of ClaimsReachable for #1031's state (its trace's second
+  // lemma): StateInvariants and CutsHeadsApart.
+  lemma {:isolate_assertions} TooLargeStateInvariants(d: DeviceId, e: DeviceId, platform: Platform, x: DocId, y: DocId,
+                                  r1: Revision, r2: Revision, r3: Revision, p: Path, q: Path, id: FileIdentity)
+    requires d != e && x != y && |{r1.id, r2.id, r3.id}| == 3 && r1.content != r2.content
+    requires !CollideK(p, q) && !CollideK(q, p)
+    requires r1 == Revision(r1.id, x, 0, None, p, r1.content, Note, false, e)
+    requires r2 == Revision(r2.id, x, 1, Some(r1.id), p, r2.content, Note, false, e)
+    requires r3 == Revision(r3.id, y, 2, None, q, r3.content, Note, false, e)
+    ensures
+      var row := Document(Some(Base(r1.id, 0, p, r1.content, Note, false)), Some(Ahead(r2, TooLarge, false)),
+                          Some(Binding(p, r1.content, false, None)), Never, None);
+      var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[p := DiskFile(r1.content, Note, id)], {}, {});
+      var revisions := map[r1.id := r1, r2.id := r2, r3.id := r3];
+      var server := Server(revisions, map[x := [r1.id, r2.id], y := [r3.id]], [r1.id, r2.id, r3.id], {}, revisions);
+      var state := State(map[d := device], server);
+      StateInvariants(state) && CutsHeadsApart(server)
+  {
+    var row := Document(Some(Base(r1.id, 0, p, r1.content, Note, false)), Some(Ahead(r2, TooLarge, false)),
+                        Some(Binding(p, r1.content, false, None)), Never, None);
+    var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[p := DiskFile(r1.content, Note, id)], {}, {});
+    var revisions := map[r1.id := r1, r2.id := r2, r3.id := r3];
+    var server := Server(revisions, map[x := [r1.id, r2.id], y := [r3.id]], [r1.id, r2.id, r3.id], {}, revisions);
+    var state := State(map[d := device], server);
+    assert server.feed[0] == r1.id && server.feed[1] == r2.id && server.feed[2] == r3.id;
+    assert Head(server, x) == Some(r2) && Head(server, y) == Some(r3);
+    forall doc | doc != x && doc != y ensures Head(server, doc).None? {}
+    forall c0 | EarlierServer(server, c0) ensures LiveHeadsApart(c0) {
+      forall doc | Head(c0, doc).Some? ensures (doc == x && Head(c0, doc).value.path == p) || (doc == y && Head(c0, doc).value.path == q) {
+        var h := c0.history[doc][|c0.history[doc]| - 1];
+        assert h in server.revisions && c0.revisions[h] == server.revisions[h];
+        var kept := set i | 0 <= i < |c0.feed| :: c0.feed[i];
+        assert doc in server.history;
+        KeepIn(server.history[doc], kept, |c0.history[doc]| - 1);
+      }
+    }
+    SameNameModuloFoldersRefl(platform, p);
+    SameFIsEquivalence(platform, p, p, p);
+  }
+
+  lemma KeepIn(s: seq<RevId>, ids: set<RevId>, j: nat)
+    requires j < |Keep(s, ids)|
+    ensures Keep(s, ids)[j] in s
+  {
+    if s[0] in ids {
+      if j > 0 { KeepIn(s[1..], ids, j - 1); }
+    } else {
+      KeepIn(s[1..], ids, j);
+    }
+  }
+
+  // The product outcome #1063 decided (logged on #52): d keeps r1's file
+  // at p, which it cannot update, and f downloaded r2 to p. Both are
+  // finished, and G9 holds: d's file is one it keeps under a revision it
+  // cannot hold, and f's file is the head d reports it cannot hold.
+  lemma {:isolate_assertions} TooLargeKeptFileAgrees(d: DeviceId, f: DeviceId, e: DeviceId, platform: Platform, x: DocId,
+                                  r1: Revision, r2: Revision, p: Path, id: FileIdentity)
+    requires |{d, e, f}| == 3 && r1.id != r2.id && r1.content != r2.content
+    requires r1 == Revision(r1.id, x, 0, None, p, r1.content, Note, false, e)
+    requires r2 == Revision(r2.id, x, 1, Some(r1.id), p, r2.content, Note, false, e)
+    ensures
+      var stale := Document(Some(Base(r1.id, 0, p, r1.content, Note, false)), Some(Ahead(r2, TooLarge, false)),
+                            Some(Binding(p, r1.content, false, None)), Never, None);
+      var current := Document(Some(Base(r2.id, 1, p, r2.content, Note, false)), None,
+                            Some(Binding(p, r2.content, false, None)), Never, None);
+      var one := Device(platform, true, Journal(map[x := stale], 2, [], [], Some(r2.id)), map[p := DiskFile(r1.content, Note, id)], {}, {});
+      var other := Device(platform, true, Journal(map[x := current], 2, [], [], Some(r2.id)), map[p := DiskFile(r2.content, Note, id)], {}, {});
+      var revisions := map[r1.id := r1, r2.id := r2];
+      var state := State(map[d := one, f := other], Server(revisions, map[x := [r1.id, r2.id]], [r1.id, r2.id], {}, revisions));
+      FinishedSyncing(state, d) && FinishedSyncing(state, f) && MirrorInv(state)
+      && G9Agrees(state, one, other, p) && G9Agrees(state, other, one, p) && G9(state)
+  {
+    var stale := Document(Some(Base(r1.id, 0, p, r1.content, Note, false)), Some(Ahead(r2, TooLarge, false)),
+                          Some(Binding(p, r1.content, false, None)), Never, None);
+    var current := Document(Some(Base(r2.id, 1, p, r2.content, Note, false)), None,
+                          Some(Binding(p, r2.content, false, None)), Never, None);
+    var one := Device(platform, true, Journal(map[x := stale], 2, [], [], Some(r2.id)), map[p := DiskFile(r1.content, Note, id)], {}, {});
+    var other := Device(platform, true, Journal(map[x := current], 2, [], [], Some(r2.id)), map[p := DiskFile(r2.content, Note, id)], {}, {});
+    var revisions := map[r1.id := r1, r2.id := r2];
+    var state := State(map[d := one, f := other], Server(revisions, map[x := [r1.id, r2.id]], [r1.id, r2.id], {}, revisions));
+    assert state.server.feed[1] == r2.id;
+    assert Head(state.server, x) == Some(r2);
+    forall doc | LiveHead(state.server, doc) ensures doc == x {}
+    SameNameModuloFoldersRefl(platform, p);
+    SameFIsEquivalence(platform, p, p, p);
+    assert BoundTo(one, x, p) && BoundTo(other, x, p);
+    assert InStep(one) && InStep(other);
+    assert FinishedSyncing(state, d) && FinishedSyncing(state, f);
+    assert KeepsUnheld(state, one, p);
+    assert ReportedCannotHold(state, one, p);
+    assert FilesMirrorHeads(state, one) && HeadsMirrored(state, one);
+    assert FilesMirrorHeads(state, other) && HeadsMirrored(state, other);
+    assert MirrorInv(state);
+    MirrorImpliesG9(state);
+  }
+
+  // #950's gap A (regression): a diverged device's cursor (1) is past the
+  // empty feed, which CoreReachable allows (#1025). A purge changes no
+  // cursor, so CursorsOnFeed fails after it as before it; the contract
+  // therefore concludes KeepsCursors, which holds.
+  lemma PurgeWithDivergedCursor(d: DeviceId, platform: Platform)
+    ensures
+      var device := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {});
+      var pre := State(map[d := device], Server(map[], map[], [], {}, map[]));
+      var step := Step(pre, Purge({}), [], pre);
+      CoreReachable(pre) && ServerFollowsEvent(step)
+      && !CursorsOnFeed(step.post) && KeepsCursors(step)
+  {
+    var device := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {});
+    var pre := State(map[d := device], Server(map[], map[], [], {}, map[]));
+    assert Diverged(pre, d);
+    assert !FinishedSyncing(pre, d);
+    forall doc ensures Head(pre.server, doc).None? {}
+    assert CutsHeadsApart(pre.server) by {
+      forall cut | EarlierServer(pre.server, cut) ensures LiveHeadsApart(cut) {
+        assert cut.feed == [];
+        var kept: set<RevId> := set i | 0 <= i < |cut.feed| :: cut.feed[i];
+        assert kept == {};
+        forall doc ensures Head(cut, doc).None? {}
+      }
+    }
+    assert MirrorAtCursor(pre);
+    assert CoreReachable(pre);
+  }
+
+  // ServerEventContract's last clause, proved (#1063): a purge changes
+  // nothing Diverged reads, and a restore from history only extends the
+  // feed and the revisions, so a device on the feed stays on it with its
+  // anchor in place and its journal's revisions held.
+  lemma ServerEventKeepsCursors(step: Step)
+    requires step.event.Purge? || step.event.RestoreFromHistory?
+    requires ServerFollowsEvent(step) && step.post.devices == step.pre.devices
+    ensures KeepsCursors(step)
+  {
+    forall d | d in step.pre.devices && !Diverged(step.pre, d) ensures !Diverged(step.post, d) {
+      var journal := step.pre.devices[d].journal;
+      assert step.pre.server.feed <= step.post.server.feed;
+      assert step.pre.server.revisions.Keys <= step.post.server.revisions.Keys;
+      if journal.cursor > 0 {
+        assert step.post.server.feed[journal.cursor - 1] == step.pre.server.feed[journal.cursor - 1];
+      }
+    }
+  }
+
+  // #950's gap B (rejection): the feed [r.id, a.id] names r.id, which the
+  // server neither holds nor accepted, and a restore from history appends
+  // r under that id. The cut at d's cursor then holds r as z's head, which
+  // d, finished against it, does not mirror. Every feed entry is an
+  // accepted id (FeedAccepted), so the state before is not reachable.
+  lemma {:isolate_assertions} RestoreFromHistoryReusesUnheldFeedId(
+    d: DeviceId, e: DeviceId, platform: Platform, z: DocId, a: Revision, r: Revision, p: Path, file: DiskFile)
+    requires d != e && a.id != r.id && a.doc == z && a.position == 1 && !a.deleted && a.device == e
+    requires file.content == a.content && a.path == p
+    requires r == Revision(r.id, z, 2, Some(a.id), r.path, a.content, a.kind, false, e)
+    requires !SameNameModuloFolders(platform, p, r.path)
+    ensures
+      var base := Base(a.id, 1, p, a.content, a.kind, false);
+      var journal := Journal(map[z := Document(Some(base), None, Some(Binding(p, a.content, false, None)), Never, None)],
+                             2, [], [], Some(a.id));
+      var device := Device(platform, true, journal, map[p := file], {}, {});
+      var pre := State(map[d := device],
+        Server(map[a.id := a], map[z := [a.id]], [r.id, a.id], {}, map[a.id := a]));
+      var step := Step(pre, RestoreFromHistory(z, a.id, r), [], pre.(server := Appended(pre.server, z, r)));
+      ServerFollowsEvent(step) && !MirrorAtCursor(step.post)
+      && !FeedAccepted(pre.server) && !ClaimsReachable(pre) && !CoreReachable(pre)
+  {
+    var base := Base(a.id, 1, p, a.content, a.kind, false);
+    var journal := Journal(map[z := Document(Some(base), None, Some(Binding(p, a.content, false, None)), Never, None)],
+                           2, [], [], Some(a.id));
+    var device := Device(platform, true, journal, map[p := file], {}, {});
+    var pre := State(map[d := device],
+      Server(map[a.id := a], map[z := [a.id]], [r.id, a.id], {}, map[a.id := a]));
+    var step := Step(pre, RestoreFromHistory(z, a.id, r), [], pre.(server := Appended(pre.server, z, r)));
+    var post := step.post;
+    SameNameModuloFoldersRefl(platform, p);
+    assert Head(pre.server, z) == Some(a);
+    assert Appendable(pre.server, z, r);
+    assert ServerFollowsEvent(step);
+    assert pre.server.feed[0] == r.id && r.id !in pre.server.accepted;
+    assert !FeedAccepted(pre.server);
+
+    // after: the cut at d's cursor holds r as z's head
+    assert post.server.feed == [r.id, a.id, r.id];
+    assert !Diverged(post, d);
+    var cut := Server(map[r.id := r, a.id := a], map[z := [a.id, r.id]], [r.id, a.id], {}, map[]);
+    var kept: set<RevId> := set i | 0 <= i < |cut.feed| :: cut.feed[i];
+    assert cut.feed[0] == r.id && cut.feed[1] == a.id;
+    assert kept == {r.id, a.id} by {
+      forall id | id in kept ensures id == r.id || id == a.id {}
+      assert r.id in kept && a.id in kept;
+    }
+    assert post.server.history[z] == [a.id, r.id];
+    assert Keep([r.id], kept) == [r.id];
+    assert [a.id, r.id][1..] == [r.id];
+    assert Keep([a.id, r.id], kept) == [a.id, r.id];
+    assert cut.revisions == (map id | id in post.server.revisions && id in kept :: post.server.revisions[id]);
+    assert cut.history == (map doc | doc in post.server.history && |Keep(post.server.history[doc], kept)| > 0
+                             :: Keep(post.server.history[doc], kept));
+    assert EarlierServer(post.server, cut);
+    assert Head(cut, z) == Some(r);
+    assert InHistory(pre.server, a.id) by { assert a.id in pre.server.history[z]; }
+    assert BoundTo(device, z, p);
+    assert InStep(device);
+    assert FinishedSyncing(post.(server := cut), d);
+    assert !ReportedCannotHold(post.(server := cut), device, r.path);
+    assert !HeadsMirrored(post.(server := cut), device);
+    assert !MirrorAtCursor(post);
+  }
+
+  // FeedAccepted holds initially (InitialCoreReachable) and every server
+  // step keeps it: an append adds the id to the feed and to `accepted`, a
+  // restore from backup cuts the feed and keeps `accepted`, a purge
+  // changes neither. With it an appended id is not on the feed before.
+  lemma FeedAcceptedKept(step: Step)
+    requires FeedAccepted(step.pre.server) && ServerFollowsEvent(step)
+    ensures FeedAccepted(step.post.server)
+  {
+    var pre := step.pre.server;
+    var post := step.post.server;
+    if step.event.Restore? {
+      forall i | 0 <= i < |post.feed| ensures post.feed[i] in post.accepted {
+        assert post.feed[i] == pre.feed[i];
+      }
+    }
+  }
+
+  lemma AppendedIdOffFeed(server: Server, doc: DocId, r: Revision)
+    requires FeedAccepted(server) && Appendable(server, doc, r)
+    ensures r.id !in server.feed
+  {
+  }
 }

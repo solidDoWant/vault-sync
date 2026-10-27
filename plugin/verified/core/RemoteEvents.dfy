@@ -680,12 +680,15 @@ abstract module RemoteCore {
 
   // Every in-scope file on the device holds the content of a live head
   // whose path is the file's name, folders compared on the device's system
-  // (INV-9: a device keeps its own spelling of a folder, #995).
+  // (INV-9: a device keeps its own spelling of a folder, #995), or is the
+  // older file of a document whose head the device cannot hold
+  // (KeepsUnheld, #1031: G9's exception).
   ghost predicate FilesMirrorHeads(state: State, device: Device) {
     forall p :: p in device.disk && p !in device.outOfScope ==>
-      exists doc :: LiveHead(state.server, doc)
-        && SameNameModuloFolders(device.platform, p, Head(state.server, doc).value.path)
-        && Head(state.server, doc).value.content == device.disk[p].content
+      KeepsUnheld(state, device, p)
+      || (exists doc :: LiveHead(state.server, doc)
+            && SameNameModuloFolders(device.platform, p, Head(state.server, doc).value.path)
+            && Head(state.server, doc).value.content == device.disk[p].content)
   }
 
   // Every live head is on the device: a file whose name is the head's path,
@@ -725,10 +728,12 @@ abstract module RemoteCore {
   {
     var one := state.devices[d1];
     var other := state.devices[d2];
-    var doc := var doc0 :| LiveHead(state.server, doc0)
-      && SameNameModuloFolders(one.platform, p, Head(state.server, doc0).value.path)
-      && Head(state.server, doc0).value.content == one.disk[p].content; doc0;
-    assert HeadsMirrored(state, other);
+    if !KeepsUnheld(state, one, p) {
+      var doc := var doc0 :| LiveHead(state.server, doc0)
+        && SameNameModuloFolders(one.platform, p, Head(state.server, doc0).value.path)
+        && Head(state.server, doc0).value.content == one.disk[p].content; doc0;
+      assert HeadsMirrored(state, other);
+    }
   }
 
   lemma MirrorImpliesG9(state: State)
