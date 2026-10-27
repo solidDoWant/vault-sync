@@ -482,6 +482,10 @@ abstract module EngineModel {
   // other document's live head collides with under K (SPEC.md §5).
   ghost predicate Appendable(server: Server, doc: DocId, r: Revision) {
     r.doc == doc
+    // Its position is its index in the feed (#1025): after a restore from
+    // backup the server reuses positions past the restored feed (SPEC.md
+    // §8 "Divergence"), which only a device's resync makes safe to compare.
+    && r.position == |server.feed|
     && r.id !in server.revisions && r.id !in server.accepted
     && ParentIsHead(server, doc, r.parent)
     && (Head(server, doc).Some? ==> r.kind == Head(server, doc).value.kind)

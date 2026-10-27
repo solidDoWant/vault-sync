@@ -11,7 +11,7 @@
 // this pass missed it.
 //
 // The contracts are stated over the core's invariants (CoreInv, ServerInv,
-// RowInv, MirrorInv), so this file builds on the core's modules; it adds no
+// RowInv, MirrorInv, MirrorAtCursor), so this file builds on the core's modules; it adds no
 // definition the core uses.
 include "../core/Push.dfy"
 
@@ -27,8 +27,15 @@ abstract module StepContracts refines PushCore {
 
   // What every step theorem starts from and must keep (§3.2, §3.5, §3.7,
   // §4.1).
+  //
+  // ServerInv's cursor clause is required only of devices a restore did not
+  // diverge (#1025): between a restore from backup and a diverged device's
+  // resync the state is still reachable, and other devices' steps, server
+  // events and crashes in that window are still covered by their
+  // contracts. A diverged device's own round or pulled revision waits for
+  // its resync (ShellRun), so its contracts assume it is not Diverged.
   ghost predicate CoreReachable(state: State) {
-    StateInvariants(state) && CoreInv(state) && ServerInv(state) && MirrorInv(state)
+    StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
     && MirrorAtCursor(state)
   }
 
@@ -245,7 +252,7 @@ abstract module StepContracts refines PushCore {
   }
 
   ghost predicate RoundContract(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
-    (d in pre.devices && pre.devices[d].running && CoreReachable(pre)
+    (d in pre.devices && pre.devices[d].running && CoreReachable(pre) && !Diverged(pre, d)
      && OwnRevisionsAcknowledged(pre, d)
      && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
      && RevsCover(pre.devices[d].journal, input, revs))
@@ -274,18 +281,19 @@ abstract module StepContracts refines PushCore {
   // StepGuarantees (a restore leaves every device whose journal names a
   // revision it lost, or whose cursor is past the restored feed, unfinished:
   // EarlierServer, JournalOnServer). Each keeps StateInvariants (G1_Retained
-  // excuses what a restore removed, `lost`) and ServerRetains. A purge and a
-  // restore from history keep ServerInv's cursor clause too; a restore keeps
-  // it for every device but one whose cursor is past the restored feed,
-  // which only that device's resync can bring back (a server event changes
-  // no device).
+  // excuses what a restore removed, `lost`), ServerRetains and
+  // MirrorAtCursor (a restore's server is a cut of the one before, so a cut
+  // of it at a cursor is one too: #950's gap, #1025), so it keeps
+  // CoreReachable. A purge and a restore from history keep ServerInv's
+  // cursor clause too; a restore keeps it for every device but one it
+  // diverged (Diverged), which only that device's resync can bring back
+  // (a server event changes no device).
   ghost predicate ServerEventContract(step: Step) {
     (step.event.Restore? || step.event.Purge? || step.event.RestoreFromHistory?)
     && CoreReachable(step.pre) && ServerFollowsEvent(step)
     && step.post.devices == step.pre.devices && step.effects == []
     ==>
-      CoreInv(step.post) && MirrorInv(step.post) && StepGuarantees(step)
-      && StateInvariants(step.post) && ServerRetains(step.post)
+      CoreReachable(step.post) && StepGuarantees(step)
       && (!step.event.Restore? ==> CursorsOnFeed(step.post))
   }
 
@@ -411,14 +419,19 @@ abstract module StepContracts refines PushCore {
   }
 
   ghost predicate ResyncContract(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
-    (d in pre.devices && pre.devices[d].running && CoreInv(pre)
+    (d in pre.devices && pre.devices[d].running && CoreReachable(pre)
      && RoundInputOf(pre, d, input)
      && RevsCover(pre.devices[d].journal, input, revs))
     ==>
       var step := ResyncStepOf(pre, d, input, revs);
       step.pre == pre && step.event == Resync(d)
-      && CoreInv(step.post) && StepGuarantees(step)
+      && CoreReachable(step.post) && StepGuarantees(step)
       && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
+      // SPEC.md §8 "Divergence" (#1025): every revision the journal names
+      // is on the server again, so a base the restore lost is re-anchored
+      // (to the restored head, or none) and CoreInv makes the device send
+      // what it holds again; the device is no longer Diverged.
+      && JournalOnServer(step.post.server, step.post.devices[d].journal)
       && OwnRevisionsAcknowledged(step.post, d)
       && IntentsCoverDiskEffects(step.effects)
   }
@@ -460,7 +473,8 @@ abstract module StepContracts refines PushCore {
   }
 
   ghost predicate OneRoundFinishes(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
-    d in pre.devices && NoLocalChange(pre, d) && CoreReachable(pre) && OwnRevisionsAcknowledged(pre, d)
+    d in pre.devices && NoLocalChange(pre, d) && CoreReachable(pre) && !Diverged(pre, d)
+    && OwnRevisionsAcknowledged(pre, d)
     // Every revision the journal names is on the server (#1025): after a
     // restore that lost one, only the resync can finish the device.
     && JournalOnServer(pre.server, pre.devices[d].journal)
@@ -487,9 +501,20 @@ abstract module StepContracts refines PushCore {
   // delivered which an earlier scan's listing already reflects, §3.4, is
   // #952's tested obligation, not part of this predicate: the model has no
   // record of which listing an event postdates.)
+  // A device a restore diverged (#1025, SPEC.md §8 "Divergence"): its
+  // cursor is past the restored feed, or its journal names a revision the
+  // restore removed. That is what the server's divergence signal reports;
+  // a device that lags the restored feed with every revision it names
+  // still there gets no signal and needs no resync.
+  ghost predicate Diverged(state: State, d: DeviceId) {
+    d in state.devices
+    && (state.devices[d].journal.cursor > |state.server.feed|
+        || !JournalOnServer(state.server, state.devices[d].journal))
+  }
+
   ghost predicate ShellRun(trace: Trace) {
-    forall j, k, d :: 0 <= j < k < |trace| && trace[j].event.Restore?
-      && trace[k].event == SyncRound(d)
+    forall j, k, d :: 0 <= j < k < |trace| && trace[j].event.Restore? && Diverged(trace[j].post, d)
+      && (trace[k].event == SyncRound(d) || (trace[k].event.RemoteRevision? && trace[k].event.device == d))
       ==> exists m :: j < m < k && trace[m].event == Resync(d)
   }
 
