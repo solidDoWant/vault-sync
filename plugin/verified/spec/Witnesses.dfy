@@ -50,8 +50,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
       var document := Document(Some(Base(rev.id, 1, p, rev.content, rev.kind, false)), None,
                                Some(Binding(p, rev.content, false, None)), Never, None);
       var state := State(
-        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
-            d2 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f2], {}, {})],
+        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f1], {}, {}),
+            d2 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f2], {}, {})],
         server);
       StateInvariants(state) && FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
   {
@@ -59,8 +59,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
     var document := Document(Some(Base(rev.id, 1, p, rev.content, rev.kind, false)), None,
                              Some(Binding(p, rev.content, false, None)), Never, None);
     var state := State(
-      map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
-          d2 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f2], {}, {})],
+      map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f1], {}, {}),
+          d2 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f2], {}, {})],
       server);
     assert Head(server, doc) == Some(rev);
     forall other | other != doc ensures Head(server, other).None? {}
@@ -91,8 +91,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
       var document := Document(Some(Base(rev.id, 1, p, rev.content, rev.kind, false)), None,
                                Some(Binding(p, rev.content, false, None)), Never, None);
       var pre := State(
-        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f], {}, {}),
-            d2 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f], {}, {})],
+        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f], {}, {}),
+            d2 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f], {}, {})],
         server);
       var post := pre.(devices := pre.devices[d1 := pre.devices[d1].(disk := map[q := f])]);
       FinishedSyncing(pre, d1) && FinishedSyncing(pre, d2)
@@ -1016,6 +1016,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
 
   // A crash that cut a sync round short after the first of the two effects
   // the core requested lists that one: a prefix of what was requested.
+  // (ContractWitnesses.dfy restates it with the round's own effects, as
+  // CrashContract's CutRequestedByCore requires.)
   lemma CrashAfterFirstEffectCutsShort(pre: State, post: State, d: DeviceId, first: Effect, second: Effect)
     ensures CrashCutsShort(Step(pre, Crash(d, Some(Cut(SyncRound(d), [first, second]))), [first], post))
   {
@@ -1067,8 +1069,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
       var other := Document(Some(Base(rev.id, 1, p, f2.content, rev.kind, false)), None,
                             Some(Binding(p, f2.content, false, None)), Never, None);
       var state := State(
-        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
-            d2 := Device(platform, true, Journal(map[doc := other], 1, [], []), map[p := f2], {}, {})],
+        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f1], {}, {}),
+            d2 := Device(platform, true, Journal(map[doc := other], 1, [], [], Some(rev.id)), map[p := f2], {}, {})],
         server);
       // Neither directly nor through the server does d2's other content
       // agree with d1's file, which is the server's head.
@@ -1080,8 +1082,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
     var other := Document(Some(Base(rev.id, 1, p, f2.content, rev.kind, false)), None,
                           Some(Binding(p, f2.content, false, None)), Never, None);
     var state := State(
-      map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
-          d2 := Device(platform, true, Journal(map[doc := other], 1, [], []), map[p := f2], {}, {})],
+      map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], [], Some(rev.id)), map[p := f1], {}, {}),
+          d2 := Device(platform, true, Journal(map[doc := other], 1, [], [], Some(rev.id)), map[p := f2], {}, {})],
       server);
     SameNameModuloFoldersRefl(platform, p);
     assert BoundTo(state.devices[d1], doc, p);

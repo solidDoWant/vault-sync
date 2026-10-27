@@ -124,7 +124,14 @@ abstract module EngineModel {
     documents: map<DocId, Document>,
     cursor: nat,
     intents: seq<Intent>,
-    conflicts: seq<ConflictRecord>)
+    conflicts: seq<ConflictRecord>,
+    // SPEC.md §8 "Divergence" (#1025): the id of the last feed entry the
+    // device read (None before it read any). The server reuses positions
+    // after a restore from backup, so the cursor alone cannot tell the feed
+    // the device read from the one the server now has (AnchorOnFeed). Ghost
+    // and carried unchanged until #1030 sets it in the round and the resync
+    // and the shell persists it.
+    ghost anchor: Option<RevId> := None)
 
   // ---------------------------------------------------------------------
   // The disk
@@ -451,7 +458,8 @@ abstract module EngineModel {
   // core handles (not a user's action or another crash) and that starts in
   // the crash step's pre state. A crash that cut nothing short performs no
   // effect. That `cut.requested` is what the core requests for `cut.event`
-  // in that state is a proof obligation of the verified core.
+  // in that state is stated over the core's step functions by
+  // CutRequestedByCore (Contracts.dfy), a hypothesis of CrashContract.
   ghost predicate CrashCutsShort(step: Step) {
     step.event.Crash? ==>
       if step.event.cut.Some? then
@@ -481,6 +489,10 @@ abstract module EngineModel {
   // other document's live head collides with under K (SPEC.md §5).
   ghost predicate Appendable(server: Server, doc: DocId, r: Revision) {
     r.doc == doc
+    // Its position is its index in the feed (#1025): after a restore from
+    // backup the server reuses positions past the restored feed (SPEC.md
+    // §8 "Divergence"), which only a device's resync makes safe to compare.
+    && r.position == |server.feed|
     && r.id !in server.revisions && r.id !in server.accepted
     && ParentIsHead(server, doc, r.parent)
     && (Head(server, doc).Some? ==> r.kind == Head(server, doc).value.kind)
@@ -525,6 +537,9 @@ abstract module EngineModel {
     case RestoreFromHistory(doc, from, r) =>
       from in pre.revisions && pre.revisions[from].doc == doc && !r.deleted
       && r.content == pre.revisions[from].content && r.kind == pre.revisions[from].kind
+      // The server commits it, attributed to no syncing device (#1025):
+      // a device's own revision is one it sent and acknowledges.
+      && r.device !in step.pre.devices
       && Appendable(pre, doc, r) && post == Appended(pre, doc, r)
     case Purge(revisions) =>
       (forall rev :: rev in revisions ==> rev in pre.revisions && !IsHead(pre, rev))
@@ -538,7 +553,30 @@ abstract module EngineModel {
       && post == restored.(accepted := pre.accepted, lost := pre.lost + RestoreRemoves(pre, restored))
     case RemoteRevision(_, rev) =>
       post == pre && rev.id in pre.revisions && pre.revisions[rev.id] == rev && rev.id in pre.feed
+    // A commit the server accepted whose answer was lost (#1025): the app
+    // crashed after the Commit effect, or the answer came back
+    // "unavailable" although the server had accepted it. The server then
+    // has the device's sealed outbox, which the device's next round pulls as
+    // its acknowledgement (OwnRevisionsAcknowledged).
+    case Crash(d, _) => post == pre || CommitLanded(step, d)
+    case Pushed(d, Unavailable) => post == pre || CommitLanded(step, d)
     case _ => post == pre
+  }
+
+  // One of the device's sealed outboxes, at its current or a requested
+  // commit, is on the server, appended as a commit is.
+  ghost predicate CommitLanded(step: Step, d: DeviceId) {
+    d in step.pre.devices
+    && exists doc, o :: CommitLandedAs(step, d, doc, o)
+  }
+
+  ghost predicate CommitLandedAs(step: Step, d: DeviceId, doc: DocId, o: Outbox) {
+    d in step.pre.devices
+    && ((doc in step.pre.devices[d].journal.documents && step.pre.devices[d].journal.documents[doc].outbox == Some(o))
+        || Commit(doc, o) in step.effects)
+    && o.sealed
+    && var r := Revision(o.rev, doc, |step.pre.server.feed|, o.baseRev, o.path, o.content, o.kind, o.deleted, d);
+    Appendable(step.pre.server, doc, r) && step.post.server == Appended(step.pre.server, doc, r)
   }
 
   // The accepted revisions a restore of `restored` over `server` removes
@@ -654,7 +692,17 @@ abstract module EngineModel {
          device.journal.documents[doc].outbox.None?
          && (device.journal.documents[doc].ahead.Some? ==> CannotHold(device.journal.documents[doc].ahead.value.blocker)))
     && JournalOnServer(state.server, device.journal)
+    && AnchorOnFeed(state.server, device.journal)
     && InStep(device)
+  }
+
+  // The feed entry the device last read is still the server's at that
+  // place (#1025): no restore from backup replaced it. Like
+  // JournalOnServer, a device whose cursor sits on a feed that a restore
+  // cut and other devices grew back has not finished syncing.
+  ghost predicate AnchorOnFeed(server: Server, journal: Journal) {
+    journal.cursor == 0
+    || (journal.cursor <= |server.feed| && journal.anchor == Some(server.feed[journal.cursor - 1]))
   }
 
   // Every revision the journal records as a base or an ahead is one the
