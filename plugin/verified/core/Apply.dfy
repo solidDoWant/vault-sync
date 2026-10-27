@@ -1506,4 +1506,57 @@ abstract module ApplyCore refines StepContracts {
       SubsetCard(a - {x}, b - {x});
     }
   }
+
+  // ---------------------------------------------------------------------
+  // The feed anchor and divergence (#1030, SPEC.md §8 "Divergence")
+  // ---------------------------------------------------------------------
+
+  // For a device whose journal names only revisions the server holds,
+  // Diverged is the anchor check: it holds exactly when the device's
+  // anchor is not the server's entry at its cursor. (A journal naming a
+  // lost revision is the own-commit anchor's case, SPEC.md §6.1.)
+  lemma DivergedIsAnchorCheck(state: State, d: DeviceId)
+    requires d in state.devices && JournalOnServer(state.server, state.devices[d].journal)
+    ensures Diverged(state, d) <==> !AnchorOnFeed(state.server, state.devices[d].journal)
+  {}
+
+  // A device that read the feed `read` up to `n` (ReadFeed), against a
+  // server whose feed a restore cut to `kept` entries and other devices
+  // grew back (GrewFrom): it is Diverged exactly when the server's feed
+  // up to its cursor is no longer the one it read.
+  lemma ReadFeedDivergedExactly(state: State, d: DeviceId, read: seq<RevId>, kept: nat, journal: Journal, n: nat)
+    requires n <= |read| && GrewFrom(read, state.server.feed, kept)
+    requires d in state.devices && state.devices[d].journal == ReadFeed(journal, read, n)
+    requires JournalOnServer(state.server, state.devices[d].journal)
+    ensures Diverged(state, d) <==> !(n <= |state.server.feed| && state.server.feed[..n] == read[..n])
+  {
+    DivergedIsAnchorCheck(state, d);
+    AnchorCheckExact(read, state.server, kept, journal, n);
+  }
+
+  // Regression (gap 3.9, #1025's GrownBackFeedDiverges, through the core's
+  // read): d read [r1, r2] and holds no row; a restore cut the feed to
+  // [r1] and another device committed r3. d's cursor is on the feed again
+  // and its journal names nothing lost, yet it is Diverged. Had the feed
+  // only grown ([r1, r2, r3]), it would not be.
+  lemma ReadThenGrownBackDiverges(d: DeviceId, platform: Platform, journal: Journal, r1: Revision, r2: Revision, r3: Revision)
+    requires journal.documents == map[] && r3.id != r1.id && r3.id != r2.id
+    ensures
+      var read := ReadFeed(journal, [r1.id, r2.id], 2);
+      var device := Device(platform, true, read, map[], {}, {});
+      var grownBack := Server(map[r1.id := r1, r3.id := r3], map[], [r1.id, r3.id], {}, map[]);
+      var grown := Server(map[r1.id := r1, r2.id := r2, r3.id := r3], map[], [r1.id, r2.id, r3.id], {}, map[]);
+      read.cursor == 2 && read.anchor == Some(r2.id)
+      && Diverged(State(map[d := device], grownBack), d)
+      && !Diverged(State(map[d := device], grown), d)
+  {
+    var read := ReadFeed(journal, [r1.id, r2.id], 2);
+    var device := Device(platform, true, read, map[], {}, {});
+    var grownBack := Server(map[r1.id := r1, r3.id := r3], map[], [r1.id, r3.id], {}, map[]);
+    var grown := Server(map[r1.id := r1, r2.id := r2, r3.id := r3], map[], [r1.id, r2.id, r3.id], {}, map[]);
+    ReadFeedDivergedExactly(State(map[d := device], grownBack), d, [r1.id, r2.id], 1, journal, 2);
+    assert grownBack.feed[..2][1] == r3.id;
+    ReadFeedDivergedExactly(State(map[d := device], grown), d, [r1.id, r2.id], 2, journal, 2);
+    assert grown.feed[..2] == [r1.id, r2.id];
+  }
 }
