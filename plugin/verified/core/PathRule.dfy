@@ -175,7 +175,10 @@ abstract module PathRuleCore refines ApplyCore {
     var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
                then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
     var way := InTheWay(platform, input.listing, r.path, own);
-    if r.deleted || (document.binding.Some? && own.None?) then Defer(documents, doc, r, false)
+    // A bound file missing from the listing is the user's delete, and the
+    // head brings it back (Revives, verified-core.md §4.2); any other
+    // missing file waits.
+    if r.deleted || (document.binding.Some? && own.None? && !Revives(platform, document, r, input)) then Defer(documents, doc, r, false)
     else if (exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
             || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value)) then
       // Unsaved text collides with a file that would move, though not with
@@ -220,10 +223,20 @@ abstract module PathRuleCore refines ApplyCore {
   function ClearRows(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
                      moves: seq<(Path, Path, Hash)>, revs: FreshRevs): map<DocId, Document>
     requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
   {
     RecordMissing(platform, input.listing, documents, doc, r.path, MoveRows(platform, documents, doc, moves, revs), revs)
-      [doc := documents[doc].(base := Some(BaseOf(r)), ahead := None,
-                              binding := Some(Binding(r.path, r.content, false, None)), absence := Never)]
+      [doc := HeadRow(platform, documents[doc], r, input)]
+  }
+
+  // The head's row: the document's base, at its name. A revived document's
+  // delete loses to the head (Revived).
+  function HeadRow(platform: Platform, document: Document, r: Revision, input: RoundInput): Document
+    requires ListingDistinct(platform, input.listing)
+  {
+    (if Revives(platform, document, r, input) then Revived(document) else document)
+      .(base := Some(BaseOf(r)), ahead := None,
+        binding := Some(Binding(r.path, r.content, false, None)), absence := Never)
   }
 
   // The rows after the files in the way moved aside.
@@ -347,7 +360,7 @@ abstract module PathRuleCore refines ApplyCore {
     var claims := AllClaims(documents);
     var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
     AsideFrom(platform, input.listing, avoid, claims, way, r.path);
-    if !r.deleted && !(document.binding.Some? && own.None?)
+    if !r.deleted && !(document.binding.Some? && own.None? && !Revives(platform, document, r, input))
        && !((exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
             || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value)))
        && !StillClaimed(platform, documents, doc, r.path) && aside.Some? {
@@ -478,7 +491,8 @@ abstract module PathRuleCore refines ApplyCore {
   // with no change the server lacks.
   lemma HeldHasNoChange(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
-    ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r) ==> !JournalChange(document)
+    ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r)
+            ==> !JournalChange(document) || Revives(platform, document, r, input)
   {}
 
   lemma MovedAsideKeepsRowInv(document: Document, to: Path, rev: RevId)
@@ -593,7 +607,7 @@ abstract module PathRuleCore refines ApplyCore {
   // of Arrive's effects holds in order.
   lemma ArriveInOrder(platform: Platform, doc: DocId, document: Document, r: Revision, own: Option<Path>,
                       disk0: map<Path, DiskFile>, way0: set<Path>, keep: set<Path>, d': map<Path, DiskFile>)
-    requires document.binding.Some? <==> own.Some?
+    requires own.Some? ==> document.binding.Some?
     requires own.Some? ==> own.value in disk0 && disk0[own.value].content == document.binding.value.seen && own.value !in way0
     requires forall x | x in disk0 && x !in way0 && Some(x) != own :: !CollideF(platform, x, r.path)
     requires forall x, y | x in disk0 && y in disk0 && x != y :: !SameF(platform, x, y)
@@ -650,6 +664,7 @@ abstract module PathRuleCore refines ApplyCore {
   lemma HeldReadsSeen(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r) && document.binding.Some?
+            && !Revives(platform, document, r, input)
       ==> var read := ListedRead(platform, input.listing, document.binding.value.spelling);
           read.Some? && read.value.0 == document.binding.value.seen
   {}
@@ -683,7 +698,7 @@ abstract module PathRuleCore refines ApplyCore {
     var way := InTheWay(platform, input.listing, r.path, own);
     var avoid := bound + input.unsaved;
     var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
-    if r.deleted || (document.binding.Some? && own.None?)
+    if r.deleted || (document.binding.Some? && own.None? && !Revives(platform, document, r, input))
        || (exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
        || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value))
        || StillClaimed(platform, documents, doc, r.path) || aside.None? {
@@ -789,6 +804,42 @@ abstract module PathRuleCore refines ApplyCore {
       && ruled.effects == []
   {
     AcknowledgementSettles(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+  }
+
+  // The user's delete, or a bound file missing from the listing (the
+  // user's delete, G3_DeleteSeen), against a live remote revision brings the
+  // file back (ApplySettlesContract, verified-core.md §4.2, SPEC.md §6.3):
+  // on the row after the rule, the file is bound at the revision's name,
+  // holding its content, the revision is the base, and the user's delete is
+  // dropped. The revision waits only where the device cannot hold it
+  // (CannotHold) or unsaved text collides with its name (a user must act).
+  // The outbox's own revision is its acknowledgement instead
+  // (RuleAcknowledges), and a commit in flight is #1023's.
+  lemma RuleRevivesDeletedFile(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires forall e | e in documents :: RowInv(documents[e])
+    requires Newer(documents[doc], r) && !Acknowledges(documents[doc], r) && Revives(platform, documents[doc], r, input)
+    ensures var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+      && RowInv(after)
+      && (after.ahead.None? ==>
+            after.binding == Some(Binding(r.path, r.content, false, None))
+            && after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+            && after.outbox.None? && after.absence == Never)
+      && (after.ahead.Some? ==>
+            after.ahead.value.revision == r
+            && (CannotHold(after.ahead.value.blocker)
+                || (after.ahead.value.blocker.PathHeld? && UnsavedCollides(platform, input.unsaved, r.path))))
+      // Where nothing is in the way (no listed file collides with the name,
+      // no unsaved text, no other document's server claim), it comes back.
+      && ((FreeIn(platform, input.listing, r.path) && !UnsavedCollides(platform, input.unsaved, r.path)
+           && !StillClaimed(platform, documents, doc, r.path)) ==> after.ahead.None?)
+      // ApplySettlesContract's clause, with a user's need to act being
+      // unsaved text in the revision's way.
+      && ((after.ahead.None? || !CannotHold(after.ahead.value.blocker)) && !UnsavedCollides(platform, input.unsaved, r.path)
+          ==> after.binding.Some? && after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted)))
+  {
+    RuleKeepsRowInv(platform, documents, doc, r, input, revs);
   }
 
   // Where the apply leaves nothing waiting for a name, the rule's step is the
@@ -1190,7 +1241,7 @@ abstract module PathRuleCore refines ApplyCore {
   lemma ArriveTakes(platform: Platform, doc: DocId, document: Document, r: Revision, own: Option<Path>,
                     disk: map<Path, DiskFile>, disk': map<Path, DiskFile>)
     requires OneFilePerName(platform, disk)
-    requires document.binding.Some? <==> own.Some?
+    requires own.Some? ==> document.binding.Some?
     requires own.Some? ==> own.value in disk && disk[own.value].content == document.binding.value.seen
     requires forall x | x in disk && Some(x) != own :: !CollideF(platform, x, r.path)
     requires EffectsTake(platform, disk, Arrive(platform, doc, document, r, own), disk')
@@ -1383,7 +1434,7 @@ abstract module PathRuleCore refines ApplyCore {
     own == (if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
             then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None)
     && var way := InTheWay(platform, input.listing, r.path, own);
-    !r.deleted && !(document.binding.Some? && own.None?)
+    !r.deleted && !(document.binding.Some? && own.None? && !Revives(platform, document, r, input))
     && !(exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
     && !(own.Some? && UnsavedCollides(platform, input.unsaved, own.value))
     && !StillClaimed(platform, documents, doc, r.path)
@@ -1399,7 +1450,7 @@ abstract module PathRuleCore refines ApplyCore {
     requires doc in documents && input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
     requires ClearsWith(device.platform, documents, doc, r, input, own, moves)
-    requires documents[doc].binding.Some? ==>
+    requires documents[doc].binding.Some? && own.Some? ==>
       var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
       read.Some? && read.value.0 == documents[doc].binding.value.seen
     requires EffectsTake(device.platform, device.disk,
@@ -1469,7 +1520,7 @@ abstract module PathRuleCore refines ApplyCore {
     requires doc in documents && input.listing == ListingOf(device) && after.platform == device.platform
     requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
     requires ClearsWith(device.platform, documents, doc, r, input, own, moves)
-    requires documents[doc].binding.Some? ==>
+    requires documents[doc].binding.Some? && own.Some? ==>
       var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
       read.Some? && read.value.0 == documents[doc].binding.value.seen
     requires EffectsTake(device.platform, device.disk,
@@ -1520,7 +1571,7 @@ abstract module PathRuleCore refines ApplyCore {
     requires NeverJoinedRows(device.platform, device.journal.documents)
     requires ClearsWith(device.platform, device.journal.documents, doc, r, input, own, moves)
     requires var documents := device.journal.documents;
-      documents[doc].binding.Some? ==>
+      documents[doc].binding.Some? && own.Some? ==>
         var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
         read.Some? && read.value.0 == documents[doc].binding.value.seen
     requires EffectsTake(device.platform, device.disk,
