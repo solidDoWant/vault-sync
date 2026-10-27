@@ -222,8 +222,8 @@ abstract module PathRuleCore refines ApplyCore {
       [Move(mover, q, c, content)] + MoveEffects(platform, documents, doc, moves[1..])
   }
 
-  // The head arrives at its name: the document's own clean file moves there
-  // (and is written over where the content changed), or, with no file, the
+  // The head arrives at its name: the document's own clean file is written
+  // over where the content changed and moves there, or, with no file, the
   // head is created there.
   // A file whose name is a folder of the new name, or lies under it, cannot
   // be moved there: it is removed (it is clean, so the server has its
@@ -234,8 +234,10 @@ abstract module PathRuleCore refines ApplyCore {
       if CollideF(platform, own.value, r.path) && !SameF(platform, own.value, r.path) then
         [Remove(doc, own.value, seen), Write(Some(doc), r.path, r.content, r.kind, None)]
       else
-        [Move(Some(doc), own.value, r.path, seen)]
-        + (if r.content == seen then [] else [Write(Some(doc), r.path, r.content, r.kind, Some(seen))])
+        // Written over in place first, where its file is still the one the
+        // document is bound to (G2_OnlyWhatItSaw), then moved.
+        (if r.content == seen then [] else [Write(Some(doc), own.value, r.content, r.kind, Some(seen))])
+        + [Move(Some(doc), own.value, r.path, r.content)]
     else [Write(Some(doc), r.path, r.content, r.kind, None)]
   }
 
@@ -589,19 +591,22 @@ abstract module PathRuleCore refines ApplyCore {
       }
       assert effects[1..] == [write];
     } else {
-      var move := Move(Some(doc), o, r.path, seen);
-      assert MovableTo(platform, d', o, o, r.path, seen);
+      var move := Move(Some(doc), o, r.path, r.content);
       if r.content == seen {
         assert effects == [move];
+        assert MovableTo(platform, d', o, o, r.path, seen);
         OneEffect(platform, d', move);
       } else {
-        var write := Write(Some(doc), r.path, r.content, r.kind, Some(seen));
-        assert effects == [move, write];
-        forall mid | EffectTakes(platform, d', move, mid) ensures PreconditionsInOrder(platform, mid, [write]) {
-          assert Holds(platform, mid, r.path, r.path, seen);
-          OneEffect(platform, mid, write);
+        var write := Write(Some(doc), o, r.content, r.kind, Some(seen));
+        assert effects == [write, move];
+        forall mid | EffectTakes(platform, d', write, mid) ensures PreconditionsInOrder(platform, mid, [move]) {
+          var q' := var q' :| Holds(platform, d', q', o, seen) && mid == d'[q' := DiskFile(r.content, r.kind, d'[q'].identity)]; q';
+          assert q' == o;
+          assert mid.Keys == d'.Keys;
+          assert MovableTo(platform, mid, o, o, r.path, r.content);
+          OneEffect(platform, mid, move);
         }
-        assert effects[1..] == [write];
+        assert effects[1..] == [move];
       }
     }
   }
@@ -894,7 +899,7 @@ abstract module PathRuleCore refines ApplyCore {
       ensures forall u | u in input.unsaved :: !SameF(platform, u, e.path)
     {
       forall u | u in input.unsaved ensures !SameF(platform, u, e.path) {
-        if e.Write? { assert e.path == r.path; assert !CollideF(platform, u, r.path); }
+        if e.Write? && e.path == r.path { assert !CollideF(platform, u, r.path); }
         else { assert own.Some? && e.path == own.value; assert !CollideF(platform, u, own.value); }
       }
     }
