@@ -1,0 +1,434 @@
+// The path-conflict rule of the sync round (#962, docs/design/verified-core.md
+// §3.10). One rule decides every name collision a pulled revision meets:
+//
+//   The server's head takes its name. Every file in its way on this device
+//   (each listed file that collides with the name under F, folders and
+//   files under it included, other than the document's own file) moves
+//   aside with its contents, to a name the copy-name function (#1004)
+//   picks. A document whose file moves aside keeps it under its own id
+//   when a local change put it there (rule W(a)); otherwise it lets the
+//   file go, as an untracked copy (rule W(b)). The rule moves nothing, and
+//   the revision waits, where an open editor holds unsaved text in the way
+//   (PathHeld, which UserMustAct reports), where another document's newest
+//   server claim still holds the name (Unmaterializable(alias := true)),
+//   and where no copy name is free (Unmaterializable(alias := false)).
+//
+// The rule runs where the pull apply (`ApplyRevision`, Apply.dfy) leaves a
+// revision `PathHeld`, and only there: every other outcome of the apply is
+// the rule's result unchanged.
+include "Apply.dfy"
+
+abstract module PathRuleCore refines ApplyCore {
+
+  // ---------------------------------------------------------------------
+  // Vocabulary (compiled)
+  // ---------------------------------------------------------------------
+
+  // Every name a document is bound to.
+  function BoundNames(documents: map<DocId, Document>): set<Path> {
+    set d | d in documents && documents[d].binding.Some? :: documents[d].binding.value.spelling
+  }
+
+  // The document a listed file is bound to, if any (under F).
+  predicate FileOf(platform: Platform, documents: map<DocId, Document>, q: Path, e: DocId) {
+    e in documents && documents[e].binding.Some? && SameF(platform, documents[e].binding.value.spelling, q)
+  }
+
+  // Every document's server claims, the document the rule applies included:
+  // a copy collides with none of them (CopiesTakeFreeNames, PO-14).
+  function AllClaims(documents: map<DocId, Document>): Claims {
+    Claims((set d | d in documents && documents[d].base.Some? && !documents[d].base.value.deleted
+              :: documents[d].base.value.path)
+           + (set d | d in documents && documents[d].ahead.Some? && !documents[d].ahead.value.revision.deleted
+                :: documents[d].ahead.value.revision.path),
+           set d | d in documents && documents[d].outbox.Some? && !documents[d].outbox.value.deleted
+             :: documents[d].outbox.value.path)
+  }
+
+  // A document's newest server claim: its live `ahead`'s path, else its live
+  // base's path (design §4.2). A tombstone claims no path.
+  function NewestClaim(document: Document): Option<Path> {
+    if document.ahead.Some? then
+      (if document.ahead.value.revision.deleted then None else Some(document.ahead.value.revision.path))
+    else if document.base.Some? && !document.base.value.deleted then Some(document.base.value.path)
+    else None
+  }
+
+  // Another document still claims `p` on the server: its newest server claim
+  // collides with `p` under K, or is the same file under F (an F-alias,
+  // design §4.5 step 3). The revision cannot take the name on this device
+  // while that claim stands (rule W(c) and the alias case).
+  predicate StillClaimed(platform: Platform, documents: map<DocId, Document>, doc: DocId, p: Path) {
+    exists e | e in documents && e != doc ::
+      NewestClaim(documents[e]).Some?
+      && (CollideK(NewestClaim(documents[e]).value, p) || CollideF(platform, NewestClaim(documents[e]).value, p))
+  }
+
+  // A file is held by a local change of its document (rule W(a)): the
+  // document has no live base at that name, or an outbox that sends it
+  // elsewhere or anew.
+  predicate LocallyPlaced(document: Document) {
+    document.binding.Some?
+    && (document.base.None? || document.base.value.deleted
+        || document.base.value.path != document.binding.value.spelling
+        || document.outbox.Some?)
+  }
+
+  // The files in the way of `p`: every listed file colliding with it under
+  // F, apart from `own` (the document's own file, which the rule moves to
+  // `p` itself).
+  function InTheWay(platform: Platform, listing: Listing, p: Path, own: Option<Path>): set<Path> {
+    set q | q in listing && CollideF(platform, q, p) && own != Some(q)
+  }
+
+  // ---------------------------------------------------------------------
+  // Moving aside (compiled)
+  // ---------------------------------------------------------------------
+
+  // A copy name for each file in `way`, chosen one after another: each name
+  // is picked against the listing with the earlier names already in it, so
+  // no two collide. None when one of them has no free name.
+  function Aside(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, way: set<Path>, wanted: Path): (moves: Option<seq<(Path, Path, Hash)>>)
+    requires way <= listing.Keys
+    decreases |way|
+  {
+    if way == {} then Some([])
+    else
+      var q := LeastPath(way);
+      match PathConflictCopy(platform, listing, avoid, claims, q, wanted)
+      case None => None
+      case Some(c) =>
+        match Aside(platform, listing[c := listing[q]], avoid, claims, way - {q}, wanted)
+        case None => None
+        case Some(rest) => Some([(q, c, listing[q].0)] + rest)
+  }
+
+  // The new row of a document whose file `from` moved aside to `to`: under
+  // W(a) it keeps the file, and its outbox (opened with `rev` if it has
+  // none) sends the new name; under W(b) it lets the file go, and the copy
+  // is untracked. A commit in flight stays as it was sealed.
+  function MovedAside(document: Document, to: Path, rev: RevId): Document
+    requires document.binding.Some?
+  {
+    var b := document.binding.value;
+    if LocallyPlaced(document) then
+      var row := document.(binding := Some(b.(spelling := to)));
+      if document.outbox.Some? && document.outbox.value.sealed then row
+      else if document.outbox.Some? then row.(outbox := Some(document.outbox.value.(path := to)))
+      else row.(outbox := Some(Outbox(rev, if document.base.Some? then Some(document.base.value.rev) else None,
+                                      to, b.seen, KindOfBase(document), false, false, false)))
+    else
+      document.(binding := None, absence := Released,
+                outbox := if document.outbox.Some? && document.outbox.value.sealed then document.outbox else None)
+  }
+
+  function KindOfBase(document: Document): Kind {
+    if document.base.Some? then document.base.value.kind else Note
+  }
+
+  // ---------------------------------------------------------------------
+  // The rule (compiled)
+  // ---------------------------------------------------------------------
+
+  datatype Ruled = Ruled(documents: map<DocId, Document>, effects: seq<Effect>)
+
+  // The apply left `r` waiting for its name.
+  predicate HeldForName(applied: Applied, r: Revision) {
+    applied.document.ahead.Some? && applied.document.ahead.value.blocker.PathHeld?
+    && applied.document.ahead.value.revision == r
+  }
+
+  function Defer(documents: map<DocId, Document>, doc: DocId, r: Revision, alias: bool): Ruled
+    requires doc in documents
+  {
+    Ruled(documents[doc := documents[doc].(ahead := Some(Ahead(r, Unmaterializable(alias), false)))],
+          [Report(Some(doc), r.path, if alias then "conflict: name held by another file" else "conflict: no copy name fits")])
+  }
+
+  // One pulled revision `r` of document `doc` in a round, against the
+  // journal's rows `documents`, the round's input, and the revision ids of
+  // §3.1.
+  function PathRule(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs): Ruled
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    if !HeldForName(applied, r) then Ruled(documents[doc := applied.document], applied.effects)
+    else if UnsavedCollides(platform, input.unsaved, r.path) then
+      // A user must act: the revision waits, and the round reports it.
+      Ruled(documents[doc := applied.document], [Report(Some(doc), r.path, "conflict: unsaved changes in the way")])
+    else ClearWay(platform, documents, doc, r, input, revs)
+  }
+
+  // The rule proper: the files in the way move aside, and the head takes its
+  // name.
+  function ClearWay(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs): Ruled
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+  {
+    var document := documents[doc];
+    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, input.listing, r.path, own);
+    if r.deleted || (document.binding.Some? && own.None?) then Defer(documents, doc, r, false)
+    else if (exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
+            || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value)) then
+      // Unsaved text collides with a file that would move, though not with
+      // the name itself: nothing moves, and the device cannot hold the head.
+      Defer(documents, doc, r, false)
+    else if StillClaimed(platform, documents, doc, r.path) then Defer(documents, doc, r, true)
+    else
+      var avoid := BoundNames(documents) + input.unsaved;
+      var claims := AllClaims(documents);
+      assert way <= input.listing.Keys;
+      match Aside(platform, input.listing, avoid, claims, way, r.path)
+      case None => Defer(documents, doc, r, false)
+      case Some(moves) =>
+        var moved := MoveRows(platform, documents, doc, moves, revs);
+        var row := document.(base := Some(BaseOf(r)), ahead := None,
+                             binding := Some(Binding(r.path, r.content, false, None)), absence := Never);
+        Ruled(moved[doc := row], MoveEffects(platform, documents, doc, moves) + Arrive(platform, doc, document, r, own))
+  }
+
+  // The rows after the files in the way moved aside.
+  function MoveRows(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs): map<DocId, Document>
+    requires documents.Keys <= revs.Keys
+    decreases |moves|
+  {
+    if moves == [] then documents
+    else
+      var (q, c, content) := moves[0];
+      var rest := MoveRows(platform, documents, doc, moves[1..], revs);
+      var holders := set e | e in documents && e != doc && FileOf(platform, documents, q, e);
+      if holders != {} then
+        var e := LeastDoc(holders);
+        if e in rest && rest[e].binding.Some? then rest[e := MovedAside(rest[e], c, revs[e])] else rest
+      else rest
+  }
+
+  // The disk effects of moving aside: each file moves with its contents,
+  // under its document's id where W(a) keeps it.
+  function MoveEffects(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>): seq<Effect>
+    decreases |moves|
+  {
+    if moves == [] then []
+    else
+      var (q, c, content) := moves[0];
+      var keepers := set e | e in documents && e != doc && FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]);
+      var mover := if keepers != {} then Some(LeastDoc(keepers)) else None;
+      [Move(mover, q, c, content)] + MoveEffects(platform, documents, doc, moves[1..])
+  }
+
+  // The head arrives at its name: the document's own clean file moves there
+  // (and is written over where the content changed), or, with no file, the
+  // head is created there.
+  // A file whose name is a folder of the new name, or lies under it, cannot
+  // be moved there: it is removed (it is clean, so the server has its
+  // content) and the head is created.
+  function Arrive(platform: Platform, doc: DocId, document: Document, r: Revision, own: Option<Path>): seq<Effect> {
+    if own.Some? && document.binding.Some? then
+      var seen := document.binding.value.seen;
+      if CollideF(platform, own.value, r.path) && !SameF(platform, own.value, r.path) then
+        [Remove(doc, own.value, seen), Write(Some(doc), r.path, r.content, r.kind, None)]
+      else
+        [Move(Some(doc), own.value, r.path, seen)]
+        + (if r.content == seen then [] else [Write(Some(doc), r.path, r.content, r.kind, Some(seen))])
+    else [Write(Some(doc), r.path, r.content, r.kind, None)]
+  }
+
+  // ---------------------------------------------------------------------
+  // The rule's contract (verified-core.md §4, PathRuleContract)
+  // ---------------------------------------------------------------------
+
+  lemma AsideFrom(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, way: set<Path>, wanted: Path)
+    requires way <= listing.Keys
+    ensures var moves := Aside(platform, listing, avoid, claims, way, wanted);
+      moves.Some? ==> forall i | 0 <= i < |moves.value| :: moves.value[i].0 in way
+    decreases |way|
+  {
+    if way != {} {
+      var q := LeastPath(way);
+      var c := PathConflictCopy(platform, listing, avoid, claims, q, wanted);
+      if c.Some? {
+        AsideFrom(platform, listing[c.value := listing[q]], avoid, claims, way - {q}, wanted);
+      }
+    }
+  }
+
+  lemma MoveEffectsShape(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>)
+    ensures var effects := MoveEffects(platform, documents, doc, moves);
+      |effects| == |moves|
+      && forall i | 0 <= i < |effects| :: effects[i].Move? && effects[i].from == moves[i].0 && effects[i].to == moves[i].1
+    decreases |moves|
+  {
+    if moves != [] { MoveEffectsShape(platform, documents, doc, moves[1..]); }
+  }
+
+  // The apply moves only an untracked file no unsaved text collides with,
+  // and writes copies only at names the copy-name function picked.
+  lemma AppliedMovesAndCopies(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var effects := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects;
+      forall e | e in effects ::
+        (e.Move? ==> !UnsavedCollides(platform, input.unsaved, e.from))
+        && (e.Write? && e.target.None? ==>
+              FreeIn(platform, input.listing, e.path)
+              && (forall t | t in bound + input.unsaved :: !SameF(platform, t, e.path))
+              && (forall s | s in claims.paths :: !CollideK(s, e.path))
+              && (forall s | s in claims.names :: !SameK(s, e.path)))
+  {}
+
+  // NoMoveFromUnsaved, on the rule: no file that collides with a path an
+  // open editor holds unsaved text at is moved.
+  lemma RuleNoMoveFromUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var effects := PathRule(platform, documents, doc, r, input, revs).effects;
+      forall i | 0 <= i < |effects| && effects[i].Move? :: !UnsavedCollides(platform, input.unsaved, effects[i].from)
+  {
+    var document := documents[doc];
+    AppliedMovesAndCopies(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    if HeldForName(applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      ClearWayNoMoveFromUnsaved(platform, documents, doc, r, input, revs);
+    }
+  }
+
+  lemma ClearWayNoMoveFromUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var effects := ClearWay(platform, documents, doc, r, input, revs).effects;
+      forall i | 0 <= i < |effects| && effects[i].Move? :: !UnsavedCollides(platform, input.unsaved, effects[i].from)
+  {
+    var document := documents[doc];
+    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, input.listing, r.path, own);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var claims := AllClaims(documents);
+    var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
+    AsideFrom(platform, input.listing, avoid, claims, way, r.path);
+    if !r.deleted && !(document.binding.Some? && own.None?)
+       && !((exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
+            || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value)))
+       && !StillClaimed(platform, documents, doc, r.path) && aside.Some? {
+      var moves := aside.value;
+      MoveEffectsShape(platform, documents, doc, moves);
+      var front := MoveEffects(platform, documents, doc, moves);
+      var back := Arrive(platform, doc, document, r, own);
+      var effects := ClearWay(platform, documents, doc, r, input, revs).effects;
+      assert effects == front + back;
+      forall i | 0 <= i < |effects| && effects[i].Move?
+        ensures !UnsavedCollides(platform, input.unsaved, effects[i].from)
+      {
+        if i < |front| {
+          assert effects[i] == front[i];
+          assert moves[i].0 in way;
+        } else {
+          assert effects[i] == back[i - |front|];
+          assert effects[i].from == own.value;
+        }
+      }
+    }
+  }
+
+  // The rule leaves the revision waiting for its name (PathHeld) only where
+  // unsaved text collides with the name, which UserMustAct reports; it
+  // changes no other document's `ahead`.
+  lemma RuleHeldOnlyForUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+      ruled.documents.Keys == documents.Keys
+      && (forall e | e in documents && e != doc :: ruled.documents[e].ahead == documents[e].ahead)
+      && (ruled.documents[doc].ahead != documents[doc].ahead && ruled.documents[doc].ahead.Some?
+          && ruled.documents[doc].ahead.value.blocker.PathHeld?
+          ==> ruled.documents[doc].ahead.value.revision == r && UnsavedCollides(platform, input.unsaved, r.path))
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    if HeldForName(applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+                 then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+      var way := InTheWay(platform, input.listing, r.path, own);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        MoveRowsAheads(platform, documents, doc, aside.value, revs);
+      }
+    }
+  }
+
+  lemma MoveRowsAheads(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs)
+    requires documents.Keys <= revs.Keys
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      rows.Keys == documents.Keys && forall e | e in documents :: rows[e].ahead == documents[e].ahead
+    decreases |moves|
+  {
+    if moves != [] { MoveRowsAheads(platform, documents, doc, moves[1..], revs); }
+  }
+
+  // CopiesTakeFreeNames, on the rule: every copy it writes (a write of no
+  // document) takes a name that collides under F with nothing listed, bound
+  // or unsaved, and under K with no document's server claim.
+  lemma RuleCopiesTakeFreeNames(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var effects := PathRule(platform, documents, doc, r, input, revs).effects;
+      forall e | e in effects && e.Write? && e.target.None? ::
+        (forall q :: q in input.listing ==> !CollideF(platform, q, e.path))
+        && (forall u :: u in input.unsaved ==> !SameF(platform, u, e.path))
+        && (forall d :: d in documents ==>
+              var row := documents[d];
+              (row.binding.Some? ==> !SameF(platform, row.binding.value.spelling, e.path))
+              && (row.base.Some? && !row.base.value.deleted ==> !CollideK(row.base.value.path, e.path))
+              && (row.ahead.Some? && !row.ahead.value.revision.deleted ==> !CollideK(row.ahead.value.revision.path, e.path))
+              && (row.outbox.Some? && !row.outbox.value.deleted ==> !SameK(row.outbox.value.path, e.path)))
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := AllClaims(documents);
+    AppliedMovesAndCopies(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    if HeldForName(applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      ClearWayWritesNoCopy(platform, documents, doc, r, input, revs);
+    }
+    forall e | e in PathRule(platform, documents, doc, r, input, revs).effects && e.Write? && e.target.None?
+      ensures forall d :: d in documents ==>
+              var row := documents[d];
+              (row.binding.Some? ==> !SameF(platform, row.binding.value.spelling, e.path))
+              && (row.base.Some? && !row.base.value.deleted ==> !CollideK(row.base.value.path, e.path))
+              && (row.ahead.Some? && !row.ahead.value.revision.deleted ==> !CollideK(row.ahead.value.revision.path, e.path))
+              && (row.outbox.Some? && !row.outbox.value.deleted ==> !SameK(row.outbox.value.path, e.path))
+    {
+      forall d | d in documents
+        ensures var row := documents[d];
+              (row.binding.Some? ==> !SameF(platform, row.binding.value.spelling, e.path))
+              && (row.base.Some? && !row.base.value.deleted ==> !CollideK(row.base.value.path, e.path))
+              && (row.ahead.Some? && !row.ahead.value.revision.deleted ==> !CollideK(row.ahead.value.revision.path, e.path))
+              && (row.outbox.Some? && !row.outbox.value.deleted ==> !SameK(row.outbox.value.path, e.path))
+      {
+        var row := documents[d];
+        if row.binding.Some? { assert row.binding.value.spelling in bound; }
+        if row.base.Some? && !row.base.value.deleted { assert row.base.value.path in claims.paths; }
+        if row.ahead.Some? && !row.ahead.value.revision.deleted { assert row.ahead.value.revision.path in claims.paths; }
+        if row.outbox.Some? && !row.outbox.value.deleted { assert row.outbox.value.path in claims.names; }
+      }
+    }
+  }
+
+  lemma ClearWayWritesNoCopy(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures forall e | e in ClearWay(platform, documents, doc, r, input, revs).effects :: !(e.Write? && e.target.None?)
+  {
+    var document := documents[doc];
+    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, input.listing, r.path, own);
+    var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+    if aside.Some? {
+      MoveEffectsShape(platform, documents, doc, aside.value);
+    }
+  }
+}

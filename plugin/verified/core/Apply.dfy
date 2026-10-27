@@ -21,10 +21,10 @@
 // candidate names (`CopyCandidate`) for one free under F and K, and where
 // none is, the revision waits, blocked by `Unmaterializable(alias := false)`,
 // and is reported without a copy (SPEC.md §7, #100). The path-conflict rule
-// itself is #962's.
-include "Push.dfy"
+// itself is in PathRule.dfy (#962).
+include "../spec/Contracts.dfy"
 
-abstract module ApplyCore refines PushCore {
+abstract module ApplyCore refines StepContracts {
 
   // ---------------------------------------------------------------------
   // Reads (compiled)
@@ -50,6 +50,13 @@ abstract module ApplyCore refines PushCore {
   // An open editor holds unsaved text at `p` (under F).
   predicate UnsavedAt(platform: Platform, unsaved: set<Path>, p: Path) {
     exists u | u in unsaved :: SameF(platform, u, p)
+  }
+
+  // An open editor holds unsaved text at a path that collides with `p` under
+  // F: `p` itself, a folder of it, or a path under it (#1003). A file that
+  // collides with such a path is never moved.
+  predicate UnsavedCollides(platform: Platform, unsaved: set<Path>, p: Path) {
+    exists u | u in unsaved :: CollideF(platform, u, p)
   }
 
   // ---------------------------------------------------------------------
@@ -336,7 +343,8 @@ abstract module ApplyCore refines PushCore {
       var held := Colliders(platform, input.listing, r.path);
       // Only an untracked file is moved aside here; a name another document
       // holds is the path rule's (#962).
-      if |held| == 1 && !BoundName(platform, bound, LeastPath(held)) then
+      if |held| == 1 && !BoundName(platform, bound, LeastPath(held))
+         && !UnsavedCollides(platform, input.unsaved, LeastPath(held)) then
         var q := LeastPath(held);
         match PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path)
         case None => NoCopy(doc, document, r, r.path)
@@ -394,6 +402,7 @@ abstract module ApplyCore refines PushCore {
        && !FreeIn(platform, input.listing, r.path)
        && var held := Colliders(platform, input.listing, r.path);
        |held| == 1 && !BoundName(platform, bound, LeastPath(held))
+       && !UnsavedCollides(platform, input.unsaved, LeastPath(held))
        && PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, LeastPath(held), r.path).None?)
       ==> applied == NoCopy(doc, document, r, r.path)
   {}
@@ -476,7 +485,7 @@ abstract module ApplyCore refines PushCore {
         var w2 := Write(Some(doc), spelling, r.content, r.kind, Some(l.0));
         assert applied.effects == [w1, w2];
         assert FreeOn(platform, disk, copy);
-        var q :| Holds(platform, disk, q, spelling, l.0);
+        var q := var q :| Holds(platform, disk, q, spelling, l.0); q;
         forall mid | EffectTakes(platform, disk, w1, mid)
           ensures PreconditionsInOrder(platform, mid, [w2])
         {
@@ -513,7 +522,7 @@ abstract module ApplyCore refines PushCore {
     forall mid | EffectTakes(platform, disk, move, mid)
       ensures PreconditionsInOrder(platform, mid, [write])
     {
-      var q' :| MovableTo(platform, disk, q', q, copy, content) && mid == (disk - {q'})[copy := disk[q']];
+      var q' := var q' :| MovableTo(platform, disk, q', q, copy, content) && mid == (disk - {q'})[copy := disk[q']]; q';
       assert q' == q;
       forall x | x in mid ensures !CollideF(platform, x, r.path) {
         if x != copy {
@@ -541,7 +550,7 @@ abstract module ApplyCore refines PushCore {
     requires EffectsTake(platform, disk, [e], disk')
     ensures EffectTakes(platform, disk, e, disk')
   {
-    var mid :| EffectTakes(platform, disk, e, mid) && EffectsTake(platform, mid, [e][1..], disk');
+    var mid := var mid :| EffectTakes(platform, disk, e, mid) && EffectsTake(platform, mid, [e][1..], disk'); mid;
     assert [e][1..] == [];
   }
 
@@ -549,7 +558,7 @@ abstract module ApplyCore refines PushCore {
     requires EffectsTake(platform, disk, [e1, e2], disk')
     ensures exists mid :: EffectTakes(platform, disk, e1, mid) && EffectTakes(platform, mid, e2, disk')
   {
-    var mid :| EffectTakes(platform, disk, e1, mid) && EffectsTake(platform, mid, [e1, e2][1..], disk');
+    var mid := var mid :| EffectTakes(platform, disk, e1, mid) && EffectsTake(platform, mid, [e1, e2][1..], disk'); mid;
     assert [e1, e2][1..] == [e2];
     Unroll1(platform, mid, e2, disk');
   }
@@ -614,8 +623,8 @@ abstract module ApplyCore refines PushCore {
       assert applied.effects == [e];
       assert IsDiskEffect(e);
       Unroll1(platform, disk, e, disk');
-      var q :| Holds(platform, disk, q, spelling, ListedRead(platform, input.listing, spelling).value.0)
-                && (if e.Remove? then disk' == disk - {q} else disk' == disk[q := DiskFile(e.content, e.kind, disk[q].identity)]);
+      var q := var q :| Holds(platform, disk, q, spelling, ListedRead(platform, input.listing, spelling).value.0)
+                && (if e.Remove? then disk' == disk - {q} else disk' == disk[q := DiskFile(e.content, e.kind, disk[q].identity)]); q;
       if spelling in disk {
         assert q == spelling;
       }
@@ -634,8 +643,8 @@ abstract module ApplyCore refines PushCore {
       assert IsDiskEffect(e);
       Unroll1(platform, disk, e, disk');
       assert FreeOn(platform, disk, r.path);
-      var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
-                      && disk' == disk[r.path := DiskFile(r.content, r.kind, identity)];
+      var identity: FileIdentity := var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
+                      && disk' == disk[r.path := DiskFile(r.content, r.kind, identity)]; identity;
       assert r.path !in disk;
       assert Holds(platform, disk', r.path, r.path, r.content);
       return;
@@ -654,9 +663,9 @@ abstract module ApplyCore refines PushCore {
     assert applied.effects == [move, write];
     assert move in applied.effects && IsDiskEffect(move);
     Unroll2(platform, disk, move, write, disk');
-    var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, move, mid) && EffectTakes(platform, mid, write, disk');
+    var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, move, mid) && EffectTakes(platform, mid, write, disk'); mid;
     assert MovableTo(platform, disk, q, q, copy, content);
-    var q' :| MovableTo(platform, disk, q', q, copy, content) && mid == (disk - {q'})[copy := disk[q']];
+    var q' := var q' :| MovableTo(platform, disk, q', q, copy, content) && mid == (disk - {q'})[copy := disk[q']]; q';
     assert q' == q;
     assert copy !in disk - {q};
     assert OneFilePerName(platform, mid) by {
@@ -674,8 +683,8 @@ abstract module ApplyCore refines PushCore {
         }
       }
     }
-    var identity: FileIdentity :| (forall x :: x in mid ==> mid[x].identity != identity)
-                    && disk' == mid[r.path := DiskFile(r.content, r.kind, identity)];
+    var identity: FileIdentity := var identity: FileIdentity :| (forall x :: x in mid ==> mid[x].identity != identity)
+                    && disk' == mid[r.path := DiskFile(r.content, r.kind, identity)]; identity;
     assert r.path !in mid;
     assert Holds(platform, disk', r.path, r.path, r.content);
     assert copy != r.path;
@@ -717,15 +726,15 @@ abstract module ApplyCore refines PushCore {
     assert applied.effects == [w1, w2];
     assert applied.document.binding.value.seen == r.content;
     Unroll2(platform, disk, w1, w2, disk');
-    var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, w1, mid) && EffectTakes(platform, mid, w2, disk');
+    var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, w1, mid) && EffectTakes(platform, mid, w2, disk'); mid;
     assert FreeOn(platform, disk, copy);
-    var identity: FileIdentity :| (forall x :: x in disk ==> disk[x].identity != identity)
-                                  && mid == disk[copy := DiskFile(l.0, l.1, identity)];
+    var identity: FileIdentity := var identity: FileIdentity :| (forall x :: x in disk ==> disk[x].identity != identity)
+                                  && mid == disk[copy := DiskFile(l.0, l.1, identity)]; identity;
     assert copy !in disk;
-    var q :| Holds(platform, disk, q, spelling, l.0);
+    var q := var q :| Holds(platform, disk, q, spelling, l.0); q;
     assert q != copy by { assert !CollideF(platform, q, copy); }
     assert Holds(platform, mid, q, spelling, l.0);
-    var q2 :| Holds(platform, mid, q2, spelling, l.0) && disk' == mid[q2 := DiskFile(r.content, r.kind, mid[q2].identity)];
+    var q2 := var q2 :| Holds(platform, mid, q2, spelling, l.0) && disk' == mid[q2 := DiskFile(r.content, r.kind, mid[q2].identity)]; q2;
     assert q2 != copy by { assert !CollideF(platform, copy, spelling); }
     assert q2 in disk && SameF(platform, q2, q);
     assert q2 == q;
@@ -808,7 +817,7 @@ abstract module ApplyCore refines PushCore {
     ensures HasUnsavedEdits(device, p) ==> UnsavedAt(device.platform, unsaved, p)
   {
     if HasUnsavedEdits(device, p) {
-      var editor :| editor in device.editors && editor.unsaved.Some? && SameF(device.platform, editor.path, p);
+      var editor := var editor :| editor in device.editors && editor.unsaved.Some? && SameF(device.platform, editor.path, p); editor;
       assert editor.path in unsaved;
     }
   }
@@ -825,7 +834,7 @@ abstract module ApplyCore refines PushCore {
     requires q in device.disk && SameF(device.platform, q, p)
     ensures HasFile(device, p) && FileAt(device, p) == device.disk[q]
   {
-    var q' :| q' in device.disk && SameF(device.platform, q', p) && FileAt(device, p) == device.disk[q'];
+    var q' := var q' :| q' in device.disk && SameF(device.platform, q', p) && FileAt(device, p) == device.disk[q']; q';
     if q' != q { SameFIsEquivalence(device.platform, q', p, q); SameFIsEquivalence(device.platform, q, p, q); assert SameF(device.platform, q', q); assert CollideF(device.platform, q', q); }
   }
 
@@ -860,7 +869,7 @@ abstract module ApplyCore refines PushCore {
     }
     ListedReadOnDisk(device, spelling);
     var l := read.value;
-    var q :| Holds(platform, device.disk, q, spelling, l.0);
+    var q := var q :| Holds(platform, device.disk, q, spelling, l.0); q;
     FileAtIs(device, spelling, q);
     assert RoundRead(step, spelling) == Some(l) by {
       assert ListedAt(platform, input.listing, spelling) == q by {
@@ -886,7 +895,7 @@ abstract module ApplyCore refines PushCore {
       assert w in applied.effects && IsDiskEffect(w);
       assert Outgoing(after, doc) == Some(m) by {
         if applied.document.outbox.None? {
-          var p :| Holds(platform, after.disk, p, spelling, m);
+          var p := var p :| Holds(platform, after.disk, p, spelling, m); p;
           FileAtIs(after, spelling, p);
           assert BoundFile(after, doc) == Some(after.disk[p]);
         }
@@ -915,7 +924,7 @@ abstract module ApplyCore refines PushCore {
       assert SavedNextToIt(after, l.0);
       assert !HasUnsavedEdits(device, copy) by {
         if HasUnsavedEdits(device, copy) {
-          var editor :| editor in device.editors && editor.unsaved.Some? && SameF(platform, editor.path, copy);
+          var editor := var editor :| editor in device.editors && editor.unsaved.Some? && SameF(platform, editor.path, copy); editor;
           assert editor.path in input.unsaved;
         }
       }
@@ -981,14 +990,14 @@ abstract module ApplyCore refines PushCore {
     assert !UnsavedAt(platform, input.unsaved, spelling);
     if !Concurrent(document, read, r) {
       assert Clean(platform, document, read);
-      var q :| Holds(platform, device.disk, q, spelling, read.value.0);
+      var q := var q :| Holds(platform, device.disk, q, spelling, read.value.0); q;
       FileAtIs(device, spelling, q);
       assert BoundFile(device, doc) == Some(device.disk[q]);
       assert !LocalChange(device, doc);
       return;
     }
     var l := read.value;
-    var q :| Holds(platform, device.disk, q, spelling, l.0);
+    var q := var q :| Holds(platform, device.disk, q, spelling, l.0); q;
     FileAtIs(device, spelling, q);
     assert BoundFile(device, doc) == Some(device.disk[q]);
     assert device.disk[q].content == l.0 && device.disk[q].kind == l.1 by {
@@ -1010,7 +1019,7 @@ abstract module ApplyCore refines PushCore {
           assert BoundFile(after, doc) == Some(after.disk[q]);
         } else {
           assert applied.effects[|applied.effects| - 1] in applied.effects && IsDiskEffect(applied.effects[|applied.effects| - 1]);
-          var p :| Holds(platform, after.disk, p, spelling, settledContent);
+          var p := var p :| Holds(platform, after.disk, p, spelling, settledContent); p;
           FileAtIs(after, spelling, p);
           assert BoundFile(after, doc) == Some(after.disk[p]);
         }
@@ -1075,7 +1084,7 @@ abstract module ApplyCore refines PushCore {
               (HasFile(before, spelling) && FileAt(after, spelling).identity == FileAt(before, spelling).identity)
   {
     if HasFile(after, spelling) {
-      var x :| x in after.disk && SameF(after.platform, x, spelling);
+      var x := var x :| x in after.disk && SameF(after.platform, x, spelling); x;
       FileAtIs(after, spelling, x);
       FileAtIs(before, spelling, x);
     }
@@ -1146,7 +1155,7 @@ abstract module ApplyCore refines PushCore {
     {
       var s' := device.journal.documents[other].binding.value.spelling;
       assert s' in bound;
-      var x :| x in device.disk && SameF(platform, x, s');
+      var x := var x :| x in device.disk && SameF(platform, x, s'); x;
       FileAtIs(device, s', x);
       assert !Departs(platform, applied.effects, x) by {
         forall e | e in applied.effects
@@ -1207,7 +1216,7 @@ abstract module ApplyCore refines PushCore {
     ensures |a| <= |b|
   {
     if a != {} {
-      var x :| x in a;
+      var x := var x :| x in a; x;
       SubsetCard(a - {x}, b - {x});
     }
   }
