@@ -362,6 +362,27 @@ abstract module LocalCore refines Guarantees {
     ensures KeepsFinished(step)
   {}
 
+  // A step that replaces only d's journal and leaves d unfinished keeps G9:
+  // every device finished after it was finished before, as it was.
+  lemma AfterKeepsG9(pre: State, d: DeviceId, journal': Journal)
+    requires d in pre.devices && G9(pre)
+    requires !FinishedSyncing(After(pre, d, journal'), d)
+    ensures G9(After(pre, d, journal'))
+  {
+    var post := After(pre, d, journal');
+    forall d1, d2, p | FinishedSyncing(post, d1) && FinishedSyncing(post, d2)
+      && p in post.devices[d1].disk && p !in post.devices[d1].outOfScope && p !in post.devices[d2].outOfScope
+      ensures (exists q :: q in post.devices[d2].disk
+                 && (SameNameModuloFolders(post.devices[d1].platform, p, q) || SameNameModuloFolders(post.devices[d2].platform, p, q))
+                 && post.devices[d2].disk[q].content == post.devices[d1].disk[p].content)
+              || ReportedCannotHold(post, post.devices[d2], p)
+    {
+      assert d1 != d && d2 != d;
+      assert post.devices[d1] == pre.devices[d1] && post.devices[d2] == pre.devices[d2];
+      assert FinishedSyncing(pre, d1) && FinishedSyncing(pre, d2);
+    }
+  }
+
   // ---------------------------------------------------------------------
   // The theorem for local events
   // ---------------------------------------------------------------------

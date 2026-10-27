@@ -74,6 +74,52 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert G9(state);
   }
 
+  // A user's case-only rename (`a.md` to `A.md` where the platform folds
+  // case) on one of two finished devices (#995). The file is still the bound
+  // one under F, with the same content, but its name is no longer the
+  // server's: the device has a rename to send, so it has not finished, and
+  // the state after the step keeps every state invariant (G9 included,
+  // although the other device still holds `a.md`).
+  lemma CaseOnlyRenameUnfinishes(
+    d1: DeviceId, d2: DeviceId, platform: Platform, p: Path, q: Path, doc: DocId, rev: Revision, f: DiskFile)
+    requires d1 != d2
+    requires rev.doc == doc && !rev.deleted && rev.path == p
+    requires f.content == rev.content
+    requires SameF(platform, p, q) && !SameNameModuloFolders(platform, q, p)
+    ensures
+      var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
+      var document := Document(Some(Base(rev.id, 1, p, rev.content, rev.kind, false)), None,
+                               Some(Binding(p, rev.content, false, None)), Never, None);
+      var pre := State(
+        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f], {}, {}),
+            d2 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f], {}, {})],
+        server);
+      var post := pre.(devices := pre.devices[d1 := pre.devices[d1].(disk := map[q := f])]);
+      FinishedSyncing(pre, d1) && FinishedSyncing(pre, d2)
+      && !FinishedSyncing(post, d1) && StateInvariants(post)
+  {
+    var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
+    var document := Document(Some(Base(rev.id, 1, p, rev.content, rev.kind, false)), None,
+                             Some(Binding(p, rev.content, false, None)), Never, None);
+    var pre := State(
+      map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f], {}, {}),
+          d2 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f], {}, {})],
+      server);
+    var post := pre.(devices := pre.devices[d1 := pre.devices[d1].(disk := map[q := f])]);
+    SyncedDevicesSatisfyInvariants(d1, d2, platform, p, doc, rev, f, f);
+    assert Head(server, doc) == Some(rev);
+    forall other | other != doc ensures Head(server, other).None? {}
+    assert InHistory(server, rev.id);
+    assert G1_Retained(post);
+    assert BoundTo(post.devices[d1], doc, q);
+    assert BoundTo(post.devices[d2], doc, p);
+    assert !FinishedSyncing(post, d1) by {
+      assert q in post.devices[d1].disk && q !in post.devices[d1].outOfScope;
+      forall other | BoundTo(post.devices[d1], other, q) ensures other == doc {}
+    }
+    assert G9(post);
+  }
+
   // A device whose user has written a file it has not been told of yet runs
   // two sync rounds while another device's revision waits on the feed. The
   // first round pulls and applies it; the second has nothing to do. The run
@@ -858,12 +904,25 @@ abstract module GuaranteeWitnesses refines Guarantees {
       map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
           d2 := Device(platform, true, Journal(map[doc := other], 1, [], []), map[p := f2], {}, {})],
       server);
+    SameNameModuloFoldersRefl(platform, p);
     assert BoundTo(state.devices[d1], doc, p);
     assert BoundTo(state.devices[d2], doc, p);
     assert FinishedSyncing(state, d1);
     assert FinishedSyncing(state, d2);
     assert !ReportedCannotHold(state, state.devices[d2], p);
   }
+
+  // G6 merges only two notes (#995): a round's merge counts as keeping what
+  // it read only when the file it read in the document's bound file is a
+  // note. A read of any other kind fails MergedRead.
+  lemma MergedReadRejectsNonNoteRead(step: Step, d: DeviceId, doc: DocId, content: Hash, remote: Revision, kind: Kind)
+    requires step.event.SyncRound? && step.event.device == d && d in step.pre.devices
+    requires doc in step.pre.devices[d].journal.documents
+    requires step.pre.devices[d].journal.documents[doc].binding.Some?
+    requires RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling) == Some((content, kind))
+    requires kind != Note
+    ensures !MergedRead(step, d, doc, content, remote)
+  {}
 
   // G3: a delete sync requests with no user delete before it fails it.
   lemma G3Rejects(platforms: map<DeviceId, Platform>, d: DeviceId, p: Path, doc: DocId, h: Hash, post: State)

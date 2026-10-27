@@ -572,7 +572,10 @@ abstract module EngineModel {
 
   // A device's disk is in step with its journal: every in-scope file is
   // bound to a document whose live base, and whose last-seen content, are
-  // exactly the file's content; every binding names a file on disk; and a
+  // exactly the file's content, and whose base's path is the file's name with
+  // folders compared under F (INV-9: a folder keeps the spelling the device
+  // has, but a file's own name, its case included, is the server's); every
+  // binding names a file on disk; and a
   // document the server has live but the device holds no file of is one it
   // reports it cannot hold. A user change the engine has not yet handled
   // (or not yet learned of) breaks this.
@@ -582,7 +585,8 @@ abstract module EngineModel {
          && device.journal.documents[doc].binding.value.seen == device.disk[p].content
          && device.journal.documents[doc].base.Some?
          && !device.journal.documents[doc].base.value.deleted
-         && device.journal.documents[doc].base.value.content == device.disk[p].content)
+         && device.journal.documents[doc].base.value.content == device.disk[p].content
+         && SameNameModuloFolders(device.platform, p, device.journal.documents[doc].base.value.path))
     && (forall doc :: doc in device.journal.documents && device.journal.documents[doc].binding.Some? ==>
           exists p :: p in device.disk && SameF(device.platform, p, device.journal.documents[doc].binding.value.spelling))
     && (forall doc :: (doc in device.journal.documents && device.journal.documents[doc].binding.None?
