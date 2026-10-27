@@ -35,6 +35,11 @@ abstract module ApplyCore refines PushCore {
     forall q | q in listing :: !CollideF(platform, q, p)
   }
 
+  // A document is bound to `p` (under F): `bound` is every binding's name.
+  predicate BoundName(platform: Platform, bound: set<Path>, p: Path) {
+    exists t | t in bound :: SameF(platform, t, p)
+  }
+
   // An open editor holds unsaved text at `p` (under F).
   predicate UnsavedAt(platform: Platform, unsaved: set<Path>, p: Path) {
     exists u | u in unsaved :: SameF(platform, u, p)
@@ -174,7 +179,7 @@ abstract module ApplyCore refines PushCore {
       if r.deleted && !JournalChange(document) then
         Applied(document.(base := Some(BaseOf(r)), ahead := None), [])
       else Hold(document, r, LocalChanges)
-    else if UnsavedAt(platform, input.unsaved, r.path) then Hold(document, r, PathHeld)
+    else if UnsavedAt(platform, input.unsaved, r.path) || BoundName(platform, bound, r.path) then Hold(document, r, PathHeld)
     else if FreeIn(platform, input.listing, r.path) then
       // A document with no file here: created where no file collides.
       Applied(document.(base := Some(BaseOf(r)), ahead := None,
@@ -182,7 +187,9 @@ abstract module ApplyCore refines PushCore {
               [Write(Some(doc), r.path, r.content, r.kind, None)])
     else
       var held := Colliders(platform, input.listing, r.path);
-      if |held| == 1 then
+      // Only an untracked file is moved aside here; a name another document
+      // holds is the path rule's (#962).
+      if |held| == 1 && !BoundName(platform, bound, LeastPath(held)) then
         var q := LeastPath(held);
         var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, q, r.path);
         // The untracked file holding the name moves aside with its contents;
@@ -373,6 +380,8 @@ abstract module ApplyCore refines PushCore {
             e.path in disk' && disk'[e.path].content == e.content && e.path !in device.disk)
       && (forall e :: e in applied.effects && e.Move? ==>
             e.to in disk' && e.from in device.disk && disk'[e.to] == device.disk[e.from])
+      && (forall x :: x in disk' && !Arrives(applied.effects, x) ==>
+            x in device.disk && disk'[x].identity == device.disk[x].identity)
   {
     DistinctDisk(device);
     var platform := device.platform;
@@ -476,6 +485,8 @@ abstract module ApplyCore refines PushCore {
       && (forall e :: e in applied.effects && e.Write? && e.target.None? ==>
             e.path in disk' && disk'[e.path].content == e.content && e.path !in device.disk)
       && (forall e :: e in applied.effects ==> !e.Move?)
+      && (forall x :: x in disk' && !Arrives(applied.effects, x) ==>
+            x in device.disk && disk'[x].identity == device.disk[x].identity)
   {
     var platform := device.platform;
     var disk := device.disk;
@@ -513,6 +524,12 @@ abstract module ApplyCore refines PushCore {
     }
     assert Holds(platform, disk', q, spelling, r.content);
     assert disk'[copy].content == l.0;
+  }
+
+  // A file arrives at name x by one of the effects: created there (a write
+  // conditional on no file) or moved there.
+  ghost predicate Arrives(effects: seq<Effect>, x: Path) {
+    exists e :: e in effects && ((e.Write? && e.precondition.None? && e.path == x) || (e.Move? && e.to == x))
   }
 
   // A file is at `p` under F on `disk`.
@@ -775,6 +792,94 @@ abstract module ApplyCore refines PushCore {
         }
       }
       assert SavedNextToIt(after, l.0);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G7 and G5 on the step that requests the apply's effects
+  // ---------------------------------------------------------------------
+
+  // One file per name stays true on the device, the server does not change,
+  // and a file moved aside arrives at its new name with its contents.
+  lemma AppliedG7(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, rev)
+    requires G7_OneFilePerName(step.pre)
+    ensures G7_OneFilePerName(step.post) && G7_MoveKeepsContents(step)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var document := device.journal.documents[doc];
+    var applied := ApplyRevision(device.platform, doc, document, r, input, bound, rev);
+    var after := step.post.devices[d];
+    assert input.listing == ListingOf(device);
+    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    forall e | e in step.effects && e.Move?
+      ensures HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
+    {
+      FileAtIs(after, e.to, e.to);
+      var q := e.from;
+      assert e.expected == input.listing[q].0;
+    }
+  }
+
+  // The identity of the file a document's binding names is kept, or the
+  // file is gone, when no file arrived at a name that is the binding's under
+  // F and every other file keeps its identity.
+  lemma IdentityFrame(before: Device, after: Device, spelling: Path, effects: seq<Effect>)
+    requires after.platform == before.platform
+    requires OneFilePerName(before.platform, before.disk) && OneFilePerName(after.platform, after.disk)
+    requires forall x :: x in after.disk && !Arrives(effects, x) ==>
+      x in before.disk && after.disk[x].identity == before.disk[x].identity
+    requires forall x :: Arrives(effects, x) ==> !SameF(before.platform, x, spelling)
+    ensures HasFile(after, spelling) ==>
+              (HasFile(before, spelling) && FileAt(after, spelling).identity == FileAt(before, spelling).identity)
+  {
+    if HasFile(after, spelling) {
+      var x :| x in after.disk && SameF(after.platform, x, spelling);
+      FileAtIs(after, spelling, x);
+      FileAtIs(before, spelling, x);
+    }
+  }
+
+  // G5: no document is mixed up with another file. A document whose bound
+  // file is another file after the apply is the one the apply created for
+  // it (clause (b)); every other binding keeps its file, because a file
+  // arrives only at a name no document is bound to (the revision's name is
+  // checked against `bound`, and the path-conflict function avoids it).
+  lemma AppliedG5(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, rev)
+    ensures G5_NeverMixedUp(step)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var platform := device.platform;
+    var document := device.journal.documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var after := step.post.devices[d];
+    assert input.listing == ListingOf(device);
+    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    // Every name a file arrives at is no binding's name.
+    assert forall x :: Arrives(applied.effects, x) ==> !BoundName(platform, bound, x) || (document.binding.None? && x == r.path);
+    forall doc' | BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
+      ensures exists effect :: (effect in step.effects
+                && ((effect.Write? && effect.target == Some(doc')
+                     && SameF(platform, effect.path, after.journal.documents[doc'].binding.value.spelling))
+                    || (effect.Move? && effect.mover == Some(doc')
+                        && SameF(platform, effect.to, after.journal.documents[doc'].binding.value.spelling))))
+    {
+      var spelling' := after.journal.documents[doc'].binding.value.spelling;
+      if doc' != doc || document.binding.Some? {
+        assert after.journal.documents[doc'].binding.Some?;
+        assert device.journal.documents[doc'].binding.value.spelling == spelling';
+        assert spelling' in bound;
+        forall x | Arrives(applied.effects, x) ensures !SameF(platform, x, spelling') {
+          if SameF(platform, x, spelling') { SameFIsEquivalence(platform, x, spelling', spelling'); assert BoundName(platform, bound, x); }
+        }
+        IdentityFrame(device, after, spelling', applied.effects);
+        assert false;
+      }
+      var e := Write(Some(doc), r.path, r.content, r.kind, None);
+      assert e in step.effects;
     }
   }
 
