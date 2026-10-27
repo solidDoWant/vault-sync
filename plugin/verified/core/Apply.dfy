@@ -17,8 +17,11 @@
 // document keeps its bound file (`AppliedKeepsOtherFiles`).
 //
 // A path conflict (the revision's name is held by an untracked file) is
-// resolved only by `PathConflictCopy`, whose contract is stated here as its
-// postcondition; its body and proof are #962's.
+// resolved only by `PathConflictCopy` (#1004): it searches the shell's
+// candidate names (`CopyCandidate`) for one free under F and K, and where
+// none is, the revision waits, blocked by `Unmaterializable(alias := false)`,
+// and is reported without a copy (SPEC.md §7, #100). The path-conflict rule
+// itself is #962's.
 include "Push.dfy"
 
 abstract module ApplyCore refines PushCore {
@@ -50,19 +53,149 @@ abstract module ApplyCore refines PushCore {
   }
 
   // ---------------------------------------------------------------------
-  // The path-conflict function: contract only (#962)
+  // The path-conflict function (#1004)
   // ---------------------------------------------------------------------
+
+  // The other documents' server claims (SPEC.md §7 "Copy names", PO-14):
+  // `paths` their live `base` and `ahead` paths, which hold their folders
+  // too, and `names` their live outbox paths, which hold only the name.
+  datatype Claims = Claims(paths: set<Path>, names: set<Path>)
+
+  function ClaimsOf(documents: map<DocId, Document>, doc: DocId): Claims {
+    Claims((set d | d in documents && d != doc && documents[d].base.Some? && !documents[d].base.value.deleted
+              :: documents[d].base.value.path)
+           + (set d | d in documents && d != doc && documents[d].ahead.Some? && !documents[d].ahead.value.revision.deleted
+                :: documents[d].ahead.value.revision.path),
+           set d | d in documents && d != doc && documents[d].outbox.Some? && !documents[d].outbox.value.deleted
+             :: documents[d].outbox.value.path)
+  }
+
+  // The shell's candidate names for a copy of `p` (SPEC.md §7 "Copy names"):
+  // `<name> (conflict <device> <date>).<ext>` in the same folder, with the
+  // suffix on folder `folder` of `p` instead when it is given, and counter
+  // `n` (1: none). The device and the date are the shell's, fixed for the
+  // round. None: no shortened name fits 255 bytes, SPEC.md §6.2's limits and
+  // the platform. Contract only: the core assumes nothing of the name it
+  // returns and checks every candidate for freedom itself.
+  function CopyCandidate(p: Path, folder: Option<Path>, n: nat): Option<Path>
+
+  // How many counters the search tries (the engine's
+  // `maxConflictNameAttempts`).
+  const CopyAttempts: nat := 100
+
+  // A copy may take `c`: under F no listed file collides with it, it is no
+  // name to avoid (a bound name or an unsaved path), and it collides with
+  // neither the wanted name nor its folders; under K it collides with no
+  // other document's claim, folders included, and has no claimed name.
+  predicate CopyFree(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, wanted: Path, c: Path) {
+    && FreeIn(platform, listing, c)
+    && (forall t | t in avoid :: !SameF(platform, t, c))
+    && !CollideF(platform, c, wanted)
+    && (forall s | s in claims.paths :: !CollideK(s, c))
+    && (forall s | s in claims.names :: !SameK(s, c))
+  }
+
+  // A folder of the copy's path is held when a claim, a listed file or the
+  // wanted name is named like it; the outermost such folder takes the
+  // suffix (#359).
+  predicate FolderHeld(platform: Platform, listing: Listing, claims: Claims, wanted: Path, a: Path) {
+    (exists s | s in claims.paths :: SameK(s, a))
+    || (exists q | q in listing :: SameF(platform, q, a))
+    || SameF(platform, wanted, a)
+  }
+
+  function SuffixFolder(platform: Platform, listing: Listing, claims: Claims, held: Path, wanted: Path): Option<Path> {
+    var named := set a | a in Ancestors(held) && FolderHeld(platform, listing, claims, wanted, a);
+    var outermost := set a | a in named && forall b | b in named :: b !in Ancestors(a);
+    if outermost == {} then None else Some(LeastPath(outermost))
+  }
+
+  // The first free candidate from counter n on, or None when the shell has
+  // no candidate left or the counters run out.
+  function FirstFreeCopy(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims,
+                         held: Path, folder: Option<Path>, wanted: Path, n: nat): Option<Path>
+    requires 1 <= n <= CopyAttempts + 1
+    decreases CopyAttempts + 1 - n
+  {
+    if n > CopyAttempts then None
+    else match CopyCandidate(held, folder, n)
+      case None => None
+      case Some(c) =>
+        if CopyFree(platform, listing, avoid, claims, wanted, c) then Some(c)
+        else FirstFreeCopy(platform, listing, avoid, claims, held, folder, wanted, n + 1)
+  }
 
   // The one place a path conflict is resolved: the server's head keeps the
   // name, and the untracked file `held` that holds it moves aside, with its
   // contents, to the name this function picks (SPEC.md §7 "Who keeps a
-  // path", a conflict copy's name). Its contract: the name is free on the
-  // listed disk, and it collides with neither the wanted name nor any of its
-  // folders. Its body, the copy-name rule and its proof are #962's.
-  function PathConflictCopy(platform: Platform, listing: Listing, avoid: set<Path>, held: Path, wanted: Path): (copy: Path)
-    ensures FreeIn(platform, listing, copy)
-    ensures forall t | t in avoid :: !SameF(platform, t, copy)
-    ensures !CollideF(platform, copy, wanted)
+  // path", a conflict copy's name). Its contract: under F the name is free
+  // on the listed disk, is no name to avoid (every bound name and unsaved
+  // path) and collides with neither the wanted name nor its folders; under K
+  // it collides with no other document's claim, folders included, and is no
+  // claimed name (PO-14). None when no candidate the search tries is free
+  // (`PathConflictCopyNone`).
+  function PathConflictCopy(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, held: Path, wanted: Path): (copy: Option<Path>)
+    ensures copy.Some? ==> FreeIn(platform, listing, copy.value)
+    ensures copy.Some? ==> forall t | t in avoid :: !SameF(platform, t, copy.value)
+    ensures copy.Some? ==> !CollideF(platform, copy.value, wanted)
+    ensures copy.Some? ==> forall s | s in claims.paths :: !CollideK(s, copy.value)
+    ensures copy.Some? ==> forall s | s in claims.names :: !SameK(s, copy.value)
+  {
+    FirstFreeCopyFree(platform, listing, avoid, claims, held, SuffixFolder(platform, listing, claims, held, wanted), wanted, 1);
+    FirstFreeCopy(platform, listing, avoid, claims, held, SuffixFolder(platform, listing, claims, held, wanted), wanted, 1)
+  }
+
+  lemma FirstFreeCopyFree(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims,
+                          held: Path, folder: Option<Path>, wanted: Path, n: nat)
+    requires 1 <= n <= CopyAttempts + 1
+    decreases CopyAttempts + 1 - n
+    ensures var copy := FirstFreeCopy(platform, listing, avoid, claims, held, folder, wanted, n);
+      copy.Some? ==> CopyFree(platform, listing, avoid, claims, wanted, copy.value)
+  {
+    if n <= CopyAttempts && CopyCandidate(held, folder, n).Some?
+       && !CopyFree(platform, listing, avoid, claims, wanted, CopyCandidate(held, folder, n).value) {
+      FirstFreeCopyFree(platform, listing, avoid, claims, held, folder, wanted, n + 1);
+    }
+  }
+
+  // The candidates the search tries from counter n on: each while the shell
+  // still has one and the counters last.
+  ghost predicate Tried(held: Path, folder: Option<Path>, n: nat, m: nat) {
+    n <= m <= CopyAttempts && forall k | n <= k <= m :: CopyCandidate(held, folder, k).Some?
+  }
+
+  // No name: every candidate the search tries is taken. A name: the shell's
+  // candidate at some counter, after every earlier one was taken.
+  lemma FirstFreeCopyNone(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims,
+                          held: Path, folder: Option<Path>, wanted: Path, n: nat)
+    requires 1 <= n <= CopyAttempts + 1
+    decreases CopyAttempts + 1 - n
+    ensures var copy := FirstFreeCopy(platform, listing, avoid, claims, held, folder, wanted, n);
+      && (copy.None? <==> forall m: nat | Tried(held, folder, n, m) ::
+                            !CopyFree(platform, listing, avoid, claims, wanted, CopyCandidate(held, folder, m).value))
+      && (copy.Some? ==> exists m: nat :: Tried(held, folder, n, m) && CopyCandidate(held, folder, m) == copy)
+  {
+    if n <= CopyAttempts && CopyCandidate(held, folder, n).Some? {
+      var c := CopyCandidate(held, folder, n).value;
+      assert Tried(held, folder, n, n);
+      if !CopyFree(platform, listing, avoid, claims, wanted, c) {
+        FirstFreeCopyNone(platform, listing, avoid, claims, held, folder, wanted, n + 1);
+        forall m: nat | Tried(held, folder, n, m) && m > n ensures Tried(held, folder, n + 1, m) {}
+        forall m: nat | Tried(held, folder, n + 1, m) ensures Tried(held, folder, n, m) {}
+      }
+    }
+  }
+
+  // The path-conflict function returns no name exactly when no candidate its
+  // search tries is free.
+  lemma PathConflictCopyNone(platform: Platform, listing: Listing, avoid: set<Path>, claims: Claims, held: Path, wanted: Path)
+    ensures var folder := SuffixFolder(platform, listing, claims, held, wanted);
+      PathConflictCopy(platform, listing, avoid, claims, held, wanted).None?
+      <==> forall m: nat | Tried(held, folder, 1, m) ::
+             !CopyFree(platform, listing, avoid, claims, wanted, CopyCandidate(held, folder, m).value)
+  {
+    FirstFreeCopyNone(platform, listing, avoid, claims, held, SuffixFolder(platform, listing, claims, held, wanted), wanted, 1);
+  }
 
   // The listed files that collide with `p`.
   function Colliders(platform: Platform, listing: Listing, p: Path): set<Path> {
@@ -134,7 +267,7 @@ abstract module ApplyCore refines PushCore {
   // that reads as the base but not as `seen` (changed back before its event
   // arrived) is also saved as a copy before the remote is written over it:
   // G2 lets the round overwrite only content it keeps.
-  function Settle(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, rev: RevId): Applied
+  function Settle(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId): Applied
     requires document.binding.Some? && document.base.Some?
   {
     var spelling := document.binding.value.spelling;
@@ -148,14 +281,24 @@ abstract module ApplyCore refines PushCore {
       var m := Merge(b, l, r.content).value;
       Applied(Settled(document, r, m, rev), [Write(Some(doc), spelling, m, Note, Some(l))])
     else
-      var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, spelling, spelling);
-      Applied(Settled(document, r, r.content, rev),
-              [Write(None, copy, l, read.1, None), Write(Some(doc), spelling, r.content, r.kind, Some(l))])
+      match PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling)
+      case None => NoCopy(doc, document, r, spelling)
+      case Some(copy) =>
+        Applied(Settled(document, r, r.content, rev),
+                [Write(None, copy, l, read.1, None), Write(Some(doc), spelling, r.content, r.kind, Some(l))])
+  }
+
+  // No copy name is free (SPEC.md §7, #100): nothing is written, the local
+  // version stays, and the revision waits, blocked because this device
+  // cannot hold the copy's name; the conflict is reported without a copy.
+  function NoCopy(doc: DocId, document: Document, r: Revision, path: Path): Applied {
+    Applied(document.(ahead := Some(Ahead(r, Unmaterializable(false), false))),
+            [Report(Some(doc), path, "conflict: no copy name fits")])
   }
 
   // One pulled revision `r` of document `doc`, whose row is `document`,
   // against the round's input.
-  function ApplyRevision(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId): Applied
+  function ApplyRevision(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId): Applied
     requires ListingDistinct(platform, input.listing)
   {
     if !Newer(document, r) then Applied(document, [])
@@ -163,7 +306,7 @@ abstract module ApplyCore refines PushCore {
       var spelling := document.binding.value.spelling;
       var read := ListedRead(platform, input.listing, spelling);
       if UnsavedAt(platform, input.unsaved, spelling) then Hold(document, r, LocalChanges)
-      else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, rev)
+      else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, claims, rev)
       else if !Clean(platform, document, read) then
         Hold(document, r, if JournalChange(document) || read.None? || read.value.0 != document.binding.value.seen
                           then LocalChanges else PathHeld)
@@ -195,14 +338,51 @@ abstract module ApplyCore refines PushCore {
       // holds is the path rule's (#962).
       if |held| == 1 && !BoundName(platform, bound, LeastPath(held)) then
         var q := LeastPath(held);
-        var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, q, r.path);
-        // The untracked file holding the name moves aside with its contents;
-        // the head takes the name.
-        Applied(document.(base := Some(BaseOf(r)), ahead := None,
-                          binding := Some(Binding(r.path, r.content, false, None)), absence := Never),
-                [Move(None, q, copy, input.listing[q].0), Write(Some(doc), r.path, r.content, r.kind, None)])
+        match PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path)
+        case None => NoCopy(doc, document, r, r.path)
+        case Some(copy) =>
+          // The untracked file holding the name moves aside with its
+          // contents; the head takes the name.
+          Applied(document.(base := Some(BaseOf(r)), ahead := None,
+                            binding := Some(Binding(r.path, r.content, false, None)), absence := Never),
+                  [Move(None, q, copy, input.listing[q].0), Write(Some(doc), r.path, r.content, r.kind, None)])
       else Hold(document, r, PathHeld)
   }
+
+  // A report is requested only where no copy name is free, and then the
+  // revision waits as `ahead`, blocked by `Unmaterializable(alias := false)`,
+  // the row is otherwise unchanged, and the report is the only effect: no
+  // file is touched (SPEC.md §7, #100).
+  lemma NoCopyDefers(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      ((exists e :: e in applied.effects && e.Report?)
+       || (applied.document.ahead != document.ahead && applied.document.ahead.Some?
+           && applied.document.ahead.value.blocker == Unmaterializable(false)))
+      ==> && |applied.effects| == 1 && applied.effects[0].Report?
+          && applied == NoCopy(doc, document, r, applied.effects[0].path)
+          && applied.document == document.(ahead := Some(Ahead(r, Unmaterializable(false), false)))
+          && Untouched(applied.effects)
+  {}
+
+  // Where the path-conflict function finds no name, the apply defers the
+  // revision without a copy: a concurrent change it would save as a copy,
+  // and an untracked file it would move aside.
+  lemma NoNameNoCopy(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      (document.binding.Some? && Newer(document, r)
+       && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+       && var spelling := document.binding.value.spelling;
+       var read := ListedRead(platform, input.listing, spelling);
+       Concurrent(document, read, r)
+       && var b := document.base.value.content;
+       var l := read.value.0;
+       !(l == b && l == document.binding.value.seen) && r.content != b
+       && !(l != b && read.value.1 == Note && r.kind == Note && Merge(b, l, r.content).Some?)
+       && PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling).None?)
+      ==> applied == NoCopy(doc, document, r, document.binding.value.spelling)
+  {}
 
   // ---------------------------------------------------------------------
   // Every precondition holds on the disk the listing was read from
@@ -254,16 +434,22 @@ abstract module ApplyCore refines PushCore {
   // device's DiskListing), the second effect of a path conflict on the disk
   // the first leaves. So a disk effect of the apply that does not take effect
   // means the disk changed after the round read it.
-  lemma AppliedPreconditionsHold(device: Device, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+  lemma AppliedPreconditionsHold(device: Device, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires input.listing == ListingOf(device)
     requires ListingDistinct(device.platform, input.listing)
     ensures PreconditionsInOrder(device.platform, device.disk,
-                                 ApplyRevision(device.platform, doc, document, r, input, bound, rev).effects)
+                                 ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects)
   {
     var platform := device.platform;
     var disk := device.disk;
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     if |applied.effects| == 0 {
+      return;
+    }
+    NoCopyDefers(platform, doc, document, r, input, bound, claims, rev);
+    if applied.effects[0].Report? {
+      assert applied.effects == [applied.effects[0]];
+      OneEffect(platform, disk, applied.effects[0]);
       return;
     }
     if document.binding.Some? {
@@ -271,7 +457,7 @@ abstract module ApplyCore refines PushCore {
       ListedReadOnDisk(device, spelling);
       if |applied.effects| == 2 {
         var l := ListedRead(platform, input.listing, spelling).value;
-        var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, spelling, spelling);
+        var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling).value;
         var w1 := Write(None, copy, l.0, l.1, None);
         var w2 := Write(Some(doc), spelling, r.content, r.kind, Some(l.0));
         assert applied.effects == [w1, w2];
@@ -303,7 +489,7 @@ abstract module ApplyCore refines PushCore {
         if x != q { SubsetCard({x, q}, held); }
       }
     }
-    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, q, r.path);
+    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path).value;
     var content := input.listing[q].0;
     var move := Move(None, q, copy, content);
     var write := Write(Some(doc), r.path, r.content, r.kind, None);
@@ -364,19 +550,19 @@ abstract module ApplyCore refines PushCore {
   // - a file moved aside by the path-conflict function keeps its contents
   //   (and identity) at its new name.
   lemma AppliedTakesEffect(device: Device, doc: DocId, document: Document, r: Revision, input: RoundInput,
-                           bound: set<Path>, rev: RevId, disk': map<Path, DiskFile>)
+                           bound: set<Path>, claims: Claims, rev: RevId, disk': map<Path, DiskFile>)
     requires input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk)
     requires EffectsTake(device.platform, device.disk,
-                         ApplyRevision(device.platform, doc, document, r, input, bound, rev).effects, disk')
+                         ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects, disk')
     ensures ListingDistinct(device.platform, input.listing)
     ensures OneFilePerName(device.platform, disk')
-    ensures var applied := ApplyRevision(device.platform, doc, document, r, input, bound, rev);
-      && (applied.effects == [] ==> disk' == device.disk)
-      && (applied.effects != [] && applied.document.binding.Some? ==>
+    ensures var applied := ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev);
+      && (Untouched(applied.effects) ==> disk' == device.disk)
+      && (!Untouched(applied.effects) && applied.document.binding.Some? ==>
             exists p :: Holds(device.platform, disk', p, applied.document.binding.value.spelling,
                               applied.document.binding.value.seen))
-      && (applied.effects != [] && document.binding.Some? && document.binding.value.spelling in device.disk ==>
+      && (!Untouched(applied.effects) && document.binding.Some? && document.binding.value.spelling in device.disk ==>
             (applied.document.binding.Some? ==>
                document.binding.value.spelling in disk' && disk'[document.binding.value.spelling].identity == device.disk[document.binding.value.spelling].identity)
             && (applied.document.binding.None? ==> !HasFileOn(device.platform, disk', document.binding.value.spelling)))
@@ -392,20 +578,27 @@ abstract module ApplyCore refines PushCore {
     DistinctDisk(device);
     var platform := device.platform;
     var disk := device.disk;
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
-    AppliedPreconditionsHold(device, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    AppliedPreconditionsHold(device, doc, document, r, input, bound, claims, rev);
     if |applied.effects| == 0 {
       assert disk' == disk;
       return;
     }
+    NoCopyDefers(platform, doc, document, r, input, bound, claims, rev);
+    if applied.effects[0].Report? {
+      Unroll1(platform, disk, applied.effects[0], disk');
+      return;
+    }
     if document.binding.Some? && |applied.effects| == 2 {
-      SettleConflictTakesEffect(device, doc, document, r, input, bound, rev, disk');
+      assert applied.effects[1] in applied.effects && IsDiskEffect(applied.effects[1]);
+      SettleConflictTakesEffect(device, doc, document, r, input, bound, claims, rev, disk');
       return;
     }
     if document.binding.Some? {
       var spelling := document.binding.value.spelling;
       var e := applied.effects[0];
       assert applied.effects == [e];
+      assert IsDiskEffect(e);
       Unroll1(platform, disk, e, disk');
       var q :| Holds(platform, disk, q, spelling, ListedRead(platform, input.listing, spelling).value.0)
                 && (if e.Remove? then disk' == disk - {q} else disk' == disk[q := DiskFile(e.content, e.kind, disk[q].identity)]);
@@ -424,6 +617,7 @@ abstract module ApplyCore refines PushCore {
     if FreeIn(platform, input.listing, r.path) {
       var e := applied.effects[0];
       assert applied.effects == [e];
+      assert IsDiskEffect(e);
       Unroll1(platform, disk, e, disk');
       assert FreeOn(platform, disk, r.path);
       var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
@@ -439,11 +633,12 @@ abstract module ApplyCore refines PushCore {
         if x != q { SubsetCard({x, q}, held); }
       }
     }
-    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, q, r.path);
+    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path).value;
     var content := input.listing[q].0;
     var move := Move(None, q, copy, content);
     var write := Write(Some(doc), r.path, r.content, r.kind, None);
     assert applied.effects == [move, write];
+    assert move in applied.effects && IsDiskEffect(move);
     Unroll2(platform, disk, move, write, disk');
     var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, move, mid) && EffectTakes(platform, mid, write, disk');
     assert MovableTo(platform, disk, q, q, copy, content);
@@ -474,16 +669,16 @@ abstract module ApplyCore refines PushCore {
   }
 
   lemma SettleConflictTakesEffect(device: Device, doc: DocId, document: Document, r: Revision, input: RoundInput,
-                                  bound: set<Path>, rev: RevId, disk': map<Path, DiskFile>)
+                                  bound: set<Path>, claims: Claims, rev: RevId, disk': map<Path, DiskFile>)
     requires input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk)
     requires ListingDistinct(device.platform, input.listing)
     requires document.binding.Some?
-    requires |ApplyRevision(device.platform, doc, document, r, input, bound, rev).effects| == 2
+    requires |ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects| == 2
     requires EffectsTake(device.platform, device.disk,
-                         ApplyRevision(device.platform, doc, document, r, input, bound, rev).effects, disk')
+                         ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects, disk')
     ensures OneFilePerName(device.platform, disk')
-    ensures var applied := ApplyRevision(device.platform, doc, document, r, input, bound, rev);
+    ensures var applied := ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev);
       var spelling := document.binding.value.spelling;
       && applied.document.binding.Some? && applied.document.binding.value.spelling == spelling
       && (exists p :: Holds(device.platform, disk', p, spelling, applied.document.binding.value.seen))
@@ -498,11 +693,11 @@ abstract module ApplyCore refines PushCore {
   {
     var platform := device.platform;
     var disk := device.disk;
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     var spelling := document.binding.value.spelling;
     ListedReadOnDisk(device, spelling);
     var l := ListedRead(platform, input.listing, spelling).value;
-    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, spelling, spelling);
+    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling).value;
     var w1 := Write(None, copy, l.0, l.1, None);
     var w2 := Write(Some(doc), spelling, r.content, r.kind, Some(l.0));
     assert applied.effects == [w1, w2];
@@ -532,6 +727,11 @@ abstract module ApplyCore refines PushCore {
     }
     assert Holds(platform, disk', q, spelling, r.content);
     assert disk'[copy].content == l.0;
+  }
+
+  // No effect touches the disk: none requested, or only a report.
+  ghost predicate Untouched(effects: seq<Effect>) {
+    forall e | e in effects :: !IsDiskEffect(e)
   }
 
   // A file arrives at name x by one of the effects: created there (a write
@@ -570,7 +770,7 @@ abstract module ApplyCore refines PushCore {
   // the round's input read from the step's state before (RoundInputOf) on a
   // disk with one file per name, `bound` every name a document is bound to,
   // and the step's state after as the effects leave it.
-  ghost predicate ApplyStep(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId) {
+  ghost predicate ApplyStep(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId) {
     step.event.SyncRound?
     && RoundInputOf(step.pre, step.event.device, input)
     && var d := step.event.device;
@@ -580,9 +780,10 @@ abstract module ApplyCore refines PushCore {
     && ListingDistinct(device.platform, input.listing)
     && (forall other :: other in device.journal.documents && device.journal.documents[other].binding.Some? ==>
           device.journal.documents[other].binding.value.spelling in bound)
+    && claims == ClaimsOf(device.journal.documents, doc)
     && r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
     && r.doc == doc && r.device != d
-    && var applied := ApplyRevision(device.platform, doc, device.journal.documents[doc], r, input, bound, rev);
+    && var applied := ApplyRevision(device.platform, doc, device.journal.documents[doc], r, input, bound, claims, rev);
     step.effects == applied.effects && d in step.post.devices
     && EffectsTake(device.platform, device.disk, applied.effects, step.post.devices[d].disk)
     && step.post == ApplyAfter(step.pre, d, doc, applied.document, step.post.devices[d].disk)
@@ -620,18 +821,18 @@ abstract module ApplyCore refines PushCore {
   // where the step keeps it (a merge of it is sent, or it is saved next to
   // the remote as an untracked copy). Only a tracked file is deleted, and
   // no file with unsaved text is written or deleted.
-  lemma AppliedG2(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
-    requires ApplyStep(step, doc, r, input, bound, rev)
+  lemma AppliedG2(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, claims, rev)
     ensures G2_OnlyWhatItSaw(step) && G2_UnsavedSafe(step) && G2_NoUntrackedDelete(step)
   {
     var d := step.event.device;
     var device := step.pre.devices[d];
     var platform := device.platform;
     var document := device.journal.documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     var after := step.post.devices[d];
     assert input.listing == ListingOf(device);
-    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     if document.binding.None? {
       UnsavedSeen(device, input.unsaved, r.path);
       return;
@@ -667,6 +868,8 @@ abstract module ApplyCore refines PushCore {
         }
       }
       assert SettlesConcurrent(step, d, doc, r);
+      var w := Write(Some(doc), spelling, m, Note, Some(l.0));
+      assert w in applied.effects && IsDiskEffect(w);
       assert Outgoing(after, doc) == Some(m) by {
         if applied.document.outbox.None? {
           var p :| Holds(platform, after.disk, p, spelling, m);
@@ -677,7 +880,11 @@ abstract module ApplyCore refines PushCore {
       assert MergedRead(step, d, doc, l.0, r);
       assert ReadKept(step, doc, l.0);
     } else {
-      var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, spelling, spelling);
+      var found := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling);
+      if found.None? {
+        return;
+      }
+      var copy := found.value;
       var w1 := Write(None, copy, l.0, l.1, None);
       assert w1 in applied.effects;
       assert copy in after.disk && after.disk[copy].content == l.0;
@@ -711,18 +918,18 @@ abstract module ApplyCore refines PushCore {
   // contents it read (a remote delete, a user's delete and a commit in
   // flight wait), and keeps the side that changed, the merge, or the remote
   // with the local version saved next to it.
-  lemma AppliedG6(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
-    requires ApplyStep(step, doc, r, input, bound, rev)
+  lemma AppliedG6(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, claims, rev)
     ensures forall d, doc', remote :: SettlesConcurrent(step, d, doc', remote) ==> G6_Settle(step, d, doc', remote)
   {
     var d := step.event.device;
     var device := step.pre.devices[d];
     var platform := device.platform;
     var document := device.journal.documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     var after := step.post.devices[d];
     assert input.listing == ListingOf(device);
-    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     forall d', doc', remote | SettlesConcurrent(step, d', doc', remote)
       ensures G6_Settle(step, d', doc', remote)
     {
@@ -732,12 +939,12 @@ abstract module ApplyCore refines PushCore {
       }
       assert applied.document.base == Some(BaseOf(r));
       assert remote == r;
-      SettledByApply(step, doc, r, input, bound, rev);
+      SettledByApply(step, doc, r, input, bound, claims, rev);
     }
   }
 
-  lemma SettledByApply(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
-    requires ApplyStep(step, doc, r, input, bound, rev)
+  lemma SettledByApply(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, claims, rev)
     requires SettlesConcurrent(step, step.event.device, doc, r)
     ensures G6_Settle(step, step.event.device, doc, r)
   {
@@ -745,10 +952,10 @@ abstract module ApplyCore refines PushCore {
     var device := step.pre.devices[d];
     var platform := device.platform;
     var document := device.journal.documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     var after := step.post.devices[d];
     assert input.listing == ListingOf(device);
-    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     assert Newer(document, r);
     if document.binding.None? {
       assert !LocalChange(device, doc);
@@ -774,6 +981,11 @@ abstract module ApplyCore refines PushCore {
       var x := ListedAt(platform, input.listing, spelling);
       if x != q { SameFIsEquivalence(platform, x, spelling, q); SameFIsEquivalence(platform, q, spelling, q); assert CollideF(platform, x, q); }
     }
+    NoCopyDefers(platform, doc, document, r, input, bound, claims, rev);
+    if exists e :: e in applied.effects && e.Report? {
+      assert applied.document.base == document.base;
+      assert false;
+    }
     var b := document.base.value.content;
     var settledContent := applied.document.binding.value.seen;
     assert Outgoing(after, doc) == Some(settledContent) by {
@@ -783,6 +995,7 @@ abstract module ApplyCore refines PushCore {
           FileAtIs(after, spelling, q);
           assert BoundFile(after, doc) == Some(after.disk[q]);
         } else {
+          assert applied.effects[|applied.effects| - 1] in applied.effects && IsDiskEffect(applied.effects[|applied.effects| - 1]);
           var p :| Holds(platform, after.disk, p, spelling, settledContent);
           FileAtIs(after, spelling, p);
           assert BoundFile(after, doc) == Some(after.disk[p]);
@@ -791,7 +1004,7 @@ abstract module ApplyCore refines PushCore {
     }
     if !(l.0 == b && l.0 == document.binding.value.seen) && r.content != b
        && !(l.0 != b && l.1 == Note && r.kind == Note && Merge(b, l.0, r.content).Some?) {
-      var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, spelling, spelling);
+      var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling).value;
       var w1 := Write(None, copy, l.0, l.1, None);
       assert w1 in applied.effects;
       assert !Tracked(after, copy) by {
@@ -814,18 +1027,18 @@ abstract module ApplyCore refines PushCore {
 
   // One file per name stays true on the device, the server does not change,
   // and a file moved aside arrives at its new name with its contents.
-  lemma AppliedG7(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
-    requires ApplyStep(step, doc, r, input, bound, rev)
+  lemma AppliedG7(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, claims, rev)
     requires G7_OneFilePerName(step.pre)
     ensures G7_OneFilePerName(step.post) && G7_MoveKeepsContents(step)
   {
     var d := step.event.device;
     var device := step.pre.devices[d];
     var document := device.journal.documents[doc];
-    var applied := ApplyRevision(device.platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev);
     var after := step.post.devices[d];
     assert input.listing == ListingOf(device);
-    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     forall e | e in step.effects && e.Move?
       ensures HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
     {
@@ -859,18 +1072,18 @@ abstract module ApplyCore refines PushCore {
   // it (clause (b)); every other binding keeps its file, because a file
   // arrives only at a name no document is bound to (the revision's name is
   // checked against `bound`, and the path-conflict function avoids it).
-  lemma AppliedG5(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
-    requires ApplyStep(step, doc, r, input, bound, rev)
+  lemma AppliedG5(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, claims, rev)
     ensures G5_NeverMixedUp(step)
   {
     var d := step.event.device;
     var device := step.pre.devices[d];
     var platform := device.platform;
     var document := device.journal.documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     var after := step.post.devices[d];
     assert input.listing == ListingOf(device);
-    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     // Every name a file arrives at is no binding's name.
     assert forall x :: Arrives(applied.effects, x) ==> !BoundName(platform, bound, x) || (document.binding.None? && x == r.path);
     forall doc' | BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
@@ -899,8 +1112,8 @@ abstract module ApplyCore refines PushCore {
   // Every other document's bound file stays where it is, the same file: the
   // apply removes only the document's own file (no other document is bound
   // to its name, G5_NeverJoined) and moves aside only an untracked file.
-  lemma AppliedKeepsOtherFiles(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
-    requires ApplyStep(step, doc, r, input, bound, rev)
+  lemma AppliedKeepsOtherFiles(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ApplyStep(step, doc, r, input, bound, claims, rev)
     requires G5_NeverJoined(step.pre)
     ensures var d := step.event.device;
       forall other :: other != doc && BoundIdentity(step.pre.devices[d], other).Some? ==>
@@ -910,10 +1123,10 @@ abstract module ApplyCore refines PushCore {
     var device := step.pre.devices[d];
     var platform := device.platform;
     var document := device.journal.documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, bound, rev);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     var after := step.post.devices[d];
     assert input.listing == ListingOf(device);
-    AppliedTakesEffect(device, doc, document, r, input, bound, rev, after.disk);
+    AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     forall other | other != doc && BoundIdentity(device, other).Some?
       ensures BoundIdentity(after, other) == BoundIdentity(device, other)
     {
@@ -949,24 +1162,28 @@ abstract module ApplyCore refines PushCore {
   // a user's delete is still sent or already the base, a bound file that
   // differs from the new base has an outbox (AheadOfBase), and an unsealed
   // outbox carries the file as last seen (OutboxCurrent).
-  lemma AppliedKeepsRowInv(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+  lemma AppliedKeepsRowInv(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     requires RowInv(document)
-    ensures RowInv(ApplyRevision(platform, doc, document, r, input, bound, rev).document)
+    ensures RowInv(ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document)
   {
     if Newer(document, r) && document.binding.Some? {
       var read := ListedRead(platform, input.listing, document.binding.value.spelling);
       if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && Concurrent(document, read, r) {
-        SettleKeepsRowInv(platform, doc, document, read.value, r, input, bound, rev);
+        SettleKeepsRowInv(platform, doc, document, read.value, r, input, bound, claims, rev);
       }
     }
   }
 
-  lemma SettleKeepsRowInv(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, rev: RevId)
+  lemma SettleKeepsRowInv(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires Concurrent(document, Some(read), r)
-    ensures RowInv(Settle(platform, doc, document, read, r, input, bound, rev).document)
+    requires RowInv(document)
+    ensures RowInv(Settle(platform, doc, document, read, r, input, bound, claims, rev).document)
   {
-    var settled := Settle(platform, doc, document, read, r, input, bound, rev).document;
+    var settled := Settle(platform, doc, document, read, r, input, bound, claims, rev).document;
+    if settled == NoCopy(doc, document, r, document.binding.value.spelling).document {
+      return;
+    }
     assert settled.binding.Some? && settled.base == Some(BaseOf(r)) && !r.deleted;
     assert settled.binding.value.spelling == document.binding.value.spelling;
   }
