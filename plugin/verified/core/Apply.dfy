@@ -1523,6 +1523,28 @@ abstract module ApplyCore refines StepContracts {
     }
   }
 
+  // A pull apply keeps a commit in flight (verified-core.md §3.2, §3.9;
+  // ApplySettlesContract, #1061): a sealed outbox the pulled revision does
+  // not answer stays as it was sealed, whatever the apply decides, so its
+  // answer still finds it. Settling a commit in flight (#1023) must keep it.
+  lemma AppliedKeepsCommitInFlight(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires InFlight(document) && document.outbox.value.rev != r.id
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document.outbox == document.outbox
+  {
+  }
+
+  // A bound file at whose name an open editor holds unsaved text keeps its
+  // binding against any pulled revision (ApplySettlesContract, #1061): the
+  // round neither records it missing nor moves it, whatever the listing
+  // reads.
+  lemma AppliedKeepsUnsavedBinding(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.binding.Some? && UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document.binding == document.binding
+  {
+  }
+
   // The outbox's own revision is its acknowledgement (verified-core.md §4.1,
   // ApplySettlesContract): a newer pulled revision whose id is the outbox's,
   // sealed or not and whatever the listing reads, becomes the base, nothing
