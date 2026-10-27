@@ -125,10 +125,6 @@ describe("bindings.test.ts: Bindings", () => {
     expectOnlyPersists(device);
   });
 
-  // Adapted (#802's rule replaced): the engine test expects the binding to
-  // take the new spelling and drop `displaced`. The core's scan compares
-  // names under the platform's file key (§3.3), so on Windows the listed
-  // A.md is the bound file itself: nothing changed, nothing to send.
   it("finds at start-up a user's case-only rename of a file the engine moved aside, which is the user's move then (#802)", () => {
     const row = synced("A", "a.md", "a1");
     const device = new CoreDevice("windows", {
@@ -141,13 +137,28 @@ describe("bindings.test.ts: Bindings", () => {
     device.rename("a.md", "A.md", { lost: true });
     device.scan();
 
-    expect(device.row("A").binding).toEqual({
-      spelling: "a.md",
-      seen: "a1",
-      displaced: true,
-      userSpelling: null,
+    expect(device.row("A").binding).toEqual(sameFile("A.md", "a1"));
+    expect(device.row("A").outbox).toMatchObject({
+      path: "A.md",
+      content: "a1",
+      deleted: false,
     });
-    expect(device.row("A").outbox).toBeNull();
+    expectOnlyPersists(device);
+  });
+
+  it("drops the record that the engine moved a file when the vault reports the user's rename of it (#802)", () => {
+    const row = synced("A", "a.md", "a1");
+    const device = new CoreDevice("posix", {
+      A: {
+        ...row,
+        binding: row.binding && { ...row.binding, displaced: true },
+      },
+    });
+
+    device.rename("a.md", "b.md");
+
+    expect(device.row("A").binding).toEqual(sameFile("b.md", "a1"));
+    expectOnlyPersists(device);
   });
 
   it("keeps at start-up the record that the engine moved a file it finds where it left it (#802)", () => {
@@ -210,6 +221,17 @@ describe("bindings.test.ts: the start-up content match (E7, decision 4)", () => 
       content: "a1",
       deleted: false,
     });
+  });
+
+  it("transfers no binding to a file of another kind with the same content", () => {
+    const device = synchedA();
+
+    device.delete("a.md", { lost: true });
+    device.write("a.bin", "a1", { kind: "binary", lost: true });
+    device.scan();
+
+    userDeleted(device, "A", "a.md", "a1");
+    expectOnlyPersists(device);
   });
 
   it("transfers no binding when two untracked files hold the missing file's content (delete plus create)", () => {
