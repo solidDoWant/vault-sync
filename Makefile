@@ -99,8 +99,8 @@ $(PLUGIN_DIR)/node_modules/.package-lock.json: $(PLUGIN_DIR)/package.json $(PLUG
 	@touch $@
 
 .PHONY: verify
-verify: ## Prove the Dafny modules in plugin/verified/ (dafny verify).
-	dafny verify $(PLUGIN_DIR)/verified/*.dfy
+verify: ## Prove the Dafny modules in plugin/verified/ and check the engine specification in plugin/verified/spec/ (dafny verify).
+	dafny verify $(PLUGIN_DIR)/verified/*.dfy $(PLUGIN_DIR)/verified/spec/*.dfy
 
 .PHONY: verified-js
 verified-js: ## Compile the Dafny modules in plugin/verified/ to JavaScript (plugin/src/verified/gen/, committed).

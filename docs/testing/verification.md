@@ -1,6 +1,6 @@
 # Verified modules (Dafny)
 
-Code in `plugin/verified/` is written in [Dafny](https://dafny.org) and carries machine-checked proofs: preconditions (`requires`), postconditions (`ensures`), invariants. It is the planned home of the sync engine's decision core (#946 is the feasibility gate). For now only a toy module exists, `Clamp.dfy`.
+Code in `plugin/verified/` is written in [Dafny](https://dafny.org) and carries machine-checked proofs: preconditions (`requires`), postconditions (`ensures`), invariants. It is the planned home of the sync engine's decision core (#946 was the feasibility gate). For now it holds a toy module, `Clamp.dfy`, and the engine's formal specification in `plugin/verified/spec/` (state, events, effects and the guarantees as predicates; `docs/design/verified-core.md` §2). The specification has no compiled code.
 
 ## Toolchain
 
@@ -8,8 +8,8 @@ The flake's dev shell provides Dafny from nixpkgs (4.11.0 at the time of writing
 
 ## Commands
 
-- `make verify` runs `dafny verify plugin/verified/*.dfy`. A proof that does not go through fails it. CI's `verify` job runs it on every push to `master` and on PRs that change `plugin/verified/**`, `flake.nix`/`flake.lock`, `.github/workflows/ci.yml` or `.github/actions/nix-dev-shell/`. The job is part of the required `checks`.
-- `make verified-js` (`scripts/verified-js.sh`) compiles the modules, with the Dafny JavaScript runtime included, to one CommonJS file, `plugin/src/verified/gen/verified.cjs`. `make build` (`make plugin-build`) runs it first. The file is committed like the protobuf code, so builds without Dafny still work (the native Windows and macOS e2e legs run `npm run build` directly). `make check-generate` (CI's lint job) fails when the committed file differs from a fresh compile. Compiling does not run the verifier again: `make verify` is the proof check.
+- `make verify` runs `dafny verify plugin/verified/*.dfy plugin/verified/spec/*.dfy`. A proof that does not go through fails it. CI's `verify` job runs it on every push to `master` and on PRs that change `plugin/verified/**`, `flake.nix`/`flake.lock`, `.github/workflows/ci.yml` or `.github/actions/nix-dev-shell/`. The job is part of the required `checks`.
+- `make verified-js` (`scripts/verified-js.sh`) compiles the modules in `plugin/verified/` (not the specification in `spec/`), with the Dafny JavaScript runtime included, to one CommonJS file, `plugin/src/verified/gen/verified.cjs`. `make build` (`make plugin-build`) runs it first. The file is committed like the protobuf code, so builds without Dafny still work (the native Windows and macOS e2e legs run `npm run build` directly). `make check-generate` (CI's lint job) fails when the committed file differs from a fresh compile. Compiling does not run the verifier again: `make verify` is the proof check.
 
 ## Using a module from the plugin
 
