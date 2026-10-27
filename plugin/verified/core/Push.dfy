@@ -364,4 +364,12 @@ abstract module PushCore refines RemoteCore {
       assert doc in sending;
     }
   }
+
+  // The push reads no feed: it keeps the journal's cursor and anchor
+  // (#1030), so in the round only the pull's ReadFeed moves them.
+  lemma PushKeepsReadPosition(platform: Platform, journal: Journal, input: RoundInput, revs: FreshRevs)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    ensures OnPush(platform, journal, input, revs).0.cursor == journal.cursor
+    ensures OnPush(platform, journal, input, revs).0.anchor == journal.anchor
+  {}
 }
