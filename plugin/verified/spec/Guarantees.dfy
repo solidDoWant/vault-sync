@@ -643,6 +643,56 @@ abstract module Guarantees refines EngineModel {
     ensures TraceGuarantees([])
   {}
 
+  // The predicates are not vacuous: states and steps that break a guarantee
+  // fail its predicate.
+
+  // Two files whose names are one file on the device break G7.
+  lemma G7Rejects(d: DeviceId, platform: Platform, p: Path, q: Path, f: DiskFile, g: DiskFile)
+    requires p != q && SameF(platform, p, q)
+    ensures !G7_OneFilePerName(State(
+      map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := f, q := g], {}, {})],
+      Server(map[], map[], [], {}, map[])))
+  {
+    var s := State(
+      map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := f, q := g], {}, {})],
+      Server(map[], map[], [], {}, map[]));
+    assert p in s.devices[d].disk && q in s.devices[d].disk && CollideF(platform, p, q);
+  }
+
+  // Deleting a file no document is bound to breaks G2.
+  lemma G2Rejects(d: DeviceId, platform: Platform, p: Path, f: DiskFile, doc: DocId, event: Event)
+    requires event == Local(d, Modified(p))
+    ensures !G2_NoUntrackedDelete(Step(
+      State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := f], {}, {})],
+            Server(map[], map[], [], {}, map[])),
+      event, [Remove(doc, p, f.content)],
+      State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[], {}, {})],
+            Server(map[], map[], [], {}, map[]))))
+  {
+    var device := Device(platform, true, Journal(map[], 0, [], []), map[p := f], {}, {});
+    assert !Tracked(device, p);
+  }
+
+  // Two documents bound to one file break G5.
+  lemma G5Rejects(d: DeviceId, platform: Platform, p: Path, doc1: DocId, doc2: DocId, h: Hash)
+    requires doc1 != doc2
+    ensures !G5_NeverJoined(State(
+      map[d := Device(platform, true,
+        Journal(map[doc1 := Document(None, None, Some(Binding(p, h, false, None)), Never, None),
+                    doc2 := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+        map[], {}, {})],
+      Server(map[], map[], [], {}, map[])))
+  {
+    var s := State(
+      map[d := Device(platform, true,
+        Journal(map[doc1 := Document(None, None, Some(Binding(p, h, false, None)), Never, None),
+                    doc2 := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+        map[], {}, {})],
+      Server(map[], map[], [], {}, map[]));
+    assert d in s.devices && doc1 in s.devices[d].journal.documents && doc2 in s.devices[d].journal.documents;
+    assert SameF(platform, p, p);
+  }
+
   // A run starts in the initial state and each step starts where the
   // previous one ended.
   ghost predicate Run(platforms: map<DeviceId, Platform>, trace: Trace) {
