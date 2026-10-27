@@ -1,6 +1,6 @@
 # Verified engine core
 
-Status: **draft, awaiting the owner's sign-off** (#945, part of the verified-core rewrite #944). This document will hold the specification of the engine's verified decision core. Only §1 exists so far: the guarantees the core must keep, in plain English, for the owner to approve. The formal specification (#947) states these guarantees as invariants and proves them; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
+Status: §1 approved by the owner (#945), §2 added by #947; part of the verified-core rewrite #944. This document holds the specification of the engine's verified decision core. §1 states the guarantees the core must keep, in plain English. §2 describes the formal model that states them as predicates (#947). The formal specification (§2) states these guarantees as predicates, which the verified core will prove; it may not weaken them. Changing what a guarantee means needs the owner (#944, "Rules while this runs").
 
 ## 1. Guarantees
 
@@ -50,7 +50,7 @@ These defaults follow design §10.3: (1) what Obsidian Sync does, (2) what loses
 |---|---|---|
 | Two devices edit different parts of the same note | Combined automatically; no conflict markers are written into the note | Step 1 (Obsidian Sync merges notes). The merge is line-level, not Obsidian's diff-match-patch: `SPEC.md` §7 decided that (#18), and step 2 agrees, because a fuzzy patch can misplace text silently while a line-level merge falls back to a copy |
 | Two devices edit the same lines of a note, or the same non-note file | The other device's version stays in place; this device's version becomes a conflict copy next to it | Step 1 (Obsidian Sync's "create conflict file" option keeps the remote version in place). Its default for non-note files, last-modified-wins, is excluded because it breaks G1 and G6 |
-| Name of a conflict copy | `<name> (conflict <device> <date>).<ext>`, as `SPEC.md` §7 says today | `SPEC.md` §7 (PO-14), which predates the policy. Step 1 would pick Obsidian's `<name> (Conflicted copy <device> <YYYYMMDDHHMM>).<ext>`. **Open question for the owner:** keep the current name, or switch to Obsidian's (an engine update, no guarantee changes) |
+| Name of a conflict copy | `<name> (conflict <device> <date>).<ext>`, as `SPEC.md` §7 says | `SPEC.md` §7 (PO-14), which predates the policy. Step 1 would pick Obsidian's `<name> (Conflicted copy <device> <YYYYMMDDHHMM>).<ext>`. The owner kept `SPEC.md` §7's name (delegated on PR #959, logged on #52); no guarantee depends on it |
 | One device deletes a file while another edits or renames it | The edit or rename wins; the file stays, with the edit | Step 2 (keeps the edit). Also `SPEC.md` §6.3 |
 | Two devices create a file with the same name at the same time | The first to reach the server keeps the name; the other becomes a conflict copy | Step 3 (both outcomes keep all contents, so step 2 does not decide). Also `SPEC.md` §6.3 |
 | A file is created where a deleted file used to be, while that device is offline | It becomes the next version of the deleted file, which keeps its history | Step 3 (no data is at stake either way; Obsidian Sync's behaviour is undocumented). Also `SPEC.md` §8 (decision #17) |
@@ -58,3 +58,49 @@ These defaults follow design §10.3: (1) what Obsidian Sync does, (2) what loses
 | A file a device cannot hold (name not allowed, too large) | Kept on the server and on other devices unchanged; this device reports it and does not rename it for everyone | Step 3 (no data is lost either way; Obsidian Sync's behaviour is undocumented). Also `SPEC.md` §8 "Platform path rules" |
 | Two folders whose names differ only in case, on a device that treats them as one | The device keeps the spelling it already has on disk | Step 3 (no data is at stake). Also `SPEC.md` §8 and design INV-9 (#737) |
 | A delete of a note with unsaved changes in an open editor | The changes are saved and the delete is refused, so the edit then wins over the delete | Step 2 (keeps the unsaved text). Also `SPEC.md` §8 "Editor-safe deletes" (#181) |
+
+## 2. The formal model
+
+The guarantees of §1 are stated formally in Dafny, in `plugin/verified/spec/`. The specification describes what the engine's state is, which events change it, which effects the engine may ask for, and what every run must satisfy. It contains no decision logic and no proofs about transitions: those come with the verified core itself. `make verify` checks that the specification is well-formed and proves that the initial state satisfies every guarantee that is a property of one state (`docs/testing/verification.md`). The specification is not compiled into the plugin.
+
+### 2.1 Paths (`Paths.dfy`)
+
+A path is an exact spelling. The engine compares paths in two ways (`engine-path-ownership.md` §3.1, PO-10): `F`, which spellings name one file on a device, depends on the device's platform; `K`, the server key of `SPEC.md` §5, decides server claims and copy-name freedom. Both are abstract functions to a key, so "same key" is an equivalence relation by construction. Their axioms are: normalizing a path keeps its key and normalizing twice changes nothing; the folder relation (`Ancestors`) is proper and transitive; and both keys are compatible with folders, so whether a file lies under a folder does not depend on which spelling of the folder is asked about. That is what disk exclusivity needs of `F`: a collision (§3.2, a name or a folder of it) is a property of key classes. No axiom relates `F` and `K`, because neither implies the other. There are no Unicode tables: a refinement with identity keys (the posix platform) shows the axioms are consistent.
+
+### 2.2 State (`Engine.dfy`)
+
+The state is a set of devices and the server.
+
+- **The server** holds every revision, each document's history (a line, its last revision the head), the change feed, and the revisions the retention policy purged. It also records, as bookkeeping that only the guarantees read, every revision it ever accepted, so a restore from backup that loses one is visible.
+- **A device** has a platform, whether the app is running, its journal, its disk, the open editors with unsaved text, and the paths it does not sync.
+- **The journal** holds one row per document: `base` (the last server revision applied or acknowledged), `ahead` (the newest server revision not applied, with its blocker), `binding` (the file that is the document on this device, with the content last seen there) or the reason it has none (`absence`), and `outbox` (the one commit it will send). With the cursor these are the device's view of the server. The journal also holds the open intents (`apply`, `merge`, `displace`, `detach`, `commit`, `resync`, design §4.4) and the conflict log.
+- **The disk** maps spellings to files. A file has its content and, as bookkeeping the engine never sees, its identity (the harness's inode, design §5.4), so the guarantees can say which file is which.
+
+### 2.3 Events and effects (`Engine.dfy`)
+
+An event is one of: a user action on a device's disk (write, delete, rename, an editor's unsaved text), whether the app runs or not; a local file event the vault reports (create, modify, delete, rename), which can be lost; the start-up scan with the vault listing; a remote revision; a push result (accepted, head moved, already exists, invalid argument, unavailable); a restore from backup; a retention purge; a restore of an earlier revision from history; a crash; a restart; and a sync round (a pull, then a push).
+
+The effects the engine may ask for are: write a file (for a document or as an untracked copy), delete a file, move a file, each with the content the file must still have (or that no file is there); read a file; upload content; commit an outbox; pull from a cursor; persist the journal; and report something to the user.
+
+A step is a state, an event, the effects requested and the next state. A trace is a sequence of connected steps, and a run is a trace from the initial state (every device running, with an empty vault and journal, and an empty server).
+
+### 2.4 Guarantees as predicates (`Guarantees.dfy`)
+
+Each guarantee is a predicate, with a comment quoting the sentence of §1.1 it formalizes. A guarantee about one moment is a predicate on a state, one about what a single step may do a predicate on a step, and one about the order of things a predicate on a trace. `StateInvariants` collects the state predicates and `TraceGuarantees` the trace predicates. G8's "as if it had not crashed" relates two runs, one with crashes and one without, and is the separate predicate `G8_AsIfNoCrash`.
+
+| Guarantee | Predicates |
+|---|---|
+| G1 | `G1_Retained`, `G1_LatestNeverPurged` (state), `G1_OnlyRetentionRemoves` (step), `G1` |
+| G2 | `G2_OnlyWhatItSaw`, `G2_Conditional`, `G2_NoUntrackedDelete`, `G2_UnsavedSafe` (step), `G2` |
+| G3 | `G3` (trace) |
+| G4 | `G4` (trace) |
+| G5 | `G5_RenameKeepsDocument`, `G5_NeverMixedUp` (step), `G5_NeverJoined` (state), `G5` |
+| G6 | `G6_Settle` (step), `G6` |
+| G7 | `G7_OneFilePerName` (state), `G7_MoveKeepsContents` (step), `G7` |
+| G8 | `G8_Recovers`, `G8_PicksUpOfflineChanges` (step), `G8`, `G8_AsIfNoCrash` (two traces) |
+| G9 | `G9` (state) |
+| G10 | `G10_SettledOrReported` (step), `G10_NoLoop` (two consecutive steps), `G10` |
+
+### 2.5 Changing the specification
+
+The specification is changed only through `design` issues (`docs/agents/engine-designer.md`), never by a fix or refactor PR. A change to what a guarantee's predicate means, or to the guarantees themselves, needs the owner, as §1 does. A predicate may be made more precise only where its English sentence already says so, and a reviewer checks every predicate against its sentence.
