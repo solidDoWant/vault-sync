@@ -820,13 +820,19 @@ abstract module Guarantees refines EngineModel {
 
   // A user has to act on a document before sync can settle it: its file has
   // text not yet saved in an open editor (G2_UnsavedSafe keeps sync from
-  // replacing it), or the server refused its commit as invalid (SPEC.md
-  // §6.2: it stays, reported as rejected, until the user changes it).
+  // replacing it), the server refused its commit as invalid (SPEC.md §6.2:
+  // it stays, reported as rejected, until the user changes it), or a
+  // revision of it waits for its name because a file in the way, at the
+  // name or a folder of it, has unsaved text (the path rule moves no such
+  // file, verified-core.md §4.1).
   ghost predicate UserMustAct(device: Device, doc: DocId) {
     doc in device.journal.documents
     && ((device.journal.documents[doc].binding.Some?
          && HasUnsavedEdits(device, device.journal.documents[doc].binding.value.spelling))
-        || (device.journal.documents[doc].outbox.Some? && device.journal.documents[doc].outbox.value.rejected))
+        || (device.journal.documents[doc].outbox.Some? && device.journal.documents[doc].outbox.value.rejected)
+        || (device.journal.documents[doc].ahead.Some? && device.journal.documents[doc].ahead.value.blocker.PathHeld?
+            && exists editor :: editor in device.editors && editor.unsaved.Some?
+                 && CollideF(device.platform, editor.path, device.journal.documents[doc].ahead.value.revision.path)))
   }
 
   // "Every conflict is settled within one sync, unless a user has to act on

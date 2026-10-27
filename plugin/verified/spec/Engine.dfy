@@ -202,6 +202,11 @@ abstract module EngineModel {
     // with the round's input (`RoundInput`, `RoundInputOf`). The push's
     // answers arrive as later `Pushed` events.
     | SyncRound(device: DeviceId)
+    // The resync the shell runs on the server's divergence signal after a
+    // restore from backup (SPEC.md §8 "Divergence"): a round that re-reads
+    // every head instead of the feed after the cursor (verified-core.md
+    // §4.1). Its step includes its input as a sync round's does.
+    | Resync(device: DeviceId)
 
   ghost predicate IsUserAction(event: Event) { event.User? }
 
@@ -262,6 +267,7 @@ abstract module EngineModel {
     case Crash(d, _) => Some(d)
     case Restart(d) => Some(d)
     case SyncRound(d) => Some(d)
+    case Resync(d) => Some(d)
     case _ => None
   }
 
@@ -520,7 +526,16 @@ abstract module EngineModel {
     case Purge(revisions) =>
       (forall rev :: rev in revisions ==> rev in pre.revisions && !IsHead(pre, rev))
       && post == pre.(purged := pre.purged + revisions)
-    case Restore(restored) => post == restored
+    // A backup is an earlier state of the server: the restored feed and
+    // every restored history are prefixes of the current ones, its revisions
+    // are current ones and its purges were made already. The ghost record
+    // of what the server accepted is not restored (verified-core.md §4.1).
+    case Restore(restored) =>
+      restored.feed <= pre.feed
+      && (forall doc :: doc in restored.history ==> doc in pre.history && restored.history[doc] <= pre.history[doc])
+      && (forall id :: id in restored.revisions ==> id in pre.revisions && restored.revisions[id] == pre.revisions[id])
+      && restored.purged <= pre.purged
+      && post == restored.(accepted := pre.accepted)
     case RemoteRevision(_, rev) =>
       post == pre && rev.id in pre.revisions && pre.revisions[rev.id] == rev && rev.id in pre.feed
     case _ => post == pre
