@@ -522,19 +522,20 @@ abstract module ServerEvents refines StepContracts {
 
   // A cut of the appended server short of the new entry is a cut of the
   // server before.
-  lemma AppendShortCut(step: Step, cut: Server)
-    requires ServerEventStep(step) && step.event.RestoreFromHistory?
-    requires CoreReachable(step.pre) && FeedAccepted(step.pre.server)
-    requires EarlierServer(step.post.server, cut) && |cut.feed| <= |step.pre.server.feed|
-    ensures EarlierServer(step.pre.server, cut)
+  lemma AppendShortCut(pre: Server, doc: DocId, r: Revision, cut: Server)
+    requires r.id !in pre.feed
+    requires EarlierServer(Appended(pre, doc, r), cut) && |cut.feed| <= |pre.feed|
+    ensures EarlierServer(pre, cut)
   {
-    var pre := step.pre.server;
-    var post := step.post.server;
-    var r := step.event.revision;
-    var doc := step.event.doc;
+    var post := Appended(pre, doc, r);
     var kept := FeedIds(cut.feed);
     assert cut.feed == pre.feed[..|cut.feed|];
-    assert r.id !in kept;
+    assert r.id !in kept by {
+      if r.id in kept {
+        var i :| 0 <= i < |cut.feed| && cut.feed[i] == r.id;
+        assert pre.feed[i] == r.id;
+      }
+    }
     assert cut.revisions == (map id | id in pre.revisions && id in kept :: pre.revisions[id]);
     var h := if doc in pre.history then pre.history[doc] else [];
     KeepAppendOut(h, r.id, kept);
@@ -604,7 +605,15 @@ abstract module ServerEvents refines StepContracts {
     ensures |cut.feed| > |step.pre.server.feed| ==> forall x :: Head(cut, x) == Head(step.post.server, x)
   {
     if |cut.feed| <= |step.pre.server.feed| {
-      AppendShortCut(step, cut);
+      var r := step.event.revision;
+      assert r.id !in step.pre.server.feed by {
+        if r.id in step.pre.server.feed {
+          var i :| 0 <= i < |step.pre.server.feed| && step.pre.server.feed[i] == r.id;
+          assert r.id in step.pre.server.accepted;
+        }
+      }
+      assert step.post.server == Appended(step.pre.server, step.event.doc, r);
+      AppendShortCut(step.pre.server, step.event.doc, r, cut);
     } else {
       AppendWholeCut(step, cut);
     }
