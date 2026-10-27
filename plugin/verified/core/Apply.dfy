@@ -307,6 +307,29 @@ abstract module ApplyCore refines StepContracts {
                 [Write(None, copy, l, read.1, None), Write(Some(doc), spelling, r.content, r.kind, Some(l))])
   }
 
+  // A remote tombstone against a bound file the listing reads, with a change
+  // the server lacks: something to send, or a read other than the content
+  // and kind the core last saw (G6). A commit in flight (a sealed outbox)
+  // waits for its answer (#1006's settlement, #1023).
+  predicate EditedAgainstDelete(document: Document, read: Read, r: Revision) {
+    r.deleted && document.binding.Some? && read.Some?
+    && (document.outbox.None? || !document.outbox.value.sealed)
+    && (document.outbox.Some? || read.value != (document.binding.value.seen, KindOf(document)))
+  }
+
+  // The kept row (verified-core.md §4.2): the tombstone is the base, the
+  // file stays as the round read it, and the outbox (its own id, or the
+  // round's fresh one) sends the file as read on top of the tombstone.
+  function KeptAgainstDelete(document: Document, read: (Hash, Kind), r: Revision, rev: RevId): Document
+    requires document.binding.Some?
+  {
+    var spelling := document.binding.value.spelling;
+    document.(base := Some(BaseOf(r)), ahead := None,
+              binding := Some(document.binding.value.(seen := read.0)),
+              outbox := Some(Outbox(if document.outbox.Some? then document.outbox.value.rev else rev,
+                                    Some(r.id), spelling, read.0, read.1, false, false, false)))
+  }
+
   // No copy name is free (SPEC.md §7, #100): nothing is written, the local
   // version stays, and the revision waits, blocked because this device
   // cannot hold the copy's name; the conflict is reported without a copy.
@@ -346,6 +369,10 @@ abstract module ApplyCore refines StepContracts {
       var read := ListedRead(platform, input.listing, spelling);
       if UnsavedAt(platform, input.unsaved, spelling) then Hold(document, r, LocalChanges)
       else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, claims, rev)
+      else if EditedAgainstDelete(document, read, r) then
+        // A remote delete against a change the server lacks: an edit beats a
+        // delete (SPEC.md §6.3). The file stays, untouched.
+        Applied(KeptAgainstDelete(document, read.value, r, rev), [])
       else if !Clean(platform, document, read) then
         Hold(document, r, if JournalChange(document) || read.None? || read.value.0 != document.binding.value.seen
                           then LocalChanges else PathHeld)
@@ -1002,10 +1029,11 @@ abstract module ApplyCore refines StepContracts {
   // ---------------------------------------------------------------------
 
   // Every concurrent change the apply settles satisfies G6_Settle: the
-  // apply settles only a live remote edit against a bound file whose
-  // contents it read (a remote delete, a user's delete and a commit in
-  // flight wait), and keeps the side that changed, the merge, or the remote
-  // with the local version saved next to it.
+  // apply settles a live remote edit against a bound file whose contents it
+  // read, keeping the side that changed, the merge, or the remote with the
+  // local version saved next to it; and a remote delete against a change the
+  // server lacks, keeping the file, which the outbox sends (a user's delete
+  // and a commit in flight wait).
   lemma AppliedG6(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ApplyStep(step, doc, r, input, bound, claims, rev)
     ensures forall d, doc', remote :: SettlesConcurrent(step, d, doc', remote) ==> G6_Settle(step, d, doc', remote)
@@ -1053,6 +1081,12 @@ abstract module ApplyCore refines StepContracts {
     var read := ListedRead(platform, input.listing, spelling);
     ListedReadOnDisk(device, spelling);
     assert !UnsavedAt(platform, input.unsaved, spelling);
+    if EditedAgainstDelete(document, read, r) && !Concurrent(document, read, r) {
+      // An edit beats a delete: the document sends the file as read.
+      assert applied.document == KeptAgainstDelete(document, read.value, r, rev);
+      assert Outgoing(after, doc) == Some(read.value.0);
+      return;
+    }
     if !Concurrent(document, read, r) {
       assert Clean(platform, document, read);
       var q := var q :| Holds(platform, device.disk, q, spelling, read.value.0); q;
@@ -1286,6 +1320,9 @@ abstract module ApplyCore refines StepContracts {
       var read := ListedRead(platform, input.listing, document.binding.value.spelling);
       if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && Concurrent(document, read, r) {
         SettleKeepsRowInv(platform, doc, document, read.value, r, input, bound, claims, rev);
+      } else if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && EditedAgainstDelete(document, read, r) {
+        var kept := KeptAgainstDelete(document, read.value, r, rev);
+        assert kept.binding.Some? && kept.outbox.Some? && !kept.outbox.value.sealed;
       }
     }
   }
@@ -1303,6 +1340,39 @@ abstract module ApplyCore refines StepContracts {
       applied.document == Accept(document, r, rev) && applied.effects == []
       && applied.document.base == Some(BaseOf(r)) && applied.document.ahead.None?
   {
+  }
+
+  // A remote delete against a change the server lacks keeps the file
+  // (ApplySettlesContract's first settlement, verified-core.md §4.2, SPEC.md
+  // §6.3): a newer tombstone against a bound file the listing reads, with no
+  // unsaved text, no commit in flight and not the outbox's own tombstone
+  // (its acknowledgement, AcknowledgementSettles), and with something to send or a
+  // read other than what the core last saw, leaves the file bound and
+  // untouched, makes the tombstone the base, and has a live, unsealed outbox
+  // send the file as read on top of it. The revision does not wait.
+  lemma RemoteDeleteKeepsEditedFile(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires RowInv(document)
+    requires Newer(document, r) && r.deleted && document.binding.Some? && !Acknowledges(document, r)
+    requires !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+    requires document.outbox.None? || !document.outbox.value.sealed
+    requires ListedRead(platform, input.listing, document.binding.value.spelling).Some?
+    requires var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+      document.outbox.Some? || read != Some((document.binding.value.seen, KindOf(document)))
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      var read := ListedRead(platform, input.listing, document.binding.value.spelling).value;
+      && RowInv(applied.document)
+      && applied.effects == []
+      && applied.document.binding == Some(document.binding.value.(seen := read.0))
+      && applied.document.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+      && applied.document.ahead.None?
+      && applied.document.outbox.Some? && !applied.document.outbox.value.deleted
+      && !applied.document.outbox.value.sealed
+      && applied.document.outbox.value.baseRev == Some(r.id)
+      && applied.document.outbox.value.path == document.binding.value.spelling
+      && applied.document.outbox.value.content == read.0 && applied.document.outbox.value.kind == read.1
+  {
+    AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, rev);
   }
 
   lemma SettleKeepsRowInv(platform: Platform, doc: DocId, document: Document, read: (Hash, Kind), r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
