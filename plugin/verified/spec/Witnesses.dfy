@@ -352,6 +352,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert Outgoing(device', doc) == Some(m);
     assert G6_Settle(step, d, doc, remote);
     assert BoundTo(device, doc, p);
+    assert MergedRead(step, d, doc, l, remote);
+    assert ReadKept(step, doc, l);
     assert LastSaw(step, device, doc, p, l);
     assert G2_OnlyWhatItSaw(step);
     assert write in step.effects;
@@ -427,6 +429,58 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert Outgoing(gone, doc) == None;
     assert !ReadKept(stepGone, doc, f.content);
     assert !LastSaw(stepGone, pre.devices[d], doc, p, f.content);
+  }
+
+  // Another device deletes doc while this device's user edits its file to l,
+  // unreported yet. A round that settles the tombstone but writes the base
+  // content b back over l (conditional on l) and sends nothing keeps a file,
+  // so it passes G6_Settle's "the file stays", yet l is gone. It fails
+  // G2_OnlyWhatItSaw: settling a remote delete keeps the read content only
+  // if the document sends it or it is saved in a file (`ReadKept`).
+  lemma G2RejectsRoundRevertingEditAgainstTombstone(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, f: DiskFile, baseRev: Revision, remote: Revision)
+    requires baseRev.doc == doc && remote.doc == doc && baseRev.id != remote.id
+    requires remote.device != d && remote.deleted
+    requires baseRev.path == p && !baseRev.deleted && f.content != baseRev.content
+    ensures
+      var b := baseRev.content;
+      var server := TwoRevisionServer(baseRev, remote);
+      var before := Document(Some(Base(baseRev.id, 0, p, b, f.kind, false)), None,
+                             Some(Binding(p, b, false, None)), Never, None);
+      var after := Document(Some(Base(remote.id, 1, p, remote.content, f.kind, true)), None,
+                            Some(Binding(p, b, false, None)), Never, None);
+      var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], {}, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
+                                        map[p := DiskFile(b, f.kind, f.identity)], {}, {})], server);
+      var step := Step(pre, SyncRound(d), [Pull(1), Write(Some(doc), p, b, f.kind, Some(f.content))], post);
+      SettlesConcurrent(step, d, doc, remote) && G6_Settle(step, d, doc, remote)
+      && !G2_OnlyWhatItSaw(step)
+  {
+    var b := baseRev.content;
+    var server := TwoRevisionServer(baseRev, remote);
+    var before := Document(Some(Base(baseRev.id, 0, p, b, f.kind, false)), None,
+                           Some(Binding(p, b, false, None)), Never, None);
+    var after := Document(Some(Base(remote.id, 1, p, remote.content, f.kind, true)), None,
+                          Some(Binding(p, b, false, None)), Never, None);
+    var pre := State(map[d := Device(platform, true, Journal(map[doc := before], 1, [], []), map[p := f], {}, {})], server);
+    var post := State(map[d := Device(platform, true, Journal(map[doc := after], 2, [], []),
+                                      map[p := DiskFile(b, f.kind, f.identity)], {}, {})], server);
+    var write := Write(Some(doc), p, b, f.kind, Some(f.content));
+    var step := Step(pre, SyncRound(d), [Pull(1), write], post);
+    var device := pre.devices[d];
+    var device' := post.devices[d];
+    assert p in device.disk && SameF(platform, p, p);
+    assert BoundFile(device, doc) == Some(f);
+    assert LocalChange(device, doc);
+    assert SettlesConcurrent(step, d, doc, remote);
+    assert BoundFile(device', doc) == Some(DiskFile(b, f.kind, f.identity));
+    assert Outgoing(device', doc) == Some(b);
+    assert G6_Settle(step, d, doc, remote);
+    assert !SavedNextToIt(device', f.content);
+    assert !ReadKept(step, doc, f.content);
+    assert BoundTo(device, doc, p);
+    assert !LastSaw(step, device, doc, p, f.content);
+    assert write in step.effects;
   }
 
   // ---------------------------------------------------------------------

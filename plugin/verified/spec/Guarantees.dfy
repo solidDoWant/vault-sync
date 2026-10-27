@@ -142,8 +142,9 @@ abstract module Guarantees refines EngineModel {
   // A sync round keeps the content it read in doc's file: after the step it
   // is what the document will have on the server (`Outgoing`), or it is in
   // an untracked file on the device, or the step settles another device's
-  // revision of doc against it, where G6_Settle says how it is kept
-  // (combined, in place, or next to it).
+  // live note revision of doc against it and the document sends their merge
+  // (G6's combined edits). Settling a remote delete keeps the read content
+  // only by the first two: an edit beats a delete with the edit itself.
   ghost predicate ReadKept(step: Step, doc: DocId, content: Hash)
     requires step.event.SyncRound?
   {
@@ -151,7 +152,18 @@ abstract module Guarantees refines EngineModel {
     d in step.post.devices
     && (Outgoing(step.post.devices[d], doc) == Some(content)
         || SavedNextToIt(step.post.devices[d], content)
-        || exists remote :: SettlesConcurrent(step, d, doc, remote))
+        || exists remote :: MergedRead(step, d, doc, content, remote))
+  }
+
+  // The step settles `remote`, a live note revision of doc, against the
+  // content read in doc's file, and the document sends the merge of the two
+  // over its base.
+  ghost predicate MergedRead(step: Step, d: DeviceId, doc: DocId, content: Hash, remote: Revision) {
+    SettlesConcurrent(step, d, doc, remote)
+    && !remote.deleted && remote.kind == Note
+    && step.pre.devices[d].journal.documents[doc].base.Some?
+    && var merged := Merge3(step.pre.devices[d].journal.documents[doc].base.value.content, content, remote.content);
+    merged.Some? && Outgoing(step.post.devices[d], doc) == merged
   }
 
   // The adapter performs a disk effect only if its precondition holds: a
