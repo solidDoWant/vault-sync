@@ -7,7 +7,7 @@
 // - A remote revision newer than everything the device knows of its document
 //   is recorded as the document's `ahead`; the core requests no disk effect
 //   for it yet. Applying it to disk needs the single path-conflict function
-//   (#962).
+//   (#962) in the sync round (#982).
 // - A push result answers the document's sealed outbox (the commit in
 //   flight). An accept makes the revision the document's base and keeps an
 //   outbox only for a change made after the commit was sealed; a refusal or
@@ -43,7 +43,7 @@ abstract module RemoteCore {
   }
 
   // Why a newer revision waits: local changes, or (for now) the apply that
-  // needs the path rule of #962, marked postponed.
+  // needs the path rule of #962 in the sync round (#982), marked postponed.
   function Waiting(document: Document, revision: Revision): Ahead {
     if JournalChange(document) then Ahead(revision, LocalChanges, false)
     else Ahead(revision, PathHeld, true)
@@ -436,6 +436,21 @@ abstract module RemoteCore {
     assert EffectsTake(before.platform, disk, step.effects[1..], disk);
     assert EffectsTake(before.platform, disk, step.effects, disk);
   }
+
+  // A user's delete made after a live commit was sealed survives its
+  // accept: the device opens a tombstone outbox on top of the accepted
+  // revision (#974 item 4). If the sealed commit was itself the tombstone,
+  // the server has the delete as the document's base.
+  lemma AcceptKeepsUserDelete(doc: DocId, document: Document, r: Revision, nextRev: RevId)
+    requires document.binding.None? && document.absence == UserDeleted
+    requires InFlight(document) && r.id == document.outbox.value.rev
+    ensures var after := PushedDoc(doc, document, Accepted(doc, r), nextRev);
+      after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+      && (!r.deleted ==>
+            after.outbox.Some? && after.outbox.value.deleted && !after.outbox.value.sealed
+            && after.outbox.value.baseRev == Some(r.id))
+      && (r.deleted ==> after.base.value.deleted)
+  {}
 
   lemma AcceptRow(document: Document, r: Revision, nextRev: RevId)
     ensures RowInv(Accept(document, r, nextRev))
