@@ -866,4 +866,37 @@ abstract module PathRuleCore refines ApplyCore {
     var device := step.pre.devices[step.event.device];
     EffectsKeepOneFilePerName(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk);
   }
+
+  // ---------------------------------------------------------------------
+  // G2: the rule writes and removes nothing an open editor holds unsaved
+  // text at
+  // ---------------------------------------------------------------------
+
+  // Where the rule clears the way, no write or remove it requests names a
+  // path an open editor holds unsaved text at (G2_UnsavedSafe for the
+  // rule's own effects; the pull apply's are §3.9's AppliedG2).
+  lemma ClearWayUnsavedSafe(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires !UnsavedCollides(platform, input.unsaved, r.path)
+    ensures forall e | e in ClearWay(platform, documents, doc, r, input, revs).effects && (e.Write? || e.Remove?) ::
+      forall u | u in input.unsaved :: !SameF(platform, u, e.path)
+  {
+    var document := documents[doc];
+    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
+    var way := InTheWay(platform, input.listing, r.path, own);
+    var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+    if aside.Some? {
+      MoveEffectsShape(platform, documents, doc, aside.value);
+    }
+    forall e | e in ClearWay(platform, documents, doc, r, input, revs).effects && (e.Write? || e.Remove?)
+      ensures forall u | u in input.unsaved :: !SameF(platform, u, e.path)
+    {
+      forall u | u in input.unsaved ensures !SameF(platform, u, e.path) {
+        if e.Write? { assert e.path == r.path; assert !CollideF(platform, u, r.path); }
+        else { assert own.Some? && e.path == own.value; assert !CollideF(platform, u, own.value); }
+      }
+    }
+  }
 }
