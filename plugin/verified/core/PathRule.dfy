@@ -740,6 +740,45 @@ abstract module PathRuleCore refines ApplyCore {
     }
   }
 
+  // Where the apply leaves nothing waiting for a name, the rule's step is the
+  // pull apply's step (§3.9's `ApplyStep`, with every binding's name and
+  // every row's claims), so the apply's guarantees hold for it: G2's step
+  // predicates, G5_NeverMixedUp, G6_Settle and G7.
+  lemma RulePassThroughGuarantees(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires RuleStep(step, doc, r, input, revs)
+    requires var d := step.event.device;
+      step.post == step.pre.(devices := step.pre.devices[d := step.post.devices[d]])
+    requires var device := step.pre.devices[step.event.device];
+      OneFilePerName(device.platform, device.disk)
+      && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
+    requires r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
+    requires r.doc == doc && r.device != step.event.device
+    requires var device := step.pre.devices[step.event.device];
+      var documents := device.journal.documents;
+      !HeldForName(documents[doc], ApplyRevision(device.platform, doc, documents[doc], r, input, BoundNames(documents),
+                                                 AllClaims(documents), revs[doc]), r)
+    ensures var device := step.pre.devices[step.event.device];
+      ApplyStep(step, doc, r, input, BoundNames(device.journal.documents), AllClaims(device.journal.documents), revs[doc])
+    ensures G2_OnlyWhatItSaw(step) && G2_UnsavedSafe(step) && G2_NoUntrackedDelete(step)
+    ensures G5_NeverMixedUp(step)
+    ensures forall d, doc', remote :: SettlesConcurrent(step, d, doc', remote) ==> G6_Settle(step, d, doc', remote)
+    ensures G7_OneFilePerName(step.pre) ==> G7_OneFilePerName(step.post) && G7_MoveKeepsContents(step)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var documents := device.journal.documents;
+    var bound := BoundNames(documents);
+    var claims := AllClaims(documents);
+    forall other | other in documents && documents[other].binding.Some?
+      ensures documents[other].binding.value.spelling in bound
+    {}
+    assert ApplyStep(step, doc, r, input, bound, claims, revs[doc]);
+    AppliedG2(step, doc, r, input, bound, claims, revs[doc]);
+    AppliedG5(step, doc, r, input, bound, claims, revs[doc]);
+    AppliedG6(step, doc, r, input, bound, claims, revs[doc]);
+    if G7_OneFilePerName(step.pre) { AppliedG7(step, doc, r, input, bound, claims, revs[doc]); }
+  }
+
   // ---------------------------------------------------------------------
   // The cases of the engine design the rule covers (PO-4, PO-11)
   // ---------------------------------------------------------------------

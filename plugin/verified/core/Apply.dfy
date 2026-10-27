@@ -209,6 +209,18 @@ abstract module ApplyCore refines StepContracts {
     set q | q in listing && CollideF(platform, q, p)
   }
 
+  // The only file colliding with a new document's name is a file at exactly
+  // that name holding the revision's content and kind: the document adopts
+  // it (design §4.5 step 3). The apply asks only where no document is bound
+  // to the name and no unsaved text is at it, so the file is untracked. The
+  // revision is not the document's base already (G5 (d) binds a file only
+  // where the step applied a revision).
+  predicate Adoptable(platform: Platform, document: Document, input: RoundInput, r: Revision) {
+    (document.base.None? || document.base.value.rev != r.id)
+    && r.path in input.listing && Colliders(platform, input.listing, r.path) == {r.path}
+    && input.listing[r.path] == (r.content, r.kind)
+  }
+
   // ---------------------------------------------------------------------
   // The apply (compiled)
   // ---------------------------------------------------------------------
@@ -341,9 +353,15 @@ abstract module ApplyCore refines StepContracts {
               [Write(Some(doc), r.path, r.content, r.kind, None)])
     else
       var held := Colliders(platform, input.listing, r.path);
+      if Adoptable(platform, document, input, r) then
+        // Adoption (design §4.5 step 3, G5 (d)): the untracked file at the
+        // name holds exactly the head's bytes, so it becomes the document's
+        // file. Nothing on disk changes.
+        Applied(document.(base := Some(BaseOf(r)), ahead := None,
+                          binding := Some(Binding(r.path, r.content, false, None)), absence := Never), [])
       // Only an untracked file is moved aside here; a name another document
       // holds is the path rule's (#962).
-      if |held| == 1 && !BoundName(platform, bound, LeastPath(held))
+      else if |held| == 1 && !BoundName(platform, bound, LeastPath(held))
          && !UnsavedCollides(platform, input.unsaved, LeastPath(held)) then
         var q := LeastPath(held);
         match PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path)
@@ -403,9 +421,33 @@ abstract module ApplyCore refines StepContracts {
        && var held := Colliders(platform, input.listing, r.path);
        |held| == 1 && !BoundName(platform, bound, LeastPath(held))
        && !UnsavedCollides(platform, input.unsaved, LeastPath(held))
+       && !Adoptable(platform, document, input, r)
        && PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, LeastPath(held), r.path).None?)
       ==> applied == NoCopy(doc, document, r, r.path)
   {}
+
+  // Adoption (design §4.5 step 3): a new document whose name holds only an
+  // untracked file with exactly the revision's content and kind takes that
+  // file as its own. The apply touches no file.
+  lemma AdoptsIdenticalFile(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      (document.binding.None? && Newer(document, r) && !JournalChange(document) && !r.deleted
+       && !UnsavedAt(platform, input.unsaved, r.path) && !BoundName(platform, bound, r.path)
+       && Adoptable(platform, document, input, r))
+      ==> && applied.effects == []
+          && applied.document.binding == Some(Binding(r.path, r.content, false, None))
+          && applied.document.base == Some(BaseOf(r)) && applied.document.ahead.None?
+          && input.listing[r.path] == (r.content, r.kind)
+  {
+    if document.binding.None? && Newer(document, r) && !JournalChange(document) && !r.deleted
+       && !UnsavedAt(platform, input.unsaved, r.path) && !BoundName(platform, bound, r.path)
+       && Adoptable(platform, document, input, r) {
+      assert !FreeIn(platform, input.listing, r.path) by {
+        assert r.path in Colliders(platform, input.listing, r.path);
+      }
+    }
+  }
 
   // ---------------------------------------------------------------------
   // Every precondition holds on the disk the listing was read from
@@ -792,7 +834,9 @@ abstract module ApplyCore refines StepContracts {
   // another device's revision the server accepted, to document doc, with
   // the round's input read from the step's state before (RoundInputOf) on a
   // disk with one file per name, `bound` every name a document is bound to,
-  // and the step's state after as the effects leave it.
+  // and the step's state after as the effects leave it. The claims only
+  // steer which copy name is picked, so any claims will do: the pull apply
+  // passes `ClaimsOf`, the path rule (#962) every row's claims.
   ghost predicate ApplyStep(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId) {
     step.event.SyncRound?
     && RoundInputOf(step.pre, step.event.device, input)
@@ -803,7 +847,6 @@ abstract module ApplyCore refines StepContracts {
     && ListingDistinct(device.platform, input.listing)
     && (forall other :: other in device.journal.documents && device.journal.documents[other].binding.Some? ==>
           device.journal.documents[other].binding.value.spelling in bound)
-    && claims == ClaimsOf(device.journal.documents, doc)
     && r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
     && r.doc == doc && r.device != d
     && var applied := ApplyRevision(device.platform, doc, device.journal.documents[doc], r, input, bound, claims, rev);
@@ -1110,11 +1153,20 @@ abstract module ApplyCore refines StepContracts {
     // Every name a file arrives at is no binding's name.
     assert forall x :: Arrives(applied.effects, x) ==> !BoundName(platform, bound, x) || (document.binding.None? && x == r.path);
     forall doc' | BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
-      ensures exists effect :: (effect in step.effects
+      ensures var spelling := after.journal.documents[doc'].binding.value.spelling;
+        var file := BoundFile(after, doc').value;
+        var known := doc' in device.journal.documents;
+        var hadFile := known && BoundFile(device, doc').Some?;
+        (exists effect :: (effect in step.effects
                 && ((effect.Write? && effect.target == Some(doc')
-                     && SameF(platform, effect.path, after.journal.documents[doc'].binding.value.spelling))
+                     && SameF(platform, effect.path, spelling))
                     || (effect.Move? && effect.mover == Some(doc')
-                        && SameF(platform, effect.to, after.journal.documents[doc'].binding.value.spelling))))
+                        && SameF(platform, effect.to, spelling)))))
+        || (!hadFile && HasFile(device, spelling) && !Tracked(device, spelling)
+            && after.journal.documents[doc'].base.Some?
+            && (!known || device.journal.documents[doc'].base.None?
+                || device.journal.documents[doc'].base.value.rev != after.journal.documents[doc'].base.value.rev)
+            && file.content == after.journal.documents[doc'].base.value.content)
     {
       var spelling' := after.journal.documents[doc'].binding.value.spelling;
       if doc' != doc || document.binding.Some? {
@@ -1127,8 +1179,24 @@ abstract module ApplyCore refines StepContracts {
         IdentityFrame(device, after, spelling', applied.effects);
         assert false;
       }
-      var e := Write(Some(doc), r.path, r.content, r.kind, None);
-      assert e in step.effects;
+      if !Adoptable(platform, document, input, r) {
+        var e := Write(Some(doc), r.path, r.content, r.kind, None);
+        assert e in step.effects;
+      } else {
+        // Adoption, clause (d): nothing on disk changed, and the file at the
+        // revision's name, untracked before, holds the revision's content.
+        assert applied.effects == [];
+        assert after.disk == device.disk;
+        assert spelling' == r.path;
+        FileAtIs(device, r.path, r.path);
+        FileAtIs(after, r.path, r.path);
+        assert BoundFile(after, doc').value.content == r.content;
+        assert !Tracked(device, r.path) by {
+          forall other | BoundTo(device, other, r.path) ensures false {
+            assert device.journal.documents[other].binding.value.spelling in bound;
+          }
+        }
+      }
     }
   }
 
