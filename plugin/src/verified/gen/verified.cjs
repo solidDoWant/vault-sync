@@ -3167,6 +3167,49 @@ let LocalCoreJs = (function() {
       };
     }
   }
+
+  $module.RoundInput = class RoundInput {
+    constructor(tag) {
+      this.$tag = tag;
+    }
+    static create_RoundInput(listing, unsaved, freshDocs) {
+      let $dt = new RoundInput(0);
+      $dt.listing = listing;
+      $dt.unsaved = unsaved;
+      $dt.freshDocs = freshDocs;
+      return $dt;
+    }
+    get is_RoundInput() { return this.$tag === 0; }
+    get dtor_listing() { return this.listing; }
+    get dtor_unsaved() { return this.unsaved; }
+    get dtor_freshDocs() { return this.freshDocs; }
+    toString() {
+      if (this.$tag === 0) {
+        return "LocalCoreJs.RoundInput.RoundInput" + "(" + _dafny.toString(this.listing) + ", " + _dafny.toString(this.unsaved) + ", " + _dafny.toString(this.freshDocs) + ")";
+      } else  {
+        return "<unexpected>";
+      }
+    }
+    equals(other) {
+      if (this === other) {
+        return true;
+      } else if (this.$tag === 0) {
+        return other.$tag === 0 && _dafny.areEqual(this.listing, other.listing) && _dafny.areEqual(this.unsaved, other.unsaved) && _dafny.areEqual(this.freshDocs, other.freshDocs);
+      } else  {
+        return false; // unexpected
+      }
+    }
+    static Default() {
+      return LocalCoreJs.RoundInput.create_RoundInput(_dafny.Map.Empty, _dafny.Set.Empty, _dafny.Seq.of());
+    }
+    static Rtd() {
+      return class {
+        static get Default() {
+          return RoundInput.Default();
+        }
+      };
+    }
+  }
   return $module;
 })(); // end of module LocalCoreJs
 let PosixPaths = (function() {

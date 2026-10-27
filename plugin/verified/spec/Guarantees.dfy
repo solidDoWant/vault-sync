@@ -108,7 +108,8 @@ abstract module Guarantees refines EngineModel {
   //
   // Every overwrite or delete the core requests names a file bound to the
   // document it acts for, conditional on the content the engine last read or
-  // wrote there (`seen`). A write where no file is must be conditional on no
+  // wrote there: `seen`, or, in a sync round, the content the round read
+  // there (`LastSaw`). A write where no file is must be conditional on no
   // file being there.
   ghost predicate G2_OnlyWhatItSaw(step: Step) {
     var d := EventDevice(step.event);
@@ -117,10 +118,52 @@ abstract module Guarantees refines EngineModel {
       var device := step.pre.devices[d.value];
       (effect.Write? && effect.precondition.Some? ==>
          effect.target.Some? && BoundTo(device, effect.target.value, effect.path)
-         && effect.precondition.value == device.journal.documents[effect.target.value].binding.value.seen)
+         && LastSaw(step, device, effect.target.value, effect.path, effect.precondition.value))
       && (effect.Remove? ==>
          BoundTo(device, effect.doc, effect.path)
-         && effect.expected == device.journal.documents[effect.doc].binding.value.seen)
+         && LastSaw(step, device, effect.doc, effect.path, effect.expected))
+  }
+
+  // What the core last saw at the bound file `path` of `doc` is `content`:
+  // the binding's `seen`, or, in a sync round, the round's read of the file
+  // (its listing, verified-core.md §2.3), which is newer than `seen`. The
+  // round's read counts only where the step keeps what it read (`ReadKept`):
+  // an overwrite of a user's change the core read but did not keep would
+  // destroy what the user wrote.
+  ghost predicate LastSaw(step: Step, device: Device, doc: DocId, path: Path, content: Hash)
+    requires BoundTo(device, doc, path)
+  {
+    content == device.journal.documents[doc].binding.value.seen
+    || (step.event.SyncRound? && step.event.device in step.pre.devices
+        && RoundRead(step, path).Some? && RoundRead(step, path).value.0 == content
+        && ReadKept(step, doc, content))
+  }
+
+  // A sync round keeps the content it read in doc's file: after the step it
+  // is what the document will have on the server (`Outgoing`), or it is in
+  // an untracked file on the device, or the step settles another device's
+  // live note revision of doc against it and the document sends their merge
+  // (G6's combined edits). Settling a remote delete keeps the read content
+  // only by the first two: an edit beats a delete with the edit itself.
+  ghost predicate ReadKept(step: Step, doc: DocId, content: Hash)
+    requires step.event.SyncRound?
+  {
+    var d := step.event.device;
+    d in step.post.devices
+    && (Outgoing(step.post.devices[d], doc) == Some(content)
+        || SavedNextToIt(step.post.devices[d], content)
+        || exists remote :: MergedRead(step, d, doc, content, remote))
+  }
+
+  // The step settles `remote`, a live note revision of doc, against the
+  // content read in doc's file, and the document sends the merge of the two
+  // over its base.
+  ghost predicate MergedRead(step: Step, d: DeviceId, doc: DocId, content: Hash, remote: Revision) {
+    SettlesConcurrent(step, d, doc, remote)
+    && !remote.deleted && remote.kind == Note
+    && step.pre.devices[d].journal.documents[doc].base.Some?
+    && var merged := Merge3(step.pre.devices[d].journal.documents[doc].base.value.content, content, remote.content);
+    merged.Some? && Outgoing(step.post.devices[d], doc) == merged
   }
 
   // The adapter performs a disk effect only if its precondition holds: a
