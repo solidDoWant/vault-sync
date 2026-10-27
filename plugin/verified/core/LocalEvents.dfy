@@ -58,22 +58,25 @@ abstract module LocalCore refines Guarantees {
                   path, content, kind, deleted, false, false))
   }
 
-  // The document's file is at `spelling` with `content`.
-  function Rebind(document: Document, spelling: Path, content: Hash, kind: Kind, rev: RevId): Document
+  // The document's file is at `spelling` with `content`. The outbox keeps
+  // the document's kind, whatever kind the file at `spelling` reads as: a
+  // document's kind is chosen at creation and never changes (SPEC.md §6),
+  // so the server refuses a commit of another (verified-core.md §3.6).
+  function Rebind(document: Document, spelling: Path, content: Hash, rev: RevId): Document
     requires document.binding.Some?
   {
     document.(binding := Some(document.binding.value.(spelling := spelling, seen := content)),
-              outbox := Send(document, spelling, content, kind, false, rev))
+              outbox := Send(document, spelling, content, KindOf(document), false, rev))
   }
 
   // The user moved the document's file to `spelling`: the binding follows,
   // and no longer records that the engine displaced the file (#802's
   // ruling, verified-core.md §3.3: a user's move observed afterwards clears
   // the record).
-  function Moved(document: Document, spelling: Path, content: Hash, kind: Kind, rev: RevId): Document
+  function Moved(document: Document, spelling: Path, content: Hash, rev: RevId): Document
     requires document.binding.Some?
   {
-    var moved := Rebind(document, spelling, content, kind, rev);
+    var moved := Rebind(document, spelling, content, rev);
     moved.(binding := Some(moved.binding.value.(displaced := false, userSpelling := None)))
   }
 
@@ -96,8 +99,8 @@ abstract module LocalCore refines Guarantees {
     case Renamed(from, to) =>
       if BoundAt(platform, document, from) then
         var r := ReadOf(input, to);
-        if r.Some? then Moved(document, to, r.value.0, r.value.1, rev)
-        else Moved(document, to, document.binding.value.seen, KindOf(document), rev)
+        if r.Some? then Moved(document, to, r.value.0, rev)
+        else Moved(document, to, document.binding.value.seen, rev)
       // Another file was renamed over this document's file: the user
       // replaced it, so this document's file is gone.
       else if BoundAt(platform, document, to) then Unbind(document, rev)
@@ -108,8 +111,22 @@ abstract module LocalCore refines Guarantees {
   // changed carries the change.
   function Saved(platform: Platform, document: Document, p: Path, r: Read, rev: RevId): Document {
     if r.Some? && BoundAt(platform, document, p) && document.binding.value.seen != r.value.0
-    then Rebind(document, document.binding.value.spelling, r.value.0, r.value.1, rev)
+    then Rebind(document, document.binding.value.spelling, r.value.0, rev)
     else document
+  }
+
+  // A reported rename onto a name of another kind keeps the document and
+  // its kind: the binding follows the file, and the outbox carries the
+  // document's kind, not the kind read at the new name (verified-core.md
+  // §3.6; SPEC.md §6, a document's kind never changes).
+  lemma RenameAcrossKindsKeepsKind(platform: Platform, document: Document, from: Path, to: Path, h: Hash, k: Kind, rev: RevId)
+    requires BoundAt(platform, document, from) && document.outbox.None?
+    requires document.base.Some? && document.base.value.kind != k
+    ensures var after := LocalDoc(platform, document, Renamed(from, to), map[to := Some((h, k))], rev);
+      after.binding.Some? && after.binding.value.spelling == to
+      && after.outbox.Some? && after.outbox.value.kind == document.base.value.kind
+      && after.outbox.value.path == to && after.outbox.value.content == h && !after.outbox.value.deleted
+  {
   }
 
   function LocalJournal(platform: Platform, journal: Journal, local: LocalEvent, input: map<Path, Read>, revs: FreshRevs): Journal
@@ -210,19 +227,20 @@ abstract module LocalCore refines Guarantees {
         // The user respelled the file (a case-only rename on a platform
         // where that is the same file), other than in its folders alone
         // (#737): the binding takes the listed spelling (SPEC.md §8).
-        if !SameNameModuloFolders(platform, listed, b.spelling) then Moved(document, listed, file.0, file.1, rev)
+        if !SameNameModuloFolders(platform, listed, b.spelling) then Moved(document, listed, file.0, rev)
         else if file.0 == b.seen
            && (document.outbox.Some?
                || (document.base.Some? && !document.base.value.deleted && document.base.value.content == file.0))
         then document
         // An offline edit, or a file the server does not have as it is.
-        else Rebind(document, b.spelling, file.0, file.1, rev)
-      // The match must hold a file of the document's kind: a document's kind
-      // never changes (SPEC.md §6), so the server refuses a commit of another.
+        else Rebind(document, b.spelling, file.0, rev)
+      // The match must hold a file of the document's kind: the match is a
+      // guess from content alone, and a file of another kind (another
+      // extension) is taken for another file (verified-core.md §3.6).
       else if Matched(platform, docs, listing, doc)
               && listing[MatchOf(platform, docs, listing, doc)].1 == KindOf(document) then
         var q := MatchOf(platform, docs, listing, doc);
-        Moved(document, q, b.seen, listing[q].1, rev)
+        Moved(document, q, b.seen, rev)
       // Missing and not matched: the user deleted it while the app was closed.
       else Unbind(document, rev)
   }

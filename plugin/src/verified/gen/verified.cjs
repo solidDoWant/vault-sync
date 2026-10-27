@@ -1336,11 +1336,11 @@ let LocalCoreJs = (function() {
         return LocalCoreJs.Option.create_Some(LocalCoreJs.Outbox.create_Outbox(rev, ((((document).dtor_base).is_Some) ? (LocalCoreJs.Option.create_Some((((document).dtor_base).dtor_value).dtor_rev)) : (LocalCoreJs.Option.create_None())), path, content, kind, deleted, false, false));
       }
     };
-    static Rebind(document, spelling, content, kind, rev) {
+    static Rebind(document, spelling, content, rev) {
       let _pat_let_tv0 = content;
       let _pat_let_tv1 = spelling;
       let _0_dt__update__tmp_h0 = document;
-      let _1_dt__update_houtbox_h0 = LocalCoreJs.__default.Send(document, spelling, content, kind, false, rev);
+      let _1_dt__update_houtbox_h0 = LocalCoreJs.__default.Send(document, spelling, content, LocalCoreJs.__default.KindOf(document), false, rev);
       let _2_dt__update_hbinding_h0 = LocalCoreJs.Option.create_Some(function (_pat_let6_0) {
   return function (_3_dt__update__tmp_h1) {
     return function (_pat_let7_0) {
@@ -1356,8 +1356,8 @@ let LocalCoreJs = (function() {
 }(((document).dtor_binding).dtor_value));
       return LocalCoreJs.Document.create_Document((_0_dt__update__tmp_h0).dtor_base, (_0_dt__update__tmp_h0).dtor_ahead, _2_dt__update_hbinding_h0, (_0_dt__update__tmp_h0).dtor_absence, _1_dt__update_houtbox_h0);
     };
-    static Moved(document, spelling, content, kind, rev) {
-      let _0_moved = LocalCoreJs.__default.Rebind(document, spelling, content, kind, rev);
+    static Moved(document, spelling, content, rev) {
+      let _0_moved = LocalCoreJs.__default.Rebind(document, spelling, content, rev);
       let _1_dt__update__tmp_h0 = _0_moved;
       let _2_dt__update_hbinding_h0 = LocalCoreJs.Option.create_Some(function (_pat_let9_0) {
   return function (_3_dt__update__tmp_h1) {
@@ -1411,9 +1411,9 @@ let LocalCoreJs = (function() {
         if (LocalCoreJs.__default.BoundAt(platform, document, _3_from)) {
           let _5_r = LocalCoreJs.__default.ReadOf(input, _4_to);
           if ((_5_r).is_Some) {
-            return LocalCoreJs.__default.Moved(document, _4_to, ((_5_r).dtor_value)[0], ((_5_r).dtor_value)[1], rev);
+            return LocalCoreJs.__default.Moved(document, _4_to, ((_5_r).dtor_value)[0], rev);
           } else {
-            return LocalCoreJs.__default.Moved(document, _4_to, (((document).dtor_binding).dtor_value).dtor_seen, LocalCoreJs.__default.KindOf(document), rev);
+            return LocalCoreJs.__default.Moved(document, _4_to, (((document).dtor_binding).dtor_value).dtor_seen, rev);
           }
         } else if (LocalCoreJs.__default.BoundAt(platform, document, _4_to)) {
           return LocalCoreJs.__default.Unbind(document, rev);
@@ -1424,7 +1424,7 @@ let LocalCoreJs = (function() {
     };
     static Saved(platform, document, p, r, rev) {
       if ((((r).is_Some) && (LocalCoreJs.__default.BoundAt(platform, document, p))) && (!_dafny.areEqual((((document).dtor_binding).dtor_value).dtor_seen, ((r).dtor_value)[0]))) {
-        return LocalCoreJs.__default.Rebind(document, (((document).dtor_binding).dtor_value).dtor_spelling, ((r).dtor_value)[0], ((r).dtor_value)[1], rev);
+        return LocalCoreJs.__default.Rebind(document, (((document).dtor_binding).dtor_value).dtor_spelling, ((r).dtor_value)[0], rev);
       } else {
         return document;
       }
@@ -1525,15 +1525,15 @@ let LocalCoreJs = (function() {
           let _2_listed = LocalCoreJs.__default.ListedAt(platform, listing, (_1_b).dtor_spelling);
           let _3_file = (listing).get(_2_listed);
           if (!(HostPaths.__default.SameNameModuloFolders(platform, _2_listed, (_1_b).dtor_spelling))) {
-            return LocalCoreJs.__default.Moved(_0_document, _2_listed, (_3_file)[0], (_3_file)[1], rev);
+            return LocalCoreJs.__default.Moved(_0_document, _2_listed, (_3_file)[0], rev);
           } else if ((_dafny.areEqual((_3_file)[0], (_1_b).dtor_seen)) && ((((_0_document).dtor_outbox).is_Some) || (((((_0_document).dtor_base).is_Some) && (!((((_0_document).dtor_base).dtor_value).dtor_deleted))) && (_dafny.areEqual((((_0_document).dtor_base).dtor_value).dtor_content, (_3_file)[0]))))) {
             return _0_document;
           } else {
-            return LocalCoreJs.__default.Rebind(_0_document, (_1_b).dtor_spelling, (_3_file)[0], (_3_file)[1], rev);
+            return LocalCoreJs.__default.Rebind(_0_document, (_1_b).dtor_spelling, (_3_file)[0], rev);
           }
         } else if ((LocalCoreJs.__default.Matched(platform, docs, listing, doc)) && (_dafny.areEqual(((listing).get(LocalCoreJs.__default.MatchOf(platform, docs, listing, doc)))[1], LocalCoreJs.__default.KindOf(_0_document)))) {
           let _4_q = LocalCoreJs.__default.MatchOf(platform, docs, listing, doc);
-          return LocalCoreJs.__default.Moved(_0_document, _4_q, (_1_b).dtor_seen, ((listing).get(_4_q))[1], rev);
+          return LocalCoreJs.__default.Moved(_0_document, _4_q, (_1_b).dtor_seen, rev);
         } else {
           return LocalCoreJs.__default.Unbind(_0_document, rev);
         }
