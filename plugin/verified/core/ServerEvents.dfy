@@ -386,4 +386,75 @@ abstract module ServerEvents refines StepContracts {
       assert pre.feed[i] == post.feed[i];
     }
   }
+
+  lemma {:isolate_assertions} RestoreKeepsAll(step: Step)
+    requires ServerEventStep(step) && step.event.Restore?
+    requires CoreReachable(step.pre) && RevisionsKeyed(step.pre.server)
+    ensures CoreReachable(step.post) && StepGuarantees(step)
+  {
+    var pre := step.pre;
+    var post := step.post;
+    RestoredIsCut(step);
+    RestoreRetains(step);
+    RestoreHistoryFollowsFeed(step);
+    ServerEventDevicePredicates(step);
+    assert pre.(server := post.server) == post;
+
+    // MirrorInv: a device finished after the restore is undiverged, with its
+    // cursor at the restored feed's length, which is a cut of the server.
+    forall d | d in post.devices && FinishedSyncing(post, d)
+      ensures FilesMirrorHeads(post, post.devices[d]) && HeadsMirrored(post, post.devices[d])
+    {
+      RestoreUndiverged(step, d);
+      assert pre.devices[d].journal.cursor == |post.server.feed| <= |pre.server.feed|;
+    }
+    assert MirrorInv(post);
+    MirrorImpliesG9(post);
+    assert LiveHeadsApart(post.server);
+    assert G7_OneFilePerName(post);
+    forall rev | rev in post.server.accepted
+      ensures Retrievable(post, rev) || (rev in post.server.purged && !IsHead(post.server, rev)) || rev in post.server.lost
+    {
+    }
+    assert G1_Retained(post);
+    assert G1_LatestNeverPurged(post);
+    assert StateInvariants(post);
+    assert CoreInv(post);
+    assert JournalsNameAccepted(post);
+    assert CutsHeadsApart(post.server);
+    forall d, i | d in post.devices && !Diverged(post, d) && 0 <= i < post.devices[d].journal.cursor
+      && i < |post.server.feed| && post.server.feed[i] in post.server.revisions
+      ensures var r := post.server.revisions[post.server.feed[i]];
+          r.doc in post.devices[d].journal.documents
+          && KnownPosition(post.devices[d].journal.documents[r.doc]).Some?
+          && KnownPosition(post.devices[d].journal.documents[r.doc]).value >= r.position
+    {
+      RestoreUndiverged(step, d);
+      assert pre.server.feed[i] == post.server.feed[i];
+    }
+    assert ClaimsCoverCursor(post);
+    forall d | d in post.devices && !Diverged(post, d) ensures OwnRevisionsAcknowledged(post, d) {
+      RestoreUndiverged(step, d);
+      forall doc, id | Unacknowledged(post, d, doc, id)
+        ensures post.devices[d].journal.documents[doc].outbox.Some?
+             && post.devices[d].journal.documents[doc].outbox.value.rev == id
+      {
+        KeepMember(pre.server.history[doc], FeedIds(post.server.feed), id);
+        assert Unacknowledged(pre, d, doc, id);
+      }
+    }
+    assert ClaimsReachable(post);
+    forall d: DeviceId, cut: Server | d in post.devices && !Diverged(post, d)
+      && post.devices[d].journal.cursor <= |post.server.feed|
+      && |cut.feed| == post.devices[d].journal.cursor && EarlierServer(post.server, cut)
+      && FinishedSyncing(post.(server := cut), d)
+      ensures FilesMirrorHeads(post.(server := cut), post.devices[d])
+           && HeadsMirrored(post.(server := cut), post.devices[d])
+    {
+      RestoreUndiverged(step, d);
+      assert pre.(server := cut) == post.(server := cut);
+    }
+    assert MirrorAtCursor(post);
+    assert G1_OnlyRetentionRemoves(step);
+  }
 }
