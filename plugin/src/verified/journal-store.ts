@@ -148,6 +148,12 @@ export class CoreJournalStore {
   /** The journal known to be durable, or undefined when not known (before the first read, or after a failed write). */
   private durable: CoreJournal | undefined;
   private closedReason: string | undefined;
+  /**
+   * The last call queued: loads and persists run one at a time, in the
+   * order they were called, so overlapping persists end with the journal of
+   * the last one called and each diffs against the journal before it.
+   */
+  private queue: Promise<unknown> = Promise.resolve();
 
   private constructor(private readonly db: IDBDatabase) {
     db.onversionchange = () => {
@@ -188,20 +194,34 @@ export class CoreJournalStore {
     this.db.close();
   }
 
-  /** The persisted journal, or undefined if none was ever persisted. */
-  async load(): Promise<CoreJournal | undefined> {
-    const journal = await this.read();
-    this.durable = journal;
-    return journal === undefined ? undefined : copyJournal(journal);
+  /** The persisted journal, or undefined if none was ever persisted. Runs after every call made before it. */
+  load(): Promise<CoreJournal | undefined> {
+    return this.serially(async () => {
+      const journal = await this.read();
+      this.durable = journal;
+      return journal === undefined ? undefined : copyJournal(journal);
+    });
   }
 
   /**
    * Replaces the persisted journal with `journal` in one durable
    * transaction: all of it or, if the write fails or is cut short, nothing.
-   * Resolves once the transaction is on disk.
+   * Resolves once the transaction is on disk. Calls may overlap: each
+   * write starts once every call made before it settled, so the journal
+   * persisted last is the one passed to the last call.
    */
-  async persist(journal: CoreJournal): Promise<void> {
+  persist(journal: CoreJournal): Promise<void> {
     const next = copyJournal(journal);
+    return this.serially(() => this.write(next));
+  }
+
+  private serially<T>(work: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(work, work);
+    this.queue = run.catch(() => undefined);
+    return run;
+  }
+
+  private async write(next: CoreJournal): Promise<void> {
     const previous = this.durable;
     // Until this write is known to have landed or not, the durable journal is unknown.
     this.durable = undefined;

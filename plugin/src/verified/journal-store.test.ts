@@ -128,6 +128,26 @@ describe("CoreJournalStore", () => {
     store.close();
   });
 
+  it("ends overlapping writes with the last one started, whatever order they land in", async () => {
+    const factory = new FakeIDBFactory();
+    const store = await CoreJournalStore.open(factory, name);
+    const rng = random(5);
+    const a = row(1, rng);
+    const b = row(2, rng);
+    const journal = (documents: Record<string, CoreDocument>, cursor: bigint): CoreJournal => ({ ...emptyJournal(), documents, cursor });
+    await store.persist(journal({}, 1n));
+    const first = store.persist(journal({ x: a }, 2n));
+    const second = store.persist(journal({ x: b, y: b }, 3n));
+    await first;
+    const third = store.persist(journal({ x: a }, 4n));
+    await Promise.all([second, third]);
+
+    const inspector = await CoreJournalStore.open(factory, name);
+    expect(await inspector.load()).toEqual(journal({ x: a }, 4n));
+    inspector.close();
+    store.close();
+  });
+
   it("rejects calls after it is closed", async () => {
     const store = await CoreJournalStore.open(new FakeIDBFactory(), name);
     store.close();
@@ -151,9 +171,28 @@ describe("CoreJournalStore", () => {
           const next = nextJournal(journal, index, rng);
           const context = `seed ${String(seed)}, write ${String(index)}`;
           if (rng.int(3) !== 0) {
-            await store.persist(next);
-            durable = next;
-            journal = next;
+            if (rng.int(2) === 0) {
+              await store.persist(next);
+              durable = next;
+              journal = next;
+              continue;
+            }
+            // Overlapping writes, as steps from local events and the feed can
+            // issue: a second write starts before the first lands, and a third,
+            // back on the first's rows, once the first landed but not the
+            // second. The journal ends as the last one written.
+            const second = nextJournal(next, index + 1000, rng);
+            const third = nextJournal(next, index + 2000, rng);
+            const first = store.persist(next);
+            const middle = store.persist(second);
+            await first;
+            const last = store.persist(third);
+            await Promise.all([middle, last]);
+            const inspector = await CoreJournalStore.open(factory, name);
+            expect(await inspector.load(), `${context}: overlapping writes`).toEqual(third);
+            inspector.close();
+            durable = third;
+            journal = third;
             continue;
           }
 
