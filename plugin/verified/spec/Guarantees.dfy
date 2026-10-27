@@ -388,7 +388,9 @@ abstract module Guarantees refines EngineModel {
   //      was untracked, and the step applied a revision whose content is
   //      exactly the file's;
   //  (e) a new document for an untracked file (its first push): the journal
-  //      did not know the document, and the file was untracked;
+  //      did not know the document, the file was untracked, and the
+  //      document has no server revision after the step (a remote create
+  //      binds an existing file only by adoption, (d));
   //  (f) tombstone re-creation (verified-core.md §1.3, decision #17): the
   //      document had no file, its newest claim was a tombstone whose path
   //      is the file's name under K, and the file was untracked.
@@ -425,7 +427,7 @@ abstract module Guarantees refines EngineModel {
                 || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
             && file.content == after.journal.documents[doc].base.value.content)
         // (e)
-        || (!known && Untracked(before, spelling))
+        || (!known && Untracked(before, spelling) && after.journal.documents[doc].base.None?)
         // (f)
         || (!hadFile && known && Untracked(before, spelling)
             && NewestClaim(before.journal.documents[doc]).Some?
@@ -755,19 +757,54 @@ abstract module Guarantees refines EngineModel {
   }
 
   // Steps [from, to) are quiet for device d: only answers to d's own
-  // commits, none of them "server unavailable".
+  // commits (none of them "server unavailable") and remote revisions
+  // delivered to d.
   ghost predicate QuietFor(trace: Trace, d: DeviceId, from: int, to: int)
     requires 0 <= from && to <= |trace|
   {
     forall m :: from <= m < to ==>
-      trace[m].event.Pushed? && trace[m].event.device == d && !trace[m].event.result.Unavailable?
+      (trace[m].event.Pushed? && trace[m].event.device == d && !trace[m].event.result.Unavailable?)
+      || (trace[m].event.RemoteRevision? && trace[m].event.device == d)
   }
 
-  // Device d has finished syncing apart from what a user has to act on: it
-  // has read the whole feed, has no open intent, and every document and
-  // in-scope file is as the server has it, except documents it cannot hold
-  // (G9) and those a user has to act on (reported, G10_SettledOrReported).
-  ghost predicate SettledExceptReported(state: State, d: DeviceId) {
+  ghost predicate UserTouches(action: UserAction, platform: Platform, p: Path) {
+    match action
+    case WriteFile(q, _, _) => SameF(platform, q, p)
+    case DeleteFile(q) => SameF(platform, q, p)
+    case RenameFile(from, to) => SameF(platform, from, p) || SameF(platform, to, p)
+    case EditBuffer(q, _) => SameF(platform, q, p)
+  }
+
+  ghost predicate EventTells(local: LocalEvent, platform: Platform, p: Path) {
+    match local
+    case Created(q) => SameF(platform, q, p)
+    case Modified(q) => SameF(platform, q, p)
+    case Deleted(q) => SameF(platform, q, p)
+    case Renamed(from, to) => SameF(platform, from, p) || SameF(platform, to, p)
+  }
+
+  // The engine on device d has not been told, by step n, of the user's last
+  // change at `p`: the user changed `p` in some step m <= n, and no local
+  // event about `p` and no start-up scan reached the engine after it. Local
+  // events lag the disk (design §4.3), so such a file is not yet the
+  // engine's to settle.
+  ghost predicate Unnoticed(trace: Trace, d: DeviceId, n: int, platform: Platform, p: Path)
+    requires 0 <= n < |trace|
+  {
+    exists m :: 0 <= m <= n && trace[m].event.User? && trace[m].event.device == d
+      && UserTouches(trace[m].event.action, platform, p)
+      && !exists m2 :: m < m2 <= n
+           && ((trace[m2].event.Local? && trace[m2].event.device == d
+                && EventTells(trace[m2].event.local, platform, p))
+               || (trace[m2].event.Scan? && trace[m2].event.device == d))
+  }
+
+  // Device d has finished syncing apart from what a user has to act on and
+  // what it has not been told of: it has read the whole feed, has no open
+  // intent, and every document and in-scope file is as the server has it,
+  // except documents it cannot hold (G9), those a user has to act on
+  // (reported, G10_SettledOrReported), and files in `unnoticed`.
+  ghost predicate SettledExceptReported(state: State, d: DeviceId, unnoticed: iset<Path>) {
     d in state.devices
     && var device := state.devices[d];
     device.running
@@ -777,21 +814,26 @@ abstract module Guarantees refines EngineModel {
           (device.journal.documents[doc].outbox.None? || UserMustAct(device, doc))
           && (device.journal.documents[doc].ahead.Some? ==>
                 CannotHold(device.journal.documents[doc].ahead.value.blocker) || UserMustAct(device, doc)))
-    && (forall p :: p in device.disk && p !in device.outOfScope ==>
+    && (forall p :: (p in device.disk && p !in device.outOfScope && p !in unnoticed) ==>
           AsServerHas(device, p) || exists doc :: BoundTo(device, doc, p) && UserMustAct(device, doc))
   }
 
   // "Sync never ... stalls forever", as a safety property: two sync rounds
   // of a device with nothing in between but answers to its own commits (none
-  // of them "unavailable"), and nothing else after them, leave the device
-  // finished apart from what a user has to act on. A core that never
-  // commits, or never applies what it pulled, breaks this.
+  // of them "unavailable") and revisions delivered to it, and nothing else
+  // after them, leave the device finished apart from what a user has to act
+  // on and the user changes it has not been told of yet. A core that never
+  // commits, or never applies what it pulled, breaks this. Each round's
+  // pull is part of its step (`SyncRound`, Engine.dfy), so the second round
+  // has pulled everything the server had when it started.
   ghost predicate G10_NeverStalls(trace: Trace) {
     forall d, i, i2, n :: (0 <= i < i2 <= n < |trace|
       && trace[i].event == SyncRound(d) && trace[i2].event == SyncRound(d)
       && QuietFor(trace, d, i + 1, i2) && QuietFor(trace, d, i2 + 1, n + 1)
-      && (n + 1 == |trace| || !QuietFor(trace, d, n + 1, n + 2))) ==>
-        SettledExceptReported(trace[n].post, d)
+      && (n + 1 == |trace| || !QuietFor(trace, d, n + 1, n + 2))
+      && d in trace[n].post.devices) ==>
+        var platform := trace[n].post.devices[d].platform;
+        SettledExceptReported(trace[n].post, d, iset p | Unnoticed(trace, d, n, platform, p))
   }
 
   ghost predicate G10(trace: Trace) {

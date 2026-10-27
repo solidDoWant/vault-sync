@@ -170,6 +170,9 @@ abstract module EngineModel {
     | Local(device: DeviceId, local: LocalEvent)
     // E7: the start-up scan, with the vault listing.
     | Scan(device: DeviceId, listing: map<Path, (Hash, Kind)>)
+    // A remote revision delivered to the device outside a sync round (a
+    // pull the realtime channel triggered, or a page of a pull still being
+    // read).
     | RemoteRevision(device: DeviceId, revision: Revision)
     | Pushed(device: DeviceId, result: PushResult)
     // A server restore from backup; the server's revisions after it.
@@ -181,7 +184,11 @@ abstract module EngineModel {
     | RestoreFromHistory(doc: DocId, from: RevId, revision: Revision)
     | Crash(device: DeviceId)
     | Restart(device: DeviceId)
-    // One sync round (a pull, then a push) the engine runs on its own.
+    // One sync round the engine runs on its own: a pull, then a push. The
+    // step includes the pull's results: the revisions on the feed after the
+    // device's cursor when the round starts are handed to the core within
+    // the step (its `Pull` effect names where the pull starts). The push's
+    // answers arrive as later `Pushed` events.
     | SyncRound(device: DeviceId)
 
   ghost predicate IsUserAction(event: Event) { event.User? }
