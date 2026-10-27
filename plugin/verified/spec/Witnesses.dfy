@@ -462,6 +462,18 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert [first, second][..1] == [first];
   }
 
+  // A crash step fails CrashCutsShort when the step it claims to have cut
+  // short is one the core does not handle: a user's action of the same
+  // device, or another crash of it. Each lists a prefix of the requested
+  // effects, so only the kind of the cut event rules it out.
+  lemma CrashCutsShortRejectsUnhandledEvents(
+    pre: State, post: State, d: DeviceId, action: UserAction, first: Effect, second: Effect)
+    ensures !CrashCutsShort(Step(pre, Crash(d, Some(Cut(User(d, action), [first, second]))), [first], post))
+    ensures !CrashCutsShort(Step(pre, Crash(d, Some(Cut(Crash(d, None), [first, second]))), [first], post))
+  {
+    assert [first, second][..1] == [first];
+  }
+
   // ---------------------------------------------------------------------
   // Rejections
   // ---------------------------------------------------------------------
