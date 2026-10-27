@@ -37,10 +37,11 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + nightly-simulation report tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + path-axiom property-test coverage check + nightly-simulation report tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
+	./scripts/path-axioms_check_test.sh
 	./scripts/sim-nightly-report_test.sh
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
