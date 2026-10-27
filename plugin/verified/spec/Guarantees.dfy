@@ -156,11 +156,14 @@ abstract module Guarantees refines EngineModel {
   }
 
   // The step settles `remote`, a live note revision of doc, against the
-  // content read in doc's file, and the document sends the merge of the two
-  // over its base.
+  // content the round read in doc's file, a note too (G6 merges only two
+  // notes), and the document sends the merge of the two over its base.
   ghost predicate MergedRead(step: Step, d: DeviceId, doc: DocId, content: Hash, remote: Revision) {
     SettlesConcurrent(step, d, doc, remote)
     && !remote.deleted && remote.kind == Note
+    && step.event.SyncRound? && step.event.device == d
+    && step.pre.devices[d].journal.documents[doc].binding.Some?
+    && RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling) == Some((content, Note))
     && step.pre.devices[d].journal.documents[doc].base.Some?
     && var merged := Merge3(step.pre.devices[d].journal.documents[doc].base.value.content, content, remote.content);
     merged.Some? && Outgoing(step.post.devices[d], doc) == merged

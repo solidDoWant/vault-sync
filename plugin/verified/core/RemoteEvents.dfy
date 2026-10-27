@@ -613,16 +613,7 @@ abstract module RemoteCore {
       var doc := var doc0 :| doc0 in journal'.documents && (doc0 !in journal.documents || journal'.documents[doc0] != journal.documents[doc0]); doc0;
       assert !FinishedSyncing(post, d);
       AfterKeepsFinished(step, d, journal');
-      forall d1, d2, p | FinishedSyncing(post, d1) && FinishedSyncing(post, d2)
-        && p in post.devices[d1].disk && p !in post.devices[d1].outOfScope && p !in post.devices[d2].outOfScope
-        ensures (exists q :: q in post.devices[d2].disk
-                   && (SameNameModuloFolders(post.devices[d1].platform, p, q) || SameNameModuloFolders(post.devices[d2].platform, p, q))
-                   && post.devices[d2].disk[q].content == post.devices[d1].disk[p].content)
-                || ReportedCannotHold(post, post.devices[d2], p)
-      {
-        assert d1 != d && d2 != d;
-        assert FinishedSyncing(pre, d1) && FinishedSyncing(pre, d2);
-      }
+      AfterKeepsG9(pre, d, journal');
     }
     assert ServerFollowsEvent(step);
     // DisksFollowEffects: the one effect leaves the disk as it is.
