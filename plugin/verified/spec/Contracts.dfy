@@ -35,9 +35,83 @@ abstract module StepContracts refines PushCore {
   // contracts. A diverged device's own round or pulled revision waits for
   // its resync (ShellRun), so its contracts assume it is not Diverged.
   ghost predicate CoreReachable(state: State) {
+    ClaimsReachable(state) && MirrorAtCursor(state)
+  }
+
+  // CoreReachable without MirrorAtCursor, which these clauses imply
+  // (ClaimsImplyMirrorContract, #1050).
+  ghost predicate ClaimsReachable(state: State) {
     StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
-    && MirrorAtCursor(state) && FeedPositioned(state.server) && ClaimsCoverCursor(state)
+    && FeedPositioned(state.server) && ClaimsCoverCursor(state)
+    && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
     && (forall d :: d in state.devices && !Diverged(state, d) ==> OwnRevisionsAcknowledged(state, d))
+  }
+
+  // Each document's history is that document's feed entries, in feed order
+  // (#1050, gap A): every history entry is a revision of its document and
+  // a feed entry, every feed entry the server holds is in its document's
+  // history, and positions grow along a history. Appended extends a
+  // history and the feed together, a purge changes neither, and a restore
+  // from backup cuts both at the same place (EarlierServer's Keep keeps
+  // the order). With FeedPositioned, a history's last entry in a cut of the
+  // feed is the newest revision of its document the cut holds.
+  ghost predicate HistoryFollowsFeed(server: Server) {
+    (forall doc, j :: doc in server.history && 0 <= j < |server.history[doc]|
+       && server.history[doc][j] in server.revisions
+       ==> server.revisions[server.history[doc][j]].doc == doc && server.history[doc][j] in server.feed)
+    && (forall i :: 0 <= i < |server.feed| && server.feed[i] in server.revisions
+          ==> var doc := server.revisions[server.feed[i]].doc;
+              doc in server.history && server.feed[i] in server.history[doc])
+    && (forall doc, j, k :: doc in server.history && 0 <= j < k < |server.history[doc]|
+          && server.history[doc][j] in server.revisions && server.history[doc][k] in server.revisions
+          ==> server.revisions[server.history[doc][j]].position < server.revisions[server.history[doc][k]].position)
+  }
+
+  // Every revision the server holds is one it accepted, as it accepted it
+  // (#1050): Appended adds a revision to both, and a restore from backup
+  // restricts the revisions and keeps `accepted`.
+  ghost predicate RevisionsAccepted(server: Server) {
+    forall id :: id in server.revisions ==> id in server.accepted && server.accepted[id] == server.revisions[id]
+  }
+
+  // A base records the revision `r` of document `doc` it was made from.
+  ghost predicate BaseRecords(base: Base, doc: DocId, r: Revision) {
+    r.id == base.rev && r.doc == doc && r.position == base.position && r.path == base.path
+    && r.content == base.content && r.kind == base.kind && r.deleted == base.deleted
+  }
+
+  // Every base and ahead a journal records is a revision of its row's
+  // document that the server accepted, as it accepted it (#1050, gaps A
+  // and B): a base comes only from a pulled or an acknowledged revision,
+  // an ahead only from a pulled one, and a restore from backup keeps
+  // `accepted`. With RevisionsAccepted, a base or ahead the server still
+  // holds matches the server's revision with that id; and a revision a
+  // later accept appends (Appendable: an id never accepted) is named by no
+  // journal before it is accepted. It holds of a diverged device too.
+  ghost predicate JournalsNameAccepted(state: State) {
+    forall d, doc :: d in state.devices && doc in state.devices[d].journal.documents ==>
+      var document := state.devices[d].journal.documents[doc];
+      (document.base.Some? ==>
+         document.base.value.rev in state.server.accepted
+         && BaseRecords(document.base.value, doc, state.server.accepted[document.base.value.rev]))
+      && (document.ahead.Some? ==>
+            document.ahead.value.revision.id in state.server.accepted
+            && document.ahead.value.revision.doc == doc
+            && state.server.accepted[document.ahead.value.revision.id] == document.ahead.value.revision)
+  }
+
+  // #1031's proof obligation (#1050): the cursor's claims imply
+  // MirrorAtCursor. A device finished against a cut at its cursor holds
+  // only revisions the cut holds (JournalOnServer), each at a position
+  // below its cursor that matches the server's revision (FeedPositioned,
+  // JournalsNameAccepted, RevisionsAccepted); the cut's head of each
+  // document is the newest revision of it below the cursor
+  // (HistoryFollowsFeed), and ClaimsCoverCursor makes the device's newest
+  // claim that head. MirrorAtCursor stays a clause of CoreReachable, so
+  // that a step's proof may assume it; #1031 proves this implication and
+  // uses it to conclude MirrorAtCursor after every step.
+  ghost predicate ClaimsImplyMirrorContract() {
+    forall state: State :: ClaimsReachable(state) ==> MirrorAtCursor(state)
   }
 
   // Every revision's position is its index in the feed (Appendable, #1025).

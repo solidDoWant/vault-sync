@@ -430,5 +430,146 @@ abstract module StepContractWitnesses refines StepContracts {
     assert Commit(doc, o) in step.effects;
     assert CommitLandedAs(step, d, doc, o);
   }
-}
 
+  // ---------------------------------------------------------------------
+  // The feed, the histories and the journals agree (#1050, settling #1031)
+  // ---------------------------------------------------------------------
+
+  // CoreReachable is satisfiable: the initial state has it.
+  lemma InitialCoreReachable(platforms: map<DeviceId, Platform>)
+    ensures CoreReachable(Initial(platforms))
+  {
+    var s := Initial(platforms);
+    InitialSatisfiesInvariants(platforms);
+    InitialCoreInv(platforms);
+    InitialServerInv(platforms);
+    InitialMirror(platforms);
+    forall d: DeviceId, cut: Server | d in s.devices && !Diverged(s, d)
+      && s.devices[d].journal.cursor <= |s.server.feed|
+      && |cut.feed| == s.devices[d].journal.cursor && EarlierServer(s.server, cut)
+      && FinishedSyncing(s.(server := cut), d)
+      ensures FilesMirrorHeads(s.(server := cut), s.devices[d]) && HeadsMirrored(s.(server := cut), s.devices[d])
+    {
+      assert cut.history == map[];
+      forall doc ensures Head(cut, doc).None? {}
+    }
+  }
+
+  // The new clauses are not vacuous: a device that holds the head of a
+  // two-revision history, read in feed order, satisfies them.
+  lemma FeedOrderedHistoryWitness(d: DeviceId, e: DeviceId, platform: Platform, x: DocId,
+                                  r1: Revision, r2: Revision, p: Path)
+    requires r1.id != r2.id
+    requires r1 == Revision(r1.id, x, 0, None, p, r1.content, Note, false, e)
+    requires r2 == Revision(r2.id, x, 1, Some(r1.id), p, r2.content, Note, true, e)
+    ensures
+      var row := Document(Some(Base(r2.id, 1, p, r2.content, Note, true)), None, None, Never, None);
+      var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[], {}, {});
+      var revisions := map[r1.id := r1, r2.id := r2];
+      var server := Server(revisions, map[x := [r1.id, r2.id]], [r1.id, r2.id], {}, revisions);
+      var state := State(map[d := device], server);
+      HistoryFollowsFeed(server) && RevisionsAccepted(server) && JournalsNameAccepted(state)
+      && FeedPositioned(server) && ClaimsCoverCursor(state)
+  {
+    var row := Document(Some(Base(r2.id, 1, p, r2.content, Note, true)), None, None, Never, None);
+    var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[], {}, {});
+    var revisions := map[r1.id := r1, r2.id := r2];
+    var server := Server(revisions, map[x := [r1.id, r2.id]], [r1.id, r2.id], {}, revisions);
+    var state := State(map[d := device], server);
+    assert server.feed[0] == r1.id && server.feed[1] == r2.id;
+    assert server.history[x][0] == r1.id && server.history[x][1] == r2.id;
+  }
+
+  // #1031's gap A (regression): x's history lists its revisions out of
+  // feed order ([r2, r1], positions 1 and 0). d read the whole of x and
+  // holds its head r2, a tombstone, so its claims cover its cursor; but
+  // the cut at d's cursor has the live r1 as x's head, and d, finished
+  // against it, holds no file of it: MirrorAtCursor fails. The history is
+  // not x's feed entries in feed order, so even without MirrorAtCursor the
+  // state is not reachable (ClaimsReachable fails); every other new clause
+  // holds of it.
+  lemma HistoryOutOfFeedOrderExcluded(d: DeviceId, e: DeviceId, platform: Platform, x: DocId, y: DocId,
+                                      r1: Revision, r2: Revision, r3: Revision, p: Path, q: Path, cut: Server)
+    requires d != e && x != y && |{r1.id, r2.id, r3.id}| == 3 && !CollideK(p, q)
+    requires r1 == Revision(r1.id, x, 0, None, p, r1.content, Note, false, e)
+    requires r2 == Revision(r2.id, x, 1, Some(r1.id), p, r2.content, Note, true, e)
+    requires r3 == Revision(r3.id, y, 2, None, q, r3.content, Note, false, e)
+    requires cut == Server(map[r1.id := r1, r2.id := r2], map[x := [r2.id, r1.id]], [r1.id, r2.id], {}, map[])
+    ensures
+      var row := Document(Some(Base(r2.id, 1, p, r2.content, Note, true)), None, None, Never, None);
+      var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[], {}, {});
+      var revisions := map[r1.id := r1, r2.id := r2, r3.id := r3];
+      var server := Server(revisions, map[x := [r2.id, r1.id], y := [r3.id]], [r1.id, r2.id, r3.id], {}, revisions);
+      var state := State(map[d := device], server);
+      !Diverged(state, d) && ClaimsCoverCursor(state) && FeedPositioned(server)
+      && EarlierServer(server, cut) && FinishedSyncing(state.(server := cut), d)
+      && RevisionsAccepted(server) && JournalsNameAccepted(state)
+      && !MirrorAtCursor(state) && !ClaimsReachable(state) && !CoreReachable(state)
+  {
+    var row := Document(Some(Base(r2.id, 1, p, r2.content, Note, true)), None, None, Never, None);
+    var device := Device(platform, true, Journal(map[x := row], 2, [], [], Some(r2.id)), map[], {}, {});
+    var revisions := map[r1.id := r1, r2.id := r2, r3.id := r3];
+    var server := Server(revisions, map[x := [r2.id, r1.id], y := [r3.id]], [r1.id, r2.id, r3.id], {}, revisions);
+    var state := State(map[d := device], server);
+    assert !Diverged(state, d);
+    forall i | 0 <= i < 2 ensures server.revisions[server.feed[i]].doc == x && server.revisions[server.feed[i]].position <= 1 {}
+    var kept := set i | 0 <= i < 2 :: cut.feed[i];
+    assert kept == {r1.id, r2.id} by { assert cut.feed[0] == r1.id; assert cut.feed[1] == r2.id; }
+    assert server.history[x][1..] == [r1.id];
+    assert server.history[x][1..][1..] == [];
+    assert Keep([], kept) == [];
+    assert Keep([r1.id], kept) == [r1.id];
+    assert Keep(server.history[x], kept) == [r2.id, r1.id];
+    assert server.history[y][1..] == [];
+    assert Keep(server.history[y], kept) == [];
+    assert cut.history == (map doc | doc in server.history && |Keep(server.history[doc], kept)| > 0 :: Keep(server.history[doc], kept));
+    assert EarlierServer(server, cut);
+    assert Head(cut, x) == Some(r1);
+    assert LiveHead(cut, x);
+    assert !ReportedCannotHold(state.(server := cut), device, p);
+    assert !HeadsMirrored(state.(server := cut), device);
+    assert FinishedSyncing(state.(server := cut), d);
+    assert !MirrorAtCursor(state);
+    assert server.history[x][0] == r2.id && server.history[x][1] == r1.id;
+  }
+
+  // #1031's gap B (regression): device e's journal names r, which the
+  // server has not accepted, as the base of a new document x; e is
+  // Diverged. d's accept of r would append it, after which e would be
+  // undiverged with no claim on the feed's r0. A journal names only
+  // accepted revisions, so the state before the accept is not
+  // CoreReachable.
+  lemma JournalNamesUnacceptedExcluded(d: DeviceId, e: DeviceId, platform: Platform, w: DocId, x: DocId,
+                                       r0: Revision, r: Revision, p0: Path, p1: Path, c: Hash)
+    requires d != e && w != x && r0.id != r.id && !CollideK(p0, p1)
+    requires r0 == Revision(r0.id, w, 0, None, p0, r0.content, Note, false, e)
+    requires r == Revision(r.id, x, 1, None, p1, c, Note, false, d)
+    ensures
+      var o := Outbox(r.id, None, p1, c, Note, false, true, false);
+      var dev := Device(platform, true, Journal(map[w := Document(Some(Base(r0.id, 0, p0, r0.content, Note, false)), None, None, Never, None), x := Document(None, None, None, Never, Some(o))], 1, [], [], Some(r0.id)), map[], {}, {});
+      var stranger := Device(platform, true, Journal(map[x := Document(Some(Base(r.id, 1, p1, c, Note, false)), None, None, Never, None)], 1, [], [], Some(r0.id)), map[], {}, {});
+      var server := Server(map[r0.id := r0], map[w := [r0.id]], [r0.id], {}, map[r0.id := r0]);
+      var pre := State(map[d := dev, e := stranger], server);
+      var post := pre.(server := Appended(server, x, r));
+      Appendable(server, x, r) && ClaimsCoverCursor(pre) && FeedPositioned(server) && Diverged(pre, e)
+      && !Diverged(post, e) && !ClaimsCoverCursor(post)
+      && !ClaimsReachable(pre) && !CoreReachable(pre)
+  {
+    var o := Outbox(r.id, None, p1, c, Note, false, true, false);
+    var dev := Device(platform, true, Journal(map[w := Document(Some(Base(r0.id, 0, p0, r0.content, Note, false)), None, None, Never, None), x := Document(None, None, None, Never, Some(o))], 1, [], [], Some(r0.id)), map[], {}, {});
+    var stranger := Device(platform, true, Journal(map[x := Document(Some(Base(r.id, 1, p1, c, Note, false)), None, None, Never, None)], 1, [], [], Some(r0.id)), map[], {}, {});
+    var server := Server(map[r0.id := r0], map[w := [r0.id]], [r0.id], {}, map[r0.id := r0]);
+    var pre := State(map[d := dev, e := stranger], server);
+    var post := pre.(server := Appended(server, x, r));
+    assert Head(server, x).None?;
+    assert Head(server, w) == Some(r0);
+    assert ParentIsHead(server, x, r.parent);
+    assert Appendable(server, x, r);
+    assert post.server.feed == [r0.id, r.id];
+    assert !Diverged(post, e);
+    assert post.server.feed[0] == r0.id && post.server.revisions[r0.id] == r0;
+    assert w !in stranger.journal.documents;
+    assert !ClaimsCoverCursor(post);
+    assert r.id !in server.accepted;
+  }
+}
