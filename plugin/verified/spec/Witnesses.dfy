@@ -877,7 +877,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
   // Rejections
   // ---------------------------------------------------------------------
 
-  // G9: two finished devices that disagree on a file's content fail it.
+  // G9: two finished devices that disagree on a file's content fail it, and
+  // the file that is the server's head does not agree with the other one.
   lemma G9Rejects(
     d1: DeviceId, d2: DeviceId, platform: Platform, p: Path, doc: DocId, rev: Revision, f1: DiskFile, f2: DiskFile)
     requires d1 != d2
@@ -890,10 +891,13 @@ abstract module GuaranteeWitnesses refines Guarantees {
                                Some(Binding(p, rev.content, false, None)), Never, None);
       var other := Document(Some(Base(rev.id, 1, p, f2.content, rev.kind, false)), None,
                             Some(Binding(p, f2.content, false, None)), Never, None);
-      !G9(State(
+      var state := State(
         map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
             d2 := Device(platform, true, Journal(map[doc := other], 1, [], []), map[p := f2], {}, {})],
-        server))
+        server);
+      // Neither directly nor through the server does d2's other content
+      // agree with d1's file, which is the server's head.
+      !G9Agrees(state, state.devices[d1], state.devices[d2], p) && !G9(state)
   {
     var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
     var document := Document(Some(Base(rev.id, 1, p, rev.content, rev.kind, false)), None,

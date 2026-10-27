@@ -526,7 +526,7 @@ abstract module RemoteCore {
   // only effect persists the journal, whose server follows the event by
   // staying as it is, and which changes rows only as QuietRow allows, keeps
   // every invariant and satisfies every step predicate.
-  lemma QuietStep(step: Step, d: DeviceId, journal': Journal)
+  lemma {:isolate_assertions} QuietStep(step: Step, d: DeviceId, journal': Journal)
     requires d in step.pre.devices && EventDevice(step.event) == Some(d)
     requires step.event.RemoteRevision? || (step.event.Pushed? && !step.event.result.Accepted?)
     requires step.event.RemoteRevision? ==>
@@ -641,21 +641,25 @@ abstract module RemoteCore {
   }
 
   // Every in-scope file on the device holds the content of a live head
-  // whose path is exactly the file's name.
+  // whose path is the file's name, folders compared on the device's system
+  // (INV-9: a device keeps its own spelling of a folder, #995).
   ghost predicate FilesMirrorHeads(state: State, device: Device) {
     forall p :: p in device.disk && p !in device.outOfScope ==>
       exists doc :: LiveHead(state.server, doc)
-        && Head(state.server, doc).value.path == p
+        && SameNameModuloFolders(device.platform, p, Head(state.server, doc).value.path)
         && Head(state.server, doc).value.content == device.disk[p].content
   }
 
-  // Every live head is on the device: a file at exactly its path holds its
-  // content, or its path is one the device does not sync, or the device
-  // reports that it cannot hold it (G9's exceptions).
+  // Every live head is on the device: a file whose name is the head's path,
+  // folders compared on the device's system, holds its content, or its path
+  // is one the device does not sync, or the device reports that it cannot
+  // hold it (G9's exceptions).
   ghost predicate HeadsMirrored(state: State, device: Device) {
     forall doc :: LiveHead(state.server, doc) ==>
       var head := Head(state.server, doc).value;
-      (head.path in device.disk && device.disk[head.path].content == head.content)
+      (exists q :: q in device.disk
+         && SameNameModuloFolders(device.platform, q, head.path)
+         && device.disk[q].content == head.content)
       || head.path in device.outOfScope
       || ReportedCannotHold(state, device, head.path)
   }
@@ -670,39 +674,23 @@ abstract module RemoteCore {
   // The invariant implies G9
   // ---------------------------------------------------------------------
 
-  // Two finished devices: a file in scope on both is on the other device,
-  // with its content, under the same name, or the other device reports
-  // that it cannot hold it.
+  // Two finished devices: a file in scope on the first mirrors a live head
+  // at its name (folders compared on the first device's system), which the
+  // second holds under that head's path (folders compared on its own
+  // system), or does not sync, or reports that it cannot hold. That is G9's
+  // agreement through the server; no path axiom is needed.
   lemma MirrorG9(state: State, d1: DeviceId, d2: DeviceId, p: Path)
     requires MirrorInv(state) && FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
     requires p in state.devices[d1].disk
     requires p !in state.devices[d1].outOfScope && p !in state.devices[d2].outOfScope
-    ensures var one := state.devices[d1];
-      var other := state.devices[d2];
-      (exists q :: q in other.disk
-         && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
-         && other.disk[q].content == one.disk[p].content)
-      || ReportedCannotHold(state, other, p)
+    ensures G9Agrees(state, state.devices[d1], state.devices[d2], p)
   {
     var one := state.devices[d1];
     var other := state.devices[d2];
-    // The file mirrors a live head at its name (d1), which d2 holds there
-    // too, unless it reports it cannot hold it (p is in scope on d2).
     var doc := var doc0 :| LiveHead(state.server, doc0)
-      && Head(state.server, doc0).value.path == p
+      && SameNameModuloFolders(one.platform, p, Head(state.server, doc0).value.path)
       && Head(state.server, doc0).value.content == one.disk[p].content; doc0;
-    var head := Head(state.server, doc).value;
     assert HeadsMirrored(state, other);
-    if p in other.disk && other.disk[p].content == one.disk[p].content {
-      // d2 holds it under the same name: the witness is p itself.
-      SameNameModuloFoldersRefl(one.platform, p);
-      assert p in other.disk && SameNameModuloFolders(one.platform, p, p)
-        && other.disk[p].content == one.disk[p].content;
-    } else {
-      // Not out of scope on d2, so d2 reports it cannot hold it.
-      assert head.path == p && p !in other.outOfScope;
-      assert ReportedCannotHold(state, other, p);
-    }
   }
 
   lemma MirrorImpliesG9(state: State)
@@ -712,15 +700,63 @@ abstract module RemoteCore {
     forall d1, d2, p | FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
       && p in state.devices[d1].disk
       && p !in state.devices[d1].outOfScope && p !in state.devices[d2].outOfScope
-      ensures var one := state.devices[d1];
-        var other := state.devices[d2];
-        (exists q :: q in other.disk
-           && (SameNameModuloFolders(one.platform, p, q) || SameNameModuloFolders(other.platform, p, q))
-           && other.disk[q].content == one.disk[p].content)
-        || ReportedCannotHold(state, other, p)
+      ensures G9Agrees(state, state.devices[d1], state.devices[d2], p)
     {
       MirrorG9(state, d1, d2, p);
     }
+  }
+
+  // Each device keeps its own spelling of a folder (INV-9, #995): two
+  // finished devices on different systems hold a live head's file under
+  // names that each match the head's path with folders compared on that
+  // device's system, but match each other on neither system. On real paths:
+  // a server folder `U+0345 U+0300` is one folder with `U+0399 U+0300` on
+  // Windows and with `U+0300 U+0345` on macOS, but those two are one folder
+  // on neither. The state keeps MirrorInv, so G9 holds through the server.
+  lemma RespelledFoldersAgree(
+    d1: DeviceId, d2: DeviceId, pl1: Platform, pl2: Platform, h: Path, p1: Path, p2: Path,
+    doc: DocId, rev: Revision, f: DiskFile)
+    requires d1 != d2
+    requires rev.doc == doc && !rev.deleted && rev.path == h && f.content == rev.content
+    requires SameNameModuloFolders(pl1, p1, h) && SameNameModuloFolders(pl2, p2, h)
+    requires !SameNameModuloFolders(pl1, p1, p2) && !SameNameModuloFolders(pl2, p1, p2)
+    ensures
+      var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
+      var document1 := Document(Some(Base(rev.id, 1, h, rev.content, rev.kind, false)), None,
+                                Some(Binding(p1, rev.content, false, None)), Never, None);
+      var document2 := Document(Some(Base(rev.id, 1, h, rev.content, rev.kind, false)), None,
+                                Some(Binding(p2, rev.content, false, None)), Never, None);
+      var state := State(
+        map[d1 := Device(pl1, true, Journal(map[doc := document1], 1, [], []), map[p1 := f], {}, {}),
+            d2 := Device(pl2, true, Journal(map[doc := document2], 1, [], []), map[p2 := f], {}, {})],
+        server);
+      FinishedSyncing(state, d1) && FinishedSyncing(state, d2) && MirrorInv(state) && G9(state)
+  {
+    var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
+    var document1 := Document(Some(Base(rev.id, 1, h, rev.content, rev.kind, false)), None,
+                              Some(Binding(p1, rev.content, false, None)), Never, None);
+    var document2 := Document(Some(Base(rev.id, 1, h, rev.content, rev.kind, false)), None,
+                              Some(Binding(p2, rev.content, false, None)), Never, None);
+    var state := State(
+      map[d1 := Device(pl1, true, Journal(map[doc := document1], 1, [], []), map[p1 := f], {}, {}),
+          d2 := Device(pl2, true, Journal(map[doc := document2], 1, [], []), map[p2 := f], {}, {})],
+      server);
+    assert Head(server, doc) == Some(rev);
+    forall other | other != doc ensures Head(server, other).None? {}
+    SameFIsEquivalence(pl1, p1, p1, p1);
+    SameFIsEquivalence(pl2, p2, p2, p2);
+    assert BoundTo(state.devices[d1], doc, p1);
+    assert BoundTo(state.devices[d2], doc, p2);
+    assert FinishedSyncing(state, d1);
+    assert FinishedSyncing(state, d2);
+    assert LiveHead(server, doc);
+    assert MirrorInv(state);
+    // G9 holds through the server, not by the direct comparison.
+    assert G9Agrees(state, state.devices[d1], state.devices[d2], p1);
+    assert G9Agrees(state, state.devices[d2], state.devices[d1], p2);
+    assert G9Agrees(state, state.devices[d1], state.devices[d1], p1);
+    assert G9Agrees(state, state.devices[d2], state.devices[d2], p2);
+    assert G9(state);
   }
 
   // ---------------------------------------------------------------------

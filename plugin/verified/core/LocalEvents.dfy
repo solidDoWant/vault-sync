@@ -372,10 +372,7 @@ abstract module LocalCore refines Guarantees {
     var post := After(pre, d, journal');
     forall d1, d2, p | FinishedSyncing(post, d1) && FinishedSyncing(post, d2)
       && p in post.devices[d1].disk && p !in post.devices[d1].outOfScope && p !in post.devices[d2].outOfScope
-      ensures (exists q :: q in post.devices[d2].disk
-                 && (SameNameModuloFolders(post.devices[d1].platform, p, q) || SameNameModuloFolders(post.devices[d2].platform, p, q))
-                 && post.devices[d2].disk[q].content == post.devices[d1].disk[p].content)
-              || ReportedCannotHold(post, post.devices[d2], p)
+      ensures G9Agrees(post, post.devices[d1], post.devices[d2], p)
     {
       assert d1 != d && d2 != d;
       assert post.devices[d1] == pre.devices[d1] && post.devices[d2] == pre.devices[d2];
@@ -487,10 +484,7 @@ abstract module LocalCore refines Guarantees {
       AfterKeepsFinished(step, d, journal');
       forall d1, d2, p | FinishedSyncing(post, d1) && FinishedSyncing(post, d2)
         && p in post.devices[d1].disk && p !in post.devices[d1].outOfScope && p !in post.devices[d2].outOfScope
-        ensures (exists q :: q in post.devices[d2].disk
-                   && (SameNameModuloFolders(post.devices[d1].platform, p, q) || SameNameModuloFolders(post.devices[d2].platform, p, q))
-                   && post.devices[d2].disk[q].content == post.devices[d1].disk[p].content)
-                || ReportedCannotHold(post, post.devices[d2], p)
+        ensures G9Agrees(post, post.devices[d1], post.devices[d2], p)
       {
         assert d1 != d && d2 != d;
         assert post.devices[d1] == pre.devices[d1] && post.devices[d2] == pre.devices[d2];
