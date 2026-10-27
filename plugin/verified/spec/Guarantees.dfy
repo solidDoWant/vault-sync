@@ -532,11 +532,23 @@ abstract module Guarantees refines EngineModel {
           || step.pre.devices[d].journal.documents[doc].base.value.rev != remote.id)
   }
 
+  // A commit in flight that another device's revision overtook: the outbox
+  // is sealed on a parent that is no longer the document's base, because a
+  // revision the server accepted after that parent became the base. The
+  // server answers it "head moved" (a commit is accepted only on the head,
+  // SPEC.md §6.2), so it is not what the document will have on the server.
+  ghost predicate Superseded(document: Document) {
+    document.outbox.Some? && document.outbox.value.sealed
+    && document.outbox.value.baseRev != (if document.base.Some? then Some(document.base.value.rev) else None)
+  }
+
   // The content a document will have on the server after this device's sync:
-  // its outgoing commit's, or its bound file's.
+  // its outgoing commit's, unless that is a superseded commit in flight, or
+  // its bound file's.
   ghost function Outgoing(device: Device, doc: DocId): Option<Hash> {
     if doc in device.journal.documents && device.journal.documents[doc].outbox.Some?
        && !device.journal.documents[doc].outbox.value.deleted
+       && !Superseded(device.journal.documents[doc])
     then Some(device.journal.documents[doc].outbox.value.content)
     else if BoundFile(device, doc).Some? then Some(BoundFile(device, doc).value.content)
     else None

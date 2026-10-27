@@ -308,8 +308,11 @@ abstract module EngineModel {
   // start-up scan's), so the push can name untracked files and the round
   // knows the content of every file it writes over. `unsaved` are the paths
   // an open editor holds unsaved text at. `freshDocs` are document ids for
-  // the documents the push creates.
-  datatype RoundInput = RoundInput(listing: map<Path, (Hash, Kind)>, unsaved: set<Path>, freshDocs: seq<DocId>)
+  // the documents the push creates. `outOfScope` are the paths the device
+  // does not sync, so the round creates no document for a file at one and
+  // applies no revision at one; the listing still names those files, so the
+  // round knows every file its writes and moves can collide with.
+  datatype RoundInput = RoundInput(listing: map<Path, (Hash, Kind)>, unsaved: set<Path>, freshDocs: seq<DocId>, outOfScope: set<Path>)
 
   // The device's listing: every file on its disk, by spelling.
   ghost function DiskListing(device: Device): map<Path, (Hash, Kind)> {
@@ -329,9 +332,10 @@ abstract module EngineModel {
     || (exists rev :: rev in state.server.accepted && state.server.accepted[rev].doc == doc)
   }
 
-  // `input` is device d's input for a round starting in `state`: the listing
-  // and the unsaved paths are read from the state before (the same disk the
-  // effects' preconditions are checked against), and the fresh document ids
+  // `input` is device d's input for a round starting in `state`: the listing,
+  // the unsaved paths and the device's scope are read from the state before
+  // (the same disk the effects' preconditions are checked against), and the
+  // fresh document ids
   // are distinct and used by no device and not by the server. Their freshness
   // is a fact about other devices and the server, which the core cannot see;
   // the shell meets it with random UUIDs.
@@ -339,6 +343,7 @@ abstract module EngineModel {
     d in state.devices
     && input.listing == DiskListing(state.devices[d])
     && input.unsaved == UnsavedPaths(state.devices[d])
+    && input.outOfScope == state.devices[d].outOfScope
     && (forall i, j :: 0 <= i < j < |input.freshDocs| ==> input.freshDocs[i] != input.freshDocs[j])
     && (forall i :: 0 <= i < |input.freshDocs| ==> !DocIdUsed(state, input.freshDocs[i]))
   }
