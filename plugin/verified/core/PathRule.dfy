@@ -734,4 +734,68 @@ abstract module PathRuleCore refines ApplyCore {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // The cases of the engine design the rule covers (PO-4, PO-11)
+  // ---------------------------------------------------------------------
+
+  // PO-4 W(a): a document a local change put in the way keeps its file,
+  // moved, under its own id, and sends the new name (unless a commit is in
+  // flight, which AcceptKeepsLaterChange follows).
+  lemma WaKeepsIdentity(document: Document, to: Path, rev: RevId)
+    requires document.binding.Some? && LocallyPlaced(document)
+    ensures var row := MovedAside(document, to, rev);
+      row.binding == Some(document.binding.value.(spelling := to)) && row.absence == document.absence
+      && row.base == document.base && row.ahead == document.ahead
+      && row.outbox.Some?
+      && (!document.outbox.Some? || !document.outbox.value.sealed ==> row.outbox.value.path == to && !row.outbox.value.sealed)
+  {}
+
+  // PO-4 W(b) and PO-11: any other document in the way (its file at its
+  // server name, whatever blocks its own newer revision) lets the file go:
+  // the file is an untracked copy, and the document keeps its server
+  // history and its waiting revision.
+  lemma WbLetsGo(document: Document, to: Path, rev: RevId)
+    requires document.binding.Some? && !LocallyPlaced(document)
+    ensures var row := MovedAside(document, to, rev);
+      row.binding.None? && row.absence == Released && row.base == document.base && row.ahead == document.ahead
+  {}
+
+  // The move of a file in the way is under its document's id exactly where
+  // W(a) keeps it there.
+  lemma MoverIsWa(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, i: nat)
+    requires i < |moves|
+    ensures var effects := MoveEffects(platform, documents, doc, moves);
+      |effects| == |moves| && effects[i].Move?
+      && (effects[i].mover.Some? <==>
+            exists e | e in documents && e != doc :: FileOf(platform, documents, moves[i].0, e) && LocallyPlaced(documents[e]))
+    decreases |moves|
+  {
+    MoveEffectsShape(platform, documents, doc, moves);
+    var effects := MoveEffects(platform, documents, doc, moves);
+    if i > 0 {
+      MoverIsWa(platform, documents, doc, moves[1..], i - 1);
+      assert effects[i] == MoveEffects(platform, documents, doc, moves[1..])[i - 1];
+    } else {
+      var q := moves[0].0;
+      var keepers := set e | e in documents && e != doc && FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]);
+      if exists e | e in documents && e != doc :: FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]) {
+        var e :| e in documents && e != doc && FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]);
+        assert e in keepers;
+      }
+    }
+  }
+
+  // PO-4 W(c) and the F-alias case of design §4.5 step 3: where another
+  // document's newest server claim still holds the name, the rule moves
+  // nothing and the revision waits, reported, as a name this device cannot
+  // hold.
+  lemma StillClaimedDefers(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires StillClaimed(platform, documents, doc, r.path)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      |ruled.effects| == 1 && ruled.effects[0].Report?
+      && ruled.documents == documents[doc := documents[doc].(ahead := Some(Ahead(r, Unmaterializable(ruled.documents[doc].ahead.value.blocker.alias), false)))]
+  {}
 }
