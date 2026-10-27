@@ -662,4 +662,76 @@ abstract module PathRuleCore refines ApplyCore {
     AsideInOrder(platform, documents, doc, input.listing, avoid, claims, way, r.path, disk, disk, way, keep, tail);
     assert effects == MoveEffects(platform, documents, doc, aside.value) + tail;
   }
+
+  // ---------------------------------------------------------------------
+  // The contract on a round step (PathRuleContract)
+  // ---------------------------------------------------------------------
+
+  // A round step of device d whose effects are the rule's for revision r of
+  // document doc, with the round's input read from the step's state before
+  // (RoundInputOf), and whose state after has the rule's rows and the disk
+  // the effects left. (The other revisions of the round and the push are
+  // #982's.)
+  ghost predicate RuleStep(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs) {
+    step.event.SyncRound?
+    && RoundInputOf(step.pre, step.event.device, input)
+    && var d := step.event.device;
+    var device := step.pre.devices[d];
+    doc in device.journal.documents && device.journal.documents.Keys <= revs.Keys
+    && ListingDistinct(device.platform, input.listing)
+    && var ruled := PathRule(device.platform, device.journal.documents, doc, r, input, revs);
+    step.effects == ruled.effects && d in step.post.devices
+    && step.post.devices[d] == device.(journal := device.journal.(documents := ruled.documents),
+                                       disk := step.post.devices[d].disk)
+  }
+
+  // On such a step, from rows whose revisions waiting for a name wait for
+  // unsaved text in their way (the state every earlier application of the
+  // rule in the round leaves; #982 re-applies a revision stored outside the
+  // round first), the rule meets PathRuleContract: it moves nothing
+  // unsaved text collides with, every copy takes a free name, and every
+  // revision left waiting for a name is one a user must act on.
+  lemma RuleMeetsContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires RuleStep(step, doc, r, input, revs)
+    requires var device := step.pre.devices[step.event.device];
+      forall e | e in device.journal.documents && device.journal.documents[e].ahead.Some?
+                 && device.journal.documents[e].ahead.value.blocker.PathHeld? ::
+        exists editor :: editor in device.editors && editor.unsaved.Some?
+          && CollideF(device.platform, editor.path, device.journal.documents[e].ahead.value.revision.path)
+    ensures PathRuleContract(step, input)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var documents := device.journal.documents;
+    var platform := device.platform;
+    RuleNoMoveFromUnsaved(platform, documents, doc, r, input, revs);
+    RuleCopiesTakeFreeNames(platform, documents, doc, r, input, revs);
+    RuleHeldOnlyForUnsaved(platform, documents, doc, r, input, revs);
+    var ruled := PathRule(platform, documents, doc, r, input, revs);
+    var after := step.post.devices[d];
+    assert input.unsaved == UnsavedPaths(device);
+    forall i | 0 <= i < |step.effects| && step.effects[i].Move?
+      ensures forall editor :: editor in device.editors && editor.unsaved.Some? ==>
+                !CollideF(device.platform, editor.path, step.effects[i].from)
+    {
+      forall editor | editor in device.editors && editor.unsaved.Some?
+        ensures !CollideF(device.platform, editor.path, step.effects[i].from)
+      {
+        assert editor.path in input.unsaved;
+      }
+    }
+    forall e | e in after.journal.documents && after.journal.documents[e].ahead.Some?
+               && after.journal.documents[e].ahead.value.blocker.PathHeld?
+      ensures UserMustAct(after, e)
+    {
+      if e == doc && ruled.documents[doc].ahead != documents[doc].ahead {
+        var u :| u in input.unsaved && CollideF(platform, u, r.path);
+        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+        assert after.editors == device.editors;
+      } else {
+        assert after.journal.documents[e].ahead == documents[e].ahead;
+        assert after.editors == device.editors && after.platform == device.platform;
+      }
+    }
+  }
 }

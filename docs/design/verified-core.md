@@ -285,6 +285,8 @@ The lemmas, on the function:
 - `RulePreconditionsHold`: every disk effect's precondition holds, in order, on the disk the listing was read from. Each move finds its file and a free name, because each copy name was picked against the listing with the earlier copies in it (`AsideInOrder`). The head then finds its name free, or its own file there (`ArriveInOrder`).
 - `RuleKeepsRowInv`: from rows that keep `RowInv`, every row the rule returns keeps it. A document that keeps its moved file has an outbox carrying the new name and `seen`, and a released one has no binding.
 
+On a round step whose effects are the rule's (`RuleStep`: the input is `RoundInputOf` the state before, and the state after has the rule's rows and the disk the effects left), `RuleMeetsContract` proves `PathRuleContract` (§4). It assumes that every row already waiting for a name before the step waits for unsaved text in its way. That is the state each earlier application of the rule in the round leaves, and #982 re-applies a revision stored outside the round (`Waiting`, §3.5) before relying on it.
+
 The rule runs only on a revision newer than its row (`HeldForName`). A revision the row already holds as `ahead` leaves the row as it is.
 
 Removing the unsaved check on a file in the way, on the document's own file or in the pull apply's move, or computing the copy's claims without the applied document's own, makes `make verify` fail. So does leaving a moved document's unsealed outbox at its old name, picking each copy name against the listing alone (without the earlier copies), or moving the document's own file onto a name that is a folder of it, or under it.
