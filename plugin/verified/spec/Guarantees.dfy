@@ -66,7 +66,8 @@ abstract module Guarantees refines EngineModel {
   //
   // A version the operator removed is excused: one retention purged (never a
   // head), or one a restore from backup removed from the server's history
-  // (`lost`, SPEC.md §13). The excuse is only the server's: devices still
+  // or, if retention had purged it, from its revisions (`lost`, SPEC.md
+  // §13, RestoreRemoves). The excuse is only the server's: devices still
   // keep and push again what they hold (G1_OnlyRetentionRemoves, G2, G9,
   // G10).
   ghost predicate G1_Retained(state: State) {
