@@ -203,6 +203,7 @@ abstract module RemoteCore {
   ghost predicate RowInv(document: Document) {
     ((document.binding.None? && document.absence == UserDeleted) ==>
       document.outbox.Some? || (document.base.Some? && document.base.value.deleted))
+    && (AheadOfBase(document) ==> document.outbox.Some?)
     && OutboxCurrent(document)
   }
 
@@ -452,6 +453,25 @@ abstract module RemoteCore {
       && (r.deleted ==> after.base.value.deleted)
   {}
 
+  // The bound-document counterpart: an edit or a rename made after a commit
+  // was sealed survives its accept, in a new unsealed outbox on top of the
+  // accepted revision that carries the file as the device last saw it. The
+  // row invariant forces it (AheadOfBase: the accepted revision, now the
+  // base, differs from the file), so every transition must keep it (#984).
+  lemma AcceptKeepsLaterChange(doc: DocId, document: Document, r: Revision, nextRev: RevId)
+    requires document.binding.Some? && InFlight(document) && r.id == document.outbox.value.rev
+    requires var b := document.binding.value; b.spelling != r.path || b.seen != r.content || r.deleted
+    ensures var after := PushedDoc(doc, document, Accepted(doc, r), nextRev);
+      after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+      && after.binding == document.binding
+      && after.outbox.Some? && !after.outbox.value.sealed && after.outbox.value.baseRev == Some(r.id)
+      && after.outbox.value.path == document.binding.value.spelling
+      && after.outbox.value.content == document.binding.value.seen
+      && !after.outbox.value.deleted
+  {
+    AcceptRow(document, r, nextRev);
+  }
+
   lemma AcceptRow(document: Document, r: Revision, nextRev: RevId)
     ensures RowInv(Accept(document, r, nextRev))
   {}
@@ -559,6 +579,13 @@ abstract module RemoteCore {
     }
     // CoreInv: every row keeps RowInv.
     CoreInvRows(pre);
+    forall x, y | x in post.devices && y in post.devices[x].journal.documents
+      ensures RowInv(post.devices[x].journal.documents[y])
+    {
+      if x == d && y in journal.documents {
+        assert QuietRow(journal.documents[y], journal'.documents[y]);
+      }
+    }
     CoreInvRows(post);
     // G9: either nothing changed, or d is not finished.
     if journal' == journal {

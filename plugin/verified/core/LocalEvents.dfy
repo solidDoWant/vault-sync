@@ -245,20 +245,34 @@ abstract module LocalCore refines Guarantees {
   // ---------------------------------------------------------------------
 
   // An unsealed outbox is the document as the device last saw it: a bound
-  // document's carries the content last seen in its file and is live; a
-  // document the user deleted sends a tombstone. (A sealed outbox, a commit
-  // in flight, carries what it carried when it was sealed.)
+  // document's carries the name and the content last seen in its file and
+  // is live; a document the user deleted sends a tombstone. (A sealed
+  // outbox, a commit in flight, carries what it carried when it was sealed.)
   ghost predicate OutboxCurrent(document: Document) {
     document.outbox.Some? && !document.outbox.value.sealed ==>
       (document.binding.Some? ==>
-         document.outbox.value.content == document.binding.value.seen && !document.outbox.value.deleted)
+         document.outbox.value.path == document.binding.value.spelling
+         && document.outbox.value.content == document.binding.value.seen && !document.outbox.value.deleted)
       && (document.binding.None? && document.absence == UserDeleted ==> document.outbox.value.deleted)
+  }
+
+  // A bound document's file, as the device last saw it, is not what the
+  // server has as the document's base: there is no base, the base is a
+  // tombstone, or its name or content differs from the binding's.
+  ghost predicate AheadOfBase(document: Document) {
+    document.binding.Some?
+    && (document.base.None? || document.base.value.deleted
+        || document.base.value.path != document.binding.value.spelling
+        || document.base.value.content != document.binding.value.seen)
   }
 
   // The core's invariant (verified-core.md §3.2):
   // - a user's delete is never forgotten: a document whose file the user
   //   removed has no binding only while it has an outbox to send or the
   //   server already has its tombstone as its base;
+  // - a change to a bound file is never forgotten: a bound document whose
+  //   file differs from its base has an outbox (a commit in flight that
+  //   predates the change is followed by a new one when it is accepted);
   // - the commit a document will send carries its latest change
   //   (OutboxCurrent).
   ghost predicate CoreInv(state: State) {
@@ -266,8 +280,13 @@ abstract module LocalCore refines Guarantees {
       var document := state.devices[d].journal.documents[doc];
       ((document.binding.None? && document.absence == UserDeleted) ==>
         document.outbox.Some? || (document.base.Some? && document.base.value.deleted))
+      && (AheadOfBase(document) ==> document.outbox.Some?)
       && OutboxCurrent(document)
   }
+
+  lemma InitialCoreInv(platforms: map<DeviceId, Platform>)
+    ensures CoreInv(Initial(platforms))
+  {}
 
   // ---------------------------------------------------------------------
   // Steps of the core
