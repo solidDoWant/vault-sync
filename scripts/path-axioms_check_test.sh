@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Tests scripts/path-axioms_check.sh: it passes on the repository's files, and
+# Tests scripts/path-axioms_check.sh: it passes on the repository's files (the
+# path model's axioms and Push.dfy's order axioms), and
 # fails when an axiom has no property test or more than one.
 set -euo pipefail
 
@@ -9,6 +10,8 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 "$check"
+# The verified core's own axioms (PathOrder, DocOrder, #1045).
+"$check" "$here/../plugin/verified/core/Push.dfy" "$here/../plugin/src/verified/core-axioms.test.ts"
 
 cat >"$work/spec.dfy" <<'DFY'
   lemma {:axiom} Alpha(p: Path)

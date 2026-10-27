@@ -3,7 +3,10 @@
 # (`lemma {:axiom} Name` in plugin/verified/spec/Paths.dfy) has exactly one
 # property test named after it (`it("Name", ...)`) in
 # plugin/src/core/pathkey/path-axioms.test.ts, which checks it against the
-# TypeScript implementations (#951). Run by `make test`.
+# TypeScript implementations (#951). Run by `make test`, through
+# scripts/path-axioms_check_test.sh, which also runs it on
+# plugin/verified/core/Push.dfy against plugin/src/verified/core-axioms.test.ts
+# (#1045).
 #
 # Usage: path-axioms_check.sh [SPEC_FILE TEST_FILE]
 set -euo pipefail
