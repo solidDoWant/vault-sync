@@ -916,6 +916,40 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert !ReportedCannotHold(state, state.devices[d2], p);
   }
 
+  // G9 through the server (#1000): a file that matches a live head's path
+  // agrees through that head only if it holds the head's content. Here the
+  // other device has the head's path out of scope and holds nothing, so the
+  // only clause that could accept d1's file is the one through the server,
+  // and d1's content is not the head's.
+  lemma G9AgreesRejectsOtherContentThanHead(
+    d1: DeviceId, d2: DeviceId, platform: Platform, p: Path, doc: DocId, rev: Revision, f1: DiskFile)
+    requires d1 != d2
+    requires rev.doc == doc && !rev.deleted && rev.path == p
+    requires f1.content != rev.content
+    ensures
+      var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
+      var document := Document(Some(Base(rev.id, 1, p, f1.content, rev.kind, false)), None,
+                               Some(Binding(p, f1.content, false, None)), Never, None);
+      var state := State(
+        map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
+            d2 := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {p})],
+        server);
+      !G9Agrees(state, state.devices[d1], state.devices[d2], p)
+  {
+    var server := Server(map[rev.id := rev], map[doc := [rev.id]], [rev.id], {}, map[rev.id := rev]);
+    var document := Document(Some(Base(rev.id, 1, p, f1.content, rev.kind, false)), None,
+                             Some(Binding(p, f1.content, false, None)), Never, None);
+    var state := State(
+      map[d1 := Device(platform, true, Journal(map[doc := document], 1, [], []), map[p := f1], {}, {}),
+          d2 := Device(platform, true, Journal(map[], 1, [], []), map[], {}, {p})],
+      server);
+    SameNameModuloFoldersRefl(platform, p);
+    // The clause through the server would hold but for the head's content.
+    assert Head(state.server, doc) == Some(rev);
+    assert rev.path in state.devices[d2].outOfScope;
+    assert !ReportedCannotHold(state, state.devices[d2], p);
+  }
+
   // G6 merges only two notes (#995): a round's merge counts as keeping what
   // it read only when the file it read in the document's bound file is a
   // note. A read of any other kind fails MergedRead.
