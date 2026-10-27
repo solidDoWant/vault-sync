@@ -342,6 +342,26 @@ abstract module LocalCore refines Guarantees {
     && DisksFollowEffects(step) && ServerFollowsEvent(step)
   }
 
+  // No step of the core so far makes a device finish syncing: a device
+  // finished after the step is as it was before it, with the same disk and
+  // journal, on the same server, so it had finished already. Whatever holds
+  // of finished devices and the server is therefore kept (MirrorInv,
+  // verified-core.md §3.7). The sync round (#982) is the step that finishes
+  // a device, and must prove MirrorInv itself.
+  ghost predicate KeepsFinished(step: Step) {
+    forall x :: x in step.post.devices && FinishedSyncing(step.post, x) ==>
+      x in step.pre.devices
+      && step.post.devices[x] == step.pre.devices[x] && step.post.server == step.pre.server
+  }
+
+  // A step that replaces only d's journal, and either leaves it as it was
+  // or leaves d unfinished, makes no device finish.
+  lemma AfterKeepsFinished(step: Step, d: DeviceId, journal': Journal)
+    requires d in step.pre.devices && step.post == After(step.pre, d, journal')
+    requires journal' == step.pre.devices[d].journal || !FinishedSyncing(step.post, d)
+    ensures KeepsFinished(step)
+  {}
+
   // ---------------------------------------------------------------------
   // The theorem for local events
   // ---------------------------------------------------------------------
@@ -351,6 +371,7 @@ abstract module LocalCore refines Guarantees {
     requires StateInvariants(pre) && CoreInv(pre)
     ensures var step := LocalStep(pre, d, local, revs);
       StateInvariants(step.post) && CoreInv(step.post) && StepGuarantees(step)
+      && KeepsFinished(step)
   {
     var step := LocalStep(pre, d, local, revs);
     var device := pre.devices[d];
@@ -409,6 +430,7 @@ abstract module LocalCore refines Guarantees {
     ensures forall x, doc, remote :: SettlesConcurrent(step, x, doc, remote) ==> G6_Settle(step, x, doc, remote)
     ensures G7_MoveKeepsContents(step) && G8_Recovers(step) && G10_SettledOrReported(step)
     ensures DisksFollowEffects(step)
+    ensures KeepsFinished(step)
   {
     var pre := step.pre;
     var post := step.post;
@@ -432,6 +454,7 @@ abstract module LocalCore refines Guarantees {
     // G9: either nothing changed, or d has an outbox and has not finished.
     if journal' == journal {
       assert post == pre;
+      AfterKeepsFinished(step, d, journal');
     } else {
       var doc :| doc in journal.documents && journal'.documents[doc] != journal.documents[doc] by {
         if forall doc :: doc in journal.documents ==> journal'.documents[doc] == journal.documents[doc] {
@@ -440,6 +463,7 @@ abstract module LocalCore refines Guarantees {
         }
       }
       assert !FinishedSyncing(post, d);
+      AfterKeepsFinished(step, d, journal');
       forall d1, d2, p | FinishedSyncing(post, d1) && FinishedSyncing(post, d2)
         && p in post.devices[d1].disk && p !in post.devices[d1].outOfScope && p !in post.devices[d2].outOfScope
         ensures (exists q :: q in post.devices[d2].disk
@@ -565,6 +589,7 @@ abstract module LocalCore refines Guarantees {
     ensures ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d]))
     ensures var step := ScanStep(pre, d, revs);
       StateInvariants(step.post) && CoreInv(step.post) && StepGuarantees(step)
+      && KeepsFinished(step)
   {
     var device := pre.devices[d];
     DistinctDisk(device);
