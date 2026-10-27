@@ -569,6 +569,95 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert BoundIdentity(pre.devices[d], doc).None?;
   }
 
+  // G5 on a user's step: the user renames an untracked file over a bound
+  // one. The document's binding now names another file, which the user put
+  // there; the run satisfies G5 (clause (g)), so the guarantee leaves the
+  // user free to change the disk.
+  lemma G5AllowsUserRenameOverBoundFile(
+    d: DeviceId, platform: Platform, p: Path, q: Path, doc: DocId, h: Hash, f: DiskFile, g: DiskFile)
+    requires !SameF(platform, p, q) && f.identity != g.identity
+    ensures
+      var journal := Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []);
+      var pre := State(map[d := Device(platform, true, journal, map[p := g, q := f], {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true, journal, map[p := f], {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      G5([Step(pre, User(d, RenameFile(q, p)), [], post)])
+  {
+    var journal := Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []);
+    var pre := State(map[d := Device(platform, true, journal, map[p := g, q := f], {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true, journal, map[p := f], {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    assert p in post.devices[d].disk && SameF(platform, p, p);
+    assert BoundFile(post.devices[d], doc) == Some(f);
+  }
+
+  // G5 on a user's step does not excuse a binding moved to another file: a
+  // user's step whose journal binds the document to a different file (an
+  // untracked one) fails G5_NeverMixedUp.
+  lemma G5RejectsRebindInUserStep(
+    d: DeviceId, platform: Platform, p: Path, q: Path, doc: DocId, h: Hash, f: DiskFile, g: DiskFile)
+    requires !SameF(platform, p, q) && f.identity != g.identity
+    ensures
+      var disk := map[p := g, q := f];
+      var pre := State(map[d := Device(platform, true,
+                         Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                         disk, {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true,
+                          Journal(map[doc := Document(None, None, Some(Binding(q, h, false, None)), Never, None)], 0, [], []),
+                          disk, {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      !G5_NeverMixedUp(Step(pre, User(d, EditBuffer(p, None)), [], post))
+  {
+    var disk := map[p := g, q := f];
+    var pre := State(map[d := Device(platform, true,
+                       Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                       disk, {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true,
+                        Journal(map[doc := Document(None, None, Some(Binding(q, h, false, None)), Never, None)], 0, [], []),
+                        disk, {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    assert SameF(platform, p, p) && SameF(platform, q, q);
+    assert BoundFile(pre.devices[d], doc) == Some(g) by {
+      forall r | r in disk && SameF(platform, r, p) ensures r == p {}
+    }
+    assert BoundFile(post.devices[d], doc) == Some(f) by {
+      forall r | r in disk && SameF(platform, r, q) ensures r == q {}
+    }
+  }
+
+  // G3: a reported delete of a bound file that is still at its name (a new
+  // file was created there before the event arrived), recorded as the
+  // user's delete, fails G3_DeleteSeen.
+  lemma G3RejectsDeleteOfPresentFile(
+    d: DeviceId, platform: Platform, p: Path, doc: DocId, h: Hash, f: DiskFile, outbox: Outbox)
+    ensures
+      var pre := State(map[d := Device(platform, true,
+                         Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                         map[p := f], {}, {})],
+                       Server(map[], map[], [], {}, map[]));
+      var post := State(map[d := Device(platform, true,
+                          Journal(map[doc := Document(None, None, None, UserDeleted, Some(outbox))], 0, [], []),
+                          map[p := f], {}, {})],
+                        Server(map[], map[], [], {}, map[]));
+      !G3_DeleteSeen(Step(pre, Local(d, Deleted(p)), [], post))
+  {
+    var pre := State(map[d := Device(platform, true,
+                       Journal(map[doc := Document(None, None, Some(Binding(p, h, false, None)), Never, None)], 0, [], []),
+                       map[p := f], {}, {})],
+                     Server(map[], map[], [], {}, map[]));
+    var post := State(map[d := Device(platform, true,
+                        Journal(map[doc := Document(None, None, None, UserDeleted, Some(outbox))], 0, [], []),
+                        map[p := f], {}, {})],
+                      Server(map[], map[], [], {}, map[]));
+    assert RecordsUserDelete(Step(pre, Local(d, Deleted(p)), [], post), d, doc);
+    assert p in pre.devices[d].disk && SameF(platform, p, p);
+    assert HasFile(pre.devices[d], p);
+  }
+
   // G4: device A edits its file, then deletes it and pushes the tombstone;
   // A's later live commit on that tombstone, with nothing else in between,
   // fails it: A's own delete overruled the edit (m <= k).

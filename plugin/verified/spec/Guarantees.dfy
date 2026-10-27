@@ -219,9 +219,39 @@ abstract module Guarantees refines EngineModel {
   // is that tombstone. Only a User step counts: a crash, a lost local event
   // or an engine move is no such step, and a delete from an earlier life of
   // the document (before a restore or a re-create) does not count.
+  // A step records a user's delete of document `doc`: the document was
+  // bound before, and after the step it has no binding and counts as deleted
+  // by the user.
+  ghost predicate RecordsUserDelete(step: Step, d: DeviceId, doc: DocId) {
+    d in step.pre.devices && d in step.post.devices
+    && doc in step.pre.devices[d].journal.documents
+    && step.pre.devices[d].journal.documents[doc].binding.Some?
+    && doc in step.post.devices[d].journal.documents
+    && step.post.devices[d].journal.documents[doc].binding.None?
+    && step.post.devices[d].journal.documents[doc].absence == UserDeleted
+  }
+
+  // "A file is only deleted because someone deleted it ... a missed
+  // notification ... never counts as a delete", for what the engine records:
+  // a step that is not the user's records a user's delete of a document only
+  // when its file is gone from its name (no file is there under F before the
+  // step), or the vault reported another file renamed onto that name (the
+  // user replaced it). A file still at its name was not deleted, whatever
+  // event arrived (verified-core.md §2.4).
+  ghost predicate G3_DeleteSeen(step: Step) {
+    !step.event.User? ==>
+      forall d, doc :: RecordsUserDelete(step, d, doc) ==>
+        var device := step.pre.devices[d];
+        var spelling := device.journal.documents[doc].binding.value.spelling;
+        !HasFile(device, spelling)
+        || (step.event.Local? && step.event.device == d && step.event.local.Renamed?
+            && SameF(device.platform, step.event.local.to, spelling))
+  }
+
   ghost predicate G3(trace: Trace) {
     forall i :: 0 <= i < |trace| ==>
-      (forall doc, rev :: AcceptsTombstone(trace[i], doc, rev) ==> JustifiedTombstone(trace, i, doc))
+      G3_DeleteSeen(trace[i])
+      && (forall doc, rev :: AcceptsTombstone(trace[i], doc, rev) ==> JustifiedTombstone(trace, i, doc))
       && (forall effect :: effect in trace[i].effects && effect.Remove? ==>
             var d := EventDevice(trace[i].event);
             d.Some? && d.value in trace[i].post.devices &&
@@ -369,7 +399,11 @@ abstract module Guarantees refines EngineModel {
   //      binds an existing file only by adoption, (d));
   //  (f) tombstone re-creation (verified-core.md §1.3, decision #17): the
   //      document had no file, its newest claim was a tombstone whose path
-  //      is the file's name under K, and the file was untracked.
+  //      is the file's name under K, and the file was untracked;
+  //  (g) the user's own step, which changed the disk under a binding the
+  //      step left as it was (a write at a bound name, or a rename onto
+  //      it): the user, not sync, put another file there, and the engine
+  //      learns of it from the vault's report or the start-up scan.
   // In (c), (d) and (f) contents or names decide, and only these
   // owner-approved rules let them.
   ghost predicate G5_NeverMixedUp(step: Step) {
@@ -409,6 +443,8 @@ abstract module Guarantees refines EngineModel {
             && NewestClaim(before.journal.documents[doc]).Some?
             && NewestClaim(before.journal.documents[doc]).value.1
             && SameK(NewestClaim(before.journal.documents[doc]).value.0, spelling))
+        // (g)
+        || (step.event.User? && known && before.journal.documents[doc].binding == after.journal.documents[doc].binding)
   }
 
   ghost predicate G5(trace: Trace) {
