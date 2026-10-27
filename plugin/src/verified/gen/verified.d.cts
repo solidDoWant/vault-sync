@@ -73,9 +73,32 @@ declare namespace Dafny {
   interface LocalEvent {
     readonly $tag: number;
   }
+  // One constructor's fields are defined only on values of that constructor.
   interface Effect {
+    readonly is_Write: boolean;
+    readonly is_Remove: boolean;
+    readonly is_Move: boolean;
+    readonly is_ReadFile: boolean;
+    readonly is_Upload: boolean;
+    readonly is_Commit: boolean;
+    readonly is_Pull: boolean;
     readonly is_PersistJournal: boolean;
+    readonly is_Report: boolean;
+    readonly dtor_target: Option<Str>;
+    readonly dtor_path: Str;
+    readonly dtor_content: Str;
+    readonly dtor_kind: Kind;
+    readonly dtor_precondition: Option<Str>;
+    readonly dtor_doc: Str;
+    readonly dtor_expected: Str;
+    readonly dtor_mover: Option<Str>;
+    readonly dtor_from: Str;
+    readonly dtor_to: Str;
+    readonly dtor_outbox: Outbox;
+    readonly dtor_cursor: BigNumber;
     readonly dtor_journal: Journal;
+    readonly dtor_subject: Option<Str>;
+    readonly dtor_reason: Str;
     toString(): string;
   }
   type Read = Option<Tuple2<Str, Kind>>;
@@ -161,6 +184,32 @@ declare const verified: {
         intents: Dafny.Seq<unknown>,
         conflicts: Dafny.Seq<unknown>,
       ): Dafny.Journal;
+    };
+    Effect: {
+      create_Write(
+        target: Dafny.Option<Dafny.Str>,
+        path: Dafny.Str,
+        content: Dafny.Str,
+        kind: Dafny.Kind,
+        precondition: Dafny.Option<Dafny.Str>,
+      ): Dafny.Effect;
+      create_Remove(doc: Dafny.Str, path: Dafny.Str, expected: Dafny.Str): Dafny.Effect;
+      create_Move(
+        mover: Dafny.Option<Dafny.Str>,
+        from: Dafny.Str,
+        to: Dafny.Str,
+        expected: Dafny.Str,
+      ): Dafny.Effect;
+      create_ReadFile(path: Dafny.Str): Dafny.Effect;
+      create_Upload(content: Dafny.Str): Dafny.Effect;
+      create_Commit(doc: Dafny.Str, outbox: Dafny.Outbox): Dafny.Effect;
+      create_Pull(cursor: BigNumber): Dafny.Effect;
+      create_PersistJournal(journal: Dafny.Journal): Dafny.Effect;
+      create_Report(
+        subject: Dafny.Option<Dafny.Str>,
+        path: Dafny.Str,
+        reason: Dafny.Str,
+      ): Dafny.Effect;
     };
     LocalEvent: {
       create_Created(path: Dafny.Str): Dafny.LocalEvent;
