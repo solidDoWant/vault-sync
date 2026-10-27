@@ -23,6 +23,15 @@ abstract module EngineModel {
   // engine never sees it. The guarantees use it to say which file is which.
   type FileIdentity(==, !new)
 
+  // The supply of file identities is unbounded: whatever finitely many files
+  // exist, a new file can get an identity none of them has. Sound because
+  // the harness's inodes are unbounded (a fresh number per file); the
+  // refinement `NatIdentities` (Witnesses.dfy) proves it for identities that
+  // are natural numbers, so the axiom is consistent. Without it a create
+  // could have no outcome (`EffectsCanTake`).
+  lemma {:axiom} FreshIdentityExists(used: set<FileIdentity>)
+    ensures exists identity: FileIdentity :: identity !in used
+
   datatype Kind = Note | Binary
 
   // ---------------------------------------------------------------------
@@ -182,7 +191,9 @@ abstract module EngineModel {
     // A user restores a document's earlier revision from history (SPEC.md
     // §11), which commits it as a new revision.
     | RestoreFromHistory(doc: DocId, from: RevId, revision: Revision)
-    | Crash(device: DeviceId)
+    // A crash of the device's app. `cut` is the step it cut short, if any
+    // (`CrashCutsShort`).
+    | Crash(device: DeviceId, cut: Option<Cut>)
     | Restart(device: DeviceId)
     // One sync round the engine runs on its own: a pull, then a push. The
     // step includes the pull's results: the revisions on the feed after the
@@ -192,6 +203,10 @@ abstract module EngineModel {
     | SyncRound(device: DeviceId)
 
   ghost predicate IsUserAction(event: Event) { event.User? }
+
+  // A step a crash cut short: its event, and the effects the core requested
+  // in response to it from the crash step's pre state.
+  datatype Cut = Cut(event: Event, requested: seq<Effect>)
 
   // ---------------------------------------------------------------------
   // Effects the core may request
@@ -243,7 +258,7 @@ abstract module EngineModel {
     case Scan(d, _) => Some(d)
     case RemoteRevision(d, _) => Some(d)
     case Pushed(d, _) => Some(d)
-    case Crash(d) => Some(d)
+    case Crash(d, _) => Some(d)
     case Restart(d) => Some(d)
     case SyncRound(d) => Some(d)
     case _ => None
@@ -358,13 +373,30 @@ abstract module EngineModel {
   // A crash cuts a step short: that step does not complete, and the
   // device's Crash step lists, as its effects, the prefix of the
   // interrupted step's effects the shell had performed, which therefore
-  // act on the disk as any step's effects do.
+  // act on the disk as any step's effects do (CrashCutsShort).
   ghost predicate DisksFollowEffects(step: Step) {
     !step.event.User? ==>
       forall d :: d in step.pre.devices && d in step.post.devices ==>
         if EventDevice(step.event) == Some(d)
         then EffectsTake(step.pre.devices[d].platform, step.pre.devices[d].disk, step.effects, step.post.devices[d].disk)
         else step.post.devices[d].disk == step.pre.devices[d].disk
+  }
+
+  // A crash step's effects are a prefix of the effects the core requested
+  // for the step the crash cut short, an event of the same device that the
+  // core handles (not a user's action or another crash) and that starts in
+  // the crash step's pre state. A crash that cut nothing short performs no
+  // effect. That `cut.requested` is what the core requests for `cut.event`
+  // in that state is a proof obligation of the verified core.
+  ghost predicate CrashCutsShort(step: Step) {
+    step.event.Crash? ==>
+      if step.event.cut.Some? then
+        var cut := step.event.cut.value;
+        EventDevice(cut.event) == Some(step.event.device)
+        && !cut.event.User? && !cut.event.Crash?
+        && |step.effects| <= |cut.requested|
+        && step.effects == cut.requested[..|step.effects|]
+      else step.effects == []
   }
 
   // ---------------------------------------------------------------------
