@@ -79,6 +79,28 @@ abstract module RemoteCore {
   }
 
   // ---------------------------------------------------------------------
+  // Reading the feed (compiled; SPEC.md §6.1 cursor anchor, §8 "Divergence")
+  // ---------------------------------------------------------------------
+
+  // The journal after the device has read the feed `feed` up to its `n`th
+  // entry (#1030): its cursor is `n` and its anchor the id of the last
+  // entry read (None before any). Nothing else changes. It is the one way
+  // a step moves the cursor: the round (#1033) and the resync (#1019) read
+  // the feed through it, so the anchor always names the entry at the
+  // cursor of the feed the device read. The anchor is ghost (the shell
+  // persists the server's random anchor, SPEC.md §6.1), so the compiled
+  // function only sets the cursor.
+  function ReadFeed(journal: Journal, ghost feed: seq<RevId>, n: nat): (journal': Journal)
+    requires n <= |feed|
+    ensures journal'.cursor == n
+    ensures journal'.anchor == (if n == 0 then None else Some(feed[n - 1]))
+    ensures journal'.documents == journal.documents && journal'.intents == journal.intents
+    ensures journal'.conflicts == journal.conflicts
+  {
+    journal.(cursor := n, anchor := if n == 0 then None else Some(feed[n - 1]))
+  }
+
+  // ---------------------------------------------------------------------
   // Push results (compiled)
   // ---------------------------------------------------------------------
 
@@ -851,5 +873,100 @@ abstract module RemoteCore {
   {
     AcceptSafe(pre, d, doc, r, nextRev);
     KeepsFinishedKeepsMirror(AcceptStep(pre, d, doc, r, nextRev));
+  }
+
+  // ---------------------------------------------------------------------
+  // The feed anchor (#1030, SPEC.md §8 "Divergence")
+  // ---------------------------------------------------------------------
+
+  // The device read the server's feed up to its cursor: the anchor the
+  // read records is on that feed (AnchorOnFeed), at the cursor.
+  lemma ReadFeedAnchors(server: Server, journal: Journal, n: nat)
+    requires n <= |server.feed|
+    ensures AnchorOnFeed(server, ReadFeed(journal, server.feed, n))
+    ensures n > 0 ==> ReadFeed(journal, server.feed, n).anchor == Some(server.feed[n - 1])
+  {}
+
+  // The server's feed `now` against the feed `read` the device read: they
+  // share the first `kept` entries, and every later entry of `now` is one
+  // the device never read. That is the feed after a restore from backup to
+  // `kept` entries (or none, kept == |read| <= |now|) and any number of
+  // commits since: revision ids are never reused (Appendable).
+  ghost predicate GrewFrom(read: seq<RevId>, now: seq<RevId>, kept: nat) {
+    kept <= |read| && kept <= |now| && now[..kept] == read[..kept]
+    && forall i :: kept <= i < |now| ==> now[i] !in read
+  }
+
+  // The anchor check is exact: against such a feed, the anchor the read
+  // recorded is on it exactly when the server's feed up to the cursor is
+  // the one the device read. A restore at or past the cursor passes; one
+  // below it fails, however far the feed grew back.
+  lemma AnchorCheckExact(read: seq<RevId>, server: Server, kept: nat, journal: Journal, n: nat)
+    requires n <= |read| && GrewFrom(read, server.feed, kept)
+    ensures AnchorOnFeed(server, ReadFeed(journal, read, n))
+      <==> n <= |server.feed| && server.feed[..n] == read[..n]
+  {
+    var journal' := ReadFeed(journal, read, n);
+    if n > 0 && n <= |server.feed| {
+      if n <= kept {
+        assert server.feed[..n] == server.feed[..kept][..n];
+        assert read[..n] == read[..kept][..n];
+        assert server.feed[n - 1] == server.feed[..kept][n - 1];
+      } else {
+        assert server.feed[n - 1] !in read;
+        assert read[n - 1] in read;
+        assert server.feed[..n][n - 1] != read[..n][n - 1];
+      }
+    }
+  }
+
+  // Every merged step keeps each device's cursor and anchor, and so the
+  // anchor of every device whose anchor was on the feed is on it after
+  // the step (an accept only appends to the feed). Only a read of the
+  // feed (ReadFeed) moves them.
+  ghost predicate KeepsReadPosition(step: Step) {
+    step.post.devices.Keys == step.pre.devices.Keys
+    && forall x :: x in step.pre.devices ==>
+         step.post.devices[x].journal.cursor == step.pre.devices[x].journal.cursor
+         && step.post.devices[x].journal.anchor == step.pre.devices[x].journal.anchor
+         && (AnchorOnFeed(step.pre.server, step.pre.devices[x].journal)
+             ==> AnchorOnFeed(step.post.server, step.post.devices[x].journal))
+  }
+
+  lemma LocalKeepsReadPosition(pre: State, d: DeviceId, local: LocalEvent, revs: FreshRevs)
+    requires d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys
+    ensures KeepsReadPosition(LocalStep(pre, d, local, revs))
+  {}
+
+  lemma ScanKeepsReadPosition(pre: State, d: DeviceId, revs: FreshRevs)
+    requires d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys
+    requires ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d]))
+    ensures KeepsReadPosition(ScanStep(pre, d, revs))
+  {}
+
+  lemma RemoteKeepsReadPosition(pre: State, d: DeviceId, revision: Revision)
+    requires d in pre.devices
+    ensures KeepsReadPosition(RemoteStep(pre, d, revision))
+  {}
+
+  lemma RefusedKeepsReadPosition(pre: State, d: DeviceId, result: PushResult, nextRev: RevId)
+    requires d in pre.devices && !result.Accepted?
+    ensures KeepsReadPosition(RefusedStep(pre, d, result, nextRev))
+  {}
+
+  lemma AcceptKeepsReadPosition(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires d in pre.devices
+    ensures KeepsReadPosition(AcceptStep(pre, d, doc, r, nextRev))
+  {
+    var step := AcceptStep(pre, d, doc, r, nextRev);
+    assert step.post.server.feed == pre.server.feed + [r.id];
+    forall x | x in pre.devices && AnchorOnFeed(pre.server, pre.devices[x].journal)
+      ensures AnchorOnFeed(step.post.server, step.post.devices[x].journal)
+    {
+      var c := pre.devices[x].journal.cursor;
+      if c > 0 {
+        assert step.post.server.feed[c - 1] == pre.server.feed[c - 1];
+      }
+    }
   }
 }
