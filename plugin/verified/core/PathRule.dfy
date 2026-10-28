@@ -2729,4 +2729,40 @@ abstract module PathRuleCore refines ApplyCore {
       RuleAcknowledges(platform, documents, doc, r, input, revs);
     }
   }
+
+  // A row's waiting revision is never older than its base (the
+  // hypothesis of RuleKeepsBase and RuleOwnRowKeepsBase), and the rule
+  // keeps that for every row.
+  ghost predicate AheadAboveBase(document: Document) {
+    document.ahead.Some? && document.base.Some? ==> document.base.value.position <= document.ahead.value.revision.position
+  }
+
+  lemma MoveRowsKeepAheadAboveBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs)
+    requires documents.Keys <= revs.Keys
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      rows.Keys == documents.Keys
+      && forall e | e in documents :: rows[e].base == documents[e].base && rows[e].ahead == documents[e].ahead
+    decreases |moves|
+  {
+    if moves != [] { MoveRowsKeepAheadAboveBase(platform, documents, doc, moves[1..], revs); }
+  }
+
+  lemma RuleKeepsAheadAboveBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires forall e | e in documents :: AheadAboveBase(documents[e])
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+      forall e | e in ruled.documents :: AheadAboveBase(ruled.documents[e])
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        MoveRowsKeepAheadAboveBase(platform, documents, doc, aside.value, revs);
+      }
+    }
+  }
 }
