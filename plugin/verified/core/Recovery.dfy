@@ -662,12 +662,11 @@ abstract module RecoveryCore refines PathRuleCore {
 
   // A crash that leaves the journal's rows as they were keeps the step
   // guarantees: it performs at most a journal write (CoveredCutEffects), so
-  // the disks are as they were too.
+  // the disks are as they were too, and a landed commit is the device's own.
   lemma {:isolate_assertions} CrashGuarantees(step: Step)
     requires ResyncJournalOnly()
     requires CrashHypotheses(step) && CoveredCut(step)
     requires step.event.device in step.pre.devices
-    requires step.post.server == step.pre.server
     requires step.post.devices[step.event.device].journal.documents == step.pre.devices[step.event.device].journal.documents
     ensures StepGuarantees(step)
   {
@@ -681,7 +680,10 @@ abstract module RecoveryCore refines PathRuleCore {
       var mid :| EffectTakes(device.platform, device.disk, step.effects[0], mid) && EffectsTake(device.platform, mid, step.effects[1..], post.devices[d].disk);
     }
     assert post.devices[d].disk == device.disk;
-    assert forall effect :: effect in step.effects ==> effect.PersistJournal?;
+    CoveredEffectsJournalOnly(step);
+    if post.server != pre.server {
+      var doc, r := CrashLanding(step);
+    }
     assert G1_OnlyRetentionRemoves(step);
     assert G2_OnlyWhatItSaw(step);
     assert G2_Conditional(step);
@@ -706,16 +708,18 @@ abstract module RecoveryCore refines PathRuleCore {
     assert ServerFollowsEvent(step);
   }
 
-  // CrashContract (#1018), for a covered cut (CoveredCut), with the server
-  // unchanged, of a crash that leaves the journal's rows as they were: no
-  // cut, a cut before its journal write, or a restart's cut. A landed
-  // commit (CommitLanded), a persisted row of a local event, scan or push
-  // answer, and the cuts CoveredCut leaves out are open (#1018's PR).
+  // CrashContract (#1018), for a covered cut (CoveredCut) of a crash that
+  // leaves the journal's rows as they were: no cut, a cut before its
+  // journal write, or a restart's cut. The server is unchanged or has the
+  // device's commit landed (LandingKeepsClaims, #1100); a resync's cut
+  // needs it unchanged. The guarantees of a crash after a rename's or a
+  // scan match's journal write are #1098's (G5_NeverMixedUp and
+  // G3_DeleteSeen read the step's own event).
   lemma CrashKeepsAll(step: Step)
     requires MergedKeepClaims() && ResyncJournalOnly()
     requires ClaimsImplyMirrorContract() && LandingKeepsClaims()
     requires CoveredCut(step) && step.event.device in step.pre.devices && step.event.device in step.post.devices
-    requires step.post.server == step.pre.server
+    requires step.event.cut.Some? && step.event.cut.value.event.Resync? ==> step.post.server == step.pre.server
     requires step.post.devices[step.event.device].journal.documents == step.pre.devices[step.event.device].journal.documents
     ensures CrashContract(step)
   {

@@ -485,7 +485,7 @@ A crash in the middle of a sync round's revision works as follows:
 - a crash that cuts short a local event, the scan, a refused or unanswered push, or a restart;
 - a crash that cuts short a running device's resync.
 
-The server may be unchanged or may be one where the device's sealed outbox landed (`CommitLanded`), except that a resync's cut needs an unchanged server, because the resync's journal reads the server. `CrashKeepsAll` proves the whole `CrashContract`, including `StepGuarantees`, for a crash that leaves the journal's rows as they were: no cut, a cut before the step's journal write, or a restart's cut.
+The server may be unchanged or may be one where the device's sealed outbox landed (`CommitLanded`), except that a resync's cut needs an unchanged server, because the resync's journal reads the server. `CrashKeepsAll` proves the whole `CrashContract`, including `StepGuarantees`, for a crash that leaves the journal's rows as they were: no cut, a cut before the step's journal write, or a restart's cut. The same rule about the server applies.
 
 The proofs rest on hypotheses that restate lemmas proved elsewhere:
 - `MergedKeepClaims`, proved in `MergedClaims.dfy` as `MergedKeepClaimsHolds`;
