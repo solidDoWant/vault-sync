@@ -11,6 +11,7 @@ server core/ServerEvents.dfy        # 203
 
 core core/Resync.dfy                # 190
 core core/RemoteEvents.dfy          # 87
+core core/Convergence.dfy           # 38
 core core/PathRule.dfy              # 69
 core core/ClaimsMirror.dfy          # 45
 core core/Apply.dfy                 # 42
