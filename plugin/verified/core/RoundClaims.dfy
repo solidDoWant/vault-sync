@@ -576,4 +576,283 @@ abstract module RoundClaimsCore refines PathRuleCore {
       RuleOpensNoOutbox(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r), first);
     }
   }
+
+  // ---------------------------------------------------------------------
+  // The round's listing stays distinct: it is the listing of a disk with
+  // one file per name that the round's effects can leave
+  // ---------------------------------------------------------------------
+
+  ghost function DiskMap(disk: map<Path, DiskFile>): Listing {
+    map p | p in disk :: (disk[p].content, disk[p].kind)
+  }
+
+  // A listing read from a disk with one file per name.
+  ghost predicate ListingOn(platform: Platform, listing: Listing) {
+    exists disk :: OneFilePerName(platform, disk) && DiskMap(disk) == listing
+  }
+
+  lemma OneFileDistinct(platform: Platform, disk: map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk)
+    ensures ListingDistinct(platform, DiskMap(disk))
+  {}
+
+  // Where an effect's precondition holds, the listing the round keeps
+  // follows the disk the effect leaves.
+  lemma {:isolate_assertions} EffectListing(platform: Platform, disk: map<Path, DiskFile>, e: Effect)
+    requires OneFilePerName(platform, disk) && PreconditionHolds(platform, disk, e)
+    ensures exists mid :: EffectTakes(platform, disk, e, mid) && DiskMap(mid) == ListingAfterEffect(platform, DiskMap(disk), e)
+  {
+    var listing := DiskMap(disk);
+    OneFileDistinct(platform, disk);
+    match e
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.Some? {
+        var q :| Holds(platform, disk, q, path, precondition.value);
+        assert q in listing && SameF(platform, q, path);
+        assert Listed(platform, listing, path);
+        var at := ListedAt(platform, listing, path);
+        assert at == q;
+        var mid := disk[q := DiskFile(content, kind, disk[q].identity)];
+        assert EffectTakes(platform, disk, e, mid);
+        assert DiskMap(mid) == listing[at := (content, kind)];
+      } else {
+        assert FreeOn(platform, disk, path);
+        assert !Listed(platform, listing, path) by {
+          forall q | q in listing ensures !SameF(platform, q, path) {
+            assert !CollideF(platform, q, path);
+          }
+        }
+        FreshIdentityExists(set q | q in disk :: disk[q].identity);
+        var identity: FileIdentity :| identity !in (set q | q in disk :: disk[q].identity);
+        var mid := disk[path := DiskFile(content, kind, identity)];
+        assert EffectTakes(platform, disk, e, mid);
+        assert DiskMap(mid) == listing[path := (content, kind)];
+      }
+    case Remove(_, path, expected) =>
+      var q :| Holds(platform, disk, q, path, expected);
+      assert Listed(platform, listing, path);
+      assert ListedAt(platform, listing, path) == q;
+      var mid := disk - {q};
+      assert EffectTakes(platform, disk, e, mid);
+      assert DiskMap(mid) == listing - {q};
+    case Move(_, from, to, expected) =>
+      var q :| MovableTo(platform, disk, q, from, to, expected);
+      assert Listed(platform, listing, from);
+      assert ListedAt(platform, listing, from) == q;
+      var mid := (disk - {q})[to := disk[q]];
+      assert EffectTakes(platform, disk, e, mid);
+      assert DiskMap(mid) == (listing - {q})[to := listing[q]];
+    case _ =>
+      assert EffectTakes(platform, disk, e, disk);
+  }
+
+  lemma EffectsListing(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>)
+    requires OneFilePerName(platform, disk) && PreconditionsInOrder(platform, disk, effects)
+    ensures ListingOn(platform, ListingAfter(platform, DiskMap(disk), effects))
+    decreases |effects|
+  {
+    if |effects| == 0 {
+      assert ListingAfter(platform, DiskMap(disk), effects) == DiskMap(disk);
+    } else {
+      EffectListing(platform, disk, effects[0]);
+      var mid :| EffectTakes(platform, disk, effects[0], mid) && DiskMap(mid) == ListingAfterEffect(platform, DiskMap(disk), effects[0]);
+      EffectKeepsOneFilePerName(platform, disk, effects[0], mid);
+      EffectsListing(platform, mid, effects[1..]);
+    }
+  }
+
+  // The rule's effects keep the round's listing one of a disk with one
+  // file per name (so distinct: the round never skips a revision).
+  lemma {:isolate_assertions} RuleKeepsListingOn(platform: Platform, listing: Listing, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, listing)
+    requires doc in documents && documents.Keys <= revs.Keys
+    ensures ListingDistinct(platform, listing)
+    ensures ListingDistinct(platform, input.(listing := listing).listing)
+            ==> ListingOn(platform, ListingAfter(platform, listing, PathRule(platform, documents, doc, r, input.(listing := listing), revs, first).effects))
+  {
+    var disk :| OneFilePerName(platform, disk) && DiskMap(disk) == listing;
+    OneFileDistinct(platform, disk);
+    var device := Device(platform, true, Journal(map[], 0, [], []), disk, {}, {});
+    assert ListingOf(device) == listing;
+    RulePreconditionsHold(device, documents, doc, r, input.(listing := listing), revs, first);
+    EffectsListing(platform, disk, PathRule(platform, documents, doc, r, input.(listing := listing), revs, first).effects);
+  }
+
+  // ---------------------------------------------------------------------
+  // ClaimsCoverCursor: a row never forgets a revision it knew of, and a
+  // settled revision is known
+  // ---------------------------------------------------------------------
+
+  ghost predicate KnowsAtLeast(document: Document, position: nat) {
+    KnownPosition(document).Some? && KnownPosition(document).value >= position
+  }
+
+  ghost predicate KnownNoLess(before: Document, after: Document) {
+    KnownPosition(before).Some? ==> KnowsAtLeast(after, KnownPosition(before).value)
+  }
+
+  lemma ApplyKnows(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var after := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document;
+      KnownNoLess(document, after) && KnowsAtLeast(after, r.position)
+  {}
+
+  lemma {:isolate_assertions} RuleKnows(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first).documents;
+      ruled.Keys == documents.Keys
+      && KnowsAtLeast(ruled[doc], r.position)
+      && forall e | e in documents :: KnownNoLess(documents[e], ruled[e])
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    ApplyKnows(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    RuleNamesFrom(platform, documents, doc, r, input, revs, first);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first).documents;
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      assert Newer(document, r);
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        reveal HeadRow();
+      }
+      assert KnowsAtLeast(ruled[doc], r.position);
+      assert KnownNoLess(document, ruled[doc]);
+    }
+    forall e | e in documents && e != doc ensures KnownNoLess(documents[e], ruled[e]) {
+      assert KeepsNames(documents[e], ruled[e]);
+    }
+  }
+
+  // Every row of `before` is in `after` and knows no less.
+  ghost predicate RowsKnowNoLess(before: map<DocId, Document>, after: map<DocId, Document>) {
+    forall e | e in before :: e in after && KnownNoLess(before[e], after[e])
+  }
+
+  // Every revision of `settled` is known by its document's row.
+  ghost predicate RowsKnow(documents: map<DocId, Document>, settled: set<Revision>) {
+    forall r | r in settled :: r.doc in documents && KnowsAtLeast(documents[r.doc], r.position)
+  }
+
+  lemma KnowsTrans(a: map<DocId, Document>, b: map<DocId, Document>, c: map<DocId, Document>)
+    requires RowsKnowNoLess(a, b) && RowsKnowNoLess(b, c)
+    ensures RowsKnowNoLess(a, c)
+  {}
+
+  lemma KnowsCarry(a: map<DocId, Document>, b: map<DocId, Document>, settled: set<Revision>)
+    requires RowsKnow(a, settled) && RowsKnowNoLess(a, b)
+    ensures RowsKnow(b, settled)
+  {}
+
+  lemma {:isolate_assertions} SettleKnows(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, pass.listing)
+    ensures var pass' := SettleRevision(platform, pass, doc, r, input, revs, first);
+      ListingOn(platform, pass'.listing)
+      && RowsKnowNoLess(pass.journal.documents, pass'.journal.documents)
+      && doc in pass'.journal.documents && KnowsAtLeast(pass'.journal.documents[doc], r.position)
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var rows := documents[doc := row];
+    var input' := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    RuleKeepsListingOn(platform, pass.listing, rows, doc, r, input, revs', first);
+    assert Distinct(platform, pass.listing);
+    var pass' := SettleRevision(platform, pass, doc, r, input, revs, first);
+    if r.path in input.outOfScope {
+      assert pass'.listing == pass.listing;
+    } else {
+      assert input'.(listing := pass.listing) == input';
+      RuleKnows(platform, rows, doc, r, input', revs', first);
+      assert pass'.journal.documents == PathRule(platform, rows, doc, r, input', revs', first).documents;
+      forall e | e in documents ensures e in pass'.journal.documents && KnownNoLess(documents[e], pass'.journal.documents[e]) {
+        assert KnownNoLess(rows[e], pass'.journal.documents[e]);
+      }
+    }
+  }
+
+  lemma SettlePulledKnows(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, pass.listing)
+    ensures var pass' := SettlePulled(platform, pass, revisions, input, revs, first);
+      ListingOn(platform, pass'.listing)
+      && RowsKnowNoLess(pass.journal.documents, pass'.journal.documents)
+      && RowsKnow(pass'.journal.documents, set i | 0 <= i < |revisions| :: revisions[i])
+    decreases |revisions|
+  {
+    var pass' := SettlePulled(platform, pass, revisions, input, revs, first);
+    if |revisions| > 0 {
+      var next := SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKnows(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettlePulledKnows(platform, next, revisions[1..], input, revs, first);
+      KnowsTrans(pass.journal.documents, next.journal.documents, pass'.journal.documents);
+      KnowsCarry(next.journal.documents, pass'.journal.documents, {revisions[0]});
+      forall x | x in (set i | 0 <= i < |revisions| :: revisions[i])
+        ensures x.doc in pass'.journal.documents && KnowsAtLeast(pass'.journal.documents[x.doc], x.position)
+      {
+        var i :| 0 <= i < |revisions| && revisions[i] == x;
+        if i > 0 { assert revisions[1..][i - 1] == x; }
+      }
+    }
+  }
+
+  lemma RetryKnows(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, pass.listing)
+    ensures var pass' := RetryWaiting(platform, pass, docs, input, revs, first);
+      ListingOn(platform, pass'.listing)
+      && RowsKnowNoLess(pass.journal.documents, pass'.journal.documents)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      var pass' := RetryWaiting(platform, pass, docs, input, revs, first);
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var r := row.ahead.value.revision;
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        var next := SettleRevision(platform, cleared, docs[0], r, input, revs, first);
+        SettleKnows(platform, cleared, docs[0], r, input, revs, first);
+        RetryKnows(platform, next, docs[1..], input, revs, first);
+        assert RowsKnowNoLess(documents, next.journal.documents) by {
+          forall e | e in documents ensures e in next.journal.documents && KnownNoLess(documents[e], next.journal.documents[e]) {
+            if e != docs[0] { assert KnownNoLess(cleared.journal.documents[e], next.journal.documents[e]); }
+          }
+        }
+        KnowsTrans(documents, next.journal.documents, pass'.journal.documents);
+      } else {
+        RetryKnows(platform, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} OnRoundKnows(platform: Platform, journal: Journal, pulled: seq<Revision>, cursor': nat, anchor': Option<RevId>,
+                                           input: RoundInput, revs: FreshRevs)
+    requires FreshIn(input, revs)
+    requires ListingOn(platform, input.listing)
+    ensures var journal' := OnRound(platform, journal, pulled, cursor', anchor', input, revs).0;
+      RowsKnowNoLess(journal.documents, journal'.documents)
+      && RowsKnow(journal'.documents, set i | 0 <= i < |pulled| :: pulled[i])
+  {
+    var start := StartPass(journal, input);
+    var first := RoundClaims(platform, journal, input);
+    RetryKnows(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    SettlePulledKnows(platform, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    KnowsTrans(journal.documents, retried.journal.documents, settled.journal.documents);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    PushKeepsParents(platform, read, input', revs);
+    PushKeepsAheads(platform, read, input', revs);
+    var journal' := OnPush(platform, read, input', revs).0;
+    assert RowsKnowNoLess(settled.journal.documents, journal'.documents) by {
+      forall e | e in settled.journal.documents ensures e in journal'.documents && KnownNoLess(settled.journal.documents[e], journal'.documents[e]) {
+        assert journal'.documents[e].base == settled.journal.documents[e].base;
+        assert journal'.documents[e].ahead == settled.journal.documents[e].ahead;
+      }
+    }
+    KnowsTrans(journal.documents, settled.journal.documents, journal'.documents);
+    KnowsCarry(settled.journal.documents, journal'.documents, set i | 0 <= i < |pulled| :: pulled[i]);
+  }
 }
