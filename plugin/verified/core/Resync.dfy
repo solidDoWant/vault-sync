@@ -412,4 +412,214 @@ abstract module ResyncCore refines StepContracts {
     assert EffectsTake(before.platform, disk, step.effects[1..], disk);
     assert EffectsTake(before.platform, disk, step.effects, disk);
   }
+
+  // ---------------------------------------------------------------------
+  // The claims
+  // ---------------------------------------------------------------------
+
+  // JournalsNameAccepted, one row at a time (as MergedClaims.dfy's
+  // RowNamesAccepted, which this module cannot reach).
+  ghost predicate RowNamed(server: Server, doc: DocId, document: Document) {
+    (document.base.Some? ==>
+       document.base.value.rev in server.accepted
+       && BaseRecords(document.base.value, doc, server.accepted[document.base.value.rev]))
+    && (document.ahead.Some? ==>
+          document.ahead.value.revision.id in server.accepted
+          && document.ahead.value.revision.doc == doc
+          && server.accepted[document.ahead.value.revision.id] == document.ahead.value.revision)
+  }
+
+  // A row after a pulled revision knows of its document at least what it
+  // knew before.
+  ghost predicate KnowsNoLess(before: Document, after: Document) {
+    KnownPosition(before).Some? ==>
+      KnownPosition(after).Some? && KnownPosition(after).value >= KnownPosition(before).value
+  }
+
+  // A row knows feed entry `id` (a revision the server holds): it has the
+  // revision's document, at that revision's position or later.
+  ghost predicate EntryKnown(server: Server, documents: map<DocId, Document>, id: RevId) {
+    id in server.revisions ==>
+      var r := server.revisions[id];
+      r.doc in documents && KnownPosition(documents[r.doc]).Some?
+      && KnownPosition(documents[r.doc]).value >= r.position
+  }
+
+  lemma RemoteKnows(journal: Journal, r: Revision)
+    ensures var docs' := RemoteJournal(journal, r).documents;
+      r.doc in docs' && KnownPosition(docs'[r.doc]).Some? && KnownPosition(docs'[r.doc]).value >= r.position
+      && journal.documents.Keys <= docs'.Keys
+      && (forall doc :: doc in journal.documents ==> KnowsNoLess(journal.documents[doc], docs'[doc]))
+  {}
+
+  lemma PullFeedCovers(journal: Journal, server: Server, i: nat)
+    requires i <= |server.feed|
+    requires forall k :: 0 <= k < i ==> EntryKnown(server, journal.documents, server.feed[k])
+    ensures forall k :: 0 <= k < |server.feed| ==> EntryKnown(server, PullFeed(journal, server, i).documents, server.feed[k])
+    decreases |server.feed| - i
+  {
+    if i < |server.feed| {
+      var journal' := if server.feed[i] in server.revisions then RemoteJournal(journal, server.revisions[server.feed[i]]) else journal;
+      if server.feed[i] in server.revisions {
+        RemoteKnows(journal, server.revisions[server.feed[i]]);
+      }
+      forall k | 0 <= k <= i ensures EntryKnown(server, journal'.documents, server.feed[k]) {
+        if k < i && server.feed[k] in server.revisions {
+          var r := server.revisions[server.feed[k]];
+          assert KnowsNoLess(journal.documents[r.doc], journal'.documents[r.doc]);
+        }
+      }
+      PullFeedCovers(journal', server, i + 1);
+    }
+  }
+
+  // Pulling keeps every row naming accepted revisions.
+  lemma PullFeedNamed(journal: Journal, server: Server, i: nat)
+    requires i <= |server.feed| && RevisionsAccepted(server) && RevisionsKeyed(server)
+    requires forall doc :: doc in journal.documents ==> RowNamed(server, doc, journal.documents[doc])
+    ensures forall doc :: doc in PullFeed(journal, server, i).documents
+              ==> RowNamed(server, doc, PullFeed(journal, server, i).documents[doc])
+    decreases |server.feed| - i
+  {
+    if i < |server.feed| {
+      var journal' := if server.feed[i] in server.revisions then RemoteJournal(journal, server.revisions[server.feed[i]]) else journal;
+      PullFeedNamed(journal', server, i + 1);
+    }
+  }
+
+  lemma ResyncRowNamed(server: Server, d: DeviceId, doc: DocId, document: Document, rev: RevId)
+    requires RevisionsAccepted(server) && RevisionsKeyed(server) && HistoryFollowsFeed(server)
+    requires RowNamed(server, doc, document)
+    ensures RowNamed(server, doc, ResyncRow(server, d, doc, document, rev))
+  {
+    var own := OwnAnchor(server, d, doc, document);
+    if own.Some? {
+      assert doc in server.history;
+      var j :| 0 <= j < |server.history[doc]| && server.history[doc][j] == own.value;
+      assert server.revisions[own.value].doc == doc;
+    }
+  }
+
+  // The resync keeps every clause of ClaimsReachable but MirrorInv, whose
+  // finished-device case ResyncMirror settles.
+  lemma {:isolate_assertions} ResyncClaims(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RevsCover(pre.devices[d].journal, input, revs) && CoreReachable(pre)
+    ensures var post := ResyncStepOf(pre, d, input, revs).post;
+      FeedPositioned(post.server) && ClaimsCoverCursor(post)
+      && HistoryFollowsFeed(post.server) && RevisionsAccepted(post.server) && JournalsNameAccepted(post)
+      && FeedAccepted(post.server) && RevisionsKeyed(post.server) && CutsHeadsApart(post.server)
+      && ScopesClosedUnderF(post) && OwnDocsKnown(post) && ReadsFeed(post, d) && !Diverged(post, d)
+      && (forall x :: ReadsFeed(post, x) ==> OwnRevisionsAcknowledged(post, x))
+  {
+    var step := ResyncStepOf(pre, d, input, revs);
+    ResyncKeepsBindings(pre, d, input, revs);
+    ResyncRowsHold(pre, d, input, revs);
+    var post := step.post;
+    var server := pre.server;
+    var journal := pre.devices[d].journal;
+    var reanchored := journal.(documents := ResyncDocs(server, d, journal.documents, revs));
+    var journal' := post.devices[d].journal;
+    assert journal'.documents == PullFeed(reanchored, server, 0).documents;
+    assert journal'.cursor == |server.feed|;
+    assert journal'.anchor == (if |server.feed| == 0 then None else Some(server.feed[|server.feed| - 1]));
+    forall x | x in post.devices && x != d ensures post.devices[x] == pre.devices[x] {}
+    // The cursor's claims: the whole feed was pulled.
+    PullFeedCovers(reanchored, server, 0);
+    assert ReadsFeed(post, d);
+    forall x, i | ReadsFeed(post, x) && 0 <= i < post.devices[x].journal.cursor
+      && i < |post.server.feed| && post.server.feed[i] in post.server.revisions
+      ensures var r := post.server.revisions[post.server.feed[i]];
+        r.doc in post.devices[x].journal.documents
+        && KnownPosition(post.devices[x].journal.documents[r.doc]).Some?
+        && KnownPosition(post.devices[x].journal.documents[r.doc]).value >= r.position
+    {
+      if x == d {
+        assert EntryKnown(server, journal'.documents, server.feed[i]);
+      } else {
+        assert ReadsFeed(pre, x);
+      }
+    }
+    assert ClaimsCoverCursor(post);
+    ResyncNamesAccepted(pre, d, input, revs);
+    assert OwnDocsKnown(post);
+    assert ScopesClosedUnderF(post);
+    assert !Diverged(post, d);
+    forall x | ReadsFeed(post, x) ensures OwnRevisionsAcknowledged(post, x) {
+      if x != d {
+        assert ReadsFeed(pre, x);
+        assert OwnRevisionsAcknowledged(pre, x);
+        assert post.devices[x] == pre.devices[x];
+        forall doc, id | Unacknowledged(post, x, doc, id)
+          ensures post.devices[x].journal.documents[doc].outbox.Some?
+          ensures post.devices[x].journal.documents[doc].outbox.value.rev == id
+        {
+          assert Unacknowledged(pre, x, doc, id);
+        }
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} ResyncNamesAccepted(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RevsCover(pre.devices[d].journal, input, revs)
+    requires RevisionsAccepted(pre.server) && RevisionsKeyed(pre.server) && HistoryFollowsFeed(pre.server)
+    requires FeedAccepted(pre.server) && JournalsNameAccepted(pre)
+    ensures JournalsNameAccepted(ResyncStepOf(pre, d, input, revs).post)
+  {
+    var post := ResyncStepOf(pre, d, input, revs).post;
+    var server := pre.server;
+    var journal := pre.devices[d].journal;
+    var reanchored := journal.(documents := ResyncDocs(server, d, journal.documents, revs));
+    var pulled := PullFeed(reanchored, server, 0).documents;
+    assert post.devices[d].journal.documents == pulled;
+    assert post.devices[d].journal.anchor == (if |server.feed| == 0 then None else Some(server.feed[|server.feed| - 1]));
+    assert post.server == server;
+    forall doc | doc in reanchored.documents ensures RowNamed(server, doc, reanchored.documents[doc]) {
+      assert RowNamed(server, doc, journal.documents[doc]);
+      assert reanchored.documents[doc] == ResyncRow(server, d, doc, journal.documents[doc], revs[doc]);
+      ResyncRowNamed(server, d, doc, journal.documents[doc], revs[doc]);
+    }
+    PullFeedNamed(reanchored, server, 0);
+    forall x | x in post.devices
+      ensures var j := post.devices[x].journal;
+        (j.anchor.Some? ==> j.anchor.value in post.server.accepted)
+        && forall doc :: doc in j.documents ==> RowNamed(post.server, doc, j.documents[doc])
+    {
+      if x == d {
+        assert |server.feed| > 0 ==> server.feed[|server.feed| - 1] in server.accepted;
+        forall doc | doc in pulled ensures RowNamed(post.server, doc, pulled[doc]) {
+          assert RowNamed(server, doc, pulled[doc]);
+        }
+      } else {
+        assert post.devices[x] == pre.devices[x];
+        var j := pre.devices[x].journal;
+        forall doc | doc in j.documents ensures RowNamed(post.server, doc, j.documents[doc]) {}
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // The contract
+  // ---------------------------------------------------------------------
+
+  // ResyncContract where the resync leaves the device unfinished, from
+  // ClaimsImplyMirrorContract (proven by ClaimsMirror.ClaimsImplyMirror;
+  // this module cannot refine ClaimsMirror, Dafny 4.11's resolver crashes).
+  // Open (#1019): a resync that finishes the device must show MirrorInv for
+  // it, which needs ClaimsMirror's MirrorAtCut from ClaimsReachable without
+  // MirrorInv.
+  lemma ResyncContractUnfinished(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires ClaimsImplyMirrorContract()
+    requires d in pre.devices && pre.devices[d].running && CoreReachable(pre)
+    requires RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires !FinishedSyncing(ResyncStepOf(pre, d, input, revs).post, d)
+    ensures ResyncContract(pre, d, input, revs)
+  {
+    var step := ResyncStepOf(pre, d, input, revs);
+    ResyncReadsFeed(pre, d, input, revs);
+    ResyncRowsHold(pre, d, input, revs);
+    ResyncGuarantees(pre, d, input, revs);
+    ResyncClaims(pre, d, input, revs);
+    assert ClaimsReachable(step.post);
+    assert MirrorAtCursor(step.post);
+  }
 }
