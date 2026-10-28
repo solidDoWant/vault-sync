@@ -53,7 +53,7 @@ abstract module PathRuleCore refines ApplyCore {
   // `first` (RoundClaims). A name an earlier revision of the round freed
   // stays taken until the round ends, so every copy is free against the
   // listing and the journal the round started from (CopiesTakeFreeNames).
-  function ApplyClaims(documents: map<DocId, Document>, first: Claims): Claims {
+  opaque function ApplyClaims(documents: map<DocId, Document>, first: Claims): Claims {
     var all := AllClaims(documents);
     Claims(all.paths + first.paths, all.names + first.names, all.listed + first.listed)
   }
@@ -538,6 +538,7 @@ abstract module PathRuleCore refines ApplyCore {
               && (row.ahead.Some? && !row.ahead.value.revision.deleted ==> !CollideK(row.ahead.value.revision.path, e.path))
               && (row.outbox.Some? && !row.outbox.value.deleted ==> !SameK(row.outbox.value.path, e.path)))
   {
+    reveal ApplyClaims();
     var document := documents[doc];
     var bound := BoundNames(documents);
     var claims := ApplyClaims(documents, first);
@@ -628,8 +629,6 @@ abstract module PathRuleCore refines ApplyCore {
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       ruled.documents.Keys == documents.Keys && forall e | e in ruled.documents :: RowInv(ruled.documents[e])
   {
-    reveal Keeps(), ArrivingRow(), Arriving();
-    reveal HeadRow();
     var document := documents[doc];
     var bound := BoundNames(documents);
     var claims := ApplyClaims(documents, first);
@@ -637,13 +636,33 @@ abstract module PathRuleCore refines ApplyCore {
     HeldHasNoChange(platform, doc, document, r, input, bound, claims, revs[doc]);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
-      var own := OwnFile(platform, document, input);
-      var keep := Keeps(platform, document, r, input);
-      var way := InTheWay(platform, input.listing, r.path, keep);
-      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
-      if aside.Some? {
-        MoveRowsKeepRowInv(platform, documents, doc, aside.value, revs);
-      }
+      ClearWayKeepsRowInv(platform, documents, doc, r, input, revs);
+    }
+  }
+
+  // The rule proper keeps RowInv in every row, for a revision the apply
+  // held for its name (so the row has no change but a revive, a move
+  // against a change or a commit in flight, HeldHasNoChange).
+  lemma {:isolate_assertions} ClearWayKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires forall e | e in documents :: RowInv(documents[e])
+    requires Newer(documents[doc], r)
+    requires var document := documents[doc];
+      !JournalChange(document) || Revives(platform, document, r, input) || MoveRead(platform, document, r, input).Some?
+      || InFlight(document)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      ruled.documents.Keys == documents.Keys && forall e | e in ruled.documents :: RowInv(ruled.documents[e])
+  {
+    reveal Keeps(), ArrivingRow(), Arriving();
+    reveal HeadRow();
+    var document := documents[doc];
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+    if aside.Some? {
+      MoveRowsKeepRowInv(platform, documents, doc, aside.value, revs);
     }
   }
 
@@ -2499,6 +2518,7 @@ abstract module PathRuleCore refines ApplyCore {
     requires ListingDistinct(platform, input.listing)
     ensures CopiesAvoid(platform, input.unsaved, first, PathRule(platform, documents, doc, r, input, revs, first).effects)
   {
+    reveal ApplyClaims();
     var document := documents[doc];
     var bound := BoundNames(documents);
     var claims := ApplyClaims(documents, first);
