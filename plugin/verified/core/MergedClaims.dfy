@@ -542,98 +542,138 @@ abstract module MergedClaims refines StepContracts {
   {
   }
 
-  // An accepted push (#949) to a device that is not Diverged (#1031's
-  // third gap). Its appended id is named by no journal (JournalsNameAccepted,
-  // Appendable), so no other device's divergence changes.
-  lemma {:isolate_assertions} AcceptKeepsClaims(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
-    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
-    ensures var step := AcceptStep(pre, d, doc, r, nextRev);
-      ClaimsReachable(step.post) && StepGuarantees(step)
+  // The shape of an accept step: only d's row for doc changes, by Accept,
+  // and the server appends r, whose id no one held before.
+  lemma AcceptShape(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
+      var journal := pre.devices[d].journal;
+      var journal' := PushedJournal(journal, Accepted(doc, r), nextRev);
+      post == After(pre, d, journal').(server := Appended(pre.server, doc, r))
+      && r.id !in pre.server.accepted && r.id !in pre.server.revisions
+      && post.devices.Keys == pre.devices.Keys
+      && (forall x :: x in post.devices && x != d ==> post.devices[x] == pre.devices[x])
+      && post.devices[d].journal == journal'
+      && journal'.documents.Keys == journal.documents.Keys
+      && (forall x :: x in journal.documents && x != doc ==> journal'.documents[x] == journal.documents[x])
+      && journal'.documents[doc] == Accept(journal.documents[doc], r, nextRev)
+      && journal'.cursor == journal.cursor && journal'.anchor == journal.anchor
+      && RowNamesAccepted(pre.server, doc, journal.documents[doc])
+      && RowNamesAccepted(pre.server.(accepted := pre.server.accepted[r.id := r]), doc, journal'.documents[doc])
+      && KnowsAtLeast(journal.documents[doc], journal'.documents[doc])
+      && journal'.documents[doc].base.Some? && journal'.documents[doc].base.value.position >= r.position
   {
-    var step := AcceptStep(pre, d, doc, r, nextRev);
     var journal := pre.devices[d].journal;
     var journal' := PushedJournal(journal, Accepted(doc, r), nextRev);
-    var server := pre.server;
-    var server' := Appended(server, doc, r);
-    var post := step.post;
-    assert post == After(pre, d, journal').(server := server');
-    assert r.id !in server.accepted && r.id !in server.revisions;
-    forall x | x in pre.devices && pre.devices[x].journal.cursor == |server.feed| + 1
-      ensures pre.devices[x].journal.anchor != Some(r.id)
-    {}
-    AcceptSafe(pre, d, doc, r, nextRev);
-    KeepsFinishedKeepsMirror(step);
-    assert G7_OneFilePerName(post);
-    assert LiveHeadsApart(server');
-    AppendKeepsServerClauses(server, doc, r);
-    forall x | x in post.devices && x != d ensures post.devices[x] == pre.devices[x] {}
-
-    // Rows: only doc changes, by Accept.
+    assert r.id !in pre.server.accepted && r.id !in pre.server.revisions;
     forall x | x in journal.documents && x != doc ensures journal'.documents[x] == journal.documents[x] {}
-    assert journal'.documents[doc] == Accept(journal.documents[doc], r, nextRev);
-    assert RowNamesAccepted(server, doc, journal.documents[doc]);
-    AcceptRowClaims(server, doc, journal.documents[doc], r, nextRev);
+    assert RowNamesAccepted(pre.server, doc, journal.documents[doc]);
+    AcceptRowClaims(pre.server, doc, journal.documents[doc], r, nextRev);
+  }
 
-    // Journals: every id they name was accepted before, so is not r's.
-    assert JournalsNameAccepted(post) by {
-      forall x | x in post.devices
-        ensures var j := post.devices[x].journal;
-          (j.anchor.Some? ==> j.anchor.value in server'.accepted)
-          && forall y :: y in j.documents ==> RowNamesAccepted(server', y, j.documents[y])
-      {
-        var j0 := pre.devices[x].journal;
-        forall y | y in j0.documents ensures RowNamesAccepted(server, y, j0.documents[y]) {}
-        forall y | y in j0.documents && (x != d || y != doc)
-          ensures RowNamesAccepted(server', y, post.devices[x].journal.documents[y])
-        {
-          assert post.devices[x].journal.documents[y] == j0.documents[y];
-        }
-      }
-    }
-
-    // Divergence: no journal names r.id, and an undiverged cursor is on the
-    // feed before the append.
-    forall x | x in pre.devices ensures Diverged(post, x) == Diverged(pre, x) || (x == d && !Diverged(post, x)) {
+  // Journals: every id they name was accepted before, so is not r's.
+  lemma {:isolate_assertions} AcceptJournalsNamed(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures JournalsNameAccepted(AcceptStep(pre, d, doc, r, nextRev).post)
+  {
+    AcceptShape(pre, d, doc, r, nextRev);
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    var server := pre.server;
+    var server' := post.server;
+    forall x | x in post.devices
+      ensures var j := post.devices[x].journal;
+        (j.anchor.Some? ==> j.anchor.value in server'.accepted)
+        && forall y :: y in j.documents ==> RowNamesAccepted(server', y, j.documents[y])
+    {
       var j0 := pre.devices[x].journal;
-      if x != d {
-        assert JournalOnServer(server', j0) == JournalOnServer(server, j0) by {
-          forall y | y in j0.documents
-            ensures (j0.documents[y].base.Some? ==> j0.documents[y].base.value.rev in server'.revisions)
-                 == (j0.documents[y].base.Some? ==> j0.documents[y].base.value.rev in server.revisions)
-            ensures (j0.documents[y].ahead.Some? ==> j0.documents[y].ahead.value.revision.id in server'.revisions)
-                 == (j0.documents[y].ahead.Some? ==> j0.documents[y].ahead.value.revision.id in server.revisions)
-          {
-            assert RowNamesAccepted(server, y, j0.documents[y]);
-          }
-        }
-        if j0.cursor == |server'.feed| {
-          assert server'.feed[j0.cursor - 1] == r.id;
-        } else if 0 < j0.cursor <= |server.feed| {
-          assert server'.feed[j0.cursor - 1] == server.feed[j0.cursor - 1];
-        }
-      }
-    }
-
-    assert ClaimsCoverCursor(post) by {
-      forall x, i | x in post.devices && !Diverged(post, x) && 0 <= i < post.devices[x].journal.cursor
-        && i < |server'.feed| && server'.feed[i] in server'.revisions
-        ensures var rv := server'.revisions[server'.feed[i]];
-          rv.doc in post.devices[x].journal.documents
-          && KnownPosition(post.devices[x].journal.documents[rv.doc]).Some?
-          && KnownPosition(post.devices[x].journal.documents[rv.doc]).value >= rv.position
+      forall y | y in j0.documents ensures RowNamesAccepted(server, y, j0.documents[y]) {}
+      forall y | y in j0.documents && (x != d || y != doc)
+        ensures RowNamesAccepted(server', y, post.devices[x].journal.documents[y])
       {
-        assert !Diverged(pre, x);
-        assert i < |server.feed|;
-        assert server'.feed[i] == server.feed[i];
-        assert server.feed[i] != r.id by { assert server.feed[i] in server.accepted; }
-        var rv := server.revisions[server.feed[i]];
-        assert rv.doc in pre.devices[x].journal.documents;
-        if x == d && rv.doc == doc {
-          assert KnowsAtLeast(journal.documents[doc], journal'.documents[doc]);
-        }
+        assert post.devices[x].journal.documents[y] == j0.documents[y];
       }
     }
+  }
 
+  // Divergence: no journal names r.id, and an undiverged cursor is on the
+  // feed before the append; only d's own may switch off.
+  lemma {:isolate_assertions} AcceptDivergence(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
+      forall x :: x in pre.devices && Diverged(post, x) ==> x == d || Diverged(pre, x)
+  {
+    AcceptShape(pre, d, doc, r, nextRev);
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    var server := pre.server;
+    var server' := post.server;
+    forall x | x in pre.devices && x != d ensures Diverged(post, x) == Diverged(pre, x) {
+      var j0 := pre.devices[x].journal;
+      assert post.devices[x] == pre.devices[x];
+      assert JournalOnServer(server', j0) == JournalOnServer(server, j0) by {
+        forall y | y in j0.documents
+          ensures (j0.documents[y].base.Some? ==> j0.documents[y].base.value.rev in server'.revisions)
+               == (j0.documents[y].base.Some? ==> j0.documents[y].base.value.rev in server.revisions)
+          ensures (j0.documents[y].ahead.Some? ==> j0.documents[y].ahead.value.revision.id in server'.revisions)
+               == (j0.documents[y].ahead.Some? ==> j0.documents[y].ahead.value.revision.id in server.revisions)
+        {
+          assert RowNamesAccepted(server, y, j0.documents[y]);
+        }
+      }
+      forall z | z in pre.devices && pre.devices[z].journal.cursor == |server.feed| + 1
+        ensures pre.devices[z].journal.anchor != Some(r.id)
+      {}
+      if j0.cursor == |server'.feed| {
+        assert server'.feed[j0.cursor - 1] == r.id;
+      } else if 0 < j0.cursor <= |server.feed| {
+        assert server'.feed[j0.cursor - 1] == server.feed[j0.cursor - 1];
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} AcceptCoversCursor(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
+    requires var post := AcceptStep(pre, d, doc, r, nextRev).post;
+      forall x :: x in pre.devices && Diverged(post, x) ==> x == d || Diverged(pre, x)
+    ensures ClaimsCoverCursor(AcceptStep(pre, d, doc, r, nextRev).post)
+  {
+    AcceptShape(pre, d, doc, r, nextRev);
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    var journal := pre.devices[d].journal;
+    var journal' := post.devices[d].journal;
+    var server := pre.server;
+    var server' := post.server;
+    forall x, i | x in post.devices && !Diverged(post, x) && 0 <= i < post.devices[x].journal.cursor
+      && i < |server'.feed| && server'.feed[i] in server'.revisions
+      ensures var rv := server'.revisions[server'.feed[i]];
+        rv.doc in post.devices[x].journal.documents
+        && KnownPosition(post.devices[x].journal.documents[rv.doc]).Some?
+        && KnownPosition(post.devices[x].journal.documents[rv.doc]).value >= rv.position
+    {
+      assert !Diverged(pre, x);
+      assert i < |server.feed|;
+      assert server'.feed[i] == server.feed[i];
+      assert server.feed[i] != r.id by { assert server.feed[i] in server.accepted; }
+      var rv := server.revisions[server.feed[i]];
+      assert rv.doc in pre.devices[x].journal.documents;
+      if x == d && rv.doc == doc {
+        assert KnowsAtLeast(journal.documents[doc], journal'.documents[doc]);
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} AcceptOwnAcknowledged(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
+    requires var post := AcceptStep(pre, d, doc, r, nextRev).post;
+      forall x :: x in pre.devices && Diverged(post, x) ==> x == d || Diverged(pre, x)
+    ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
+      forall x :: x in post.devices && !Diverged(post, x) ==> OwnRevisionsAcknowledged(post, x)
+  {
+    AcceptShape(pre, d, doc, r, nextRev);
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    var journal := pre.devices[d].journal;
+    var journal' := post.devices[d].journal;
+    var server := pre.server;
+    var server' := post.server;
     forall x | x in post.devices && !Diverged(post, x) ensures OwnRevisionsAcknowledged(post, x) {
       if x != d { assert !Diverged(pre, x); }
       assert OwnRevisionsAcknowledged(pre, x);
@@ -662,10 +702,36 @@ abstract module MergedClaims refines StepContracts {
             assert Unacknowledged(pre, x, y, id);
             assert false;
           }
+          if x != d { assert post.devices[x] == pre.devices[x]; }
           assert Unacknowledged(pre, x, y, id);
         }
       }
     }
+  }
+
+  // An accepted push (#949) to a device that is not Diverged (#1031's
+  // third gap). Its appended id is named by no journal (JournalsNameAccepted,
+  // Appendable), so no other device's divergence changes.
+  lemma {:isolate_assertions} AcceptKeepsClaims(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
+    ensures var step := AcceptStep(pre, d, doc, r, nextRev);
+      ClaimsReachable(step.post) && StepGuarantees(step)
+  {
+    var step := AcceptStep(pre, d, doc, r, nextRev);
+    var post := step.post;
+    AcceptShape(pre, d, doc, r, nextRev);
+    forall x | x in pre.devices && pre.devices[x].journal.cursor == |pre.server.feed| + 1
+      ensures pre.devices[x].journal.anchor != Some(r.id)
+    {}
+    AcceptSafe(pre, d, doc, r, nextRev);
+    KeepsFinishedKeepsMirror(step);
+    assert G7_OneFilePerName(post);
+    assert LiveHeadsApart(post.server);
+    AppendKeepsServerClauses(pre.server, doc, r);
+    AcceptJournalsNamed(pre, d, doc, r, nextRev);
+    AcceptDivergence(pre, d, doc, r, nextRev);
+    AcceptCoversCursor(pre, d, doc, r, nextRev);
+    AcceptOwnAcknowledged(pre, d, doc, r, nextRev);
     assert ScopesClosedUnderF(post);
   }
 }

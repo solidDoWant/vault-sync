@@ -370,7 +370,7 @@ abstract module RemoteCore {
     QuietStep(step, d, journal');
   }
 
-  lemma AcceptSafe(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+  lemma {:isolate_assertions} AcceptSafe(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
     requires AcceptHappens(pre, d, doc, r)
     requires StateInvariants(pre) && CoreInv(pre) && ServerRetains(pre)
     // A device whose cursor is one past the feed (a restore diverged it)
