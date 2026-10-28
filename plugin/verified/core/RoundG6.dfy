@@ -3263,4 +3263,415 @@ abstract module RoundG6 refines RoundGuarantees {
       SameFIsEquivalence(platform, spelling, spelling, spelling);
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G2 of the round: where each conditional effect's file came from
+  // ---------------------------------------------------------------------
+
+  // An effect the adapter performs only where the file holds what it
+  // expects, acting for a document: a conditional overwrite, a remove, or
+  // a move of a document's file.
+  ghost predicate IsCond(effect: Effect) {
+    (effect.Write? && effect.precondition.Some? && effect.target.Some?) || effect.Remove? || (effect.Move? && effect.mover.Some?)
+  }
+
+  ghost function CondDoc(effect: Effect): DocId
+    requires IsCond(effect)
+  {
+    if effect.Write? then effect.target.value else if effect.Remove? then effect.doc else effect.mover.value
+  }
+
+  ghost function CondPath(effect: Effect): Path
+    requires IsCond(effect)
+  {
+    if effect.Write? then effect.path else if effect.Remove? then effect.path else effect.from
+  }
+
+  ghost function CondExpect(effect: Effect): Hash
+    requires IsCond(effect)
+  {
+    if effect.Write? then effect.precondition.value else if effect.Remove? then effect.expected else effect.expected
+  }
+
+  // A conditional effect for `e` at `p` expecting `c` acts on e's own
+  // file as the effects before it left it (OwnNameIn), or expects a live
+  // revision of `e` the server accepted.
+  ghost predicate CondOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>, effects: seq<Effect>,
+                             e: DocId, p: Path, c: Hash) {
+    OwnNameIn(platform, device0, effects, e, p) || AcceptedContent(accepted, e, c)
+  }
+
+  ghost predicate CondAt(platform: Platform, device0: Device, accepted: map<RevId, Revision>, effects: seq<Effect>, i: int)
+    requires 0 <= i < |effects|
+  {
+    IsCond(effects[i]) ==>
+      CondOrigin(platform, device0, accepted, effects[..i], CondDoc(effects[i]), CondPath(effects[i]), CondExpect(effects[i]))
+  }
+
+  ghost predicate PassHist(platform: Platform, device0: Device, accepted: map<RevId, Revision>, effects: seq<Effect>) {
+    forall i | 0 <= i < |effects| :: CondAt(platform, device0, accepted, effects, i)
+  }
+
+  // Effects that touch no file at `p` keep what OwnNameIn reads at a name
+  // the same as `p` under F.
+  lemma OwnNameThrough(platform: Platform, device0: Device, a: seq<Effect>, b: seq<Effect>, e: DocId, t: Path, p: Path)
+    requires device0.platform == platform && SameF(platform, t, p)
+    requires OwnNameIn(platform, device0, a, e, t)
+    requires forall effect :: effect in b ==> !Touches(platform, effect, p)
+    ensures OwnNameIn(platform, device0, a + b, e, p)
+  {
+    RoundPutSameF(platform, a, t, p);
+    UntouchedTailKeepsReadings(platform, device0, a, b, e, p);
+    SameFIsEquivalence(platform, t, p, p);
+    if RoundPut(platform, a, p).Untouched? {
+      assert BoundTo(device0, e, t);
+      SameFIsEquivalence(platform, device0.journal.documents[e].binding.value.spelling, t, p);
+    }
+  }
+
+  // The rule clearing the way acts conditionally only on files whose
+  // origin the pass knows: a moved-aside file is its mover's own or holds
+  // a live revision of it (it adopted it), and the arriving document's
+  // own file likewise.
+  lemma {:isolate_assertions} ClearWayCondOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                                                 effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                                 input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires device0.platform == platform
+    requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires forall e | e in documents :: RowG5(platform, device0, effects0, e, documents[e])
+                                          && RowContent(platform, device0, accepted, effects0, input.listing, e, documents[e])
+    requires Keeps(platform, documents[doc], r, input).Some? ==>
+      ListedRead(platform, input.listing, documents[doc].binding.value.spelling).value.0
+        == ArrivingRow(platform, documents[doc], r, input).binding.value.seen
+    ensures var effects := ClearWay(platform, documents, doc, r, input, revs).effects;
+      forall i | |effects0| <= i < |effects0 + effects| :: CondAt(platform, device0, accepted, effects0 + effects, i)
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+      assert |ruled.effects| == 1 && ruled.effects[0].Report?;
+      return;
+    }
+    var moves := aside.value;
+    AsideFacts(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    assert ruled.effects == front + arrive;
+    var all := effects0 + ruled.effects;
+    forall i | |effects0| <= i < |all|
+      ensures CondAt(platform, device0, accepted, all, i)
+    {
+      var k := i - |effects0|;
+      assert all[|effects0| + k] == ruled.effects[k];
+      assert all[..|effects0| + k] == effects0 + ruled.effects[..k];
+      if k < |front| {
+        FrontCondOrigin(platform, device0, accepted, effects0, documents, doc, input, moves, way, avoid, r.path, k);
+        assert ruled.effects[k] == front[k];
+        assert ruled.effects[..k] == front[..k];
+      } else {
+        var k' := k - |front|;
+        ArriveCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, k');
+        assert ruled.effects[k] == arrive[k'];
+        assert ruled.effects[..k] == front + arrive[..k'];
+        assert effects0 + front + arrive[..k'] == effects0 + (front + arrive[..k']);
+      }
+    }
+  }
+
+  // A row bound at a name the same as the listed file `q` reads there what
+  // the listing holds at `q`.
+  lemma ListedAtBound(platform: Platform, listing: Listing, t: Path, q: Path)
+    requires ListingDistinct(platform, listing) && q in listing && SameF(platform, t, q)
+    ensures Listed(platform, listing, t) && ListedAt(platform, listing, t) == q
+    ensures ListedRead(platform, listing, t) == Some(listing[q])
+  {
+    SameFIsEquivalence(platform, t, q, q);
+    assert SameF(platform, q, t);
+    var q' := ListedAt(platform, listing, t);
+    if q' != q {
+      SameFIsEquivalence(platform, q', t, q);
+      assert SameF(platform, q', q);
+    }
+  }
+
+  // A move aside of a file in the way moves its mover's own file, or a
+  // file holding a live revision of its mover.
+  lemma {:isolate_assertions} FrontCondOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                                              effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId,
+                                              input: RoundInput, moves: seq<(Path, Path, Hash)>, way: set<Path>,
+                                              avoid: set<Path>, wanted: Path, k: nat)
+    requires device0.platform == platform
+    requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing)
+    requires forall e | e in documents :: RowG5(platform, device0, effects0, e, documents[e])
+                                          && RowContent(platform, device0, accepted, effects0, input.listing, e, documents[e])
+    requires way <= input.listing.Keys && k < |moves|
+    requires forall i | 0 <= i < |moves| ::
+      moves[i].0 in way && moves[i].2 == input.listing[moves[i].0].0 && FreeIn(platform, input.listing, moves[i].1)
+    requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0
+    ensures var front := MoveEffects(platform, documents, doc, moves);
+      k < |front| && (IsCond(front[k]) ==>
+        CondOrigin(platform, device0, accepted, effects0 + front[..k], CondDoc(front[k]), CondPath(front[k]), CondExpect(front[k])))
+  {
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    if !IsCond(front[k]) { return; }
+    var x := front[k].mover.value;
+    MoveEffectsMoverOwns(platform, documents, doc, moves, k, x);
+    var q := moves[k].0;
+    var t := documents[x].binding.value.spelling;
+    assert q in input.listing;
+    if OwnNameIn(platform, device0, effects0, x, t) {
+      forall effect | effect in front[..k] ensures !Touches(platform, effect, q) {
+        var j := var j :| 0 <= j < k && front[..k][j] == effect; j;
+        assert effect == front[j];
+        assert moves[j].0 != q && moves[j].0 in input.listing;
+        assert !CollideF(platform, moves[j].1, q);
+      }
+      OwnNameThrough(platform, device0, effects0, front[..k], x, t, q);
+    } else {
+      ListedAtBound(platform, input.listing, t, q);
+      assert RowContent(platform, device0, accepted, effects0, input.listing, x, documents[x]);
+    }
+  }
+
+  // The arrival acts conditionally only on the arriving document's own
+  // file, which the moves aside before it leave alone: its own as the pass
+  // left it, or a file holding a live revision of it.
+  lemma {:isolate_assertions} ArriveCondOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                                               effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                               input: RoundInput, moves: seq<(Path, Path, Hash)>, way: set<Path>,
+                                               avoid: set<Path>, k: nat)
+    requires doc in documents
+    requires device0.platform == platform
+    requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing)
+    requires forall e | e in documents :: RowG5(platform, device0, effects0, e, documents[e])
+                                          && RowContent(platform, device0, accepted, effects0, input.listing, e, documents[e])
+    requires Keeps(platform, documents[doc], r, input).Some? ==>
+      ListedRead(platform, input.listing, documents[doc].binding.value.spelling).value.0
+        == ArrivingRow(platform, documents[doc], r, input).binding.value.seen
+    requires way == InTheWay(platform, input.listing, r.path, Keeps(platform, documents[doc], r, input))
+    requires forall i | 0 <= i < |moves| :: moves[i].0 in way && FreeIn(platform, input.listing, moves[i].1)
+    requires k < |ArriveOf(platform, doc, documents[doc], r, input)|
+    ensures var front := MoveEffects(platform, documents, doc, moves);
+      var arrive := ArriveOf(platform, doc, documents[doc], r, input);
+      IsCond(arrive[k]) ==>
+        CondOrigin(platform, device0, accepted, effects0 + front + arrive[..k], CondDoc(arrive[k]), CondPath(arrive[k]), CondExpect(arrive[k]))
+  {
+    var document := documents[doc];
+    var keep := Keeps(platform, document, r, input);
+    var row := ArrivingRow(platform, document, r, input);
+    var a := Arriving(platform, document, r, input);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    assert arrive == Arrive(platform, doc, row, a, keep);
+    if !IsCond(arrive[k]) { return; }
+    assert keep.Some? && row.binding.Some?;
+    var own := keep.value;
+    var spelling := document.binding.value.spelling;
+    assert own == ListedAt(platform, input.listing, spelling);
+    ListedAtBound(platform, input.listing, spelling, own);
+    var seen := row.binding.value.seen;
+    var c := CondExpect(arrive[k]);
+    if k == 1 && arrive[0].Write? {
+      // The move after the overwrite in place: the file is the one it wrote.
+      assert arrive[..k] == [arrive[0]];
+      var before := effects0 + front + arrive[..k];
+      assert before[|before| - 1] == arrive[0];
+      SameFIsEquivalence(platform, own, own, own);
+      RoundPutLastIs(platform, before, own);
+      assert CondPath(arrive[k]) == own;
+      return;
+    }
+    assert k == 0;
+    assert CondPath(arrive[k]) == own && c == seen;
+    assert arrive[..k] == [];
+    assert effects0 + front + arrive[..k] == effects0 + front;
+    if OwnNameIn(platform, device0, effects0, doc, spelling) {
+      forall effect | effect in front ensures !Touches(platform, effect, own) {
+        var j := var j :| 0 <= j < |front| && front[j] == effect; j;
+        assert moves[j].0 in way && moves[j].0 != own && moves[j].0 in input.listing;
+        assert !CollideF(platform, moves[j].1, own);
+      }
+      SameFIsEquivalence(platform, spelling, own, own);
+      OwnNameThrough(platform, device0, effects0, front, doc, spelling, own);
+    } else {
+      assert RowContent(platform, device0, accepted, effects0, input.listing, doc, document);
+    }
+  }
+
+  // The apply acts conditionally only on its document's file, as the pass
+  // left it: its own, or a file holding a live revision of it (adopted).
+  lemma {:isolate_assertions} ApplyCondOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                                              effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                              input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires doc in documents && device0.platform == platform
+    requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing)
+    requires RowG5(platform, device0, effects0, doc, documents[doc])
+    requires RowContent(platform, device0, accepted, effects0, input.listing, doc, documents[doc])
+    ensures var effects := ApplyRevision(platform, doc, documents[doc], r, input, bound, claims, rev).effects;
+      forall i | |effects0| <= i < |effects0 + effects| :: CondAt(platform, device0, accepted, effects0 + effects, i)
+  {
+    var document := documents[doc];
+    var effects := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects;
+    ApplySaws(platform, doc, document, r, input, bound, claims, rev);
+    var all := effects0 + effects;
+    forall i | |effects0| <= i < |all|
+      ensures CondAt(platform, device0, accepted, all, i)
+    {
+      var k := i - |effects0|;
+      assert all[i] == effects[k];
+      assert all[..i] == effects0 + effects[..k];
+      if IsCond(effects[k]) {
+        assert effects[k] in effects;
+        var path := CondPath(effects[k]);
+        var spelling := document.binding.value.spelling;
+        assert !effects[k].Move?;
+        assert SameF(platform, spelling, path) && Listed(platform, input.listing, spelling);
+        if OwnNameIn(platform, device0, effects0, doc, spelling) {
+          forall effect | effect in effects[..k] ensures !Touches(platform, effect, path) {
+            ApplyEarlierTouch(platform, doc, document, r, input, bound, claims, rev, k, path);
+          }
+          OwnNameThrough(platform, device0, effects0, effects[..k], doc, spelling, path);
+        }
+      }
+    }
+  }
+
+  // Before the apply's conditional effect, no effect of it touches that
+  // effect's file (a conflict copy goes to a free name).
+  lemma {:isolate_assertions} ApplyEarlierTouch(platform: Platform, doc: DocId, document: Document, r: Revision,
+                                                input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId, k: nat, path: Path)
+    requires ListingDistinct(platform, input.listing)
+    requires var effects := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects;
+      k < |effects| && IsCond(effects[k]) && path == CondPath(effects[k])
+    ensures var effects := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects;
+      forall effect | effect in effects[..k] :: !Touches(platform, effect, path)
+  {
+    var effects := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects;
+    ApplySaws(platform, doc, document, r, input, bound, claims, rev);
+    assert effects[k] in effects;
+    var spelling := document.binding.value.spelling;
+    assert SameF(platform, spelling, path);
+    if k > 0 {
+      // Only the conflict copy comes before the overwrite.
+      assert |effects| == 2 && effects[0].Write? && effects[0].target.None? && k == 1;
+      var copy := effects[0].path;
+      assert !CollideF(platform, copy, spelling);
+      if SameF(platform, copy, path) {
+        SameFIsEquivalence(platform, copy, path, spelling);
+        SameFIsEquivalence(platform, spelling, path, path);
+        assert SameF(platform, path, spelling);
+        assert SameF(platform, copy, spelling);
+      }
+      assert effects[..k] == [effects[0]];
+    }
+  }
+
+  // The rule acts conditionally only on files whose origin the pass
+  // knows (CondOrigin).
+  lemma {:isolate_assertions} RuleCondOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                                             effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                             input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys && device0.platform == platform
+    requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires forall e | e in documents :: RowG5(platform, device0, effects0, e, documents[e])
+                                          && RowContent(platform, device0, accepted, effects0, input.listing, e, documents[e])
+    ensures var effects := PathRule(platform, documents, doc, r, input, revs, first).effects;
+      forall i | |effects0| <= i < |effects0 + effects| :: CondAt(platform, device0, accepted, effects0 + effects, i)
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var effects := PathRule(platform, documents, doc, r, input, revs, first).effects;
+    if !HeldForName(document, applied, r) {
+      ApplyCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, bound, claims, revs[doc]);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) {
+      forall i | |effects0| <= i < |effects0 + effects| ensures CondAt(platform, device0, accepted, effects0 + effects, i) {
+        assert (effects0 + effects)[i] == effects[i - |effects0|];
+      }
+      return;
+    }
+    HeldReadsSeen(platform, doc, document, r, input, bound, claims, revs[doc]);
+    ClearWayCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, revs);
+  }
+
+  // A journal write in the pass puts no file anywhere.
+  lemma GuardKeepsPuts(platform: Platform, effects: seq<Effect>, guard: seq<Effect>, p: Path)
+    requires forall effect | effect in guard :: effect.PersistJournal?
+    ensures RoundPut(platform, effects + guard, p) == RoundPut(platform, effects, p)
+    decreases |guard|
+  {
+    if |guard| > 0 {
+      var front := effects + guard[..|guard| - 1];
+      assert effects + guard == front + [guard[|guard| - 1]];
+      assert (effects + guard)[..|effects + guard| - 1] == front;
+      assert guard[|guard| - 1] in guard;
+      var all := effects + guard;
+      assert all[|all| - 1].PersistJournal?;
+      assert RoundPut(platform, all, p) == RoundPut(platform, all[..|all| - 1], p);
+      forall effect | effect in guard[..|guard| - 1] ensures effect.PersistJournal? {
+        assert effect in guard;
+      }
+      GuardKeepsPuts(platform, effects, guard[..|guard| - 1], p);
+    } else {
+      assert effects + guard == effects;
+    }
+  }
+
+  // Settling one revision keeps the history of conditional effects.
+  lemma {:isolate_assertions} SettleKeepsHist(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                                              doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && PassContent(platform, device0, accepted, pass)
+    requires PassHist(platform, device0, accepted, pass.effects)
+    ensures PassHist(platform, device0, accepted, SettleRevision(platform, pass, doc, r, input, revs, first).effects)
+  {
+    var pass' := SettleRevision(platform, pass, doc, r, input, revs, first);
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    if !Distinct(platform, pass.listing) || r.path in input.outOfScope { return; }
+    var rows := documents[doc := row];
+    var input' := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, input', revs', first);
+    var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+    var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+    var e0 := pass.effects + guard;
+    assert pass'.effects == e0 + ruled.effects;
+    assert NeverJoinedRows(platform, rows) by {
+      assert NeverJoinedRows(platform, documents);
+      if doc !in documents { assert rows[doc].binding.None?; }
+    }
+    forall e | e in rows
+      ensures RowG5(platform, device0, e0, e, rows[e]) && RowContent(platform, device0, accepted, e0, pass.listing, e, rows[e])
+    {
+      if rows[e].binding.Some? {
+        var t := rows[e].binding.value.spelling;
+        assert e in documents && rows[e] == documents[e];
+        GuardKeepsPuts(platform, pass.effects, guard, t);
+        assert RowG5(platform, device0, pass.effects, e, documents[e]);
+        assert RowContent(platform, device0, accepted, pass.effects, pass.listing, e, documents[e]);
+      }
+    }
+    RuleCondOrigin(platform, device0, accepted, e0, rows, doc, r, input', revs', first);
+    var all := pass'.effects;
+    forall i | 0 <= i < |all| ensures CondAt(platform, device0, accepted, all, i) {
+      if i < |pass.effects| {
+        assert all[i] == pass.effects[i] && all[..i] == pass.effects[..i];
+        assert CondAt(platform, device0, accepted, pass.effects, i);
+      } else if i < |e0| {
+        assert all[i] in guard;
+      }
+    }
+  }
 }
