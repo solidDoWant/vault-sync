@@ -1055,4 +1055,104 @@ abstract module RoundG6 refines RoundGuarantees {
       }
     }
   }
+  // ---------------------------------------------------------------------
+  // Saved contents: untracked files on the listing
+  // ---------------------------------------------------------------------
+
+  // The listing holds content `h` in a file no row is bound to.
+  ghost predicate UntrackedHolds(platform: Platform, rows: map<DocId, Document>, listing: Listing, h: Hash) {
+    exists p :: p in listing && listing[p].0 == h
+      && forall e | e in rows && rows[e].binding.Some? :: !SameF(platform, rows[e].binding.value.spelling, p)
+  }
+
+  // The conflict copy a settle writes is an untracked file holding the
+  // local version.
+  lemma {:isolate_assertions} SettleCopyUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, read: (Hash, Kind),
+                                                  r: Revision, input: RoundInput, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing) && doc in documents
+    requires documents[doc].binding.Some? && documents[doc].base.Some?
+    requires Listed(platform, input.listing, documents[doc].binding.value.spelling)
+    ensures var applied := Settle(platform, doc, documents[doc], read, r, input, BoundNames(documents), claims, rev);
+      var listing' := ListingAfter(platform, input.listing, applied.effects);
+      Distinct(platform, listing') && applied.document.binding.Some?
+      && applied.document.binding.value.spelling == documents[doc].binding.value.spelling ==>
+        forall h | h in SavedBy(applied.effects) :: UntrackedHolds(platform, documents[doc := applied.document], listing', h)
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var applied := Settle(platform, doc, document, read, r, input, bound, claims, rev);
+    var listing' := ListingAfter(platform, input.listing, applied.effects);
+    var spelling := document.binding.value.spelling;
+    if !(Distinct(platform, listing') && applied.document.binding.Some? && applied.document.binding.value.spelling == spelling) { return; }
+    if |applied.effects| != 2 {
+      forall h | h in SavedBy(applied.effects) ensures false {
+        var i := var i :| 0 <= i < |applied.effects| && applied.effects[i].Write? && applied.effects[i].target.None? && applied.effects[i].content == h; i;
+      }
+      return;
+    }
+    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling).value;
+    var w0 := Write(None, copy, read.0, read.1, None);
+    var w1 := Write(Some(doc), spelling, r.content, r.kind, Some(read.0));
+    assert applied.effects == [w0, w1];
+    ListingAfterTwo(platform, input.listing, w0, w1);
+    var mid := ListingAfterEffect(platform, input.listing, w0);
+    if !Distinct(platform, mid) { assert ListingAfterEffect(platform, mid, w1) == mid; assert false; }
+    if Listed(platform, input.listing, copy) {
+      var q := ListedAt(platform, input.listing, copy);
+      assert CollideF(platform, q, copy);
+      assert false;
+    }
+    assert mid == input.listing[copy := (read.0, read.1)];
+    var k := ListedAt(platform, input.listing, spelling);
+    assert k in mid && SameF(platform, k, spelling);
+    assert Listed(platform, mid, spelling);
+    var k' := ListedAt(platform, mid, spelling);
+    if k' == copy {
+      SameFIsEquivalence(platform, copy, spelling, spelling);
+      assert spelling in bound;
+      assert false;
+    }
+    assert listing' == mid[k' := (r.content, r.kind)];
+    assert copy in listing' && listing'[copy].0 == read.0;
+    var rows' := documents[doc := applied.document];
+    forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, copy) {
+      var t := rows'[e].binding.value.spelling;
+      if e == doc { assert t == spelling; }
+      assert t in bound;
+    }
+    forall h | h in SavedBy(applied.effects) ensures UntrackedHolds(platform, rows', listing', h) {
+      var i := var i :| 0 <= i < |applied.effects| && applied.effects[i].Write? && applied.effects[i].target.None? && applied.effects[i].content == h; i;
+      assert i == 0 && h == read.0;
+    }
+  }
+  // The conflict copies the apply writes are untracked files holding what
+  // they saved.
+  lemma {:isolate_assertions} ApplyCopiesUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                                   input: RoundInput, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing) && doc in documents
+    ensures var applied := ApplyRevision(platform, doc, documents[doc], r, input, BoundNames(documents), claims, rev);
+      var listing' := ListingAfter(platform, input.listing, applied.effects);
+      Distinct(platform, listing') ==>
+        forall h | h in SavedBy(applied.effects) :: UntrackedHolds(platform, documents[doc := applied.document], listing', h)
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    if document.binding.Some? && document.base.Some? && Newer(document, r) && !SettlesIdentical(platform, document, r, input)
+       && !Acknowledges(document, r) && !Revives(platform, document, r, input)
+       && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) {
+      var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+      if !(r.deleted && read.None?) && Concurrent(document, read, r) {
+        assert applied == Settle(platform, doc, document, read.value, r, input, bound, claims, rev);
+        SettleCopyUntracked(platform, documents, doc, read.value, r, input, claims, rev);
+        if |applied.effects| == 2 {
+          assert applied.document.binding.Some? && applied.document.binding.value.spelling == document.binding.value.spelling;
+        }
+        return;
+      }
+    }
+    forall h | h in SavedBy(applied.effects) ensures false {
+      var i := var i :| 0 <= i < |applied.effects| && applied.effects[i].Write? && applied.effects[i].target.None? && applied.effects[i].content == h; i;
+    }
+  }
 }
