@@ -2377,7 +2377,7 @@ abstract module PathRuleCore refines ApplyCore {
             && exists intent :: intent in pass.effects[j].journal.intents && Covers(intent.kind, pass.effects[i]))
   }
 
-  lemma SettleGuarded(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma {:isolate_assertions} SettleGuarded(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires Guarded(platform, input.unsaved, pass)
     ensures Guarded(platform, input.unsaved, SettleRevision(platform, pass, doc, r, input, revs))
   {
