@@ -259,11 +259,15 @@ abstract module ApplyCore refines StepContracts {
   // path rule's (#962). A commit in flight is settled like any concurrent
   // change, from the content the round read (#1006, #1023): the sealed
   // outbox stays as it is until its answer (KeptOutbox).
+  // A file the user moved away from its base's name keeps its name against
+  // any live revision (a local rename wins over a remote edit, move or
+  // earlier delete, SPEC.md §7), and a tombstone base settles from its
+  // content (#1068). The row's `absence` decides nothing for a bound row.
   predicate Concurrent(document: Document, read: Read, r: Revision) {
-    document.binding.Some? && read.Some? && document.absence != UserDeleted
-    && document.base.Some? && !document.base.value.deleted && !r.deleted
-    && r.path == document.base.value.path && r.id != document.base.value.rev
-    && (document.outbox.Some? || read.value.0 != document.base.value.content)
+    document.binding.Some? && read.Some?
+    && document.base.Some? && !r.deleted && r.id != document.base.value.rev
+    && (r.path == document.base.value.path || document.binding.value.spelling != document.base.value.path)
+    && (JournalChange(document) || read.value.0 != document.base.value.content)
   }
 
   // The outbox a settlement of another device's revision leaves: a commit in
@@ -327,11 +331,11 @@ abstract module ApplyCore refines StepContracts {
   // settled as for an edit (MovedContent). A commit in flight is settled
   // the same way, from the content read, and stays as sealed (#1023).
   predicate MovedAgainstChange(document: Document, read: Read, r: Revision) {
-    document.binding.Some? && read.Some? && document.absence != UserDeleted
-    && document.base.Some? && !document.base.value.deleted && !r.deleted
+    document.binding.Some? && read.Some?
+    && document.base.Some? && !r.deleted
     && r.path != document.base.value.path && r.id != document.base.value.rev
     && document.binding.value.spelling == document.base.value.path
-    && (document.outbox.Some? || read.value.0 != document.base.value.content)
+    && (JournalChange(document) || read.value.0 != document.base.value.content)
   }
 
   // The content and kind a remote move against a local change settles at
@@ -374,7 +378,7 @@ abstract module ApplyCore refines StepContracts {
   // such a change: the file stays and the commit stays as sealed (#1023).
   predicate EditedAgainstDelete(document: Document, read: Read, r: Revision) {
     r.deleted && document.binding.Some? && read.Some?
-    && (document.outbox.Some? || read.value != (document.binding.value.seen, KindOf(document)))
+    && (JournalChange(document) || read.value != (document.binding.value.seen, KindOf(document)))
   }
 
   // The kept row (verified-core.md §4.2): the tombstone is the base, the
@@ -465,10 +469,21 @@ abstract module ApplyCore refines StepContracts {
     requires ListingDistinct(platform, input.listing)
   {
     !r.deleted
-    && ((document.binding.None? && document.absence == UserDeleted)
+    && ((document.binding.None? && (document.absence == UserDeleted
+                                    || (document.outbox.Some? && !document.outbox.value.sealed)))
         || (document.binding.Some?
-            && ListedRead(platform, input.listing, document.binding.value.spelling).None?
+            && (ListedRead(platform, input.listing, document.binding.value.spelling).None? || document.base.None?)
+            && !Identical(document, ListedRead(platform, input.listing, document.binding.value.spelling), r)
             && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)))
+  }
+
+  // A bound file with no base, let go untracked, where the head would adopt
+  // an untracked file at its name.
+  predicate KeepsUntracked(platform: Platform, document: Document, r: Revision, input: RoundInput)
+    requires ListingDistinct(platform, input.listing)
+  {
+    document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).Some?
+    && Adoptable(platform, document, input, r)
   }
 
   // The revived row: the user's delete loses to the remote edit, so its
@@ -535,12 +550,23 @@ abstract module ApplyCore refines StepContracts {
       // The user's delete, or a bound file missing from the listing (the
       // user's delete, G3_DeleteSeen), against a live remote revision: an
       // edit beats a delete (SPEC.md §6.3, verified-core.md §4.2). The file
-      // comes back as for a document with no file here.
-      Create(platform, doc, Revived(document), r, input, bound, claims, rev)
+      // comes back as for a document with no file here. A bound file with
+      // no base is let go untracked (#1068); where an untracked file at the
+      // name holds the head, the path rule moves it aside instead of the
+      // document adopting it (G5_NeverMixedUp: the document had a file).
+      if KeepsUntracked(platform, document, r, input) then Hold(document, r, PathHeld)
+      else Create(platform, doc, Revived(document), r, input, bound, claims, rev)
     else if document.binding.Some? then
       var spelling := document.binding.value.spelling;
       var read := ListedRead(platform, input.listing, spelling);
       if UnsavedAt(platform, input.unsaved, spelling) then Hold(document, r, LocalChanges)
+      else if r.deleted && read.None? then
+        // A tombstone against a bound file missing from the listing (the
+        // user's delete, G3_DeleteSeen): deleted on both sides (#1068). The
+        // tombstone is the base, nothing is bound, and nothing is left to
+        // send but a commit in flight.
+        Applied(document.(base := Some(BaseOf(r)), ahead := None, binding := None, absence := Released,
+                          outbox := if InFlight(document) then document.outbox else None), [])
       else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, claims, rev)
       else if MovedAgainstChange(document, read, r) then
         // A remote move against a local change: #962's rule moves the file
@@ -551,6 +577,13 @@ abstract module ApplyCore refines StepContracts {
         // A remote delete against a change the server lacks: an edit beats a
         // delete (SPEC.md §6.3). The file stays, untouched.
         Applied(KeptAgainstDelete(document, read.value, r, rev), [])
+      else if !Clean(platform, document, read) && !r.deleted && read.Some? then
+        // A live revision against a file the listing reads that no case
+        // above settles (the base's own revision, pulled again past an
+        // older waiting one): it becomes the base, and the file stays as
+        // read, sent where it differs from it (#1068). Nothing on disk
+        // changes.
+        Applied(Settled(document, r, read.value.0, rev), [])
       else if !Clean(platform, document, read) then
         Hold(document, r, if JournalChange(document) || read.None? || read.value.0 != document.binding.value.seen
                           then LocalChanges else PathHeld)
@@ -570,10 +603,11 @@ abstract module ApplyCore refines StepContracts {
       // file is gone): recorded as the base, the commit in flight kept as
       // sealed (#1023), nothing on disk. An unsent user's delete against a
       // remote tombstone waits.
-      if !JournalChange(document) || InFlight(document) then
-        Applied(document.(base := Some(BaseOf(r)), ahead := None), [])
-      else Hold(document, r, LocalChanges)
-    else if JournalChange(document) && !InFlight(document) then Hold(document, r, LocalChanges)
+      // The user's unsent delete, or an unsent change of a document with no
+      // file here, against it is a delete on both sides (#1068): nothing is
+      // left to send but a commit in flight.
+      Applied(document.(base := Some(BaseOf(r)), ahead := None,
+                        outbox := if InFlight(document) then document.outbox else None), [])
     else
       // A document with no file here, a commit in flight kept as sealed
       // (#1023).
@@ -612,7 +646,7 @@ abstract module ApplyCore refines StepContracts {
   function ApplyingRow(platform: Platform, document: Document, r: Revision, input: RoundInput): Document
     requires ListingDistinct(platform, input.listing)
   {
-    if Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input) then Revived(document)
+    if Newer(document, r) && !Acknowledges(document, r) && (Revives(platform, document, r, input) && !KeepsUntracked(platform, document, r, input)) then Revived(document)
     else document
   }
 
@@ -621,6 +655,7 @@ abstract module ApplyCore refines StepContracts {
   lemma RevivedApplies(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     requires Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input)
+    requires !KeepsUntracked(platform, document, r, input)
     ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev)
             == ApplyRevision(platform, doc, Revived(document), r, input, bound, claims, rev)
             == Create(platform, doc, Revived(document), r, input, bound, claims, rev)
@@ -773,12 +808,12 @@ abstract module ApplyCore refines StepContracts {
     requires ListingDistinct(device.platform, input.listing)
     ensures PreconditionsInOrder(device.platform, device.disk,
                                  ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects)
-    decreases if Newer(document, r) && !Acknowledges(document, r) && Revives(device.platform, document, r, input) then 1 else 0
+    decreases if Newer(document, r) && !Acknowledges(document, r) && (Revives(device.platform, document, r, input) && !KeepsUntracked(device.platform, document, r, input)) then 1 else 0
   {
     var platform := device.platform;
     var disk := device.disk;
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
-    if Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input) {
+    if Newer(document, r) && !Acknowledges(document, r) && (Revives(platform, document, r, input) && !KeepsUntracked(platform, document, r, input)) {
       RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
       AppliedPreconditionsHold(device, doc, Revived(document), r, input, bound, claims, rev);
       return;
@@ -892,6 +927,7 @@ abstract module ApplyCore refines StepContracts {
   lemma AppliedTakesEffect(device: Device, doc: DocId, document: Document, r: Revision, input: RoundInput,
                            bound: set<Path>, claims: Claims, rev: RevId, disk': map<Path, DiskFile>)
     requires input.listing == ListingOf(device)
+    requires document.binding.Some? ==> document.binding.value.spelling in bound
     requires OneFilePerName(device.platform, device.disk)
     requires EffectsTake(device.platform, device.disk,
                          ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects, disk')
@@ -915,17 +951,28 @@ abstract module ApplyCore refines StepContracts {
       && (forall x :: x in device.disk && !Departs(device.platform, applied.effects, x) ==>
             x in disk' && disk'[x].identity == device.disk[x].identity)
     decreases if ListingDistinct(device.platform, input.listing) && Newer(document, r) && !Acknowledges(document, r)
-                 && Revives(device.platform, document, r, input) then 1 else 0
+                 && (Revives(device.platform, document, r, input) && !KeepsUntracked(device.platform, document, r, input)) then 1 else 0
   {
     DistinctDisk(device);
     var platform := device.platform;
     var disk := device.disk;
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
-    if Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input) {
+    if Newer(document, r) && !Acknowledges(document, r) && (Revives(platform, document, r, input) && !KeepsUntracked(platform, document, r, input)) {
       RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
       AppliedTakesEffect(device, doc, Revived(document), r, input, bound, claims, rev, disk');
-      if document.binding.Some? {
+      if document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).None? {
         UnlistedNotOnDisk(device, document.binding.value.spelling);
+      } else if document.binding.Some? {
+        // A bound file with no base is let go untracked: it stays where it
+        // is, since the head arrives only at a name no binding has.
+        var spelling := document.binding.value.spelling;
+        forall e | e in applied.effects && e.Move? ensures !SameF(platform, e.from, spelling) {
+          if SameF(platform, e.from, spelling) {
+            SameFIsEquivalence(platform, spelling, e.from, spelling);
+            assert BoundName(platform, bound, e.from);
+          }
+        }
+        assert !Departs(platform, applied.effects, spelling);
       }
       return;
     }
@@ -1023,7 +1070,7 @@ abstract module ApplyCore refines StepContracts {
     requires input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk)
     requires ListingDistinct(device.platform, input.listing)
-    requires document.binding.Some? && !(Newer(document, r) && !Acknowledges(document, r) && Revives(device.platform, document, r, input))
+    requires document.binding.Some? && !(Newer(document, r) && !Acknowledges(document, r) && (Revives(device.platform, document, r, input) && !KeepsUntracked(device.platform, document, r, input)))
     requires |ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects| == 2
     requires EffectsTake(device.platform, device.disk,
                          ApplyRevision(device.platform, doc, document, r, input, bound, claims, rev).effects, disk')
@@ -1314,15 +1361,14 @@ abstract module ApplyCore refines StepContracts {
     assert input.listing == ListingOf(device);
     AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     assert Newer(document, r);
-    if Revives(platform, document, r, input) {
+    if (Revives(platform, document, r, input) && !KeepsUntracked(platform, document, r, input)) {
       // A local delete against a remote edit: the file comes back, with the
       // remote's content, and nothing else is sent.
       assert !Acknowledges(document, r);
       RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
-      if document.binding.Some? {
+      if document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).None? {
         UnlistedNotOnDisk(device, document.binding.value.spelling);
       }
-      assert BoundFile(device, doc).None?;
       assert applied.document.base != document.base;
       assert applied.document.binding == Some(Binding(r.path, r.content, false, None));
       assert after.journal.documents[doc] == applied.document;
@@ -1361,6 +1407,12 @@ abstract module ApplyCore refines StepContracts {
     var read := ListedRead(platform, input.listing, spelling);
     ListedReadOnDisk(device, spelling);
     assert !UnsavedAt(platform, input.unsaved, spelling);
+    if read.None? {
+      // A tombstone against a missing file (a live revision revives,
+      // above): G6 asks nothing of it.
+      UnlistedNotOnDisk(device, spelling);
+      return;
+    }
     if SettlesIdentical(platform, document, r, input) {
       // Both sides hold the same content (G6_Settle's first case): it stays
       // in place, and nothing is saved next to it.
@@ -1402,7 +1454,21 @@ abstract module ApplyCore refines StepContracts {
       return;
     }
     if !Concurrent(document, read, r) {
-      assert Clean(platform, document, read);
+      // A hold leaves the base as it was, so it settles nothing; what is
+      // left (a clean file, or the base's own revision) has no local change.
+      assert after.journal.documents[doc] == applied.document;
+      if applied.document.base == document.base { return; }
+      assert !MovedAgainstChange(document, read, r);
+      if r.deleted {
+        assert Clean(platform, document, read);
+      } else {
+        assert document.base.Some? by {
+          if document.base.None? { assert applied.document.base == document.base; }
+        }
+        assert document.base.value.rev != r.id;
+        assert !JournalChange(document) && read.value.0 == document.base.value.content
+               && spelling == document.base.value.path;
+      }
       var q := var q :| Holds(platform, device.disk, q, spelling, read.value.0); q;
       FileAtIs(device, spelling, q);
       assert BoundFile(device, doc) == Some(device.disk[q]);
@@ -1527,10 +1593,10 @@ abstract module ApplyCore refines StepContracts {
     assert input.listing == ListingOf(device);
     AppliedTakesEffect(device, doc, document, r, input, bound, claims, rev, after.disk);
     // Every name a file arrives at is no binding's name.
-    var revived := Newer(document, r) && !Acknowledges(document, r) && Revives(platform, document, r, input);
+    var revived := Newer(document, r) && !Acknowledges(document, r) && (Revives(platform, document, r, input) && !KeepsUntracked(platform, document, r, input));
     if revived {
       RevivedApplies(platform, doc, document, r, input, bound, claims, rev);
-      if document.binding.Some? {
+      if document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).None? {
         UnlistedNotOnDisk(device, document.binding.value.spelling);
       }
     }
