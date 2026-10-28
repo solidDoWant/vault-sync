@@ -42,6 +42,18 @@ abstract module ClaimsMirror refines StepContracts {
     }
   }
 
+  // A kept entry other than the last kept one comes before it in the
+  // sequence. Sequence-level only, so it is checked without server facts.
+  lemma KeptBeforeLast(s: seq<RevId>, ids: set<RevId>, x: RevId) returns (a: int, b: int)
+    requires x in Keep(s, ids) && x != Keep(s, ids)[|Keep(s, ids)| - 1]
+    ensures 0 <= a < b < |s| && s[a] == x && s[b] == Keep(s, ids)[|Keep(s, ids)| - 1]
+  {
+    var ks := Keep(s, ids);
+    var m :| 0 <= m < |ks| && ks[m] == x;
+    assert m < |ks| - 1;
+    a, b := KeepOrder(s, ids, m, |ks| - 1);
+  }
+
   // The hypotheses of MirrorAtCursor for one device and one cut.
   ghost predicate FinishedAtCut(state: State, d: DeviceId, cut: Server) {
     d in state.devices && !Diverged(state, d)
@@ -50,28 +62,64 @@ abstract module ClaimsMirror refines StepContracts {
     && FinishedSyncing(state.(server := cut), d)
   }
 
-  // The newest claim a finished device has of a document it knows is the
-  // cut's head of it: the claim's revision is in the cut (JournalOnServer),
-  // so at a feed index below the cursor (FeedPositioned) and in its
-  // document's history (HistoryFollowsFeed); the cut's head is the last
-  // entry of that history the cut keeps, read by the device too, so the
-  // claim is at least as new (ClaimsCoverCursor) and, positions growing
-  // along a history, is that head.
-  lemma {:isolate_assertions} ClaimIsCutHead(state: State, d: DeviceId, cut: Server, doc: DocId)
+  // The cut's head of a document whose history holds a kept id is the
+  // last kept entry of that history, an entry of the cut's feed; positions
+  // growing along a history (HistoryFollowsFeed), the kept id is that head
+  // or older than it. Server-level only, so the order argument is proved
+  // without the reachable state's clauses in scope.
+  lemma {:isolate_assertions} CutHeadIsNewestKept(S: Server, cut: Server, doc: DocId, id: RevId) returns (h: RevId)
+    requires EarlierServer(S, cut) && HistoryFollowsFeed(S) && FeedPositioned(S)
+    requires doc in S.history && id in S.history[doc] && id in S.revisions
+    requires forall e :: e in S.history[doc] ==> e in S.revisions
+    requires exists i :: 0 <= i < |cut.feed| && cut.feed[i] == id
+    ensures doc in cut.history && |cut.history[doc]| > 0 && h == cut.history[doc][|cut.history[doc]| - 1]
+    ensures h in S.revisions && Head(cut, doc) == Some(S.revisions[h])
+    ensures S.revisions[h].doc == doc && S.revisions[h].position < |cut.feed|
+    ensures S.feed[S.revisions[h].position] == h && S.feed[S.revisions[h].position] in S.revisions
+    ensures id == h || S.revisions[id].position < S.revisions[h].position
+  {
+    var kept := set i | 0 <= i < |cut.feed| :: cut.feed[i];
+    var hist := S.history[doc];
+    assert id in kept;
+    KeepMember(hist, kept, id);
+    var ks := Keep(hist, kept);
+    assert |ks| > 0;
+    assert doc in cut.history && cut.history[doc] == ks;
+    h := ks[|ks| - 1];
+    KeepMember(hist, kept, h);
+    assert h in hist && h in kept && h in S.revisions;
+    assert h in cut.revisions && cut.revisions[h] == S.revisions[h];
+    assert Head(cut, doc) == Some(S.revisions[h]);
+    var mh :| 0 <= mh < |hist| && hist[mh] == h;
+    assert S.revisions[h].doc == doc;
+    var jj :| 0 <= jj < |cut.feed| && cut.feed[jj] == h;
+    assert S.feed[jj] == h;
+    assert S.revisions[h].position == jj;
+    if id != h {
+      var a, b := KeptBeforeLast(hist, kept, id);
+      assert 0 <= a < b < |S.history[doc]| && S.history[doc][a] in S.revisions && S.history[doc][b] in S.revisions;
+      assert S.revisions[S.history[doc][a]].position < S.revisions[S.history[doc][b]].position;
+    }
+  }
+
+  // The revision a finished device's newest claim of a document names is
+  // on the cut's feed, in its document's history, at the claim's position.
+  lemma {:isolate_assertions} ClaimOnCut(state: State, d: DeviceId, cut: Server, doc: DocId) returns (id: RevId)
     requires ClaimsReachable(state) && FinishedAtCut(state, d, cut)
     requires doc in state.devices[d].journal.documents
     requires KnownPosition(state.devices[d].journal.documents[doc]).Some?
-    ensures Head(cut, doc).Some?
-    ensures var document := state.devices[d].journal.documents[doc];
-      (document.ahead.Some? ==> Head(cut, doc).value == document.ahead.value.revision)
-      && (document.ahead.None? ==> document.base.Some? && BaseRecords(document.base.value, doc, Head(cut, doc).value))
+    ensures var S := state.server; var document := state.devices[d].journal.documents[doc];
+      id in S.revisions && doc in S.history && id in S.history[doc]
+      && (exists i :: 0 <= i < |cut.feed| && cut.feed[i] == id)
+      && S.revisions[id].position == KnownPosition(document).value
+      && (document.ahead.Some? ==> S.revisions[id] == document.ahead.value.revision)
+      && (document.ahead.None? ==> document.base.Some? && BaseRecords(document.base.value, doc, S.revisions[id]))
   {
     var S := state.server;
-    var device := state.devices[d];
-    var journal := device.journal;
+    var journal := state.devices[d].journal;
     var document := journal.documents[doc];
     assert JournalOnServer(cut, journal);
-    var id := if document.ahead.Some? then document.ahead.value.revision.id else document.base.value.rev;
+    id := if document.ahead.Some? then document.ahead.value.revision.id else document.base.value.rev;
     assert id in cut.revisions;
     var kept := set i | 0 <= i < |cut.feed| :: cut.feed[i];
     assert id in kept && id in S.revisions;
@@ -88,39 +136,32 @@ abstract module ClaimsMirror refines StepContracts {
     assert R.position == i;
     assert KnownPosition(document).value == i;
     assert doc in S.history && id in S.history[doc];
-    var hist := S.history[doc];
-    KeepMember(hist, kept, id);
-    var ks := Keep(hist, kept);
-    assert |ks| > 0;
-    assert doc in cut.history && cut.history[doc] == ks by {
-      assert doc in S.history && |Keep(S.history[doc], kept)| > 0;
-    }
-    var h := ks[|ks| - 1];
-    KeepMember(hist, kept, h);
-    assert h in hist && h in kept;
-    assert h in S.revisions;
-    assert h in cut.revisions && cut.revisions[h] == S.revisions[h];
+  }
+
+  // The newest claim a finished device has of a document it knows is the
+  // cut's head of it: the claim's revision is in the cut (ClaimOnCut); the
+  // cut's head is the last entry of that history the cut keeps
+  // (CutHeadIsNewestKept), read by the device too, so the claim is at
+  // least as new (ClaimsCoverCursor) and, positions growing along a
+  // history, is that head.
+  lemma {:isolate_assertions} ClaimIsCutHead(state: State, d: DeviceId, cut: Server, doc: DocId)
+    requires ClaimsReachable(state) && FinishedAtCut(state, d, cut)
+    requires doc in state.devices[d].journal.documents
+    requires KnownPosition(state.devices[d].journal.documents[doc]).Some?
+    ensures Head(cut, doc).Some?
+    ensures var document := state.devices[d].journal.documents[doc];
+      (document.ahead.Some? ==> Head(cut, doc).value == document.ahead.value.revision)
+      && (document.ahead.None? ==> document.base.Some? && BaseRecords(document.base.value, doc, Head(cut, doc).value))
+  {
+    var S := state.server;
+    var journal := state.devices[d].journal;
+    var id := ClaimOnCut(state, d, cut, doc);
+    forall e | e in S.history[doc] ensures e in S.revisions {}
+    var h := CutHeadIsNewestKept(S, cut, doc, id);
     var H := S.revisions[h];
-    assert cut.history[doc][|cut.history[doc]| - 1] == h;
-    assert Head(cut, doc) == Some(cut.revisions[h]);
-    assert Head(cut, doc) == Some(H);
-    var jj :| 0 <= jj < |cut.feed| && cut.feed[jj] == h;
-    assert S.feed[jj] == h;
-    assert H.position == jj;
-    var mh :| 0 <= mh < |hist| && hist[mh] == h;
-    assert H.doc == doc;
-    assert jj < journal.cursor && jj < |S.feed| && S.feed[jj] in S.revisions;
+    assert H.position < journal.cursor;
     assert KnownPosition(journal.documents[H.doc]).value >= H.position;
-    assert i >= jj;
-    if id != h {
-      var m :| 0 <= m < |ks| && ks[m] == id;
-      assert m < |ks| - 1;
-      var a, b := KeepOrder(hist, kept, m, |ks| - 1);
-      assert hist[a] == id && hist[b] == h;
-      assert R.position < H.position;
-      assert false;
-    }
-    assert H == R;
+    assert id == h;
   }
 
   lemma {:isolate_assertions} MirrorAtCut(state: State, d: DeviceId, cut: Server)
