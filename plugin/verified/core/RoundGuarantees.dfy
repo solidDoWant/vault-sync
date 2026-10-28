@@ -2335,4 +2335,109 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       }
     }
   }
+
+  // A row in the way that is not locally placed is let go (W(b)): its
+  // file moves aside for no document.
+  lemma MoveEffectsNoMover(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, i: nat, e: DocId)
+    requires i < |moves| && NeverJoinedRows(platform, documents)
+    requires e in documents && e != doc && FileOf(platform, documents, moves[i].0, e) && !LocallyPlaced(documents[e])
+    ensures var effects := MoveEffects(platform, documents, doc, moves);
+      |effects| == |moves| && effects[i] == Move(None, moves[i].0, moves[i].1, moves[i].2)
+    decreases |moves|
+  {
+    MoveEffectsShape(platform, documents, doc, moves);
+    if i > 0 {
+      MoveEffectsNoMover(platform, documents, doc, moves[1..], i - 1, e);
+      assert MoveEffects(platform, documents, doc, moves)[i] == MoveEffects(platform, documents, doc, moves[1..])[i - 1];
+    } else {
+      var q := moves[0].0;
+      var keepers := set e' | e' in documents && e' != doc && FileOf(platform, documents, q, e') && LocallyPlaced(documents[e']);
+      assert keepers == {} by {
+        forall e' | e' in keepers ensures false {
+          SameFIsEquivalence(platform, documents[e'].binding.value.spelling, q, documents[e].binding.value.spelling);
+          SameFIsEquivalence(platform, documents[e].binding.value.spelling, q, q);
+          assert SameF(platform, documents[e'].binding.value.spelling, documents[e].binding.value.spelling);
+        }
+      }
+    }
+  }
+
+  // An earlier move aside, of another listed file to a copy name clear of
+  // every bound name, misses a bound row's name.
+  lemma MoveMissesName(platform: Platform, listing: Listing, avoid: set<Path>, from: Path, to: Path, own: Path, t: Path)
+    requires ListingDistinct(platform, listing) && from in listing && own in listing && from != own
+    requires SameF(platform, own, t) && t in avoid && forall a | a in avoid :: !SameF(platform, a, to)
+    ensures !SameF(platform, from, t) && !SameF(platform, to, t)
+  {
+    if SameF(platform, from, t) {
+      SameFIsEquivalence(platform, from, t, own);
+      SameFIsEquivalence(platform, own, t, t);
+      assert SameF(platform, from, own);
+    }
+    if SameF(platform, to, t) { SameFIsEquivalence(platform, to, t, t); }
+  }
+
+  // Where the rule clears the way, another row comes off its listed file
+  // only by moving it: with the row (W(a), its new binding) or aside for
+  // no document (W(b)), no earlier effect touching its name.
+  lemma {:isolate_assertions} ClearWayDrop(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, e: DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires e in documents && e != doc && documents[e].binding.Some?
+    requires Listed(platform, input.listing, documents[e].binding.value.spelling)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      var t := documents[e].binding.value.spelling;
+      e in ruled.documents
+      && ((ruled.documents[e].binding.None? || ruled.documents[e].binding.value.spelling != t) ==>
+            (ruled.documents[e].binding.Some?
+             && exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, ruled.documents[e].binding.value.spelling))
+            || exists i :: 0 <= i < |ruled.effects| && ruled.effects[i].Move? && ruled.effects[i].mover.None?
+                 && SameF(platform, ruled.effects[i].from, t)
+                 && forall k | 0 <= k < i :: !Touches(platform, ruled.effects[k], t))
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var t := documents[e].binding.value.spelling;
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+      assert ruled.documents[e].binding == documents[e].binding;
+      return;
+    }
+    var moves := aside.value;
+    AsideFacts(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    assert ruled.effects == front + arrive;
+    var rows := ruled.documents;
+    assert rows == ClearRows(platform, documents, doc, r, input, moves, revs);
+    MoveRowsRow(platform, documents, doc, moves, revs, input.listing, e);
+    var moved := MoveRows(platform, documents, doc, moves, revs);
+    var recorded := RecordMissing(platform, input.listing, documents, doc, r.path, moved, revs);
+    assert !MissingIn(platform, input.listing, documents[e]);
+    assert rows[e] == recorded[e] == moved[e];
+    if exists i | 0 <= i < |moves| :: FileOf(platform, documents, moves[i].0, e) {
+      var i := var i :| 0 <= i < |moves| && FileOf(platform, documents, moves[i].0, e); i;
+      assert moved[e] == MovedAside(documents[e], moves[i].1, revs[e]);
+      assert t in avoid;
+      forall k | 0 <= k < i ensures !Touches(platform, ruled.effects[k], t) {
+        assert ruled.effects[k] == front[k];
+        MoveMissesName(platform, input.listing, avoid, moves[k].0, moves[k].1, moves[i].0, t);
+      }
+      assert front[i] == ruled.effects[i];
+      SameFIsEquivalence(platform, t, moves[i].0, moves[i].0);
+      if LocallyPlaced(documents[e]) {
+        MoveEffectsMover(platform, documents, doc, moves, i, e);
+        assert SameF(platform, moves[i].1, moves[i].1);
+        assert front[i] in ruled.effects && PutsFor(platform, front[i], e, moves[i].1);
+      } else {
+        MoveEffectsNoMover(platform, documents, doc, moves, i, e);
+      }
+    } else {
+      assert rows[e] == documents[e];
+    }
+  }
 }
