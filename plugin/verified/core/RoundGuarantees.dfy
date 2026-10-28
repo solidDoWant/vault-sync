@@ -2635,15 +2635,41 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       (PutsTracked(platform, b[m], s) || (b[m].Write? && SameF(platform, b[m].path, s)) || (b[m].Move? && SameF(platform, b[m].to, s)))
         ==> put == By(|a| + m)
   {
-    assert a + b == (a + b[..m + 1]) + b[m + 1..];
+    var c := a + b[..m + 1];
+    var d := b[m + 1..];
+    SplitAt(a, b, m);
+    TailUntouched(platform, b, s, m);
+    RoundPutUntouchedTail(platform, c, d, s);
+    RoundPutLastIs(platform, c, s);
+  }
+
+  lemma SplitAt(a: seq<Effect>, b: seq<Effect>, m: nat)
+    requires m < |b|
+    ensures a + b == (a + b[..m + 1]) + b[m + 1..]
+    ensures |a + b[..m + 1]| == |a| + m + 1 && (a + b[..m + 1])[|a| + m] == b[m]
+  {
+    assert b == b[..m + 1] + b[m + 1..];
+  }
+
+  lemma TailUntouched(platform: Platform, b: seq<Effect>, s: Path, m: nat)
+    requires m < |b|
+    requires forall k | m < k < |b| :: !Touches(platform, b[k], s)
+    ensures forall effect :: effect in b[m + 1..] ==> !Touches(platform, effect, s)
+  {
     forall effect | effect in b[m + 1..] ensures !Touches(platform, effect, s) {
       var k :| 0 <= k < |b[m + 1..]| && b[m + 1..][k] == effect;
       assert effect == b[m + 1 + k];
     }
-    RoundPutUntouchedTail(platform, a + b[..m + 1], b[m + 1..], s);
-    var c := a + b[..m + 1];
-    assert c[|c| - 1] == b[m];
   }
+
+  // A last effect that puts a file at `s` is what is there.
+  lemma RoundPutLastIs(platform: Platform, c: seq<Effect>, s: Path)
+    requires |c| > 0
+    ensures var last := c[|c| - 1];
+      ((last.Write? && SameF(platform, last.path, s)) || (last.Move? && SameF(platform, last.to, s)))
+        ==> RoundPut(platform, c, s) == By(|c| - 1)
+  {}
+
 
   // Where the apply puts the document's file at its new binding, that put
   // is its last effect: a write of the document's file at that name.
