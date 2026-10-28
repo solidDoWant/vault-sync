@@ -262,4 +262,268 @@ abstract module RoundClaimsCore refines PathRuleCore {
       }
     }
   }
+
+  // A revision the server accepted, as it accepted it.
+  ghost predicate AcceptedAs(accepted: map<RevId, Revision>, r: Revision) {
+    r.id in accepted && accepted[r.id] == r
+  }
+
+  // JournalsNameAccepted's clause on a journal's rows.
+  ghost predicate RowsNameAccepted(accepted: map<RevId, Revision>, documents: map<DocId, Document>) {
+    forall e | e in documents ::
+      var document := documents[e];
+      (document.base.Some? ==>
+         document.base.value.rev in accepted && BaseRecords(document.base.value, e, accepted[document.base.value.rev]))
+      && (document.ahead.Some? ==>
+            document.ahead.value.revision.doc == e && AcceptedAs(accepted, document.ahead.value.revision))
+  }
+
+  lemma SettleNamesAccepted(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RowsNameAccepted(accepted, pass.journal.documents)
+    requires AcceptedAs(accepted, r) && r.doc == doc
+    ensures RowsNameAccepted(accepted, SettleRevision(platform, pass, doc, r, input, revs, first).journal.documents)
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
+      var rows := documents[doc := row];
+      RuleNamesFrom(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r), first);
+    }
+  }
+
+  lemma SettlePulledNamesAccepted(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RowsNameAccepted(accepted, pass.journal.documents)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    ensures RowsNameAccepted(accepted, SettlePulled(platform, pass, revisions, input, revs, first).journal.documents)
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleNamesAccepted(platform, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledNamesAccepted(platform, accepted, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryNamesAccepted(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RowsNameAccepted(accepted, pass.journal.documents)
+    ensures RowsNameAccepted(accepted, RetryWaiting(platform, pass, docs, input, revs, first).journal.documents)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        SettleNamesAccepted(platform, accepted, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryNamesAccepted(platform, accepted, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryNamesAccepted(platform, accepted, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  lemma PushNamesAccepted(platform: Platform, accepted: map<RevId, Revision>, journal: Journal, input: RoundInput, revs: FreshRevs)
+    requires FreshIn(input, revs)
+    requires RowsNameAccepted(accepted, journal.documents)
+    ensures RowsNameAccepted(accepted, OnPush(platform, journal, input, revs).0.documents)
+  {
+    var docs := Created(platform, journal, input, revs);
+    assert forall e | e in docs && e !in journal.documents :: docs[e].base.None? && docs[e].ahead.None?;
+  }
+
+  // Every revision the pull reads is one the server holds, under its id.
+  lemma RevisionsHeld(server: Server, ids: seq<RevId>)
+    requires RevisionsKeyed(server)
+    ensures forall r | r in Revisions(server, ids) :: r.id in server.revisions && server.revisions[r.id] == r
+    decreases |ids|
+  {
+    if |ids| > 0 {
+      RevisionsHeld(server, ids[1..]);
+      assert Revisions(server, ids) == (if ids[0] in server.revisions then [server.revisions[ids[0]]] else []) + Revisions(server, ids[1..]);
+    }
+  }
+
+  lemma {:isolate_assertions} OnRoundNamesAccepted(platform: Platform, accepted: map<RevId, Revision>, journal: Journal, pulled: seq<Revision>,
+                                                   cursor': nat, anchor': Option<RevId>, input: RoundInput, revs: FreshRevs)
+    requires FreshIn(input, revs)
+    requires RowsNameAccepted(accepted, journal.documents)
+    requires forall i | 0 <= i < |pulled| :: AcceptedAs(accepted, pulled[i])
+    ensures RowsNameAccepted(accepted, OnRound(platform, journal, pulled, cursor', anchor', input, revs).0.documents)
+  {
+    var start := StartPass(journal, input);
+    var first := RoundClaims(platform, journal, input);
+    RetryNamesAccepted(platform, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    SettlePulledNamesAccepted(platform, accepted, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    PushNamesAccepted(platform, accepted, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
+  }
+
+  // Clause JournalsNameAccepted.
+  lemma {:isolate_assertions} RoundKeepsNamesAccepted(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && JournalsNameAccepted(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server) && FeedAccepted(pre.server)
+    ensures JournalsNameAccepted(RoundStepOf(pre, d, input, revs).post)
+  {
+    var post := RoundStepOf(pre, d, input, revs).post;
+    var accepted := pre.server.accepted;
+    RoundStepJournal(pre, d, input, revs);
+    var journal := pre.devices[d].journal;
+    assert RowsNameAccepted(accepted, journal.documents);
+    if FreshIn(input, revs) {
+      var pulled := PulledOf(pre, d);
+      if journal.cursor < |pre.server.feed| {
+        var ids := pre.server.feed[journal.cursor..];
+        var held := Revisions(pre.server, ids);
+        assert pulled == held;
+        RevisionsHeld(pre.server, ids);
+        forall i | 0 <= i < |held| ensures AcceptedAs(accepted, held[i]) {
+          assert held[i] in held;
+        }
+      } else {
+        assert pulled == [];
+      }
+      OnRoundNamesAccepted(pre.devices[d].platform, accepted, journal, pulled, CursorOf(pre, d), AnchorOf(pre, d), input, revs);
+      PushKeepsReadPosition(pre.devices[d].platform, journal, input, revs);
+      var journal' := post.devices[d].journal;
+      assert RowsNameAccepted(accepted, journal'.documents);
+      OnRoundEffects(pre.devices[d].platform, journal, pulled, CursorOf(pre, d), AnchorOf(pre, d), input, revs);
+      assert journal'.anchor == AnchorOf(pre, d);
+      assert journal'.anchor.Some? ==> journal'.anchor.value in accepted;
+    }
+    assert forall x | x in post.devices :: RowsNameAccepted(accepted, post.devices[x].journal.documents);
+  }
+
+  // ---------------------------------------------------------------------
+  // OutboxParentsAccepted: an outbox keeps its parent or takes its base's
+  // id, which the server accepted (RowsNameAccepted)
+  // ---------------------------------------------------------------------
+
+  ghost predicate RowsParentsAccepted(accepted: map<RevId, Revision>, documents: map<DocId, Document>) {
+    forall e | e in documents && documents[e].outbox.Some? && documents[e].outbox.value.baseRev.Some? ::
+      documents[e].outbox.value.baseRev.value in accepted
+  }
+
+  lemma {:isolate_assertions} SettleParentsAccepted(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RowsNameAccepted(accepted, pass.journal.documents) && RowsParentsAccepted(accepted, pass.journal.documents)
+    requires AcceptedAs(accepted, r) && r.doc == doc
+    ensures var documents' := SettleRevision(platform, pass, doc, r, input, revs, first).journal.documents;
+      RowsNameAccepted(accepted, documents') && RowsParentsAccepted(accepted, documents')
+  {
+    SettleNamesAccepted(platform, accepted, pass, doc, r, input, revs, first);
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
+      var rows := documents[doc := row];
+      var revs' := RevsFor(rows, revs, r);
+      var input' := input.(listing := pass.listing);
+      RuleKeepsParent(platform, rows, doc, r, input', revs', first);
+      var after := PathRule(platform, rows, doc, r, input', revs', first).documents;
+      assert after == SettleRevision(platform, pass, doc, r, input, revs, first).journal.documents;
+      forall e | e in after && after[e].outbox.Some? && after[e].outbox.value.baseRev.Some?
+        ensures after[e].outbox.value.baseRev.value in accepted
+      {
+        assert ParentKeptOrBase(rows[e], after[e]);
+        if !(rows[e].outbox.Some? && after[e].outbox.value.baseRev == rows[e].outbox.value.baseRev) {
+          assert after[e].base.Some?;
+        }
+      }
+    }
+  }
+
+  lemma SettlePulledParentsAccepted(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RowsNameAccepted(accepted, pass.journal.documents) && RowsParentsAccepted(accepted, pass.journal.documents)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    ensures var documents' := SettlePulled(platform, pass, revisions, input, revs, first).journal.documents;
+      RowsNameAccepted(accepted, documents') && RowsParentsAccepted(accepted, documents')
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleParentsAccepted(platform, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledParentsAccepted(platform, accepted, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryParentsAccepted(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RowsNameAccepted(accepted, pass.journal.documents) && RowsParentsAccepted(accepted, pass.journal.documents)
+    ensures var documents' := RetryWaiting(platform, pass, docs, input, revs, first).journal.documents;
+      RowsNameAccepted(accepted, documents') && RowsParentsAccepted(accepted, documents')
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        SettleParentsAccepted(platform, accepted, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryParentsAccepted(platform, accepted, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryParentsAccepted(platform, accepted, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  lemma PushParentsAccepted(platform: Platform, accepted: map<RevId, Revision>, journal: Journal, input: RoundInput, revs: FreshRevs)
+    requires FreshIn(input, revs)
+    requires RowsNameAccepted(accepted, journal.documents) && RowsParentsAccepted(accepted, journal.documents)
+    ensures RowsParentsAccepted(accepted, OnPush(platform, journal, input, revs).0.documents)
+  {
+    PushKeepsParents(platform, journal, input, revs);
+  }
+
+  lemma {:isolate_assertions} OnRoundParentsAccepted(platform: Platform, accepted: map<RevId, Revision>, journal: Journal, pulled: seq<Revision>,
+                                                     cursor': nat, anchor': Option<RevId>, input: RoundInput, revs: FreshRevs)
+    requires FreshIn(input, revs)
+    requires RowsNameAccepted(accepted, journal.documents) && RowsParentsAccepted(accepted, journal.documents)
+    requires forall i | 0 <= i < |pulled| :: AcceptedAs(accepted, pulled[i])
+    ensures RowsParentsAccepted(accepted, OnRound(platform, journal, pulled, cursor', anchor', input, revs).0.documents)
+  {
+    var start := StartPass(journal, input);
+    var first := RoundClaims(platform, journal, input);
+    RetryParentsAccepted(platform, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    SettlePulledParentsAccepted(platform, accepted, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    PushParentsAccepted(platform, accepted, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
+  }
+
+  // The revisions the round pulls are ones the server accepted.
+  lemma PulledAccepted(pre: State, d: DeviceId)
+    requires d in pre.devices && RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    ensures forall i | 0 <= i < |PulledOf(pre, d)| :: AcceptedAs(pre.server.accepted, PulledOf(pre, d)[i])
+  {
+    var journal := pre.devices[d].journal;
+    var pulled := PulledOf(pre, d);
+    if journal.cursor < |pre.server.feed| {
+      var ids := pre.server.feed[journal.cursor..];
+      var held := Revisions(pre.server, ids);
+      assert pulled == held;
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |held| ensures AcceptedAs(pre.server.accepted, held[i]) {
+        assert held[i] in held;
+      }
+    }
+  }
+
+  // Clause OutboxParentsAccepted.
+  lemma {:isolate_assertions} RoundKeepsParentsAccepted(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && JournalsNameAccepted(pre) && OutboxParentsAccepted(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    ensures OutboxParentsAccepted(RoundStepOf(pre, d, input, revs).post)
+  {
+    var post := RoundStepOf(pre, d, input, revs).post;
+    var accepted := pre.server.accepted;
+    RoundStepJournal(pre, d, input, revs);
+    var journal := pre.devices[d].journal;
+    assert RowsNameAccepted(accepted, journal.documents);
+    assert RowsParentsAccepted(accepted, journal.documents);
+    if FreshIn(input, revs) {
+      PulledAccepted(pre, d);
+      OnRoundParentsAccepted(pre.devices[d].platform, accepted, journal, PulledOf(pre, d), CursorOf(pre, d), AnchorOf(pre, d), input, revs);
+    }
+    assert forall x | x in post.devices :: RowsParentsAccepted(accepted, post.devices[x].journal.documents);
+  }
 }
