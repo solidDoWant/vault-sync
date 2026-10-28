@@ -2885,14 +2885,14 @@ abstract module RoundG6 refines RoundGuarantees {
   // An untracked content on the pass's listing is saved next to it on the
   // device the push leaves: untracked still, or the push's new document.
   lemma {:isolate_assertions} PushKeepsUntracked(platform: Platform, read: Journal, input: RoundInput, revs: FreshRevs,
-                                                 after: Device, h: Hash)
+                                                 listing: Listing, after: Device, h: Hash)
     requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
-    requires after.platform == platform && ListingOf(after) == input.listing
+    requires after.platform == platform && ListingOf(after) == listing
     requires after.journal.documents == OnPush(platform, read, input, revs).0.documents
-    requires UntrackedHolds(platform, read.documents, input.listing, h)
+    requires UntrackedHolds(platform, read.documents, listing, h)
     ensures SavedNextToIt(after, h)
   {
-    var p := var p :| p in input.listing && input.listing[p].0 == h
+    var p := var p :| p in listing && listing[p].0 == h
       && forall e | e in read.documents && read.documents[e].binding.Some? :: !SameF(platform, read.documents[e].binding.value.spelling, p); p;
     var created := Created(platform, read, input, revs);
     var creates := Creates(Untracked(platform, read.documents, input.listing), input.freshDocs);
@@ -2913,12 +2913,12 @@ abstract module RoundG6 refines RoundGuarantees {
   // The content a document sends after the push is what its file holds,
   // for a row in step with its file.
   lemma {:isolate_assertions} PushSends(platform: Platform, read: Journal, input: RoundInput, revs: FreshRevs,
-                                        after: Device, doc: DocId)
+                                        listing: Listing, after: Device, doc: DocId)
     requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
-    requires after.platform == platform && ListingOf(after) == input.listing && Distinct(platform, input.listing)
+    requires after.platform == platform && ListingOf(after) == listing && Distinct(platform, listing)
     requires after.journal.documents == OnPush(platform, read, input, revs).0.documents
-    requires doc in read.documents && Synced(platform, input.listing, read.documents[doc])
-    ensures Outgoing(after, doc) == LocalContent(LocalSide(platform, input.listing, read.documents[doc]))
+    requires doc in read.documents && Synced(platform, listing, read.documents[doc])
+    ensures Outgoing(after, doc) == LocalContent(LocalSide(platform, listing, read.documents[doc]))
   {
     var row := read.documents[doc];
     var created := Created(platform, read, input, revs);
@@ -2928,7 +2928,7 @@ abstract module RoundG6 refines RoundGuarantees {
     assert post.binding == row.binding && post.base == row.base;
     if row.binding.Some? {
       var s := row.binding.value.spelling;
-      var k := ListedAt(platform, input.listing, s);
+      var k := ListedAt(platform, listing, s);
       assert k in after.disk && SameF(platform, k, s);
       assert HasFile(after, s);
       var q :| q in after.disk && SameF(platform, q, s) && FileAt(after, s) == after.disk[q];
@@ -2938,5 +2938,162 @@ abstract module RoundG6 refines RoundGuarantees {
       }
       assert BoundFile(after, doc).value.content == row.binding.value.seen;
     }
+  }
+
+  // What a device reads at a name is what its listing reads there.
+  lemma ReadAtListed(device: Device, s: Path)
+    requires Distinct(device.platform, ListingOf(device))
+    ensures ReadAt(device, s) == ListedRead(device.platform, ListingOf(device), s)
+  {
+    var listing := ListingOf(device);
+    if HasFile(device, s) {
+      var k := ListedAt(device.platform, listing, s);
+      var q :| q in device.disk && SameF(device.platform, q, s) && FileAt(device, s) == device.disk[q];
+      if q != k {
+        SameFIsEquivalence(device.platform, q, s, k);
+        assert false;
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G6 of the round: the chain
+  // ---------------------------------------------------------------------
+
+  // The round's pass meets every revision it settles as PulledBy its row,
+  // and a commit in flight NotBuiltOn it (the facts the apply states of a
+  // pulled revision, Apply.dfy), retried and pulled alike.
+  ghost predicate RoundPulledBy(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var feed := pre.server.feed;
+    var pulled := if journal.cursor < |feed| then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    RetriedInPass(platform, d, start, WaitingRows(journal.documents), input, revs, first)
+    && PulledInPass(platform, d, retried, pulled, input, revs, first)
+  }
+
+  // A round that settles another device's revision `remote` of a document
+  // whose file it read settles it as the last link of the document's chain
+  // (G6_Step's chain, RoundChain).
+  lemma {:isolate_assertions} RoundG6Chain(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs, doc: DocId, remote: Revision)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    requires RoundPulledBy(pre, d, input, revs)
+    requires SettlesConcurrent(RoundStepOf(pre, d, input, revs), d, doc, remote)
+    requires var row := pre.devices[d].journal.documents[doc];
+      row.binding.Some? && row.base.Some? && AheadAboveBase(row)
+      && RoundRead(RoundStepOf(pre, d, input, revs), row.binding.value.spelling).Some?
+    ensures var step := RoundStepOf(pre, d, input, revs);
+      var row := pre.devices[d].journal.documents[doc];
+      exists rs :: |rs| > 0 && rs[|rs| - 1] == remote
+        && RoundChain(step, d, doc, rs, RoundRead(step, row.binding.value.spelling).value.0)
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var accepted := pre.server.accepted;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundStepJournal(pre, d, input, revs);
+    var row0 := journal.documents[doc];
+    var spelling0 := row0.binding.value.spelling;
+    if !(forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs) {
+      assert step.post.devices[d] == device;
+      assert false;
+    }
+    var after := step.post.devices[d];
+    var feed := pre.server.feed;
+    var behind := journal.cursor < |feed|;
+    var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var cursor' := if behind then |feed| else journal.cursor;
+    var anchor' := if behind then Some(feed[|feed| - 1]) else journal.anchor;
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    assert step.effects == settled.effects + push.1;
+    assert after.journal == push.0;
+    // The pass invariants.
+    assert OneFilePerName(platform, device.disk);
+    assert input.listing == ListingOf(device);
+    OneFileDistinct(platform, device.disk);
+    assert NeverJoinedRows(platform, journal.documents);
+    assert RowsNameAccepted(accepted, journal.documents);
+    forall e | e in start.journal.documents
+      ensures RowOrigin(platform, device, accepted, start.effects, start.listing, e, start.journal.documents[e])
+    {
+      if journal.documents[e].binding.Some? {
+        assert SameF(platform, journal.documents[e].binding.value.spelling, journal.documents[e].binding.value.spelling);
+        assert BoundTo(device, e, journal.documents[e].binding.value.spelling);
+      }
+    }
+    assert PassNUD(platform, device, accepted, start);
+    PassG5Start(device, start, journal.cursor);
+    RetryKeepsG5(platform, device, start, WaitingRows(journal.documents), input, revs, first);
+    SettlePulledKeepsG5(platform, device, retried, pulled, input, revs, first);
+    // The chain at the start.
+    ReadAtListed(device, spelling0);
+    var read0 := RoundRead(step, spelling0).value;
+    assert ListedRead(platform, start.listing, spelling0) == Some(read0);
+    assert row0.base.Some?;
+    var base0 := row0.base.value;
+    PassChainStart(platform, d, accepted, doc, start);
+    RetryKeepsChain(platform, device, d, accepted, base0, read0, doc, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    if behind {
+      var ids := feed[journal.cursor..];
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |pulled| ensures AcceptedAs(accepted, pulled[i]) {
+        assert pulled[i] in pulled;
+      }
+    }
+    SettlePulledKeepsChain(platform, device, d, accepted, base0, read0, doc, retried, pulled, input, revs, first);
+    PushTouchesNoFile(platform, read, input', revs);
+    // The disk after the round is the pass's listing.
+    RoundDisksFollowEffects(pre, d, input, revs);
+    assert EffectsTake(platform, device.disk, step.effects, after.disk);
+    EffectsTakeSplit(platform, device.disk, settled.effects, push.1, after.disk);
+    var mid := var mid :| EffectsTake(platform, device.disk, settled.effects, mid) && EffectsTake(platform, mid, push.1, after.disk); mid;
+    PushKeepsDisk(platform, mid, push.1, after.disk);
+    assert DiskMap(after.disk) == settled.listing && OneFilePerName(platform, after.disk);
+    assert DiskMap(after.disk) == ListingOf(after);
+    OneFileDistinct(platform, after.disk);
+    assert Distinct(platform, settled.listing);
+    var rows := settled.journal.documents;
+    var rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)> :| ChainRows(platform, d, accepted, base0, read0, doc, rows, settled.listing, rs, saved, x);
+    // The row after the push: sealed, with the base the pass left.
+    var created := Created(platform, read, input', revs);
+    assert created[doc] == rows[doc];
+    assert after.journal.documents[doc] == Seal(rows[doc]);
+    assert after.journal.documents[doc].base == rows[doc].base;
+    // The chain ends in `remote`.
+    if |rs| == 0 { assert false; }
+    var last := rs[|rs| - 1];
+    assert AcceptedAs(accepted, last);
+    assert last == remote;
+    assert OthersIn(d, rs);
+    // Its saved contents are saved, and it ends in what the document sends.
+    forall h | h in saved ensures SavedInRound(step.post, d, h) {
+      if !AcceptedLive(accepted, h) {
+        PushKeepsUntracked(platform, read, input', revs, settled.listing, after, h);
+      }
+    }
+    ChainSavedIsThrough(step.post, saved, d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+    PushSends(platform, read, input', revs, settled.listing, after, doc);
+    assert ChainEnds(step.post, d, doc, LocalContent(x));
+    forall k | 0 <= k < |rs| ensures rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k] && rs[k].doc == doc {
+      assert AcceptedAs(accepted, rs[k]);
+    }
+    assert RoundChain(step, d, doc, rs, read0.0);
   }
 }
