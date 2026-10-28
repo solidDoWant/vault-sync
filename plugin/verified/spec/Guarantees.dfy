@@ -246,10 +246,12 @@ abstract module Guarantees refines EngineModel {
   // file there, LastSaw against the state before the step; where the
   // round wrote that content there for `doc`, the content is kept
   // (ReadKept); where the round moved `doc`'s file there, what it last saw
-  // at the file's old name before the move. A file the round adopted for
-  // `doc` (an untracked file, before the step or left by the round, G5
+  // at the file's old name before the move. Any other file the round put
+  // there (one it adopted for `doc`: an untracked file, left by the round
+  // as a copy, or written for another document that then let it go, G5
   // (d)) qualifies only if it holds exactly a live version of `doc` in the
-  // server's history (DocVersion). A freed file never qualifies.
+  // server's history (DocVersion), as an untouched file does. A freed file
+  // never qualifies.
   ghost predicate RoundSaw(step: Step, i: nat, doc: DocId, p: Path, content: Hash)
     requires i <= |step.effects|
     decreases i
@@ -265,7 +267,7 @@ abstract module Guarantees refines EngineModel {
        && (ReadKept(step, doc, content) || DocVersion(step, doc, content)))
       || (effect.Move? && effect.mover == Some(doc) && effect.expected == content
           && RoundSaw(step, j, doc, effect.from, content))
-      || (PutsUntracked(effect) && DocVersion(step, doc, content))
+      || DocVersion(step, doc, content)
   }
 
   // What the core last saw at the bound file `path` of `doc` is `content`:
