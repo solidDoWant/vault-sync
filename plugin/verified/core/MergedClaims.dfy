@@ -1607,7 +1607,7 @@ abstract module MergedClaims refines StepContracts {
     RefusedSafe(landed, d, Unavailable, nextRev);
     assert refused.post == step.post && refused.effects == step.effects && refused.event == step.event;
     assert landed.devices == pre.devices;
-    assert G1_OnlyRetentionRemoves(step);
+    UnavailableLandedRetains(pre, d, doc, r, nextRev);
     assert G2_OnlyWhatItSaw(step);
     assert G2_Conditional(step);
     assert G2_NoUntrackedDelete(step);
@@ -1626,5 +1626,37 @@ abstract module MergedClaims refines StepContracts {
     var o := pre.devices[d].journal.documents[doc].outbox.value;
     assert CommitLandedAs(step, d, doc, o);
     assert ServerFollowsEvent(step);
+  }
+
+  // G1 for the landed step: the append keeps every history entry, the
+  // disks are as they were, and a version kept only by a head's content was
+  // purged or lost (ServerRetains).
+  lemma {:isolate_assertions} UnavailableLandedRetains(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires LandingHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures G1_OnlyRetentionRemoves(UnavailableLandedStep(pre, d, doc, r, nextRev))
+  {
+    var step := UnavailableLandedStep(pre, d, doc, r, nextRev);
+    var post := step.post;
+    var server := pre.server;
+    var server' := post.server;
+    assert server' == Appended(server, doc, r);
+    forall x | x in pre.devices ensures x in post.devices && post.devices[x].disk == pre.devices[x].disk {}
+    forall rev | InHistory(server, rev) ensures InHistory(server', rev) {
+      var x := var x0 :| x0 in server.history && rev in server.history[x0]; x0;
+      assert rev in server'.history[x];
+    }
+    forall rev | rev in server.accepted && rev in server'.accepted && Retrievable(pre, rev) && !Retrievable(post, rev)
+      ensures rev in server.purged
+          || (rev in server.lost
+              && !exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content))
+    {
+      assert server'.accepted[rev] == server.accepted[rev];
+      if exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content) {
+        var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], server.accepted[rev].content); x0;
+        assert OnDisk(post.devices[x], server.accepted[rev].content);
+        assert false;
+      }
+      assert !InHistory(server, rev);
+    }
   }
 }
