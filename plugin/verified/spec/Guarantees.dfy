@@ -530,9 +530,28 @@ abstract module Guarantees refines EngineModel {
             || (BoundFile(device, doc).Some? && BoundFile(device, doc).value.content != document.base.value.content)))
   }
 
+  // The local change was made on R and the step keeps carrying it in full
+  // (#1080): d's outbox for the document was sealed on R, the step leaves
+  // it exactly as it was (same id, parent, content, path and deletion,
+  // still sealed), and d's bound file for the document is unchanged. R is
+  // then the revision the change sits on, not a change made at the same
+  // time, so R becoming the base again settles nothing. A step that adopts
+  // R and drops or rewrites the outbox, or writes the file, still settles
+  // R concurrently.
+  ghost predicate CarriedOnParent(step: Step, d: DeviceId, doc: DocId, remote: Revision)
+    requires d in step.pre.devices && d in step.post.devices
+  {
+    doc in step.pre.devices[d].journal.documents && doc in step.post.devices[d].journal.documents
+    && var outbox := step.pre.devices[d].journal.documents[doc].outbox;
+    outbox.Some? && outbox.value.sealed && outbox.value.baseRev == Some(remote.id)
+    && step.post.devices[d].journal.documents[doc].outbox == outbox
+    && BoundFile(step.post.devices[d], doc) == BoundFile(step.pre.devices[d], doc)
+  }
+
   // A step settles another device's revision R of `doc` against a local
   // change on device d (a change made at the same time, which the server
-  // does not have): R becomes the document's base.
+  // does not have): R becomes the document's base, unless the change was
+  // made on R and is still carried in full (CarriedOnParent).
   ghost predicate SettlesConcurrent(step: Step, d: DeviceId, doc: DocId, remote: Revision) {
     d in step.pre.devices && d in step.post.devices
     // R is a revision the server accepted from another device.
@@ -545,6 +564,7 @@ abstract module Guarantees refines EngineModel {
     && (doc in step.pre.devices[d].journal.documents ==>
           step.pre.devices[d].journal.documents[doc].base.None?
           || step.pre.devices[d].journal.documents[doc].base.value.rev != remote.id)
+    && !CarriedOnParent(step, d, doc, remote)
   }
 
   // A commit in flight that another device's revision overtook: the outbox

@@ -512,6 +512,10 @@ abstract module ResyncCore refines StepContracts {
             || Some(journal'.documents[doc].base.value.rev) == ParentOn(journal.documents[doc])
             || Some(journal'.documents[doc].base.value.rev) == LandedOn(pre.server, d, doc, journal.documents[doc]))
       && journal'.intents == journal.intents
+      // A commit in flight stays as it was sealed (§3.2).
+      && (forall doc :: doc in journal.documents && journal.documents[doc].outbox.Some?
+            && journal.documents[doc].outbox.value.sealed
+            ==> journal'.documents[doc].outbox == journal.documents[doc].outbox)
   {
     var server := pre.server;
     var journal := pre.devices[d].journal;
@@ -522,6 +526,15 @@ abstract module ResyncCore refines StepContracts {
       ensures reanchored.documents[doc] == ResyncRow(server, d, doc, journal.documents[doc], revs[doc])
     {}
   }
+
+  // A device whose disk and binding for `doc` are unchanged has the same
+  // bound file for it.
+  lemma SameBoundFile(before: Device, after: Device, doc: DocId)
+    requires after.disk == before.disk && after.platform == before.platform
+    requires doc in before.journal.documents && doc in after.journal.documents
+    requires after.journal.documents[doc].binding == before.journal.documents[doc].binding
+    ensures BoundFile(after, doc) == BoundFile(before, doc)
+  {}
 
   // A resync settles no conflict: every base it sets is the row's own, or a
   // revision of this device's.
@@ -585,7 +598,23 @@ abstract module ResyncCore refines StepContracts {
       assert x == d;
       assert doc in journal.documents;
       assert pre.server.accepted[remote.id] == remote;
-      assert false;
+      var document := journal.documents[doc];
+      if document.outbox.Some? && document.outbox.value.sealed {
+        assert journal'.documents[doc].outbox == document.outbox;
+        SameBoundFile(before, after, doc);
+        if Some(remote.id) == ParentOn(document) {
+          assert CarriedOnParent(step, d, doc, remote);
+          assert false;
+        } else {
+          // OPEN (#1080): the base is raised to the entry before the landed
+          // commit, which is its parent only by a server fact no clause
+          // states yet (a commit lands on its parent, the head).
+        }
+      } else {
+        // OPEN (#1080): an unsent outbox (or one Reopen unsealed after its
+        // commit landed) whose parent or landing revision is newer than
+        // the kept base; unreachable only by facts no clause states yet.
+      }
     }
     if !FinishedSyncing(post, d) {
       AfterKeepsFinished(step, d, journal');

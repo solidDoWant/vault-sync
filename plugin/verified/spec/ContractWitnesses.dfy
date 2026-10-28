@@ -465,6 +465,103 @@ abstract module StepContractWitnesses refines StepContracts {
   }
 
   // ---------------------------------------------------------------------
+  // G6 and a commit's own parent (#1080, A')
+  // ---------------------------------------------------------------------
+
+  // Device d's row was based on another device's revision `y` (content
+  // `yc`, since removed by a restore), its file holds `x` (binary), and its
+  // commit `xid`, sealed on the other device's revision `p` (content `pc`),
+  // is in flight. A step makes `p` the base again. Where it keeps the
+  // outbox as it was and the file unchanged, the change is still carried on
+  // the revision it was made on: CarriedOnParent, and nothing is settled
+  // (the resync's re-anchoring, #1080).
+  function ParentTraceStep(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, y: RevId, xid: RevId,
+                           n: Path, pc: Hash, yc: Hash, x: Hash, platform: Platform, file: FileIdentity,
+                           outbox': Option<Outbox>, content': Hash): Step
+  {
+    var rp := Revision(p, doc, 1, None, n, pc, Binary, false, other);
+    var outbox := Some(Outbox(xid, Some(p), n, x, Binary, false, true, false));
+    var beforeRow := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, x, false, None)), Never, outbox);
+    var afterRow := Document(Some(Base(p, 1, n, pc, Binary, false)), None, Some(Binding(n, x, false, None)), Never, outbox');
+    var journal := Journal(map[doc := beforeRow], 0, [], []);
+    var journal' := Journal(map[doc := afterRow], 1, [], []);
+    var server := Server(map[p := rp], map[doc := [p]], [p], {}, map[p := rp], {});
+    var pre := State(map[d := Device(platform, true, journal, map[n := DiskFile(x, Binary, file)], {}, {})], server);
+    var post := State(map[d := Device(platform, true, journal', map[n := DiskFile(content', Binary, file)], {}, {})], server);
+    Step(pre, Resync(d), [PersistJournal(journal')], post)
+  }
+
+  lemma ParentKeptSettlesNothing(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, y: RevId, xid: RevId,
+                                 n: Path, pc: Hash, yc: Hash, x: Hash, platform: Platform, file: FileIdentity)
+    requires d != other && p != y
+    ensures
+      var outbox := Some(Outbox(xid, Some(p), n, x, Binary, false, true, false));
+      var step := ParentTraceStep(d, other, doc, p, y, xid, n, pc, yc, x, platform, file, outbox, x);
+      var rp := Revision(p, doc, 1, None, n, pc, Binary, false, other);
+      CarriedOnParent(step, d, doc, rp) && !SettlesConcurrent(step, d, doc, rp)
+  {
+    var outbox := Some(Outbox(xid, Some(p), n, x, Binary, false, true, false));
+    var step := ParentTraceStep(d, other, doc, p, y, xid, n, pc, yc, x, platform, file, outbox, x);
+    SameFIsEquivalence(platform, n, n, n);
+    assert HasFile(step.pre.devices[d], n) && HasFile(step.post.devices[d], n);
+    assert BoundFile(step.pre.devices[d], doc) == BoundFile(step.post.devices[d], doc);
+  }
+
+  // G6 keeps its teeth: the same re-anchoring that drops the commit settles
+  // `p` against the local change, and keeps neither the file's `x` beside
+  // `p`'s content nor `p`'s beside it, so it fails G6_Settle.
+  lemma ParentDroppedOutboxRejected(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, y: RevId, xid: RevId,
+                                    n: Path, pc: Hash, yc: Hash, x: Hash, platform: Platform, file: FileIdentity)
+    requires d != other && p != y && x != pc && x != yc && pc != yc
+    ensures
+      var step := ParentTraceStep(d, other, doc, p, y, xid, n, pc, yc, x, platform, file, None, x);
+      var rp := Revision(p, doc, 1, None, n, pc, Binary, false, other);
+      SettlesConcurrent(step, d, doc, rp) && !G6_Settle(step, d, doc, rp)
+  {
+    var step := ParentTraceStep(d, other, doc, p, y, xid, n, pc, yc, x, platform, file, None, x);
+    var before := step.pre.devices[d];
+    var after := step.post.devices[d];
+    SameFIsEquivalence(platform, n, n, n);
+    assert HasFile(before, n) && HasFile(after, n);
+    assert FileAt(before, n) == DiskFile(x, Binary, file);
+    assert FileAt(after, n) == DiskFile(x, Binary, file);
+    assert BoundFile(before, doc) == Some(DiskFile(x, Binary, file));
+    assert BoundFile(after, doc) == Some(DiskFile(x, Binary, file));
+    assert LocalChange(before, doc);
+    assert Outgoing(after, doc) == Some(x);
+    assert !SavedNextToIt(after, pc);
+  }
+
+  // And the re-anchoring that keeps the commit but writes `p`'s content
+  // over the file settles `p` too, and fails G6_Settle: `p`'s content is
+  // only in the document's own file, saved next to nothing.
+  lemma ParentOverwrittenFileRejected(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, y: RevId, xid: RevId,
+                                      n: Path, pc: Hash, yc: Hash, x: Hash, platform: Platform, file: FileIdentity)
+    requires d != other && p != y && x != pc && x != yc && pc != yc
+    ensures
+      var outbox := Some(Outbox(xid, Some(p), n, x, Binary, false, true, false));
+      var step := ParentTraceStep(d, other, doc, p, y, xid, n, pc, yc, x, platform, file, outbox, pc);
+      var rp := Revision(p, doc, 1, None, n, pc, Binary, false, other);
+      SettlesConcurrent(step, d, doc, rp) && !G6_Settle(step, d, doc, rp)
+  {
+    var outbox := Some(Outbox(xid, Some(p), n, x, Binary, false, true, false));
+    var step := ParentTraceStep(d, other, doc, p, y, xid, n, pc, yc, x, platform, file, outbox, pc);
+    var before := step.pre.devices[d];
+    var after := step.post.devices[d];
+    SameFIsEquivalence(platform, n, n, n);
+    assert HasFile(before, n) && HasFile(after, n);
+    assert FileAt(before, n) == DiskFile(x, Binary, file);
+    assert FileAt(after, n) == DiskFile(pc, Binary, file);
+    assert BoundFile(before, doc) == Some(DiskFile(x, Binary, file));
+    assert BoundFile(after, doc) == Some(DiskFile(pc, Binary, file));
+    assert !CarriedOnParent(step, d, doc, Revision(p, doc, 1, None, n, pc, Binary, false, other));
+    assert LocalChange(before, doc);
+    assert Outgoing(after, doc) == Some(x);
+    assert BoundTo(after, doc, n);
+    assert !SavedNextToIt(after, pc);
+  }
+
+  // ---------------------------------------------------------------------
   // ServerEventContract: a restore to a device's cursor (#950's gap)
   // ---------------------------------------------------------------------
 
