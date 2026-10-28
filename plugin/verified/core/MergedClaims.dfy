@@ -603,6 +603,73 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
+  // A commit that lands with its answer lost (CommitLandedAs, a crash or an
+  // "unavailable" answer) keeps CommitsOnBase (#1080), for the landing of a
+  // row's own sealed outbox with every journal as it was: the commit lands
+  // on its document's head, its parent, at or below the row's base, and
+  // every other landed commit is earlier on the feed. The steps that end in
+  // such a landing (#1018's restart, the crash) build on it.
+  lemma {:isolate_assertions} LandedKeepsCommitsOnBase(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires ClaimsReachable(pre) && d in pre.devices && doc in pre.devices[d].journal.documents
+    requires var o := pre.devices[d].journal.documents[doc].outbox;
+      o.Some? && o.value.sealed
+      && r == Revision(o.value.rev, doc, |pre.server.feed|, o.value.baseRev, o.value.path, o.value.content,
+                       o.value.kind, o.value.deleted, d)
+    requires Appendable(pre.server, doc, r)
+    ensures CommitsOnBase(pre.(server := Appended(pre.server, doc, r)))
+  {
+    var post := pre.(server := Appended(pre.server, doc, r));
+    var server := pre.server;
+    var server' := post.server;
+    forall x, y | ReadsFeed(post, x) && y in post.devices[x].journal.documents
+      ensures OutboxParentAtBase(server', post.devices[x].journal.documents[y])
+      ensures OwnCommitOnBase(server', x, y, post.devices[x].journal.documents[y])
+    {
+      var journal := pre.devices[x].journal;
+      assert r.id !in server.accepted;
+      if journal.cursor == |server'.feed| {
+        assert server'.feed[journal.cursor - 1] == r.id;
+        assert false;
+      } else if 0 < journal.cursor {
+        assert server'.feed[journal.cursor - 1] == server.feed[journal.cursor - 1];
+      }
+      assert ReadsFeed(pre, x);
+      var row := journal.documents[y];
+      assert OutboxParentAtBase(server, row) && OwnCommitOnBase(server, x, y, row);
+      if row.outbox.Some? && row.outbox.value.rev in server'.revisions
+         && server'.revisions[row.outbox.value.rev].device == x
+         && server'.revisions[row.outbox.value.rev].doc == y && y in server'.history
+      {
+        var o := row.outbox.value.rev;
+        if o == r.id {
+          assert x == d && y == doc;
+          forall id | id in server'.history[doc] && id in server'.revisions && id != o
+            && server'.revisions[id].position < server'.revisions[o].position
+            ensures row.base.Some? && server'.revisions[id].position <= row.base.value.position
+          {
+            assert doc in server.history && id in server.history[doc];
+            AtOrBeforeHead(server, doc, id);
+            var head := Head(server, doc).value;
+            assert r.parent == Some(head.id);
+            assert head.id in server.accepted && server.accepted[head.id] == head;
+          }
+        } else {
+          assert o in server.revisions && o in server.feed;
+          var i :| 0 <= i < |server.feed| && server.feed[i] == o;
+          forall id | id in server'.history[y] && id in server'.revisions && id != o
+            && server'.revisions[id].position < server'.revisions[o].position
+            ensures row.base.Some? && server'.revisions[id].position <= row.base.value.position
+          {
+            if id == r.id {
+              assert false;
+            }
+            assert y in server.history && id in server.history[y];
+          }
+        }
+      }
+    }
+  }
+
   // The accepting row itself: its new outbox, if any, has the base's id
   // as its parent, and a landed commit of the device's own it carries is
   // the appended one or one the base already covered.
