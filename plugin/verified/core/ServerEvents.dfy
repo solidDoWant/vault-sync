@@ -546,6 +546,70 @@ abstract module ServerEvents refines StepContracts {
     assert cut.history == m;
   }
 
+  // Every id in a reachable server's history is on its feed.
+  lemma HistoryOnFeed(s: State)
+    requires CoreReachable(s)
+    ensures forall x, e :: x in s.server.history && e in s.server.history[x] ==> e in FeedIds(s.server.feed)
+  {
+    forall x, e | x in s.server.history && e in s.server.history[x]
+      ensures e in FeedIds(s.server.feed)
+    {
+      assert e in s.server.revisions;
+      assert e in s.server.feed;
+      var i :| 0 <= i < |s.server.feed| && s.server.feed[i] == e;
+    }
+  }
+
+  // Appending keeps every history id on the feed.
+  lemma AppendedHistoryOnFeed(pre: Server, doc: DocId, r: Revision)
+    requires forall x, e :: x in pre.history && e in pre.history[x] ==> e in FeedIds(pre.feed)
+    ensures var post := Appended(pre, doc, r);
+      forall x, e :: x in post.history && e in post.history[x] ==> e in FeedIds(post.feed)
+  {
+    var post := Appended(pre, doc, r);
+    forall x, e | x in post.history && e in post.history[x]
+      ensures e in FeedIds(post.feed)
+    {
+      if e == r.id {
+        assert post.feed[|pre.feed|] == r.id;
+      } else {
+        var h := if doc in pre.history then pre.history[doc] else [];
+        if x == doc {
+          assert post.history[x] == h + [r.id];
+          assert e in h;
+          assert doc in pre.history && e in pre.history[doc];
+        } else {
+          assert post.history[x] == pre.history[x];
+          assert x in pre.history && e in pre.history[x];
+        }
+        assert e in FeedIds(pre.feed);
+        var i :| 0 <= i < |pre.feed| && pre.feed[i] == e;
+        assert post.feed[i] == e;
+      }
+    }
+  }
+
+  // A cut at a server's whole feed whose history is all on the feed has
+  // the server's heads.
+  lemma WholeFeedCutHeads(server: Server, cut: Server)
+    requires EarlierServer(server, cut) && |cut.feed| == |server.feed|
+    requires forall x, e :: x in server.history && e in server.history[x] ==> e in FeedIds(server.feed)
+    ensures forall x :: Head(cut, x) == Head(server, x)
+  {
+    var kept := FeedIds(cut.feed);
+    assert cut.feed == server.feed;
+    forall x | x in server.history
+      ensures Keep(server.history[x], kept) == server.history[x]
+    {
+      KeepAll(server.history[x], kept);
+    }
+    forall x ensures Head(cut, x) == Head(server, x) {
+      if x in server.history && |server.history[x]| > 0 {
+        assert x in cut.history && cut.history[x] == server.history[x];
+      }
+    }
+  }
+
   // The cut at the whole appended feed has the appended server's heads.
   lemma AppendWholeCut(step: Step, cut: Server)
     requires ServerEventStep(step) && step.event.RestoreFromHistory?
@@ -553,35 +617,10 @@ abstract module ServerEvents refines StepContracts {
     requires EarlierServer(step.post.server, cut) && |cut.feed| > |step.pre.server.feed|
     ensures forall x :: Head(cut, x) == Head(step.post.server, x)
   {
-    var pre := step.pre.server;
-    var post := step.post.server;
-    var r := step.event.revision;
-    var kept := FeedIds(cut.feed);
-    assert cut.feed == post.feed;
-    forall x | x in post.history
-      ensures (forall e :: e in post.history[x] ==> e in kept) && Keep(post.history[x], kept) == post.history[x]
-    {
-      forall e | e in post.history[x] ensures e in kept {
-        if e != r.id {
-          assert x in pre.history && e in pre.history[x];
-          assert e in pre.revisions;
-          assert e in pre.feed;
-          var i :| 0 <= i < |pre.feed| && pre.feed[i] == e;
-          assert post.feed[i] == e;
-        } else {
-          assert post.feed[|pre.feed|] == r.id;
-        }
-      }
-      KeepAll(post.history[x], kept);
-    }
-    forall x ensures Head(cut, x) == Head(post, x) {
-      if x in post.history && |post.history[x]| > 0 {
-        var last := post.history[x][|post.history[x]| - 1];
-        assert x in cut.history && cut.history[x] == post.history[x];
-        assert last in post.history[x];
-        assert last in kept;
-      }
-    }
+    HistoryOnFeed(step.pre);
+    assert step.post.server == Appended(step.pre.server, step.event.doc, step.event.revision);
+    AppendedHistoryOnFeed(step.pre.server, step.event.doc, step.event.revision);
+    WholeFeedCutHeads(step.post.server, cut);
   }
 
   lemma AppendCuts(step: Step, cut: Server)
