@@ -190,6 +190,195 @@ abstract module StepContractWitnesses refines StepContracts {
   }
 
   // ---------------------------------------------------------------------
+  // ApplySettlesContract: the rows ApplyRevision held with LocalChanges
+  // where no user must act (#1068, #1024's traces)
+  // ---------------------------------------------------------------------
+
+  // In each lemma below, `held` is the row ApplyRevision returned before
+  // #1068 (the revision waiting with LocalChanges, the row otherwise
+  // unchanged), `decided` the row the design now decides. The contract
+  // rejects `held` (no user must act) and accepts `decided`, and where a
+  // second row is shown, it rejects that other settlement too.
+
+  // A tombstone `r` of revision rev2 from another device, after rev0.
+  function Tombstone(rev0: RevId, rev2: RevId, doc: DocId, other: DeviceId, position: nat, p: Path, h: Hash): Revision {
+    Revision(rev2, doc, position, Some(rev0), p, h, Note, true, other)
+  }
+
+  // Case a, #1024's DeleteAgainstDelete: the user's unsent delete against
+  // another device's newer tombstone. Both sides deleted the document: the
+  // tombstone becomes the base and the user's delete is not sent again.
+  // Keeping the unsent delete fails the contract.
+  lemma DeleteAgainstDeleteSettles(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId, p: Path, h: Hash)
+    requires rev1 != rev2
+    ensures
+      var r := Tombstone(rev0, rev2, doc, other, 1, p, h);
+      var before := Document(Some(Base(rev0, 0, p, h, Note, false)), None, None, UserDeleted,
+                             Some(Outbox(rev1, Some(rev0), p, h, Note, true, false, false)));
+      var held := before.(ahead := Some(Ahead(r, LocalChanges, false)));
+      var decided := Document(Some(Base(rev2, 1, p, h, Note, true)), None, None, UserDeleted, None);
+      var resent := decided.(outbox := before.outbox);
+      RowInv(before)
+      && !ApplySettlesContract(before, held, r, None, false, false)
+      && ApplySettlesContract(before, decided, r, None, false, false)
+      && !ApplySettlesContract(before, resent, r, None, false, false)
+  {
+  }
+
+  // Case b, #1024's DeleteAgainstMissing: another device's newer tombstone
+  // against a clean bound file missing from the listing, with no unsaved
+  // text at its name. The round records the missing file as the user's
+  // delete (G3_DeleteSeen), so both sides deleted it: the tombstone becomes
+  // the base and nothing is bound or sent. Keeping the binding and sending
+  // the file as last seen (what the remote-delete clause demanded of a
+  // missing file before #1068) fails the contract.
+  lemma DeleteAgainstMissingSettles(rev0: RevId, rev2: RevId, rev3: RevId, doc: DocId, other: DeviceId, p: Path, h: Hash)
+    ensures
+      var r := Tombstone(rev0, rev2, doc, other, 1, p, h);
+      var before := CleanRow(rev0, p, h);
+      var held := before.(ahead := Some(Ahead(r, LocalChanges, false)));
+      var decided := Document(Some(Base(rev2, 1, p, h, Note, true)), None, None, UserDeleted, None);
+      var revived := Document(Some(Base(rev2, 1, p, h, Note, true)), None, Some(Binding(p, h, false, None)), Never,
+                              Some(Outbox(rev3, Some(rev2), p, h, Note, false, false, false)));
+      RowInv(before)
+      && !ApplySettlesContract(before, held, r, None, false, false)
+      && ApplySettlesContract(before, decided, r, None, false, false)
+      && !ApplySettlesContract(before, revived, r, None, false, false)
+  {
+  }
+
+  // Case b with something to send: the user changed the file to `h1` and
+  // then it went missing (an unsealed outbox), or a commit of `h1` is in
+  // flight (sealed). The missing file is the user's latest change, a
+  // delete: the unsent change is dropped as Revived drops one, and a
+  // commit in flight stays as sealed until its answer, which reopens it on
+  // the tombstone as the user's delete (Reopen).
+  lemma DeleteAgainstMissingChangedSettles(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId,
+                                           p: Path, h0: Hash, h1: Hash)
+    requires rev1 != rev2
+    ensures
+      var r := Tombstone(rev0, rev2, doc, other, 1, p, h0);
+      var unsent := Document(Some(Base(rev0, 0, p, h0, Note, false)), None, Some(Binding(p, h1, false, None)), Never,
+                             Some(Outbox(rev1, Some(rev0), p, h1, Note, false, false, false)));
+      var sealed := Some(Outbox(rev1, Some(rev0), p, h1, Note, false, true, false));
+      var inFlight := unsent.(outbox := sealed);
+      var decided := Document(Some(Base(rev2, 1, p, h0, Note, true)), None, None, UserDeleted, None);
+      RowInv(unsent) && RowInv(inFlight)
+      && !ApplySettlesContract(unsent, unsent.(ahead := Some(Ahead(r, LocalChanges, false))), r, None, false, false)
+      && ApplySettlesContract(unsent, decided, r, None, false, false)
+      && !ApplySettlesContract(inFlight, inFlight.(ahead := Some(Ahead(r, LocalChanges, false))), r, None, false, false)
+      && ApplySettlesContract(inFlight, decided.(outbox := sealed), r, None, false, false)
+      && !ApplySettlesContract(inFlight, decided, r, None, false, false)
+  {
+  }
+
+  // Case c: a local rename against a remote move. The user moved the file
+  // from its base's name `p` to `q` and changed it to `h1` (an unsealed
+  // outbox at `q`); another device moved the document to `p2`, neither `p`
+  // nor `q`, keeping the base's content `h0`. Path and content are merged
+  // apart: the user's move wins the name, and the remote left the content
+  // as it was, so the local content stays (G6). The revision becomes the
+  // base and the outbox sends the file at `q` on top of it. Moving the file
+  // to the remote's name fails the contract.
+  lemma RenameAgainstMoveSettles(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId,
+                                 p: Path, q: Path, p2: Path, h0: Hash, h1: Hash)
+    requires p != q && p2 != p && p2 != q && rev1 != rev2
+    ensures
+      var r := Revision(rev2, doc, 1, Some(rev0), p2, h0, Note, false, other);
+      var before := Document(Some(Base(rev0, 0, p, h0, Note, false)), None, Some(Binding(q, h1, false, None)), Never,
+                             Some(Outbox(rev1, Some(rev0), q, h1, Note, false, false, false)));
+      var held := before.(ahead := Some(Ahead(r, LocalChanges, false)));
+      var decided := Document(Some(Base(rev2, 1, p2, h0, Note, false)), None, Some(Binding(q, h1, false, None)), Never,
+                              Some(Outbox(rev1, Some(rev2), q, h1, Note, false, false, false)));
+      var moved := Document(Some(Base(rev2, 1, p2, h0, Note, false)), None, Some(Binding(p2, h1, false, None)), Never,
+                            Some(Outbox(rev1, Some(rev2), p2, h1, Note, false, false, false)));
+      RowInv(before)
+      && !ApplySettlesContract(before, held, r, Some((h1, Note)), false, false)
+      && ApplySettlesContract(before, decided, r, Some((h1, Note)), false, false)
+      && !ApplySettlesContract(before, moved, r, Some((h1, Note)), false, false)
+  {
+  }
+
+  // Case d: a live revision against a kept tombstone base. The file was
+  // kept against another device's delete (KeptAgainstDelete: the tombstone
+  // rev1 is the base, the outbox sends `h1` on top of it); then another
+  // device brings the document back at `p` with the deleted content `h0`.
+  // The content is settled as G6 decides from the row's base, the
+  // tombstone's content `h0`: the remote left it as it was, so the local
+  // content stays, and nothing waits.
+  lemma LiveAgainstKeptTombstoneSettles(rev0: RevId, rev1: RevId, rev2: RevId, rev3: RevId, doc: DocId, other: DeviceId,
+                                        p: Path, h0: Hash, h1: Hash)
+    requires rev2 != rev3
+    ensures
+      var r := Revision(rev2, doc, 2, Some(rev1), p, h0, Note, false, other);
+      var before := Document(Some(Base(rev1, 1, p, h0, Note, true)), None, Some(Binding(p, h1, false, None)), Never,
+                             Some(Outbox(rev3, Some(rev1), p, h1, Note, false, false, false)));
+      var held := before.(ahead := Some(Ahead(r, LocalChanges, false)));
+      var decided := Document(Some(Base(rev2, 2, p, h0, Note, false)), None, Some(Binding(p, h1, false, None)), Never,
+                              Some(Outbox(rev3, Some(rev2), p, h1, Note, false, false, false)));
+      RowInv(before)
+      && !ApplySettlesContract(before, held, r, Some((h1, Note)), false, false)
+      && ApplySettlesContract(before, decided, r, Some((h1, Note)), false, false)
+  {
+  }
+
+  // A bound file with no base (a document this device created and has not
+  // had acknowledged) against another device's live revision of it at
+  // `p2`. There is no common base, so both versions are kept (SPEC.md §7):
+  // the file here stays as an untracked file, pushed as a new document,
+  // and the head is created at its name. Nothing waits.
+  lemma LiveAgainstNoBaseSettles(rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId, p: Path, p2: Path, h1: Hash, h2: Hash)
+    requires rev1 != rev2
+    ensures
+      var r := Revision(rev2, doc, 1, None, p2, h2, Note, false, other);
+      var before := Document(None, None, Some(Binding(p, h1, false, None)), Never,
+                             Some(Outbox(rev1, None, p, h1, Note, false, false, false)));
+      var held := before.(ahead := Some(Ahead(r, LocalChanges, false)));
+      var decided := Document(Some(Base(rev2, 1, p2, h2, Note, false)), None, Some(Binding(p2, h2, false, None)), Never, None);
+      RowInv(before)
+      && !ApplySettlesContract(before, held, r, Some((h1, Note)), false, false)
+      && ApplySettlesContract(before, decided, r, Some((h1, Note)), false, false)
+  {
+  }
+
+  // A document with no file here that the user did not delete, holding an
+  // unsent live commit: a commit in flight that a revived document kept
+  // (Revived) and whose answer reopened it before its file came back. It
+  // is not the user's current change (the user's delete it was sealed
+  // before lost to the revival). Against another device's newer live
+  // revision the file comes as for any document with no file here, and the
+  // stale commit is dropped; against a tombstone the document is deleted on
+  // both sides.
+  lemma ReopenedCommitWithNoFileSettles(rev0: RevId, rev1: RevId, rev2: RevId, doc: DocId, other: DeviceId,
+                                        p: Path, h0: Hash, h1: Hash, h2: Hash)
+    requires rev1 != rev2
+    ensures
+      var live := Revision(rev2, doc, 1, Some(rev0), p, h2, Note, false, other);
+      var dead := Tombstone(rev0, rev2, doc, other, 1, p, h0);
+      var before := Document(Some(Base(rev0, 0, p, h0, Note, false)), None, None, Never,
+                             Some(Outbox(rev1, Some(rev0), p, h1, Note, false, false, false)));
+      var created := Document(Some(Base(rev2, 1, p, h2, Note, false)), None, Some(Binding(p, h2, false, None)), Never, None);
+      var deleted := Document(Some(Base(rev2, 1, p, h0, Note, true)), None, None, Never, None);
+      RowInv(before)
+      && !ApplySettlesContract(before, before.(ahead := Some(Ahead(live, LocalChanges, false))), live, None, false, false)
+      && ApplySettlesContract(before, created, live, None, false, false)
+      && !ApplySettlesContract(before, before.(ahead := Some(Ahead(dead, LocalChanges, false))), dead, None, false, false)
+      && ApplySettlesContract(before, deleted, dead, None, false, false)
+  {
+  }
+
+  // A revision no newer than the row's base changes nothing, and the
+  // contract asks nothing of it (Newer). Before #1068 the contract took a
+  // revision as newer wherever nothing waited, so it demanded that a stale
+  // revision identical to the file become the base.
+  lemma StaleRevisionChangesNothing(rev0: RevId, rev1: RevId, doc: DocId, other: DeviceId, p: Path, h: Hash)
+    ensures
+      var r := Revision(rev0, doc, 3, None, p, h, Note, false, other);
+      var before := Document(Some(Base(rev1, 5, p, h, Note, false)), None, Some(Binding(p, h, false, None)), Never, None);
+      RowInv(before) && ApplySettlesContract(before, before, r, Some((h, Note)), false, false)
+  {
+  }
+  // ---------------------------------------------------------------------
   // ApplySettlesContract and G6_Settle: a revision identical to the file
   // ---------------------------------------------------------------------
 
