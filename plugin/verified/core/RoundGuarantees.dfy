@@ -3232,4 +3232,279 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       }
     }
   }
+
+  // Names the same under F hold the same file on a disk with one file per
+  // name.
+  lemma FileAtSameF(device: Device, p: Path, q: Path)
+    requires ListingDistinct(device.platform, ListingOf(device)) && SameF(device.platform, p, q)
+    ensures HasFile(device, p) <==> HasFile(device, q)
+    ensures HasFile(device, p) ==> FileAt(device, p) == FileAt(device, q)
+  {
+    var platform := device.platform;
+    if HasFile(device, p) {
+      var a :| a in device.disk && SameF(platform, a, p) && FileAt(device, p) == device.disk[a];
+      SameFIsEquivalence(platform, a, p, q);
+      var b :| b in device.disk && SameF(platform, b, q) && FileAt(device, q) == device.disk[b];
+      SameFIsEquivalence(platform, b, q, a);
+      SameFIsEquivalence(platform, a, q, b);
+      assert a in ListingOf(device) && b in ListingOf(device);
+    } else if HasFile(device, q) {
+      var b :| b in device.disk && SameF(platform, b, q);
+      SameFIsEquivalence(platform, p, q, b);
+      SameFIsEquivalence(platform, b, q, p);
+    }
+  }
+
+  // G5_NeverMixedUp of the round (#1094): every binding the round changes
+  // names a file the round put there for the document (b), or one that
+  // was untracked as the round left it (UntrackedThen): a new document's
+  // (e), or an adoption of a live revision of the document the server
+  // accepted (d). It takes the step's G5_NeverJoined after the round as
+  // given (the round's G5_NeverJoined is its own lemma).
+  lemma {:isolate_assertions} RoundG5NeverMixedUp(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    requires G5_NeverJoined(RoundStepOf(pre, d, input, revs).post)
+    ensures G5_NeverMixedUp(RoundStepOf(pre, d, input, revs))
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var accepted := pre.server.accepted;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundStepJournal(pre, d, input, revs);
+    if !(forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs) {
+      assert step.post.devices[d] == device;
+      return;
+    }
+    var after := step.post.devices[d];
+    var feed := pre.server.feed;
+    var behind := journal.cursor < |feed|;
+    var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var cursor' := if behind then |feed| else journal.cursor;
+    var anchor' := if behind then Some(feed[|feed| - 1]) else journal.anchor;
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    assert step.effects == settled.effects + push.1;
+    assert after.journal == push.0;
+    // The pass invariants.
+    assert OneFilePerName(platform, device.disk);
+    assert input.listing == ListingOf(device);
+    OneFileDistinct(platform, device.disk);
+    assert NeverJoinedRows(platform, journal.documents);
+    PassG5Start(device, start, journal.cursor);
+    PassContentStart(device, accepted, start, journal.cursor);
+    assert RowsNameAccepted(accepted, journal.documents);
+    forall e | e in start.journal.documents
+      ensures RowOrigin(platform, device, accepted, start.effects, start.listing, e, start.journal.documents[e])
+    {
+      if journal.documents[e].binding.Some? {
+        assert SameF(platform, journal.documents[e].binding.value.spelling, journal.documents[e].binding.value.spelling);
+        assert BoundTo(device, e, journal.documents[e].binding.value.spelling);
+      }
+    }
+    assert PassNUD(platform, device, accepted, start);
+    RetryKeepsG5(platform, device, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsContent(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    if behind {
+      var ids := feed[journal.cursor..];
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |pulled| ensures AcceptedAs(accepted, pulled[i]) {
+        assert pulled[i] in pulled;
+      }
+    }
+    SettlePulledKeepsG5(platform, device, retried, pulled, input, revs, first);
+    SettlePulledKeepsContent(platform, device, accepted, retried, pulled, input, revs, first);
+    PushKeepsG5(platform, device, settled, read, input, revs);
+    PushTouchesNoFile(platform, read, input', revs);
+    // The disk after the round is the pass's listing.
+    RoundDisksFollowEffects(pre, d, input, revs);
+    assert EffectsTake(platform, device.disk, step.effects, after.disk);
+    EffectsTakeSplit(platform, device.disk, settled.effects, push.1, after.disk);
+    var mid :| EffectsTake(platform, device.disk, settled.effects, mid) && EffectsTake(platform, mid, push.1, after.disk);
+    PushKeepsDisk(platform, mid, push.1, after.disk);
+    assert DiskMap(after.disk) == settled.listing && OneFilePerName(platform, after.disk);
+    assert DiskMap(after.disk) == ListingOf(after);
+    OneFileDistinct(platform, after.disk);
+    RoundIdsAreNew(pre, d, input);
+    var created := Created(platform, read, input', revs);
+    var creates := Creates(Untracked(platform, read.documents, input'.listing), input'.freshDocs);
+    CreatesFacts(Untracked(platform, read.documents, input'.listing), input'.freshDocs);
+    assert step.effects[..|settled.effects|] == settled.effects;
+    assert step.effects[|settled.effects|..] == push.1;
+    forall doc | BoundIdentity(after, doc).Some? && BoundIdentity(after, doc) != BoundIdentity(device, doc)
+      ensures var spelling := after.journal.documents[doc].binding.value.spelling;
+        var file := BoundFile(after, doc).value;
+        var known := doc in device.journal.documents;
+        var hadFile := known && BoundFile(device, doc).Some?;
+        (exists effect :: effect in step.effects
+           && ((effect.Write? && effect.target == Some(doc) && SameF(after.platform, effect.path, spelling))
+               || (effect.Move? && effect.mover == Some(doc) && SameF(after.platform, effect.to, spelling))))
+        || ((!hadFile || RoundEvent(step.event)) && UntrackedThen(step, device, spelling)
+            && ((after.journal.documents[doc].base.Some?
+                 && (!known || device.journal.documents[doc].base.None?
+                     || device.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
+                 && file.content == after.journal.documents[doc].base.value.content)
+                || (RoundEvent(step.event) && DocVersion(step, doc, file.content))))
+        || (!known && UntrackedThen(step, device, spelling) && after.journal.documents[doc].base.None?)
+    {
+      assert push.0.documents[doc] == Seal(created[doc]);
+      if doc in settled.journal.documents {
+        assert created[doc] == settled.journal.documents[doc];
+        assert RowContent(platform, device, accepted, settled.effects, settled.listing, doc, settled.journal.documents[doc]);
+      } else {
+        assert doc in creates;
+        var i :| 0 <= i < |input.freshDocs| && input.freshDocs[i] == doc;
+      }
+      RoundG5Doc(step, device, after, settled.effects, settled.listing, settled.journal.documents, doc);
+    }
+  }
+
+  // The push's effects leave the disk as it is.
+  lemma PushKeepsDisk(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>)
+    requires forall e | e in effects :: !e.Write? && !e.Remove? && !e.Move?
+    requires EffectsTake(platform, disk, effects, disk')
+    ensures disk' == disk
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var m :| EffectTakes(platform, disk, effects[0], m) && EffectsTake(platform, m, effects[1..], disk');
+      assert effects[0] in effects;
+      assert m == disk;
+      assert forall e | e in effects[1..] :: e in effects;
+      PushKeepsDisk(platform, m, effects[1..], disk');
+    }
+  }
+
+  // One rebinding of the round, as G5_NeverMixedUp asks: from the pass
+  // invariants at the end of the round.
+  lemma {:isolate_assertions} RoundG5Doc(step: Step, before: Device, after: Device, settledEffects: seq<Effect>, listing: Listing,
+                                         settledRows: map<DocId, Document>, doc: DocId)
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices && step.event.device in step.post.devices
+    requires before == step.pre.devices[step.event.device] && after == step.post.devices[step.event.device]
+    requires after.platform == before.platform
+    requires ListingDistinct(before.platform, ListingOf(before)) && ListingDistinct(after.platform, ListingOf(after))
+    requires EffectsTake(before.platform, before.disk, step.effects, after.disk)
+    requires DiskMap(after.disk) == listing
+    requires G5_NeverJoined(step.post)
+    requires |settledEffects| <= |step.effects| && step.effects[..|settledEffects|] == settledEffects
+    requires forall effect | effect in step.effects[|settledEffects|..] :: !effect.Write? && !effect.Remove? && !effect.Move?
+    requires doc in after.journal.documents
+    requires RowG5(before.platform, before, step.effects, doc, after.journal.documents[doc])
+    requires doc in settledRows ==>
+      settledRows[doc].binding == after.journal.documents[doc].binding
+      && RowContent(before.platform, before, step.post.server.accepted, settledEffects, listing, doc, settledRows[doc])
+    requires doc !in settledRows ==> doc !in before.journal.documents && after.journal.documents[doc].base.None?
+    requires BoundIdentity(after, doc).Some? && BoundIdentity(after, doc) != BoundIdentity(before, doc)
+    ensures var spelling := after.journal.documents[doc].binding.value.spelling;
+      var file := BoundFile(after, doc).value;
+      var known := doc in before.journal.documents;
+      var hadFile := known && BoundFile(before, doc).Some?;
+      (exists effect :: effect in step.effects
+         && ((effect.Write? && effect.target == Some(doc) && SameF(after.platform, effect.path, spelling))
+             || (effect.Move? && effect.mover == Some(doc) && SameF(after.platform, effect.to, spelling))))
+      || ((!hadFile || RoundEvent(step.event)) && UntrackedThen(step, before, spelling)
+          && ((after.journal.documents[doc].base.Some?
+               && (!known || before.journal.documents[doc].base.None?
+                   || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
+               && file.content == after.journal.documents[doc].base.value.content)
+              || (RoundEvent(step.event) && DocVersion(step, doc, file.content))))
+      || (!known && UntrackedThen(step, before, spelling) && after.journal.documents[doc].base.None?)
+  {
+    var platform := before.platform;
+    var row := after.journal.documents[doc];
+    var s := row.binding.value.spelling;
+    var file := BoundFile(after, doc).value;
+    var effects := step.effects;
+    var put := RoundPut(platform, effects, s);
+    RoundPutIndexTouches(platform, effects, s);
+    // (b): the round put the file there for the document.
+    if put.By? && ((effects[put.index].Write? && effects[put.index].target == Some(doc))
+                   || (effects[put.index].Move? && effects[put.index].mover == Some(doc))) {
+      var effect := effects[put.index];
+      assert effect in effects;
+      RoundPutIndexTouches(platform, effects, s);
+      return;
+    }
+    // Not its own untouched file: the identity changed.
+    if put.Untouched? && BoundTo(before, doc, s) {
+      var p0 := before.journal.documents[doc].binding.value.spelling;
+      UntouchedSameFile(before, after, effects, s);
+      FileAtSameF(before, p0, s);
+      assert HasFile(after, s);
+      assert false;
+    }
+    assert !OwnNameIn(platform, before, effects, doc, s);
+    assert UntrackedIn(platform, before, effects, s);
+    // UntrackedThen.
+    if put.Untouched? {
+      if Tracked(before, s) {
+        forall y | BoundTo(before, y, s) ensures !BoundTo(after, y, s) {
+          if y == doc { assert false; }
+          if BoundTo(after, y, s) {
+            SameFIsEquivalence(platform, after.journal.documents[y].binding.value.spelling, s, s);
+            assert false;
+          }
+        }
+        assert RoundLetGo(step, before, s);
+      } else {
+        assert HasFile(before, s) && !Tracked(before, s);
+      }
+    } else if put.By? {
+      var effect := effects[put.index];
+      if PutsUntracked(effect) {
+        assert RoundLeftUntracked(step, s);
+      } else {
+        var y := if effect.Write? then effect.target.value else effect.mover.value;
+        assert y != doc;
+        if BoundTo(after, y, s) {
+          SameFIsEquivalence(platform, after.journal.documents[y].binding.value.spelling, s, s);
+          assert false;
+        }
+        assert RoundLetGo(step, before, s);
+      }
+    }
+    assert UntrackedThen(step, before, s);
+    if doc in settledRows {
+      // (d): the file holds an accepted live revision of the document.
+      var tail := effects[|settledEffects|..];
+      assert effects == settledEffects + tail;
+      forall effect | effect in tail ensures !Touches(platform, effect, s) { }
+      UntouchedTailKeepsReadings(platform, before, settledEffects, tail, doc, s);
+      assert !OwnNameIn(platform, before, settledEffects, doc, s);
+      var k :| k in after.disk && SameF(platform, k, s) && file == after.disk[k];
+      assert k in listing;
+      SameFIsEquivalence(platform, k, s, s);
+      assert Listed(platform, listing, s);
+      assert ListingOf(after) == listing;
+      var at := ListedAt(platform, listing, s);
+      SameFIsEquivalence(platform, at, s, k);
+      assert ListedAt(platform, listing, s) == k;
+      assert AcceptedContent(step.post.server.accepted, doc, file.content);
+      assert DocVersion(step, doc, file.content);
+    }
+  }
+
+  // The effect the round's last put at `s` names puts a file at `s`.
+  lemma RoundPutIndexTouches(platform: Platform, effects: seq<Effect>, s: Path)
+    ensures var put := RoundPut(platform, effects, s);
+      put.By? ==>
+        (effects[put.index].Write? && SameF(platform, effects[put.index].path, s))
+        || (effects[put.index].Move? && SameF(platform, effects[put.index].to, s))
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var init := effects[..|effects| - 1];
+      RoundPutIndexTouches(platform, init, s);
+      var put := RoundPut(platform, init, s);
+      if put.By? { assert effects[put.index] == init[put.index]; }
+    }
+  }
 }
