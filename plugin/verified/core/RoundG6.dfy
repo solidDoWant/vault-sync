@@ -54,12 +54,14 @@ abstract module RoundG6 refines RoundGuarantees {
   // `c` is some, it is one of the chain's contents.
   ghost predicate ChainSaved(saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
                              x: Option<(Hash, Kind)>, c: Option<Hash>)
-    decreases |rs|
+    decreases |rs|, if l.Some? then 1 else 0
   {
-    if |rs| == 0 then x == l && (c.None? || c == LocalContent(l))
-    else exists y :: LinkSaved(saved, d, b, bd, l, rs[0], y)
-           && (ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c)
-               || (c.Some? && c == LocalContent(l) && ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None)))
+    (l.Some? && l.value.0 in saved
+     && ChainSaved(saved, d, b, bd, None, rs, x, if c == LocalContent(l) then None else c))
+    || if |rs| == 0 then x == l && (c.None? || c == LocalContent(l))
+       else exists y :: LinkSaved(saved, d, b, bd, l, rs[0], y)
+              && (ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c)
+                  || (c.Some? && c == LocalContent(l) && ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None)))
   }
 
   // The base the next link settles against: the last revision settled, or
@@ -78,8 +80,13 @@ abstract module RoundG6 refines RoundGuarantees {
     requires ChainSaved(saved, d, b, bd, l, rs, x, c)
     requires LinkSaved(saved, d, ChainBase(b, rs), ChainBaseDeleted(bd, rs), x, r, y)
     ensures ChainSaved(saved, d, b, bd, l, rs + [r], y, c)
-    decreases |rs|
+    decreases |rs|, if l.Some? then 1 else 0
   {
+    var lg := if c == LocalContent(l) then None else c;
+    if l.Some? && l.value.0 in saved && ChainSaved(saved, d, b, bd, None, rs, x, lg) {
+      ChainSavedSnoc(saved, d, b, bd, None, rs, x, lg, r, y);
+      return;
+    }
     if |rs| == 0 {
       assert (rs + [r])[0] == r && (rs + [r])[1..] == [];
       if c.Some? {
@@ -108,8 +115,12 @@ abstract module RoundG6 refines RoundGuarantees {
                           x: Option<(Hash, Kind)>)
     requires ChainSaved(saved, d, b, bd, l, rs, x, None) && x.Some?
     ensures ChainSaved(saved, d, b, bd, l, rs, x, Some(x.value.0))
-    decreases |rs|
+    decreases |rs|, if l.Some? then 1 else 0
   {
+    if l.Some? && l.value.0 in saved && ChainSaved(saved, d, b, bd, None, rs, x, None) {
+      ChainSavedReaches(saved, d, b, bd, None, rs, x);
+      return;
+    }
     if |rs| > 0 {
       var y := var y :| LinkSaved(saved, d, b, bd, l, rs[0], y)
         && ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None); y;
@@ -121,8 +132,13 @@ abstract module RoundG6 refines RoundGuarantees {
                         rs: seq<Revision>, x: Option<(Hash, Kind)>, c: Option<Hash>)
     requires ChainSaved(saved, d, b, bd, l, rs, x, c) && saved <= saved'
     ensures ChainSaved(saved', d, b, bd, l, rs, x, c)
-    decreases |rs|
+    decreases |rs|, if l.Some? then 1 else 0
   {
+    var lg := if c == LocalContent(l) then None else c;
+    if l.Some? && l.value.0 in saved && ChainSaved(saved, d, b, bd, None, rs, x, lg) {
+      ChainSavedGrows(saved, saved', d, b, bd, None, rs, x, lg);
+      return;
+    }
     if |rs| > 0 {
       var y := var y :| LinkSaved(saved, d, b, bd, l, rs[0], y)
         && (ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c)
@@ -144,8 +160,13 @@ abstract module RoundG6 refines RoundGuarantees {
     requires ChainSaved(saved, d, b, bd, l, rs, x, c)
     requires forall h :: h in saved ==> SavedInRound(post, d, h)
     ensures ChainThrough(post, d, b, bd, l, rs, LocalContent(x), c)
-    decreases |rs|
+    decreases |rs|, if l.Some? then 1 else 0
   {
+    var lg := if c == LocalContent(l) then None else c;
+    if l.Some? && l.value.0 in saved && ChainSaved(saved, d, b, bd, None, rs, x, lg) {
+      ChainSavedIsThrough(post, saved, d, b, bd, None, rs, x, lg);
+      return;
+    }
     if |rs| > 0 {
       var y := var y :| LinkSaved(saved, d, b, bd, l, rs[0], y)
         && (ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c)
