@@ -343,7 +343,8 @@ abstract module ResyncCore refines StepContracts {
   lemma {:isolate_assertions} ResyncGuarantees(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
     requires d in pre.devices && RevsCover(pre.devices[d].journal, input, revs) && CoreReachable(pre)
     ensures var step := ResyncStepOf(pre, d, input, revs);
-      StateInvariants(step.post) || FinishedSyncing(step.post, d)
+      G1_Retained(step.post) && G1_LatestNeverPurged(step.post)
+      && G5_NeverJoined(step.post) && G7_OneFilePerName(step.post)
     ensures var step := ResyncStepOf(pre, d, input, revs);
       CoreInv(step.post) && ServerRetains(step.post) && StepGuarantees(step)
       && (!FinishedSyncing(step.post, d) ==> MirrorInv(step.post) && StateInvariants(step.post))
@@ -388,6 +389,7 @@ abstract module ResyncCore refines StepContracts {
       if Tracked(before, p) { var doc := var doc0 :| BoundTo(before, doc0, p); doc0; assert BoundTo(after, doc, p); }
     }
     assert G5_NeverJoined(post);
+    assert G1_LatestNeverPurged(post);
     assert G5_NeverMixedUp(step);
     assert G3_DeleteSeen(step);
     // G6: every base the resync sets is the row's, or this device's own
@@ -601,25 +603,137 @@ abstract module ResyncCore refines StepContracts {
   // The contract
   // ---------------------------------------------------------------------
 
-  // ResyncContract where the resync leaves the device unfinished, from
-  // ClaimsImplyMirrorContract (proven by ClaimsMirror.ClaimsImplyMirror;
-  // this module cannot refine ClaimsMirror, Dafny 4.11's resolver crashes).
-  // Open (#1019): a resync that finishes the device must show MirrorInv for
-  // it, which needs ClaimsMirror's MirrorAtCut from ClaimsReachable without
-  // MirrorInv.
-  lemma ResyncContractUnfinished(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+  // The state with every device but d stopped: d is then the only device
+  // that can be finished, so G9 holds of it by d's agreement with itself.
+  ghost function OthersStopped(state: State, d: DeviceId): State {
+    state.(devices := map x | x in state.devices :: if x == d then state.devices[x] else state.devices[x].(running := false))
+  }
+
+  // ClaimsCore without G9: what the resync proves of its post-state before
+  // MirrorInv, and what OthersStopped keeps.
+  ghost predicate CoreButG9(state: State) {
+    G1_Retained(state) && G1_LatestNeverPurged(state) && G5_NeverJoined(state) && G7_OneFilePerName(state)
+    && CoreInv(state) && ServerRetains(state)
+    && FeedPositioned(state.server) && ClaimsCoverCursor(state) && RevisionsOnFeed(state.server)
+    && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
+    && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
+    && ScopesClosedUnderF(state) && OwnDocsKnown(state)
+    && (forall x :: ReadsFeed(state, x) ==> OwnRevisionsAcknowledged(state, x))
+  }
+
+  lemma {:isolate_assertions} OthersStoppedCore(state: State, d: DeviceId)
+    requires d in state.devices && CoreButG9(state)
+    ensures ClaimsCore(OthersStopped(state, d))
+  {
+    var S := OthersStopped(state, d);
+    assert S.server == state.server && S.devices.Keys == state.devices.Keys;
+    assert forall x :: x in S.devices ==> S.devices[x] == state.devices[x].(running := S.devices[x].running);
+    forall rev | rev in state.server.accepted
+      ensures (exists x :: x in state.devices && OnDisk(state.devices[x], state.server.accepted[rev].content))
+          <==> (exists x :: x in S.devices && OnDisk(S.devices[x], state.server.accepted[rev].content))
+    {
+      var version := state.server.accepted[rev];
+      if exists x :: x in state.devices && OnDisk(state.devices[x], version.content) {
+        var x := var x0 :| x0 in state.devices && OnDisk(state.devices[x0], version.content); x0;
+        assert OnDisk(S.devices[x], version.content);
+      }
+      if exists x :: x in S.devices && OnDisk(S.devices[x], version.content) {
+        var x := var x0 :| x0 in S.devices && OnDisk(S.devices[x0], version.content); x0;
+        assert OnDisk(state.devices[x], version.content);
+      }
+    }
+    assert G1_Retained(S);
+    assert ServerRetains(S);
+    assert G5_NeverJoined(S);
+    assert G7_OneFilePerName(S);
+    forall d1, d2, p | FinishedSyncing(S, d1) && FinishedSyncing(S, d2)
+      && p in S.devices[d1].disk && p !in S.devices[d1].outOfScope && p !in S.devices[d2].outOfScope
+      ensures G9Agrees(S, S.devices[d1], S.devices[d2], p)
+    {
+      assert d1 == d && d2 == d;
+      SameNameModuloFoldersRefl(S.devices[d].platform, p);
+    }
+    assert G9(S);
+    assert CoreInv(S);
+    forall x | ReadsFeed(S, x) ensures OwnRevisionsAcknowledged(S, x) {
+      assert ReadsFeed(state, x);
+      assert OwnRevisionsAcknowledged(state, x);
+      forall doc, id | Unacknowledged(S, x, doc, id)
+        ensures S.devices[x].journal.documents[doc].outbox.Some?
+        ensures S.devices[x].journal.documents[doc].outbox.value.rev == id
+      {
+        assert Unacknowledged(state, x, doc, id);
+      }
+    }
+    assert ClaimsCoverCursor(S);
+    assert JournalsNameAccepted(S);
+    assert ScopesClosedUnderF(S);
+    assert OwnDocsKnown(S);
+  }
+
+  // A device finished in `state` mirrors the heads if it does in
+  // OthersStopped, which has the same server and leaves it as it is.
+  lemma MirrorAtStopped(state: State, d: DeviceId)
+    requires d in state.devices && FinishedSyncing(state, d) && MirrorInv(OthersStopped(state, d))
+    ensures FilesMirrorHeads(state, state.devices[d]) && HeadsMirrored(state, state.devices[d])
+  {
+    var S := OthersStopped(state, d);
+    assert S.devices[d] == state.devices[d] && S.server == state.server;
+    assert FinishedSyncing(S, d);
+    assert FilesMirrorHeads(S, S.devices[d]) && HeadsMirrored(S, S.devices[d]);
+  }
+
+  // A device a step leaves as it was, on the same server, mirrors the heads
+  // after it if it did before.
+  lemma MirrorOfUnchanged(pre: State, post: State, x: DeviceId)
+    requires MirrorInv(pre) && post.server == pre.server
+    requires x in pre.devices && x in post.devices && post.devices[x] == pre.devices[x]
+    requires FinishedSyncing(post, x)
+    ensures FilesMirrorHeads(post, post.devices[x]) && HeadsMirrored(post, post.devices[x])
+  {
+    assert FinishedSyncing(pre, x);
+    assert FilesMirrorHeads(pre, pre.devices[x]) && HeadsMirrored(pre, pre.devices[x]);
+  }
+
+  // The resync keeps every invariant: ClaimsCore from the lemmas above,
+  // MirrorInv and MirrorAtCursor from ClaimsImplyMirrorContract (proven by
+  // ClaimsMirror.ClaimsImplyMirror, #1078; this module cannot refine
+  // ClaimsMirror, Dafny 4.11's resolver crashes). A device the resync leaves
+  // finished mirrors the heads by the contract at OthersStopped, where it
+  // is the only finished device.
+  lemma {:isolate_assertions} ResyncKeepsAll(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
     requires ClaimsImplyMirrorContract()
-    requires d in pre.devices && pre.devices[d].running && CoreReachable(pre)
-    requires RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
-    requires !FinishedSyncing(ResyncStepOf(pre, d, input, revs).post, d)
     ensures ResyncContract(pre, d, input, revs)
   {
-    var step := ResyncStepOf(pre, d, input, revs);
-    ResyncReadsFeed(pre, d, input, revs);
-    ResyncRowsHold(pre, d, input, revs);
-    ResyncGuarantees(pre, d, input, revs);
-    ResyncClaims(pre, d, input, revs);
-    assert ClaimsReachable(step.post);
-    assert MirrorAtCursor(step.post);
+    if d in pre.devices && pre.devices[d].running && CoreReachable(pre)
+       && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs) {
+      var step := ResyncStepOf(pre, d, input, revs);
+      var post := step.post;
+      ResyncReadsFeed(pre, d, input, revs);
+      ResyncRowsHold(pre, d, input, revs);
+      ResyncGuarantees(pre, d, input, revs);
+      ResyncClaims(pre, d, input, revs);
+      ResyncKeepsBindings(pre, d, input, revs);
+      assert post.server == pre.server;
+      assert RevisionsOnFeed(post.server);
+      assert CoreButG9(post);
+      if FinishedSyncing(post, d) {
+        var S := OthersStopped(post, d);
+        OthersStoppedCore(post, d);
+        assert MirrorInv(S);
+        MirrorAtStopped(post, d);
+        forall x | x in post.devices && FinishedSyncing(post, x) && x != d
+          ensures FilesMirrorHeads(post, post.devices[x]) && HeadsMirrored(post, post.devices[x])
+        {
+          MirrorOfUnchanged(pre, post, x);
+        }
+        assert MirrorInv(post);
+        MirrorImpliesG9(post);
+      }
+      assert StateInvariants(post);
+      assert ClaimsCore(post);
+      assert ClaimsReachable(post);
+      assert MirrorAtCursor(post);
+    }
   }
 }
