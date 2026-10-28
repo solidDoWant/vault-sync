@@ -1559,6 +1559,63 @@ let LocalCoreJs = (function() {
     };
   };
 
+  $module.Put = class Put {
+    constructor(tag) {
+      this.$tag = tag;
+    }
+    static create_Untouched() {
+      let $dt = new Put(0);
+      return $dt;
+    }
+    static create_Freed() {
+      let $dt = new Put(1);
+      return $dt;
+    }
+    static create_By(index) {
+      let $dt = new Put(2);
+      $dt.index = index;
+      return $dt;
+    }
+    get is_Untouched() { return this.$tag === 0; }
+    get is_Freed() { return this.$tag === 1; }
+    get is_By() { return this.$tag === 2; }
+    get dtor_index() { return this.index; }
+    toString() {
+      if (this.$tag === 0) {
+        return "LocalCoreJs.Put.Untouched";
+      } else if (this.$tag === 1) {
+        return "LocalCoreJs.Put.Freed";
+      } else if (this.$tag === 2) {
+        return "LocalCoreJs.Put.By" + "(" + _dafny.toString(this.index) + ")";
+      } else  {
+        return "<unexpected>";
+      }
+    }
+    equals(other) {
+      if (this === other) {
+        return true;
+      } else if (this.$tag === 0) {
+        return other.$tag === 0;
+      } else if (this.$tag === 1) {
+        return other.$tag === 1;
+      } else if (this.$tag === 2) {
+        return other.$tag === 2 && _dafny.areEqual(this.index, other.index);
+      } else  {
+        return false; // unexpected
+      }
+    }
+    static Default() {
+      return LocalCoreJs.Put.create_Untouched();
+    }
+    static Rtd() {
+      return class {
+        static get Default() {
+          return Put.Default();
+        }
+      };
+    }
+  }
+
   $module.Option = class Option {
     constructor(tag) {
       this.$tag = tag;
