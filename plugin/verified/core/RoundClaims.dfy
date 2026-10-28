@@ -526,4 +526,54 @@ abstract module RoundClaimsCore refines PathRuleCore {
     }
     assert forall x | x in post.devices :: RowsParentsAccepted(accepted, post.devices[x].journal.documents);
   }
+
+  // ---------------------------------------------------------------------
+  // #1033's stand-in: no outbox on a row the round created
+  // ---------------------------------------------------------------------
+
+  // A row the round itself added (NoRow: another device's new document)
+  // has no binding, no base and no outbox; RevsFor gives it the settled
+  // revision's own id. The rule opens no outbox on it, so that stand-in
+  // is never a commit's id.
+  ghost predicate NewRow(document: Document) {
+    document.binding.None? && document.base.None? && document.outbox.None?
+  }
+
+  lemma ApplyOpensNoOutbox(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing) && NewRow(document)
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document.outbox.None?
+  {}
+
+  lemma {:isolate_assertions} RuleOpensNoOutbox(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NewRow(documents[doc])
+    ensures PathRule(platform, documents, doc, r, input, revs, first).documents[doc].outbox.None?
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    ApplyOpensNoOutbox(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        reveal HeadRow();
+      }
+    }
+  }
+
+  // The round's settle of a revision of a document its journal does not
+  // know opens no outbox on that document's row, so RevsFor's stand-in id
+  // for it is never sent.
+  lemma SettleNewRowOpensNoOutbox(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc !in pass.journal.documents
+    ensures var documents' := SettleRevision(platform, pass, doc, r, input, revs, first).journal.documents;
+      doc in documents' ==> documents'[doc].outbox.None?
+  {
+    var documents := pass.journal.documents;
+    if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
+      var rows := documents[doc := NoRow()];
+      RuleOpensNoOutbox(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r), first);
+    }
+  }
 }
