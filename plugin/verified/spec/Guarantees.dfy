@@ -874,7 +874,19 @@ abstract module Guarantees refines EngineModel {
     else if lc == b then x == Some((rc, r.kind))
     else if rc == b then x == l
     else if lk == Note && r.kind == Note && Merge3(b, lc, rc).Some? then Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note
-    else (x == Some((rc, r.kind)) && SavedNextToIt(after, lc)) || (x == l && SavedNextToIt(after, rc))
+    else (x == Some((rc, r.kind)) && SavedInRound(after, lc)) || (x == l && SavedInRound(after, rc))
+  }
+
+  // A content a round's chain saved is on the device it leaves: saved next
+  // to it (SavedNextToIt), or in a file bound to a document whose base, a
+  // revision the server accepted, holds exactly it. A conflict copy written
+  // early in a round can be adopted later in the same round by another
+  // document's revision that holds the same content at that name (#1094):
+  // the content is then on the device and on the server.
+  ghost predicate SavedInRound(after: Device, content: Hash) {
+    SavedNextToIt(after, content)
+    || exists p, e :: p in after.disk && after.disk[p].content == content && BoundTo(after, e, p)
+         && after.journal.documents[e].base.Some? && after.journal.documents[e].base.value.content == content
   }
 
   // The content of a chain's local side.
@@ -929,7 +941,7 @@ abstract module Guarantees refines EngineModel {
   // W(b) let the document's file go, as a later step of its own would.
   ghost predicate ChainEnds(after: Device, doc: DocId, out: Option<Hash>) {
     out == Outgoing(after, doc)
-    || (Outgoing(after, doc).None? && out.Some? && SavedNextToIt(after, out.value))
+    || (Outgoing(after, doc).None? && out.Some? && SavedInRound(after, out.value))
   }
 
   // ---------------------------------------------------------------------

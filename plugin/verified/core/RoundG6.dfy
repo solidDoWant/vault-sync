@@ -17,7 +17,7 @@ abstract module RoundG6 refines RoundGuarantees {
   // ---------------------------------------------------------------------
 
   // SettleLink, with the contents its conflict copies saved (`saved`) in
-  // place of SavedNextToIt on the device the round leaves.
+  // place of SavedInRound on the device the round leaves.
   ghost predicate LinkSaved(saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, r: Revision,
                             x: Option<(Hash, Kind)>) {
     if r.device == d then x == l
@@ -45,7 +45,7 @@ abstract module RoundG6 refines RoundGuarantees {
   lemma LinkSavedIsLink(after: Device, saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>,
                         r: Revision, x: Option<(Hash, Kind)>)
     requires LinkSaved(saved, d, b, bd, l, r, x)
-    requires forall h :: h in saved ==> SavedNextToIt(after, h)
+    requires forall h :: h in saved ==> SavedInRound(after, h)
     ensures SettleLink(after, d, b, bd, l, r, x)
   {}
 
@@ -142,7 +142,7 @@ abstract module RoundG6 refines RoundGuarantees {
   lemma ChainSavedIsThrough(after: Device, saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>,
                             rs: seq<Revision>, x: Option<(Hash, Kind)>, c: Option<Hash>)
     requires ChainSaved(saved, d, b, bd, l, rs, x, c)
-    requires forall h :: h in saved ==> SavedNextToIt(after, h)
+    requires forall h :: h in saved ==> SavedInRound(after, h)
     ensures ChainThrough(after, d, b, bd, l, rs, LocalContent(x), c)
     decreases |rs|
   {
