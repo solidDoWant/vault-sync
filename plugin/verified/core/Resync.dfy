@@ -503,7 +503,7 @@ abstract module ResyncCore refines StepContracts {
   }
 
   // The resync keeps every clause of ClaimsReachable but MirrorInv, whose
-  // finished-device case ResyncMirror settles.
+  // finished-device case ResyncKeepsAll settles.
   lemma {:isolate_assertions} ResyncClaims(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
     requires d in pre.devices && RevsCover(pre.devices[d].journal, input, revs) && CoreReachable(pre)
     ensures var post := ResyncStepOf(pre, d, input, revs).post;
