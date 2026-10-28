@@ -855,4 +855,70 @@ abstract module RoundClaimsCore refines PathRuleCore {
     KnowsTrans(journal.documents, settled.journal.documents, journal'.documents);
     KnowsCarry(settled.journal.documents, journal'.documents, set i | 0 <= i < |pulled| :: pulled[i]);
   }
+
+  // A feed entry the server holds is among the revisions the pull reads.
+  lemma RevisionsHas(server: Server, ids: seq<RevId>, j: nat)
+    requires j < |ids| && ids[j] in server.revisions
+    ensures server.revisions[ids[j]] in Revisions(server, ids)
+    decreases |ids|
+  {
+    if j > 0 {
+      RevisionsHas(server, ids[1..], j - 1);
+      assert ids[1..][j - 1] == ids[j];
+    }
+  }
+
+  // Clause ClaimsCoverCursor.
+  lemma {:isolate_assertions} RoundKeepsClaimsCover(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && ClaimsCoverCursor(pre) && !Diverged(pre, d) && RoundInputOf(pre, d, input)
+    requires OneFilePerName(pre.devices[d].platform, pre.devices[d].disk)
+    ensures ClaimsCoverCursor(RoundStepOf(pre, d, input, revs).post)
+  {
+    var post := RoundStepOf(pre, d, input, revs).post;
+    RoundStepJournal(pre, d, input, revs);
+    var device := pre.devices[d];
+    var journal := device.journal;
+    var feed := pre.server.feed;
+    assert ReadsFeed(pre, d);
+    if FreshIn(input, revs) {
+      var platform := device.platform;
+      var pulled := PulledOf(pre, d);
+      assert DiskMap(device.disk) == input.listing;
+      assert ListingOn(platform, input.listing);
+      OnRoundKnows(platform, journal, pulled, CursorOf(pre, d), AnchorOf(pre, d), input, revs);
+      OnRoundEffects(platform, journal, pulled, CursorOf(pre, d), AnchorOf(pre, d), input, revs);
+      var journal' := post.devices[d].journal;
+      assert journal'.cursor == CursorOf(pre, d);
+      forall i | ReadsFeed(post, d) && 0 <= i < journal'.cursor && i < |feed| && feed[i] in pre.server.revisions
+        ensures var r := pre.server.revisions[feed[i]];
+          r.doc in journal'.documents && KnowsAtLeast(journal'.documents[r.doc], r.position)
+      {
+        var r := pre.server.revisions[feed[i]];
+        if i < journal.cursor {
+          assert r.doc in journal.documents && KnowsAtLeast(journal.documents[r.doc], r.position);
+          assert KnownNoLess(journal.documents[r.doc], journal'.documents[r.doc]);
+        } else {
+          assert journal.cursor < |feed|;
+          var ids := feed[journal.cursor..];
+          assert ids[i - journal.cursor] == feed[i];
+          RevisionsHas(pre.server, ids, i - journal.cursor);
+          assert pulled == Revisions(pre.server, ids);
+          var k :| 0 <= k < |pulled| && pulled[k] == r;
+          assert r in (set j | 0 <= j < |pulled| :: pulled[j]);
+        }
+      }
+    }
+    forall x, i | ReadsFeed(post, x) && 0 <= i < post.devices[x].journal.cursor
+      && i < |post.server.feed| && post.server.feed[i] in post.server.revisions
+      ensures var r := post.server.revisions[post.server.feed[i]];
+          r.doc in post.devices[x].journal.documents
+          && KnownPosition(post.devices[x].journal.documents[r.doc]).Some?
+          && KnownPosition(post.devices[x].journal.documents[r.doc]).value >= r.position
+    {
+      if x != d || !FreshIn(input, revs) {
+        assert post.devices[x].journal == pre.devices[x].journal;
+        assert ReadsFeed(pre, x);
+      }
+    }
+  }
 }
