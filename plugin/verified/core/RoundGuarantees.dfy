@@ -2644,4 +2644,240 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     var c := a + b[..m + 1];
     assert c[|c| - 1] == b[m];
   }
+
+  // Where the apply puts the document's file at its new binding, that put
+  // is its last effect: a write of the document's file at that name.
+  lemma {:isolate_assertions} CreatePutsLast(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := Create(platform, doc, document, r, input, bound, claims, rev);
+      (applied.document.binding.Some?
+       && exists effect :: effect in applied.effects && PutsFor(platform, effect, doc, applied.document.binding.value.spelling)) ==>
+        |applied.effects| > 0
+        && applied.effects[|applied.effects| - 1].Write?
+        && applied.effects[|applied.effects| - 1].target == Some(doc)
+        && applied.effects[|applied.effects| - 1].path == applied.document.binding.value.spelling
+  {
+    var applied := Create(platform, doc, document, r, input, bound, claims, rev);
+    if UnsavedAt(platform, input.unsaved, r.path) || BoundName(platform, bound, r.path) {
+    } else if FreeIn(platform, input.listing, r.path) {
+    } else if Adoptable(platform, document, input, r) {
+    } else {
+      var held := Colliders(platform, input.listing, r.path);
+      if |held| == 1 && !BoundName(platform, bound, LeastPath(held))
+         && !UnsavedCollides(platform, input.unsaved, LeastPath(held)) {
+        var q := LeastPath(held);
+        var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path);
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} ApplyPutsLast(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      (applied.document.binding.Some?
+       && exists effect :: effect in applied.effects && PutsFor(platform, effect, doc, applied.document.binding.value.spelling)) ==>
+        |applied.effects| > 0
+        && applied.effects[|applied.effects| - 1].Write?
+        && applied.effects[|applied.effects| - 1].target == Some(doc)
+        && applied.effects[|applied.effects| - 1].path == applied.document.binding.value.spelling
+  {
+    if !Newer(document, r) {
+    } else if SettlesIdentical(platform, document, r, input) {
+    } else if Acknowledges(document, r) {
+    } else if Revives(platform, document, r, input) {
+      if !KeepsUntracked(platform, document, r, input) {
+        CreatePutsLast(platform, doc, Revived(document), r, input, bound, claims, rev);
+      }
+    } else if document.binding.Some? {
+      var spelling := document.binding.value.spelling;
+      var read := ListedRead(platform, input.listing, spelling);
+      if UnsavedAt(platform, input.unsaved, spelling) {
+      } else if r.deleted && read.None? {
+      } else if Concurrent(document, read, r) {
+        var settled := Settle(platform, doc, document, read.value, r, input, bound, claims, rev);
+        assert settled.document.binding.None? || settled.document.binding.value.spelling == spelling;
+      }
+    } else if r.deleted {
+    } else {
+      CreatePutsLast(platform, doc, document, r, input, bound, claims, rev);
+    }
+  }
+
+  // The arrival ends with the put of the document's file at the head's name.
+  lemma ArriveLast(platform: Platform, doc: DocId, document: Document, a: Revision, own: Option<Path>)
+    ensures var effects := Arrive(platform, doc, document, a, own);
+      |effects| > 0
+      && var last := effects[|effects| - 1];
+      (last.Write? && last.target == Some(doc) && last.path == a.path)
+      || (last.Move? && last.mover == Some(doc) && last.to == a.path)
+  {}
+
+  // A move aside moves the file of the row it names, if any.
+  lemma MoveEffectsMoverOwns(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, i: nat, x: DocId)
+    requires i < |moves|
+    requires var effects := MoveEffects(platform, documents, doc, moves);
+      i < |effects| && effects[i].Move? && effects[i].mover == Some(x)
+    ensures x != doc && FileOf(platform, documents, moves[i].0, x)
+    decreases |moves|
+  {
+    MoveEffectsShape(platform, documents, doc, moves);
+    if i > 0 {
+      assert MoveEffects(platform, documents, doc, moves)[i] == MoveEffects(platform, documents, doc, moves[1..])[i - 1];
+      MoveEffectsShape(platform, documents, doc, moves[1..]);
+      MoveEffectsMoverOwns(platform, documents, doc, moves[1..], i - 1, x);
+    } else {
+      var q := moves[0].0;
+      var keepers := set e' | e' in documents && e' != doc && FileOf(platform, documents, q, e') && LocallyPlaced(documents[e']);
+      assert keepers != {};
+      assert x == LeastDoc(keepers);
+    }
+  }
+
+  // The arrival writes and moves only the document's own file.
+  lemma ArriveFor(platform: Platform, doc: DocId, document: Document, a: Revision, own: Option<Path>)
+    ensures forall effect :: effect in Arrive(platform, doc, document, a, own) ==>
+      (effect.Write? ==> effect.target == Some(doc)) && (effect.Move? ==> effect.mover == Some(doc))
+  {}
+
+  // Where the rule clears the way, the effect that puts a row's file at
+  // its new binding is the last one touching that name.
+  lemma {:isolate_assertions} ClearWayPutsLast(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, e: DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires e in documents
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      e in ruled.documents
+      && var after := ruled.documents[e];
+      (after.binding.Some?
+       && exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, after.binding.value.spelling)) ==>
+        var s := after.binding.value.spelling;
+        exists m :: 0 <= m < |ruled.effects|
+          && ((ruled.effects[m].Write? && ruled.effects[m].target == Some(e) && SameF(platform, ruled.effects[m].path, s))
+              || (ruled.effects[m].Move? && ruled.effects[m].mover == Some(e) && SameF(platform, ruled.effects[m].to, s)))
+          && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s)
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+      assert |ruled.effects| == 1 && ruled.effects[0].Report?;
+      return;
+    }
+    var moves := aside.value;
+    AsideFacts(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var a := Arriving(platform, document, r, input);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    assert ruled.effects == front + arrive;
+    var rows := ruled.documents;
+    assert rows == ClearRows(platform, documents, doc, r, input, moves, revs);
+    MoveRowsRow(platform, documents, doc, moves, revs, input.listing, e);
+    if rows[e].binding.None? { return; }
+    var s := rows[e].binding.value.spelling;
+    if !exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) { return; }
+    if e == doc {
+      assert s == r.path;
+      ArriveLast(platform, doc, ArrivingRow(platform, document, r, input), a, keep);
+      var m := |ruled.effects| - 1;
+      assert ruled.effects[m] == arrive[|arrive| - 1];
+      assert SameF(platform, r.path, r.path);
+      return;
+    }
+    ClearWayRow(platform, documents, doc, r, input, revs, keep, moves, e);
+    if exists i | 0 <= i < |moves| :: s == moves[i].1 && FileOf(platform, documents, moves[i].0, e) {
+      var i := var i :| 0 <= i < |moves| && s == moves[i].1 && FileOf(platform, documents, moves[i].0, e); i;
+      var moved := MoveRows(platform, documents, doc, moves, revs);
+      assert LocallyPlaced(documents[e]) by {
+        if !LocallyPlaced(documents[e]) {
+          assert moved[e] == MovedAside(documents[e], moves[i].1, revs[e]);
+          var recorded := RecordMissing(platform, input.listing, documents, doc, r.path, moved, revs);
+          assert rows[e] == recorded[e];
+        }
+      }
+      MoveEffectsMover(platform, documents, doc, moves, i, e);
+      assert ruled.effects[i] == front[i];
+      assert SameF(platform, moves[i].1, s);
+      forall k | i < k < |ruled.effects| ensures !Touches(platform, ruled.effects[k], s) {
+        if k < |front| {
+          assert ruled.effects[k] == front[k];
+          assert !CollideF(platform, moves[i].1, moves[k].1);
+          assert moves[k].0 in input.listing;
+          assert !CollideF(platform, moves[k].0, moves[i].1);
+        } else {
+          var t := documents[e].binding.value.spelling;
+          assert ruled.effects[k] in arrive;
+          assert !CollideF(platform, moves[i].1, r.path);
+          if keep.Some? {
+            var b := document.binding.value.spelling;
+            assert SameF(platform, keep.value, b);
+            assert b in avoid;
+            assert !SameF(platform, b, moves[i].1);
+            if SameF(platform, keep.value, s) { SameFIsEquivalence(platform, b, keep.value, s); }
+          }
+          ArriveTouchesOnly(platform, doc, ArrivingRow(platform, document, r, input), a, keep, s);
+        }
+      }
+    } else {
+      // Left as it was: no effect puts its file anywhere for it.
+      assert rows[e].binding == documents[e].binding;
+      ArriveFor(platform, doc, ArrivingRow(platform, document, r, input), a, keep);
+      forall effect | effect in ruled.effects ensures !PutsFor(platform, effect, e, s) {
+        if effect in front {
+          var i := var i :| 0 <= i < |front| && front[i] == effect; i;
+          if effect.mover == Some(e) {
+            MoveEffectsMoverOwns(platform, documents, doc, moves, i, e);
+          }
+        } else {
+          assert effect in arrive;
+        }
+      }
+    }
+  }
+
+  // The effect that puts a row's file at its binding is the rule's last
+  // one touching that name (OwnNameIn's By(j), read on the pass).
+  lemma {:isolate_assertions} RulePutsLast(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, e: DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires e in documents
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      e in ruled.documents
+      && var after := ruled.documents[e];
+      (after.binding.Some?
+       && exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, after.binding.value.spelling)) ==>
+        var s := after.binding.value.spelling;
+        exists m :: 0 <= m < |ruled.effects|
+          && ((ruled.effects[m].Write? && ruled.effects[m].target == Some(e) && SameF(platform, ruled.effects[m].path, s))
+              || (ruled.effects[m].Move? && ruled.effects[m].mover == Some(e) && SameF(platform, ruled.effects[m].to, s)))
+          && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s)
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    if !HeldForName(document, applied, r) {
+      if e == doc {
+        ApplyPutsLast(platform, doc, document, r, input, bound, claims, revs[doc]);
+        var after := ruled.documents[e];
+        if after.binding.Some? && exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, after.binding.value.spelling) {
+          assert SameF(platform, after.binding.value.spelling, after.binding.value.spelling);
+          assert ruled.effects[|ruled.effects| - 1] == applied.effects[|applied.effects| - 1];
+        }
+      } else if documents[e].binding.Some? {
+        var t := documents[e].binding.value.spelling;
+        assert t in bound;
+        ApplyLeavesOthers(platform, doc, document, r, input, bound, claims, revs[doc], t);
+        assert ruled.documents[e] == documents[e];
+      }
+    } else if UnsavedCollides(platform, input.unsaved, r.path) {
+      assert |ruled.effects| == 1 && ruled.effects[0].Report?;
+    } else {
+      ClearWayPutsLast(platform, documents, doc, r, input, revs, e);
+    }
+  }
 }
