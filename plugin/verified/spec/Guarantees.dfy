@@ -77,10 +77,13 @@ abstract module Guarantees refines EngineModel {
     Untracked(before, p) || RoundLeftUntracked(step, p)
   }
 
-  // The content of a live version of `doc` in the server's history after
-  // the step: a file holding exactly it can be got back from the server.
+  // The content of a live revision of `doc` the server accepted: the
+  // content a binding records (`seen`) when it adopts a file or takes a
+  // revision, so a later step may overwrite or remove such a file under
+  // the single-step rules too. (Retention may since have purged it, as it
+  // may purge any old version, G1.)
   ghost predicate DocVersion(step: Step, doc: DocId, content: Hash) {
-    exists rev :: rev in step.post.server.accepted && InHistory(step.post.server, rev)
+    exists rev :: rev in step.post.server.accepted
       && step.post.server.accepted[rev].doc == doc
       && !step.post.server.accepted[rev].deleted && step.post.server.accepted[rev].content == content
   }
@@ -323,21 +326,24 @@ abstract module Guarantees refines EngineModel {
                && RoundTracked(step, i, effect.doc, effect.path, effect.expected))
   }
 
-  // In a sync round, the file at `p` before effect `i` is one the round
-  // itself wrote or moved there for a document, or one it adopted for
-  // `doc` that holds exactly a live version of `doc` on the server
-  // (#1094). A freed file never qualifies.
+  // In a sync round (#1094), a remove before effect `i` of `doc`'s file at
+  // `p`, expecting `content`, is also one of a tracked file where an
+  // earlier effect of the round wrote or moved a file there for a
+  // document, or where the file holds exactly a live revision of `doc` the
+  // server accepted (a file the round adopted for `doc`, DocVersion). A
+  // conflict copy or a released file with other content never qualifies.
   ghost predicate RoundTracked(step: Step, i: nat, doc: DocId, p: Path, content: Hash)
     requires i <= |step.effects|
   {
     step.event.SyncRound? && step.event.device in step.pre.devices
-    && match RoundPut(step.pre.devices[step.event.device].platform, step.effects[..i], p)
-       case Untouched => DocVersion(step, doc, content)
-       case Freed => false
-       case By(j) =>
-         var effect := step.effects[j];
-         (effect.Write? && effect.target.Some?) || (effect.Move? && effect.mover.Some?)
-         || DocVersion(step, doc, content)
+    && (DocVersion(step, doc, content)
+        || exists j :: 0 <= j < i && PutsTracked(step.pre.devices[step.event.device].platform, step.effects[j], p))
+  }
+
+  // The effect writes or moves a file at `p` for a document.
+  ghost predicate PutsTracked(platform: Platform, effect: Effect, p: Path) {
+    (effect.Write? && effect.target.Some? && SameF(platform, effect.path, p))
+    || (effect.Move? && effect.mover.Some? && SameF(platform, effect.to, p))
   }
 
   // "A file you are editing is never replaced underneath your unsaved

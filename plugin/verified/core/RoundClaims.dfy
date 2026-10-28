@@ -607,7 +607,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
     match e
     case Write(_, path, content, kind, precondition) =>
       if precondition.Some? {
-        var q :| Holds(platform, disk, q, path, precondition.value);
+        var q := var q :| Holds(platform, disk, q, path, precondition.value); q;
         assert q in listing && SameF(platform, q, path);
         assert Listed(platform, listing, path);
         var at := ListedAt(platform, listing, path);
@@ -623,20 +623,20 @@ abstract module RoundClaimsCore refines PathRuleCore {
           }
         }
         FreshIdentityExists(set q | q in disk :: disk[q].identity);
-        var identity: FileIdentity :| identity !in (set q | q in disk :: disk[q].identity);
+        var identity: FileIdentity := var identity: FileIdentity :| identity !in (set q | q in disk :: disk[q].identity); identity;
         var mid := disk[path := DiskFile(content, kind, identity)];
         assert EffectTakes(platform, disk, e, mid);
         assert DiskMap(mid) == listing[path := (content, kind)];
       }
     case Remove(_, path, expected) =>
-      var q :| Holds(platform, disk, q, path, expected);
+      var q := var q :| Holds(platform, disk, q, path, expected); q;
       assert Listed(platform, listing, path);
       assert ListedAt(platform, listing, path) == q;
       var mid := disk - {q};
       assert EffectTakes(platform, disk, e, mid);
       assert DiskMap(mid) == listing - {q};
     case Move(_, from, to, expected) =>
-      var q :| MovableTo(platform, disk, q, from, to, expected);
+      var q := var q :| MovableTo(platform, disk, q, from, to, expected); q;
       assert Listed(platform, listing, from);
       assert ListedAt(platform, listing, from) == q;
       var mid := (disk - {q})[to := disk[q]];
@@ -655,7 +655,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
       assert ListingAfter(platform, DiskMap(disk), effects) == DiskMap(disk);
     } else {
       EffectListing(platform, disk, effects[0]);
-      var mid :| EffectTakes(platform, disk, effects[0], mid) && DiskMap(mid) == ListingAfterEffect(platform, DiskMap(disk), effects[0]);
+      var mid := var mid :| EffectTakes(platform, disk, effects[0], mid) && DiskMap(mid) == ListingAfterEffect(platform, DiskMap(disk), effects[0]); mid;
       EffectKeepsOneFilePerName(platform, disk, effects[0], mid);
       EffectsListing(platform, mid, effects[1..]);
     }
@@ -670,7 +670,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
     ensures ListingDistinct(platform, input.(listing := listing).listing)
             ==> ListingOn(platform, ListingAfter(platform, listing, PathRule(platform, documents, doc, r, input.(listing := listing), revs, first).effects))
   {
-    var disk :| OneFilePerName(platform, disk) && DiskMap(disk) == listing;
+    var disk := var disk :| OneFilePerName(platform, disk) && DiskMap(disk) == listing; disk;
     OneFileDistinct(platform, disk);
     var device := Device(platform, true, Journal(map[], 0, [], []), disk, {}, {});
     assert ListingOf(device) == listing;
@@ -791,7 +791,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
       forall x | x in (set i | 0 <= i < |revisions| :: revisions[i])
         ensures x.doc in pass'.journal.documents && KnowsAtLeast(pass'.journal.documents[x.doc], x.position)
       {
-        var i :| 0 <= i < |revisions| && revisions[i] == x;
+        var i := var i :| 0 <= i < |revisions| && revisions[i] == x; i;
         if i > 0 { assert revisions[1..][i - 1] == x; }
       }
     }
@@ -903,7 +903,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
           assert ids[i - journal.cursor] == feed[i];
           RevisionsHas(pre.server, ids, i - journal.cursor);
           assert pulled == Revisions(pre.server, ids);
-          var k :| 0 <= k < |pulled| && pulled[k] == r;
+          var k := var k :| 0 <= k < |pulled| && pulled[k] == r; k;
           assert r in (set j | 0 <= j < |pulled| :: pulled[j]);
         }
       }
@@ -1165,7 +1165,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
     {
       var x := after.outbox.value.rev;
       assert x in server.feed;
-      var i :| 0 <= i < |server.feed| && server.feed[i] == x;
+      var i := var i :| 0 <= i < |server.feed| && server.feed[i] == x; i;
       assert x in server.history[doc];
       if before.outbox.Some? && before.outbox.value.rev == x {
       } else {
@@ -1221,7 +1221,7 @@ abstract module RoundClaimsCore refines PathRuleCore {
           {
             var id := after.outbox.value.rev;
             assert id in server.feed;
-            var i :| 0 <= i < |server.feed| && server.feed[i] == id;
+            var i := var i :| 0 <= i < |server.feed| && server.feed[i] == id; i;
             assert id in server.history[doc];
             assert false;
           }
