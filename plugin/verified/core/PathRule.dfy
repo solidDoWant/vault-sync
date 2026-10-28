@@ -83,6 +83,61 @@ abstract module PathRuleCore refines ApplyCore {
     set q | q in listing && CollideF(platform, q, p) && own != Some(q)
   }
 
+  // The document's own listed file, if any.
+  function OwnFile(platform: Platform, document: Document, input: RoundInput): Option<Path>
+    requires ListingDistinct(platform, input.listing)
+  {
+    if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
+    then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None
+  }
+
+  // The round's read of the document's file where `r` is a remote move
+  // against a local change (MovedAgainstChange, verified-core.md §4.2).
+  function MoveRead(platform: Platform, document: Document, r: Revision, input: RoundInput): (read: Option<(Hash, Kind)>)
+    requires ListingDistinct(platform, input.listing)
+    ensures read.Some? ==> document.binding.Some? && document.base.Some? && !r.deleted
+  {
+    if document.binding.Some? && document.base.Some?
+       && MovedAgainstChange(document, ListedRead(platform, input.listing, document.binding.value.spelling), r)
+    then ListedRead(platform, input.listing, document.binding.value.spelling) else None
+  }
+
+  // The file the head arrives from: the document's own file, except where a
+  // remote move against a local change keeps the two versions apart
+  // (MovedContent is None). That file then stays as the untracked copy of
+  // the local version (moved aside with the rest of the way where it
+  // collides with the name), and the head is created at its name.
+  opaque function Keeps(platform: Platform, document: Document, r: Revision, input: RoundInput): (keep: Option<Path>)
+    requires ListingDistinct(platform, input.listing)
+    ensures keep.Some? ==> keep == OwnFile(platform, document, input)
+  {
+    var read := MoveRead(platform, document, r, input);
+    if read.Some? && MovedContent(document, read.value, r).None? then None else OwnFile(platform, document, input)
+  }
+
+  // The row the head arrives with: for a remote move against a local
+  // change, the document's file is what the round read.
+  opaque function ArrivingRow(platform: Platform, document: Document, r: Revision, input: RoundInput): (row: Document)
+    requires ListingDistinct(platform, input.listing)
+    ensures row.binding.Some? == document.binding.Some?
+    ensures row.binding.Some? ==> row.binding.value.spelling == document.binding.value.spelling
+  {
+    var read := MoveRead(platform, document, r, input);
+    if read.Some? then document.(binding := Some(document.binding.value.(seen := read.value.0))) else document
+  }
+
+  // The revision the head arrives as: for a remote move against a local
+  // change, at the remote's name with the settled content.
+  opaque function Arriving(platform: Platform, document: Document, r: Revision, input: RoundInput): (arriving: Revision)
+    requires ListingDistinct(platform, input.listing)
+    ensures arriving.path == r.path
+  {
+    var read := MoveRead(platform, document, r, input);
+    if read.Some? && MovedContent(document, read.value, r).Some? then
+      r.(content := MovedContent(document, read.value, r).value.0, kind := MovedContent(document, read.value, r).value.1)
+    else r
+  }
+
   // ---------------------------------------------------------------------
   // Moving aside (compiled)
   // ---------------------------------------------------------------------
@@ -172,9 +227,8 @@ abstract module PathRuleCore refines ApplyCore {
     requires ListingDistinct(platform, input.listing)
   {
     var document := documents[doc];
-    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, input.listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var way := InTheWay(platform, input.listing, r.path, Keeps(platform, document, r, input));
     // A bound file missing from the listing is the user's delete, and the
     // head brings it back (Revives, verified-core.md §4.2); any other
     // missing file waits.
@@ -193,7 +247,7 @@ abstract module PathRuleCore refines ApplyCore {
       case None => Defer(documents, doc, r, false)
       case Some(moves) =>
         Ruled(ClearRows(platform, documents, doc, r, input, moves, revs),
-              MoveEffects(platform, documents, doc, moves) + Arrive(platform, doc, document, r, own))
+              MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, document, r, input))
   }
 
   // Another document bound at a name in the way of `p` whose file is not
@@ -226,17 +280,30 @@ abstract module PathRuleCore refines ApplyCore {
     requires ListingDistinct(platform, input.listing)
   {
     RecordMissing(platform, input.listing, documents, doc, r.path, MoveRows(platform, documents, doc, moves, revs), revs)
-      [doc := HeadRow(platform, documents[doc], r, input)]
+      [doc := HeadRow(platform, documents[doc], r, input, revs[doc])]
   }
 
   // The head's row: the document's base, at its name. A revived document's
-  // delete loses to the head (Revived).
-  function HeadRow(platform: Platform, document: Document, r: Revision, input: RoundInput): Document
+  // delete loses to the head (Revived). A remote move against a local
+  // change (verified-core.md §4.2) is the settled row at the remote's name
+  // (Settled, an outbox only where the file differs from the head), or,
+  // where the two versions are kept apart, the head with nothing to send:
+  // the local version is the untracked copy, which the push sends as a new
+  // document.
+  opaque function HeadRow(platform: Platform, document: Document, r: Revision, input: RoundInput, rev: RevId): (row: Document)
     requires ListingDistinct(platform, input.listing)
+    ensures row.binding.Some? && row.binding.value.spelling == r.path
+    ensures row.base == Some(BaseOf(r)) && row.ahead.None?
   {
-    (if Revives(platform, document, r, input) then Revived(document) else document)
+    var read := MoveRead(platform, document, r, input);
+    var row := (if Revives(platform, document, r, input) then Revived(document) else document)
       .(base := Some(BaseOf(r)), ahead := None,
-        binding := Some(Binding(r.path, r.content, false, None)), absence := Never)
+        binding := Some(Binding(r.path, r.content, false, None)), absence := Never);
+    if read.None? then row
+    else match MovedContent(document, read.value, r)
+      case None => row.(outbox := None)
+      case Some(settled) =>
+        Settled(document.(binding := Some(document.binding.value.(spelling := r.path)), absence := Never), r, settled.0, rev)
   }
 
   // The rows after the files in the way moved aside.
@@ -285,6 +352,13 @@ abstract module PathRuleCore refines ApplyCore {
         (if r.content == seen then [] else [Write(Some(doc), own.value, r.content, r.kind, Some(seen))])
         + [Move(Some(doc), own.value, r.path, r.content)]
     else [Write(Some(doc), r.path, r.content, r.kind, None)]
+  }
+
+  // The head's arrival for document `doc` where the rule clears the way.
+  function ArriveOf(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput): seq<Effect>
+    requires ListingDistinct(platform, input.listing)
+  {
+    Arrive(platform, doc, ArrivingRow(platform, document, r, input), Arriving(platform, document, r, input), Keeps(platform, document, r, input))
   }
 
   // ---------------------------------------------------------------------
@@ -353,9 +427,9 @@ abstract module PathRuleCore refines ApplyCore {
       forall i | 0 <= i < |effects| && effects[i].Move? :: !UnsavedCollides(platform, input.unsaved, effects[i].from)
   {
     var document := documents[doc];
-    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, input.listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
     var avoid := BoundNames(documents) + input.unsaved;
     var claims := AllClaims(documents);
     var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
@@ -367,7 +441,7 @@ abstract module PathRuleCore refines ApplyCore {
       var moves := aside.value;
       MoveEffectsShape(platform, documents, doc, moves);
       var front := MoveEffects(platform, documents, doc, moves);
-      var back := Arrive(platform, doc, document, r, own);
+      var back := ArriveOf(platform, doc, document, r, input);
       var effects := ClearWay(platform, documents, doc, r, input, revs).effects;
       assert effects == front + back;
       forall i | 0 <= i < |effects| && effects[i].Move?
@@ -400,9 +474,9 @@ abstract module PathRuleCore refines ApplyCore {
     var document := documents[doc];
     var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
-      var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-                 then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-      var way := InTheWay(platform, input.listing, r.path, own);
+      var own := OwnFile(platform, document, input);
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
       var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
       if aside.Some? {
         MoveRowsAheads(platform, documents, doc, aside.value, revs);
@@ -474,9 +548,9 @@ abstract module PathRuleCore refines ApplyCore {
     ensures forall e | e in ClearWay(platform, documents, doc, r, input, revs).effects :: !(e.Write? && e.target.None?)
   {
     var document := documents[doc];
-    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, input.listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
     var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
     if aside.Some? {
       MoveEffectsShape(platform, documents, doc, aside.value);
@@ -492,7 +566,7 @@ abstract module PathRuleCore refines ApplyCore {
   lemma HeldHasNoChange(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r)
-            ==> !JournalChange(document) || Revives(platform, document, r, input)
+            ==> !JournalChange(document) || Revives(platform, document, r, input) || MoveRead(platform, document, r, input).Some?
   {}
 
   lemma MovedAsideKeepsRowInv(document: Document, to: Path, rev: RevId)
@@ -524,6 +598,8 @@ abstract module PathRuleCore refines ApplyCore {
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
       ruled.documents.Keys == documents.Keys && forall e | e in ruled.documents :: RowInv(ruled.documents[e])
   {
+    reveal Keeps(), ArrivingRow(), Arriving();
+    reveal HeadRow();
     var document := documents[doc];
     var bound := BoundNames(documents);
     var claims := AllClaims(documents);
@@ -531,9 +607,9 @@ abstract module PathRuleCore refines ApplyCore {
     HeldHasNoChange(platform, doc, document, r, input, bound, claims, revs[doc]);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
-      var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-                 then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-      var way := InTheWay(platform, input.listing, r.path, own);
+      var own := OwnFile(platform, document, input);
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
       var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, claims, way, r.path);
       if aside.Some? {
         MoveRowsKeepRowInv(platform, documents, doc, aside.value, revs);
@@ -666,8 +742,11 @@ abstract module PathRuleCore refines ApplyCore {
     ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r) && document.binding.Some?
             && !Revives(platform, document, r, input)
       ==> var read := ListedRead(platform, input.listing, document.binding.value.spelling);
-          read.Some? && read.value.0 == document.binding.value.seen
-  {}
+          read.Some? && read.value.0 == ArrivingRow(platform, document, r, input).binding.value.seen
+          && ArrivingRow(platform, document, r, input).binding.value.spelling == document.binding.value.spelling
+  {
+    reveal Keeps(), ArrivingRow(), Arriving();
+  }
 
   // Every disk effect of the rule has a precondition that holds, in order,
   // on the disk the round's listing was read from.
@@ -693,9 +772,9 @@ abstract module PathRuleCore refines ApplyCore {
       return;
     }
     HeldReadsSeen(platform, doc, document, r, input, bound, claims, revs[doc]);
-    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, input.listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
     var avoid := bound + input.unsaved;
     var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
     if r.deleted || (document.binding.Some? && own.None? && !Revives(platform, document, r, input))
@@ -705,15 +784,18 @@ abstract module PathRuleCore refines ApplyCore {
       OneEffect(platform, disk, effects[0]);
       return;
     }
-    var keep := if own.Some? then {own.value} else {};
-    var tail := Arrive(platform, doc, document, r, own);
+    var kept := if keep.Some? then {keep.value} else {};
+    var tail := ArriveOf(platform, doc, document, r, input);
+    var arow := ArrivingRow(platform, document, r, input);
+    var ar := Arriving(platform, document, r, input);
+    assert ar.path == r.path;
     if own.Some? {
       assert ListedRead(platform, input.listing, document.binding.value.spelling) == Some(input.listing[own.value]);
     }
-    forall d' | AsideLeaves(platform, disk, way, r.path, keep, d') ensures PreconditionsInOrder(platform, d', tail) {
-      ArriveInOrder(platform, doc, document, r, own, disk, way, keep, d');
+    forall d' | AsideLeaves(platform, disk, way, r.path, kept, d') ensures PreconditionsInOrder(platform, d', tail) {
+      ArriveInOrder(platform, doc, arow, ar, keep, disk, way, kept, d');
     }
-    AsideInOrder(platform, documents, doc, input.listing, avoid, claims, way, r.path, disk, disk, way, keep, tail);
+    AsideInOrder(platform, documents, doc, input.listing, avoid, claims, way, r.path, disk, disk, way, kept, tail);
     assert effects == MoveEffects(platform, documents, doc, aside.value) + tail;
   }
 
@@ -839,7 +921,71 @@ abstract module PathRuleCore refines ApplyCore {
       && ((after.ahead.None? || !CannotHold(after.ahead.value.blocker)) && !UnsavedCollides(platform, input.unsaved, r.path)
           ==> after.binding.Some? && after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted)))
   {
+    reveal HeadRow();
     RuleKeepsRowInv(platform, documents, doc, r, input, revs);
+  }
+
+  // A remote move against a local change (ApplySettlesContract,
+  // verified-core.md §4.2, SPEC.md §7: path and content merged apart): on
+  // the row after the rule, the file takes the remote's name, the revision
+  // is the base, and the content is settled as for an edit (MovedContent).
+  // A side that left the content as it was takes the other's, two notes
+  // the merge combines are merged, and the settled row (Settled) sends what
+  // the file holds where it differs from the revision. Otherwise the file
+  // read here stays as an untracked copy and the head is created at its
+  // name, with nothing to send. The revision waits only where the device
+  // cannot hold it (CannotHold) or unsaved text collides with its name (a
+  // user must act); where nothing is in the way it is settled.
+  lemma RuleSettlesMoveAgainstChange(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires forall e | e in documents :: RowInv(documents[e])
+    requires Newer(documents[doc], r) && !Acknowledges(documents[doc], r) && documents[doc].binding.Some?
+    requires !UnsavedAt(platform, input.unsaved, documents[doc].binding.value.spelling)
+    requires MovedAgainstChange(documents[doc], ListedRead(platform, input.listing, documents[doc].binding.value.spelling), r)
+    ensures var document := documents[doc];
+      var read := ListedRead(platform, input.listing, document.binding.value.spelling).value;
+      var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+      && RowInv(after)
+      && (after.ahead.None? ==>
+            after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+            && after.binding.Some? && after.binding.value.spelling == r.path
+            && match MovedContent(document, read, r)
+               case Some(settled) =>
+                 after == Settled(document.(binding := Some(document.binding.value.(spelling := r.path)), absence := Never), r, settled.0, revs[doc])
+               case None => after.binding == Some(Binding(r.path, r.content, false, None)) && after.outbox.None?)
+      && (after.ahead.Some? ==>
+            after.ahead.value.revision == r
+            && (CannotHold(after.ahead.value.blocker)
+                || (after.ahead.value.blocker.PathHeld? && UnsavedCollides(platform, input.unsaved, r.path))))
+      // Where nothing is in the way (no listed file other than its own
+      // collides with the name, no unsaved text at the name or the file, no
+      // other document's server claim), it is settled.
+      && ((forall q | q in input.listing && CollideF(platform, q, r.path) :: SameF(platform, q, document.binding.value.spelling))
+          && !UnsavedCollides(platform, input.unsaved, r.path)
+          && !UnsavedCollides(platform, input.unsaved, ListedAt(platform, input.listing, document.binding.value.spelling))
+          && !StillClaimed(platform, documents, doc, r.path) && MovedContent(document, read, r).Some?
+          ==> after.ahead.None?)
+  {
+    reveal Keeps(), ArrivingRow(), Arriving();
+    reveal HeadRow();
+    RuleKeepsRowInv(platform, documents, doc, r, input, revs);
+    var document := documents[doc];
+    var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+    assert !Revives(platform, document, r, input);
+    assert MoveRead(platform, document, r, input) == read;
+    var own := OwnFile(platform, document, input);
+    var spelling := document.binding.value.spelling;
+    assert own == Some(ListedAt(platform, input.listing, spelling));
+    if (forall q | q in input.listing && CollideF(platform, q, r.path) :: SameF(platform, q, spelling))
+       && MovedContent(document, read.value, r).Some? {
+      assert Keeps(platform, document, r, input) == own;
+      var way := InTheWay(platform, input.listing, r.path, own);
+      forall q | q in way ensures false {
+        SameFIsEquivalence(platform, q, spelling, own.value);
+      }
+      assert way == {};
+    }
   }
 
   // Where the apply leaves nothing waiting for a name, the rule's step is the
@@ -1029,9 +1175,9 @@ abstract module PathRuleCore refines ApplyCore {
       forall u | u in input.unsaved :: !SameF(platform, u, e.path)
   {
     var document := documents[doc];
-    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, input.listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
     var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
     if aside.Some? {
       MoveEffectsShape(platform, documents, doc, aside.value);
@@ -1056,17 +1202,19 @@ abstract module PathRuleCore refines ApplyCore {
       forall e | e in effects ::
         (e.Write? && e.precondition.Some? ==>
            e.target == Some(doc) && BoundTo(device, doc, e.path)
-           && e.precondition.value == device.journal.documents[doc].binding.value.seen)
+           && e.precondition.value == ArrivingRow(device.platform, device.journal.documents[doc], r, input).binding.value.seen)
         && (e.Remove? ==>
            e.doc == doc && BoundTo(device, doc, e.path)
-           && e.expected == device.journal.documents[doc].binding.value.seen && Tracked(device, e.path))
+           && e.expected == ArrivingRow(device.platform, device.journal.documents[doc], r, input).binding.value.seen
+           && Tracked(device, e.path))
   {
+    reveal Keeps(), ArrivingRow(), Arriving();
     var platform := device.platform;
     var documents := device.journal.documents;
     var document := documents[doc];
-    var own := if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, input.listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
     var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
     if aside.Some? {
       MoveEffectsShape(platform, documents, doc, aside.value);
@@ -1431,12 +1579,12 @@ abstract module PathRuleCore refines ApplyCore {
     requires doc in documents && ListingDistinct(platform, input.listing)
   {
     var document := documents[doc];
-    own == (if document.binding.Some? && Listed(platform, input.listing, document.binding.value.spelling)
-            then Some(ListedAt(platform, input.listing, document.binding.value.spelling)) else None)
+    var file := OwnFile(platform, document, input);
+    own == Keeps(platform, document, r, input)
     && var way := InTheWay(platform, input.listing, r.path, own);
-    !r.deleted && !(document.binding.Some? && own.None? && !Revives(platform, document, r, input))
+    !r.deleted && !(document.binding.Some? && file.None? && !Revives(platform, document, r, input))
     && !(exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
-    && !(own.Some? && UnsavedCollides(platform, input.unsaved, own.value))
+    && !(file.Some? && UnsavedCollides(platform, input.unsaved, file.value))
     && !StillClaimed(platform, documents, doc, r.path)
     && Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path) == Some(moves)
   }
@@ -1452,15 +1600,16 @@ abstract module PathRuleCore refines ApplyCore {
     requires ClearsWith(device.platform, documents, doc, r, input, own, moves)
     requires documents[doc].binding.Some? && own.Some? ==>
       var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
-      read.Some? && read.value.0 == documents[doc].binding.value.seen
+      read.Some? && read.value.0 == ArrivingRow(device.platform, documents[doc], r, input).binding.value.seen
+      && ArrivingRow(device.platform, documents[doc], r, input).binding.value.spelling == documents[doc].binding.value.spelling
     requires EffectsTake(device.platform, device.disk,
-                         MoveEffects(device.platform, documents, doc, moves) + Arrive(device.platform, doc, documents[doc], r, own), disk')
+                         MoveEffects(device.platform, documents, doc, moves) + ArriveOf(device.platform, doc, documents[doc], r, input), disk')
     ensures OneFilePerName(device.platform, disk')
     ensures forall i | 0 <= i < |moves| ::
       moves[i].0 in device.disk && moves[i].1 in disk' && disk'[moves[i].1] == device.disk[moves[i].0]
       && device.disk[moves[i].0].content == moves[i].2 && moves[i].1 !in device.disk && !CollideF(device.platform, moves[i].1, r.path)
       && forall t | t in BoundNames(documents) :: !SameF(device.platform, t, moves[i].1)
-    ensures r.path in disk' && disk'[r.path].content == r.content
+    ensures r.path in disk' && disk'[r.path].content == Arriving(device.platform, documents[doc], r, input).content
     ensures forall x | x in disk' ::
       x == r.path || (exists i | 0 <= i < |moves| :: x == moves[i].1)
       || (x in device.disk && Some(x) != own && disk'[x] == device.disk[x] && (forall i | 0 <= i < |moves| :: x != moves[i].0))
@@ -1479,7 +1628,11 @@ abstract module PathRuleCore refines ApplyCore {
     AsideFacts(platform, listing, avoid, claims, way, r.path);
     AsideCovers(platform, listing, avoid, claims, way, r.path);
     var front := MoveEffects(platform, documents, doc, moves);
-    var back := Arrive(platform, doc, document, r, own);
+    var back := ArriveOf(platform, doc, document, r, input);
+    var arow := ArrivingRow(platform, document, r, input);
+    var ar := Arriving(platform, document, r, input);
+    assert back == Arrive(platform, doc, arow, ar, own);
+    assert ar.path == r.path;
     EffectsTakeSplit(platform, disk, front, back, disk');
     var mid: map<Path, DiskFile> :| EffectsTake(platform, disk, front, mid) && EffectsTake(platform, mid, back, disk');
     forall i | 0 <= i < |moves|
@@ -1491,6 +1644,7 @@ abstract module PathRuleCore refines ApplyCore {
     }
     MovesTake(platform, documents, doc, moves, disk, mid);
     if own.Some? {
+      assert own == OwnFile(platform, document, input);
       assert own.value in listing;
       assert ListedRead(platform, listing, document.binding.value.spelling) == Some(listing[own.value]);
       forall i | 0 <= i < |moves| ensures own.value != moves[i].0 { assert moves[i].0 in way; }
@@ -1501,7 +1655,7 @@ abstract module PathRuleCore refines ApplyCore {
         if CollideF(platform, x, r.path) { assert x in way; }
       }
     }
-    ArriveTakes(platform, doc, document, r, own, mid, disk');
+    ArriveTakes(platform, doc, arow, ar, own, mid, disk');
     forall x | x in disk && Some(x) != own && CollideF(platform, x, r.path)
       ensures exists i | 0 <= i < |moves| :: x == moves[i].0
     {
@@ -1522,17 +1676,18 @@ abstract module PathRuleCore refines ApplyCore {
     requires ClearsWith(device.platform, documents, doc, r, input, own, moves)
     requires documents[doc].binding.Some? && own.Some? ==>
       var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
-      read.Some? && read.value.0 == documents[doc].binding.value.seen
+      read.Some? && read.value.0 == ArrivingRow(device.platform, documents[doc], r, input).binding.value.seen
+      && ArrivingRow(device.platform, documents[doc], r, input).binding.value.spelling == documents[doc].binding.value.spelling
     requires EffectsTake(device.platform, device.disk,
-                         MoveEffects(device.platform, documents, doc, moves) + Arrive(device.platform, doc, documents[doc], r, own), after.disk)
-    ensures forall e | e in MoveEffects(device.platform, documents, doc, moves) + Arrive(device.platform, doc, documents[doc], r, own) && e.Move? ::
+                         MoveEffects(device.platform, documents, doc, moves) + ArriveOf(device.platform, doc, documents[doc], r, input), after.disk)
+    ensures forall e | e in MoveEffects(device.platform, documents, doc, moves) + ArriveOf(device.platform, doc, documents[doc], r, input) && e.Move? ::
       HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
   {
     var platform := device.platform;
     ClearWayDisk(device, documents, doc, r, input, own, moves, after.disk);
     MoveEffectsShape(platform, documents, doc, moves);
     var front := MoveEffects(platform, documents, doc, moves);
-    var back := Arrive(platform, doc, documents[doc], r, own);
+    var back := ArriveOf(platform, doc, documents[doc], r, input);
     var effects := front + back;
     forall e: Effect | e in effects && e.Move?
       ensures HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
@@ -1543,7 +1698,8 @@ abstract module PathRuleCore refines ApplyCore {
         FileAtIs(after, e.to, e.to);
       } else {
         assert e == back[k - |front|];
-        assert e.to == r.path && e.expected == r.content;
+        assert back == Arrive(platform, doc, ArrivingRow(platform, documents[doc], r, input), Arriving(platform, documents[doc], r, input), own);
+        assert e.to == r.path && e.expected == Arriving(platform, documents[doc], r, input).content;
         FileAtIs(after, r.path, r.path);
       }
     }
@@ -1555,6 +1711,59 @@ abstract module PathRuleCore refines ApplyCore {
     exists effect :: effect in effects
       && ((effect.Write? && effect.target == Some(doc') && SameF(platform, effect.path, spelling))
           || (effect.Move? && effect.mover == Some(doc') && SameF(platform, effect.to, spelling)))
+  }
+
+  // The head's own binding after the rule clears the way: its row is at the
+  // head's name, and the arrival's last effect writes or moves its file
+  // there. Kept apart from ClearG5Doc so the case is proved in a small
+  // context.
+  lemma ClearG5Head(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                    moves: seq<(Path, Path, Hash)>, revs: FreshRevs, rows: map<DocId, Document>)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires rows == ClearRows(platform, documents, doc, r, input, moves, revs)
+    ensures doc in rows && rows[doc].binding.Some? && rows[doc].binding.value.spelling == r.path
+    ensures EngineBrought(MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input),
+                          platform, doc, rows[doc].binding.value.spelling)
+  {
+    var front := MoveEffects(platform, documents, doc, moves);
+    var back := ArriveOf(platform, doc, documents[doc], r, input);
+    assert rows[doc] == HeadRow(platform, documents[doc], r, input, revs[doc]);
+    var arriving := Arriving(platform, documents[doc], r, input);
+    assert arriving.path == r.path;
+    var arrival := back[|back| - 1];
+    assert arrival.Write? || arrival.Move?;
+    assert (arrival.Write? && arrival.target == Some(doc) && arrival.path == r.path)
+        || (arrival.Move? && arrival.mover == Some(doc) && arrival.to == r.path);
+    assert (front + back)[|front| + |back| - 1] == arrival;
+  }
+
+  // A document whose file moves aside: it is bound after the rule only where
+  // W(a) keeps it, and then the move to the copy's name is under its id.
+  // Kept apart from ClearG5Doc so the case is proved in a small context.
+  lemma ClearG5Aside(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                     moves: seq<(Path, Path, Hash)>, revs: FreshRevs, rows: map<DocId, Document>, i: nat, doc': DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires rows == ClearRows(platform, documents, doc, r, input, moves, revs)
+    requires i < |moves| && doc' in documents && doc' != doc && FileOf(platform, documents, moves[i].0, doc')
+    requires doc' in MoveRows(platform, documents, doc, moves, revs)
+    requires MoveRows(platform, documents, doc, moves, revs)[doc'] == MovedAside(documents[doc'], moves[i].1, revs[doc'])
+    requires !MissingInTheWay(platform, input.listing, documents, doc, doc', r.path)
+    requires doc' in rows && rows[doc'].binding.Some?
+    ensures EngineBrought(MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input),
+                          platform, doc', rows[doc'].binding.value.spelling)
+  {
+    var front := MoveEffects(platform, documents, doc, moves);
+    var back := ArriveOf(platform, doc, documents[doc], r, input);
+    assert rows[doc'] == MovedAside(documents[doc'], moves[i].1, revs[doc']);
+    if LocallyPlaced(documents[doc']) {
+      assert rows[doc'].binding.value.spelling == moves[i].1;
+      MoveEffectsMover(platform, documents, doc, moves, i, doc');
+      assert (front + back)[i] == front[i];
+    } else {
+      assert rows[doc'].binding.None?;
+    }
   }
 
   // G5 for one document: a document whose bound file changes is the one the
@@ -1573,14 +1782,15 @@ abstract module PathRuleCore refines ApplyCore {
     requires var documents := device.journal.documents;
       documents[doc].binding.Some? && own.Some? ==>
         var read := ListedRead(device.platform, input.listing, documents[doc].binding.value.spelling);
-        read.Some? && read.value.0 == documents[doc].binding.value.seen
+        read.Some? && read.value.0 == ArrivingRow(device.platform, documents[doc], r, input).binding.value.seen
+        && ArrivingRow(device.platform, documents[doc], r, input).binding.value.spelling == documents[doc].binding.value.spelling
     requires EffectsTake(device.platform, device.disk,
                          MoveEffects(device.platform, device.journal.documents, doc, moves)
-                         + Arrive(device.platform, doc, device.journal.documents[doc], r, own), after.disk)
+                         + ArriveOf(device.platform, doc, device.journal.documents[doc], r, input), after.disk)
     requires after.journal.documents == ClearRows(device.platform, device.journal.documents, doc, r, input, moves, revs)
     requires BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
     ensures EngineBrought(MoveEffects(device.platform, device.journal.documents, doc, moves)
-                          + Arrive(device.platform, doc, device.journal.documents[doc], r, own),
+                          + ArriveOf(device.platform, doc, device.journal.documents[doc], r, input),
                           device.platform, doc', after.journal.documents[doc'].binding.value.spelling)
   {
     var platform := device.platform;
@@ -1591,16 +1801,15 @@ abstract module PathRuleCore refines ApplyCore {
     ClearWayDisk(device, documents, doc, r, input, own, moves, after.disk);
     MoveEffectsShape(platform, documents, doc, moves);
     var front := MoveEffects(platform, documents, doc, moves);
-    var back := Arrive(platform, doc, document, r, own);
+    var back := ArriveOf(platform, doc, document, r, input);
     var effects := front + back;
     var way := InTheWay(platform, listing, r.path, own);
     AsideFacts(platform, listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
     var moved := MoveRows(platform, documents, doc, moves, revs);
     MoveRowsAheads(platform, documents, doc, moves, revs);
+    assert own.Some? ==> own == OwnFile(platform, document, input);
     if doc' == doc {
-      var arrival := back[|back| - 1];
-      assert effects[|front| + |back| - 1] == arrival;
-      assert after.journal.documents[doc].binding.value.spelling == r.path;
+      ClearG5Head(platform, documents, doc, r, input, moves, revs, after.journal.documents);
       return;
     }
     assert doc' in documents;
@@ -1610,13 +1819,8 @@ abstract module PathRuleCore refines ApplyCore {
       assert moves[i].0 in listing;
       assert Listed(platform, listing, documents[doc'].binding.value.spelling);
       assert !MissingInTheWay(platform, listing, documents, doc, doc', r.path);
-      if LocallyPlaced(documents[doc']) {
-        assert after.journal.documents[doc'].binding.value.spelling == moves[i].1;
-        MoveEffectsMover(platform, documents, doc, moves, i, doc');
-        assert effects[i] == front[i];
-      } else {
-        assert after.journal.documents[doc'].binding.None?;
-      }
+      assert after.journal.documents[doc'].binding.Some?;
+      ClearG5Aside(platform, documents, doc, r, input, moves, revs, after.journal.documents, i, doc');
       return;
     }
     assert moved[doc'] == documents[doc'];
@@ -1635,8 +1839,11 @@ abstract module PathRuleCore refines ApplyCore {
         if x == moves[i].0 { assert FileOf(platform, documents, moves[i].0, doc'); }
       }
       if own.Some? && own.value == x {
+        assert own == OwnFile(platform, document, input);
         assert SameF(platform, document.binding.value.spelling, spelling);
       }
+      assert Some(x) != own;
+      assert x in after.disk && after.disk[x] == disk[x];
       FileAtIs(after, spelling, x);
       assert false;
     } else {
@@ -1684,11 +1891,11 @@ abstract module PathRuleCore refines ApplyCore {
     assert NeverJoinedRows(platform, documents);
     var ruled := PathRule(platform, documents, doc, r, input, revs);
     assert ruled == ClearWay(platform, documents, doc, r, input, revs);
-    var own := if document.binding.Some? && Listed(platform, listing, document.binding.value.spelling)
-               then Some(ListedAt(platform, listing, document.binding.value.spelling)) else None;
-    var way := InTheWay(platform, listing, r.path, own);
+    var own := OwnFile(platform, document, input);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, listing, r.path, keep);
     var aside := Aside(platform, listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
-    if aside.None? || !ClearsWith(platform, documents, doc, r, input, own, aside.value) {
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
       // The rule defers: one report, nothing on disk changes, and no binding.
       assert |ruled.effects| == 1 && ruled.effects[0].Report?;
       Unroll1(platform, disk, ruled.effects[0], after.disk);
@@ -1699,13 +1906,13 @@ abstract module PathRuleCore refines ApplyCore {
     }
     var moves := aside.value;
     HeldReadsSeen(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
-    assert step.effects == MoveEffects(platform, documents, doc, moves) + Arrive(platform, doc, document, r, own);
+    assert step.effects == MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, document, r, input);
     assert after.journal.documents == ClearRows(platform, documents, doc, r, input, moves, revs);
-    ClearG7(device, after, documents, doc, r, input, own, moves);
+    ClearG7(device, after, documents, doc, r, input, keep, moves);
     forall doc' | BoundIdentity(after, doc').Some? && BoundIdentity(after, doc') != BoundIdentity(device, doc')
       ensures EngineBrought(step.effects, platform, doc', after.journal.documents[doc'].binding.value.spelling)
     {
-      ClearG5Doc(device, after, doc, r, input, revs, own, moves, doc');
+      ClearG5Doc(device, after, doc, r, input, revs, keep, moves, doc');
     }
   }
 }
