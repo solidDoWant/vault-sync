@@ -671,7 +671,8 @@ abstract module RecoveryCore refines PathRuleCore {
 
   // The crash's server: the device's commit appended (CrashLanding).
   ghost predicate Lands(step: Step, doc: DocId, r: Revision) {
-    LandsOutbox(step.pre, step.event.device, doc, r) && step.post.server == Appended(step.pre.server, doc, r)
+    step.event.Crash? && LandsOutbox(step.pre, step.event.device, doc, r)
+    && step.post.server == Appended(step.pre.server, doc, r)
   }
 
   // G1 for a crash that leaves every disk as it was: a revision the server
