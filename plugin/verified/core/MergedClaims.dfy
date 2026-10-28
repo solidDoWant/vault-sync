@@ -401,6 +401,8 @@ abstract module MergedClaims refines StepContracts {
     KeepsFinishedKeepsMirror(step);
     PushedKeepsNames(journal, result, nextRev);
     NamesKeptStep(pre, d, journal');
+    PushedKeepsParents(journal, result, nextRev);
+    NamesKeptCommitsOnBase(pre, d, journal');
   }
 
   // A local event (#948).
@@ -419,6 +421,8 @@ abstract module MergedClaims refines StepContracts {
     KeepsFinishedKeepsMirror(step);
     LocalKeepsNames(device.platform, device.journal, local, input, revs);
     NamesKeptStep(pre, d, journal');
+    LocalKeepsParents(device.platform, device.journal, local, input, revs);
+    NamesKeptCommitsOnBase(pre, d, journal');
   }
 
   // The start-up scan (#948).
@@ -437,6 +441,8 @@ abstract module MergedClaims refines StepContracts {
     KeepsFinishedKeepsMirror(step);
     ScanKeepsNames(device.platform, device.journal, ListingOf(device), revs);
     NamesKeptStep(pre, d, journal');
+    ScanKeepsParents(device.platform, device.journal, ListingOf(device), revs);
+    NamesKeptCommitsOnBase(pre, d, journal');
   }
 
   // A step that changes only a journal's documents keeps ServerRetains
@@ -488,6 +494,7 @@ abstract module MergedClaims refines StepContracts {
       assert OwnRevisionsAcknowledged(pre, x);
       RemoteAcknowledged(pre, d, revision, x);
     }
+    RemoteKeepsCommitsOnBase(pre, d, revision);
   }
 
   // A remote revision keeps every row's base and outbox, and creates rows
@@ -1106,6 +1113,7 @@ abstract module MergedClaims refines StepContracts {
     AcceptCoversCursor(pre, d, doc, r, nextRev);
     AcceptOwnAcknowledged(pre, d, doc, r, nextRev);
     AcceptOwnDocsKnown(pre, d, doc, r, nextRev);
+    AcceptKeepsCommitsOnBase(pre, d, doc, r, nextRev);
     assert ScopesClosedUnderF(post);
   }
 }

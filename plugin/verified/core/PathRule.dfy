@@ -3000,4 +3000,40 @@ abstract module PathRuleCore refines ApplyCore {
       }
     }
   }
+
+  // CommitsOnBase's row condition (#1080) for the rule: every row keeps
+  // its outbox's parent or takes its base's id as the parent.
+  lemma MoveRowsKeepParent(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs)
+    requires documents.Keys <= revs.Keys
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      rows.Keys == documents.Keys && forall e | e in documents :: ParentKeptOrBase(documents[e], rows[e])
+    decreases |moves|
+  {
+    MoveRowsKeepAheadAboveBase(platform, documents, doc, moves, revs);
+    if moves != [] {
+      MoveRowsKeepParent(platform, documents, doc, moves[1..], revs);
+      MoveRowsKeepAheadAboveBase(platform, documents, doc, moves[1..], revs);
+    }
+  }
+
+  lemma {:isolate_assertions} RuleKeepsParent(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      ruled.documents.Keys == documents.Keys
+      && forall e | e in documents :: ParentKeptOrBase(documents[e], ruled.documents[e])
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    ApplyKeepsParent(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        MoveRowsKeepParent(platform, documents, doc, aside.value, revs);
+        reveal HeadRow();
+      }
+    }
+  }
 }

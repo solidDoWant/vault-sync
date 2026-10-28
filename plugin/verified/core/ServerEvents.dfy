@@ -84,6 +84,7 @@ abstract module ServerEvents refines StepContracts {
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
     ServerClausesKept(step);
+    ServerEventKeepsCommitsOnBase(step);
     var pre := step.pre;
     var post := step.post;
     var revisions := step.event.revisions;
@@ -430,6 +431,7 @@ abstract module ServerEvents refines StepContracts {
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
     ServerClausesKept(step);
+    ServerEventKeepsCommitsOnBase(step);
     var pre := step.pre;
     var post := step.post;
     RestoredIsCut(step);
@@ -766,6 +768,7 @@ abstract module ServerEvents refines StepContracts {
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
     ServerClausesKept(step);
+    ServerEventKeepsCommitsOnBase(step);
     var pre := step.pre;
     var post := step.post;
     var r := step.event.revision;

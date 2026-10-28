@@ -55,6 +55,7 @@ abstract module StepContracts refines PushCore {
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
     && ScopesClosedUnderF(state) && OwnDocsKnown(state)
     && (forall d :: ReadsFeed(state, d) ==> OwnRevisionsAcknowledged(state, d))
+    && CommitsOnBase(state)
   }
 
   // The device's cursor and anchor are on the feed (#1071, #1031's gap 3):

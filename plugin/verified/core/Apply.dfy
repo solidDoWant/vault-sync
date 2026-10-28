@@ -2006,4 +2006,17 @@ abstract module ApplyCore refines StepContracts {
     ReadFeedDivergedExactly(State(map[d := device], grown), d, [r1.id, r2.id], 2, journal, 2);
     assert grown.feed[..2] == [r1.id, r2.id];
   }
+
+  // CommitsOnBase's row condition (#1080): an outbox keeps its parent or
+  // takes its row's base's id as its parent.
+  ghost predicate ParentKeptOrBase(before: Document, after: Document) {
+    after.outbox.Some? && after.outbox.value.baseRev.Some? ==>
+      (before.outbox.Some? && after.outbox.value.baseRev == before.outbox.value.baseRev)
+      || (after.base.Some? && after.outbox.value.baseRev == Some(after.base.value.rev))
+  }
+
+  lemma ApplyKeepsParent(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures ParentKeptOrBase(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document)
+  {}
 }
