@@ -2206,6 +2206,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     NeverJoinedRows(platform, rows)
     && (forall e | e in rows :: RowG5(platform, device0, pass.effects, e, rows[e]))
     && ListedTaken(platform, device0, pass.effects, pass.listing)
+    && ListingOn(platform, pass.listing)
   }
 
   // The invariant holds at the start of the round: every binding names
@@ -2215,9 +2216,11 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     requires start.listing == ListingOf(device0) && ListingDistinct(device0.platform, start.listing)
     requires start.effects == [Pull(cursor)]
     requires NeverJoinedRows(device0.platform, start.journal.documents)
+    requires OneFilePerName(device0.platform, device0.disk)
     ensures PassG5(device0.platform, device0, start)
   {
     var platform := device0.platform;
+    assert DiskMap(device0.disk) == ListingOf(device0);
     var rows := start.journal.documents;
     ListedTakenStart(device0, cursor);
     forall e | e in rows ensures RowG5(platform, device0, start.effects, e, rows[e]) {
@@ -2835,6 +2838,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     assert settled.journal.documents == ruled.documents && settled.effects == effects' && settled.listing == listing';
     RuleKeepsNeverJoined(platform, rows, doc, r, inner, revs', first);
     RuleDeleteSeen(platform, rows, doc, r, inner, revs', first);
+    RuleKeepsListingOn(platform, pass.listing, rows, doc, r, input, revs', first);
     forall effect | effect in guard ensures !Touches(platform, effect, r.path) && effect.PersistJournal? { }
     assert ListingAfter(platform, pass.listing, guard) == pass.listing;
     ListedTakenAfter(platform, device0, pass.effects, pass.listing, guard);
@@ -2914,7 +2918,6 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   lemma {:isolate_assertions} PushKeepsG5(platform: Platform, device0: Device, settled: RoundPass, read: Journal, input: RoundInput, revs: FreshRevs)
     requires device0.platform == platform
     requires PassG5(platform, device0, settled) && read.documents == settled.journal.documents
-    requires Distinct(platform, settled.listing)
     requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
     ensures var push := OnPush(platform, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
       forall e | e in push.0.documents :: RowG5(platform, device0, settled.effects + push.1, e, push.0.documents[e])
@@ -2922,6 +2925,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     var input' := input.(listing := InScope(settled.listing, input.outOfScope));
     var push := OnPush(platform, read, input', revs);
     var created := Created(platform, read, input', revs);
+    var disk :| OneFilePerName(platform, disk) && DiskMap(disk) == settled.listing;
+    OneFileDistinct(platform, disk);
     PushTouchesNoFile(platform, read, input', revs);
     forall e | e in push.0.documents ensures RowG5(platform, device0, settled.effects + push.1, e, push.0.documents[e]) {
       assert push.0.documents[e] == Seal(created[e]);
