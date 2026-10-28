@@ -3369,19 +3369,32 @@ abstract module RoundG6 refines RoundGuarantees {
       ensures CondAt(platform, device0, accepted, all, i)
     {
       var k := i - |effects0|;
-      assert all[|effects0| + k] == ruled.effects[k];
-      assert all[..|effects0| + k] == effects0 + ruled.effects[..k];
       if k < |front| {
         FrontCondOrigin(platform, device0, accepted, effects0, documents, doc, input, moves, way, avoid, r.path, k);
-        assert ruled.effects[k] == front[k];
-        assert ruled.effects[..k] == front[..k];
       } else {
-        var k' := k - |front|;
-        ArriveCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, k');
-        assert ruled.effects[k] == arrive[k'];
-        assert ruled.effects[..k] == front + arrive[..k'];
-        assert effects0 + front + arrive[..k'] == effects0 + (front + arrive[..k']);
+        ArriveCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, k - |front|);
       }
+      CondAtJoin(platform, device0, accepted, effects0, front, arrive, k);
+    }
+  }
+
+  // CondAt of an effect of `f + g` after `a`, from the one of `f` or `g`.
+  lemma {:isolate_assertions} CondAtJoin(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                                         a: seq<Effect>, f: seq<Effect>, g: seq<Effect>, k: nat)
+    requires k < |f| + |g|
+    requires k < |f| ==> (IsCond(f[k]) ==> CondOrigin(platform, device0, accepted, a + f[..k], CondDoc(f[k]), CondPath(f[k]), CondExpect(f[k])))
+    requires k >= |f| ==> (IsCond(g[k - |f|]) ==>
+      CondOrigin(platform, device0, accepted, a + f + g[..k - |f|], CondDoc(g[k - |f|]), CondPath(g[k - |f|]), CondExpect(g[k - |f|])))
+    ensures CondAt(platform, device0, accepted, a + (f + g), |a| + k)
+  {
+    var all := a + (f + g);
+    if k < |f| {
+      assert all[|a| + k] == f[k];
+      assert all[..|a| + k] == a + f[..k];
+    } else {
+      var k' := k - |f|;
+      assert all[|a| + k] == g[k'];
+      assert all[..|a| + k] == a + f + g[..k'];
     }
   }
 
