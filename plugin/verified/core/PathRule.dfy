@@ -93,8 +93,9 @@ abstract module PathRuleCore refines ApplyCore {
 
   // The round's read of the document's file where `r` is a remote move
   // against a local change (MovedAgainstChange, verified-core.md §4.2).
-  function MoveRead(platform: Platform, document: Document, r: Revision, input: RoundInput): Option<(Hash, Kind)>
+  function MoveRead(platform: Platform, document: Document, r: Revision, input: RoundInput): (read: Option<(Hash, Kind)>)
     requires ListingDistinct(platform, input.listing)
+    ensures read.Some? ==> document.binding.Some? && document.base.Some? && !r.deleted
   {
     if document.binding.Some? && document.base.Some?
        && MovedAgainstChange(document, ListedRead(platform, input.listing, document.binding.value.spelling), r)
@@ -106,8 +107,9 @@ abstract module PathRuleCore refines ApplyCore {
   // (MovedContent is None). That file then stays as the untracked copy of
   // the local version (moved aside with the rest of the way where it
   // collides with the name), and the head is created at its name.
-  function Keeps(platform: Platform, document: Document, r: Revision, input: RoundInput): Option<Path>
+  opaque function Keeps(platform: Platform, document: Document, r: Revision, input: RoundInput): (keep: Option<Path>)
     requires ListingDistinct(platform, input.listing)
+    ensures keep.Some? ==> keep == OwnFile(platform, document, input)
   {
     var read := MoveRead(platform, document, r, input);
     if read.Some? && MovedContent(document, read.value, r).None? then None else OwnFile(platform, document, input)
@@ -115,8 +117,10 @@ abstract module PathRuleCore refines ApplyCore {
 
   // The row the head arrives with: for a remote move against a local
   // change, the document's file is what the round read.
-  function ArrivingRow(platform: Platform, document: Document, r: Revision, input: RoundInput): Document
+  opaque function ArrivingRow(platform: Platform, document: Document, r: Revision, input: RoundInput): (row: Document)
     requires ListingDistinct(platform, input.listing)
+    ensures row.binding.Some? == document.binding.Some?
+    ensures row.binding.Some? ==> row.binding.value.spelling == document.binding.value.spelling
   {
     var read := MoveRead(platform, document, r, input);
     if read.Some? then document.(binding := Some(document.binding.value.(seen := read.value.0))) else document
@@ -124,8 +128,9 @@ abstract module PathRuleCore refines ApplyCore {
 
   // The revision the head arrives as: for a remote move against a local
   // change, at the remote's name with the settled content.
-  function Arriving(platform: Platform, document: Document, r: Revision, input: RoundInput): Revision
+  opaque function Arriving(platform: Platform, document: Document, r: Revision, input: RoundInput): (arriving: Revision)
     requires ListingDistinct(platform, input.listing)
+    ensures arriving.path == r.path
   {
     var read := MoveRead(platform, document, r, input);
     if read.Some? && MovedContent(document, read.value, r).Some? then
@@ -593,6 +598,7 @@ abstract module PathRuleCore refines ApplyCore {
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
       ruled.documents.Keys == documents.Keys && forall e | e in ruled.documents :: RowInv(ruled.documents[e])
   {
+    reveal Keeps(), ArrivingRow(), Arriving();
     reveal HeadRow();
     var document := documents[doc];
     var bound := BoundNames(documents);
@@ -738,7 +744,9 @@ abstract module PathRuleCore refines ApplyCore {
       ==> var read := ListedRead(platform, input.listing, document.binding.value.spelling);
           read.Some? && read.value.0 == ArrivingRow(platform, document, r, input).binding.value.seen
           && ArrivingRow(platform, document, r, input).binding.value.spelling == document.binding.value.spelling
-  {}
+  {
+    reveal Keeps(), ArrivingRow(), Arriving();
+  }
 
   // Every disk effect of the rule has a precondition that holds, in order,
   // on the disk the round's listing was read from.
@@ -959,6 +967,7 @@ abstract module PathRuleCore refines ApplyCore {
           && !StillClaimed(platform, documents, doc, r.path) && MovedContent(document, read, r).Some?
           ==> after.ahead.None?)
   {
+    reveal Keeps(), ArrivingRow(), Arriving();
     reveal HeadRow();
     RuleKeepsRowInv(platform, documents, doc, r, input, revs);
     var document := documents[doc];
@@ -1199,6 +1208,7 @@ abstract module PathRuleCore refines ApplyCore {
            && e.expected == ArrivingRow(device.platform, device.journal.documents[doc], r, input).binding.value.seen
            && Tracked(device, e.path))
   {
+    reveal Keeps(), ArrivingRow(), Arriving();
     var platform := device.platform;
     var documents := device.journal.documents;
     var document := documents[doc];

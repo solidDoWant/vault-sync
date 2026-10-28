@@ -341,6 +341,22 @@ abstract module ApplyCore refines StepContracts {
     else None
   }
 
+  // MovedContent is G6_Settle's case analysis (Guarantees.dfy), stated
+  // without it: b the base, l the content read, r the remote's.
+  lemma MovedContentSettlesAsG6(document: Document, read: (Hash, Kind), r: Revision)
+    requires document.binding.Some? && document.base.Some?
+    ensures var b := document.base.value.content;
+      var l := read.0;
+      var kept := l == b && l == document.binding.value.seen;
+      var c := MovedContent(document, read, r);
+      && (kept ==> c == Some((r.content, r.kind)))
+      && (!kept && r.content == b ==> c == Some(read))
+      && (l != b && r.content != b && read.1 == Note && r.kind == Note && Merge3(b, l, r.content).Some?
+          ==> c == Some((Merge3(b, l, r.content).value, Note)))
+      && (!kept && r.content != b && !(l != b && read.1 == Note && r.kind == Note && Merge3(b, l, r.content).Some?)
+          ==> c.None?)
+  {}
+
   // A remote tombstone against a bound file the listing reads, with a change
   // the server lacks: something to send, or a read other than the content
   // and kind the core last saw (G6). A commit in flight (a sealed outbox)
@@ -1278,6 +1294,12 @@ abstract module ApplyCore refines StepContracts {
         SameFIsEquivalence(platform, r.path, r.path, r.path);
         FileAtIs(after, r.path, r.path);
       } else {
+        // Revived and created: the head is written, not only reported (a
+        // report alone, NoCopy, or a hold would leave the base as it was).
+        assert applied == Create(platform, doc, Revived(document), r, input, bound, claims, rev);
+        var last := applied.effects[|applied.effects| - 1];
+        assert last.Write? || applied.document.base == Revived(document).base;
+        assert last in applied.effects && IsDiskEffect(last);
         var p := var p :| Holds(platform, after.disk, p, r.path, r.content); p;
         FileAtIs(after, r.path, p);
       }
