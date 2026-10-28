@@ -188,11 +188,13 @@ jobs:
           groups="$(./scripts/verify-group.sh --matrix)"
           echo "groups=$groups" >> "$GITHUB_OUTPUT"
 
+  # The groups aim for under 10 minutes each; the limit leaves headroom for a
+  # slow runner (#1095).
   verify:
     needs: [changes, verify-groups]
     if: needs.changes.outputs.dafny == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
