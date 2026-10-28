@@ -962,6 +962,32 @@ abstract module ResyncCore refines StepContracts {
     assert FilesMirrorHeads(pre, pre.devices[x]) && HeadsMirrored(pre, pre.devices[x]);
   }
 
+  // The resync keeps a user's pending delete of a document the server has
+  // live: re-anchoring sends it as a tombstone, and pulling the feed
+  // changes only aheads.
+  lemma {:isolate_assertions} ResyncKeepsDelete(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RevsCover(pre.devices[d].journal, input, revs) && RevisionsKeyed(pre.server)
+    ensures ResyncKeepsUserDelete(pre.devices[d].journal, ResyncStepOf(pre, d, input, revs).post.devices[d].journal)
+  {
+    var server := pre.server;
+    var journal := pre.devices[d].journal;
+    var reanchored := journal.(documents := ResyncDocs(server, d, journal.documents, revs));
+    var pulled := PullFeed(reanchored, server, 0);
+    PullFeedRows(reanchored, server, 0);
+    var post := ResyncStepOf(pre, d, input, revs).post;
+    assert post.devices[d].journal.documents == pulled.documents;
+    forall doc | doc in journal.documents && journal.documents[doc].binding.None?
+      && journal.documents[doc].absence == UserDeleted
+      ensures doc in pulled.documents
+      ensures pulled.documents[doc].base.None? || pulled.documents[doc].base.value.deleted
+              || pulled.documents[doc].absence == UserDeleted
+    {
+      var row := ResyncRow(server, d, doc, journal.documents[doc], revs[doc]);
+      assert reanchored.documents[doc] == row;
+      assert pulled.documents[doc] == row.(ahead := pulled.documents[doc].ahead);
+    }
+  }
+
   // The resync keeps every invariant: ClaimsCore from the lemmas above,
   // MirrorInv and MirrorAtCursor from ClaimsImplyMirrorContract (proven by
   // ClaimsMirror.ClaimsImplyMirror, #1078; this module cannot refine
@@ -982,6 +1008,7 @@ abstract module ResyncCore refines StepContracts {
       ResyncClaims(pre, d, input, revs);
       ResyncKeepsBindings(pre, d, input, revs);
       ResyncCommitsOnBase(pre, d, input, revs);
+      ResyncKeepsDelete(pre, d, input, revs);
       assert post.server == pre.server;
       assert RevisionsOnFeed(post.server);
       assert CoreButG9(post);

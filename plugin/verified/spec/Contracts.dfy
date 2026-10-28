@@ -759,13 +759,27 @@ abstract module StepContracts refines PushCore {
       && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
       // SPEC.md §8 "Divergence" (#1025): every revision the journal names
       // is on the server again, so a base the restore lost is re-anchored
-      // (to the newest revision of the device's own the server still holds
-      // that is not its outbox's, or none, #1078; at least at the revision
-      // a row's outbox commit is on, where held, #1080) and CoreInv makes the
-      // device send what it holds again; the device is no longer Diverged.
+      // (to the newest revision of the device's own the server still holds,
+      // a landed commit the outbox carries included, or none, #1078, #1080;
+      // at least at the parent a commit in flight is sealed on, where held,
+      // #1080) and CoreInv makes the device send what it holds again; the
+      // device is no longer Diverged.
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
       && OwnRevisionsAcknowledged(step.post, d)
       && IntentsCoverDiskEffects(step.effects)
+      // A user's pending delete is kept (principle 1, #1080 item 3): a row
+      // the user deleted still records the delete, which CoreInv then makes
+      // an outbox carry, unless the server no longer has the document live
+      // (no base: the delete is dropped, SPEC.md §8, #829; or a tombstone).
+      && ResyncKeepsUserDelete(pre.devices[d].journal, step.post.devices[d].journal)
+  }
+
+  ghost predicate ResyncKeepsUserDelete(journal: Journal, journal': Journal) {
+    forall doc :: doc in journal.documents && journal.documents[doc].binding.None?
+      && journal.documents[doc].absence == UserDeleted
+      ==> doc in journal'.documents
+          && (journal'.documents[doc].base.None? || journal'.documents[doc].base.value.deleted
+              || journal'.documents[doc].absence == UserDeleted)
   }
 
   // ---------------------------------------------------------------------
