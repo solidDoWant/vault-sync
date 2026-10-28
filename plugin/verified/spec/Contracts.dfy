@@ -768,11 +768,14 @@ abstract module StepContracts refines PushCore {
       // at least at the parent a commit in flight is sealed on, where held,
       // #1080) and CoreInv makes the device send what it holds again; the
       // device is no longer Diverged. A row whose unchanged file is at a
-      // lost base it only pulled takes the restored head (#874, #1080).
+      // lost base it only pulled takes the restored head (#874, #1080),
+      // after a `base-purged` copy of the file where no live head holds the
+      // lost base's content (#1080, planner ruling (2)).
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
       && OwnRevisionsAcknowledged(step.post, d)
       // Crash safety (§4.3): every write comes after a persisted journal
-      // holding an ApplyIntent for it, as the apply's, so recovery (#1018)
+      // holding an intent for it, as the apply's (an ApplyIntent, or the
+      // apply's MergeIntent for a copy and the write after it), so recovery (#1018)
       // finishes or undoes it from the disk alone, whichever step recorded
       // it; the interrupted resync then runs again.
       && IntentsCoverDiskEffects(step.effects)
