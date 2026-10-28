@@ -3674,4 +3674,58 @@ abstract module RoundG6 refines RoundGuarantees {
       }
     }
   }
+
+  lemma SettlePulledKeepsHist(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                              revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && PassContent(platform, device0, accepted, pass)
+    requires PassHist(platform, device0, accepted, pass.effects)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    ensures PassHist(platform, device0, accepted, SettlePulled(platform, pass, revisions, input, revs, first).effects)
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleKeepsHist(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsContent(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsG5(platform, device0, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledKeepsHist(platform, device0, accepted, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsHist(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                       docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && PassContent(platform, device0, accepted, pass)
+    requires PassNUD(platform, device0, accepted, pass) && PassHist(platform, device0, accepted, pass.effects)
+    ensures PassHist(platform, device0, accepted, RetryWaiting(platform, pass, docs, input, revs, first).effects)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        forall e | e in cleared.journal.documents
+          ensures RowG5(platform, device0, cleared.effects, e, cleared.journal.documents[e])
+          ensures RowContent(platform, device0, accepted, cleared.effects, cleared.listing, e, cleared.journal.documents[e])
+        {
+          assert RowG5(platform, device0, pass.effects, e, documents[e]);
+          assert RowContent(platform, device0, accepted, pass.effects, pass.listing, e, documents[e]);
+        }
+        assert PassG5(platform, device0, cleared);
+        assert PassNUD(platform, device0, accepted, cleared);
+        var r := row.ahead.value.revision;
+        assert AcceptedAs(accepted, r) && r.doc == docs[0];
+        SettleKeepsHist(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        SettleKeepsContent(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        SettleKeepsG5(platform, device0, cleared, docs[0], r, input, revs, first);
+        SettleKeepsNUD(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        RetryKeepsHist(platform, device0, accepted, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsHist(platform, device0, accepted, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
 }
