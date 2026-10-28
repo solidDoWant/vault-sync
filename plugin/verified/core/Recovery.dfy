@@ -668,6 +668,44 @@ abstract module RecoveryCore refines PathRuleCore {
     StoppedKeepsClaims(After(base, d, jS), Recovered(post));
   }
 
+  // The crash's server: the device's commit appended (CrashLanding).
+  ghost predicate Lands(step: Step, doc: DocId, r: Revision) {
+    LandsOutbox(step.pre, step.event.device, doc, r) && step.post.server == Appended(step.pre.server, doc, r)
+  }
+
+  // G1 for a crash that leaves every disk as it was: a revision the server
+  // could give back before (G1_Retained, ServerRetains) still is, unless it
+  // was purged or lost and is on no disk.
+  lemma {:isolate_assertions} CrashKeepsG1(step: Step)
+    requires G1_Retained(step.pre) && ServerRetains(step.pre)
+    requires step.pre.devices.Keys == step.post.devices.Keys
+    requires forall x :: x in step.pre.devices ==> step.post.devices[x].disk == step.pre.devices[x].disk
+    requires step.post.server == step.pre.server || exists doc, r :: Lands(step, doc, r)
+    ensures G1_OnlyRetentionRemoves(step)
+  {
+    var pre := step.pre;
+    var post := step.post;
+    forall rev | rev in pre.server.accepted && rev in post.server.accepted && Retrievable(pre, rev) && !Retrievable(post, rev)
+      ensures rev in pre.server.purged
+          || (rev in pre.server.lost
+              && !exists x :: x in pre.devices && OnDisk(pre.devices[x], pre.server.accepted[rev].content))
+    {
+      if post.server != pre.server {
+        var doc, r :| Lands(step, doc, r);
+        assert post.server.accepted[rev] == pre.server.accepted[rev];
+        if InHistory(pre.server, rev) {
+          var doc' :| doc' in pre.server.history && rev in pre.server.history[doc'];
+          assert rev in post.server.history[doc'];
+          assert InHistory(post.server, rev);
+        }
+      }
+      if exists x :: x in pre.devices && OnDisk(pre.devices[x], pre.server.accepted[rev].content) {
+        var x :| x in pre.devices && OnDisk(pre.devices[x], pre.server.accepted[rev].content);
+        assert OnDisk(post.devices[x], pre.server.accepted[rev].content);
+      }
+    }
+  }
+
   // A crash that leaves the journal's rows as they were keeps the step
   // guarantees: it performs at most a journal write (CoveredCutEffects), so
   // the disks are as they were too, and a landed commit is the device's own.
@@ -691,7 +729,9 @@ abstract module RecoveryCore refines PathRuleCore {
     CoveredEffectsJournalOnly(step);
     if post.server != pre.server {
       var doc, r := CrashLanding(step);
+      assert Lands(step, doc, r);
     }
+    CrashKeepsG1(step);
     assert G1_OnlyRetentionRemoves(step);
     assert G2_OnlyWhatItSaw(step);
     assert G2_Conditional(step);
