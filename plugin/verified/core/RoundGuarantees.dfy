@@ -1943,8 +1943,9 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         var s := after.binding.value.spelling;
         if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
           var effect :| effect in ruled.effects && PutsFor(platform, effect, e, s);
+          assert PutsTracked(platform, effect, s);
           var m := var m :| 0 <= m < |ruled.effects| && ruled.effects[m] == effect; m;
-          assert PutsTracked(platform, effects'[base + m], s);
+          assert effects'[base + m] == effect;
         } else {
           ListingAfterUntouched(platform, pass.listing, ruled.effects, s);
           if rows[e].binding.Some? && s == rows[e].binding.value.spelling
@@ -2432,9 +2433,11 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       if LocallyPlaced(documents[e]) {
         MoveEffectsMover(platform, documents, doc, moves, i, e);
         assert SameF(platform, moves[i].1, moves[i].1);
+        assert rows[e].binding.Some? && rows[e].binding.value.spelling == moves[i].1;
         assert front[i] in ruled.effects && PutsFor(platform, front[i], e, moves[i].1);
       } else {
         MoveEffectsNoMover(platform, documents, doc, moves, i, e);
+        assert ruled.effects[i].Move? && ruled.effects[i].mover.None? && SameF(platform, ruled.effects[i].from, t);
       }
     } else {
       assert rows[e] == documents[e];
