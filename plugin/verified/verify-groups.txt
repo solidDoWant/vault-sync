@@ -16,6 +16,8 @@ round core/RoundGuarantees.dfy      # 71
 
 resync core/Resync.dfy              # 196
 
+recovery core/Recovery.dfy          # 90
+
 path-rule core/PathRule.dfy         # 143
 path-rule core/Apply.dfy            # 46
 path-rule core/LocalEvents.dfy      # 12
