@@ -326,44 +326,58 @@ abstract module StepContracts refines PushCore {
   // the rule, and this module, below both, states the contract on rows.
   // #1007 proves it with the lemmas of §3.9 (AppliedG2, AppliedG5,
   // AppliedG6, AppliedG7, AppliedKeepsRowInv) extended to each settlement,
-  // and #1024 of the rule's row. The settlements (verified-core.md §4.2):
-  // - a remote delete against a change the server lacks: the file stays,
-  //   the tombstone becomes the base, and the outbox sends the file on top
-  //   of it;
-  // - the user's delete (or a bound file missing from the listing, which the
-  //   round records as the user's delete, G3_DeleteSeen) against a live
-  //   remote revision: the file comes back, at the name the path rule gives,
-  //   and the revision becomes the base;
-  // - a remote move against a local change: the remote's name, the content
-  //   settled as for an edit (SPEC.md §7, path and content merged apart);
-  // - a commit in flight: as #1006 decided (§3.9);
+  // and #1024 of the rule's row.
+  //
+  // Only a user's need to act, or a file the device cannot hold, leaves a
+  // newer revision waiting (G10). Otherwise the revision is settled by what
+  // the row has here (verified-core.md §4.2, #1068):
+  // - "no file here": no binding, or a bound file the listing does not read
+  //   and no editor holds unsaved text at, which the round records as the
+  //   user's delete (G3_DeleteSeen). A tombstone against it is a delete both
+  //   sides agree on: the tombstone becomes the base, and nothing is bound or
+  //   left to send but a commit in flight. A live revision against it brings
+  //   the file (back), at the name the path rule gives, and becomes the base
+  //   (an edit beats a delete, SPEC.md §6.3);
+  // - a bound file the listing reads: a tombstone against a change the
+  //   server lacks keeps the file, the tombstone becomes the base, and the
+  //   outbox sends the file on top of it (SPEC.md §6.3); a live revision
+  //   becomes the base, with path and content merged apart (SPEC.md §7). The
+  //   content is settled as G6 decides from the row's base (a tombstone
+  //   base's content included), and a file the user moved away from its
+  //   base's name keeps its name (a local rename wins over a remote edit,
+  //   move or earlier delete). The row's `absence` decides nothing for a
+  //   bound row;
   // - a pulled revision whose id is the outbox's: the outbox's
   //   acknowledgement, settled as §3.5's "accepted";
   // - a remote revision whose path and content are what the file holds: no
   //   conflict, it becomes the base and nothing is written or copied.
-  // Only a user's need to act, or a file the device cannot hold, leaves the
-  // revision waiting. Whatever the settlement (#1061):
+  // Whatever the settlement (#1061):
   // - a sealed outbox, a commit in flight, that the pulled revision does not
   //   answer stays as it was sealed until its answer arrives (§3.2): a pull
   //   apply never drops or edits it;
   // - a bound file at whose name an open editor holds unsaved text
   //   (`unsaved`, under F) keeps its binding: the round neither records it
   //   missing nor moves it, whatever the listing reads.
-  // The remote-delete and identical clauses are about a file with no
-  // unsaved text at its name, and the remote-delete clause not about a
-  // tombstone in flight, which the first item keeps until its answer.
-  // The user's-delete clause is about a remote revision: the outbox's own
-  // revision is its acknowledgement, which keeps the user's delete
+  // The clauses are about a revision newer than everything the row knows
+  // (Newer: its waiting revision, else its base); an older one changes
+  // nothing. The remote-delete and identical clauses are about a file with
+  // no unsaved text at its name, and the remote-delete clause not about a
+  // tombstone in flight, which the first item keeps until its answer. The
+  // no-file clauses are about a remote revision: the outbox's own revision
+  // is its acknowledgement, which keeps the user's delete
   // (AcceptKeepsUserDelete) and sends it on top.
   ghost predicate ApplySettlesContract(before: Document, after: Document, r: Revision, read: Option<(Hash, Kind)>, unsaved: bool, mustAct: bool) {
     var rBase := Base(r.id, r.position, r.path, r.content, r.kind, r.deleted);
-    var newer := before.ahead.Some? ==> before.ahead.value.revision.position < r.position;
+    var newer := Newer(before, r);
     var changed := before.outbox.Some? || (before.binding.Some? && read != Some((before.binding.value.seen, KindOf(before))));
+    var own := before.outbox.Some? && before.outbox.value.rev == r.id;
+    var noFile := before.binding.None? || (read.None? && !unsaved);
+    var settles := newer && !own && !mustAct && (after.ahead.None? || !CannotHold(after.ahead.value.blocker));
     RowInv(before) ==>
       RowInv(after)
       && (after.ahead.Some? && (after.ahead.value.blocker.LocalChanges? || after.ahead.value.blocker.PathHeld?) ==> mustAct)
       // A remote delete against a change the server lacks keeps the file.
-      && (newer && r.deleted && before.binding.Some? && changed && !unsaved && !mustAct
+      && (newer && r.deleted && before.binding.Some? && read.Some? && changed && !unsaved && !mustAct
           && !(before.outbox.Some? && before.outbox.value.sealed && before.outbox.value.deleted)
           ==> after.binding.Some? && after.base == Some(rBase)
               && after.outbox.Some? && !after.outbox.value.deleted)
@@ -372,14 +386,23 @@ abstract module StepContracts refines PushCore {
           ==> after.outbox == before.outbox)
       // A bound file with unsaved text at its name keeps its binding.
       && (before.binding.Some? && unsaved ==> after.binding == before.binding)
-      // A live remote revision against the user's delete brings the file back.
-      && (newer && !r.deleted && before.binding.None? && before.absence == UserDeleted
-          && !(before.outbox.Some? && before.outbox.value.rev == r.id)
-          && (after.ahead.None? || !CannotHold(after.ahead.value.blocker)) && !mustAct
+      // A tombstone against a document with no file here: deleted on both
+      // sides, nothing to send but a commit in flight.
+      && (settles && r.deleted && noFile
+          ==> after.base == Some(rBase) && after.ahead.None? && after.binding.None?
+              && (after.outbox.Some? ==> after.outbox.value.sealed))
+      // A live revision against a document with no file here brings the
+      // file (back).
+      && (settles && !r.deleted && noFile
           ==> after.binding.Some? && after.base == Some(rBase))
+      // A live revision against a bound file the listing reads is settled:
+      // a file the user moved keeps its name.
+      && (settles && !r.deleted && before.binding.Some? && read.Some? && !unsaved
+          ==> after.base == Some(rBase) && after.ahead.None? && after.binding.Some?
+              && (before.base.Some? && before.base.value.path != before.binding.value.spelling
+                  ==> after.binding.value.spelling == before.binding.value.spelling))
       // The outbox's own revision is its acknowledgement.
-      && (newer && before.outbox.Some? && before.outbox.value.rev == r.id
-          ==> after.base == Some(rBase) && after.ahead.None?)
+      && (newer && own ==> after.base == Some(rBase) && after.ahead.None?)
       // A revision identical to the file is no conflict.
       && (newer && !r.deleted && before.binding.Some? && before.binding.value.spelling == r.path
           && read == Some((r.content, r.kind)) && !unsaved && !mustAct
