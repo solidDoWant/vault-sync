@@ -2207,6 +2207,12 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     && (forall e | e in rows :: RowG5(platform, device0, pass.effects, e, rows[e]))
     && ListedTaken(platform, device0, pass.effects, pass.listing)
     && ListingOn(platform, pass.listing)
+    && DiskFollows(platform, device0.disk, pass.effects, pass.listing)
+  }
+
+  // Every disk the pass's effects can leave holds the pass's listing.
+  ghost predicate DiskFollows(platform: Platform, disk0: map<Path, DiskFile>, effects: seq<Effect>, listing: Listing) {
+    forall disk' | EffectsTake(platform, disk0, effects, disk') :: DiskMap(disk') == listing && OneFilePerName(platform, disk')
   }
 
   // The invariant holds at the start of the round: every binding names
@@ -2221,6 +2227,12 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   {
     var platform := device0.platform;
     assert DiskMap(device0.disk) == ListingOf(device0);
+    forall disk' | EffectsTake(platform, device0.disk, start.effects, disk')
+      ensures DiskMap(disk') == start.listing && OneFilePerName(platform, disk')
+    {
+      var mid :| EffectTakes(platform, device0.disk, start.effects[0], mid) && EffectsTake(platform, mid, start.effects[1..], disk');
+      assert mid == device0.disk;
+    }
     var rows := start.journal.documents;
     ListedTakenStart(device0, cursor);
     forall e | e in rows ensures RowG5(platform, device0, start.effects, e, rows[e]) {
@@ -2839,6 +2851,25 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     RuleKeepsNeverJoined(platform, rows, doc, r, inner, revs', first);
     RuleDeleteSeen(platform, rows, doc, r, inner, revs', first);
     RuleKeepsListingOn(platform, pass.listing, rows, doc, r, input, revs', first);
+    forall disk'' | EffectsTake(platform, device0.disk, effects', disk'')
+      ensures DiskMap(disk'') == listing' && OneFilePerName(platform, disk'')
+    {
+      EffectsTakeSplit(platform, device0.disk, pass.effects + guard, ruled.effects, disk'');
+      var mid1 :| EffectsTake(platform, device0.disk, pass.effects + guard, mid1) && EffectsTake(platform, mid1, ruled.effects, disk'');
+      EffectsTakeSplit(platform, device0.disk, pass.effects, guard, mid1);
+      var mid0 :| EffectsTake(platform, device0.disk, pass.effects, mid0) && EffectsTake(platform, mid0, guard, mid1);
+      assert DiskMap(mid0) == pass.listing && OneFilePerName(platform, mid0);
+      if |guard| > 0 {
+        var m :| EffectTakes(platform, mid0, guard[0], m) && EffectsTake(platform, m, guard[1..], mid1);
+        assert guard[0].PersistJournal?;
+        assert m == mid0 && mid1 == mid0;
+      }
+      assert mid1 == mid0;
+      var device := Device(platform, true, Journal(map[], 0, [], []), mid1, {}, {});
+      assert ListingOf(device) == pass.listing;
+      RulePreconditionsHold(device, rows, doc, r, inner, revs', first);
+      EffectsDiskMap(platform, mid1, ruled.effects, disk'');
+    }
     forall effect | effect in guard ensures !Touches(platform, effect, r.path) && effect.PersistJournal? { }
     assert ListingAfter(platform, pass.listing, guard) == pass.listing;
     ListedTakenAfter(platform, device0, pass.effects, pass.listing, guard);
@@ -2985,6 +3016,62 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         SameFIsEquivalence(platform, q, s, k);
         SameFIsEquivalence(platform, k, s, q);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // The pass's listing is the disk its effects leave (for G5's content)
+  // ---------------------------------------------------------------------
+
+  // Where its precondition holds on a disk with one file per name, an
+  // effect leaves a disk whose contents are the listing after it.
+  lemma {:isolate_assertions} EffectDiskMap(platform: Platform, disk: map<Path, DiskFile>, e: Effect, m: map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk) && PreconditionHolds(platform, disk, e) && EffectTakes(platform, disk, e, m)
+    ensures DiskMap(m) == ListingAfterEffect(platform, DiskMap(disk), e) && OneFilePerName(platform, m)
+  {
+    var listing := DiskMap(disk);
+    OneFileDistinct(platform, disk);
+    EffectKeepsOneFilePerName(platform, disk, e, m);
+    match e
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.Some? {
+        var q := var q :| Holds(platform, disk, q, path, precondition.value)
+          && m == disk[q := DiskFile(content, kind, disk[q].identity)]; q;
+        assert q in listing && SameF(platform, q, path);
+        assert ListedAt(platform, listing, path) == q;
+        assert DiskMap(m) == listing[q := (content, kind)];
+      } else {
+        assert !Listed(platform, listing, path) by {
+          forall q | q in listing ensures !SameF(platform, q, path) {
+            assert !CollideF(platform, q, path);
+          }
+        }
+        var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
+          && m == disk[path := DiskFile(content, kind, identity)];
+        assert DiskMap(m) == listing[path := (content, kind)];
+      }
+    case Remove(_, path, expected) =>
+      var q := var q :| Holds(platform, disk, q, path, expected) && m == disk - {q}; q;
+      assert q in listing && SameF(platform, q, path);
+      assert ListedAt(platform, listing, path) == q;
+      assert DiskMap(m) == listing - {q};
+    case Move(_, from, to, expected) =>
+      var q := var q :| MovableTo(platform, disk, q, from, to, expected) && m == (disk - {q})[to := disk[q]]; q;
+      assert q in listing && SameF(platform, q, from);
+      assert ListedAt(platform, listing, from) == q;
+      assert DiskMap(m) == (listing - {q})[to := listing[q]];
+    case _ =>
+  }
+
+  lemma EffectsDiskMap(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>)
+    requires OneFilePerName(platform, disk) && PreconditionsInOrder(platform, disk, effects) && EffectsTake(platform, disk, effects, disk')
+    ensures DiskMap(disk') == ListingAfter(platform, DiskMap(disk), effects) && OneFilePerName(platform, disk')
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var mid :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk');
+      EffectDiskMap(platform, disk, effects[0], mid);
+      EffectsDiskMap(platform, mid, effects[1..], disk');
     }
   }
 }
