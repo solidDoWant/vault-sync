@@ -2181,9 +2181,13 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   }
 
   // `e` may take another file: it had none before the round, or the pass
-  // dropped the one it had.
-  ghost predicate MayTakeFile(platform: Platform, device0: Device, effects: seq<Effect>, e: DocId) {
+  // dropped the one it had, or let it go untouched and its row `row` is
+  // no longer bound there (RoundLetGo, read on the pass).
+  ghost predicate MayTakeFile(platform: Platform, device0: Device, effects: seq<Effect>, e: DocId, row: Document) {
     BoundFile(device0, e).None? || DroppedIn(platform, device0, effects, e)
+    || (var p := device0.journal.documents[e].binding.value.spelling;
+        RoundPut(platform, effects, p).Untouched?
+        && !(row.binding.Some? && SameF(platform, row.binding.value.spelling, p)))
   }
 
   // The file at `p` is untracked as the pass left it (UntrackedThen, read
@@ -2203,9 +2207,9 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   ghost predicate RowG5(platform: Platform, device0: Device, effects: seq<Effect>, listing: Listing, e: DocId, row: Document) {
     (row.binding.Some? ==>
        OwnNameIn(platform, device0, effects, e, row.binding.value.spelling)
-       || (MayTakeFile(platform, device0, effects, e) && UntrackedIn(platform, device0, effects, row.binding.value.spelling)))
+       || (MayTakeFile(platform, device0, effects, e, row) && UntrackedIn(platform, device0, effects, row.binding.value.spelling)))
     && ((row.binding.None? || (Distinct(platform, listing) && !Listed(platform, listing, row.binding.value.spelling)))
-        ==> MayTakeFile(platform, device0, effects, e))
+        ==> MayTakeFile(platform, device0, effects, e, row))
   }
 
   ghost predicate PassG5(platform: Platform, device0: Device, pass: RoundPass) {
@@ -2277,6 +2281,57 @@ abstract module RoundGuarantees refines RoundClaimsCore {
          && !FreeIn(platform, input.listing, r.path) && Adoptable(platform, document, input, r) {
         ListedAtSelf(platform, input.listing, r.path);
         assert ListedRead(platform, input.listing, r.path) == Some(input.listing[r.path]);
+      }
+    }
+  }
+
+  // The apply takes its row off a listed bound file only by removing it
+  // first, by writing or moving the document's file to its new binding,
+  // or by letting go a file with no base untouched (#1068).
+  lemma {:isolate_assertions} ApplyDrop(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.binding.Some? && document.binding.value.spelling in bound
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      var b := document.binding.value.spelling;
+      (ListedRead(platform, input.listing, b).Some?
+       && (applied.document.binding.None? || applied.document.binding.value.spelling != b)) ==>
+        (|applied.effects| > 0 && applied.effects[0].Remove? && applied.effects[0].doc == doc && applied.effects[0].path == b)
+        || (applied.document.binding.Some?
+            && exists effect :: effect in applied.effects && PutsFor(platform, effect, doc, applied.document.binding.value.spelling))
+        || (applied.document.binding.None? && document.base.None?
+            && forall effect :: effect in applied.effects ==> !Touches(platform, effect, b))
+  {
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    var b := document.binding.value.spelling;
+    if !Newer(document, r) {
+    } else if SettlesIdentical(platform, document, r, input) {
+    } else if Acknowledges(document, r) {
+    } else if Revives(platform, document, r, input) {
+      if !KeepsUntracked(platform, document, r, input) {
+        var revived := Revived(document);
+        CreateOrigin(platform, doc, revived, r, input, bound, claims, rev);
+        if UnsavedAt(platform, input.unsaved, r.path) || BoundName(platform, bound, r.path) {
+        } else if FreeIn(platform, input.listing, r.path) {
+        } else if Adoptable(platform, revived, input, r) {
+        } else {
+          var held := Colliders(platform, input.listing, r.path);
+          if |held| == 1 && !BoundName(platform, bound, LeastPath(held))
+             && !UnsavedCollides(platform, input.unsaved, LeastPath(held)) {
+            var q := LeastPath(held);
+            var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path);
+            if copy.Some? {
+              assert applied.effects[1] in applied.effects;
+              assert PutsFor(platform, applied.effects[1], doc, r.path) by { assert SameF(platform, r.path, r.path); }
+            }
+          }
+        }
+      }
+    } else {
+      var read := ListedRead(platform, input.listing, b);
+      if UnsavedAt(platform, input.unsaved, b) {
+      } else if r.deleted && read.None? {
+      } else if Concurrent(document, read, r) {
+        SettleOrigin(platform, doc, document, read.value, r, input, bound, claims, rev);
       }
     }
   }
