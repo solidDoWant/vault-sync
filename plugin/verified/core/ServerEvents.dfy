@@ -69,6 +69,15 @@ abstract module ServerEvents refines StepContracts {
   // A retention purge
   // ---------------------------------------------------------------------
 
+  // A cut of the purged server, with only the purges made before this one,
+  // is a cut of the server before it (#1078: split out of PurgeKeepsAll).
+  lemma PurgedCut(pre: Server, revisions: set<RevId>, cut: Server)
+    requires EarlierServer(pre.(purged := pre.purged + revisions), cut)
+    ensures EarlierServer(pre, cut.(purged := cut.purged * pre.purged))
+    ensures SameButPurges(cut, cut.(purged := cut.purged * pre.purged))
+  {
+  }
+
   lemma {:isolate_assertions} PurgeKeepsAll(step: Step)
     requires ServerEventStep(step) && step.event.Purge?
     requires CoreReachable(step.pre)
@@ -129,8 +138,7 @@ abstract module ServerEvents refines StepContracts {
     assert CutsHeadsApart(post.server) by {
       forall cut | EarlierServer(post.server, cut) ensures LiveHeadsApart(cut) {
         var cut' := cut.(purged := cut.purged * pre.server.purged);
-        assert EarlierServer(pre.server, cut');
-        assert SameButPurges(cut, cut');
+        PurgedCut(pre.server, revisions, cut);
         SameButPurgesSameHeads(cut, cut');
         assert LiveHeadsApart(cut');
       }
@@ -155,8 +163,7 @@ abstract module ServerEvents refines StepContracts {
              && HeadsMirrored(post.(server := cut), post.devices[d])
       {
         var cut' := cut.(purged := cut.purged * pre.server.purged);
-        assert EarlierServer(pre.server, cut');
-        assert SameButPurges(cut, cut');
+        PurgedCut(pre.server, revisions, cut);
         assert pre.(server := cut') == post.(server := cut').(server := cut');
         SameButPurgesSameDevices(post.(server := cut'), cut);
         assert post.(server := cut').(server := cut) == post.(server := cut);
@@ -866,17 +873,40 @@ abstract module ServerEvents refines StepContracts {
   // `accepted`, a restore from backup cuts the feed and keeps `accepted`, a
   // purge changes neither) and RevisionsKeyed (an append stores the
   // revision under its id, a restore restricts the revisions, a purge
-  // changes none). FeedAccepted holds initially (InitialCoreReachable).
+  // changes none), and RevisionsOnFeed (#1078: an append adds the
+  // revision to the feed, a restore keeps only revisions its cut feed
+  // names). They hold initially (InitialCoreReachable).
   lemma ServerClausesKept(step: Step)
     requires ServerFollowsEvent(step)
-    requires FeedAccepted(step.pre.server) && RevisionsKeyed(step.pre.server)
-    ensures FeedAccepted(step.post.server) && RevisionsKeyed(step.post.server)
+    requires FeedAccepted(step.pre.server) && RevisionsKeyed(step.pre.server) && RevisionsOnFeed(step.pre.server)
+    ensures FeedAccepted(step.post.server) && RevisionsKeyed(step.post.server) && RevisionsOnFeed(step.post.server)
   {
     var pre := step.pre.server;
     var post := step.post.server;
     if step.event.Restore? {
       forall i | 0 <= i < |post.feed| ensures post.feed[i] in post.accepted {
         assert post.feed[i] == pre.feed[i];
+      }
+      forall id | id in post.revisions ensures id in post.feed {
+        var i :| 0 <= i < |post.feed| && post.feed[i] == id;
+      }
+    } else if step.event.RestoreFromHistory? {
+      ServerAppendedRevisionsOnFeed(pre, step.event.doc, step.event.revision);
+    }
+  }
+
+  // An append adds its revision to the feed (#1078).
+  lemma ServerAppendedRevisionsOnFeed(pre: Server, doc: DocId, r: Revision)
+    requires RevisionsOnFeed(pre)
+    ensures RevisionsOnFeed(Appended(pre, doc, r))
+  {
+    var post := Appended(pre, doc, r);
+    assert post.feed[|pre.feed|] == r.id;
+    forall id | id in post.revisions ensures id in post.feed {
+      if id != r.id {
+        assert id in pre.feed;
+        var i :| 0 <= i < |pre.feed| && pre.feed[i] == id;
+        assert post.feed[i] == id;
       }
     }
   }

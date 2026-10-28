@@ -105,7 +105,7 @@ abstract module ClaimsMirror refines StepContracts {
   // The revision a finished device's newest claim of a document names is
   // on the cut's feed, in its document's history, at the claim's position.
   lemma {:isolate_assertions} ClaimOnCut(state: State, d: DeviceId, cut: Server, doc: DocId) returns (id: RevId)
-    requires ClaimsReachable(state) && FinishedAtCut(state, d, cut)
+    requires ClaimsCore(state) && FinishedAtCut(state, d, cut)
     requires doc in state.devices[d].journal.documents
     requires KnownPosition(state.devices[d].journal.documents[doc]).Some?
     ensures var S := state.server; var document := state.devices[d].journal.documents[doc];
@@ -145,7 +145,7 @@ abstract module ClaimsMirror refines StepContracts {
   // least as new (ClaimsCoverCursor) and, positions growing along a
   // history, is that head.
   lemma {:isolate_assertions} ClaimIsCutHead(state: State, d: DeviceId, cut: Server, doc: DocId)
-    requires ClaimsReachable(state) && FinishedAtCut(state, d, cut)
+    requires ClaimsCore(state) && FinishedAtCut(state, d, cut)
     requires doc in state.devices[d].journal.documents
     requires KnownPosition(state.devices[d].journal.documents[doc]).Some?
     ensures Head(cut, doc).Some?
@@ -165,7 +165,7 @@ abstract module ClaimsMirror refines StepContracts {
   }
 
   lemma {:isolate_assertions} MirrorAtCut(state: State, d: DeviceId, cut: Server)
-    requires ClaimsReachable(state) && FinishedAtCut(state, d, cut)
+    requires ClaimsCore(state) && FinishedAtCut(state, d, cut)
     ensures FilesMirrorHeads(state.(server := cut), state.devices[d])
     ensures HeadsMirrored(state.(server := cut), state.devices[d])
   {
@@ -250,11 +250,107 @@ abstract module ClaimsMirror refines StepContracts {
     }
   }
 
-  // #1031's obligation, proved.
+  // The server with its empty histories dropped: what a restore to its
+  // whole feed gives.
+  ghost function WholeCut(S: Server): Server {
+    S.(history := map doc | doc in S.history && |S.history[doc]| > 0 :: S.history[doc])
+  }
+
+  // With every revision on the feed (RevisionsOnFeed), every history entry
+  // and purge held (ServerRetains) and no head purged
+  // (G1_LatestNeverPurged), WholeCut is the server's cut at its whole feed.
+  // Server-level only, so it is checked without the reachable state's
+  // clauses in scope.
+  lemma {:isolate_assertions} WholeCutIsCut(S: Server)
+    requires RevisionsOnFeed(S) && RevisionsKeyed(S) && S.purged <= S.revisions.Keys
+    requires forall doc, rev :: doc in S.history && rev in S.history[doc] ==> rev in S.revisions
+    requires forall doc :: Head(S, doc).Some? ==> Head(S, doc).value.id !in S.purged
+    ensures EarlierServer(S, WholeCut(S))
+  {
+    var C := WholeCut(S);
+    var kept := set i | 0 <= i < |C.feed| :: C.feed[i];
+    assert C.feed == S.feed && S.feed[..|C.feed|] == S.feed;
+    forall id | id in S.revisions ensures id in kept {
+      assert id in S.feed;
+      var i :| 0 <= i < |S.feed| && S.feed[i] == id;
+    }
+    assert C.revisions == (map id | id in S.revisions && id in kept :: S.revisions[id]);
+    forall doc | doc in S.history ensures Keep(S.history[doc], kept) == S.history[doc] {
+      forall e | e in S.history[doc] ensures e in kept {
+        var j :| 0 <= j < |S.history[doc]| && S.history[doc][j] == e;
+        assert e in S.revisions;
+        assert e in S.feed;
+        var i :| 0 <= i < |S.feed| && S.feed[i] == e;
+      }
+      KeepAll(S.history[doc], kept);
+    }
+    assert C.history == (map doc | doc in S.history && |Keep(S.history[doc], kept)| > 0 :: Keep(S.history[doc], kept));
+    forall id | id in C.purged ensures id in kept {
+      assert id in S.revisions;
+    }
+    assert C.purged <= S.purged * kept;
+    forall doc | doc in C.history && |C.history[doc]| > 0
+      ensures C.history[doc][|C.history[doc]| - 1] !in C.purged
+    {
+      var h := S.history[doc][|S.history[doc]| - 1];
+      assert h in S.revisions;
+      assert Head(S, doc) == Some(S.revisions[h]);
+      assert S.revisions[h].id == h;
+    }
+  }
+
+  // Dropping empty histories changes no head.
+  lemma WholeCutHeads(S: Server)
+    ensures forall doc :: Head(WholeCut(S), doc) == Head(S, doc)
+  {
+    forall doc ensures Head(WholeCut(S), doc) == Head(S, doc) {
+      if doc in S.history && |S.history[doc]| > 0 {
+        assert WholeCut(S).history[doc] == S.history[doc];
+      } else {
+        assert doc !in WholeCut(S).history;
+      }
+    }
+  }
+
+  lemma KeepAll(s: seq<RevId>, ids: set<RevId>)
+    requires forall e :: e in s ==> e in ids
+    ensures Keep(s, ids) == s
+  {
+    if |s| > 0 {
+      KeepAll(s[1..], ids);
+      assert s == [s[0]] + s[1..];
+    }
+  }
+
+  // A finished device mirrors the server: MirrorAtCut at the whole feed,
+  // whose cut has the server's heads and revisions.
+  lemma {:isolate_assertions} MirrorFinished(state: State, d: DeviceId)
+    requires ClaimsCore(state) && d in state.devices && FinishedSyncing(state, d)
+    ensures FilesMirrorHeads(state, state.devices[d]) && HeadsMirrored(state, state.devices[d])
+  {
+    var C := WholeCut(state.server);
+    assert ServerRetains(state) && G1_LatestNeverPurged(state);
+    WholeCutIsCut(state.server);
+    WholeCutHeads(state.server);
+    var at := state.(server := C);
+    assert at.devices == state.devices;
+    assert !Diverged(state, d);
+    assert JournalOnServer(C, state.devices[d].journal);
+    assert FinishedSyncing(at, d);
+    assert FinishedAtCut(state, d, C);
+    MirrorAtCut(state, d, C);
+    var device := state.devices[d];
+    forall p ensures KeepsUnheld(at, device, p) == KeepsUnheld(state, device, p) {}
+    forall p ensures ReportedCannotHold(at, device, p) == ReportedCannotHold(state, device, p) {}
+    forall doc ensures LiveHead(C, doc) == LiveHead(state.server, doc) {}
+  }
+
+  // #1031's obligation, proved, with MirrorInv from the claims without it
+  // (#1078).
   lemma ClaimsImplyMirror()
     ensures ClaimsImplyMirrorContract()
   {
-    forall state: State | ClaimsReachable(state) ensures MirrorAtCursor(state) {
+    forall state: State | ClaimsCore(state) ensures MirrorAtCursor(state) && MirrorInv(state) {
       forall d: DeviceId, cut: Server | d in state.devices && !Diverged(state, d)
         && state.devices[d].journal.cursor <= |state.server.feed|
         && |cut.feed| == state.devices[d].journal.cursor && EarlierServer(state.server, cut)
@@ -264,6 +360,11 @@ abstract module ClaimsMirror refines StepContracts {
       {
         assert FinishedAtCut(state, d, cut);
         MirrorAtCut(state, d, cut);
+      }
+      forall d | d in state.devices && FinishedSyncing(state, d)
+        ensures FilesMirrorHeads(state, state.devices[d]) && HeadsMirrored(state, state.devices[d])
+      {
+        MirrorFinished(state, d);
       }
     }
   }

@@ -1039,6 +1039,27 @@ abstract module StepContractWitnesses refines StepContracts {
     assert !ClaimsReachable(State(map[], server));
   }
 
+  // #1078 (regression for #963's gap): a server holding a revision of x,
+  // `b`, at `a`'s position but on no feed and in no history. Every server
+  // clause #1025 to #1063 added holds of it, so a finished device's base
+  // could be `b` while another's is the head `a` (#963's
+  // OffFeedBaseBreaksConvergence). Every revision the server holds is a feed
+  // entry (RevisionsOnFeed), so the state is not reachable.
+  lemma {:isolate_assertions} OffFeedRevisionExcluded(x: DocId, a: Revision, b: Revision)
+    requires a.id != b.id && a.doc == x && b.doc == x && a.position == 0 && b.position == 0
+    ensures
+      var revisions := map[a.id := a, b.id := b];
+      var server := Server(revisions, map[x := [a.id]], [a.id], {}, revisions);
+      HistoryFollowsFeed(server) && RevisionsAccepted(server) && FeedPositioned(server) && FeedAccepted(server)
+      && !RevisionsOnFeed(server) && !ClaimsReachable(State(map[], server))
+  {
+    var revisions := map[a.id := a, b.id := b];
+    var server := Server(revisions, map[x := [a.id]], [a.id], {}, revisions);
+    assert server.feed[0] == a.id && server.history[x][0] == a.id;
+    assert b.id in server.revisions && b.id !in server.feed;
+    assert !RevisionsOnFeed(server);
+  }
+
   // ---------------------------------------------------------------------
   // #1063: a file kept under a revision the device cannot hold, and the
   // cursor and feed clauses of the server events
