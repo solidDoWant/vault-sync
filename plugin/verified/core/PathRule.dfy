@@ -2712,4 +2712,21 @@ abstract module PathRuleCore refines ApplyCore {
       }
     }
   }
+
+  lemma RuleOwnRowKeepsBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires var document := documents[doc];
+      document.ahead.Some? && document.base.Some? ==> document.base.value.position <= document.ahead.value.revision.position
+    ensures var before := documents[doc];
+      var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+      (before.base.Some? ==> after.base.Some? && before.base.value.position <= after.base.value.position)
+      && (Newer(before, r) && Acknowledges(before, r) ==> after.base.Some? && after.base.value.position == r.position)
+  {
+    var document := documents[doc];
+    ApplyBaseGrows(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    if Newer(document, r) && Acknowledges(document, r) {
+      RuleAcknowledges(platform, documents, doc, r, input, revs);
+    }
+  }
 }
