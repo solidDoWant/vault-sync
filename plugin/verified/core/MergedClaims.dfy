@@ -320,6 +320,69 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
+  // Each outbox keeps its parent or takes its row's base's (#1080).
+  ghost predicate KeepsParents(journal: Journal, journal': Journal) {
+    journal.documents.Keys <= journal'.documents.Keys
+    && forall doc :: doc in journal.documents ==> OutboxMoves(journal.documents[doc], journal'.documents[doc])
+  }
+
+  lemma LocalDocKeepsParents(platform: Platform, document: Document, local: LocalEvent, input: map<Path, Read>, rev: RevId)
+    ensures OutboxMoves(document, LocalDoc(platform, document, local, input, rev))
+  {
+  }
+
+  lemma {:isolate_assertions} LocalKeepsParents(platform: Platform, journal: Journal, local: LocalEvent, input: map<Path, Read>, revs: FreshRevs)
+    requires journal.documents.Keys <= revs.Keys
+    ensures KeepsParents(journal, LocalJournal(platform, journal, local, input, revs))
+  {
+    var journal' := LocalJournal(platform, journal, local, input, revs);
+    LocalKeepsNames(platform, journal, local, input, revs);
+    forall doc | doc in journal.documents ensures OutboxMoves(journal.documents[doc], journal'.documents[doc]) {
+      LocalDocKeepsParents(platform, journal.documents[doc], local, input, revs[doc]);
+    }
+  }
+
+  lemma ScanDocKeepsParents(platform: Platform, docs: map<DocId, Document>, listing: Listing, doc: DocId, rev: RevId)
+    requires doc in docs && ListingDistinct(platform, listing)
+    ensures OutboxMoves(docs[doc], ScanDoc(platform, docs, listing, doc, rev))
+  {
+  }
+
+  lemma {:isolate_assertions} ScanKeepsParents(platform: Platform, journal: Journal, listing: Listing, revs: FreshRevs)
+    requires journal.documents.Keys <= revs.Keys && ListingDistinct(platform, listing)
+    ensures KeepsParents(journal, ScanJournal(platform, journal, listing, revs))
+  {
+    var journal' := ScanJournal(platform, journal, listing, revs);
+    ScanKeepsNames(platform, journal, listing, revs);
+    forall doc | doc in journal.documents ensures OutboxMoves(journal.documents[doc], journal'.documents[doc]) {
+      ScanDocKeepsParents(platform, journal.documents, listing, doc, revs[doc]);
+    }
+  }
+
+  lemma PushedKeepsParents(journal: Journal, result: PushResult, nextRev: RevId)
+    requires !result.Accepted?
+    ensures KeepsParents(journal, PushedJournal(journal, result, nextRev))
+  {
+    PushedKeepsNames(journal, result, nextRev);
+  }
+
+  // A step that keeps its rows' names and their outboxes' parents (or
+  // gives them the base's) keeps CommitsOnBase (#1080).
+  lemma {:isolate_assertions} NamesKeptCommitsOnBase(pre: State, d: DeviceId, journal': Journal)
+    requires ClaimsReachable(pre) && CommitsOnBase(pre) && d in pre.devices
+    requires KeepsRowNames(pre.devices[d].journal, journal') && KeepsParents(pre.devices[d].journal, journal')
+    ensures CommitsOnBase(After(pre, d, journal'))
+  {
+    var journal := pre.devices[d].journal;
+    assert JournalOnServer(pre.server, journal') == JournalOnServer(pre.server, journal);
+    AfterSameDivergence(pre, d, journal');
+    forall doc | doc in journal'.documents ensures RowNamesAccepted(pre.server, doc, journal'.documents[doc]) {
+      assert RowNamesAccepted(pre.server, doc, journal.documents[doc]);
+    }
+    assert ClaimsStep(pre, d, journal');
+    JournalStepKeepsCommitsOnBase(pre, d, journal');
+  }
+
   // ---------------------------------------------------------------------
   // The theorems
   // ---------------------------------------------------------------------
@@ -448,6 +511,137 @@ abstract module MergedClaims refines StepContracts {
         assert journal'.documents[y].outbox == journal.documents[y].outbox;
       }
       assert Unacknowledged(pre, x, y, id);
+    }
+  }
+
+  // A pulled revision keeps CommitsOnBase (#1080): it changes no base and
+  // no outbox, and a row it creates has no outbox.
+  lemma {:isolate_assertions} RemoteKeepsCommitsOnBase(pre: State, d: DeviceId, revision: Revision)
+    requires d in pre.devices && ClaimsReachable(pre) && CommitsOnBase(pre) && !Diverged(pre, d)
+    requires revision.id in pre.server.revisions && pre.server.revisions[revision.id] == revision
+    requires revision.id in pre.server.feed
+    ensures CommitsOnBase(RemoteStep(pre, d, revision).post)
+  {
+    var journal := pre.devices[d].journal;
+    var journal' := RemoteJournal(journal, revision);
+    assert RemoteStep(pre, d, revision).post == After(pre, d, journal');
+    forall x | x in journal'.documents ensures RowNamesAccepted(pre.server, x, journal'.documents[x]) {
+      if x in journal.documents {
+        assert RowNamesAccepted(pre.server, x, journal.documents[x]);
+      }
+    }
+    forall x | x in journal.documents ensures KnowsAtLeast(journal.documents[x], journal'.documents[x]) {}
+    assert ClaimsStep(pre, d, journal');
+    JournalStepKeepsCommitsOnBase(pre, d, journal');
+  }
+
+  // Every revision of a document's history is at or before its head.
+  lemma AtOrBeforeHead(server: Server, doc: DocId, id: RevId)
+    requires HistoryFollowsFeed(server)
+    requires forall x, rev :: x in server.history && rev in server.history[x] ==> rev in server.revisions
+    requires doc in server.history && id in server.history[doc]
+    ensures Head(server, doc).Some? && server.revisions[id].position <= Head(server, doc).value.position
+  {
+    var h := server.history[doc];
+    var j :| 0 <= j < |h| && h[j] == id;
+    assert h[|h| - 1] in h;
+  }
+
+  // An accepted push keeps CommitsOnBase (#1080). The commit lands on its
+  // document's head, its parent, which is at or below the row's base
+  // (OutboxParentAtBase), so every revision of the document before it is
+  // too; and the base the accept leaves is at or past both. Every other
+  // landed commit is before the appended one on the feed.
+  lemma {:isolate_assertions} AcceptKeepsCommitsOnBase(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && CommitsOnBase(pre)
+    ensures CommitsOnBase(AcceptStep(pre, d, doc, r, nextRev).post)
+  {
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    AcceptShape(pre, d, doc, r, nextRev);
+    AcceptReadsFeed(pre, d, doc, r, nextRev);
+    var server := pre.server;
+    var server' := post.server;
+    forall x, y | ReadsFeed(post, x) && y in post.devices[x].journal.documents
+      ensures OutboxParentAtBase(server', post.devices[x].journal.documents[y])
+      ensures OwnCommitOnBase(server', x, y, post.devices[x].journal.documents[y])
+    {
+      assert ReadsFeed(pre, x);
+      var before := pre.devices[x].journal.documents[y];
+      var after := post.devices[x].journal.documents[y];
+      assert OutboxParentAtBase(server, before) && OwnCommitOnBase(server, x, y, before);
+      if x == d && y == doc {
+        AcceptLandsOnBase(pre, d, doc, r, nextRev);
+      } else {
+        assert after == before;
+        if after.outbox.Some? && after.outbox.value.rev in server'.revisions
+           && server'.revisions[after.outbox.value.rev].device == x
+           && server'.revisions[after.outbox.value.rev].doc == y && y in server'.history
+        {
+          var o := after.outbox.value.rev;
+          assert o != r.id;
+          assert o in server.revisions && server'.revisions[o] == server.revisions[o];
+          assert o in server.feed;
+          var i :| 0 <= i < |server.feed| && server.feed[i] == o;
+          forall id | id in server'.history[y] && id in server'.revisions && id != o
+            && server'.revisions[id].position < server'.revisions[o].position
+            ensures after.base.Some? && server'.revisions[id].position <= after.base.value.position
+          {
+            if id == r.id {
+              assert false;
+            }
+            assert y in server.history && id in server.history[y];
+          }
+        }
+      }
+    }
+  }
+
+  // The accepting row itself: its new outbox, if any, has the base's id
+  // as its parent, and a landed commit of the device's own it carries is
+  // the appended one or one the base already covered.
+  lemma {:isolate_assertions} AcceptLandsOnBase(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && CommitsOnBase(pre) && ReadsFeed(pre, d)
+    ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
+      var after := post.devices[d].journal.documents[doc];
+      OutboxParentAtBase(post.server, after) && OwnCommitOnBase(post.server, d, doc, after)
+  {
+    AcceptShape(pre, d, doc, r, nextRev);
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    var server := pre.server;
+    var server' := post.server;
+    var before := pre.devices[d].journal.documents[doc];
+    var after := post.devices[d].journal.documents[doc];
+    assert OutboxParentAtBase(server, before) && OwnCommitOnBase(server, d, doc, before);
+    var base' := after.base.value;
+    assert base'.position >= r.position;
+    assert before.base.Some? ==> base'.position >= before.base.value.position;
+    // Every revision of the document the server held is at or below the
+    // parent, the head, which is at or below the base before.
+    forall id | doc in server.history && id in server.history[doc]
+      ensures server.revisions[id].position <= base'.position
+    {
+      AtOrBeforeHead(server, doc, id);
+      var head := Head(server, doc).value;
+      assert r.parent == Some(head.id);
+      assert head.id in server.accepted && server.accepted[head.id] == head;
+    }
+    if after.outbox.Some? && after.outbox.value.rev in server'.revisions
+       && server'.revisions[after.outbox.value.rev].device == d
+       && server'.revisions[after.outbox.value.rev].doc == doc && doc in server'.history
+    {
+      var o := after.outbox.value.rev;
+      if o == r.id {
+        forall id | id in server'.history[doc] && id in server'.revisions && id != o
+          && server'.revisions[id].position < server'.revisions[o].position
+          ensures after.base.Some? && server'.revisions[id].position <= after.base.value.position
+        {
+          assert doc in server.history && id in server.history[doc];
+        }
+      } else {
+        assert o in server.revisions && o in server.feed;
+        var i :| 0 <= i < |server.feed| && server.feed[i] == o;
+        assert doc in server.history && o in server.history[doc];
+      }
     }
   }
 
