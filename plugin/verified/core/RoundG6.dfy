@@ -3160,8 +3160,8 @@ abstract module RoundG6 refines RoundGuarantees {
     requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
     // Proof obligations of the state before the round (#1034).
     requires RoundPulledBy(pre, d, input, revs)
-    requires AheadAboveBase(pre.devices[d].journal.documents[doc])
     requires SettlesConcurrent(RoundStepOf(pre, d, input, revs), d, doc, remote)
+    requires AheadAboveBase(pre.devices[d].journal.documents[doc])
     ensures G6_Step(RoundStepOf(pre, d, input, revs), d, doc, remote)
   {
     RoundG6Chain(pre, d, input, revs, doc, remote);
