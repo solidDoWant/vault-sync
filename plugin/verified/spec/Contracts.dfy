@@ -752,20 +752,29 @@ abstract module StepContracts refines PushCore {
     (d in pre.devices && pre.devices[d].running && CoreReachable(pre)
      && RoundInputOf(pre, d, input)
      && RevsCover(pre.devices[d].journal, input, revs))
-    ==>
-      var step := ResyncStepOf(pre, d, input, revs);
+    ==> ResyncKeeps(pre, d, ResyncStepOf(pre, d, input, revs))
+  }
+
+  // What a resync step keeps (ResyncContract), of a step `step` from `pre`
+  // on device d.
+  ghost predicate ResyncKeeps(pre: State, d: DeviceId, step: Step) {
       step.pre == pre && step.event == Resync(d)
       && CoreReachable(step.post) && StepGuarantees(step)
-      && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
+      && d in pre.devices && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
       // SPEC.md §8 "Divergence" (#1025): every revision the journal names
       // is on the server again, so a base the restore lost is re-anchored
       // (to the newest revision of the device's own the server still holds,
       // a landed commit the outbox carries included, or none, #1078, #1080;
       // at least at the parent a commit in flight is sealed on, where held,
       // #1080) and CoreInv makes the device send what it holds again; the
-      // device is no longer Diverged.
+      // device is no longer Diverged. A row whose unchanged file is at a
+      // lost base it only pulled takes the restored head (#874, #1080).
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
       && OwnRevisionsAcknowledged(step.post, d)
+      // Crash safety (§4.3): every write comes after a persisted journal
+      // holding an ApplyIntent for it, as the apply's, so recovery (#1018)
+      // finishes or undoes it from the disk alone, whichever step recorded
+      // it; the interrupted resync then runs again.
       && IntentsCoverDiskEffects(step.effects)
       // A user's pending delete is kept (principle 1, #1080 item 3): a row
       // the user deleted still records the delete, which CoreInv then makes
