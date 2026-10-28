@@ -608,6 +608,14 @@ abstract module RecoveryCore refines PathRuleCore {
     {}
   }
 
+  // A device given its own journal is unchanged.
+  lemma AfterOwnJournal(s: State, d: DeviceId)
+    requires d in s.devices
+    ensures After(s, d, s.devices[d].journal) == s
+  {
+    assert s.devices[d := s.devices[d].(journal := s.devices[d].journal)] == s.devices;
+  }
+
   // A crash's post-state, recovered, is a state with ClaimsCore with some
   // devices stopped and some intents changed. A landed commit enters
   // through LandingKeepsClaims (#1100); a resync's journal reads the
@@ -631,7 +639,7 @@ abstract module RecoveryCore refines PathRuleCore {
       assert post.devices[d].journal == device.journal;
       assert post.devices[d].disk == device.disk;
       jS := device.journal;
-      assert After(base, d, jS) == base;
+      AfterOwnJournal(base, d);
     } else {
       var j' := CoveredCutEffects(step, base);
       assert step.effects == [PersistJournal(j')];
@@ -651,7 +659,7 @@ abstract module RecoveryCore refines PathRuleCore {
         assert ClaimsCore(RefusedStep(base, d, result, nextRev).post);
       case Restart(_) =>
         jS := device.journal;
-        assert After(base, d, jS) == base;
+        AfterOwnJournal(base, d);
       case Resync(_) =>
         assert base == pre;
     }
