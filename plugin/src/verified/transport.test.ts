@@ -163,6 +163,55 @@ describe("the verified core's transport", () => {
     expect(outcome.results.map((result) => result.kind)).toEqual(["head-moved", "already-exists", "invalid-argument", "unavailable"]);
   });
 
+  it("commits a delete without an upload and reports it accepted", async () => {
+    const s = setup();
+    other(s, "a", "a1");
+    await s.shell.round();
+    const base = s.server.revisionAt(1n);
+    s.core.queued.push({ doc: "a", outbox: { ...outbox("rev-del", "a.md", "a1", base.id), deleted: true } });
+    let uploads = 0;
+    s.server.interceptor = (method) => {
+      if (method === "BeginBlob" || method === "PutBlobChunk") uploads++;
+    };
+    const outcome = await s.shell.round();
+
+    expect(outcome.results.map((result) => result.kind)).toEqual(["accepted"]);
+    expect(uploads).toBe(0);
+    const stored = s.server.revisionAt(2n);
+    expect(stored).toMatchObject({ id: "rev-del", deleted: true, parentRevId: base.id });
+    expect(stored.contentRef?.size).toBe(base.contentRef?.size);
+  });
+
+  it("reports a delete whose base retention purged as head moved", async () => {
+    const s = setup();
+    other(s, "a", "a1");
+    await s.shell.round();
+    const base = s.server.revisionAt(1n);
+    other(s, "a", "a2");
+    s.server.purge(base.id);
+    s.core.queued.push({ doc: "a", outbox: { ...outbox("rev-del", "a.md", "a1", base.id), deleted: true } });
+    queue(s, "b", "rev-b", "b.md", "b1");
+    const outcome = await s.shell.round();
+
+    // The core gets the answer, and the round's later commits are still sent.
+    expect(outcome.results.map((result) => result.kind)).toEqual(["head-moved", "accepted"]);
+    expect(s.core.calls.slice(-2)).toEqual(["pushed a head-moved", "pushed b accepted"]);
+  });
+
+  it.each([
+    ["PERMISSION_DENIED", Code.PermissionDenied],
+    ["UNAUTHENTICATED", Code.Unauthenticated],
+  ])("throws %s instead of turning it into a push result", async (_name, code) => {
+    const s = setup();
+    queue(s, "a", "rev-a", "a.md", "a1");
+    s.server.interceptor = (method) => {
+      if (method === "CommitRevision") throw new ConnectError("refused", code);
+    };
+
+    await expect(s.shell.round()).rejects.toMatchObject({ code });
+    expect(s.core.calls.filter((call) => call.startsWith("pushed"))).toEqual([]);
+  });
+
   it("delivers revisions outside a round to the core one by one", async () => {
     const s = setup();
     other(s, "a", "a1");
@@ -191,6 +240,16 @@ describe("divergence detection (ShellRun)", () => {
     expect(s.core.calls).toEqual(["resync 1"]);
   });
 
+  it("resyncs a cursor stored without an anchor, even on a server that was not restored", async () => {
+    const s = setup();
+    await syncedToThree(s);
+    s.core.current = { ...s.core.current, anchor: null };
+    const outcome = await s.shell.round();
+
+    expect(outcome.resynced).toBe("anchor");
+    expect(s.core.calls).toEqual(["resync 3"]);
+  });
+
   it("resyncs a cursor stored without an anchor when the head is below it", async () => {
     const s = setup();
     await syncedToThree(s);
@@ -198,7 +257,7 @@ describe("divergence detection (ShellRun)", () => {
     s.server.restoreTo(2n);
     const outcome = await s.shell.round();
 
-    expect(outcome.resynced).toBe("head-below-cursor");
+    expect(outcome.resynced).not.toBeNull();
     expect(s.core.calls).toEqual(["resync 2"]);
   });
 

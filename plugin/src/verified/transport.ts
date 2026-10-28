@@ -97,7 +97,10 @@ export class CoreTransport {
   async pull(journal: CoreJournal): Promise<Pull> {
     // Each page is anchored at the entry before it: the cursor's, then the
     // last one read, so a restore between two pages is caught too.
-    let anchor = journal.cursor > 0n && journal.anchor !== null ? journal.anchor : new Uint8Array();
+    // A cursor with no anchor cannot show the feed it read is the server's
+    // (`AnchorOnFeed`), so the device counts as diverged and resyncs.
+    if (journal.cursor > 0n && journal.anchor === null) return { kind: "diverged", reason: "anchor" };
+    let anchor = journal.anchor ?? new Uint8Array();
     const entries: FeedEntry[] = [];
     let since = journal.cursor;
     for (;;) {
@@ -138,7 +141,11 @@ export class CoreTransport {
     try {
       let size: bigint;
       if (outbox.deleted) {
-        size = await this.headSize(doc, outbox);
+        const kept = await this.baseSize(outbox);
+        // A head is never purged (SPEC.md §11), so a base the server no
+        // longer has is not the document's head: the core rebases the delete.
+        if (kept === null) return { kind: "head-moved" };
+        size = kept;
       } else {
         const content = await this.readContent(doc, outbox);
         if (content === null) return { kind: "unavailable" };
@@ -163,11 +170,16 @@ export class CoreTransport {
     }
   }
 
-  /** The size of the content a delete keeps: its base's, which the server holds. */
-  private async headSize(doc: string, outbox: CoreOutbox): Promise<bigint> {
+  /** The size of the content a delete keeps: its base's, which the server holds; null if retention purged the base. */
+  private async baseSize(outbox: CoreOutbox): Promise<bigint | null> {
     if (outbox.baseRev === null) throw new ConnectError("a delete needs a base", Code.InvalidArgument);
-    const response = await this.api.sync.getRevision({ vaultId: this.vaultId, revisionId: outbox.baseRev });
-    return response.revision?.contentRef?.size ?? 0n;
+    try {
+      const response = await this.api.sync.getRevision({ vaultId: this.vaultId, revisionId: outbox.baseRev });
+      return response.revision?.contentRef?.size ?? 0n;
+    } catch (error) {
+      if (error instanceof ConnectError && error.code === Code.NotFound) return null;
+      throw error;
+    }
   }
 }
 
