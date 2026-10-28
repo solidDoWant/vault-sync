@@ -655,9 +655,9 @@ abstract module GuaranteeWitnesses refines Guarantees {
   // A chain whose links change nothing on the local side keeps it: every
   // live link brings the base's own content back, and the last may be a
   // tombstone, against a local content other than that base.
-  lemma ChainKeeps(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
+  lemma ChainKeeps(post: State, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
                    out: Option<Hash>, c: Option<Hash>)
-    requires ChainThrough(after, d, b, bd, l, rs, out, c) && l.Some? && l.value.0 != b && |rs| > 0
+    requires ChainThrough(post, d, b, bd, l, rs, out, c) && l.Some? && l.value.0 != b && |rs| > 0
     requires forall k :: 0 <= k < |rs| - 1 ==> !rs[k].deleted && rs[k].content == b
     requires rs[|rs| - 1].deleted || rs[|rs| - 1].content == b
     ensures out == LocalContent(l)
@@ -665,16 +665,16 @@ abstract module GuaranteeWitnesses refines Guarantees {
   {
     // (The expression form of let-such-that: the statement form crashes
     // Dafny 4.11's precedence linter.)
-    var x := var x :| SettleLink(after, d, b, bd, l, rs[0], x)
-      && (ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
-          || (c.Some? && c == LocalContent(l) && ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None))); x;
+    var x := var x :| SettleLink(post, d, b, bd, l, rs[0], x)
+      && (ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
+          || (c.Some? && c == LocalContent(l) && ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None))); x;
     assert x == l;
     if |rs| == 1 {
       assert rs[1..] == [];
-    } else if ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c) {
-      ChainKeeps(after, d, b, false, l, rs[1..], out, c);
+    } else if ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c) {
+      ChainKeeps(post, d, b, false, l, rs[1..], out, c);
     } else {
-      ChainKeeps(after, d, b, false, l, rs[1..], out, None);
+      ChainKeeps(post, d, b, false, l, rs[1..], out, None);
     }
   }
 
@@ -745,9 +745,9 @@ abstract module GuaranteeWitnesses refines Guarantees {
         assert k == 0 && |rs| == 2;
         assert rs[0].position < rs[1].position;
       }
-      var out := var out :| ChainThrough(device', d, b, false, Some(read), rs, out, Some(f.content)) && ChainEnds(device', doc, out); out;
+      var out := var out :| ChainThrough(post, d, b, false, Some(read), rs, out, Some(f.content)) && ChainEnds(post, d, doc, out); out;
       assert out == Outgoing(device', doc);
-      ChainKeeps(device', d, b, false, Some(read), rs, out, Some(f.content));
+      ChainKeeps(post, d, b, false, Some(read), rs, out, Some(f.content));
     }
     assert !ReadKept(step, doc, f.content);
     assert BoundTo(device, doc, p);

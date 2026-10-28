@@ -42,11 +42,11 @@ abstract module RoundG6 refines RoundGuarantees {
     ensures LinkSaved(saved', d, b, bd, l, r, x)
   {}
 
-  lemma LinkSavedIsLink(after: Device, saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>,
+  lemma LinkSavedIsLink(post: State, saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>,
                         r: Revision, x: Option<(Hash, Kind)>)
     requires LinkSaved(saved, d, b, bd, l, r, x)
-    requires forall h :: h in saved ==> SavedInRound(after, h)
-    ensures SettleLink(after, d, b, bd, l, r, x)
+    requires forall h :: h in saved ==> SavedInRound(post, d, h)
+    ensures SettleLink(post, d, b, bd, l, r, x)
   {}
 
   // The chain so far: settling `rs` in turn from base content `b` (`bd`: a
@@ -139,22 +139,22 @@ abstract module RoundG6 refines RoundGuarantees {
   // At the end of the round: a chain whose saved contents are saved next to
   // it on the device the round leaves, and whose local side is what the
   // document sends, is RoundChain's ChainThrough.
-  lemma ChainSavedIsThrough(after: Device, saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>,
+  lemma ChainSavedIsThrough(post: State, saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>,
                             rs: seq<Revision>, x: Option<(Hash, Kind)>, c: Option<Hash>)
     requires ChainSaved(saved, d, b, bd, l, rs, x, c)
-    requires forall h :: h in saved ==> SavedInRound(after, h)
-    ensures ChainThrough(after, d, b, bd, l, rs, LocalContent(x), c)
+    requires forall h :: h in saved ==> SavedInRound(post, d, h)
+    ensures ChainThrough(post, d, b, bd, l, rs, LocalContent(x), c)
     decreases |rs|
   {
     if |rs| > 0 {
       var y := var y :| LinkSaved(saved, d, b, bd, l, rs[0], y)
         && (ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c)
             || (c.Some? && c == LocalContent(l) && ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None))); y;
-      LinkSavedIsLink(after, saved, d, b, bd, l, rs[0], y);
+      LinkSavedIsLink(post, saved, d, b, bd, l, rs[0], y);
       if ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c) {
-        ChainSavedIsThrough(after, saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c);
+        ChainSavedIsThrough(post, saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c);
       } else {
-        ChainSavedIsThrough(after, saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None);
+        ChainSavedIsThrough(post, saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None);
       }
     }
   }
@@ -1155,6 +1155,31 @@ abstract module RoundG6 refines RoundGuarantees {
       var i := var i :| 0 <= i < |applied.effects| && applied.effects[i].Write? && applied.effects[i].target.None? && applied.effects[i].content == h; i;
     }
   }
+  // After a move aside, no later move of the same aside nor the head's
+  // write touches the name it moved to.
+  lemma {:isolate_assertions} AsideTailUntouched(platform: Platform, listing: Listing, front: seq<Effect>, arrive: Effect,
+                                                 moves: seq<(Path, Path, Hash)>, i: nat, wanted: Path)
+    requires i < |moves| && |front| == |moves|
+    requires forall k | 0 <= k < |moves| :: front[k].Move? && front[k].from == moves[k].0 && front[k].to == moves[k].1
+    requires forall k | 0 <= k < |moves| :: moves[k].0 in listing && FreeIn(platform, listing, moves[k].1)
+                                              && !CollideF(platform, moves[k].1, wanted)
+    requires forall a, b | 0 <= a < b < |moves| :: !CollideF(platform, moves[a].1, moves[b].1)
+    requires arrive.Write? && arrive.path == wanted
+    ensures forall k | i < k < |front + [arrive]| :: !Touches(platform, (front + [arrive])[k], moves[i].1)
+  {
+    var effects := front + [arrive];
+    forall k | i < k < |effects| ensures !Touches(platform, effects[k], moves[i].1) {
+      if k < |front| {
+        assert effects[k] == front[k];
+        assert !CollideF(platform, moves[k].0, moves[i].1);
+        assert !CollideF(platform, moves[i].1, moves[k].1);
+        if SameF(platform, moves[k].1, moves[i].1) { SameFIsEquivalence(platform, moves[k].1, moves[i].1, moves[i].1); assert false; }
+      } else {
+        assert effects[k] == arrive;
+        if SameF(platform, wanted, moves[i].1) { SameFIsEquivalence(platform, wanted, moves[i].1, moves[i].1); assert CollideF(platform, moves[i].1, wanted); assert false; }
+      }
+    }
+  }
   // The local version a remote move against a local change keeps apart is
   // an untracked file after the rule: at its name, or moved aside.
   lemma {:isolate_assertions} ClearWayKeptApartUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
@@ -1201,18 +1226,9 @@ abstract module RoundG6 refines RoundGuarantees {
     if CollideF(platform, own, r.path) {
       InTheWayHas(platform, input.listing, r.path, keep, own);
       var i := var i :| 0 <= i < |moves| && moves[i].0 == own; i;
-      forall k | i < k < |ruled.effects| ensures !Touches(platform, ruled.effects[k], moves[i].1) {
-        if k < |front| {
-          assert front[k].from == moves[k].0 && moves[k].0 in input.listing;
-          assert !CollideF(platform, moves[k].0, moves[i].1);
-          assert !CollideF(platform, moves[i].1, moves[k].1);
-          if SameF(platform, moves[k].1, moves[i].1) { SameFIsEquivalence(platform, moves[k].1, moves[i].1, moves[i].1); assert false; }
-        } else {
-          assert ruled.effects[k] == arrive[0];
-          if SameF(platform, r.path, moves[i].1) { SameFIsEquivalence(platform, r.path, moves[i].1, moves[i].1); assert CollideF(platform, moves[i].1, r.path); assert false; }
-        }
-      }
       forall j | 0 <= j < |moves| ensures moves[j].0 in input.listing { assert moves[j].0 in way; }
+      assert ruled.effects == front + [arrive[0]];
+      AsideTailUntouched(platform, input.listing, front, arrive[0], moves, i, r.path);
       MovedKeepsRead(platform, input.listing, ruled.effects, moves, i, moves[i].1);
       name := moves[i].1;
       assert 0 <= i < |moves| && moves[i].0 == own && name == moves[i].1;
@@ -1293,5 +1309,134 @@ abstract module RoundG6 refines RoundGuarantees {
     forall h | h in KeptApart(platform, document, r, input) ensures UntrackedHolds(platform, rows, listing', h) {
       assert h == lc;
     }
+  }
+  // ---------------------------------------------------------------------
+  // Untracked contents stay saved through the pass
+  // ---------------------------------------------------------------------
+
+  // An untracked listed file no effect touches, at a name no row binds
+  // after, still holds its content untracked.
+  lemma UntouchedStaysUntracked(platform: Platform, rows': map<DocId, Document>, listing: Listing, effects: seq<Effect>, p: Path, h: Hash)
+    requires Distinct(platform, listing) && Distinct(platform, ListingAfter(platform, listing, effects))
+    requires p in listing && listing[p].0 == h
+    requires forall effect :: effect in effects ==> !Touches(platform, effect, p)
+    requires forall e | e in rows' && rows'[e].binding.Some? :: !SameF(platform, rows'[e].binding.value.spelling, p)
+    ensures UntrackedHolds(platform, rows', ListingAfter(platform, listing, effects), h)
+  {
+    var after := ListingAfter(platform, listing, effects);
+    ListingAfterUntouched(platform, listing, effects, p);
+    SameFIsEquivalence(platform, p, p, p);
+    assert Listed(platform, listing, p);
+    assert ListedAt(platform, listing, p) == p by {
+      var k := ListedAt(platform, listing, p);
+      if k != p { assert SameF(platform, k, p); assert false; }
+    }
+    var k := ListedAt(platform, after, p);
+    assert k in after && after[k].0 == h && SameF(platform, k, p);
+    forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, k) {
+      if SameF(platform, rows'[e].binding.value.spelling, k) { SameFIsEquivalence(platform, rows'[e].binding.value.spelling, k, p); }
+    }
+  }
+
+  // A create (of a row with no file here) keeps an untracked content
+  // untracked: it writes at a free name, adopts the file (holding the
+  // head), or moves the one file in the way aside to a copy.
+  lemma {:isolate_assertions} CreateKeepsUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, row: Document, r: Revision,
+                                                   input: RoundInput, claims: Claims, rev: RevId, p: Path, h: Hash)
+    requires ListingDistinct(platform, input.listing) && row.binding.None? && !r.deleted
+    requires p in input.listing && input.listing[p].0 == h
+    requires forall e | e in documents && documents[e].binding.Some? :: !SameF(platform, documents[e].binding.value.spelling, p)
+    ensures var applied := Create(platform, doc, row, r, input, BoundNames(documents), claims, rev);
+      var listing' := ListingAfter(platform, input.listing, applied.effects);
+      Distinct(platform, listing') ==>
+        UntrackedHolds(platform, documents[doc := applied.document], listing', h) || (!r.deleted && h == r.content)
+  {
+    var bound := BoundNames(documents);
+    var applied := Create(platform, doc, row, r, input, bound, claims, rev);
+    var listing' := ListingAfter(platform, input.listing, applied.effects);
+    var rows' := documents[doc := applied.document];
+    if !Distinct(platform, listing') { return; }
+    if applied.document.binding.None? || applied.document.binding.value.spelling != r.path {
+      assert applied.effects == [] || applied.effects == [Report(Some(doc), r.path, "conflict: no copy name fits")];
+      forall effect | effect in applied.effects ensures !Touches(platform, effect, p) { }
+      forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, p) {
+        if e == doc { assert applied.document.binding == row.binding; assert false; }
+      }
+      UntouchedStaysUntracked(platform, rows', input.listing, applied.effects, p, h);
+      return;
+    }
+    if FreeIn(platform, input.listing, r.path) {
+      assert applied.effects == [Write(Some(doc), r.path, r.content, r.kind, None)];
+      assert !CollideF(platform, p, r.path);
+      forall effect | effect in applied.effects ensures !Touches(platform, effect, p) { }
+      forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, p) {
+        if e == doc { assert rows'[e].binding.value.spelling == r.path; }
+      }
+      UntouchedStaysUntracked(platform, rows', input.listing, applied.effects, p, h);
+      return;
+    }
+    var held := Colliders(platform, input.listing, r.path);
+    if Adoptable(platform, row, input, r) {
+      assert applied.effects == [];
+      if SameF(platform, p, r.path) {
+        assert CollideF(platform, p, r.path);
+        assert p in held;
+        assert p == r.path;
+        assert h == input.listing[r.path].0 == r.content;
+        return;
+      }
+      forall effect | effect in applied.effects ensures !Touches(platform, effect, p) { }
+      forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, p) {
+        if e == doc { assert rows'[e].binding.value.spelling == r.path; if SameF(platform, r.path, p) { SameFIsEquivalence(platform, r.path, p, p); } }
+      }
+      UntouchedStaysUntracked(platform, rows', input.listing, applied.effects, p, h);
+      return;
+    }
+    var q := LeastPath(held);
+    var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path).value;
+    var m := Move(None, q, copy, input.listing[q].0);
+    var w := Write(Some(doc), r.path, r.content, r.kind, None);
+    assert applied.effects == [m, w];
+    AppliedMovesAndCopies(platform, doc, row, r, input, bound, claims, rev);
+    CreateMoveAsideReads(platform, doc, row, r, input, bound, claims, rev);
+    assert q in held && q in input.listing;
+    assert FreeIn(platform, input.listing, copy);
+    assert forall t | t in bound :: !SameF(platform, t, copy);
+    if p == q {
+      ListingAfterTwo(platform, input.listing, m, w);
+      var mid := ListingAfterEffect(platform, input.listing, m);
+      SameFIsEquivalence(platform, q, q, q);
+      assert ListedAt(platform, input.listing, q) == q by {
+        var k := ListedAt(platform, input.listing, q);
+        if k != q { assert SameF(platform, k, q); assert false; }
+      }
+      assert mid == (input.listing - {q})[copy := input.listing[q]];
+      assert !CollideF(platform, copy, r.path);
+      assert !SameF(platform, r.path, copy);
+      assert listing' == ListingAfterEffect(platform, mid, w);
+      assert copy in listing' && listing'[copy].0 == h;
+      forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, copy) {
+        if e == doc { assert rows'[e].binding.value.spelling == r.path; if SameF(platform, r.path, copy) { SameFIsEquivalence(platform, r.path, copy, copy); } }
+        else { assert rows'[e].binding.value.spelling in bound; }
+      }
+      return;
+    }
+    if SameF(platform, p, q) { assert false; }
+    if SameF(platform, p, r.path) {
+      assert CollideF(platform, p, r.path) && p in held;
+      assert p in held - {q};
+      assert |held - {q}| == |held| - 1 == 0;
+      assert false;
+    }
+    assert !CollideF(platform, p, copy);
+    forall effect | effect in applied.effects ensures !Touches(platform, effect, p) {
+      if SameF(platform, copy, p) { SameFIsEquivalence(platform, copy, p, p); assert CollideF(platform, p, copy); }
+      if SameF(platform, q, p) { SameFIsEquivalence(platform, q, p, p); }
+      if SameF(platform, r.path, p) { SameFIsEquivalence(platform, r.path, p, p); }
+    }
+    forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, p) {
+      if e == doc { assert rows'[e].binding.value.spelling == r.path; if SameF(platform, r.path, p) { SameFIsEquivalence(platform, r.path, p, p); } }
+    }
+    UntouchedStaysUntracked(platform, rows', input.listing, applied.effects, p, h);
   }
 }

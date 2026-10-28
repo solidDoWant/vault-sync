@@ -859,7 +859,7 @@ abstract module Guarantees refines EngineModel {
   //   both sides hold the same content, G6_Settle compares content only,
   //   so the local side may stay with its own kind).
   // The next link's base is `r`.
-  ghost predicate SettleLink(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, r: Revision,
+  ghost predicate SettleLink(post: State, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, r: Revision,
                              x: Option<(Hash, Kind)>) {
     if r.device == d then x == l
     else if r.deleted then x == l || (l.Some? && l.value.0 == b && !bd && x.None?)
@@ -874,19 +874,20 @@ abstract module Guarantees refines EngineModel {
     else if lc == b then x == Some((rc, r.kind))
     else if rc == b then x == l
     else if lk == Note && r.kind == Note && Merge3(b, lc, rc).Some? then Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note
-    else (x == Some((rc, r.kind)) && SavedInRound(after, lc)) || (x == l && SavedInRound(after, rc))
+    else (x == Some((rc, r.kind)) && SavedInRound(post, d, lc)) || (x == l && SavedInRound(post, d, rc))
   }
 
-  // A content a round's chain saved is on the device it leaves: saved next
-  // to it (SavedNextToIt), or in a file bound to a document whose base, a
-  // revision the server accepted, holds exactly it. A conflict copy written
-  // early in a round can be adopted later in the same round by another
-  // document's revision that holds the same content at that name (#1094):
-  // the content is then on the device and on the server.
-  ghost predicate SavedInRound(after: Device, content: Hash) {
-    SavedNextToIt(after, content)
-    || exists p, e :: p in after.disk && after.disk[p].content == content && BoundTo(after, e, p)
-         && after.journal.documents[e].base.Some? && after.journal.documents[e].base.value.content == content
+  // A content a round's chain saved is on the device it leaves, saved next
+  // to it (SavedNextToIt), or it is the content of a live revision the
+  // server accepted (#1094). A conflict copy written early in a round can be
+  // adopted later in the same round by another document's revision that
+  // holds the same content at that name, and a still later revision of
+  // that document can then replace the file: the content is then the
+  // accepted revision's, and only retention removes it (G1).
+  ghost predicate SavedInRound(post: State, d: DeviceId, content: Hash) {
+    (d in post.devices && SavedNextToIt(post.devices[d], content))
+    || exists rev :: rev in post.server.accepted && !post.server.accepted[rev].deleted
+         && post.server.accepted[rev].content == content
   }
 
   // The content of a chain's local side.
@@ -898,14 +899,14 @@ abstract module Guarantees refines EngineModel {
   // local side `l` leaves `out`, the content the document sends, and, where
   // `c` is some, it is one of the chain's contents (its start or a link's
   // result).
-  ghost predicate ChainThrough(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
+  ghost predicate ChainThrough(post: State, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
                                out: Option<Hash>, c: Option<Hash>)
     decreases |rs|
   {
     if |rs| == 0 then out == LocalContent(l) && (c.None? || c == LocalContent(l))
-    else exists x :: SettleLink(after, d, b, bd, l, rs[0], x)
-           && (ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
-               || (c.Some? && c == LocalContent(l) && ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None)))
+    else exists x :: SettleLink(post, d, b, bd, l, rs[0], x)
+           && (ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
+               || (c.Some? && c == LocalContent(l) && ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None)))
   }
 
   // The round on d settles doc's revisions `rs` (accepted, its own
@@ -930,18 +931,20 @@ abstract module Guarantees refines EngineModel {
     && doc in step.post.devices[d].journal.documents
     && step.post.devices[d].journal.documents[doc].base.Some?
     && step.post.devices[d].journal.documents[doc].base.value.rev == rs[|rs| - 1].id
-    && exists out :: ChainThrough(step.post.devices[d], d, document.base.value.content, document.base.value.deleted, Some(read), rs,
+    && exists out :: ChainThrough(step.post, d, document.base.value.content, document.base.value.deleted, Some(read), rs,
                                   out, Some(c))
-                     && ChainEnds(step.post.devices[d], doc, out)
+                     && ChainEnds(step.post, d, doc, out)
   }
 
   // A chain ends in what the document sends, or, where the document sends
   // nothing and has no file after the round, in a file left untracked on
   // the device (#1094): later in the round, after its last settle, rule
   // W(b) let the document's file go, as a later step of its own would.
-  ghost predicate ChainEnds(after: Device, doc: DocId, out: Option<Hash>) {
-    out == Outgoing(after, doc)
-    || (Outgoing(after, doc).None? && out.Some? && SavedInRound(after, out.value))
+  ghost predicate ChainEnds(post: State, d: DeviceId, doc: DocId, out: Option<Hash>)
+    requires d in post.devices
+  {
+    out == Outgoing(post.devices[d], doc)
+    || (Outgoing(post.devices[d], doc).None? && out.Some? && SavedInRound(post, d, out.value))
   }
 
   // ---------------------------------------------------------------------
