@@ -1617,7 +1617,7 @@ abstract module PathRuleCore refines ApplyCore {
   // arrival leave: each copy holding the file it moved, the head at its
   // name with its content, every file not in the way and not the
   // document's own as it was, and nothing else.
-  lemma ClearWayDisk(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+  lemma {:isolate_assertions} ClearWayDisk(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
                      own: Option<Path>, moves: seq<(Path, Path, Hash)>, disk': map<Path, DiskFile>)
     requires doc in documents && input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
