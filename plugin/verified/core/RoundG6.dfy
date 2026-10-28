@@ -1895,6 +1895,12 @@ abstract module RoundG6 refines RoundGuarantees {
     MovedKeepsRead(platform, listing, effects, moves, i, moves[i].1);
   }
 
+  // A free name collides with no listed file.
+  lemma FreeMissesListed(platform: Platform, listing: Listing, q: Path, p: Path)
+    requires q in listing && FreeIn(platform, listing, p)
+    ensures !CollideF(platform, q, p)
+  {}
+
   // Where the rule clears the way, another row it lets go had its file
   // moved aside: the copy holds what the row read, and no row is bound
   // to it.
@@ -1954,7 +1960,9 @@ abstract module RoundG6 refines RoundGuarantees {
     reveal ArrivingRow(), Arriving();
     if keep.Some? {
       assert keep == OwnFile(platform, document, input);
-      assert !CollideF(platform, keep.value, name);
+      assert keep.value in input.listing;
+      assert FreeIn(platform, input.listing, name);
+      FreeMissesListed(platform, input.listing, keep.value, name);
     }
     if SameF(platform, r.path, name) { SameFIsEquivalence(platform, r.path, name, name); assert CollideF(platform, name, r.path); assert false; }
     ArriveTouchesOnly(platform, doc, ArrivingRow(platform, document, r, input), Arriving(platform, document, r, input), keep, name);
