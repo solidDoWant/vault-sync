@@ -1,0 +1,26 @@
+# Groups of Dafny files for CI's `verify (<group>)` jobs (make verify-group,
+# scripts/verify-group.sh): one `<group> <file>` line per .dfy file under
+# plugin/verified/, the file relative to this directory. Every file must be in
+# exactly one group. Keep each group well under the jobs' 15-minute limit: a
+# heavy file gets its own group. The figures are seconds of
+# `dafny verify --cores 2 <file>` on the dev VM (#1031).
+
+merged core/MergedClaims.dfy        # 257
+
+server core/ServerEvents.dfy        # 203
+
+core core/RemoteEvents.dfy          # 87
+core core/PathRule.dfy              # 69
+core core/ClaimsMirror.dfy          # 45
+core core/Apply.dfy                 # 42
+core core/LocalEvents.dfy           # 12
+core core/Push.dfy                  # 7
+core LocalCoreJs.dfy                # 5
+core Clamp.dfy                      # 1
+
+spec spec/ContractWitnesses.dfy     # 60
+spec spec/Witnesses.dfy             # 14
+spec spec/Contracts.dfy             # 8
+spec spec/Guarantees.dfy            # 6
+spec spec/Engine.dfy                # 3
+spec spec/Paths.dfy                 # 1
