@@ -44,7 +44,25 @@ abstract module PathRuleCore refines ApplyCore {
            + (set d | d in documents && documents[d].ahead.Some? && !documents[d].ahead.value.revision.deleted
                 :: documents[d].ahead.value.revision.path),
            set d | d in documents && documents[d].outbox.Some? && !documents[d].outbox.value.deleted
-             :: documents[d].outbox.value.path)
+             :: documents[d].outbox.value.path,
+           {})
+  }
+
+  // The claims a conflict copy the apply writes avoids: every row's (as
+  // the round's earlier revisions left them) and the round's first ones,
+  // `first` (RoundClaims). A name an earlier revision of the round freed
+  // stays taken until the round ends, so every copy is free against the
+  // listing and the journal the round started from (CopiesTakeFreeNames).
+  function ApplyClaims(documents: map<DocId, Document>, first: Claims): Claims {
+    var all := AllClaims(documents);
+    Claims(all.paths + first.paths, all.names + first.names, all.listed + first.listed)
+  }
+
+  // The round's first claims: the journal's, and under F every file the
+  // round's listing holds and every bound name.
+  function RoundClaims(platform: Platform, journal: Journal, input: RoundInput): Claims {
+    var all := AllClaims(journal.documents);
+    Claims(all.paths, all.names, input.listing.Keys + BoundNames(journal.documents))
   }
 
   // A document's newest server claim: its live `ahead`'s path, else its live
@@ -213,14 +231,15 @@ abstract module PathRuleCore refines ApplyCore {
   }
 
   // One pulled revision `r` of document `doc` in a round, against the
-  // journal's rows `documents`, the round's input, and the revision ids of
-  // §3.1.
-  function PathRule(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs): Ruled
+  // journal's rows `documents`, the round's input, the revision ids of
+  // §3.1, and the round's first claims `first` (RoundClaims), which every
+  // conflict copy the apply writes also avoids (ApplyClaims).
+  function PathRule(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims): Ruled
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
   {
     var document := documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if !HeldForName(document, applied, r) then Ruled(documents[doc := applied.document], applied.effects)
     else if UnsavedCollides(platform, input.unsaved, r.path) then
       // A user must act: the revision waits, and the round reports it.
@@ -409,20 +428,21 @@ abstract module PathRuleCore refines ApplyCore {
               FreeIn(platform, input.listing, e.path)
               && (forall t | t in bound + input.unsaved :: !SameF(platform, t, e.path))
               && (forall s | s in claims.paths :: !CollideK(s, e.path))
-              && (forall s | s in claims.names :: !SameK(s, e.path)))
+              && (forall s | s in claims.names :: !SameK(s, e.path))
+              && (forall s | s in claims.listed :: !CollideF(platform, s, e.path)))
   {}
 
   // NoMoveFromUnsaved, on the rule: no file that collides with a path an
   // open editor holds unsaved text at is moved.
-  lemma RuleNoMoveFromUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleNoMoveFromUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
-    ensures var effects := PathRule(platform, documents, doc, r, input, revs).effects;
+    ensures var effects := PathRule(platform, documents, doc, r, input, revs, first).effects;
       forall i | 0 <= i < |effects| && effects[i].Move? :: !UnsavedCollides(platform, input.unsaved, effects[i].from)
   {
     var document := documents[doc];
-    AppliedMovesAndCopies(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
-    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    AppliedMovesAndCopies(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       ClearWayNoMoveFromUnsaved(platform, documents, doc, r, input, revs);
     }
@@ -469,10 +489,10 @@ abstract module PathRuleCore refines ApplyCore {
   // The rule leaves the revision waiting for its name (PathHeld) only where
   // unsaved text collides with the name, which UserMustAct reports; it
   // changes no other document's `ahead`.
-  lemma RuleHeldOnlyForUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleHeldOnlyForUnsaved(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
-    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       ruled.documents.Keys == documents.Keys
       && (forall e | e in documents && e != doc :: ruled.documents[e].ahead == documents[e].ahead)
       && (ruled.documents[doc].ahead != documents[doc].ahead && ruled.documents[doc].ahead.Some?
@@ -480,7 +500,7 @@ abstract module PathRuleCore refines ApplyCore {
           ==> ruled.documents[doc].ahead.value.revision == r && UnsavedCollides(platform, input.unsaved, r.path))
   {
     var document := documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       var own := OwnFile(platform, document, input);
       var keep := Keeps(platform, document, r, input);
@@ -504,10 +524,10 @@ abstract module PathRuleCore refines ApplyCore {
   // CopiesTakeFreeNames, on the rule: every copy it writes (a write of no
   // document) takes a name that collides under F with nothing listed, bound
   // or unsaved, and under K with no document's server claim.
-  lemma RuleCopiesTakeFreeNames(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleCopiesTakeFreeNames(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
-    ensures var effects := PathRule(platform, documents, doc, r, input, revs).effects;
+    ensures var effects := PathRule(platform, documents, doc, r, input, revs, first).effects;
       forall e | e in effects && e.Write? && e.target.None? ::
         (forall q :: q in input.listing ==> !CollideF(platform, q, e.path))
         && (forall u :: u in input.unsaved ==> !SameF(platform, u, e.path))
@@ -520,13 +540,13 @@ abstract module PathRuleCore refines ApplyCore {
   {
     var document := documents[doc];
     var bound := BoundNames(documents);
-    var claims := AllClaims(documents);
+    var claims := ApplyClaims(documents, first);
     AppliedMovesAndCopies(platform, doc, document, r, input, bound, claims, revs[doc]);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       ClearWayWritesNoCopy(platform, documents, doc, r, input, revs);
     }
-    forall e | e in PathRule(platform, documents, doc, r, input, revs).effects && e.Write? && e.target.None?
+    forall e | e in PathRule(platform, documents, doc, r, input, revs, first).effects && e.Write? && e.target.None?
       ensures forall d :: d in documents ==>
               var row := documents[d];
               (row.binding.Some? ==> !SameF(platform, row.binding.value.spelling, e.path))
@@ -601,18 +621,18 @@ abstract module PathRuleCore refines ApplyCore {
   }
 
   // From rows that keep RowInv, every row the rule returns keeps it.
-  lemma {:isolate_assertions} RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma {:isolate_assertions} RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
-    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       ruled.documents.Keys == documents.Keys && forall e | e in ruled.documents :: RowInv(ruled.documents[e])
   {
     reveal Keeps(), ArrivingRow(), Arriving();
     reveal HeadRow();
     var document := documents[doc];
     var bound := BoundNames(documents);
-    var claims := AllClaims(documents);
+    var claims := ApplyClaims(documents, first);
     AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, revs[doc]);
     HeldHasNoChange(platform, doc, document, r, input, bound, claims, revs[doc]);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
@@ -620,7 +640,7 @@ abstract module PathRuleCore refines ApplyCore {
       var own := OwnFile(platform, document, input);
       var keep := Keeps(platform, document, r, input);
       var way := InTheWay(platform, input.listing, r.path, keep);
-      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, claims, way, r.path);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
       if aside.Some? {
         MoveRowsKeepRowInv(platform, documents, doc, aside.value, revs);
       }
@@ -760,19 +780,19 @@ abstract module PathRuleCore refines ApplyCore {
 
   // Every disk effect of the rule has a precondition that holds, in order,
   // on the disk the round's listing was read from.
-  lemma RulePreconditionsHold(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RulePreconditionsHold(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires input.listing == ListingOf(device)
     requires ListingDistinct(device.platform, input.listing)
-    ensures PreconditionsInOrder(device.platform, device.disk, PathRule(device.platform, documents, doc, r, input, revs).effects)
+    ensures PreconditionsInOrder(device.platform, device.disk, PathRule(device.platform, documents, doc, r, input, revs, first).effects)
   {
     var platform := device.platform;
     var disk := device.disk;
     var document := documents[doc];
     var bound := BoundNames(documents);
-    var claims := AllClaims(documents);
+    var claims := ApplyClaims(documents, first);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
-    var effects := PathRule(platform, documents, doc, r, input, revs).effects;
+    var effects := PathRule(platform, documents, doc, r, input, revs, first).effects;
     if !HeldForName(document, applied, r) {
       AppliedPreconditionsHold(device, doc, document, r, input, bound, claims, revs[doc]);
       return;
@@ -786,7 +806,7 @@ abstract module PathRuleCore refines ApplyCore {
     var keep := Keeps(platform, document, r, input);
     var way := InTheWay(platform, input.listing, r.path, keep);
     var avoid := bound + input.unsaved;
-    var aside := Aside(platform, input.listing, avoid, claims, way, r.path);
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
     if r.deleted || (document.binding.Some? && own.None? && !Revives(platform, document, r, input))
        || (exists q | q in way :: UnsavedCollides(platform, input.unsaved, q))
        || (own.Some? && UnsavedCollides(platform, input.unsaved, own.value))
@@ -805,7 +825,7 @@ abstract module PathRuleCore refines ApplyCore {
     forall d' | AsideLeaves(platform, disk, way, r.path, kept, d') ensures PreconditionsInOrder(platform, d', tail) {
       ArriveInOrder(platform, doc, arow, ar, keep, disk, way, kept, d');
     }
-    AsideInOrder(platform, documents, doc, input.listing, avoid, claims, way, r.path, disk, disk, way, kept, tail);
+    AsideInOrder(platform, documents, doc, input.listing, avoid, AllClaims(documents), way, r.path, disk, disk, way, kept, tail);
     assert effects == MoveEffects(platform, documents, doc, aside.value) + tail;
   }
 
@@ -818,14 +838,14 @@ abstract module PathRuleCore refines ApplyCore {
   // (RoundInputOf), and whose state after has the rule's rows and the disk
   // the effects left. (The other revisions of the round and the push are
   // #982's.)
-  ghost predicate RuleStep(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs) {
+  ghost predicate RuleStep(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims) {
     step.event.SyncRound?
     && RoundInputOf(step.pre, step.event.device, input)
     && var d := step.event.device;
     var device := step.pre.devices[d];
     doc in device.journal.documents && device.journal.documents.Keys <= revs.Keys
     && ListingDistinct(device.platform, input.listing)
-    && var ruled := PathRule(device.platform, device.journal.documents, doc, r, input, revs);
+    && var ruled := PathRule(device.platform, device.journal.documents, doc, r, input, revs, first);
     step.effects == ruled.effects && d in step.post.devices
     && step.post.devices[d] == device.(journal := device.journal.(documents := ruled.documents),
                                        disk := step.post.devices[d].disk)
@@ -837,8 +857,8 @@ abstract module PathRuleCore refines ApplyCore {
   // round first), the rule meets PathRuleContract: it moves nothing
   // unsaved text collides with, every copy takes a free name, and every
   // revision left waiting for a name is one a user must act on.
-  lemma RuleMeetsContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
-    requires RuleStep(step, doc, r, input, revs)
+  lemma RuleMeetsContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RuleStep(step, doc, r, input, revs, first)
     requires var device := step.pre.devices[step.event.device];
       forall e | e in device.journal.documents && device.journal.documents[e].ahead.Some?
                  && device.journal.documents[e].ahead.value.blocker.PathHeld? ::
@@ -850,10 +870,10 @@ abstract module PathRuleCore refines ApplyCore {
     var device := step.pre.devices[d];
     var documents := device.journal.documents;
     var platform := device.platform;
-    RuleNoMoveFromUnsaved(platform, documents, doc, r, input, revs);
-    RuleCopiesTakeFreeNames(platform, documents, doc, r, input, revs);
-    RuleHeldOnlyForUnsaved(platform, documents, doc, r, input, revs);
-    var ruled := PathRule(platform, documents, doc, r, input, revs);
+    RuleNoMoveFromUnsaved(platform, documents, doc, r, input, revs, first);
+    RuleCopiesTakeFreeNames(platform, documents, doc, r, input, revs, first);
+    RuleHeldOnlyForUnsaved(platform, documents, doc, r, input, revs, first);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
     var after := step.post.devices[d];
     assert input.unsaved == UnsavedPaths(device);
     forall i | 0 <= i < |step.effects| && step.effects[i].Move?
@@ -885,17 +905,17 @@ abstract module PathRuleCore refines ApplyCore {
   // acknowledgement leaves nothing waiting for a name, so the rule's row is
   // the accept of it (or, where the file already holds the revision, the
   // identical row) and it requests no effect (ApplySettlesContract).
-  lemma RuleAcknowledges(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleAcknowledges(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires Newer(documents[doc], r) && Acknowledges(documents[doc], r)
-    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       && ruled.documents == documents[doc := if SettlesIdentical(platform, documents[doc], r, input)
                                              then IdenticalRow(documents[doc], r)
                                              else AcceptOn(documents[doc], BaseOf(r), revs[doc])]
       && ruled.effects == []
   {
-    AcknowledgementSettles(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    AcknowledgementSettles(platform, doc, documents[doc], r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
   }
 
   // The user's delete, or a bound file missing from the listing (the
@@ -907,12 +927,12 @@ abstract module PathRuleCore refines ApplyCore {
   // (CannotHold) or unsaved text collides with its name (a user must act).
   // The outbox's own revision is its acknowledgement instead
   // (RuleAcknowledges), and a commit in flight stays as sealed (#1023).
-  lemma RuleRevivesDeletedFile(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleRevivesDeletedFile(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
     requires Newer(documents[doc], r) && !Acknowledges(documents[doc], r) && Revives(platform, documents[doc], r, input)
-    ensures var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+    ensures var after := PathRule(platform, documents, doc, r, input, revs, first).documents[doc];
       && RowInv(after)
       && (after.ahead.None? ==>
             after.binding == Some(Binding(r.path, r.content, false, None))
@@ -935,7 +955,7 @@ abstract module PathRuleCore refines ApplyCore {
           ==> after.binding.Some? && after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted)))
   {
     reveal HeadRow();
-    RuleKeepsRowInv(platform, documents, doc, r, input, revs);
+    RuleKeepsRowInv(platform, documents, doc, r, input, revs, first);
   }
 
   // A remote move against a local change (ApplySettlesContract,
@@ -949,7 +969,7 @@ abstract module PathRuleCore refines ApplyCore {
   // name, with nothing to send (a commit in flight stays as sealed, #1023).
   // The revision waits only where the device cannot hold it (CannotHold) or unsaved text collides with its name (a
   // user must act); where nothing is in the way it is settled.
-  lemma RuleSettlesMoveAgainstChange(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleSettlesMoveAgainstChange(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
@@ -958,7 +978,7 @@ abstract module PathRuleCore refines ApplyCore {
     requires MovedAgainstChange(documents[doc], ListedRead(platform, input.listing, documents[doc].binding.value.spelling), r)
     ensures var document := documents[doc];
       var read := ListedRead(platform, input.listing, document.binding.value.spelling).value;
-      var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+      var after := PathRule(platform, documents, doc, r, input, revs, first).documents[doc];
       && RowInv(after)
       && (after.ahead.None? ==>
             after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
@@ -983,7 +1003,7 @@ abstract module PathRuleCore refines ApplyCore {
   {
     reveal Keeps(), ArrivingRow(), Arriving();
     reveal HeadRow();
-    RuleKeepsRowInv(platform, documents, doc, r, input, revs);
+    RuleKeepsRowInv(platform, documents, doc, r, input, revs, first);
     var document := documents[doc];
     var read := ListedRead(platform, input.listing, document.binding.value.spelling);
     assert !Revives(platform, document, r, input);
@@ -1007,14 +1027,14 @@ abstract module PathRuleCore refines ApplyCore {
   // #1023): the rule settles a revision the apply hands it (a remote move, a
   // revived file, a held name) with the commit kept, and defers it with the
   // row as it was.
-  lemma RuleKeepsCommitInFlight(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleKeepsCommitInFlight(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires InFlight(documents[doc]) && !Acknowledges(documents[doc], r)
-    ensures PathRule(platform, documents, doc, r, input, revs).documents[doc].outbox == documents[doc].outbox
+    ensures PathRule(platform, documents, doc, r, input, revs, first).documents[doc].outbox == documents[doc].outbox
   {
     reveal HeadRow();
-    AppliedKeepsCommitInFlight(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    AppliedKeepsCommitInFlight(platform, doc, documents[doc], r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
   }
 
   // ---------------------------------------------------------------------
@@ -1047,34 +1067,34 @@ abstract module PathRuleCore refines ApplyCore {
   // (ApplySettlesContract, verified-core.md §4.2, #1068): on the row the
   // rule leaves, for every revision, row, listing and unsaved paths.
   lemma {:isolate_assertions} RuleSettlesContract(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
-                                                  input: RoundInput, revs: FreshRevs)
+                                                  input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
-    ensures var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+    ensures var after := PathRule(platform, documents, doc, r, input, revs, first).documents[doc];
       ApplySettlesContract(documents[doc], after, r, ReadOf(platform, input, documents[doc]),
                            UnsavedOf(platform, input, documents[doc]), MustActOn(platform, input.unsaved, after))
   {
     reveal HeadRow();
     var document := documents[doc];
     var bound := BoundNames(documents);
-    var claims := AllClaims(documents);
+    var claims := ApplyClaims(documents, first);
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
-    var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
-    RuleKeepsRowInv(platform, documents, doc, r, input, revs);
+    var after := PathRule(platform, documents, doc, r, input, revs, first).documents[doc];
+    RuleKeepsRowInv(platform, documents, doc, r, input, revs, first);
     if !Newer(document, r) {
       assert after == document;
       return;
     }
     if Acknowledges(document, r) {
-      RuleAcknowledges(platform, documents, doc, r, input, revs);
+      RuleAcknowledges(platform, documents, doc, r, input, revs, first);
       return;
     }
     if InFlight(document) {
-      RuleKeepsCommitInFlight(platform, documents, doc, r, input, revs);
+      RuleKeepsCommitInFlight(platform, documents, doc, r, input, revs, first);
     }
     if Revives(platform, document, r, input) {
-      RuleRevivesDeletedFile(platform, documents, doc, r, input, revs);
+      RuleRevivesDeletedFile(platform, documents, doc, r, input, revs, first);
       return;
     }
     if document.binding.Some? {
@@ -1086,7 +1106,7 @@ abstract module PathRuleCore refines ApplyCore {
         return;
       }
       if MovedAgainstChange(document, read, r) && !SettlesIdentical(platform, document, r, input) && !Concurrent(document, read, r) {
-        RuleSettlesMoveAgainstChange(platform, documents, doc, r, input, revs);
+        RuleSettlesMoveAgainstChange(platform, documents, doc, r, input, revs, first);
         return;
       }
     }
@@ -1105,18 +1125,18 @@ abstract module PathRuleCore refines ApplyCore {
   // MustActOn is UserMustAct on the rule's step: the step keeps the
   // device's editors and platform, and the round's unsaved paths are the
   // editors' (RoundInputOf).
-  lemma RuleMustActIsUserMustAct(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
-    requires RuleStep(step, doc, r, input, revs)
+  lemma RuleMustActIsUserMustAct(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RuleStep(step, doc, r, input, revs, first)
     ensures var d := step.event.device;
       var device := step.pre.devices[d];
-      var after := PathRule(device.platform, device.journal.documents, doc, r, input, revs).documents[doc];
+      var after := PathRule(device.platform, device.journal.documents, doc, r, input, revs, first).documents[doc];
       UserMustAct(step.post.devices[d], doc) <==> MustActOn(device.platform, input.unsaved, after)
   {
     var d := step.event.device;
     var device := step.pre.devices[d];
     var post := step.post.devices[d];
     var platform := device.platform;
-    var ruled := PathRule(platform, device.journal.documents, doc, r, input, revs);
+    var ruled := PathRule(platform, device.journal.documents, doc, r, input, revs, first);
     var after := ruled.documents[doc];
     assert input.unsaved == UnsavedPaths(device);
     assert post.editors == device.editors && post.platform == platform;
@@ -1145,8 +1165,8 @@ abstract module PathRuleCore refines ApplyCore {
   // (CoreInv), the row the rule
   // leaves meets ApplySettlesContract, with `mustAct` UserMustAct in the
   // step's state after (Contracts.dfy).
-  lemma RuleStepSettlesContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
-    requires RuleStep(step, doc, r, input, revs)
+  lemma RuleStepSettlesContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RuleStep(step, doc, r, input, revs, first)
     requires var device := step.pre.devices[step.event.device];
       (forall e | e in device.journal.documents :: RowInv(device.journal.documents[e]))
     ensures var d := step.event.device;
@@ -1157,16 +1177,16 @@ abstract module PathRuleCore refines ApplyCore {
                            UserMustAct(step.post.devices[d], doc))
   {
     var device := step.pre.devices[step.event.device];
-    RuleSettlesContract(device.platform, device.journal.documents, doc, r, input, revs);
-    RuleMustActIsUserMustAct(step, doc, r, input, revs);
+    RuleSettlesContract(device.platform, device.journal.documents, doc, r, input, revs, first);
+    RuleMustActIsUserMustAct(step, doc, r, input, revs, first);
   }
 
   // Where the apply leaves nothing waiting for a name, the rule's step is the
   // pull apply's step (§3.9's `ApplyStep`, with every binding's name and
   // every row's claims), so the apply's guarantees hold for it: G2's step
   // predicates, G5_NeverMixedUp, G6_Settle and G7.
-  lemma RulePassThroughGuarantees(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
-    requires RuleStep(step, doc, r, input, revs)
+  lemma RulePassThroughGuarantees(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RuleStep(step, doc, r, input, revs, first)
     requires var d := step.event.device;
       step.post == step.pre.(devices := step.pre.devices[d := step.post.devices[d]])
     requires var device := step.pre.devices[step.event.device];
@@ -1178,9 +1198,9 @@ abstract module PathRuleCore refines ApplyCore {
     requires var device := step.pre.devices[step.event.device];
       var documents := device.journal.documents;
       !HeldForName(documents[doc], ApplyRevision(device.platform, doc, documents[doc], r, input, BoundNames(documents),
-                                                 AllClaims(documents), revs[doc]), r)
+                                                 ApplyClaims(documents, first), revs[doc]), r)
     ensures var device := step.pre.devices[step.event.device];
-      ApplyStep(step, doc, r, input, BoundNames(device.journal.documents), AllClaims(device.journal.documents), revs[doc])
+      ApplyStep(step, doc, r, input, BoundNames(device.journal.documents), ApplyClaims(device.journal.documents, first), revs[doc])
     ensures G2_OnlyWhatItSaw(step) && G2_UnsavedSafe(step) && G2_NoUntrackedDelete(step)
     ensures G5_NeverMixedUp(step)
     ensures forall d, doc', remote :: SettlesConcurrent(step, d, doc', remote) ==> G6_Settle(step, d, doc', remote)
@@ -1190,7 +1210,7 @@ abstract module PathRuleCore refines ApplyCore {
     var device := step.pre.devices[d];
     var documents := device.journal.documents;
     var bound := BoundNames(documents);
-    var claims := AllClaims(documents);
+    var claims := ApplyClaims(documents, first);
     forall other | other in documents && documents[other].binding.Some?
       ensures documents[other].binding.value.spelling in bound
     {}
@@ -1321,8 +1341,8 @@ abstract module PathRuleCore refines ApplyCore {
 
   // On a rule step from a disk with one file per name, the disk after has
   // one file per name.
-  lemma RuleOneFilePerName(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
-    requires RuleStep(step, doc, r, input, revs)
+  lemma RuleOneFilePerName(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RuleStep(step, doc, r, input, revs, first)
     requires var device := step.pre.devices[step.event.device];
       OneFilePerName(device.platform, device.disk)
       && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
@@ -2043,8 +2063,8 @@ abstract module PathRuleCore refines ApplyCore {
   // one file per name and a journal in which no two rows are bound to one
   // file (G5_NeverJoined). Where the rule defers instead, it changes no
   // binding and nothing on disk.
-  lemma ClearWayG5G7(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
-    requires RuleStep(step, doc, r, input, revs)
+  lemma ClearWayG5G7(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires RuleStep(step, doc, r, input, revs, first)
     requires var device := step.pre.devices[step.event.device];
       OneFilePerName(device.platform, device.disk)
       && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
@@ -2052,7 +2072,7 @@ abstract module PathRuleCore refines ApplyCore {
     requires var device := step.pre.devices[step.event.device];
       var documents := device.journal.documents;
       HeldForName(documents[doc], ApplyRevision(device.platform, doc, documents[doc], r, input, BoundNames(documents),
-                                                AllClaims(documents), revs[doc]), r)
+                                                ApplyClaims(documents, first), revs[doc]), r)
       && !UnsavedCollides(device.platform, input.unsaved, r.path)
     ensures G5_NeverMixedUp(step) && G7_MoveKeepsContents(step)
   {
@@ -2066,7 +2086,7 @@ abstract module PathRuleCore refines ApplyCore {
     var listing := input.listing;
     assert listing == ListingOf(device);
     assert NeverJoinedRows(platform, documents);
-    var ruled := PathRule(platform, documents, doc, r, input, revs);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
     assert ruled == ClearWay(platform, documents, doc, r, input, revs);
     var own := OwnFile(platform, document, input);
     var keep := Keeps(platform, document, r, input);
@@ -2082,7 +2102,7 @@ abstract module PathRuleCore refines ApplyCore {
       return;
     }
     var moves := aside.value;
-    HeldReadsSeen(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    HeldReadsSeen(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     assert step.effects == MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, document, r, input);
     assert after.journal.documents == ClearRows(platform, documents, doc, r, input, moves, revs);
     ClearG7(device, after, documents, doc, r, input, keep, moves);
@@ -2198,7 +2218,7 @@ abstract module PathRuleCore refines ApplyCore {
   // the listing as the round's earlier effects left it. Its disk effects
   // come after a PersistJournal whose intents cover them (§4.3,
   // IntentsCoverDiskEffects).
-  function SettleRevision(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs): RoundPass {
+  function SettleRevision(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims): RoundPass {
     var documents := pass.journal.documents;
     var row := if doc in documents then documents[doc] else NoRow();
     if !Distinct(platform, pass.listing) then pass
@@ -2208,18 +2228,18 @@ abstract module PathRuleCore refines ApplyCore {
       else pass
     else
       var rows := documents[doc := row];
-      var ruled := PathRule(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r));
+      var ruled := PathRule(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r), first);
       var intents := IntentsFor(doc, r, ruled.effects, pass.n);
       var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
       RoundPass(pass.journal.(documents := ruled.documents), ListingAfter(platform, pass.listing, ruled.effects),
            pass.effects + guard + ruled.effects, pass.n + |ruled.effects|)
   }
 
-  function SettlePulled(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs): RoundPass
+  function SettlePulled(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims): RoundPass
     decreases |revisions|
   {
     if |revisions| == 0 then pass
-    else SettlePulled(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs), revisions[1..], input, revs)
+    else SettlePulled(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first)
   }
 
   // The rows waiting since an earlier round (an `ahead`), in order. The
@@ -2230,7 +2250,7 @@ abstract module PathRuleCore refines ApplyCore {
     DocsInOrder(set doc | doc in documents && documents[doc].ahead.Some?)
   }
 
-  function RetryWaiting(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs): RoundPass
+  function RetryWaiting(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims): RoundPass
     decreases |docs|
   {
     if |docs| == 0 then pass
@@ -2240,9 +2260,9 @@ abstract module PathRuleCore refines ApplyCore {
         if docs[0] in documents && documents[docs[0]].ahead.Some? then
           var row := documents[docs[0]];
           var r := row.ahead.value.revision;
-          SettleRevision(platform, pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)])), docs[0], r, input, revs)
+          SettleRevision(platform, pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)])), docs[0], r, input, revs, first)
         else pass;
-      RetryWaiting(platform, pass', docs[1..], input, revs)
+      RetryWaiting(platform, pass', docs[1..], input, revs, first)
   }
 
   // The listing the push reads: the files in the device's scope (#1006,
@@ -2265,8 +2285,9 @@ abstract module PathRuleCore refines ApplyCore {
     // A round starts from a journal with no open intent: the restart's
     // recovery settles them first (§4.3).
     var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
-    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs);
-    var settled := SettlePulled(platform, retried, pulled, input, revs);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
     var read := settled.journal.(cursor := cursor', anchor := anchor');
     var push := OnPush(platform, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
     (push.0, settled.effects + push.1)
@@ -2320,14 +2341,14 @@ abstract module PathRuleCore refines ApplyCore {
     ensures RuleShaped(ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects)
   {}
 
-  lemma RuleShapedEffects(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleShapedEffects(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
-    ensures RuleShaped(PathRule(platform, documents, doc, r, input, revs).effects)
+    ensures RuleShaped(PathRule(platform, documents, doc, r, input, revs, first).effects)
   {
     var document := documents[doc];
-    ApplyShaped(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
-    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    ApplyShaped(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       var way := InTheWay(platform, input.listing, r.path, Keeps(platform, document, r, input));
       var avoid := BoundNames(documents) + input.unsaved;
@@ -2377,22 +2398,22 @@ abstract module PathRuleCore refines ApplyCore {
             && exists intent :: intent in pass.effects[j].journal.intents && Covers(intent.kind, pass.effects[i]))
   }
 
-  lemma {:isolate_assertions} SettleGuarded(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma {:isolate_assertions} SettleGuarded(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires Guarded(platform, input.unsaved, pass)
-    ensures Guarded(platform, input.unsaved, SettleRevision(platform, pass, doc, r, input, revs))
+    ensures Guarded(platform, input.unsaved, SettleRevision(platform, pass, doc, r, input, revs, first))
   {
     var documents := pass.journal.documents;
     var row := if doc in documents then documents[doc] else NoRow();
     if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
       var rows := documents[doc := row];
       var revs' := RevsFor(rows, revs, r);
-      var ruled := PathRule(platform, rows, doc, r, input.(listing := pass.listing), revs');
-      RuleShapedEffects(platform, rows, doc, r, input.(listing := pass.listing), revs');
-      RuleNoMoveFromUnsaved(platform, rows, doc, r, input.(listing := pass.listing), revs');
+      var ruled := PathRule(platform, rows, doc, r, input.(listing := pass.listing), revs', first);
+      RuleShapedEffects(platform, rows, doc, r, input.(listing := pass.listing), revs', first);
+      RuleNoMoveFromUnsaved(platform, rows, doc, r, input.(listing := pass.listing), revs', first);
       var intents := IntentsFor(doc, r, ruled.effects, pass.n);
       IntentsForCover(doc, r, ruled.effects, pass.n);
       var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
-      var after := SettleRevision(platform, pass, doc, r, input, revs);
+      var after := SettleRevision(platform, pass, doc, r, input, revs, first);
       assert after.effects == pass.effects + guard + ruled.effects;
       var k := |pass.effects|;
       forall i | 0 <= i < |after.effects| && IsDiskEffect(after.effects[i])
@@ -2423,20 +2444,20 @@ abstract module PathRuleCore refines ApplyCore {
     }
   }
 
-  lemma SettleAllGuarded(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs)
+  lemma SettleAllGuarded(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires Guarded(platform, input.unsaved, pass)
-    ensures Guarded(platform, input.unsaved, SettlePulled(platform, pass, revisions, input, revs))
+    ensures Guarded(platform, input.unsaved, SettlePulled(platform, pass, revisions, input, revs, first))
     decreases |revisions|
   {
     if |revisions| > 0 {
-      SettleGuarded(platform, pass, revisions[0].doc, revisions[0], input, revs);
-      SettleAllGuarded(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs), revisions[1..], input, revs);
+      SettleGuarded(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleAllGuarded(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
     }
   }
 
-  lemma RetryGuarded(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs)
+  lemma RetryGuarded(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires Guarded(platform, input.unsaved, pass)
-    ensures Guarded(platform, input.unsaved, RetryWaiting(platform, pass, docs, input, revs))
+    ensures Guarded(platform, input.unsaved, RetryWaiting(platform, pass, docs, input, revs, first))
     decreases |docs|
   {
     if |docs| > 0 {
@@ -2444,11 +2465,140 @@ abstract module PathRuleCore refines ApplyCore {
       if docs[0] in documents && documents[docs[0]].ahead.Some? {
         var row := documents[docs[0]];
         var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
-        SettleGuarded(platform, cleared, docs[0], row.ahead.value.revision, input, revs);
-        RetryGuarded(platform, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs), docs[1..], input, revs);
+        SettleGuarded(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryGuarded(platform, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
       } else {
-        RetryGuarded(platform, pass, docs[1..], input, revs);
+        RetryGuarded(platform, pass, docs[1..], input, revs, first);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // CopiesTakeFreeNames over the round
+  // ---------------------------------------------------------------------
+
+  // A copy name is free against the round's first claims `first` (its
+  // listing and bound names under F, its rows' server claims under K) and
+  // collides with no unsaved path.
+  ghost predicate CopyAvoids(platform: Platform, unsaved: set<Path>, first: Claims, c: Path) {
+    (forall s | s in first.listed :: !CollideF(platform, s, c))
+    && (forall s | s in first.paths :: !CollideK(s, c))
+    && (forall s | s in first.names :: !SameK(s, c))
+    && (forall u | u in unsaved :: !SameF(platform, u, c))
+  }
+
+  ghost predicate CopiesAvoid(platform: Platform, unsaved: set<Path>, first: Claims, effects: seq<Effect>) {
+    forall i :: 0 <= i < |effects| && effects[i].Write? && effects[i].target.None?
+      ==> CopyAvoids(platform, unsaved, first, effects[i].path)
+  }
+
+  // Every copy the rule writes avoids `first`: the apply names it against
+  // ApplyClaims, which holds `first`, and clearing the way writes none.
+  lemma RuleCopiesAvoidFirst(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures CopiesAvoid(platform, input.unsaved, first, PathRule(platform, documents, doc, r, input, revs, first).effects)
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    AppliedMovesAndCopies(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      ClearWayWritesNoCopy(platform, documents, doc, r, input, revs);
+    }
+    var effects := PathRule(platform, documents, doc, r, input, revs, first).effects;
+    forall i | 0 <= i < |effects| && effects[i].Write? && effects[i].target.None?
+      ensures CopyAvoids(platform, input.unsaved, first, effects[i].path)
+    {
+      assert effects[i] in effects;
+    }
+  }
+
+  lemma {:isolate_assertions} SettleCopiesAvoid(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires CopiesAvoid(platform, input.unsaved, first, pass.effects)
+    ensures CopiesAvoid(platform, input.unsaved, first, SettleRevision(platform, pass, doc, r, input, revs, first).effects)
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
+      var rows := documents[doc := row];
+      var revs' := RevsFor(rows, revs, r);
+      var ruled := PathRule(platform, rows, doc, r, input.(listing := pass.listing), revs', first);
+      RuleCopiesAvoidFirst(platform, rows, doc, r, input.(listing := pass.listing), revs', first);
+      var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+      var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+      var after := SettleRevision(platform, pass, doc, r, input, revs, first);
+      assert after.effects == pass.effects + guard + ruled.effects;
+      var k := |pass.effects|;
+      forall i | 0 <= i < |after.effects| && after.effects[i].Write? && after.effects[i].target.None?
+        ensures CopyAvoids(platform, input.unsaved, first, after.effects[i].path)
+      {
+        if i >= k + |guard| { assert after.effects[i] == ruled.effects[i - k - |guard|]; }
+        else if i >= k { assert after.effects[i] == guard[i - k]; }
+        else { assert after.effects[i] == pass.effects[i]; }
+      }
+    }
+  }
+
+  lemma SettleAllCopiesAvoid(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires CopiesAvoid(platform, input.unsaved, first, pass.effects)
+    ensures CopiesAvoid(platform, input.unsaved, first, SettlePulled(platform, pass, revisions, input, revs, first).effects)
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleCopiesAvoid(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleAllCopiesAvoid(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryCopiesAvoid(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires CopiesAvoid(platform, input.unsaved, first, pass.effects)
+    ensures CopiesAvoid(platform, input.unsaved, first, RetryWaiting(platform, pass, docs, input, revs, first).effects)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        SettleCopiesAvoid(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryCopiesAvoid(platform, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryCopiesAvoid(platform, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  // The push writes nothing: it persists the journal and commits.
+  lemma PushWritesNothing(platform: Platform, journal: Journal, input: RoundInput, revs: FreshRevs)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    ensures forall e | e in OnPush(platform, journal, input, revs).1 :: !e.Write?
+  {}
+
+  // Every copy the round writes avoids its first claims.
+  lemma OnRoundCopies(platform: Platform, journal: Journal, pulled: seq<Revision>, cursor': nat, anchor': Option<RevId>,
+                      input: RoundInput, revs: FreshRevs)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    ensures CopiesAvoid(platform, input.unsaved, RoundClaims(platform, journal, input),
+                        OnRound(platform, journal, pulled, cursor', anchor', input, revs).1)
+  {
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    RetryCopiesAvoid(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    SettleAllCopiesAvoid(platform, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    PushWritesNothing(platform, read, input', revs);
+    var effects := settled.effects + push.1;
+    var k := |settled.effects|;
+    forall i | 0 <= i < |effects| && effects[i].Write? && effects[i].target.None?
+      ensures CopyAvoids(platform, input.unsaved, first, effects[i].path)
+    {
+      if i >= k { assert effects[i] == push.1[i - k]; assert push.1[i - k] in push.1; }
     }
   }
 
@@ -2464,10 +2614,11 @@ abstract module PathRuleCore refines ApplyCore {
       && forall i | 0 <= i < |answer.1| && answer.1[i].Move? :: !UnsavedCollides(platform, input.unsaved, answer.1[i].from)
   {
     var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
-    RetryGuarded(platform, start, WaitingRows(journal.documents), input, revs);
-    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs);
-    SettleAllGuarded(platform, retried, pulled, input, revs);
-    var settled := SettlePulled(platform, retried, pulled, input, revs);
+    var first := RoundClaims(platform, journal, input);
+    RetryGuarded(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    SettleAllGuarded(platform, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
     var read := settled.journal.(cursor := cursor', anchor := anchor');
     var input' := input.(listing := InScope(settled.listing, input.outOfScope));
     var push := OnPush(platform, read, input', revs);
@@ -2526,36 +2677,36 @@ abstract module PathRuleCore refines ApplyCore {
       UnsavedCollides(platform, unsaved, documents[e].ahead.value.revision.path)
   }
 
-  lemma SettleKeepsHeld(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, except: set<DocId>)
+  lemma SettleKeepsHeld(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, except: set<DocId>, first: Claims)
     requires HeldForUnsaved(platform, input.unsaved, pass.journal.documents, except)
     requires doc in except && doc in pass.journal.documents ==> pass.journal.documents[doc].ahead.None?
-    ensures HeldForUnsaved(platform, input.unsaved, SettleRevision(platform, pass, doc, r, input, revs).journal.documents, except - {doc})
+    ensures HeldForUnsaved(platform, input.unsaved, SettleRevision(platform, pass, doc, r, input, revs, first).journal.documents, except - {doc})
   {
     var documents := pass.journal.documents;
     var row := if doc in documents then documents[doc] else NoRow();
     if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
       var rows := documents[doc := row];
       var revs' := RevsFor(rows, revs, r);
-      RuleHeldOnlyForUnsaved(platform, rows, doc, r, input.(listing := pass.listing), revs');
+      RuleHeldOnlyForUnsaved(platform, rows, doc, r, input.(listing := pass.listing), revs', first);
     }
   }
 
-  lemma SettlePulledKeepsHeld(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs)
+  lemma SettlePulledKeepsHeld(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires HeldForUnsaved(platform, input.unsaved, pass.journal.documents, {})
-    ensures HeldForUnsaved(platform, input.unsaved, SettlePulled(platform, pass, revisions, input, revs).journal.documents, {})
+    ensures HeldForUnsaved(platform, input.unsaved, SettlePulled(platform, pass, revisions, input, revs, first).journal.documents, {})
     decreases |revisions|
   {
     if |revisions| > 0 {
-      SettleKeepsHeld(platform, pass, revisions[0].doc, revisions[0], input, revs, {});
-      SettlePulledKeepsHeld(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs), revisions[1..], input, revs);
+      SettleKeepsHeld(platform, pass, revisions[0].doc, revisions[0], input, revs, {}, first);
+      SettlePulledKeepsHeld(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
     }
   }
 
   // A row still to retry is excepted; a retried one is held only by
   // unsaved text.
-  lemma RetryKeepsHeld(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs)
+  lemma RetryKeepsHeld(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires HeldForUnsaved(platform, input.unsaved, pass.journal.documents, set i | 0 <= i < |docs| :: docs[i])
-    ensures HeldForUnsaved(platform, input.unsaved, RetryWaiting(platform, pass, docs, input, revs).journal.documents, {})
+    ensures HeldForUnsaved(platform, input.unsaved, RetryWaiting(platform, pass, docs, input, revs, first).journal.documents, {})
     decreases |docs|
   {
     if |docs| > 0 {
@@ -2571,10 +2722,10 @@ abstract module PathRuleCore refines ApplyCore {
       if docs[0] in documents && documents[docs[0]].ahead.Some? {
         var row := documents[docs[0]];
         var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
-        SettleKeepsHeld(platform, cleared, docs[0], row.ahead.value.revision, input, revs, all);
-        RetryKeepsHeld(platform, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs), docs[1..], input, revs);
+        SettleKeepsHeld(platform, cleared, docs[0], row.ahead.value.revision, input, revs, all, first);
+        RetryKeepsHeld(platform, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
       } else {
-        RetryKeepsHeld(platform, pass, docs[1..], input, revs);
+        RetryKeepsHeld(platform, pass, docs[1..], input, revs, first);
       }
     }
   }
@@ -2595,6 +2746,7 @@ abstract module PathRuleCore refines ApplyCore {
     ensures HeldForUnsaved(platform, input.unsaved, OnRound(platform, journal, pulled, cursor', anchor', input, revs).0.documents, {})
   {
     var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
     var waiting := WaitingRows(journal.documents);
     assert HeldForUnsaved(platform, input.unsaved, start.journal.documents, set i | 0 <= i < |waiting| :: waiting[i]) by {
       forall e | e in journal.documents && journal.documents[e].ahead.Some?
@@ -2603,10 +2755,10 @@ abstract module PathRuleCore refines ApplyCore {
         assert e in waiting;
       }
     }
-    RetryKeepsHeld(platform, start, waiting, input, revs);
-    var retried := RetryWaiting(platform, start, waiting, input, revs);
-    SettlePulledKeepsHeld(platform, retried, pulled, input, revs);
-    var settled := SettlePulled(platform, retried, pulled, input, revs);
+    RetryKeepsHeld(platform, start, waiting, input, revs, first);
+    var retried := RetryWaiting(platform, start, waiting, input, revs, first);
+    SettlePulledKeepsHeld(platform, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
     var read := settled.journal.(cursor := cursor', anchor := anchor');
     PushKeepsAheads(platform, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
   }
@@ -2623,6 +2775,7 @@ abstract module PathRuleCore refines ApplyCore {
              && forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs)
             ==> RoundStepOf(pre, d, input, revs).post.devices[d].journal.cursor == |pre.server.feed|
     ensures RoundInputOf(pre, d, input) ==> NoMoveFromUnsaved(RoundStepOf(pre, d, input, revs))
+    ensures RoundInputOf(pre, d, input) ==> CopiesTakeFreeNames(RoundStepOf(pre, d, input, revs), input)
     ensures (RoundInputOf(pre, d, input) && forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs)
             ==> var device' := RoundStepOf(pre, d, input, revs).post.devices[d];
                 forall doc :: (doc in device'.journal.documents && device'.journal.documents[doc].ahead.Some?
@@ -2638,6 +2791,7 @@ abstract module PathRuleCore refines ApplyCore {
     if forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs {
       OnRoundEffects(device.platform, journal, pulled, cursor', anchor', input, revs);
       OnRoundHeld(device.platform, journal, pulled, cursor', anchor', input, revs);
+      OnRoundCopies(device.platform, journal, pulled, cursor', anchor', input, revs);
     }
     var step := RoundStepOf(pre, d, input, revs);
     if RoundInputOf(pre, d, input) && forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs {
@@ -2657,6 +2811,60 @@ abstract module PathRuleCore refines ApplyCore {
         ensures !CollideF(device.platform, editor.path, step.effects[i].from)
       {
         assert editor.path in input.unsaved;
+      }
+      RoundCopiesTakeFreeNames(pre, d, input, revs);
+    }
+  }
+
+  // CopiesTakeFreeNames from OnRoundCopies: the round's first claims are
+  // the listing, the journal's bound names and its rows' server claims.
+  lemma {:isolate_assertions} RoundCopiesTakeFreeNames(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires var device := pre.devices[d];
+      var step := RoundStepOf(pre, d, input, revs);
+      CopiesAvoid(device.platform, input.unsaved, RoundClaims(device.platform, device.journal, input), step.effects)
+    ensures CopiesTakeFreeNames(RoundStepOf(pre, d, input, revs), input)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var documents := device.journal.documents;
+    var first := RoundClaims(platform, device.journal, input);
+    var step := RoundStepOf(pre, d, input, revs);
+    forall i | 0 <= i < |step.effects| && step.effects[i].Write? && step.effects[i].target.None?
+      ensures var copy := step.effects[i].path;
+        (forall q :: q in input.listing ==> !CollideF(platform, q, copy))
+        && (forall u :: u in input.unsaved ==> !SameF(platform, u, copy))
+        && (forall doc :: doc in documents ==>
+              var document := documents[doc];
+              (document.binding.Some? ==> !SameF(platform, document.binding.value.spelling, copy))
+              && (document.base.Some? && !document.base.value.deleted ==> !CollideK(document.base.value.path, copy))
+              && (document.ahead.Some? && !document.ahead.value.revision.deleted
+                  ==> !CollideK(document.ahead.value.revision.path, copy))
+              && (document.outbox.Some? && !document.outbox.value.deleted
+                  ==> !SameK(document.outbox.value.path, copy)))
+    {
+      var copy := step.effects[i].path;
+      assert CopyAvoids(platform, input.unsaved, first, copy);
+      forall q | q in input.listing ensures !CollideF(platform, q, copy) {
+        assert q in first.listed;
+      }
+      forall doc | doc in documents
+        ensures var document := documents[doc];
+              (document.binding.Some? ==> !SameF(platform, document.binding.value.spelling, copy))
+              && (document.base.Some? && !document.base.value.deleted ==> !CollideK(document.base.value.path, copy))
+              && (document.ahead.Some? && !document.ahead.value.revision.deleted
+                  ==> !CollideK(document.ahead.value.revision.path, copy))
+              && (document.outbox.Some? && !document.outbox.value.deleted
+                  ==> !SameK(document.outbox.value.path, copy))
+      {
+        var document := documents[doc];
+        if document.binding.Some? {
+          assert document.binding.value.spelling in first.listed;
+          assert !CollideF(platform, document.binding.value.spelling, copy);
+        }
+        if document.base.Some? && !document.base.value.deleted { assert document.base.value.path in first.paths; }
+        if document.ahead.Some? && !document.ahead.value.revision.deleted { assert document.ahead.value.revision.path in first.paths; }
+        if document.outbox.Some? && !document.outbox.value.deleted { assert document.outbox.value.path in first.names; }
       }
     }
   }
@@ -2692,17 +2900,17 @@ abstract module PathRuleCore refines ApplyCore {
     if moves != [] { MoveRowsKeepBase(platform, documents, doc, moves[1..], revs); }
   }
 
-  lemma RuleKeepsBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleKeepsBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires var document := documents[doc];
       document.ahead.Some? && document.base.Some? ==> document.base.value.position <= document.ahead.value.revision.position
-    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       ruled.documents.Keys == documents.Keys
       && (forall e | e in documents && e != doc :: KeepsBaseAndFlight(documents[e], ruled.documents[e]))
   {
     var document := documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       var keep := Keeps(platform, document, r, input);
       var way := InTheWay(platform, input.listing, r.path, keep);
@@ -2713,20 +2921,20 @@ abstract module PathRuleCore refines ApplyCore {
     }
   }
 
-  lemma RuleOwnRowKeepsBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleOwnRowKeepsBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires var document := documents[doc];
       document.ahead.Some? && document.base.Some? ==> document.base.value.position <= document.ahead.value.revision.position
     ensures var before := documents[doc];
-      var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+      var after := PathRule(platform, documents, doc, r, input, revs, first).documents[doc];
       (before.base.Some? ==> after.base.Some? && before.base.value.position <= after.base.value.position)
       && (Newer(before, r) && Acknowledges(before, r) ==> after.base.Some? && after.base.value.position == r.position)
   {
     var document := documents[doc];
-    ApplyBaseGrows(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    ApplyBaseGrows(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if Newer(document, r) && Acknowledges(document, r) {
-      RuleAcknowledges(platform, documents, doc, r, input, revs);
+      RuleAcknowledges(platform, documents, doc, r, input, revs, first);
     }
   }
 
@@ -2747,15 +2955,15 @@ abstract module PathRuleCore refines ApplyCore {
     if moves != [] { MoveRowsKeepAheadAboveBase(platform, documents, doc, moves[1..], revs); }
   }
 
-  lemma RuleKeepsAheadAboveBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma RuleKeepsAheadAboveBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: AheadAboveBase(documents[e])
-    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       forall e | e in ruled.documents :: AheadAboveBase(ruled.documents[e])
   {
     var document := documents[doc];
-    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
     if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
       var keep := Keeps(platform, document, r, input);
       var way := InTheWay(platform, input.listing, r.path, keep);

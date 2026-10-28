@@ -66,7 +66,10 @@ abstract module ApplyCore refines StepContracts {
   // The other documents' server claims (SPEC.md §7 "Copy names", PO-14):
   // `paths` their live `base` and `ahead` paths, which hold their folders
   // too, and `names` their live outbox paths, which hold only the name.
-  datatype Claims = Claims(paths: set<Path>, names: set<Path>)
+  // `listed` are names a copy must not collide with under F, folders
+  // included: in a round, the files and bound names it started from
+  // (PathRuleCore.RoundClaims).
+  datatype Claims = Claims(paths: set<Path>, names: set<Path>, listed: set<Path>)
 
   function ClaimsOf(documents: map<DocId, Document>, doc: DocId): Claims {
     Claims((set d | d in documents && d != doc && documents[d].base.Some? && !documents[d].base.value.deleted
@@ -74,7 +77,8 @@ abstract module ApplyCore refines StepContracts {
            + (set d | d in documents && d != doc && documents[d].ahead.Some? && !documents[d].ahead.value.revision.deleted
                 :: documents[d].ahead.value.revision.path),
            set d | d in documents && d != doc && documents[d].outbox.Some? && !documents[d].outbox.value.deleted
-             :: documents[d].outbox.value.path)
+             :: documents[d].outbox.value.path,
+           {})
   }
 
   // The shell's candidate names for a copy of `p` (SPEC.md §7 "Copy names"):
@@ -100,6 +104,7 @@ abstract module ApplyCore refines StepContracts {
     && !CollideF(platform, c, wanted)
     && (forall s | s in claims.paths :: !CollideK(s, c))
     && (forall s | s in claims.names :: !SameK(s, c))
+    && (forall s | s in claims.listed :: !CollideF(platform, s, c))
   }
 
   // A folder of the copy's path is held when a claim, a listed file or the
@@ -147,6 +152,7 @@ abstract module ApplyCore refines StepContracts {
     ensures copy.Some? ==> !CollideF(platform, copy.value, wanted)
     ensures copy.Some? ==> forall s | s in claims.paths :: !CollideK(s, copy.value)
     ensures copy.Some? ==> forall s | s in claims.names :: !SameK(s, copy.value)
+    ensures copy.Some? ==> forall s | s in claims.listed :: !CollideF(platform, s, copy.value)
   {
     FirstFreeCopyFree(platform, listing, avoid, claims, held, SuffixFolder(platform, listing, claims, held, wanted), wanted, 1);
     FirstFreeCopy(platform, listing, avoid, claims, held, SuffixFolder(platform, listing, claims, held, wanted), wanted, 1)
