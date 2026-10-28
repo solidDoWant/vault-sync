@@ -418,12 +418,15 @@ class FakeGitHub:
     def __init__(self, snapshot):
         self.snap = snapshot
         self.writes = []
+        self.comments = []  # what GitHub.pm_comments returns: /pm comments by the human
+        self.comment_queries = []
 
     def snapshot(self):
         return self.snap
 
     def pm_comments(self, since):
-        return []
+        self.comment_queries.append(since)
+        return [c for c in self.comments if c["updated_at"] >= since]
 
     def rerun_failed(self, run_id):
         self.writes.append(("rerun", run_id))
@@ -465,7 +468,7 @@ class SchedulerTest(unittest.TestCase):
         fake.chmod(0o755)
         self.calls = root / "calls.jsonl"
         self.env = {"FAKE_CLAUDE_CALLS": str(self.calls), "FAKE_CLAUDE_MODE": "ok"}
-        self.old_env = {k: os.environ.get(k) for k in list(self.env) + ["FAKE_CLAUDE_CONTEXT", "FAKE_CLAUDE_RESULT"]}
+        self.old_env = {k: os.environ.get(k) for k in list(self.env) + ["FAKE_CLAUDE_CONTEXT", "FAKE_CLAUDE_RESULT", "FAKE_CLAUDE_SLEEP"]}
         os.environ.update(self.env)
         self.gh = FakeGitHub(snap([issue(1)]))
         self.sched = s.Scheduler(self.repo, github=self.gh, claude_bin=str(fake), log_dir=root / "logs",
@@ -720,6 +723,78 @@ class SchedulerTest(unittest.TestCase):
         # Seen triage issues do not re-trigger it.
         self.sched.poll()
         self.assertEqual(len([c for c in self.calls_made() if "--agent" not in c["argv"]]), 1)
+
+    def pm_comment(self, cid, updated_at):
+        return {"id": cid, "url": f"https://github.com/o/r/issues/51#issuecomment-{cid}",
+                "updated_at": updated_at, "line": f"/pm do thing {cid}"}
+
+    def test_pm_comment_while_planner_idle_becomes_a_reason(self):
+        self.disable_planner()
+        self.gh.comments = [self.pm_comment(7, "2099-01-01T00:00:00Z")]
+        self.sched.poll()
+        p = self.sched.state["planner"]
+        reason = "/pm instruction https://github.com/o/r/issues/51#issuecomment-7: /pm do thing 7"
+        self.assertIn(reason, p["pending"])
+        self.assertEqual(p["seen_comments"], [7])
+        self.assertEqual(p["comments_since"], "2099-01-01T00:00:00Z")
+        self.assertEqual(json.loads(self.sched.state_path.read_text())["planner"]["pending"], p["pending"])
+        # The next poll asks from the advanced cursor and does not repeat the reason.
+        self.sched.poll()
+        self.assertEqual(self.gh.comment_queries[-1], "2099-01-01T00:00:00Z")
+        self.assertEqual(p["pending"].count(reason), 1)
+        self.wait_idle()
+
+    def test_pm_comment_during_planner_run_survives_its_exit(self):
+        os.environ["FAKE_CLAUDE_MODE"] = "sleep"
+        os.environ["FAKE_CLAUDE_SLEEP"] = "3"  # outlives the second poll
+        os.environ["FAKE_CLAUDE_RESULT"] = "Handled.\nPLANNER-IDLE"
+        self.gh.snap = snap([issue(50, status="status:triage")])
+        self.sched.poll()
+        running = [r for r in self.sched.state["running"].values() if r["key"] == "planner"]
+        self.assertEqual(len(running), 1)
+        self.gh.comments = [self.pm_comment(8, "2099-01-01T00:00:00Z")]
+        self.sched.poll()  # planner still running: the reason is only recorded
+        reason = "/pm instruction https://github.com/o/r/issues/51#issuecomment-8: /pm do thing 8"
+        self.assertIn(reason, self.sched.state["planner"]["pending"])
+        self.wait_idle()
+        self.assertEqual(self.sched.state["planner"]["last_outcome"], "ok")
+        self.assertEqual(self.sched.state["planner"]["pending"], [reason])
+        os.environ["FAKE_CLAUDE_MODE"] = "ok"
+        self.sched.poll()
+        self.wait_idle()
+        planners = [c for c in self.calls_made() if "--agent" not in c["argv"]]
+        self.assertEqual(len(planners), 2)
+        prompt = planners[1]["argv"][planners[1]["argv"].index("-p") + 1]
+        self.assertIn(reason, prompt)
+        self.assertNotIn("triage #50", prompt)
+        self.assertEqual(self.sched.state["planner"]["pending"], [])
+
+
+class GitHubPmCommentsTest(unittest.TestCase):
+    def comment(self, cid, login, body, updated_at):
+        return {"id": cid, "user": {"login": login}, "body": body,
+                "html_url": f"https://github.com/o/r/issues/1#issuecomment-{cid}", "updated_at": updated_at}
+
+    def test_paginates_and_encodes_since(self):
+        gh = s.GitHub(CFG)
+        human = CFG["human"]
+        pages = [[self.comment(1, "bot", "/pm no", "2026-10-28T09:01:00Z")] * 100,
+                 [self.comment(2, human, "  /pm go\nmore", "2026-10-28T09:27:29Z"),
+                  self.comment(3, human, "not pm", "2026-10-28T09:30:00Z")]]
+        calls = []
+
+        def fake_gh(*args, **kwargs):
+            calls.append(args)
+            return json.dumps(pages)
+        gh._gh = fake_gh
+        found = gh.pm_comments("2026-10-28T09:00:00+00:00")
+        self.assertEqual([c["id"] for c in found], [2])
+        self.assertEqual(found[0]["line"], "/pm go")
+        args = calls[0]
+        self.assertIn("--paginate", args)
+        url = next(a for a in args if a.startswith("repos/"))
+        self.assertIn("since=2026-10-28T09%3A00%3A00Z", url)
+        self.assertNotIn("+", url)
 
 
 if __name__ == "__main__":

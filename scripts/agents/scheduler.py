@@ -56,6 +56,7 @@ import signal
 import subprocess
 import sys
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -430,13 +431,21 @@ class GitHub:
 
     def pm_comments(self, since: str) -> list:
         """Issue and PR conversation comments updated since `since` that are
-        human instructions: by the human, first line starting with /pm."""
+        human instructions: by the human, first line starting with /pm.
+
+        `since` goes out as `...Z`, URL-encoded: a raw `+00:00` offset decodes
+        to a space and GitHub then returns no comments at all. Every page is
+        read, because the caller's cursor only advances on a /pm comment."""
+        stamp = parse_iso(since)
+        if stamp:
+            since = stamp.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        since_q = urllib.parse.quote(since, safe="")
         out = self._gh(
-            "api",
-            f"repos/{self.cfg['repo']}/issues/comments?since={since}&sort=updated&direction=asc&per_page=100",
+            "api", "--paginate", "--slurp",
+            f"repos/{self.cfg['repo']}/issues/comments?since={since_q}&sort=updated&direction=asc&per_page=100",
         )
         found = []
-        for c in json.loads(out):
+        for c in (c for page in json.loads(out) for c in page):
             if (c.get("user") or {}).get("login") != self.cfg["human"]:
                 continue
             if not (c.get("body") or "").lstrip().startswith("/pm"):
