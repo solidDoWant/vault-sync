@@ -8,27 +8,23 @@
 // open intent from the journal alone (Recover) and persists the result
 // before the device runs again (RestartStepOf):
 //
-// - an intent of a revision (ApplyIntent, MergeIntent) is undone: its row
-//   stays as the guard has it, the row before the revision, and the
-//   revision is recorded as waiting (`ahead`, LocalChanges) where it is
-//   newer than what the row knows. The next round retries it as a waiting
-//   row (RetryWaiting), so a revision the device already read is never
-//   forgotten (ClaimsCoverCursor) and whatever the revision's half-done
-//   effects left on disk is the device's local version of it, which the
-//   round merges (engine design §4.4: "anything else: hand D to the merge
-//   path, as a local change").
-// - an intent that moves a file (DisplaceIntent, DetachIntent) is undone
-//   in the journal: the binding stays where the guard has it, and the
-//   start-up scan that follows the restart finds the file wherever the move
-//   left it (G8_PicksUpOfflineChanges).
-// - a commit or resync intent, which no step of the core opens, is dropped.
+// every open intent is dropped (Recover). The guards persist the rows as
+// they were before the revision, with the round's cursor not yet moved
+// (#1018, option B), so dropping the intents leaves the device as if the
+// round had settled only the revisions before it; the next round pulls
+// again from the old cursor and settles the rest. Whatever the revision's
+// half-done effects left on disk is then the device's own version of the
+// file: the start-up scan after the restart records it as a local change
+// (G8_PicksUpOfflineChanges), and the next round merges it with the
+// revision. Either outcome of a half-done revision is acceptable (engine
+// design §10.3, owner's policy: nothing is lost); a crash may therefore
+// leave a conflict copy a crash-free run would not (verified-core.md §4).
+// Dropping needs nothing from the intents, so an intent the invariants say
+// nothing about (CoreReachable does not read intents) is harmless too.
 //
-// Either outcome of a half-done revision is acceptable (engine design
-// §10.3, owner's policy: nothing is lost); a crash may therefore leave a
-// conflict copy a crash-free run would not (verified-core.md §4.3).
-//
-// CrashInv is CoreReachable's claims of the state every crashed device's
-// restart would make (Recovered), and no running device has an open intent.
+// CrashInv is ClaimsCore of the state every stopped device's restart would
+// leave its journal in (Recovered): a stopped device has finished nothing,
+// so its intents are all a restart has left to settle.
 // Dafny 4.11's resolver crashes on a module refining RoundClaimsCore, so
 // this one refines PathRuleCore, which has the round's body.
 include "PathRule.dfy"
@@ -39,46 +35,20 @@ abstract module RecoveryCore refines PathRuleCore {
   // The restart
   // ---------------------------------------------------------------------
 
-  // The revision an intent applies, if it applies one.
-  function IntentRevision(kind: IntentKind): Option<(DocId, Revision)> {
-    match kind
-    case ApplyIntent(doc, r) => Some((doc, r))
-    case MergeIntent(doc, r, _, _, _) => Some((doc, r))
-    case _ => None
-  }
-
-  // Undo one intent: a revision it applies waits on its row.
-  function UndoIntent(documents: map<DocId, Document>, kind: IntentKind): map<DocId, Document> {
-    match IntentRevision(kind)
-    case None => documents
-    case Some(applied) =>
-      var doc := applied.0;
-      var r := applied.1;
-      var row := if doc in documents then documents[doc] else NoRow();
-      if Newer(row, r) then documents[doc := row.(ahead := Some(Ahead(r, LocalChanges, false)))]
-      else documents
-  }
-
-  function UndoIntents(documents: map<DocId, Document>, intents: seq<Intent>): map<DocId, Document>
-    decreases |intents|
-  {
-    if |intents| == 0 then documents
-    else UndoIntents(UndoIntent(documents, intents[0].kind), intents[1..])
-  }
-
-  // The journal the restart persists: every open intent settled.
+  // The journal the restart persists: every open intent dropped.
   function Recover(journal: Journal): Journal {
-    journal.(documents := UndoIntents(journal.documents, journal.intents), intents := [])
+    journal.(intents := [])
   }
 
-  // Every device as its restart would leave its journal.
+  // Every stopped device as its restart would leave its journal.
   ghost function Recovered(state: State): State {
-    state.(devices := map x | x in state.devices :: state.devices[x].(journal := Recover(state.devices[x].journal)))
+    state.(devices := map x | x in state.devices ::
+      if state.devices[x].running then state.devices[x]
+      else state.devices[x].(journal := Recover(state.devices[x].journal)))
   }
 
   ghost predicate CrashInv(state: State) {
-    (forall x :: x in state.devices && state.devices[x].running ==> |state.devices[x].journal.intents| == 0)
-    && ClaimsCore(Recovered(state))
+    ClaimsCore(Recovered(state))
   }
 
   // The restart persists the recovered journal (nothing when no intent is
@@ -106,26 +76,6 @@ abstract module RecoveryCore refines PathRuleCore {
     ensures Recover(Recover(journal)) == Recover(journal)
   {}
 
-  // Undoing intents keeps every row apart from its ahead, and adds only
-  // rows with nothing but an ahead.
-  ghost predicate OnlyAheads(documents: map<DocId, Document>, documents': map<DocId, Document>) {
-    documents.Keys <= documents'.Keys
-    && (forall doc :: doc in documents' ==>
-          var before := if doc in documents then documents[doc] else NoRow();
-          documents'[doc] == before.(ahead := documents'[doc].ahead))
-  }
-
-  lemma UndoIntentsOnlyAheads(documents: map<DocId, Document>, intents: seq<Intent>)
-    ensures OnlyAheads(documents, UndoIntents(documents, intents))
-    decreases |intents|
-  {
-    if |intents| > 0 {
-      var once := UndoIntent(documents, intents[0].kind);
-      assert OnlyAheads(documents, once);
-      UndoIntentsOnlyAheads(once, intents[1..]);
-    }
-  }
-
   // ---------------------------------------------------------------------
   // RecoveryContract
   // ---------------------------------------------------------------------
@@ -144,7 +94,6 @@ abstract module RecoveryCore refines PathRuleCore {
     ensures StepGuarantees(RestartStepOf(pre, d, revs))
   {
     var step := RestartStepOf(pre, d, revs);
-    UndoIntentsOnlyAheads(pre.devices[d].journal.documents, pre.devices[d].journal.intents);
     assert G1_OnlyRetentionRemoves(step);
     assert G2_OnlyWhatItSaw(step);
     assert G2_Conditional(step);
@@ -160,16 +109,8 @@ abstract module RecoveryCore refines PathRuleCore {
     assert G7_OneFilePerName(Recovered(pre));
     assert after.disk == before.disk && after.platform == before.platform;
     forall doc ensures BoundIdentity(after, doc) == BoundIdentity(before, doc) {
-      if doc in docs' {
-        var row := if doc in docs then docs[doc] else NoRow();
-        assert docs'[doc].binding == row.binding;
-        if docs'[doc].binding.Some? {
-          assert doc in docs && docs[doc].binding == docs'[doc].binding;
-          var spelling := docs[doc].binding.value.spelling;
-          SameFileOnSameDisk(before, after, spelling);
-        }
-      } else {
-        assert doc !in docs;
+      if doc in docs && docs[doc].binding.Some? {
+        SameFileOnSameDisk(before, after, docs[doc].binding.value.spelling);
       }
       assert BoundFile(after, doc) == BoundFile(before, doc);
     }
@@ -315,12 +256,17 @@ abstract module RecoveryCore refines PathRuleCore {
   // The restart's post-state, recovered, is the pre-state recovered with
   // the device started.
   lemma RecoveredAfterRestart(pre: State, d: DeviceId, revs: FreshRevs)
-    requires d in pre.devices
+    requires d in pre.devices && !pre.devices[d].running
     ensures var post := RestartStepOf(pre, d, revs).post;
       var R := Recovered(pre);
       Recovered(post) == R.(devices := R.devices[d := R.devices[d].(running := true)])
   {
-    RecoverIdempotent(pre.devices[d].journal);
+    var post := RestartStepOf(pre, d, revs).post;
+    var R := Recovered(pre);
+    var R' := R.(devices := R.devices[d := R.devices[d].(running := true)]);
+    assert Recovered(post).devices.Keys == R'.devices.Keys;
+    forall x | x in R'.devices ensures Recovered(post).devices[x] == R'.devices[x] {}
+    assert Recovered(post).devices == R'.devices;
   }
 
   lemma {:isolate_assertions} RecoveryKeepsAll(pre: State, d: DeviceId, revs: FreshRevs)
