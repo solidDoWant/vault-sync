@@ -134,6 +134,8 @@ export function restoreFailureText(failure: Pick<RestoreError, "reason" | "path"
       return ["another file is at ", shownPath(failure.path), " now; move it away or restore at another path"];
     case "unavailable":
       return ["this version is no longer stored on the server"];
+    case "too-large":
+      return ["this version is no longer stored completely on the server, and it is larger than this device can download"];
     case "invalid-path": {
       const lead = failure.path === "" ? "an empty path" : failure.path;
       const problem = failure.message.startsWith(lead) ? invalidPathEnd.exec(failure.message.slice(lead.length))?.[1] : undefined;

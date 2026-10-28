@@ -225,5 +225,9 @@ describe("history view", () => {
     it("says a purged version is gone", () => {
       expect(restoreFailureText(new RestoreError("unavailable", "a\u202e.md", "this version is no longer stored on the server"))).toEqual(["this version is no longer stored on the server"]);
     });
+
+    it("says a version that must be uploaded again is larger than this device can download (#410)", () => {
+      expect(restoreFailureText(new RestoreError("too-large", "a\u202e.md", "ignored"))).toEqual(["this version is no longer stored completely on the server, and it is larger than this device can download"]);
+    });
   });
 });

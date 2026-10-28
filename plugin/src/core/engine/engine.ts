@@ -491,9 +491,13 @@ export class SyncEngine {
     return documentHistory(this.api, this.vaultId, this.deviceId, documentId, pageToken);
   }
 
-  /** A history entry's content, for a preview; with `limit`, at most its first `limit` bytes, unverified when cut (#656). */
+  /**
+   * A history entry's content, for a preview; with `limit`, at most its first
+   * `limit` bytes, unverified when cut (#656). Without one, an entry larger
+   * than the download cap is refused with DownloadCapError (#410).
+   */
   readRevision(entry: HistoryEntry, limit?: number): Promise<Uint8Array> {
-    return readRevision(this.api, this.vaultId, entry, limit);
+    return readRevision(this.api, this.vaultId, entry, limit, this.maxDownloadBytes);
   }
 
   /**
@@ -514,7 +518,7 @@ export class SyncEngine {
     this.cancelScheduledPush();
     return this.serialize(async () => {
       await this.pushOnce();
-      const restored = await commitRestore(this.api, this.vaultId, this.deviceId, entry, this.newId(), content, path);
+      const restored = await commitRestore(this.api, this.vaultId, this.deviceId, entry, this.newId(), content, path, this.maxDownloadBytes);
       await this.pullOnce();
       return restored;
     });
@@ -921,7 +925,7 @@ export class SyncEngine {
         if (claim === "alias") return this.deferUnmaterializable(remote, "alias", descends);
         if (claim === "held" || claim === "taken") return this.defer(remote, "path-conflict", descends);
       }
-      if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      if (needsContent) content ??= await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size, this.maxDownloadBytes);
       const bound = await this.journal.getDocument(remote.documentId);
       const found = await this.inspect(state, remote);
       // The user moved or deleted the document's own file while inspect read
@@ -1405,12 +1409,12 @@ export class SyncEngine {
       remote,
       base: state,
       local: { path: local.path, content: local.content },
-      readRemoteContent: () => (remote.deleted ? Promise.resolve(null) : downloadContent(this.api, this.vaultId, remote.contentHash, remote.size)),
+      readRemoteContent: () => (remote.deleted ? Promise.resolve(null) : downloadContent(this.api, this.vaultId, remote.contentHash, remote.size, this.maxDownloadBytes)),
       // A tombstone has no content of its own to merge against, nor has a
       // document whose file this device released, and a base retention
-      // purged has none any more (SPEC.md §11): never a reason to stop the
-      // pull.
-      readBaseContent: () => (!liveHere(state) ? this.tombstoneBase(state, remote, local) : baseContent(this.api, this.vaultId, state.revisionId)),
+      // purged has none any more (SPEC.md §11), nor, here, has a base larger
+      // than the download cap (#410): never a reason to stop the pull.
+      readBaseContent: () => (!liveHere(state) ? this.tombstoneBase(state, remote, local) : baseContent(this.api, this.vaultId, state.revisionId, this.maxDownloadBytes)),
       descendsFromBase: descends,
     });
     // The hook merged the content; the path merge is the engine's (design §4.7, PO-9).
@@ -1493,7 +1497,7 @@ export class SyncEngine {
   private async tombstoneBase(state: DocumentState | undefined, remote: RemoteRevision, local: LocalVersion): Promise<Uint8Array | null> {
     const before = state?.prior?.[0];
     if (state?.deleted !== true || before === undefined || local.content === null || boundLocalChange(state, remote, this.pathSpace) === undefined) return null;
-    const content = await baseContent(this.api, this.vaultId, before);
+    const content = await baseContent(this.api, this.vaultId, before, this.maxDownloadBytes);
     return content !== null && sameContent(content, local.content) ? content : null;
   }
 
@@ -2166,6 +2170,13 @@ export class SyncEngine {
       const state = await this.journal.getDocument(deferred.revision.documentId);
       // Out of scope since it was deferred: its next revision, or a start that finds it in scope again, takes it on.
       if (this.outOfScope(deferred.revision, state)) continue;
+      // Over the download cap (a deferral an engine with a higher cap wrote,
+      // #410): never downloaded. It waits as too-large, as the pull would
+      // have deferred it, for a later revision within the cap.
+      if (this.overCap(deferred.revision)) {
+        await this.defer(deferred.revision, "too-large", deferred.descendsFromBase === true);
+        continue;
+      }
       await this.handToMerge(deferred.revision, state, deferred.descendsFromBase === true);
     }
   }

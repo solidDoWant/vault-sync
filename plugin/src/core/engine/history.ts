@@ -49,7 +49,9 @@ export type RestoreFailure =
   /** Retention purged the revision and its content is gone from the server, and no preview of it was at hand. */
   | "unavailable"
   /** The other path chosen for the restore is one the server would refuse, this device cannot hold, or this vault does not sync now. */
-  | "invalid-path";
+  | "invalid-path"
+  /** The content must be uploaded again, no preview of it was at hand, and it is larger than this device's download cap (#410). */
+  | "too-large";
 
 /** A restore that cannot be done; nothing was committed. */
 export class RestoreError extends Error {
@@ -102,11 +104,13 @@ function historyEntry(revision: Revision, deviceId: string, deviceName: string |
  * Downloads a history entry's content, verified against its hash. With
  * `limit`, an entry larger than that is read only as far as its first
  * `limit` bytes (#656), for a preview: that start is not verified, and a
- * result shorter than `entry.size` is never the content to restore.
+ * result shorter than `entry.size` is never the content to restore. An
+ * entry read whole that is larger than `cap` is refused with
+ * DownloadCapError before anything is downloaded (#410).
  */
-export function readRevision(api: PullApi, vaultId: string, entry: HistoryEntry, limit?: number): Promise<Uint8Array> {
+export function readRevision(api: PullApi, vaultId: string, entry: HistoryEntry, limit?: number, cap?: bigint): Promise<Uint8Array> {
   if (limit !== undefined && entry.size > BigInt(limit)) return downloadStart(api, vaultId, entry.contentHash, entry.size, limit);
-  return downloadContent(api, vaultId, entry.contentHash, entry.size);
+  return downloadContent(api, vaultId, entry.contentHash, entry.size, cap);
 }
 
 /**
@@ -116,12 +120,13 @@ export function readRevision(api: PullApi, vaultId: string, entry: HistoryEntry,
  * and the commit retried on it. A commit refused because the content is no
  * longer a complete blob (garbage collection after a purge) uploads it again,
  * from `content` (a preview the caller holds) if it matches, or else from a
- * download; if neither has it, RestoreError `unavailable`. A path another
+ * download; if neither has it, RestoreError `unavailable`, and if the download
+ * would exceed `cap`, RestoreError `too-large` (#410). A path another
  * live document holds is RestoreError `path-taken`. With `path` it commits
  * there instead (#420): how a deleted document whose path another document
  * took comes back; check it with restorePathProblem first.
  */
-export async function commitRestore(api: PullApi, vaultId: string, deviceId: string, entry: HistoryEntry, revisionId: string, content?: Uint8Array, path?: string): Promise<RemoteRevision> {
+export async function commitRestore(api: PullApi, vaultId: string, deviceId: string, entry: HistoryEntry, revisionId: string, content?: Uint8Array, path?: string, cap?: bigint): Promise<RemoteRevision> {
   let head = await currentHead(api, vaultId, entry.documentId);
   let held = content !== undefined && BigInt(content.length) === entry.size && sha256Hex(content) === entry.contentHash ? content : undefined;
   for (let attempt = 1; ; attempt++) {
@@ -147,6 +152,7 @@ export async function commitRestore(api: PullApi, vaultId: string, deviceId: str
       if (headMoved(error)) {
         head = await currentHead(api, vaultId, entry.documentId);
       } else if (blobMissing(error)) {
+        if (held === undefined && cap !== undefined && entry.size > cap) throw new RestoreError("too-large", target, "this version is no longer stored completely on the server, and it is larger than this device can download");
         held ??= await downloadOrNull(api, vaultId, entry);
         const bytes = held;
         if (bytes === undefined) throw new RestoreError("unavailable", target, "this version is no longer stored on the server");

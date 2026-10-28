@@ -13,7 +13,21 @@ export type PullApi = Pick<ProtocolClient, "sync" | "blobs">;
 
 /** The server sent something the protocol does not allow, or content that does not match its hash. */
 export class RemoteContentError extends Error {
-  override readonly name = "RemoteContentError";
+  override readonly name: string = "RemoteContentError";
+}
+
+/**
+ * Content larger than this device's download cap (SPEC.md §8, #316, #410):
+ * refused before anything is downloaded or allocated.
+ */
+export class DownloadCapError extends RemoteContentError {
+  override readonly name = "DownloadCapError";
+  constructor(
+    readonly size: bigint,
+    readonly cap: bigint,
+  ) {
+    super(`content of ${String(size)} bytes is larger than the download cap of ${String(cap)} bytes`);
+  }
 }
 
 /** A revision from the change feed plus whether its path may touch the disk. */
@@ -111,8 +125,10 @@ function kindName(kind: DocumentKind): DocumentKindName {
 /**
  * Downloads a blob with ranged DownloadBlob calls (SPEC.md §6.2) and verifies
  * its size and, for plaintext vaults, that its SHA-256 is the blob id (§5).
+ * A blob larger than `cap` is refused with DownloadCapError before any call.
  */
-export async function downloadContent(api: PullApi, vaultId: string, contentHash: string, size: bigint): Promise<Uint8Array> {
+export async function downloadContent(api: PullApi, vaultId: string, contentHash: string, size: bigint, cap?: bigint): Promise<Uint8Array> {
+  if (cap !== undefined && size > cap) throw new DownloadCapError(size, cap);
   if (size > BigInt(Number.MAX_SAFE_INTEGER)) throw new RemoteContentError(`blob ${contentHash} is too large to hold`);
   const total = Number(size);
   const content = new Uint8Array(total);
@@ -153,24 +169,26 @@ export async function downloadStart(api: PullApi, vaultId: string, contentHash: 
   return content;
 }
 
-/** Fetches a revision's content by revision id (the merge base, SPEC.md §8). */
-export async function revisionContent(api: PullApi, vaultId: string, revisionId: string): Promise<Uint8Array> {
+/** Fetches a revision's content by revision id (the merge base, SPEC.md §8), refusing content larger than `cap` (DownloadCapError). */
+export async function revisionContent(api: PullApi, vaultId: string, revisionId: string, cap?: bigint): Promise<Uint8Array> {
   const revision = (await api.sync.getRevision({ vaultId, revisionId })).revision;
   if (revision?.contentRef === undefined) throw new RemoteContentError(`revision ${revisionId} has no content`);
-  return downloadContent(api, vaultId, bytesToHex(revision.contentRef.blobId), revision.contentRef.size);
+  return downloadContent(api, vaultId, bytesToHex(revision.contentRef.blobId), revision.contentRef.size, cap);
 }
 
 /**
  * The merge base's content (SPEC.md §8), or null if retention purged the
  * revision or its blob is gone (NOT_FOUND from GetRevision or DownloadBlob,
- * §11): the two versions then have no common base. Any other failure is
- * thrown.
+ * §11), or if it is larger than this device's download cap `cap` (#410),
+ * which a base this device committed itself can be: the two versions then
+ * have no common base here, so the merge keeps both and never fails the
+ * pull for good. Any other failure is thrown.
  */
-export async function baseContent(api: PullApi, vaultId: string, revisionId: string): Promise<Uint8Array | null> {
+export async function baseContent(api: PullApi, vaultId: string, revisionId: string, cap?: bigint): Promise<Uint8Array | null> {
   try {
-    return await revisionContent(api, vaultId, revisionId);
+    return await revisionContent(api, vaultId, revisionId, cap);
   } catch (error) {
-    if (errorCode(error) === Code.NotFound) return null;
+    if (error instanceof DownloadCapError || errorCode(error) === Code.NotFound) return null;
     throw error;
   }
 }
