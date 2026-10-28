@@ -37,11 +37,12 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + path-axiom property-test coverage check + nightly-simulation report tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + path-axiom property-test coverage check + Dafny verify-group coverage check + nightly-simulation report tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
 	./scripts/path-axioms_check_test.sh
+	./scripts/verify-group_test.sh
 	./scripts/sim-nightly-report_test.sh
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
@@ -102,6 +103,10 @@ $(PLUGIN_DIR)/node_modules/.package-lock.json: $(PLUGIN_DIR)/package.json $(PLUG
 .PHONY: verify
 verify: ## Prove the Dafny modules in plugin/verified/ and the core in plugin/verified/core/, and check the engine specification in plugin/verified/spec/ (dafny verify).
 	dafny verify $(PLUGIN_DIR)/verified/*.dfy $(PLUGIN_DIR)/verified/spec/*.dfy $(PLUGIN_DIR)/verified/core/*.dfy
+
+.PHONY: verify-group
+verify-group: ## Prove one group of plugin/verified/verify-groups.txt (GROUP=name), after checking every Dafny file is in exactly one group; CI runs one job per group.
+	./scripts/verify-group.sh $(GROUP)
 
 .PHONY: verified-js
 verified-js: ## Compile the Dafny modules in plugin/verified/ to JavaScript (plugin/src/verified/gen/, committed).

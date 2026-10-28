@@ -60,7 +60,7 @@ jobs:
             npm:
               - '{plugin/package.json,plugin/package-lock.json,scripts/npm-audit.sh}'
             dafny:
-              - '{plugin/verified/**,flake.*,.github/workflows/ci.yml,.github/actions/nix-dev-shell/**}'
+              - '{plugin/verified/**,scripts/verify-group.sh,flake.*,.github/workflows/ci.yml,.github/actions/nix-dev-shell/**}'
 
   # The test tiers run as parallel jobs (they used to be sequential steps of
   # one ~9 minute job). Everything runs inside the flake's dev shell so CI
@@ -165,19 +165,44 @@ jobs:
       - name: Simulation
         run: nix develop -c make test-sim SIM_SEEDS=5 SIM_STEPS=1000
 
-  # The proofs of the Dafny-verified modules (plugin/verified/, make verify).
-  # A failing proof fails `checks`. Compiling them to JavaScript is part of
-  # make build (the unit job) and make check-generate (the lint job).
-  verify:
+  # The proofs of the Dafny-verified modules (plugin/verified/), one job per
+  # group of plugin/verified/verify-groups.txt (make verify-group), since one
+  # `dafny verify` of every file outgrew the time limit (#1031). The groups
+  # come from that file, and every mode of scripts/verify-group.sh first
+  # checks that each Dafny file is in exactly one group, so a new file in no
+  # group fails here instead of going unverified. A failing proof or check
+  # fails `checks`. Compiling them to JavaScript is part of make build (the
+  # unit job) and make check-generate (the lint job).
+  verify-groups:
     needs: changes
     if: needs.changes.outputs.dafny == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      groups: ${{ steps.groups.outputs.groups }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: groups
+        name: Every Dafny file is in one group
+        run: |
+          groups="$(./scripts/verify-group.sh --matrix)"
+          echo "groups=$groups" >> "$GITHUB_OUTPUT"
+
+  verify:
+    needs: [changes, verify-groups]
+    if: needs.changes.outputs.dafny == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        group: ${{ fromJSON(needs.verify-groups.outputs.groups) }}
+    name: verify (${{ matrix.group }})
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/nix-dev-shell
       - name: Dafny verification
-        run: nix develop -c make verify
+        run: nix develop -c make verify-group GROUP=${{ matrix.group }}
 
   # npm advisories, only when the plugin's dependency manifests (or the check
   # itself) change. Fails only on fixable moderate+ advisories in dependencies
@@ -303,7 +328,7 @@ jobs:
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts, npm-audit, verify]
+    needs: [changes, lint, unit, integration, integration-postgres14, simulation, plugin-e2e, release-artifacts, npm-audit, verify-groups, verify]
     if: always()
     runs-on: ubuntu-latest
     steps:

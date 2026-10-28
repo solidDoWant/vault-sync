@@ -325,12 +325,12 @@ abstract module RemoteCore {
 
   lemma RemoteRevisionSafe(pre: State, d: DeviceId, revision: Revision)
     requires d in pre.devices
-    requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre)
+    requires StateInvariants(pre) && CoreInv(pre) && ServerRetains(pre)
     // The revision is one on the server's feed (ServerFollowsEvent).
     requires revision.id in pre.server.revisions && pre.server.revisions[revision.id] == revision
     requires revision.id in pre.server.feed
     ensures var step := RemoteStep(pre, d, revision);
-      StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+      StateInvariants(step.post) && CoreInv(step.post) && ServerRetains(step.post) && (CursorsOnFeed(pre) ==> CursorsOnFeed(step.post)) && StepGuarantees(step)
       && KeepsFinished(step)
   {
     var step := RemoteStep(pre, d, revision);
@@ -352,9 +352,9 @@ abstract module RemoteCore {
 
   lemma RefusedSafe(pre: State, d: DeviceId, result: PushResult, nextRev: RevId)
     requires d in pre.devices && !result.Accepted?
-    requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre)
+    requires StateInvariants(pre) && CoreInv(pre) && ServerRetains(pre)
     ensures var step := RefusedStep(pre, d, result, nextRev);
-      StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+      StateInvariants(step.post) && CoreInv(step.post) && ServerRetains(step.post) && (CursorsOnFeed(pre) ==> CursorsOnFeed(step.post)) && StepGuarantees(step)
       && KeepsFinished(step)
   {
     var step := RefusedStep(pre, d, result, nextRev);
@@ -370,11 +370,17 @@ abstract module RemoteCore {
     QuietStep(step, d, journal');
   }
 
-  lemma AcceptSafe(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+  lemma {:isolate_assertions} AcceptSafe(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
     requires AcceptHappens(pre, d, doc, r)
-    requires StateInvariants(pre) && CoreInv(pre) && ServerInv(pre)
+    requires StateInvariants(pre) && CoreInv(pre) && ServerRetains(pre)
+    // A device whose cursor is one past the feed (a restore diverged it)
+    // does not have the appended revision as its anchor, so the append
+    // finishes no device: CursorsOnFeed excludes such a device, and
+    // JournalsNameAccepted does for a CoreReachable state (#1031).
+    requires forall x :: (x in pre.devices && pre.devices[x].journal.cursor == |pre.server.feed| + 1
+                          ==> pre.devices[x].journal.anchor != Some(r.id))
     ensures var step := AcceptStep(pre, d, doc, r, nextRev);
-      StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+      StateInvariants(step.post) && CoreInv(step.post) && ServerRetains(step.post) && (CursorsOnFeed(pre) ==> CursorsOnFeed(step.post)) && StepGuarantees(step)
       && KeepsFinished(step)
   {
     var step := AcceptStep(pre, d, doc, r, nextRev);
@@ -467,9 +473,14 @@ abstract module RemoteCore {
     {}
     assert G7_OneFilePerName(post);
 
-    // G9: the feed grew, so no device has finished.
+    // G9: the feed grew past every cursor on it, and a cursor one past the
+    // old feed is not anchored on the new entry, so no device has finished.
     forall x | x in post.devices ensures !FinishedSyncing(post, x) {
       assert post.devices[x].journal.cursor == pre.devices[x].journal.cursor;
+      assert post.devices[x].journal.anchor == pre.devices[x].journal.anchor;
+      if pre.devices[x].journal.cursor == |server.feed| + 1 {
+        assert server'.feed[|server.feed|] == r.id;
+      }
     }
     assert G9(post);
 
@@ -500,7 +511,7 @@ abstract module RemoteCore {
         AcceptRow(journal.documents[doc], r, nextRev);
       }
     }
-    assert ServerInv(post);
+    assert ServerRetains(post);
     assert ServerFollowsEvent(step);
     var disk := before.disk;
     assert EffectTakes(before.platform, disk, PersistJournal(journal'), disk);
@@ -652,13 +663,13 @@ abstract module RemoteCore {
       && step.pre.server.revisions[step.event.revision.id] == step.event.revision
       && step.event.revision.id in step.pre.server.feed
     requires step.post == After(step.pre, d, journal') && step.effects == [PersistJournal(journal')]
-    requires StateInvariants(step.pre) && CoreInv(step.pre) && ServerInv(step.pre)
+    requires StateInvariants(step.pre) && CoreInv(step.pre) && ServerRetains(step.pre)
     requires var journal := step.pre.devices[d].journal;
       journal.documents.Keys <= journal'.documents.Keys
       && journal' == journal.(documents := journal'.documents)
       && (forall doc :: doc in journal.documents ==> QuietRow(journal.documents[doc], journal'.documents[doc]))
       && (forall doc :: doc in journal'.documents && doc !in journal.documents ==> NewAheadRow(journal'.documents[doc]))
-    ensures StateInvariants(step.post) && CoreInv(step.post) && ServerInv(step.post) && StepGuarantees(step)
+    ensures StateInvariants(step.post) && CoreInv(step.post) && ServerRetains(step.post) && (CursorsOnFeed(step.pre) ==> CursorsOnFeed(step.post)) && StepGuarantees(step)
     ensures KeepsFinished(step)
   {
     var pre := step.pre;
@@ -686,7 +697,7 @@ abstract module RemoteCore {
     }
     assert G1_Retained(post);
     assert G7_OneFilePerName(post);
-    assert ServerInv(post);
+    assert ServerRetains(post);
     // Bindings are unchanged, so every binding-reading predicate carries over.
     assert after.disk == before.disk && after.platform == before.platform;
     forall doc ensures BoundIdentity(after, doc) == BoundIdentity(before, doc) {
