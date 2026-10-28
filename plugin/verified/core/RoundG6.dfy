@@ -3167,4 +3167,37 @@ abstract module RoundG6 refines RoundGuarantees {
     RoundG6Chain(pre, d, input, revs, doc, remote);
     RoundOnlyTouchesDevice(pre, d, input, revs);
   }
+
+  // ---------------------------------------------------------------------
+  // G2 of the round: groundwork
+  // ---------------------------------------------------------------------
+
+  // The rule overwrites or removes only the file of the document it
+  // settles: every other row's file it moves (W(a), W(b)) or leaves.
+  lemma RuleOverwritesOwn(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                          revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures forall e | e in PathRule(platform, documents, doc, r, input, revs, first).effects ::
+      (e.Write? && e.precondition.Some? ==> e.target == Some(doc)) && (e.Remove? ==> e.doc == doc)
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if !HeldForName(document, applied, r) {
+      ApplyOverwritesOwn(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) { return; }
+    var device := Device(platform, true, Journal(documents, 0, [], []), map[], {}, {});
+    ClearWayOnlyWhatItSaw(device, doc, r, input, revs);
+  }
+
+  // The apply overwrites or removes only its document's file.
+  lemma ApplyOverwritesOwn(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput,
+                           bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures forall e | e in ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects ::
+      (e.Write? && e.precondition.Some? ==> e.target == Some(doc)) && (e.Remove? ==> e.doc == doc)
+  {
+  }
 }
