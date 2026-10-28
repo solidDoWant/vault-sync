@@ -2152,7 +2152,8 @@ abstract module RoundG6 refines RoundGuarantees {
   // at its binding (none where the rule let its file go: the chain let it
   // go, saved); its base is the chain's last revision (the start where it
   // is empty), and its waiting revision not below it; every content it
-  // saved is still saved.
+  // saved is still saved; and, once it settled another device's revision,
+  // the row is in step with its file (Synced).
   ghost predicate ChainRows(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
                             e: DocId, rows: map<DocId, Document>, listing: Listing, rs: seq<Revision>, saved: set<Hash>,
                             x: Option<(Hash, Kind)>) {
@@ -2164,6 +2165,12 @@ abstract module RoundG6 refines RoundGuarantees {
     && (|rs| == 0 ==> rows[e].base == Some(base0))
     && (|rs| > 0 ==> rows[e].base == Some(BaseOf(rs[|rs| - 1])))
     && x == LocalSide(platform, listing, rows[e])
+    && (OthersIn(d, rs) ==> Synced(platform, listing, rows[e]))
+  }
+
+  // The chain settled another device's revision.
+  ghost predicate OthersIn(d: DeviceId, rs: seq<Revision>) {
+    exists k | 0 <= k < |rs| :: rs[k].device != d
   }
 
   ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
@@ -2256,6 +2263,7 @@ abstract module RoundG6 refines RoundGuarantees {
     if !Distinct(platform, listing') { return; }
     var rows' := ruled.documents;
     RuleKeepsOtherAheads(platform, documents, doc, r, input, revs, first, e);
+    if OthersIn(d, rs) { RuleOtherSynced(platform, documents, doc, r, input, revs, first, e); }
     RuleKeepsSaved(platform, accepted, documents, doc, r, input, revs, first, saved);
     if rows'[e].binding.Some? {
       RuleOtherSide(platform, documents, doc, r, input, revs, first, e);
@@ -2283,7 +2291,7 @@ abstract module RoundG6 refines RoundGuarantees {
     requires doc in documents && documents.Keys <= revs.Keys
     requires NeverJoinedRows(platform, documents) && RowsNameAccepted(accepted, documents)
     requires AcceptedAs(accepted, r) && r.doc == doc
-    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d)
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d) && NotBuiltOn(documents[doc], r)
     requires ChainRows(platform, d, accepted, base0, read0, doc, documents, input.listing, rs, saved, x)
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       var listing' := ListingAfter(platform, input.listing, ruled.effects);
@@ -2319,6 +2327,15 @@ abstract module RoundG6 refines RoundGuarantees {
       assert ChainBase(base0.content, rs) == base.content && ChainBaseDeleted(base0.deleted, rs) == base.deleted;
       ChainSavedSnoc(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0), r, x');
       var rs' := rs + [r];
+      if r.device != d || OthersIn(d, rs) {
+        RuleSynced(platform, documents, doc, r, input, revs, first, d);
+        if r.device != d { assert rs'[|rs|].device != d; }
+        else { var k :| 0 <= k < |rs| && rs[k].device != d; assert rs'[k] == rs[k]; }
+      } else {
+        assert !OthersIn(d, rs') by {
+          forall k | 0 <= k < |rs'| ensures rs'[k].device == d { if k < |rs| { assert rs'[k] == rs[k]; } }
+        }
+      }
       assert ChainOrder(accepted, doc, base0, rs') by {
         assert forall k | 0 <= k < |rs| :: rs'[k] == rs[k];
         if |rs| > 0 { assert rs[|rs| - 1].position == base.position; }
@@ -2327,6 +2344,7 @@ abstract module RoundG6 refines RoundGuarantees {
       return;
     }
     RuleKeepsSide(platform, documents, doc, r, input, revs, first);
+    if OthersIn(d, rs) { RuleOwnKeepsSynced(platform, documents, doc, r, input, revs, first); }
     if rows'[doc].binding.Some? || x.None? {
       assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs, saved, x);
       return;
@@ -2346,7 +2364,8 @@ abstract module RoundG6 refines RoundGuarantees {
                                                doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
-    requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==> PulledBy(pass.journal.documents[doc], r, d)
+    requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==>
+               PulledBy(pass.journal.documents[doc], r, d) && NotBuiltOn(pass.journal.documents[doc], r)
     requires PassChain(platform, d, accepted, base0, read0, e, pass)
     ensures PassChain(platform, d, accepted, base0, read0, e, SettleRevision(platform, pass, doc, r, input, revs, first))
   {
@@ -2418,7 +2437,9 @@ abstract module RoundG6 refines RoundGuarantees {
   }
 
   // Every pulled revision the pass settles is PulledBy its row as the
-  // pass meets it, where it is newer.
+  // pass meets it, and a commit in flight is NotBuiltOn it, where it is
+  // newer (Apply.dfy states both; the round's final lemma takes them as
+  // facts of the state before it).
   ghost predicate PulledInPass(platform: Platform, d: DeviceId, pass: RoundPass, revisions: seq<Revision>, input: RoundInput,
                                revs: FreshRevs, first: Claims)
     decreases |revisions|
@@ -2426,7 +2447,7 @@ abstract module RoundG6 refines RoundGuarantees {
     |revisions| > 0 ==>
       var documents := pass.journal.documents;
       var r := revisions[0];
-      (r.doc in documents && Newer(documents[r.doc], r) ==> PulledBy(documents[r.doc], r, d))
+      (r.doc in documents && Newer(documents[r.doc], r) ==> PulledBy(documents[r.doc], r, d) && NotBuiltOn(documents[r.doc], r))
       && PulledInPass(platform, d, SettleRevision(platform, pass, r.doc, r, input, revs, first), revisions[1..], input, revs, first)
   }
 
@@ -2486,7 +2507,7 @@ abstract module RoundG6 refines RoundGuarantees {
         var row := documents[docs[0]];
         var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
         var r := row.ahead.value.revision;
-        (Newer(row.(ahead := None), r) ==> PulledBy(row.(ahead := None), r, d))
+        (Newer(row.(ahead := None), r) ==> PulledBy(row.(ahead := None), r, d) && NotBuiltOn(row.(ahead := None), r))
         && RetriedInPass(platform, d, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first)
       else RetriedInPass(platform, d, pass, docs[1..], input, revs, first)
   }
