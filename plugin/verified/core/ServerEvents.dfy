@@ -74,6 +74,7 @@ abstract module ServerEvents refines StepContracts {
     requires CoreReachable(step.pre)
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
+    ServerClausesKept(step);
     var pre := step.pre;
     var post := step.post;
     var revisions := step.event.revisions;
@@ -292,16 +293,9 @@ abstract module ServerEvents refines StepContracts {
   // the history or the revisions is `lost` (RestoreRemoves), and one it
   // keeps but no longer marks purged is back in its document's history
   // (HistoryFollowsFeed).
-  // Every revision is stored under its own id (Appended does so). Not a
-  // clause of CoreReachable: reported as a design gap on #950; until it is
-  // settled the restore's proof takes it as an explicit hypothesis.
-  ghost predicate RevisionsKeyed(server: Server) {
-    forall id :: id in server.revisions ==> server.revisions[id].id == id
-  }
-
   lemma {:isolate_assertions} RestoreRetains(step: Step)
     requires ServerEventStep(step) && step.event.Restore?
-    requires CoreReachable(step.pre) && RevisionsKeyed(step.pre.server)
+    requires CoreReachable(step.pre)
     ensures ServerRetains(step.post)
   {
     var pre := step.pre.server;
@@ -389,9 +383,10 @@ abstract module ServerEvents refines StepContracts {
 
   lemma {:isolate_assertions} RestoreKeepsAll(step: Step)
     requires ServerEventStep(step) && step.event.Restore?
-    requires CoreReachable(step.pre) && RevisionsKeyed(step.pre.server)
+    requires CoreReachable(step.pre)
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
+    ServerClausesKept(step);
     var pre := step.pre;
     var post := step.post;
     RestoredIsCut(step);
@@ -461,14 +456,6 @@ abstract module ServerEvents refines StepContracts {
   // ---------------------------------------------------------------------
   // A restore from history
   // ---------------------------------------------------------------------
-
-  // Every feed entry is an accepted id (Appended adds to both, a restore
-  // cuts the feed and keeps `accepted`). Not a clause of CoreReachable:
-  // reported as a design gap on #950; until it is settled the proof takes it
-  // as an explicit hypothesis.
-  ghost predicate FeedAccepted(server: Server) {
-    forall i :: 0 <= i < |server.feed| ==> server.feed[i] in server.accepted
-  }
 
   lemma KeepAppendOut(s: seq<RevId>, x: RevId, ids: set<RevId>)
     requires x !in ids
@@ -562,7 +549,7 @@ abstract module ServerEvents refines StepContracts {
   // The cut at the whole appended feed has the appended server's heads.
   lemma AppendWholeCut(step: Step, cut: Server)
     requires ServerEventStep(step) && step.event.RestoreFromHistory?
-    requires CoreReachable(step.pre) && FeedAccepted(step.pre.server)
+    requires CoreReachable(step.pre)
     requires EarlierServer(step.post.server, cut) && |cut.feed| > |step.pre.server.feed|
     ensures forall x :: Head(cut, x) == Head(step.post.server, x)
   {
@@ -599,7 +586,7 @@ abstract module ServerEvents refines StepContracts {
 
   lemma AppendCuts(step: Step, cut: Server)
     requires ServerEventStep(step) && step.event.RestoreFromHistory?
-    requires CoreReachable(step.pre) && FeedAccepted(step.pre.server)
+    requires CoreReachable(step.pre)
     requires EarlierServer(step.post.server, cut)
     ensures |cut.feed| <= |step.pre.server.feed| ==> EarlierServer(step.pre.server, cut)
     ensures |cut.feed| > |step.pre.server.feed| ==> forall x :: Head(cut, x) == Head(step.post.server, x)
@@ -621,9 +608,10 @@ abstract module ServerEvents refines StepContracts {
 
   lemma {:isolate_assertions} RestoreFromHistoryKeepsAll(step: Step)
     requires ServerEventStep(step) && step.event.RestoreFromHistory?
-    requires CoreReachable(step.pre) && FeedAccepted(step.pre.server)
+    requires CoreReachable(step.pre)
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
+    ServerClausesKept(step);
     var pre := step.pre;
     var post := step.post;
     var r := step.event.revision;
@@ -777,22 +765,72 @@ abstract module ServerEvents refines StepContracts {
   // The contract
   // ---------------------------------------------------------------------
 
-  // ServerEventContract, under the two hypotheses reported as design gaps
-  // on #950 (RevisionsKeyed, FeedAccepted), and with the cursor clause as
-  // its comment states it (a purge and a restore from history keep
-  // CursorsOnFeed; CoreReachable does not include it, gap A on #950).
-  lemma ServerEventsKeepAllUnder(step: Step)
-    requires ServerEventStep(step) && CoreReachable(step.pre)
-    requires RevisionsKeyed(step.pre.server) && FeedAccepted(step.pre.server)
-    ensures CoreReachable(step.post) && StepGuarantees(step)
-    ensures !step.event.Restore? && CursorsOnFeed(step.pre) ==> CursorsOnFeed(step.post)
+  // The server clauses #1063 added to ClaimsReachable: every server step
+  // keeps FeedAccepted (an append adds the id to the feed and to
+  // `accepted`, a restore from backup cuts the feed and keeps `accepted`, a
+  // purge changes neither) and RevisionsKeyed (an append stores the
+  // revision under its id, a restore restricts the revisions, a purge
+  // changes none). FeedAccepted holds initially (InitialCoreReachable).
+  lemma ServerClausesKept(step: Step)
+    requires ServerFollowsEvent(step)
+    requires FeedAccepted(step.pre.server) && RevisionsKeyed(step.pre.server)
+    ensures FeedAccepted(step.post.server) && RevisionsKeyed(step.post.server)
   {
-    if step.event.Purge? {
-      PurgeKeepsAll(step);
-    } else if step.event.Restore? {
-      RestoreKeepsAll(step);
-    } else {
-      RestoreFromHistoryKeepsAll(step);
+    var pre := step.pre.server;
+    var post := step.post.server;
+    if step.event.Restore? {
+      forall i | 0 <= i < |post.feed| ensures post.feed[i] in post.accepted {
+        assert post.feed[i] == pre.feed[i];
+      }
+    }
+  }
+
+  // With FeedAccepted, an appended id is not on the feed before it
+  // (Appendable takes an id never accepted).
+  lemma AppendedIdOffFeed(server: Server, doc: DocId, r: Revision)
+    requires FeedAccepted(server) && Appendable(server, doc, r)
+    ensures r.id !in server.feed
+  {
+  }
+
+  // ServerEventContract's cursor clause (#1063, #950's gap A): a purge
+  // changes nothing Diverged reads, and a restore from history only extends
+  // the feed and the revisions, so a device on the feed stays on it with
+  // its anchor in place and its journal's revisions held.
+  lemma ServerEventKeepsCursors(step: Step)
+    requires step.event.Purge? || step.event.RestoreFromHistory?
+    requires ServerFollowsEvent(step) && step.post.devices == step.pre.devices
+    ensures KeepsCursors(step)
+  {
+    forall d | d in step.pre.devices && !Diverged(step.pre, d) ensures !Diverged(step.post, d) {
+      var journal := step.pre.devices[d].journal;
+      assert step.pre.server.feed <= step.post.server.feed;
+      assert step.pre.server.revisions.Keys <= step.post.server.revisions.Keys;
+      if journal.cursor > 0 {
+        assert step.post.server.feed[journal.cursor - 1] == step.pre.server.feed[journal.cursor - 1];
+      }
+    }
+  }
+
+  // ServerEventContract (#950), proved for a restore from backup, a purge
+  // and a restore from history, with the clauses #1063 settled.
+  lemma ServerEventsKeepAll(step: Step)
+    ensures ServerEventContract(step)
+  {
+    if (step.event.Restore? || step.event.Purge? || step.event.RestoreFromHistory?)
+      && CoreReachable(step.pre) && ServerFollowsEvent(step)
+      && step.post.devices == step.pre.devices && step.effects == []
+    {
+      assert ServerEventStep(step);
+      if step.event.Purge? {
+        PurgeKeepsAll(step);
+        ServerEventKeepsCursors(step);
+      } else if step.event.Restore? {
+        RestoreKeepsAll(step);
+      } else {
+        RestoreFromHistoryKeepsAll(step);
+        ServerEventKeepsCursors(step);
+      }
     }
   }
 }

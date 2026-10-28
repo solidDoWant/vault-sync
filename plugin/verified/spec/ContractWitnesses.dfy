@@ -731,7 +731,7 @@ abstract module StepContractWitnesses refines StepContracts {
   // it would break G7_OneFilePerName's server clause. Every cut's heads are
   // apart (CutsHeadsApart), so the state is not reachable; every other new
   // clause holds of it.
-  lemma CollidingCutExcluded(x: DocId, y: DocId, a: Revision, b: Revision, c: Revision, p: Path, q: Path, cut: Server)
+  lemma {:isolate_assertions} CollidingCutExcluded(x: DocId, y: DocId, a: Revision, b: Revision, c: Revision, p: Path, q: Path, cut: Server)
     requires x != y && |{a.id, b.id, c.id}| == 3 && !CollideK(p, q) && !CollideK(q, p)
     requires a.doc == x && a.position == 0 && a.path == p && !a.deleted
     requires c.doc == y && c.position == 1 && c.path == p && !c.deleted
@@ -766,6 +766,8 @@ abstract module StepContractWitnesses refines StepContracts {
     assert LiveHead(cut, x) && LiveHead(cut, y);
     assert CollideK(p, p);
     assert !LiveHeadsApart(cut);
+    assert !CutsHeadsApart(server);
+    assert !ClaimsReachable(State(map[], server));
   }
 
   // ---------------------------------------------------------------------
@@ -968,25 +970,6 @@ abstract module StepContractWitnesses refines StepContracts {
     assert CoreReachable(pre);
   }
 
-  // ServerEventContract's last clause, proved (#1063): a purge changes
-  // nothing Diverged reads, and a restore from history only extends the
-  // feed and the revisions, so a device on the feed stays on it with its
-  // anchor in place and its journal's revisions held.
-  lemma ServerEventKeepsCursors(step: Step)
-    requires step.event.Purge? || step.event.RestoreFromHistory?
-    requires ServerFollowsEvent(step) && step.post.devices == step.pre.devices
-    ensures KeepsCursors(step)
-  {
-    forall d | d in step.pre.devices && !Diverged(step.pre, d) ensures !Diverged(step.post, d) {
-      var journal := step.pre.devices[d].journal;
-      assert step.pre.server.feed <= step.post.server.feed;
-      assert step.pre.server.revisions.Keys <= step.post.server.revisions.Keys;
-      if journal.cursor > 0 {
-        assert step.post.server.feed[journal.cursor - 1] == step.pre.server.feed[journal.cursor - 1];
-      }
-    }
-  }
-
   // #950's gap B (rejection): the feed [r.id, a.id] names r.id, which the
   // server neither holds nor accepted, and a restore from history appends
   // r under that id. The cut at d's cursor then holds r as z's head, which
@@ -1050,28 +1033,5 @@ abstract module StepContractWitnesses refines StepContracts {
     assert !ReportedCannotHold(post.(server := cut), device, r.path);
     assert !HeadsMirrored(post.(server := cut), device);
     assert !MirrorAtCursor(post);
-  }
-
-  // FeedAccepted holds initially (InitialCoreReachable) and every server
-  // step keeps it: an append adds the id to the feed and to `accepted`, a
-  // restore from backup cuts the feed and keeps `accepted`, a purge
-  // changes neither. With it an appended id is not on the feed before.
-  lemma FeedAcceptedKept(step: Step)
-    requires FeedAccepted(step.pre.server) && ServerFollowsEvent(step)
-    ensures FeedAccepted(step.post.server)
-  {
-    var pre := step.pre.server;
-    var post := step.post.server;
-    if step.event.Restore? {
-      forall i | 0 <= i < |post.feed| ensures post.feed[i] in post.accepted {
-        assert post.feed[i] == pre.feed[i];
-      }
-    }
-  }
-
-  lemma AppendedIdOffFeed(server: Server, doc: DocId, r: Revision)
-    requires FeedAccepted(server) && Appendable(server, doc, r)
-    ensures r.id !in server.feed
-  {
   }
 }

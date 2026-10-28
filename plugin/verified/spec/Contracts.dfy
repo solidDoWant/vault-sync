@@ -44,7 +44,8 @@ abstract module StepContracts refines PushCore {
     StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
     && FeedPositioned(state.server) && ClaimsCoverCursor(state)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
-    && FeedAccepted(state.server) && CutsHeadsApart(state.server)
+    && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
+    && ScopesClosedUnderF(state)
     && (forall d :: d in state.devices && !Diverged(state, d) ==> OwnRevisionsAcknowledged(state, d))
   }
 
@@ -85,6 +86,27 @@ abstract module StepContracts refines PushCore {
   // it.
   ghost predicate FeedAccepted(server: Server) {
     forall i :: 0 <= i < |server.feed| ==> server.feed[i] in server.accepted
+  }
+
+  // Every revision is stored under its own id (#1063, #950's gap C):
+  // Appended stores it so, a restore from backup restricts the revisions
+  // without changing a value, and a purge changes none. Without it a
+  // restore could make a purged id the id of a restored head stored under
+  // another key (IsHead compares a head's id), and ServerRetains' "purged
+  // and not a head" excuse could not be shown.
+  ghost predicate RevisionsKeyed(server: Server) {
+    forall id :: id in server.revisions ==> server.revisions[id].id == id
+  }
+
+  // A device's scope is a set of names, not of spellings (#1063, found
+  // proving ClaimsImplyMirrorContract): a path F-equal to an out-of-scope
+  // path is out of scope too. Without it a bound file could sit at an
+  // out-of-scope spelling of an in-scope head's path, outside both InStep's
+  // and HeadsMirrored's reach. No step changes a device's scope, and the
+  // initial one is empty.
+  ghost predicate ScopesClosedUnderF(state: State) {
+    forall d, p, q :: (d in state.devices && p in state.devices[d].outOfScope
+                       && SameF(state.devices[d].platform, p, q)) ==> q in state.devices[d].outOfScope
   }
 
   // A base records the revision `r` of document `doc` it was made from.
