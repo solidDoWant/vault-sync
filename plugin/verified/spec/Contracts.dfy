@@ -87,18 +87,20 @@ abstract module StepContracts refines PushCore {
   }
 
   // An outbox's parent is never newer than its row's base (#1080): where
-  // the server holds the outbox's parent, the row has a base at or after
-  // it on the feed. A parent a restore removed can never be a head again
+  // the server holds the outbox's parent as a revision of the row's
+  // document, the row has a base at or after it on the feed. (A commit
+  // lands only on its document's head, so a parent of another document
+  // never lets it land.) A parent a restore removed can never be a head again
   // (it was accepted, OutboxParentsAccepted, and an append takes an id
   // never accepted), so a commit on it cannot land. A new outbox and a reopened
   // one (Reopen) take the base's id as their parent, and no step moves a
   // base back (ApplyBaseGrows, RuleKeepsBase). A round may move the base
   // past the parent of a commit in flight; that commit then cannot land,
   // because its parent is no longer its document's head (ParentIsHead).
-  ghost predicate OutboxParentAtBase(server: Server, document: Document) {
+  ghost predicate OutboxParentAtBase(server: Server, doc: DocId, document: Document) {
     document.outbox.Some? && document.outbox.value.baseRev.Some? ==>
       var parent := document.outbox.value.baseRev.value;
-      parent in server.revisions ==>
+      parent in server.revisions && server.revisions[parent].doc == doc ==>
         document.base.Some? && server.revisions[parent].position <= document.base.value.position
   }
 
@@ -144,7 +146,7 @@ abstract module StepContracts refines PushCore {
   ghost predicate CommitsOnBase(state: State) {
     forall d, doc :: ReadsFeed(state, d) && doc in state.devices[d].journal.documents ==>
       var document := state.devices[d].journal.documents[doc];
-      OutboxParentAtBase(state.server, document) && OwnCommitOnBase(state.server, d, doc, document)
+      OutboxParentAtBase(state.server, doc, document) && OwnCommitOnBase(state.server, d, doc, document)
   }
 
   // Each document's history is that document's feed entries, in feed order

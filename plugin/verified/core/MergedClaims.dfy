@@ -131,10 +131,10 @@ abstract module MergedClaims refines StepContracts {
   // before the step, which landed on the base before.
   lemma RowKeepsCommitsOnBase(server: Server, d: DeviceId, doc: DocId, before: Document, after: Document)
     requires HistoryFollowsFeed(server) && RevisionsOnFeed(server) && RevisionsAccepted(server)
-    requires OutboxParentAtBase(server, before) && OwnCommitOnBase(server, d, doc, before)
+    requires OutboxParentAtBase(server, doc, before) && OwnCommitOnBase(server, d, doc, before)
     requires RowAcknowledged(server, d, doc, before) && RowNamesAccepted(server, doc, after)
     requires BaseMoves(before, after) && ParentKeptOrBase(before, after)
-    ensures OutboxParentAtBase(server, after) && OwnCommitOnBase(server, d, doc, after)
+    ensures OutboxParentAtBase(server, doc, after) && OwnCommitOnBase(server, d, doc, after)
   {
     if after.outbox.Some? && after.outbox.value.rev in server.revisions
        && server.revisions[after.outbox.value.rev].device == d
@@ -161,14 +161,14 @@ abstract module MergedClaims refines StepContracts {
       BaseMoves(pre.devices[d].journal.documents[doc], journal'.documents[doc])
       && ParentKeptOrBase(pre.devices[d].journal.documents[doc], journal'.documents[doc])
     requires forall doc :: doc in journal'.documents && doc !in pre.devices[d].journal.documents ==>
-      OutboxParentAtBase(pre.server, journal'.documents[doc])
+      OutboxParentAtBase(pre.server, doc, journal'.documents[doc])
     ensures CommitsOnBase(After(pre, d, journal'))
   {
     var post := After(pre, d, journal');
     var journal := pre.devices[d].journal;
     assert post.server == pre.server;
     forall x, doc | ReadsFeed(post, x) && doc in post.devices[x].journal.documents
-      ensures OutboxParentAtBase(post.server, post.devices[x].journal.documents[doc])
+      ensures OutboxParentAtBase(post.server, doc, post.devices[x].journal.documents[doc])
       ensures OwnCommitOnBase(post.server, x, doc, post.devices[x].journal.documents[doc])
     {
       assert ReadsFeed(pre, x);
@@ -258,9 +258,9 @@ abstract module MergedClaims refines StepContracts {
   // parent or takes the base's (#1080).
   lemma RowKeepsParentAtBase(server: Server, doc: DocId, before: Document, after: Document)
     requires RevisionsAccepted(server)
-    requires OutboxParentAtBase(server, before) && RowNamesAccepted(server, doc, after)
+    requires OutboxParentAtBase(server, doc, before) && RowNamesAccepted(server, doc, after)
     requires BaseMoves(before, after) && ParentKeptOrBase(before, after)
-    ensures OutboxParentAtBase(server, after)
+    ensures OutboxParentAtBase(server, doc, after)
   {}
 
   // A step that leaves the server as it was and replaces only device d's
@@ -278,7 +278,7 @@ abstract module MergedClaims refines StepContracts {
       BaseMoves(pre.devices[d].journal.documents[doc], journal'.documents[doc])
     requires forall doc :: doc in journal'.documents ==>
       RowNamesAccepted(pre.server, doc, journal'.documents[doc])
-      && OutboxParentAtBase(pre.server, journal'.documents[doc])
+      && OutboxParentAtBase(pre.server, doc, journal'.documents[doc])
       && (journal'.documents[doc].outbox.Some? && journal'.documents[doc].outbox.value.baseRev.Some?
           ==> journal'.documents[doc].outbox.value.baseRev.value in pre.server.accepted)
     ensures CommitsOnBase(After(pre, d, journal')) && OutboxParentsAccepted(After(pre, d, journal'))
@@ -286,7 +286,7 @@ abstract module MergedClaims refines StepContracts {
     var post := After(pre, d, journal');
     var journal := pre.devices[d].journal;
     forall x, doc | ReadsFeed(post, x) && doc in post.devices[x].journal.documents
-      ensures OutboxParentAtBase(post.server, post.devices[x].journal.documents[doc])
+      ensures OutboxParentAtBase(post.server, doc, post.devices[x].journal.documents[doc])
       ensures OwnCommitOnBase(post.server, x, doc, post.devices[x].journal.documents[doc])
     {
       if x == d {
@@ -684,13 +684,13 @@ abstract module MergedClaims refines StepContracts {
     var server := pre.server;
     var server' := post.server;
     forall x, y | ReadsFeed(post, x) && y in post.devices[x].journal.documents
-      ensures OutboxParentAtBase(server', post.devices[x].journal.documents[y])
+      ensures OutboxParentAtBase(server', y, post.devices[x].journal.documents[y])
       ensures OwnCommitOnBase(server', x, y, post.devices[x].journal.documents[y])
     {
       assert ReadsFeed(pre, x);
       var before := pre.devices[x].journal.documents[y];
       var after := post.devices[x].journal.documents[y];
-      assert OutboxParentAtBase(server, before) && OwnCommitOnBase(server, x, y, before);
+      assert OutboxParentAtBase(server, y, before) && OwnCommitOnBase(server, x, y, before);
       if x == d && y == doc {
         AcceptLandsOnBase(pre, d, doc, r, nextRev);
       } else {
@@ -737,7 +737,7 @@ abstract module MergedClaims refines StepContracts {
     var server := pre.server;
     var server' := post.server;
     forall x, y | ReadsFeed(post, x) && y in post.devices[x].journal.documents
-      ensures OutboxParentAtBase(server', post.devices[x].journal.documents[y])
+      ensures OutboxParentAtBase(server', y, post.devices[x].journal.documents[y])
       ensures OwnCommitOnBase(server', x, y, post.devices[x].journal.documents[y])
     {
       var journal := pre.devices[x].journal;
@@ -750,7 +750,7 @@ abstract module MergedClaims refines StepContracts {
       }
       assert ReadsFeed(pre, x);
       var row := journal.documents[y];
-      assert OutboxParentAtBase(server, row) && OwnCommitOnBase(server, x, y, row);
+      assert OutboxParentAtBase(server, y, row) && OwnCommitOnBase(server, x, y, row);
       if row.outbox.Some? && row.outbox.value.rev in server'.revisions
          && server'.revisions[row.outbox.value.rev].device == x
          && server'.revisions[row.outbox.value.rev].doc == y && y in server'.history
@@ -792,7 +792,7 @@ abstract module MergedClaims refines StepContracts {
     requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && CommitsOnBase(pre) && ReadsFeed(pre, d)
     ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
       var after := post.devices[d].journal.documents[doc];
-      OutboxParentAtBase(post.server, after) && OwnCommitOnBase(post.server, d, doc, after)
+      OutboxParentAtBase(post.server, doc, after) && OwnCommitOnBase(post.server, d, doc, after)
   {
     AcceptShape(pre, d, doc, r, nextRev);
     var post := AcceptStep(pre, d, doc, r, nextRev).post;
@@ -800,7 +800,7 @@ abstract module MergedClaims refines StepContracts {
     var server' := post.server;
     var before := pre.devices[d].journal.documents[doc];
     var after := post.devices[d].journal.documents[doc];
-    assert OutboxParentAtBase(server, before) && OwnCommitOnBase(server, d, doc, before);
+    assert OutboxParentAtBase(server, doc, before) && OwnCommitOnBase(server, d, doc, before);
     var base' := after.base.value;
     assert base'.position >= r.position;
     assert before.base.Some? ==> base'.position >= before.base.value.position;

@@ -1008,7 +1008,7 @@ abstract module ServerEvents refines StepContracts {
   {
     RestoredIsCut(step);
     forall d, doc | ReadsFeed(step.post, d) && doc in step.post.devices[d].journal.documents
-      ensures OutboxParentAtBase(step.post.server, step.post.devices[d].journal.documents[doc])
+      ensures OutboxParentAtBase(step.post.server, doc, step.post.devices[d].journal.documents[doc])
       ensures OwnCommitOnBase(step.post.server, d, doc, step.post.devices[d].journal.documents[doc])
     {
       RestoreReadsFeed(step, d);
@@ -1018,8 +1018,8 @@ abstract module ServerEvents refines StepContracts {
 
   lemma RestoreRowCommitsOnBase(pre: Server, post: Server, d: DeviceId, doc: DocId, document: Document)
     requires EarlierServer(pre, post.(accepted := pre.accepted, lost := post.lost)) && post.accepted == pre.accepted
-    requires OutboxParentAtBase(pre, document) && OwnCommitOnBase(pre, d, doc, document)
-    ensures OutboxParentAtBase(post, document) && OwnCommitOnBase(post, d, doc, document)
+    requires OutboxParentAtBase(pre, doc, document) && OwnCommitOnBase(pre, d, doc, document)
+    ensures OutboxParentAtBase(post, doc, document) && OwnCommitOnBase(post, d, doc, document)
   {
     if document.outbox.Some? && document.outbox.value.rev in post.revisions
        && post.revisions[document.outbox.value.rev].device == d
@@ -1044,7 +1044,7 @@ abstract module ServerEvents refines StepContracts {
   {
     var r := step.event.revision;
     forall d, doc | ReadsFeed(step.post, d) && doc in step.post.devices[d].journal.documents
-      ensures OutboxParentAtBase(step.post.server, step.post.devices[d].journal.documents[doc])
+      ensures OutboxParentAtBase(step.post.server, doc, step.post.devices[d].journal.documents[doc])
       ensures OwnCommitOnBase(step.post.server, d, doc, step.post.devices[d].journal.documents[doc])
     {
       AppendReadsFeed(step, d);
@@ -1056,9 +1056,9 @@ abstract module ServerEvents refines StepContracts {
   lemma AppendRowCommitsOnBase(pre: Server, rdoc: DocId, r: Revision, d: DeviceId, doc: DocId, document: Document)
     requires FeedPositioned(pre) && RevisionsOnFeed(pre) && Appendable(pre, rdoc, r) && r.device != d
     requires document.outbox.Some? && document.outbox.value.baseRev.Some? ==> document.outbox.value.baseRev.value in pre.accepted
-    requires OutboxParentAtBase(pre, document) && OwnCommitOnBase(pre, d, doc, document)
+    requires OutboxParentAtBase(pre, doc, document) && OwnCommitOnBase(pre, d, doc, document)
     ensures var post := Appended(pre, rdoc, r);
-      OutboxParentAtBase(post, document) && OwnCommitOnBase(post, d, doc, document)
+      OutboxParentAtBase(post, doc, document) && OwnCommitOnBase(post, d, doc, document)
   {
     var post := Appended(pre, rdoc, r);
     if document.outbox.Some? && document.outbox.value.rev in post.revisions
