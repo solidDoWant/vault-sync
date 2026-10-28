@@ -8,7 +8,9 @@
 //    dropped. The base becomes the newest revision of the document the
 //    server holds that this device synced: its kept base, or a later
 //    revision of its own that is not its commit in flight (SPEC.md §8: the
-//    own-commit anchor). With none, the row has no base. CoreInv then makes
+//    own-commit anchor), or the revision its outbox's commit is on, which it
+//    synced too (its parent, or the entry before a landed commit; #1080).
+//    With none, the row has no base. CoreInv then makes
 //    the device send what it holds again: a bound file that differs from the
 //    new base gets an outbox, carrying the file. A user's delete of a
 //    document the server no longer has is dropped (SPEC.md §8, #829); one of
@@ -57,14 +59,85 @@ abstract module ResyncCore refines StepContracts {
     if doc in server.history then NewestOwn(server, d, doc, document, |server.history[doc]|) else None
   }
 
-  // The base the resync leaves: the kept base, or the own anchor where it is
-  // newer.
+  // The base the resync leaves: the newest of the kept base, the own
+  // anchor, and the revision the row's outbox commit is on (#1080): its
+  // parent, and, where its id is a revision of the device's own the server
+  // holds, the entry before it in the document's history (the head it
+  // landed on). Each is a revision of the document the server holds.
   function ResyncBase(server: Server, d: DeviceId, doc: DocId, document: Document): Option<Base> {
     var kept := if document.base.Some? && document.base.value.rev in server.revisions then document.base else None;
     var own := OwnAnchor(server, d, doc, document);
-    if own.Some? && (kept.None? || kept.value.position < server.revisions[own.value].position)
-    then Some(BaseOf(server.revisions[own.value]))
-    else kept
+    var anchored :=
+      if own.Some? && (kept.None? || kept.value.position < server.revisions[own.value].position)
+      then Some(BaseOf(server.revisions[own.value]))
+      else kept;
+    Raise(server, doc, Raise(server, doc, anchored, ParentOn(document)), LandedOn(server, d, doc, document))
+  }
+
+  // `base`, or revision `f` of `doc` where the server holds it and it is
+  // newer.
+  function Raise(server: Server, doc: DocId, base: Option<Base>, f: Option<RevId>): (r: Option<Base>)
+    ensures base.Some? ==> r.Some? && r.value.position >= base.value.position
+    ensures f.Some? && f.value in server.revisions && server.revisions[f.value].doc == doc
+            ==> r.Some? && r.value.position >= server.revisions[f.value].position
+    ensures r == base || (f.Some? && f.value in server.revisions && server.revisions[f.value].doc == doc
+                          && r == Some(BaseOf(server.revisions[f.value])))
+  {
+    if f.Some? && f.value in server.revisions && server.revisions[f.value].doc == doc
+       && (base.None? || base.value.position < server.revisions[f.value].position)
+    then Some(BaseOf(server.revisions[f.value]))
+    else base
+  }
+
+  function ParentOn(document: Document): Option<RevId> {
+    if document.outbox.Some? then document.outbox.value.baseRev else None
+  }
+
+  // The entry just before the outbox's id in the document's history, where
+  // the id is a revision of the device's own of that document.
+  function LandedOn(server: Server, d: DeviceId, doc: DocId, document: Document): Option<RevId> {
+    if document.outbox.Some? && doc in server.history && document.outbox.value.rev in server.revisions
+       && server.revisions[document.outbox.value.rev].device == d
+       && server.revisions[document.outbox.value.rev].doc == doc
+    then EntryBefore(server.history[doc], document.outbox.value.rev)
+    else None
+  }
+
+  function EntryBefore(s: seq<RevId>, x: RevId): Option<RevId> {
+    if |s| < 2 || s[0] == x then None
+    else if s[1] == x then Some(s[0])
+    else EntryBefore(s[1..], x)
+  }
+
+  // Every entry before x's first index k is at or before index k - 1 (the
+  // entry EntryBefore names), and with none, x is first.
+  lemma EntryBeforeFacts(s: seq<RevId>, x: RevId, j: int) returns (k: int)
+    requires 0 <= j < |s| && s[j] != x && x in s[j..]
+    requires forall a, b :: 0 <= a < |s| && 0 <= b < |s| && s[a] == x && s[b] == x ==> a == b
+    ensures j < k < |s| && s[k] == x && EntryBefore(s, x) == Some(s[k - 1])
+    ensures forall i :: 0 <= i < k ==> s[i] != x
+  {
+    var m :| 0 <= m < |s[j..]| && s[j..][m] == x;
+    assert s[j + m] == x && j + m > j;
+    if s[0] == x {
+      assert false;
+    }
+    if s[1] == x {
+      k := 1;
+      assert j == 0;
+    } else {
+      var j' := if j == 0 then 0 else j - 1;
+      assert s[1..][j'] != x && x in s[1..][j'..] by {
+        assert s[1..][j + m - 1] == x;
+        if j == 0 {
+          assert s[1..][j'..] == s[1..];
+        } else {
+          assert s[1..][j'..] == s[j..];
+        }
+      }
+      var k' := EntryBeforeFacts(s[1..], x, j');
+      k := k' + 1;
+    }
   }
 
   function BaseOf(r: Revision): Base {
@@ -259,6 +332,115 @@ abstract module ResyncCore refines StepContracts {
       assert server.revisions[id].position <= server.revisions[own.value].position;
       assert row.base.Some? && row.base.value.position >= server.revisions[own.value].position;
       assert false;
+    }
+  }
+
+  // The re-anchored row keeps CommitsOnBase's clauses (#1080): its parent
+  // is its old one, raised under by ResyncBase, or the new base's id; a
+  // landed commit its outbox carries has the entry before it in the
+  // history at or below the base (LandedOn), or is a revision of the
+  // device's own that the own anchor covers (a new outbox).
+  lemma {:isolate_assertions} ResyncRowCommits(server: Server, d: DeviceId, doc: DocId, document: Document, rev: RevId)
+    requires HistoryFollowsFeed(server) && RevisionsAccepted(server) && RevisionsKeyed(server)
+    requires RevisionsOnFeed(server) && FeedPositioned(server)
+    requires forall x, r :: x in server.history && r in server.history[x] ==> r in server.revisions
+    requires document.base.Some? ==>
+      document.base.value.rev in server.accepted && BaseRecords(document.base.value, doc, server.accepted[document.base.value.rev])
+    requires document.outbox.Some? && document.outbox.value.baseRev.Some? ==> document.outbox.value.baseRev.value in server.accepted
+    ensures var row := ResyncRow(server, d, doc, document, rev);
+      OutboxParentAtBase(server, doc, row) && OwnCommitOnBase(server, d, doc, row)
+      && (row.outbox.Some? && row.outbox.value.baseRev.Some? ==> row.outbox.value.baseRev.value in server.accepted)
+  {
+    var row := ResyncRow(server, d, doc, document, rev);
+    var base' := ResyncBase(server, d, doc, document);
+    assert row.base == base';
+    assert base'.Some? ==> base'.value.rev in server.revisions
+      && server.revisions[base'.value.rev].position == base'.value.position;
+    if row.outbox.Some? && row.outbox.value.rev in server.revisions
+       && server.revisions[row.outbox.value.rev].device == d
+       && server.revisions[row.outbox.value.rev].doc == doc && doc in server.history
+    {
+      var x := row.outbox.value.rev;
+      var h := server.history[doc];
+      assert x in server.feed;
+      var i :| 0 <= i < |server.feed| && server.feed[i] == x;
+      assert x in h;
+      var kx :| 0 <= kx < |h| && h[kx] == x;
+      forall a, b | 0 <= a < |h| && 0 <= b < |h| && h[a] == x && h[b] == x ensures a == b {
+        if a < b { assert server.revisions[h[a]].position < server.revisions[h[b]].position; }
+        if b < a { assert server.revisions[h[b]].position < server.revisions[h[a]].position; }
+      }
+      forall id | id in h && id in server.revisions && id != x
+        && server.revisions[id].position < server.revisions[x].position
+        ensures base'.Some? && server.revisions[id].position <= base'.value.position
+      {
+        var a :| 0 <= a < |h| && h[a] == id;
+        if kx < a { assert server.revisions[h[kx]].position < server.revisions[h[a]].position; }
+        assert a < kx;
+        if document.outbox.Some? {
+          assert document.outbox.value.rev == x;
+          assert x in h[a..];
+          var k := EntryBeforeFacts(h, x, a);
+          assert k == kx;
+          var e := h[k - 1];
+          assert LandedOn(server, d, doc, document) == Some(e);
+          assert server.revisions[e].doc == doc;
+          if a < k - 1 { assert server.revisions[h[a]].position < server.revisions[h[k - 1]].position; }
+          assert server.revisions[id].position <= server.revisions[e].position;
+        } else {
+          assert OwnSynced(server, d, doc, document, x);
+          var own := OwnAnchor(server, d, doc, document);
+          assert own.Some?;
+          var j :| 0 <= j < |h| && h[j] == own.value
+                   && OwnSynced(server, d, doc, document, own.value)
+                   && (forall k2 :: j < k2 < |h| ==> !OwnSynced(server, d, doc, document, h[k2]));
+          assert kx <= j;
+          if kx < j { assert server.revisions[h[kx]].position < server.revisions[h[j]].position; }
+          assert server.revisions[x].position <= server.revisions[own.value].position;
+        }
+      }
+    }
+  }
+
+  // The resync's post-state keeps CommitsOnBase and OutboxParentsAccepted
+  // (#1080): pulling the feed changes only aheads and adds rows with no
+  // outbox, so each of d's rows is as ResyncRowCommits leaves it, and no
+  // other device changes.
+  lemma {:isolate_assertions} ResyncCommitsOnBase(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RevsCover(pre.devices[d].journal, input, revs) && CoreReachable(pre)
+    ensures var post := ResyncStepOf(pre, d, input, revs).post;
+      CommitsOnBase(post) && OutboxParentsAccepted(post)
+  {
+    var post := ResyncStepOf(pre, d, input, revs).post;
+    var server := pre.server;
+    var journal := pre.devices[d].journal;
+    var reanchored := journal.(documents := ResyncDocs(server, d, journal.documents, revs));
+    var pulled := PullFeed(reanchored, server, 0);
+    PullFeedRows(reanchored, server, 0);
+    assert post == After(pre, d, ReadFeed(pulled, server.feed, |server.feed|));
+    assert post.devices[d].journal.documents == pulled.documents;
+    forall doc | doc in journal.documents
+      ensures var row := ResyncRow(server, d, doc, journal.documents[doc], revs[doc]);
+        OutboxParentAtBase(server, doc, row) && OwnCommitOnBase(server, d, doc, row)
+        && (row.outbox.Some? && row.outbox.value.baseRev.Some? ==> row.outbox.value.baseRev.value in server.accepted)
+    {
+      ResyncRowCommits(server, d, doc, journal.documents[doc], revs[doc]);
+    }
+    forall x, doc | x in post.devices && doc in post.devices[x].journal.documents
+      ensures var row := post.devices[x].journal.documents[doc];
+        (ReadsFeed(post, x) ==> OutboxParentAtBase(post.server, doc, row) && OwnCommitOnBase(post.server, x, doc, row))
+        && (row.outbox.Some? && row.outbox.value.baseRev.Some? ==> row.outbox.value.baseRev.value in post.server.accepted)
+    {
+      if x == d {
+        if doc in journal.documents {
+          var row := ResyncRow(server, d, doc, journal.documents[doc], revs[doc]);
+          assert reanchored.documents[doc] == row;
+          assert pulled.documents[doc] == row.(ahead := pulled.documents[doc].ahead);
+        }
+      } else {
+        assert post.devices[x] == pre.devices[x];
+        if ReadsFeed(post, x) { assert ReadsFeed(pre, x); }
+      }
     }
   }
 
@@ -619,6 +801,7 @@ abstract module ResyncCore refines StepContracts {
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
     && ScopesClosedUnderF(state) && OwnDocsKnown(state)
     && (forall x :: ReadsFeed(state, x) ==> OwnRevisionsAcknowledged(state, x))
+    && CommitsOnBase(state) && OutboxParentsAccepted(state)
   }
 
   lemma {:isolate_assertions} OthersStoppedCore(state: State, d: DeviceId)
@@ -665,6 +848,14 @@ abstract module ResyncCore refines StepContracts {
         assert Unacknowledged(state, x, doc, id);
       }
     }
+    forall x, doc | ReadsFeed(S, x) && doc in S.devices[x].journal.documents
+      ensures OutboxParentAtBase(S.server, doc, S.devices[x].journal.documents[doc])
+      ensures OwnCommitOnBase(S.server, x, doc, S.devices[x].journal.documents[doc])
+    {
+      assert ReadsFeed(state, x);
+    }
+    assert CommitsOnBase(S);
+    assert OutboxParentsAccepted(S);
     assert ClaimsCoverCursor(S);
     assert JournalsNameAccepted(S);
     assert ScopesClosedUnderF(S);
@@ -714,6 +905,7 @@ abstract module ResyncCore refines StepContracts {
       ResyncGuarantees(pre, d, input, revs);
       ResyncClaims(pre, d, input, revs);
       ResyncKeepsBindings(pre, d, input, revs);
+      ResyncCommitsOnBase(pre, d, input, revs);
       assert post.server == pre.server;
       assert RevisionsOnFeed(post.server);
       assert CoreButG9(post);
