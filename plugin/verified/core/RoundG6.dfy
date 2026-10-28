@@ -1872,45 +1872,6 @@ abstract module RoundG6 refines RoundGuarantees {
     && (forall k | 0 <= k < |rs| - 1 :: rs[k].position < rs[k + 1].position)
   }
 
-  // Document `e`, bound with base `base0` before the round and read as
-  // `read0`, has settled the chain `rs` so far: the chain leaves the local
-  // side the listing reads at its binding, or, where the rule let its file
-  // go untracked (W(b)), a clean side holding its base, saved; its base is
-  // the chain's last revision (the start where it is empty); every content
-  // it saved is still saved.
-  ghost predicate ChainSoFar(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
-                             e: DocId, pass: RoundPass, rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)>) {
-    var rows := pass.journal.documents;
-    e in rows && Distinct(platform, pass.listing)
-    && ChainSaved(saved, d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0))
-    && ChainOrder(accepted, e, base0, rs)
-    && SavedHeld(platform, accepted, rows, pass.listing, saved)
-    && (|rs| == 0 ==> rows[e].base == Some(base0))
-    && (|rs| > 0 ==> rows[e].base == Some(BaseOf(rs[|rs| - 1])))
-    && (rows[e].binding.Some? ==> x == LocalSide(platform, pass.listing, rows[e]))
-    && (rows[e].binding.None? && x.Some? ==>
-          x.value.0 in saved && x.value.0 == ChainBase(base0.content, rs) && !ChainBaseDeleted(base0.deleted, rs))
-  }
-
-  ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
-                            e: DocId, pass: RoundPass) {
-    !Distinct(platform, pass.listing)
-    || exists rs, saved, x :: ChainSoFar(platform, d, accepted, base0, read0, e, pass, rs, saved, x)
-  }
-
-  // At the start of the round the chain is empty: the row is as it was.
-  lemma PassChainStart(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, e: DocId, start: RoundPass)
-    requires e in start.journal.documents && Distinct(platform, start.listing)
-    requires var row := start.journal.documents[e];
-      row.binding.Some? && row.base.Some? && ListedRead(platform, start.listing, row.binding.value.spelling).Some?
-    ensures var row := start.journal.documents[e];
-      PassChain(platform, d, accepted, row.base.value, ListedRead(platform, start.listing, row.binding.value.spelling).value, e, start)
-  {
-    var row := start.journal.documents[e];
-    var read0 := ListedRead(platform, start.listing, row.binding.value.spelling).value;
-    assert ChainSoFar(platform, d, accepted, row.base.value, read0, e, start, [], {}, Some(read0));
-  }
-
   // ---------------------------------------------------------------------
   // A row the rule lets go (W(b)): its file stays, untracked
   // ---------------------------------------------------------------------
@@ -2133,5 +2094,382 @@ abstract module RoundG6 refines RoundGuarantees {
         assert false;
       }
     }
+  }
+
+  // ---------------------------------------------------------------------
+  // Each document's chain through the pass, step by step
+  // ---------------------------------------------------------------------
+
+  // A chain may let its local side go at its end where its content is
+  // saved.
+  lemma ChainSavedLetGo(saved: set<Hash>, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
+                        x: Option<(Hash, Kind)>, c: Option<Hash>)
+    requires ChainSaved(saved, d, b, bd, l, rs, x, c) && x.Some? && x.value.0 in saved
+    ensures ChainSaved(saved, d, b, bd, l, rs, None, c)
+    decreases |rs|, if l.Some? then 1 else 0
+  {
+    var lg := if c == LocalContent(l) then None else c;
+    if l.Some? && l.value.0 in saved && ChainSaved(saved, d, b, bd, None, rs, x, lg) {
+      ChainSavedLetGo(saved, d, b, bd, None, rs, x, lg);
+      return;
+    }
+    if |rs| == 0 {
+      assert x == l;
+      assert ChainSaved(saved, d, b, bd, None, rs, None, lg);
+    } else {
+      var y := var y :| LinkSaved(saved, d, b, bd, l, rs[0], y)
+        && (ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c)
+            || (c.Some? && c == LocalContent(l) && ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None))); y;
+      if ChainSaved(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c) {
+        ChainSavedLetGo(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, c);
+      } else {
+        ChainSavedLetGo(saved, d, rs[0].content, rs[0].deleted, y, rs[1..], x, None);
+      }
+    }
+  }
+
+  // Document `e`, bound with base `base0` before the round and read as
+  // `read0`, has settled the chain `rs` so far in rows `rows` over the
+  // listing `listing`: the chain leaves the local side the listing reads
+  // at its binding (none where the rule let its file go: the chain let it
+  // go, saved); its base is the chain's last revision (the start where it
+  // is empty), and its waiting revision not below it; every content it
+  // saved is still saved.
+  ghost predicate ChainRows(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+                            e: DocId, rows: map<DocId, Document>, listing: Listing, rs: seq<Revision>, saved: set<Hash>,
+                            x: Option<(Hash, Kind)>) {
+    e in rows && Distinct(platform, listing)
+    && ChainSaved(saved, d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0))
+    && ChainOrder(accepted, e, base0, rs)
+    && SavedHeld(platform, accepted, rows, listing, saved)
+    && AheadAboveBase(rows[e])
+    && (|rs| == 0 ==> rows[e].base == Some(base0))
+    && (|rs| > 0 ==> rows[e].base == Some(BaseOf(rs[|rs| - 1])))
+    && x == LocalSide(platform, listing, rows[e])
+  }
+
+  ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+                            e: DocId, pass: RoundPass) {
+    !Distinct(platform, pass.listing)
+    || exists rs, saved, x :: ChainRows(platform, d, accepted, base0, read0, e, pass.journal.documents, pass.listing, rs, saved, x)
+  }
+
+  // At the start of the round the chain is empty: the row is as it was.
+  lemma PassChainStart(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, e: DocId, start: RoundPass)
+    requires e in start.journal.documents && Distinct(platform, start.listing)
+    requires var row := start.journal.documents[e];
+      row.binding.Some? && row.base.Some? && ListedRead(platform, start.listing, row.binding.value.spelling).Some?
+      && AheadAboveBase(row)
+    ensures var row := start.journal.documents[e];
+      PassChain(platform, d, accepted, row.base.value, ListedRead(platform, start.listing, row.binding.value.spelling).value, e, start)
+  {
+    var row := start.journal.documents[e];
+    var read0 := ListedRead(platform, start.listing, row.binding.value.spelling).value;
+    assert ChainRows(platform, d, accepted, row.base.value, read0, e, start.journal.documents, start.listing, [], {}, Some(read0));
+  }
+
+  // SavedHeld of two sets is SavedHeld of their union.
+  lemma SavedHeldUnion(platform: Platform, accepted: map<RevId, Revision>, rows: map<DocId, Document>, listing: Listing,
+                       s1: set<Hash>, s2: set<Hash>)
+    requires SavedHeld(platform, accepted, rows, listing, s1) && SavedHeld(platform, accepted, rows, listing, s2)
+    ensures SavedHeld(platform, accepted, rows, listing, s1 + s2)
+  {}
+
+  // The rule keeps every saved content saved (SettleKeepsSaved, one rule).
+  lemma {:isolate_assertions} RuleKeepsSaved(platform: Platform, accepted: map<RevId, Revision>, documents: map<DocId, Document>,
+                                             doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, saved: set<Hash>)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires Distinct(platform, input.listing) && NeverJoinedRows(platform, documents) && AcceptedAs(accepted, r)
+    requires SavedHeld(platform, accepted, documents, input.listing, saved)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      SavedHeld(platform, accepted, ruled.documents, ListingAfter(platform, input.listing, ruled.effects), saved)
+  {
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !Distinct(platform, listing') { return; }
+    forall h | h in saved ensures UntrackedHolds(platform, ruled.documents, listing', h) || AcceptedLive(accepted, h) {
+      if !AcceptedLive(accepted, h) {
+        RuleKeepsUntracked(platform, documents, doc, r, input, revs, first, h);
+        if !r.deleted && h == r.content { assert r.id in accepted && accepted[r.id] == r; assert false; }
+      }
+    }
+  }
+
+  // The rule keeps other rows' aheads.
+  lemma RuleKeepsOtherAheads(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                             revs: FreshRevs, first: Claims, e: DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires e in documents && e != doc
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      e in ruled.documents && ruled.documents[e].ahead == documents[e].ahead && ruled.documents[e].base == documents[e].base
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    RuleKeepsOtherBases(platform, documents, doc, r, input, revs, first);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+        MoveRowsKeepAheadAboveBase(platform, documents, doc, aside.value, revs);
+        var moved := MoveRows(platform, documents, doc, aside.value, revs);
+        assert PathRule(platform, documents, doc, r, input, revs, first).documents[e]
+            == RecordMissing(platform, input.listing, documents, doc, r.path, moved, revs)[e];
+      }
+    }
+  }
+
+  // Another row's chain through the rule: its base stays, and its local
+  // side stays, or the rule lets its file go, saved.
+  lemma {:isolate_assertions} RuleChainOther(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+                                             e: DocId, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                             revs: FreshRevs, first: Claims, rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)>)
+    requires doc in documents && documents.Keys <= revs.Keys && e != doc
+    requires NeverJoinedRows(platform, documents) && AcceptedAs(accepted, r)
+    requires ChainRows(platform, d, accepted, base0, read0, e, documents, input.listing, rs, saved, x)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      Distinct(platform, listing') ==>
+        exists saved', x' :: ChainRows(platform, d, accepted, base0, read0, e, ruled.documents, listing', rs, saved', x')
+  {
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !Distinct(platform, listing') { return; }
+    var rows' := ruled.documents;
+    RuleKeepsOtherAheads(platform, documents, doc, r, input, revs, first, e);
+    RuleKeepsSaved(platform, accepted, documents, doc, r, input, revs, first, saved);
+    if rows'[e].binding.Some? {
+      RuleOtherSide(platform, documents, doc, r, input, revs, first, e);
+      if documents[e].binding.None? { RuleOtherStaysUnbound(platform, documents, doc, r, input, revs, first, e); assert false; }
+      assert ChainRows(platform, d, accepted, base0, read0, e, rows', listing', rs, saved, x);
+    } else if x.None? {
+      assert ChainRows(platform, d, accepted, base0, read0, e, rows', listing', rs, saved, x);
+    } else {
+      RuleReleasedUntracked(platform, documents, doc, r, input, revs, first, e);
+      var saved' := saved + {x.value.0};
+      assert SavedHeld(platform, accepted, rows', listing', {x.value.0});
+      SavedHeldUnion(platform, accepted, rows', listing', saved, {x.value.0});
+      ChainSavedGrows(saved, saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+      ChainSavedLetGo(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+      assert ChainRows(platform, d, accepted, base0, read0, e, rows', listing', rs, saved', None);
+    }
+  }
+
+  // The document's own chain through the rule: a link where its base
+  // moves to the revision, and otherwise its local side stays, or the rule
+  // lets its file go, saved.
+  lemma {:isolate_assertions} RuleChainOwn(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+                                           documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                           revs: FreshRevs, first: Claims, rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)>)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires NeverJoinedRows(platform, documents) && RowsNameAccepted(accepted, documents)
+    requires AcceptedAs(accepted, r) && r.doc == doc
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d)
+    requires ChainRows(platform, d, accepted, base0, read0, doc, documents, input.listing, rs, saved, x)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      Distinct(platform, listing') ==>
+        exists rs', saved', x' :: ChainRows(platform, d, accepted, base0, read0, doc, ruled.documents, listing', rs', saved', x')
+  {
+    var document := documents[doc];
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !Distinct(platform, listing') { return; }
+    var rows' := ruled.documents;
+    if !Newer(document, r) {
+      RuleNotNewer(platform, documents, doc, r, input, revs, first);
+      assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs, saved, x);
+      return;
+    }
+    var base := document.base.value;
+    assert base.rev in accepted && BaseRecords(base, doc, accepted[base.rev]);
+    assert r.position > base.position;
+    assert base.rev != r.id;
+    RuleRowFacts(platform, documents, doc, r, input, revs, first);
+    RuleKeepsSaved(platform, accepted, documents, doc, r, input, revs, first, saved);
+    RuleLink(platform, documents, doc, r, input, revs, first, d);
+    if rows'[doc].base != document.base {
+      var more := RuleSaved(platform, documents, doc, r, input, revs, first);
+      RuleSavedUntracked(platform, documents, doc, r, input, revs, first);
+      var saved' := saved + more;
+      SavedHeldUnion(platform, accepted, rows', listing', saved, more);
+      var x' := LocalSide(platform, listing', rows'[doc]);
+      assert LinkSaved(more, d, base.content, base.deleted, x, r, x');
+      LinkSavedGrows(more, saved', d, base.content, base.deleted, x, r, x');
+      ChainSavedGrows(saved, saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+      assert ChainBase(base0.content, rs) == base.content && ChainBaseDeleted(base0.deleted, rs) == base.deleted;
+      ChainSavedSnoc(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0), r, x');
+      var rs' := rs + [r];
+      assert ChainOrder(accepted, doc, base0, rs') by {
+        assert forall k | 0 <= k < |rs| :: rs'[k] == rs[k];
+        if |rs| > 0 { assert rs[|rs| - 1].position == base.position; }
+      }
+      assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs', saved', x');
+      return;
+    }
+    RuleKeepsSide(platform, documents, doc, r, input, revs, first);
+    if rows'[doc].binding.Some? || x.None? {
+      assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs, saved, x);
+      return;
+    }
+    RuleOwnReleasedUntracked(platform, documents, doc, r, input, revs, first);
+    var saved' := saved + {x.value.0};
+    assert SavedHeld(platform, accepted, rows', listing', {x.value.0});
+    SavedHeldUnion(platform, accepted, rows', listing', saved, {x.value.0});
+    ChainSavedGrows(saved, saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+    ChainSavedLetGo(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+    assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs, saved', None);
+  }
+
+  // Each settled revision keeps every document's chain.
+  lemma {:isolate_assertions} SettleKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                                               base0: Base, read0: (Hash, Kind), e: DocId, pass: RoundPass,
+                                               doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
+    requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==> PulledBy(pass.journal.documents[doc], r, d)
+    requires PassChain(platform, d, accepted, base0, read0, e, pass)
+    ensures PassChain(platform, d, accepted, base0, read0, e, SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
+    if !Distinct(platform, pass.listing) { return; }
+    var rs, saved, x :| ChainRows(platform, d, accepted, base0, read0, e, documents, pass.listing, rs, saved, x);
+    if r.path in input.outOfScope {
+      if Newer(row, r) {
+        var rows' := settled.journal.documents;
+        assert rows' == documents[doc := row.(ahead := Some(Ahead(r, OutOfScope, false)))];
+        assert forall f | f in rows' :: (f in documents && rows'[f].binding == documents[f].binding) || rows'[f].binding.None?;
+        assert rows'[e].binding == documents[e].binding && rows'[e].base == documents[e].base;
+        assert SavedHeld(platform, accepted, rows', settled.listing, saved) by {
+          forall h | h in saved && UntrackedHolds(platform, documents, pass.listing, h)
+            ensures UntrackedHolds(platform, rows', settled.listing, h)
+          {
+            var p := var p :| p in pass.listing && pass.listing[p].0 == h
+              && forall f | f in documents && documents[f].binding.Some? :: !SameF(platform, documents[f].binding.value.spelling, p); p;
+          }
+        }
+        assert ChainRows(platform, d, accepted, base0, read0, e, rows', settled.listing, rs, saved, x);
+      }
+      return;
+    }
+    var rows := documents[doc := row];
+    assert NeverJoinedRows(platform, rows);
+    assert RowsNameAccepted(accepted, rows);
+    assert ChainRows(platform, d, accepted, base0, read0, e, rows, pass.listing, rs, saved, x) by {
+      forall h | h in saved && UntrackedHolds(platform, documents, pass.listing, h)
+        ensures UntrackedHolds(platform, rows, pass.listing, h)
+      {
+        var p := var p :| p in pass.listing && pass.listing[p].0 == h
+          && forall f | f in documents && documents[f].binding.Some? :: !SameF(platform, documents[f].binding.value.spelling, p); p;
+        assert forall f | f in rows && rows[f].binding.Some? :: f in documents && rows[f].binding == documents[f].binding;
+      }
+    }
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+    assert settled.journal.documents == ruled.documents && settled.listing == ListingAfter(platform, pass.listing, ruled.effects);
+    if e == doc {
+      RuleChainOwn(platform, d, accepted, base0, read0, rows, doc, r, inner, revs', first, rs, saved, x);
+    } else {
+      RuleChainOther(platform, d, accepted, base0, read0, e, rows, doc, r, inner, revs', first, rs, saved, x);
+    }
+  }
+
+  lemma SettlePulledKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                               base0: Base, read0: (Hash, Kind), e: DocId, pass: RoundPass,
+                               revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassNUD(platform, device0, accepted, pass)
+    requires PassChain(platform, d, accepted, base0, read0, e, pass)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    // Who made each revision (PulledBy), as the pass meets it.
+    requires PulledInPass(platform, d, pass, revisions, input, revs, first)
+    ensures PassChain(platform, d, accepted, base0, read0, e, SettlePulled(platform, pass, revisions, input, revs, first))
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      var next := SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsChain(platform, device0, d, accepted, base0, read0, e, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsNUD(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledKeepsChain(platform, device0, d, accepted, base0, read0, e, next, revisions[1..], input, revs, first);
+    }
+  }
+
+  // Every pulled revision the pass settles is PulledBy its row as the
+  // pass meets it, where it is newer.
+  ghost predicate PulledInPass(platform: Platform, d: DeviceId, pass: RoundPass, revisions: seq<Revision>, input: RoundInput,
+                               revs: FreshRevs, first: Claims)
+    decreases |revisions|
+  {
+    |revisions| > 0 ==>
+      var documents := pass.journal.documents;
+      var r := revisions[0];
+      (r.doc in documents && Newer(documents[r.doc], r) ==> PulledBy(documents[r.doc], r, d))
+      && PulledInPass(platform, d, SettleRevision(platform, pass, r.doc, r, input, revs, first), revisions[1..], input, revs, first)
+  }
+
+  lemma RetryKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                        base0: Base, read0: (Hash, Kind), e: DocId, pass: RoundPass,
+                        docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassNUD(platform, device0, accepted, pass)
+    requires PassChain(platform, d, accepted, base0, read0, e, pass)
+    requires RetriedInPass(platform, d, pass, docs, input, revs, first)
+    ensures PassChain(platform, d, accepted, base0, read0, e, RetryWaiting(platform, pass, docs, input, revs, first))
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        assert PassNUD(platform, device0, accepted, cleared);
+        assert PassChain(platform, d, accepted, base0, read0, e, cleared) by {
+          if Distinct(platform, pass.listing) {
+            var rs, saved, x :| ChainRows(platform, d, accepted, base0, read0, e, documents, pass.listing, rs, saved, x);
+            var rows' := cleared.journal.documents;
+            assert forall f | f in rows' :: f in documents && rows'[f].binding == documents[f].binding && rows'[f].base == documents[f].base;
+            assert SavedHeld(platform, accepted, rows', cleared.listing, saved) by {
+              forall h | h in saved && UntrackedHolds(platform, documents, pass.listing, h)
+                ensures UntrackedHolds(platform, rows', cleared.listing, h)
+              {
+                var p := var p :| p in pass.listing && pass.listing[p].0 == h
+                  && forall f | f in documents && documents[f].binding.Some? :: !SameF(platform, documents[f].binding.value.spelling, p); p;
+              }
+            }
+            assert ChainRows(platform, d, accepted, base0, read0, e, rows', cleared.listing, rs, saved, x);
+          }
+        }
+        var r := row.ahead.value.revision;
+        assert AcceptedAs(accepted, r) && r.doc == docs[0];
+        SettleKeepsChain(platform, device0, d, accepted, base0, read0, e, cleared, docs[0], r, input, revs, first);
+        SettleKeepsNUD(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        RetryKeepsChain(platform, device0, d, accepted, base0, read0, e, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsChain(platform, device0, d, accepted, base0, read0, e, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  // Every waiting revision the pass retries is PulledBy its row, once its
+  // ahead is cleared.
+  ghost predicate RetriedInPass(platform: Platform, d: DeviceId, pass: RoundPass, docs: seq<DocId>, input: RoundInput,
+                                revs: FreshRevs, first: Claims)
+    decreases |docs|
+  {
+    |docs| > 0 ==>
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? then
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        var r := row.ahead.value.revision;
+        (Newer(row.(ahead := None), r) ==> PulledBy(row.(ahead := None), r, d))
+        && RetriedInPass(platform, d, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first)
+      else RetriedInPass(platform, d, pass, docs[1..], input, revs, first)
   }
 }
