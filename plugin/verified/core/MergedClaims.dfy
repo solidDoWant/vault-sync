@@ -7,10 +7,9 @@
 // resolver crashes on a module that refines ClaimsMirror.
 //
 // A remote revision is delivered only to a device that is not Diverged
-// (ShellRun: a diverged device's pulled revision waits for its resync); so
-// is an accepted push, a hypothesis #1071 settles (#1031's third gap: an
-// accept can switch a diverged device's divergence off).
-// RemoteKeepsClaims also assumes OwnDocsKnown, which #1071 settles too.
+// (ShellRun: a diverged device's pulled revision waits for its resync). An
+// accepted push may answer any device, a diverged one too: the claims
+// bind every device that ReadsFeed, which no append switches on (#1071).
 include "../spec/Contracts.dfy"
 
 abstract module MergedClaims refines StepContracts {
@@ -24,7 +23,7 @@ abstract module MergedClaims refines StepContracts {
     FeedPositioned(state.server) && ClaimsCoverCursor(state)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
-    && ScopesClosedUnderF(state)
+    && ScopesClosedUnderF(state) && OwnDocsKnown(state)
   }
 
   // JournalsNameAccepted, one row at a time.
@@ -70,6 +69,7 @@ abstract module MergedClaims refines StepContracts {
     assert post.server == pre.server;
     forall x | x in post.devices && x != d ensures post.devices[x] == pre.devices[x] {}
     forall x | x in post.devices ensures Diverged(post, x) ==> Diverged(pre, x) || x == d {}
+    forall x | x in post.devices ensures ReadsFeed(post, x) == ReadsFeed(pre, x) {}
     assert JournalsNameAccepted(post) by {
       forall x | x in post.devices
         ensures var j := post.devices[x].journal;
@@ -85,7 +85,7 @@ abstract module MergedClaims refines StepContracts {
       }
     }
     assert ClaimsCoverCursor(post) by {
-      forall x, i | x in post.devices && !Diverged(post, x) && 0 <= i < post.devices[x].journal.cursor
+      forall x, i | ReadsFeed(post, x) && 0 <= i < post.devices[x].journal.cursor
         && i < |post.server.feed| && post.server.feed[i] in post.server.revisions
         ensures var r := post.server.revisions[post.server.feed[i]];
           r.doc in post.devices[x].journal.documents
@@ -94,16 +94,17 @@ abstract module MergedClaims refines StepContracts {
       {
         var r := pre.server.revisions[pre.server.feed[i]];
         if x == d {
-          assert !Diverged(pre, d);
+          assert ReadsFeed(pre, d);
           assert r.doc in journal.documents && KnownPosition(journal.documents[r.doc]).Some?;
           assert KnowsAtLeast(journal.documents[r.doc], journal'.documents[r.doc]);
         } else {
           assert post.devices[x] == pre.devices[x];
-          assert !Diverged(pre, x);
+          assert ReadsFeed(pre, x);
         }
       }
     }
     assert ScopesClosedUnderF(post);
+    assert OwnDocsKnown(post);
   }
 
   // A step that keeps every row's base and ahead, and every outbox's id,
@@ -156,31 +157,63 @@ abstract module MergedClaims refines StepContracts {
   {
   }
 
+  // A step that keeps a journal's cursor and anchor keeps whether each
+  // device reads the feed.
+  lemma AfterReadsFeed(pre: State, d: DeviceId, journal': Journal)
+    requires d in pre.devices
+    requires journal'.cursor == pre.devices[d].journal.cursor && journal'.anchor == pre.devices[d].journal.anchor
+    ensures forall x :: ReadsFeed(After(pre, d, journal'), x) == ReadsFeed(pre, x)
+  {
+  }
+
+  // A device that reads the feed after such a step acknowledges its own
+  // revisions, if it did before and the step kept its rows' names.
+  lemma NamesKeptAcknowledged(pre: State, d: DeviceId, journal': Journal, x: DeviceId)
+    requires d in pre.devices && KeepsRowNames(pre.devices[d].journal, journal')
+    requires x in pre.devices && OwnRevisionsAcknowledged(pre, x)
+    ensures OwnRevisionsAcknowledged(After(pre, d, journal'), x)
+  {
+    var post := After(pre, d, journal');
+    forall doc, id | Unacknowledged(post, x, doc, id)
+      ensures post.devices[x].journal.documents[doc].outbox.Some?
+           && post.devices[x].journal.documents[doc].outbox.value.rev == id
+    {
+      assert Unacknowledged(pre, x, doc, id);
+    }
+  }
+
+  // A step that keeps a journal's cursor, anchor and JournalOnServer keeps
+  // its device's divergence.
+  lemma AfterSameDivergence(pre: State, d: DeviceId, journal': Journal)
+    requires d in pre.devices
+    requires journal'.cursor == pre.devices[d].journal.cursor && journal'.anchor == pre.devices[d].journal.anchor
+    requires JournalOnServer(pre.server, journal') == JournalOnServer(pre.server, pre.devices[d].journal)
+    ensures Diverged(After(pre, d, journal'), d) == Diverged(pre, d)
+  {
+  }
+
   lemma {:isolate_assertions} NamesKeptStep(pre: State, d: DeviceId, journal': Journal)
     requires ClaimsReachable(pre) && d in pre.devices && KeepsRowNames(pre.devices[d].journal, journal')
     ensures ClaimsClauses(After(pre, d, journal'))
     ensures forall x :: x in pre.devices ==> Diverged(After(pre, d, journal'), x) == Diverged(pre, x)
-    ensures forall x :: x in pre.devices && !Diverged(After(pre, d, journal'), x) ==>
+    ensures forall x :: ReadsFeed(After(pre, d, journal'), x) ==>
       OwnRevisionsAcknowledged(After(pre, d, journal'), x)
   {
     var post := After(pre, d, journal');
     var journal := pre.devices[d].journal;
     forall x | x in post.devices && x != d ensures post.devices[x] == pre.devices[x] {}
     assert JournalOnServer(pre.server, journal') == JournalOnServer(pre.server, journal);
-    assert Diverged(post, d) == Diverged(pre, d);
+    AfterSameDivergence(pre, d, journal');
     forall doc | doc in journal'.documents ensures RowNamesAccepted(pre.server, doc, journal'.documents[doc]) {
       assert RowNamesAccepted(pre.server, doc, journal.documents[doc]);
     }
     assert ClaimsStep(pre, d, journal');
     JournalStepKeepsClaims(pre, d, journal');
-    forall x | x in post.devices && !Diverged(post, x) ensures OwnRevisionsAcknowledged(post, x) {
-      assert !Diverged(pre, x) && OwnRevisionsAcknowledged(pre, x);
-      forall doc, id | Unacknowledged(post, x, doc, id)
-        ensures post.devices[x].journal.documents[doc].outbox.Some?
-             && post.devices[x].journal.documents[doc].outbox.value.rev == id
-      {
-        assert Unacknowledged(pre, x, doc, id);
-      }
+    AfterReadsFeed(pre, d, journal');
+    forall x | ReadsFeed(post, x) ensures OwnRevisionsAcknowledged(post, x) {
+      assert ReadsFeed(pre, x);
+      assert OwnRevisionsAcknowledged(pre, x);
+      NamesKeptAcknowledged(pre, d, journal', x);
     }
   }
 
@@ -256,22 +289,11 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
-  // Every document a revision of d's own belongs to has a row in d's
-  // journal. Not a clause of ClaimsReachable (#1031, gap 4; a hypothesis #1071 settles): a remote
-  // revision that creates a row for such a document past d's cursor would
-  // leave the own revision unacknowledged with no outbox.
-  ghost predicate OwnDocsKnown(state: State, d: DeviceId) {
-    d in state.devices
-    && forall doc, id :: doc in state.server.history && id in state.server.history[doc]
-         && id in state.server.revisions && state.server.revisions[id].device == d
-         ==> doc in state.devices[d].journal.documents
-  }
-
   // A remote revision delivered outside a sync round (#949) to a device
-  // that is not Diverged (ShellRun). OwnDocsKnown is a hypothesis #1071
-  // settles.
+  // that is not Diverged (ShellRun). Its row exists already if the document
+  // holds a revision of d's own (OwnDocsKnown, #1071).
   lemma {:isolate_assertions} RemoteKeepsClaims(pre: State, d: DeviceId, revision: Revision)
-    requires d in pre.devices && ClaimsReachable(pre) && !Diverged(pre, d) && OwnDocsKnown(pre, d)
+    requires d in pre.devices && ClaimsReachable(pre) && !Diverged(pre, d)
     requires revision.id in pre.server.revisions && pre.server.revisions[revision.id] == revision
     requires revision.id in pre.server.feed
     ensures var step := RemoteStep(pre, d, revision);
@@ -294,21 +316,35 @@ abstract module MergedClaims refines StepContracts {
     assert ClaimsStep(pre, d, journal');
     JournalStepKeepsClaims(pre, d, journal');
     forall x | x in post.devices && x != d ensures post.devices[x] == pre.devices[x] {}
-    forall x | x in post.devices && !Diverged(post, x) ensures OwnRevisionsAcknowledged(post, x) {
-      assert OwnRevisionsAcknowledged(pre, x) by {
-        if x != d { assert !Diverged(pre, x); }
+    AfterReadsFeed(pre, d, journal');
+    forall x | ReadsFeed(post, x) ensures OwnRevisionsAcknowledged(post, x) {
+      assert ReadsFeed(pre, x);
+      assert OwnRevisionsAcknowledged(pre, x);
+      RemoteAcknowledged(pre, d, revision, x);
+    }
+  }
+
+  // A remote revision keeps every row's base and outbox, and creates rows
+  // only for documents with no revision of d's own (OwnDocsKnown), so it
+  // keeps each device's acknowledgements.
+  lemma RemoteAcknowledged(pre: State, d: DeviceId, revision: Revision, x: DeviceId)
+    requires d in pre.devices && OwnDocsKnown(pre)
+    requires x in pre.devices && OwnRevisionsAcknowledged(pre, x)
+    ensures OwnRevisionsAcknowledged(After(pre, d, RemoteJournal(pre.devices[d].journal, revision)), x)
+  {
+    var journal := pre.devices[d].journal;
+    var journal' := RemoteJournal(journal, revision);
+    var post := After(pre, d, journal');
+    forall y, id | Unacknowledged(post, x, y, id)
+      ensures post.devices[x].journal.documents[y].outbox.Some?
+           && post.devices[x].journal.documents[y].outbox.value.rev == id
+    {
+      if x == d {
+        assert y in journal.documents;
+        assert journal'.documents[y].base == journal.documents[y].base;
+        assert journal'.documents[y].outbox == journal.documents[y].outbox;
       }
-      forall y, id | Unacknowledged(post, x, y, id)
-        ensures post.devices[x].journal.documents[y].outbox.Some?
-             && post.devices[x].journal.documents[y].outbox.value.rev == id
-      {
-        if x == d {
-          assert y in journal.documents;
-          assert journal'.documents[y].base == journal.documents[y].base;
-          assert journal'.documents[y].outbox == journal.documents[y].outbox;
-        }
-        assert Unacknowledged(pre, x, y, id);
-      }
+      assert Unacknowledged(pre, x, y, id);
     }
   }
 
@@ -597,46 +633,34 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
-  // Divergence: no journal names r.id, and an undiverged cursor is on the
-  // feed before the append; only d's own may switch off.
-  lemma {:isolate_assertions} AcceptDivergence(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+  // ReadsFeed: no anchor is r.id, and a cursor and anchor on the feed
+  // before the append stay on it; no device starts to read the feed.
+  lemma {:isolate_assertions} AcceptReadsFeed(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
     requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
     ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
-      forall x :: x in pre.devices && Diverged(post, x) ==> x == d || Diverged(pre, x)
+      forall x :: ReadsFeed(post, x) ==> ReadsFeed(pre, x)
   {
     AcceptShape(pre, d, doc, r, nextRev);
     var post := AcceptStep(pre, d, doc, r, nextRev).post;
     var server := pre.server;
     var server' := post.server;
-    forall x | x in pre.devices && x != d ensures Diverged(post, x) == Diverged(pre, x) {
+    forall x | ReadsFeed(post, x) ensures ReadsFeed(pre, x) {
       var j0 := pre.devices[x].journal;
-      assert post.devices[x] == pre.devices[x];
-      assert JournalOnServer(server', j0) == JournalOnServer(server, j0) by {
-        forall y | y in j0.documents
-          ensures (j0.documents[y].base.Some? ==> j0.documents[y].base.value.rev in server'.revisions)
-               == (j0.documents[y].base.Some? ==> j0.documents[y].base.value.rev in server.revisions)
-          ensures (j0.documents[y].ahead.Some? ==> j0.documents[y].ahead.value.revision.id in server'.revisions)
-               == (j0.documents[y].ahead.Some? ==> j0.documents[y].ahead.value.revision.id in server.revisions)
-        {
-          assert RowNamesAccepted(server, y, j0.documents[y]);
-        }
-      }
-      forall z | z in pre.devices && pre.devices[z].journal.cursor == |server.feed| + 1
-        ensures pre.devices[z].journal.anchor != Some(r.id)
-      {}
+      assert post.devices[x].journal.cursor == j0.cursor && post.devices[x].journal.anchor == j0.anchor;
       if j0.cursor == |server'.feed| {
         assert server'.feed[j0.cursor - 1] == r.id;
-      } else if 0 < j0.cursor <= |server.feed| {
+        assert j0.anchor.value in server.accepted;
+        assert false;
+      } else if 0 < j0.cursor {
         assert server'.feed[j0.cursor - 1] == server.feed[j0.cursor - 1];
       }
     }
   }
 
-  // !Diverged(pre, d): a hypothesis #1071 settles.
   lemma {:isolate_assertions} AcceptCoversCursor(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
-    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
     requires var post := AcceptStep(pre, d, doc, r, nextRev).post;
-      forall x :: x in pre.devices && Diverged(post, x) ==> x == d || Diverged(pre, x)
+      forall x :: ReadsFeed(post, x) ==> ReadsFeed(pre, x)
     ensures ClaimsCoverCursor(AcceptStep(pre, d, doc, r, nextRev).post)
   {
     AcceptShape(pre, d, doc, r, nextRev);
@@ -645,14 +669,14 @@ abstract module MergedClaims refines StepContracts {
     var journal' := post.devices[d].journal;
     var server := pre.server;
     var server' := post.server;
-    forall x, i | x in post.devices && !Diverged(post, x) && 0 <= i < post.devices[x].journal.cursor
+    forall x, i | ReadsFeed(post, x) && 0 <= i < post.devices[x].journal.cursor
       && i < |server'.feed| && server'.feed[i] in server'.revisions
       ensures var rv := server'.revisions[server'.feed[i]];
         rv.doc in post.devices[x].journal.documents
         && KnownPosition(post.devices[x].journal.documents[rv.doc]).Some?
         && KnownPosition(post.devices[x].journal.documents[rv.doc]).value >= rv.position
     {
-      assert !Diverged(pre, x);
+      assert ReadsFeed(pre, x);
       assert i < |server.feed|;
       assert server'.feed[i] == server.feed[i];
       assert server.feed[i] != r.id by { assert server.feed[i] in server.accepted; }
@@ -664,13 +688,12 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
-  // !Diverged(pre, d): a hypothesis #1071 settles.
   lemma {:isolate_assertions} AcceptOwnAcknowledged(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
-    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
     requires var post := AcceptStep(pre, d, doc, r, nextRev).post;
-      forall x :: x in pre.devices && Diverged(post, x) ==> x == d || Diverged(pre, x)
+      forall x :: ReadsFeed(post, x) ==> ReadsFeed(pre, x)
     ensures var post := AcceptStep(pre, d, doc, r, nextRev).post;
-      forall x :: x in post.devices && !Diverged(post, x) ==> OwnRevisionsAcknowledged(post, x)
+      forall x :: ReadsFeed(post, x) ==> OwnRevisionsAcknowledged(post, x)
   {
     AcceptShape(pre, d, doc, r, nextRev);
     var post := AcceptStep(pre, d, doc, r, nextRev).post;
@@ -678,8 +701,8 @@ abstract module MergedClaims refines StepContracts {
     var journal' := post.devices[d].journal;
     var server := pre.server;
     var server' := post.server;
-    forall x | x in post.devices && !Diverged(post, x) ensures OwnRevisionsAcknowledged(post, x) {
-      if x != d { assert !Diverged(pre, x); }
+    forall x | ReadsFeed(post, x) ensures OwnRevisionsAcknowledged(post, x) {
+      assert ReadsFeed(pre, x);
       assert OwnRevisionsAcknowledged(pre, x);
       forall y, id | Unacknowledged(post, x, y, id)
         ensures post.devices[x].journal.documents[y].outbox.Some?
@@ -713,11 +736,43 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
-  // An accepted push (#949) to a device that is not Diverged (#1031's
-  // third gap; a hypothesis #1071 settles). Its appended id is named by no journal (JournalsNameAccepted,
+  // OwnDocsKnown: r is d's own, of a document d has a row for.
+  lemma {:isolate_assertions} AcceptOwnDocsKnown(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures OwnDocsKnown(AcceptStep(pre, d, doc, r, nextRev).post)
+  {
+    AcceptShape(pre, d, doc, r, nextRev);
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    var server := pre.server;
+    var server' := post.server;
+    forall x, y, id | x in post.devices && y in server'.history && id in server'.history[y]
+      && id in server'.revisions && server'.revisions[id].device == x
+      ensures y in post.devices[x].journal.documents
+    {
+      if id == r.id {
+        assert server'.revisions[r.id] == r;
+        assert y == doc by {
+          if y != doc { assert y in server.history && r.id in server.history[y]; }
+        }
+      } else {
+        assert id in server.revisions && server'.revisions[id] == server.revisions[id];
+        assert y in server.history && id in server.history[y] by {
+          if y == doc && doc in server.history {
+            assert server'.history[doc] == server.history[doc] + [r.id];
+          } else if y == doc {
+            assert server'.history[doc] == [r.id];
+          }
+        }
+      }
+    }
+  }
+
+  // An accepted push (#949), to any device: a diverged one too, which its
+  // own accept may switch back (#1031's third gap, settled by ReadsFeed,
+  // #1071). Its appended id is named by no journal (JournalsNameAccepted,
   // Appendable), so no other device's divergence changes.
   lemma {:isolate_assertions} AcceptKeepsClaims(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
-    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
     ensures var step := AcceptStep(pre, d, doc, r, nextRev);
       ClaimsReachable(step.post) && StepGuarantees(step)
   {
@@ -733,9 +788,10 @@ abstract module MergedClaims refines StepContracts {
     assert LiveHeadsApart(post.server);
     AppendKeepsServerClauses(pre.server, doc, r);
     AcceptJournalsNamed(pre, d, doc, r, nextRev);
-    AcceptDivergence(pre, d, doc, r, nextRev);
+    AcceptReadsFeed(pre, d, doc, r, nextRev);
     AcceptCoversCursor(pre, d, doc, r, nextRev);
     AcceptOwnAcknowledged(pre, d, doc, r, nextRev);
+    AcceptOwnDocsKnown(pre, d, doc, r, nextRev);
     assert ScopesClosedUnderF(post);
   }
 }

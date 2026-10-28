@@ -45,8 +45,36 @@ abstract module StepContracts refines PushCore {
     && FeedPositioned(state.server) && ClaimsCoverCursor(state)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
-    && ScopesClosedUnderF(state)
-    && (forall d :: d in state.devices && !Diverged(state, d) ==> OwnRevisionsAcknowledged(state, d))
+    && ScopesClosedUnderF(state) && OwnDocsKnown(state)
+    && (forall d :: ReadsFeed(state, d) ==> OwnRevisionsAcknowledged(state, d))
+  }
+
+  // The device's cursor and anchor are on the feed (#1071, #1031's gap 3):
+  // it is not Diverged, or diverged only because its journal names a
+  // revision a restore removed. A restore that leaves the cursor on the feed
+  // keeps the feed before it, so the device's claims on it carry over; and
+  // no append can switch ReadsFeed on, since an append takes an id never
+  // accepted and the anchor is accepted (JournalsNameAccepted). So the
+  // device's own accepted push, which may clear the lost name and switch
+  // Diverged off, finds the claims ClaimsCoverCursor asks of it.
+  ghost predicate ReadsFeed(state: State, d: DeviceId) {
+    d in state.devices
+    && state.devices[d].journal.cursor <= |state.server.feed|
+    && AnchorOnFeed(state.server, state.devices[d].journal)
+  }
+
+  // Every document holding a revision of a device's own has a row in its
+  // journal (#1071, #1031's gap 4). A device creates a row before it
+  // commits, the core never drops a row, and a revision of a device's own
+  // reaches the history only as its row's outbox (an accept or a landed
+  // commit); a restore from history is attributed to no device, and a
+  // restore from backup only shortens histories. Without it a remote
+  // revision of such a document past the cursor would create a row with no
+  // base and no outbox, against OwnRevisionsAcknowledged.
+  ghost predicate OwnDocsKnown(state: State) {
+    forall d, doc, id :: d in state.devices && doc in state.server.history && id in state.server.history[doc]
+      && id in state.server.revisions && state.server.revisions[id].device == d
+      ==> doc in state.devices[d].journal.documents
   }
 
   // Each document's history is that document's feed entries, in feed order
@@ -125,8 +153,9 @@ abstract module StepContracts refines PushCore {
   // with that id. And since an append takes an id never accepted
   // (Appendable), no append (an accept, a landed commit, a restore from
   // history) can match a diverged device's anchor or journal, so none can
-  // switch Diverged off: only the device's resync does. It holds of a
-  // diverged device too.
+  // switch ReadsFeed on, nor switch another device's Diverged off. (A
+  // device's own accept may replace the lost revision its journal names,
+  // which ReadsFeed covers, #1071.) It holds of a diverged device too.
   ghost predicate JournalsNameAccepted(state: State) {
     forall d :: d in state.devices ==>
       var journal := state.devices[d].journal;
@@ -187,10 +216,11 @@ abstract module StepContracts refines PushCore {
   // ahead, or else its base) is that one or a later one. Without it a
   // device could hold a base older than a head it already read, and
   // neither the round (which pulls only past the cursor) nor convergence
-  // could correct it. A diverged device is excluded: its resync re-reads
-  // every head.
+  // could correct it. A device whose cursor or anchor a restore took off
+  // the feed is excluded: its resync re-reads every head. One diverged only
+  // through a lost revision its journal names is not (ReadsFeed, #1071).
   ghost predicate ClaimsCoverCursor(state: State) {
-    forall d, i :: d in state.devices && !Diverged(state, d) && 0 <= i < state.devices[d].journal.cursor
+    forall d, i :: ReadsFeed(state, d) && 0 <= i < state.devices[d].journal.cursor
       && i < |state.server.feed| && state.server.feed[i] in state.server.revisions
       ==> var r := state.server.revisions[state.server.feed[i]];
           r.doc in state.devices[d].journal.documents
@@ -375,7 +405,11 @@ abstract module StepContracts refines PushCore {
     var settles := newer && !own && !mustAct && (after.ahead.None? || !CannotHold(after.ahead.value.blocker));
     RowInv(before) ==>
       RowInv(after)
-      && (after.ahead.Some? && (after.ahead.value.blocker.LocalChanges? || after.ahead.value.blocker.PathHeld?) ==> mustAct)
+      // A newer revision left waiting waits for a user (G10). A row held
+      // since an earlier round is the round's (#982): it re-checks the
+      // user's need to act and, once none is left, clears the ahead and
+      // re-applies it, which is then Newer (#1071).
+      && (newer && after.ahead.Some? && (after.ahead.value.blocker.LocalChanges? || after.ahead.value.blocker.PathHeld?) ==> mustAct)
       // A remote delete against a change the server lacks keeps the file.
       && (newer && r.deleted && before.binding.Some? && read.Some? && changed && !unsaved && !mustAct
           && !(before.outbox.Some? && before.outbox.value.sealed && before.outbox.value.deleted)

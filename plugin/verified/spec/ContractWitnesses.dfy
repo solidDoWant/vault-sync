@@ -809,7 +809,8 @@ abstract module StepContractWitnesses refines StepContracts {
   // Diverged. d's accept of r would append it, after which e would be
   // undiverged with no claim on the feed's r0. A journal names only
   // accepted revisions, so the state before the accept is not
-  // CoreReachable.
+  // CoreReachable. Since #1071 ClaimsCoverCursor binds e as well (its
+  // cursor and anchor are on the feed, ReadsFeed), which excludes it too.
   lemma JournalNamesUnacceptedExcluded(d: DeviceId, e: DeviceId, platform: Platform, w: DocId, x: DocId,
                                        r0: Revision, r: Revision, p0: Path, p1: Path, c: Hash)
     requires d != e && w != x && r0.id != r.id && !CollideK(p0, p1)
@@ -822,7 +823,7 @@ abstract module StepContractWitnesses refines StepContracts {
       var server := Server(map[r0.id := r0], map[w := [r0.id]], [r0.id], {}, map[r0.id := r0]);
       var pre := State(map[d := dev, e := stranger], server);
       var post := pre.(server := Appended(server, x, r));
-      Appendable(server, x, r) && ClaimsCoverCursor(pre) && FeedPositioned(server) && Diverged(pre, e)
+      Appendable(server, x, r) && !ClaimsCoverCursor(pre) && FeedPositioned(server) && Diverged(pre, e)
       && !Diverged(post, e) && !ClaimsCoverCursor(post)
       && !ClaimsReachable(pre) && !CoreReachable(pre)
   {
@@ -841,7 +842,86 @@ abstract module StepContractWitnesses refines StepContracts {
     assert post.server.feed[0] == r0.id && post.server.revisions[r0.id] == r0;
     assert w !in stranger.journal.documents;
     assert !ClaimsCoverCursor(post);
+    assert ReadsFeed(pre, e) && server.feed[0] == r0.id && server.revisions[r0.id] == r0;
+    assert !ClaimsCoverCursor(pre);
     assert r.id !in server.accepted;
+  }
+
+  // #1031's gap 3 (regression, #1071): a restore to [a, b] removed L, the
+  // ahead d read past its cursor, so d is Diverged only because its
+  // journal names L. Its commit sealed on b is then accepted as r, which
+  // drops the ahead and switches Diverged off, with no row for a's
+  // document w before d's cursor. ClaimsCoverCursor binds d before the
+  // accept already (ReadsFeed: its cursor and anchor are on the feed), so
+  // the state before it is not ClaimsReachable.
+  lemma {:isolate_assertions} OwnAcceptUndivergesExcluded(d: DeviceId, e: DeviceId, platform: Platform, w: DocId, x: DocId,
+                            a: Revision, b: Revision, L: Revision, r: Revision, p: Path, q: Path, c: Hash, nextRev: RevId)
+    requires d != e && w != x && |{a.id, b.id, L.id, r.id}| == 4 && !CollideK(p, q) && !CollideK(q, p)
+    requires a == Revision(a.id, w, 0, None, q, a.content, Note, false, e)
+    requires b == Revision(b.id, x, 1, None, p, b.content, Note, false, e)
+    requires L == Revision(L.id, x, 2, Some(b.id), p, L.content, Note, false, e)
+    requires r == Revision(r.id, x, 2, Some(b.id), p, c, Note, false, d)
+    ensures
+      var o := Outbox(r.id, Some(b.id), p, c, Note, false, true, false);
+      var row := Document(Some(Base(b.id, 1, p, b.content, Note, false)), Some(Ahead(L, LocalChanges, false)), None, Never, Some(o));
+      var dev := Device(platform, true, Journal(map[x := row], 2, [], [], Some(b.id)), map[], {}, {});
+      var server := Server(map[a.id := a, b.id := b], map[w := [a.id], x := [b.id]], [a.id, b.id], {},
+                           map[a.id := a, b.id := b, L.id := L], {L.id});
+      var pre := State(map[d := dev], server);
+      var post := AcceptStep(pre, d, x, r, nextRev).post;
+      AcceptHappens(pre, d, x, r) && JournalsNameAccepted(pre) && FeedPositioned(pre.server)
+      && Diverged(pre, d) && ReadsFeed(pre, d) && !Diverged(post, d) && !ClaimsCoverCursor(post)
+      && !ClaimsCoverCursor(pre) && !ClaimsReachable(pre)
+  {
+    var o := Outbox(r.id, Some(b.id), p, c, Note, false, true, false);
+    var row := Document(Some(Base(b.id, 1, p, b.content, Note, false)), Some(Ahead(L, LocalChanges, false)), None, Never, Some(o));
+    var dev := Device(platform, true, Journal(map[x := row], 2, [], [], Some(b.id)), map[], {}, {});
+    var server := Server(map[a.id := a, b.id := b], map[w := [a.id], x := [b.id]], [a.id, b.id], {},
+                         map[a.id := a, b.id := b, L.id := L], {L.id});
+    var pre := State(map[d := dev], server);
+    assert server.feed[0] == a.id && server.feed[1] == b.id;
+    assert Head(server, x) == Some(b) && Head(server, w) == Some(a);
+    assert AcceptHappens(pre, d, x, r);
+    assert Diverged(pre, d) && ReadsFeed(pre, d);
+    var post := AcceptStep(pre, d, x, r, nextRev).post;
+    var row' := post.devices[d].journal.documents[x];
+    assert row' == Accept(row, r, nextRev);
+    assert row'.base == Some(Base(r.id, 2, p, c, Note, false)) && row'.ahead.None?;
+    assert post.server.feed == [a.id, b.id, r.id];
+    assert post.server.feed[1] == b.id;
+    assert post.devices[d].journal.anchor == Some(b.id);
+    assert JournalOnServer(post.server, post.devices[d].journal);
+    assert !Diverged(post, d);
+    assert post.server.feed[0] == a.id && post.server.revisions[a.id] == a;
+    assert w !in post.devices[d].journal.documents;
+    assert !ClaimsCoverCursor(post);
+    assert w !in dev.journal.documents && server.revisions[a.id] == a;
+    assert !ClaimsCoverCursor(pre);
+  }
+
+  // #1031's gap 4 (regression, #1071): d's own revision r of document x is
+  // the server's head, but d's journal has no row for x (its cursor is
+  // before r). A remote revision of x would create a row with no base and
+  // no outbox, leaving r unacknowledged. A device creates a row before it
+  // commits and never drops one (OwnDocsKnown), so the state is not
+  // ClaimsReachable.
+  lemma OwnDocUnknownExcluded(d: DeviceId, platform: Platform, x: DocId, r: Revision, p: Path)
+    requires r == Revision(r.id, x, 0, None, p, r.content, Note, false, d)
+    ensures
+      var dev := Device(platform, true, Journal(map[], 0, [], [], None), map[], {}, {});
+      var server := Server(map[r.id := r], map[x := [r.id]], [r.id], {}, map[r.id := r]);
+      var state := State(map[d := dev], server);
+      !Diverged(state, d) && ClaimsCoverCursor(state) && OwnRevisionsAcknowledged(state, d)
+      && !OwnDocsKnown(state) && !ClaimsReachable(state)
+  {
+    var dev := Device(platform, true, Journal(map[], 0, [], [], None), map[], {}, {});
+    var server := Server(map[r.id := r], map[x := [r.id]], [r.id], {}, map[r.id := r]);
+    var state := State(map[d := dev], server);
+    assert server.history[x][0] == r.id;
+    assert d in state.devices && x in state.server.history && r.id in state.server.history[x]
+      && r.id in state.server.revisions && state.server.revisions[r.id].device == d
+      && x !in state.devices[d].journal.documents;
+    assert !OwnDocsKnown(state);
   }
 
   // #950's gap 2.1 (regression): retention purged `a` (not a head), and a
