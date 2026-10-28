@@ -114,10 +114,13 @@ abstract module PathRuleCore refines ApplyCore {
   // collides with the name), and the head is created at its name.
   opaque function Keeps(platform: Platform, document: Document, r: Revision, input: RoundInput): (keep: Option<Path>)
     requires ListingDistinct(platform, input.listing)
-    ensures keep.Some? ==> keep == OwnFile(platform, document, input)
+    ensures keep.Some? ==> keep == OwnFile(platform, document, input) && !Revives(platform, document, r, input)
   {
     var read := MoveRead(platform, document, r, input);
-    if read.Some? && MovedContent(document, read.value, r).None? then None else OwnFile(platform, document, input)
+    // A revived document has no file here: a bound file with no base is
+    // let go untracked, and moves aside where it is in the way (#1068).
+    if Revives(platform, document, r, input) then None
+    else if read.Some? && MovedContent(document, read.value, r).None? then None else OwnFile(platform, document, input)
   }
 
   // The row the head arrives with: for a remote move against a local
@@ -598,7 +601,7 @@ abstract module PathRuleCore refines ApplyCore {
   }
 
   // From rows that keep RowInv, every row the rule returns keeps it.
-  lemma RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma {:isolate_assertions} RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
@@ -920,8 +923,11 @@ abstract module PathRuleCore refines ApplyCore {
             && (CannotHold(after.ahead.value.blocker)
                 || (after.ahead.value.blocker.PathHeld? && UnsavedCollides(platform, input.unsaved, r.path))))
       // Where nothing is in the way (no listed file collides with the name,
-      // no unsaved text, no other document's server claim), it comes back.
+      // no unsaved text at it or at a file let go untracked, no other
+      // document's server claim), it comes back.
       && ((FreeIn(platform, input.listing, r.path) && !UnsavedCollides(platform, input.unsaved, r.path)
+           && !(OwnFile(platform, documents[doc], input).Some?
+                && UnsavedCollides(platform, input.unsaved, OwnFile(platform, documents[doc], input).value))
            && !StillClaimed(platform, documents, doc, r.path)) ==> after.ahead.None?)
       // ApplySettlesContract's clause, with a user's need to act being
       // unsaved text in the revision's way.
@@ -1009,6 +1015,163 @@ abstract module PathRuleCore refines ApplyCore {
   {
     reveal HeadRow();
     AppliedKeepsCommitInFlight(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+  }
+
+  // ---------------------------------------------------------------------
+  // ApplySettlesContract on the rule's row (#1024)
+  // ---------------------------------------------------------------------
+
+  // A user must act on the row (UserMustAct, on the round's input): unsaved
+  // text at its bound name, a rejected commit, or a revision waiting for a
+  // name that unsaved text is in the way of. `RuleMustActIsUserMustAct`
+  // ties it to the step's state after.
+  predicate MustActOn(platform: Platform, unsaved: set<Path>, row: Document) {
+    (row.binding.Some? && UnsavedAt(platform, unsaved, row.binding.value.spelling))
+    || (row.outbox.Some? && row.outbox.value.rejected)
+    || (row.ahead.Some? && row.ahead.value.blocker.PathHeld? && UnsavedCollides(platform, unsaved, row.ahead.value.revision.path))
+  }
+
+  // The listing's read at the row's bound name, and whether an open editor
+  // holds unsaved text there: ApplySettlesContract's `read` and `unsaved`.
+  function ReadOf(platform: Platform, input: RoundInput, document: Document): Option<(Hash, Kind)>
+    requires ListingDistinct(platform, input.listing)
+  {
+    if document.binding.Some? then ListedRead(platform, input.listing, document.binding.value.spelling) else None
+  }
+
+  predicate UnsavedOf(platform: Platform, input: RoundInput, document: Document) {
+    document.binding.Some? && UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+  }
+
+  // A revision the row already holds waiting for local changes or a name
+  // waits for a user: the state every earlier application of the rule in
+  // the round leaves, and #982 re-applies a revision stored outside the
+  // round first (as RuleMeetsContract assumes of PathHeld rows). A pulled
+  // revision no newer than the row changes nothing, so this is what keeps
+  // the contract's G10 clause for it.
+  predicate WaitsForUser(platform: Platform, unsaved: set<Path>, document: Document) {
+    document.ahead.Some? && (document.ahead.value.blocker.LocalChanges? || document.ahead.value.blocker.PathHeld?)
+    ==> MustActOn(platform, unsaved, document)
+  }
+
+  // The pull apply settles every pulled revision by what the row has here
+  // (ApplySettlesContract, verified-core.md §4.2, #1068): on the row the
+  // rule leaves, for every revision, row, listing and unsaved paths.
+  lemma {:isolate_assertions} RuleSettlesContract(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                                  input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires forall e | e in documents :: RowInv(documents[e])
+    requires WaitsForUser(platform, input.unsaved, documents[doc])
+    ensures var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+      ApplySettlesContract(documents[doc], after, r, ReadOf(platform, input, documents[doc]),
+                           UnsavedOf(platform, input, documents[doc]), MustActOn(platform, input.unsaved, after))
+  {
+    reveal HeadRow();
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := AllClaims(documents);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
+    RuleKeepsRowInv(platform, documents, doc, r, input, revs);
+    if !Newer(document, r) {
+      assert after == document;
+      return;
+    }
+    if Acknowledges(document, r) {
+      RuleAcknowledges(platform, documents, doc, r, input, revs);
+      return;
+    }
+    if InFlight(document) {
+      RuleKeepsCommitInFlight(platform, documents, doc, r, input, revs);
+    }
+    if Revives(platform, document, r, input) {
+      RuleRevivesDeletedFile(platform, documents, doc, r, input, revs);
+      return;
+    }
+    if document.binding.Some? {
+      var spelling := document.binding.value.spelling;
+      var read := ListedRead(platform, input.listing, spelling);
+      if UnsavedAt(platform, input.unsaved, spelling) {
+        assert applied == Hold(document, r, LocalChanges);
+        assert after == applied.document;
+        return;
+      }
+      if MovedAgainstChange(document, read, r) && !SettlesIdentical(platform, document, r, input) && !Concurrent(document, read, r) {
+        RuleSettlesMoveAgainstChange(platform, documents, doc, r, input, revs);
+        return;
+      }
+    }
+    if !HeldForName(document, applied, r) {
+      assert after == applied.document;
+      return;
+    }
+    assert !r.deleted;
+    if UnsavedCollides(platform, input.unsaved, r.path) {
+      assert after == applied.document;
+      return;
+    }
+    assert after == ClearWay(platform, documents, doc, r, input, revs).documents[doc];
+  }
+
+  // MustActOn is UserMustAct on the rule's step: the step keeps the
+  // device's editors and platform, and the round's unsaved paths are the
+  // editors' (RoundInputOf).
+  lemma RuleMustActIsUserMustAct(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires RuleStep(step, doc, r, input, revs)
+    ensures var d := step.event.device;
+      var device := step.pre.devices[d];
+      var after := PathRule(device.platform, device.journal.documents, doc, r, input, revs).documents[doc];
+      UserMustAct(step.post.devices[d], doc) <==> MustActOn(device.platform, input.unsaved, after)
+  {
+    var d := step.event.device;
+    var device := step.pre.devices[d];
+    var post := step.post.devices[d];
+    var platform := device.platform;
+    var ruled := PathRule(platform, device.journal.documents, doc, r, input, revs);
+    var after := ruled.documents[doc];
+    assert input.unsaved == UnsavedPaths(device);
+    assert post.editors == device.editors && post.platform == platform;
+    assert post.journal.documents[doc] == after;
+    forall p ensures HasUnsavedEdits(post, p) <==> UnsavedAt(platform, input.unsaved, p) {
+      UnsavedSeen(device, input.unsaved, p);
+      if UnsavedAt(platform, input.unsaved, p) {
+        var u :| u in input.unsaved && SameF(platform, u, p);
+        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+      }
+    }
+    forall p ensures (exists editor :: editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p))
+                     <==> UnsavedCollides(platform, input.unsaved, p) {
+      if UnsavedCollides(platform, input.unsaved, p) {
+        var u :| u in input.unsaved && CollideF(platform, u, p);
+        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+      }
+      if exists editor :: editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p) {
+        var editor :| editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p);
+        assert editor.path in input.unsaved;
+      }
+    }
+  }
+
+  // On a round step whose effects are the rule's, from the core's rows
+  // (CoreInv) whose waiting revisions wait for a user, the row the rule
+  // leaves meets ApplySettlesContract, with `mustAct` UserMustAct in the
+  // step's state after (Contracts.dfy).
+  lemma RuleStepSettlesContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires RuleStep(step, doc, r, input, revs)
+    requires var device := step.pre.devices[step.event.device];
+      (forall e | e in device.journal.documents :: RowInv(device.journal.documents[e]))
+      && WaitsForUser(device.platform, input.unsaved, device.journal.documents[doc])
+    ensures var d := step.event.device;
+      var device := step.pre.devices[d];
+      ApplySettlesContract(device.journal.documents[doc], step.post.devices[d].journal.documents[doc], r,
+                           ReadOf(device.platform, input, device.journal.documents[doc]),
+                           UnsavedOf(device.platform, input, device.journal.documents[doc]),
+                           UserMustAct(step.post.devices[d], doc))
+  {
+    var device := step.pre.devices[step.event.device];
+    RuleSettlesContract(device.platform, device.journal.documents, doc, r, input, revs);
+    RuleMustActIsUserMustAct(step, doc, r, input, revs);
   }
 
   // Where the apply leaves nothing waiting for a name, the rule's step is the
