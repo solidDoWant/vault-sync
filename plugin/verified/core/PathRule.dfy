@@ -1043,17 +1043,6 @@ abstract module PathRuleCore refines ApplyCore {
     document.binding.Some? && UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
   }
 
-  // A revision the row already holds waiting for local changes or a name
-  // waits for a user: the state every earlier application of the rule in
-  // the round leaves, and #982 re-applies a revision stored outside the
-  // round first (as RuleMeetsContract assumes of PathHeld rows). A pulled
-  // revision no newer than the row changes nothing, so this is what keeps
-  // the contract's G10 clause for it.
-  predicate WaitsForUser(platform: Platform, unsaved: set<Path>, document: Document) {
-    document.ahead.Some? && (document.ahead.value.blocker.LocalChanges? || document.ahead.value.blocker.PathHeld?)
-    ==> MustActOn(platform, unsaved, document)
-  }
-
   // The pull apply settles every pulled revision by what the row has here
   // (ApplySettlesContract, verified-core.md §4.2, #1068): on the row the
   // rule leaves, for every revision, row, listing and unsaved paths.
@@ -1062,7 +1051,6 @@ abstract module PathRuleCore refines ApplyCore {
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
-    requires WaitsForUser(platform, input.unsaved, documents[doc])
     ensures var after := PathRule(platform, documents, doc, r, input, revs).documents[doc];
       ApplySettlesContract(documents[doc], after, r, ReadOf(platform, input, documents[doc]),
                            UnsavedOf(platform, input, documents[doc]), MustActOn(platform, input.unsaved, after))
@@ -1154,14 +1142,13 @@ abstract module PathRuleCore refines ApplyCore {
   }
 
   // On a round step whose effects are the rule's, from the core's rows
-  // (CoreInv) whose waiting revisions wait for a user, the row the rule
+  // (CoreInv), the row the rule
   // leaves meets ApplySettlesContract, with `mustAct` UserMustAct in the
   // step's state after (Contracts.dfy).
   lemma RuleStepSettlesContract(step: Step, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires RuleStep(step, doc, r, input, revs)
     requires var device := step.pre.devices[step.event.device];
       (forall e | e in device.journal.documents :: RowInv(device.journal.documents[e]))
-      && WaitsForUser(device.platform, input.unsaved, device.journal.documents[doc])
     ensures var d := step.event.device;
       var device := step.pre.devices[d];
       ApplySettlesContract(device.journal.documents[doc], step.post.devices[d].journal.documents[doc], r,

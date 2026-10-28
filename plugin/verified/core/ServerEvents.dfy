@@ -135,8 +135,9 @@ abstract module ServerEvents refines StepContracts {
         assert LiveHeadsApart(cut');
       }
     }
-    forall d | d in post.devices && !Diverged(post, d) ensures OwnRevisionsAcknowledged(post, d) {
-      assert !Diverged(pre, d) && OwnRevisionsAcknowledged(pre, d);
+    assert OwnDocsKnown(post);
+    forall d | ReadsFeed(post, d) ensures OwnRevisionsAcknowledged(post, d) {
+      assert ReadsFeed(pre, d) && OwnRevisionsAcknowledged(pre, d);
       forall doc, id | Unacknowledged(post, d, doc, id)
         ensures post.devices[d].journal.documents[doc].outbox.Some?
              && post.devices[d].journal.documents[doc].outbox.value.rev == id
@@ -289,6 +290,41 @@ abstract module ServerEvents refines StepContracts {
     }
   }
 
+  // A device that reads the restored feed read it before (ReadsFeed): its
+  // cursor is on the restored feed, a prefix, whose entry before the cursor
+  // is the anchor.
+  lemma RestoreReadsFeed(step: Step, d: DeviceId)
+    requires ServerEventStep(step) && step.event.Restore?
+    requires ReadsFeed(step.post, d)
+    ensures ReadsFeed(step.pre, d)
+  {
+    RestoredIsCut(step);
+    var journal := step.pre.devices[d].journal;
+    if journal.cursor > 0 {
+      assert step.post.server.feed[journal.cursor - 1] == step.pre.server.feed[journal.cursor - 1];
+    }
+  }
+
+  // An append starts no device reading the feed: the new entry's id was
+  // never accepted, and every anchor was.
+  lemma AppendReadsFeed(step: Step, d: DeviceId)
+    requires ServerEventStep(step) && step.event.RestoreFromHistory?
+    requires CoreReachable(step.pre) && ReadsFeed(step.post, d)
+    ensures ReadsFeed(step.pre, d)
+  {
+    var r := step.event.revision;
+    var journal := step.pre.devices[d].journal;
+    var pre := step.pre.server;
+    var post := step.post.server;
+    assert r.id !in pre.accepted;
+    if journal.cursor == |post.feed| {
+      assert post.feed[journal.cursor - 1] == r.id;
+      assert false;
+    } else if 0 < journal.cursor <= |pre.feed| {
+      assert post.feed[journal.cursor - 1] == pre.feed[journal.cursor - 1];
+    }
+  }
+
   // A restore keeps what the server retains: a revision it removes from
   // the history or the revisions is `lost` (RestoreRemoves), and one it
   // keeps but no longer marks purged is back in its document's history
@@ -417,19 +453,28 @@ abstract module ServerEvents refines StepContracts {
     assert CoreInv(post);
     assert JournalsNameAccepted(post);
     assert CutsHeadsApart(post.server);
-    forall d, i | d in post.devices && !Diverged(post, d) && 0 <= i < post.devices[d].journal.cursor
+    forall d, i | ReadsFeed(post, d) && 0 <= i < post.devices[d].journal.cursor
       && i < |post.server.feed| && post.server.feed[i] in post.server.revisions
       ensures var r := post.server.revisions[post.server.feed[i]];
           r.doc in post.devices[d].journal.documents
           && KnownPosition(post.devices[d].journal.documents[r.doc]).Some?
           && KnownPosition(post.devices[d].journal.documents[r.doc]).value >= r.position
     {
-      RestoreUndiverged(step, d);
+      RestoreReadsFeed(step, d);
       assert pre.server.feed[i] == post.server.feed[i];
     }
     assert ClaimsCoverCursor(post);
-    forall d | d in post.devices && !Diverged(post, d) ensures OwnRevisionsAcknowledged(post, d) {
-      RestoreUndiverged(step, d);
+    assert OwnDocsKnown(post) by {
+      forall d, doc, id | d in post.devices && doc in post.server.history && id in post.server.history[doc]
+        && id in post.server.revisions && post.server.revisions[id].device == d
+        ensures doc in post.devices[d].journal.documents
+      {
+        KeepMember(pre.server.history[doc], FeedIds(post.server.feed), id);
+        assert id in pre.server.history[doc] && pre.server.revisions[id] == post.server.revisions[id];
+      }
+    }
+    forall d | ReadsFeed(post, d) ensures OwnRevisionsAcknowledged(post, d) {
+      RestoreReadsFeed(step, d);
       forall doc, id | Unacknowledged(post, d, doc, id)
         ensures post.devices[d].journal.documents[doc].outbox.Some?
              && post.devices[d].journal.documents[doc].outbox.value.rev == id
@@ -763,19 +808,31 @@ abstract module ServerEvents refines StepContracts {
         AppendCuts(step, cut);
       }
     }
-    forall d, i | d in post.devices && !Diverged(post, d) && 0 <= i < post.devices[d].journal.cursor
+    forall d, i | ReadsFeed(post, d) && 0 <= i < post.devices[d].journal.cursor
       && i < |post.server.feed| && post.server.feed[i] in post.server.revisions
       ensures var rv := post.server.revisions[post.server.feed[i]];
           rv.doc in post.devices[d].journal.documents
           && KnownPosition(post.devices[d].journal.documents[rv.doc]).Some?
           && KnownPosition(post.devices[d].journal.documents[rv.doc]).value >= rv.position
     {
+      AppendReadsFeed(step, d);
       assert i < |pre.server.feed|;
       assert post.server.feed[i] == pre.server.feed[i];
       assert pre.server.feed[i] != r.id;
     }
     assert ClaimsCoverCursor(post);
-    forall d | d in post.devices && !Diverged(post, d) ensures OwnRevisionsAcknowledged(post, d) {
+    assert OwnDocsKnown(post) by {
+      forall d, x, id | d in post.devices && x in post.server.history && id in post.server.history[x]
+        && id in post.server.revisions && post.server.revisions[id].device == d
+        ensures x in post.devices[d].journal.documents
+      {
+        assert id != r.id;
+        if x == doc && doc in pre.server.history { assert post.server.history[doc] == pre.server.history[doc] + [r.id]; }
+        assert x in pre.server.history && id in pre.server.history[x];
+      }
+    }
+    forall d | ReadsFeed(post, d) ensures OwnRevisionsAcknowledged(post, d) {
+      AppendReadsFeed(step, d);
       forall x, id | Unacknowledged(post, d, x, id)
         ensures post.devices[d].journal.documents[x].outbox.Some?
              && post.devices[d].journal.documents[x].outbox.value.rev == id
