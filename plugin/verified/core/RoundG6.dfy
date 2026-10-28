@@ -4044,8 +4044,7 @@ abstract module RoundG6 refines RoundGuarantees {
     case Freed =>
       assert false;
     case By(j) =>
-      var x: Path :| x in disk && SameF(platform, x, p) && disk[x].content == PutContent(effects[..i][j]);
-      OneAt(platform, disk, x, q, p);
+      PutByContent(platform, disk0, effects[..i], disk, p, q, c);
       assert effects[..i][j] == effects[j];
       if !accepts {
         assert OwnNameIn(platform, device0, effects[..i], e, p);
@@ -4062,16 +4061,7 @@ abstract module RoundG6 refines RoundGuarantees {
         assert OwnNameIn(platform, device0, effects[..i], e, p);
         assert BoundTo(device0, e, p);
         assert q in disk0 && disk0[q] == disk[q];
-        FileAtIs(device0, p, q);
-        assert RoundRead(step, p) == Some((c, disk0[q].kind));
-        if !DocVersion(step, e, c) {
-          var row := device0.journal.documents[e];
-          if c != row.binding.value.seen {
-            assert ReadKept(step, e, c);
-            assert RoundRead(step, p).Some? && RoundRead(step, p).value.0 == c;
-          }
-          assert LastSaw(step, device0, e, p, c);
-        }
+        CondSawUntouched(step, e, p, c, q);
       }
   }
 
@@ -4343,5 +4333,41 @@ abstract module RoundG6 refines RoundGuarantees {
     ensures ChainRows(platform, d, accepted, base0, b0, bd0, read0, LocalContent(x), e, rows, listing, rs, saved, x)
   {
     ChainSavedHere(saved, d, b0, bd0, read0, rs, x, c0);
+  }
+
+  // The content a conditional effect finds at a name the round last put a
+  // file at is that put's.
+  lemma PutByContent(platform: Platform, disk0: map<Path, DiskFile>, effects: seq<Effect>, disk: map<Path, DiskFile>, p: Path, q: Path, c: Hash)
+    requires PutOnDisk(platform, disk0, effects, disk, p) && RoundPut(platform, effects, p).By?
+    requires OneFilePerName(platform, disk) && Holds(platform, disk, q, p, c)
+    ensures c == PutContent(effects[RoundPut(platform, effects, p).index])
+  {
+    var j := RoundPut(platform, effects, p).index;
+    var x: Path :| x in disk && SameF(platform, x, p) && disk[x].content == PutContent(effects[j]);
+    OneAt(platform, disk, x, q, p);
+  }
+
+  // An untouched file the document was bound to before the round: what
+  // the round read there, which it last saw or keeps.
+  lemma CondSawUntouched(step: Step, e: DocId, p: Path, c: Hash, q: Path)
+    requires step.event.SyncRound? && step.event.device in step.pre.devices
+    requires var device0 := step.pre.devices[step.event.device];
+      OneFilePerName(device0.platform, device0.disk) && BoundTo(device0, e, p)
+      && q in device0.disk && SameF(device0.platform, q, p) && device0.disk[q].content == c
+    requires KeptBase(step, e, c)
+    ensures var device0 := step.pre.devices[step.event.device];
+      (BoundTo(device0, e, p) && LastSaw(step, device0, e, p, c)) || DocVersion(step, e, c)
+  {
+    var device0 := step.pre.devices[step.event.device];
+    FileAtIs(device0, p, q);
+    assert RoundRead(step, p) == Some((c, device0.disk[q].kind));
+    if !DocVersion(step, e, c) {
+      var row := device0.journal.documents[e];
+      if c != row.binding.value.seen {
+        assert ReadKept(step, e, c);
+        assert RoundRead(step, p).Some? && RoundRead(step, p).value.0 == c;
+      }
+      assert LastSaw(step, device0, e, p, c);
+    }
   }
 }
