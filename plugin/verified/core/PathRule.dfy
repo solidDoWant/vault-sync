@@ -2762,6 +2762,13 @@ abstract module PathRuleCore refines ApplyCore {
       var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
       if aside.Some? {
         MoveRowsKeepAheadAboveBase(platform, documents, doc, aside.value, revs);
+        var rows := ClearRows(platform, documents, doc, r, input, aside.value, revs);
+        forall e | e in rows ensures AheadAboveBase(rows[e]) {
+          if e != doc {
+            var moved := MoveRows(platform, documents, doc, aside.value, revs);
+            assert rows[e] == RecordMissing(platform, input.listing, documents, doc, r.path, moved, revs)[e];
+          }
+        }
       }
     }
   }
