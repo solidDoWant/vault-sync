@@ -1864,11 +1864,23 @@ abstract module RoundG6 refines RoundGuarantees {
   // Each document's chain through the pass
   // ---------------------------------------------------------------------
 
+  // The base content and deletedness a chain starts from: its row's base
+  // before the round, or, for a row with none (its creation in flight),
+  // any (the chain's first link is then the device's own revision, which
+  // reads none).
+  ghost function B0(base0: Option<Base>, read0: (Hash, Kind)): Hash {
+    if base0.Some? then base0.value.content else read0.0
+  }
+
+  ghost function BD0(base0: Option<Base>): bool {
+    base0.Some? && base0.value.deleted
+  }
+
   // The revisions a chain settled: accepted revisions of `e`, in feed
-  // order after the base it started from.
-  ghost predicate ChainOrder(accepted: map<RevId, Revision>, e: DocId, base0: Base, rs: seq<Revision>) {
+  // order after the base it started from (where it had one).
+  ghost predicate ChainOrder(accepted: map<RevId, Revision>, e: DocId, base0: Option<Base>, rs: seq<Revision>) {
     (forall k | 0 <= k < |rs| :: AcceptedAs(accepted, rs[k]) && rs[k].doc == e)
-    && (|rs| > 0 ==> base0.position < rs[0].position)
+    && (base0.Some? && |rs| > 0 ==> base0.value.position < rs[0].position)
     && (forall k | 0 <= k < |rs| - 1 :: rs[k].position < rs[k + 1].position)
   }
 
@@ -2162,15 +2174,16 @@ abstract module RoundG6 refines RoundGuarantees {
   // is empty), and its waiting revision not below it; every content it
   // saved is still saved; and, once it settled another device's revision,
   // the row is in step with its file (Synced).
-  ghost predicate ChainRows(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+  ghost predicate ChainRows(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, read0: (Hash, Kind),
                             e: DocId, rows: map<DocId, Document>, listing: Listing, rs: seq<Revision>, saved: set<Hash>,
                             x: Option<(Hash, Kind)>) {
     e in rows && Distinct(platform, listing)
-    && ChainSaved(saved, d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0))
+    && ChainSaved(saved, d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0))
     && ChainOrder(accepted, e, base0, rs)
     && SavedHeld(platform, accepted, rows, listing, saved)
     && AheadAboveBase(rows[e])
-    && (|rs| == 0 ==> rows[e].base == Some(base0))
+    && (|rs| == 0 ==> rows[e].base == base0)
+    && (base0.None? && |rs| > 0 ==> rs[0].device == d)
     && (|rs| > 0 ==> rows[e].base == Some(BaseOf(rs[|rs| - 1])))
     && x == LocalSide(platform, listing, rows[e])
     && (OthersIn(d, rs) ==> Synced(platform, listing, rows[e]))
@@ -2181,7 +2194,7 @@ abstract module RoundG6 refines RoundGuarantees {
     exists k | 0 <= k < |rs| :: rs[k].device != d
   }
 
-  ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+  ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, read0: (Hash, Kind),
                             e: DocId, pass: RoundPass) {
     !Distinct(platform, pass.listing)
     || exists rs, saved, x :: ChainRows(platform, d, accepted, base0, read0, e, pass.journal.documents, pass.listing, rs, saved, x)
@@ -2191,14 +2204,14 @@ abstract module RoundG6 refines RoundGuarantees {
   lemma PassChainStart(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, e: DocId, start: RoundPass)
     requires e in start.journal.documents && Distinct(platform, start.listing)
     requires var row := start.journal.documents[e];
-      row.binding.Some? && row.base.Some? && ListedRead(platform, start.listing, row.binding.value.spelling).Some?
+      row.binding.Some? && ListedRead(platform, start.listing, row.binding.value.spelling).Some?
       && AheadAboveBase(row)
     ensures var row := start.journal.documents[e];
-      PassChain(platform, d, accepted, row.base.value, ListedRead(platform, start.listing, row.binding.value.spelling).value, e, start)
+      PassChain(platform, d, accepted, row.base, ListedRead(platform, start.listing, row.binding.value.spelling).value, e, start)
   {
     var row := start.journal.documents[e];
     var read0 := ListedRead(platform, start.listing, row.binding.value.spelling).value;
-    assert ChainRows(platform, d, accepted, row.base.value, read0, e, start.journal.documents, start.listing, [], {}, Some(read0));
+    assert ChainRows(platform, d, accepted, row.base, read0, e, start.journal.documents, start.listing, [], {}, Some(read0));
   }
 
   // SavedHeld of two sets is SavedHeld of their union.
@@ -2255,7 +2268,7 @@ abstract module RoundG6 refines RoundGuarantees {
 
   // Another row's chain through the rule: its base stays, and its local
   // side stays, or the rule lets its file go, saved.
-  lemma {:isolate_assertions} RuleChainOther(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+  lemma {:isolate_assertions} RuleChainOther(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, read0: (Hash, Kind),
                                              e: DocId, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
                                              revs: FreshRevs, first: Claims, rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)>)
     requires doc in documents && documents.Keys <= revs.Keys && e != doc
@@ -2284,8 +2297,8 @@ abstract module RoundG6 refines RoundGuarantees {
       var saved' := saved + {x.value.0};
       assert SavedHeld(platform, accepted, rows', listing', {x.value.0});
       SavedHeldUnion(platform, accepted, rows', listing', saved, {x.value.0});
-      ChainSavedGrows(saved, saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
-      ChainSavedLetGo(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+      ChainSavedGrows(saved, saved', d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0));
+      ChainSavedLetGo(saved', d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0));
       assert ChainRows(platform, d, accepted, base0, read0, e, rows', listing', rs, saved', None);
     }
   }
@@ -2293,13 +2306,13 @@ abstract module RoundG6 refines RoundGuarantees {
   // The document's own chain through the rule: a link where its base
   // moves to the revision, and otherwise its local side stays, or the rule
   // lets its file go, saved.
-  lemma {:isolate_assertions} RuleChainOwn(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+  lemma {:isolate_assertions} RuleChainOwn(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, read0: (Hash, Kind),
                                            documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
                                            revs: FreshRevs, first: Claims, rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)>)
     requires doc in documents && documents.Keys <= revs.Keys
     requires NeverJoinedRows(platform, documents) && RowsNameAccepted(accepted, documents)
     requires AcceptedAs(accepted, r) && r.doc == doc
-    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d) && NotBuiltOn(documents[doc], r)
+    requires Newer(documents[doc], r) ==> PulledBy(documents[doc], r, d) && NotBuiltOn(documents[doc], r) && FirstOwn(documents[doc], r, d)
     requires ChainRows(platform, d, accepted, base0, read0, doc, documents, input.listing, rs, saved, x)
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
       var listing' := ListingAfter(platform, input.listing, ruled.effects);
@@ -2314,6 +2327,25 @@ abstract module RoundG6 refines RoundGuarantees {
     if !Newer(document, r) {
       RuleNotNewer(platform, documents, doc, r, input, revs, first);
       assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs, saved, x);
+      return;
+    }
+    if document.base.None? {
+      // Its creation's acknowledgement: the first link, which settles
+      // nothing.
+      assert |rs| == 0 && base0.None? && r.device == d && Acknowledges(document, r);
+      RuleAcknowledges(platform, documents, doc, r, input, revs, first);
+      RuleRowFacts(platform, documents, doc, r, input, revs, first);
+      RuleKeepsSaved(platform, accepted, documents, doc, r, input, revs, first, saved);
+      assert listing' == input.listing;
+      assert rows'[doc].base == Some(BaseOf(r));
+      assert rows'[doc].binding.Some? == document.binding.Some?
+        && (document.binding.Some? ==> rows'[doc].binding.value.spelling == document.binding.value.spelling);
+      assert x == LocalSide(platform, listing', rows'[doc]);
+      assert LinkSaved(saved, d, ChainBase(B0(base0, read0), rs), ChainBaseDeleted(BD0(base0), rs), x, r, x);
+      ChainSavedSnoc(saved, d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0), r, x);
+      assert rs + [r] == [r];
+      assert !OthersIn(d, [r]);
+      assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', [r], saved, x);
       return;
     }
     var base := document.base.value;
@@ -2331,9 +2363,9 @@ abstract module RoundG6 refines RoundGuarantees {
       var x' := LocalSide(platform, listing', rows'[doc]);
       assert LinkSaved(more, d, base.content, base.deleted, x, r, x');
       LinkSavedGrows(more, saved', d, base.content, base.deleted, x, r, x');
-      ChainSavedGrows(saved, saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
-      assert ChainBase(base0.content, rs) == base.content && ChainBaseDeleted(base0.deleted, rs) == base.deleted;
-      ChainSavedSnoc(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0), r, x');
+      ChainSavedGrows(saved, saved', d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0));
+      assert ChainBase(B0(base0, read0), rs) == base.content && ChainBaseDeleted(BD0(base0), rs) == base.deleted;
+      ChainSavedSnoc(saved', d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0), r, x');
       var rs' := rs + [r];
       if r.device != d || OthersIn(d, rs) {
         RuleSynced(platform, documents, doc, r, input, revs, first, d);
@@ -2361,19 +2393,20 @@ abstract module RoundG6 refines RoundGuarantees {
     var saved' := saved + {x.value.0};
     assert SavedHeld(platform, accepted, rows', listing', {x.value.0});
     SavedHeldUnion(platform, accepted, rows', listing', saved, {x.value.0});
-    ChainSavedGrows(saved, saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
-    ChainSavedLetGo(saved', d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+    ChainSavedGrows(saved, saved', d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0));
+    ChainSavedLetGo(saved', d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0));
     assert ChainRows(platform, d, accepted, base0, read0, doc, rows', listing', rs, saved', None);
   }
 
   // Each settled revision keeps every document's chain.
   lemma {:isolate_assertions} SettleKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
-                                               base0: Base, read0: (Hash, Kind), e: DocId, pass: RoundPass,
+                                               base0: Option<Base>, read0: (Hash, Kind), e: DocId, pass: RoundPass,
                                                doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
     requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==>
                PulledBy(pass.journal.documents[doc], r, d) && NotBuiltOn(pass.journal.documents[doc], r)
+               && FirstOwn(pass.journal.documents[doc], r, d)
     requires PassChain(platform, d, accepted, base0, read0, e, pass)
     ensures PassChain(platform, d, accepted, base0, read0, e, SettleRevision(platform, pass, doc, r, input, revs, first))
   {
@@ -2424,7 +2457,7 @@ abstract module RoundG6 refines RoundGuarantees {
   }
 
   lemma SettlePulledKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
-                               base0: Base, read0: (Hash, Kind), e: DocId, pass: RoundPass,
+                               base0: Option<Base>, read0: (Hash, Kind), e: DocId, pass: RoundPass,
                                revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass)
@@ -2448,6 +2481,13 @@ abstract module RoundG6 refines RoundGuarantees {
   // pass meets it, and a commit in flight is NotBuiltOn it, where it is
   // newer (Apply.dfy states both; the round's final lemma takes them as
   // facts of the state before it).
+  // A row with no base is the device's own creation, in flight: the
+  // first revision of it the pass settles is the device's own (another
+  // device can build only on the creation, which the feed holds first).
+  predicate FirstOwn(document: Document, r: Revision, d: DeviceId) {
+    document.base.None? ==> r.device == d
+  }
+
   ghost predicate PulledInPass(platform: Platform, d: DeviceId, pass: RoundPass, revisions: seq<Revision>, input: RoundInput,
                                revs: FreshRevs, first: Claims)
     decreases |revisions|
@@ -2455,12 +2495,13 @@ abstract module RoundG6 refines RoundGuarantees {
     |revisions| > 0 ==>
       var documents := pass.journal.documents;
       var r := revisions[0];
-      (r.doc in documents && Newer(documents[r.doc], r) ==> PulledBy(documents[r.doc], r, d) && NotBuiltOn(documents[r.doc], r))
+      (r.doc in documents && Newer(documents[r.doc], r) ==>
+         PulledBy(documents[r.doc], r, d) && NotBuiltOn(documents[r.doc], r) && FirstOwn(documents[r.doc], r, d))
       && PulledInPass(platform, d, SettleRevision(platform, pass, r.doc, r, input, revs, first), revisions[1..], input, revs, first)
   }
 
   lemma RetryKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
-                        base0: Base, read0: (Hash, Kind), e: DocId, pass: RoundPass,
+                        base0: Option<Base>, read0: (Hash, Kind), e: DocId, pass: RoundPass,
                         docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass)
@@ -2515,7 +2556,8 @@ abstract module RoundG6 refines RoundGuarantees {
         var row := documents[docs[0]];
         var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
         var r := row.ahead.value.revision;
-        (Newer(row.(ahead := None), r) ==> PulledBy(row.(ahead := None), r, d) && NotBuiltOn(row.(ahead := None), r))
+        (Newer(row.(ahead := None), r) ==>
+           PulledBy(row.(ahead := None), r, d) && NotBuiltOn(row.(ahead := None), r) && FirstOwn(row.(ahead := None), r, d))
         && RetriedInPass(platform, d, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first)
       else RetriedInPass(platform, d, pass, docs[1..], input, revs, first)
   }
@@ -2996,7 +3038,7 @@ abstract module RoundG6 refines RoundGuarantees {
     requires RoundPulledBy(pre, d, input, revs)
     requires SettlesConcurrent(RoundStepOf(pre, d, input, revs), d, doc, remote)
     requires var row := pre.devices[d].journal.documents[doc];
-      row.binding.Some? && row.base.Some? && AheadAboveBase(row)
+      row.binding.Some? && AheadAboveBase(row)
       && RoundRead(RoundStepOf(pre, d, input, revs), row.binding.value.spelling).Some?
     ensures var step := RoundStepOf(pre, d, input, revs);
       var row := pre.devices[d].journal.documents[doc];
@@ -3053,8 +3095,7 @@ abstract module RoundG6 refines RoundGuarantees {
     ReadAtListed(device, spelling0);
     var read0 := RoundRead(step, spelling0).value;
     assert ListedRead(platform, start.listing, spelling0) == Some(read0);
-    assert row0.base.Some?;
-    var base0 := row0.base.value;
+    var base0 := row0.base;
     PassChainStart(platform, d, accepted, doc, start);
     RetryKeepsChain(platform, device, d, accepted, base0, read0, doc, start, WaitingRows(journal.documents), input, revs, first);
     RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
@@ -3096,17 +3137,19 @@ abstract module RoundG6 refines RoundGuarantees {
         PushKeepsUntracked(platform, read, input', revs, settled.listing, after, h);
       }
     }
-    ChainSavedIsThrough(step.post, saved, d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0));
+    ChainSavedIsThrough(step.post, saved, d, B0(base0, read0), BD0(base0), Some(read0), rs, x, Some(read0.0));
     PushSends(platform, read, input', revs, settled.listing, after, doc);
     assert ChainEnds(step.post, d, doc, LocalContent(x));
     forall k | 0 <= k < |rs| ensures rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k] && rs[k].doc == doc {
       assert AcceptedAs(accepted, rs[k]);
     }
+    assert ChainThrough(step.post, d, B0(base0, read0), BD0(base0), Some(read0), rs, LocalContent(x), Some(read0.0));
+    assert row0.base.Some? || rs[0].device == d;
     assert RoundChain(step, d, doc, rs, read0.0);
   }
 
-  // G6_Step of the round, for a document bound with a base whose file the
-  // round read: its chain.
+  // G6_Step of the round, for a bound document whose file the round read
+  // (with a base, or with its creation in flight): its chain.
   lemma RoundG6Step(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs, doc: DocId, remote: Revision)
     requires d in pre.devices && RoundInputOf(pre, d, input)
     requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
@@ -3114,7 +3157,7 @@ abstract module RoundG6 refines RoundGuarantees {
     requires RoundPulledBy(pre, d, input, revs)
     requires SettlesConcurrent(RoundStepOf(pre, d, input, revs), d, doc, remote)
     requires var row := pre.devices[d].journal.documents[doc];
-      row.binding.Some? && row.base.Some? && AheadAboveBase(row)
+      row.binding.Some? && AheadAboveBase(row)
       && RoundRead(RoundStepOf(pre, d, input, revs), row.binding.value.spelling).Some?
     ensures G6_Step(RoundStepOf(pre, d, input, revs), d, doc, remote)
   {

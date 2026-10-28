@@ -920,26 +920,30 @@ abstract module Guarantees refines EngineModel {
   // last one the base after the step) in turn against the content it read
   // in doc's file, ending in what the document sends (ChainEnds), and `c`
   // is one of the chain's contents. A chain of one live revision is
-  // G6_Settle's both-sides-live case.
+  // G6_Settle's both-sides-live case. A document with no base before the
+  // round (its creation in flight) starts its chain with its own revision
+  // (the creation's acknowledgement, which settles nothing, so it reads no
+  // base content), and its order holds from that link on (#1094).
   ghost predicate RoundChain(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>, c: Hash) {
     RoundEvent(step.event) && step.event.device == d
     && d in step.pre.devices && d in step.post.devices && |rs| > 0
     && doc in step.pre.devices[d].journal.documents
     && var document := step.pre.devices[d].journal.documents[doc];
-    document.binding.Some? && document.base.Some?
+    document.binding.Some? && (document.base.Some? || rs[0].device == d)
     && RoundRead(step, document.binding.value.spelling).Some?
     && var read := RoundRead(step, document.binding.value.spelling).value;
     (forall k :: 0 <= k < |rs| ==>
        rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k]
        && rs[k].doc == doc)
-    && document.base.value.position < rs[0].position
+    && (document.base.Some? ==> document.base.value.position < rs[0].position)
     && (forall k :: 0 <= k < |rs| - 1 ==> rs[k].position < rs[k + 1].position)
     && doc in step.post.devices[d].journal.documents
     && step.post.devices[d].journal.documents[doc].base.Some?
     && step.post.devices[d].journal.documents[doc].base.value.rev == rs[|rs| - 1].id
-    && exists out :: ChainThrough(step.post, d, document.base.value.content, document.base.value.deleted, Some(read), rs,
-                                  out, Some(c))
-                     && ChainEnds(step.post, d, doc, out)
+    && exists b, bd, out ::
+         (document.base.Some? ==> b == document.base.value.content && bd == document.base.value.deleted)
+         && ChainThrough(step.post, d, b, bd, Some(read), rs, out, Some(c))
+         && ChainEnds(step.post, d, doc, out)
   }
 
   // A chain ends in what the document sends, or, where the document sends

@@ -746,7 +746,8 @@ abstract module GuaranteeWitnesses refines Guarantees {
         assert k == 0 && |rs| == 2;
         assert rs[0].position < rs[1].position;
       }
-      var out := var out :| ChainThrough(post, d, b, false, Some(read), rs, out, Some(f.content)) && ChainEnds(post, d, doc, out); out;
+      var b', bd', out :| (b' == b && !bd') && ChainThrough(post, d, b', bd', Some(read), rs, out, Some(f.content))
+                          && ChainEnds(post, d, doc, out);
       assert out == Outgoing(device', doc);
       assert !SavedInRound(post, d, read.0) by {
         forall rev | rev in post.server.accepted && !post.server.accepted[rev].deleted
