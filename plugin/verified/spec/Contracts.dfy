@@ -87,8 +87,10 @@ abstract module StepContracts refines PushCore {
   }
 
   // An outbox's parent is never newer than its row's base (#1080): where
-  // the outbox has a parent, it is a revision the server accepted, and the
-  // row has a base at or after it on the feed. A new outbox and a reopened
+  // the outbox has a parent, it is a revision the server accepted, and,
+  // where the server still holds it, the row has a base at or after it on
+  // the feed. (A parent a restore removed can never be a head again, since
+  // an append takes an id never accepted, so a commit on it cannot land.) A new outbox and a reopened
   // one (Reopen) take the base's id as their parent, and no step moves a
   // base back (ApplyBaseGrows, RuleKeepsBase). A round may move the base
   // past the parent of a commit in flight; that commit then cannot land,
@@ -96,8 +98,9 @@ abstract module StepContracts refines PushCore {
   ghost predicate OutboxParentAtBase(server: Server, document: Document) {
     document.outbox.Some? && document.outbox.value.baseRev.Some? ==>
       var parent := document.outbox.value.baseRev.value;
-      parent in server.accepted && document.base.Some?
-      && server.accepted[parent].position <= document.base.value.position
+      parent in server.accepted
+      && (parent in server.revisions ==>
+            document.base.Some? && server.revisions[parent].position <= document.base.value.position)
   }
 
   // A device's own commit lands on its row's base (#1080): where a row's
