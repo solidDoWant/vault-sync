@@ -255,14 +255,25 @@ abstract module ApplyCore refines StepContracts {
   // A live remote edit of a bound document with a change the server lacks
   // (G6): its file reads other than the base, or it has an unsealed outbox.
   // The remote keeps the document's name (it did not move it), so only the
-  // contents are settled here; a remote move against a local change, and a
-  // commit in flight, wait (#962, §3.5).
+  // contents are settled here; a remote move against a local change is the
+  // path rule's (#962). A commit in flight is settled like any concurrent
+  // change, from the content the round read (#1006, #1023): the sealed
+  // outbox stays as it is until its answer (KeptOutbox).
   predicate Concurrent(document: Document, read: Read, r: Revision) {
     document.binding.Some? && read.Some? && document.absence != UserDeleted
     && document.base.Some? && !document.base.value.deleted && !r.deleted
     && r.path == document.base.value.path && r.id != document.base.value.rev
-    && (document.outbox.None? || !document.outbox.value.sealed)
     && (document.outbox.Some? || read.value.0 != document.base.value.content)
+  }
+
+  // The outbox a settlement of another device's revision leaves: a commit in
+  // flight (a sealed outbox the revision does not answer) stays exactly as
+  // it was sealed until its answer (verified-core.md §3.2, §3.9, #1006). It
+  // is then superseded (its parent is no longer the base), so the document
+  // keeps its file's content (`Outgoing`), and its answer reopens it on the
+  // new base or drops it (§3.5). Otherwise the settlement's outbox `o`.
+  function KeptOutbox(document: Document, r: Revision, o: Option<Outbox>): Option<Outbox> {
+    if InFlight(document) && !Acknowledges(document, r) then document.outbox else o
   }
 
   // The settled row: base r, the file holding `content`, and an outbox only
@@ -274,9 +285,9 @@ abstract module ApplyCore refines StepContracts {
     var spelling := document.binding.value.spelling;
     var row := document.(base := Some(BaseOf(r)), ahead := None,
                          binding := Some(document.binding.value.(seen := content)));
-    if spelling == r.path && content == r.content then row.(outbox := None)
-    else row.(outbox := Some(Outbox(if document.outbox.Some? then document.outbox.value.rev else rev,
-                                    Some(r.id), spelling, content, r.kind, false, false, false)))
+    if spelling == r.path && content == r.content then row.(outbox := KeptOutbox(document, r, None))
+    else row.(outbox := KeptOutbox(document, r, Some(Outbox(if document.outbox.Some? then document.outbox.value.rev else rev,
+                                                         Some(r.id), spelling, content, r.kind, false, false, false))))
   }
 
   // G6: a side that left the content as it was takes the other's; two
@@ -313,13 +324,13 @@ abstract module ApplyCore refines StepContracts {
   // other than the base or has an unsealed outbox. Path and content are
   // merged apart (SPEC.md §7): the file takes the remote's name through
   // #962's rule, which the apply hands it to (PathHeld), with the content
-  // settled as for an edit (MovedContent). A commit in flight waits (#1023).
+  // settled as for an edit (MovedContent). A commit in flight is settled
+  // the same way, from the content read, and stays as sealed (#1023).
   predicate MovedAgainstChange(document: Document, read: Read, r: Revision) {
     document.binding.Some? && read.Some? && document.absence != UserDeleted
     && document.base.Some? && !document.base.value.deleted && !r.deleted
     && r.path != document.base.value.path && r.id != document.base.value.rev
     && document.binding.value.spelling == document.base.value.path
-    && (document.outbox.None? || !document.outbox.value.sealed)
     && (document.outbox.Some? || read.value.0 != document.base.value.content)
   }
 
@@ -359,25 +370,26 @@ abstract module ApplyCore refines StepContracts {
 
   // A remote tombstone against a bound file the listing reads, with a change
   // the server lacks: something to send, or a read other than the content
-  // and kind the core last saw (G6). A commit in flight (a sealed outbox)
-  // waits for its answer (#1006's settlement, #1023).
+  // and kind the core last saw (G6). A commit in flight (a sealed outbox) is
+  // such a change: the file stays and the commit stays as sealed (#1023).
   predicate EditedAgainstDelete(document: Document, read: Read, r: Revision) {
     r.deleted && document.binding.Some? && read.Some?
-    && (document.outbox.None? || !document.outbox.value.sealed)
     && (document.outbox.Some? || read.value != (document.binding.value.seen, KindOf(document)))
   }
 
   // The kept row (verified-core.md §4.2): the tombstone is the base, the
   // file stays as the round read it, and the outbox (its own id, or the
-  // round's fresh one) sends the file as read on top of the tombstone.
+  // round's fresh one) sends the file as read on top of the tombstone. A
+  // commit in flight stays as sealed (KeptOutbox); its answer reopens it on
+  // the tombstone or opens a new outbox on top of it (§3.5).
   function KeptAgainstDelete(document: Document, read: (Hash, Kind), r: Revision, rev: RevId): Document
     requires document.binding.Some?
   {
     var spelling := document.binding.value.spelling;
     document.(base := Some(BaseOf(r)), ahead := None,
               binding := Some(document.binding.value.(seen := read.0)),
-              outbox := Some(Outbox(if document.outbox.Some? then document.outbox.value.rev else rev,
-                                    Some(r.id), spelling, read.0, read.1, false, false, false)))
+              outbox := KeptOutbox(document, r, Some(Outbox(if document.outbox.Some? then document.outbox.value.rev else rev,
+                                                            Some(r.id), spelling, read.0, read.1, false, false, false))))
   }
 
   // No copy name is free (SPEC.md §7, #100): nothing is written, the local
@@ -391,12 +403,12 @@ abstract module ApplyCore refines StepContracts {
   // A live pulled revision at the bound name whose content and kind the
   // listing reads there is no conflict (verified-core.md §4.1, #1028): the
   // file already holds it, whether both devices made the same change away
-  // from the base or nothing changed here. A commit in flight (a sealed
-  // outbox) is #1023's settlement and still waits, unless the revision is
-  // its own: then the outbox is acknowledged and nothing is left to send.
+  // from the base or nothing changed here. Where the revision is the
+  // outbox's own, the outbox is acknowledged and nothing is left to send; a
+  // commit in flight the revision does not answer stays as sealed (#1023).
   predicate Identical(document: Document, read: Read, r: Revision) {
     document.binding.Some? && !r.deleted && r.path == document.binding.value.spelling
-    && read == Some((r.content, r.kind)) && (!InFlight(document) || Acknowledges(document, r))
+    && read == Some((r.content, r.kind))
   }
 
   // The apply takes the identical settlement: the revision is identical to
@@ -410,11 +422,12 @@ abstract module ApplyCore refines StepContracts {
   }
 
   // The identical row: the revision is the base, the binding has seen its
-  // content, and nothing is left to send (the file is what the server has).
+  // content, and nothing is left to send (the file is what the server has),
+  // but a commit in flight the revision does not answer (KeptOutbox).
   function IdenticalRow(document: Document, r: Revision): Document
     requires document.binding.Some?
   {
-    document.(base := Some(BaseOf(r)), ahead := None, outbox := None,
+    document.(base := Some(BaseOf(r)), ahead := None, outbox := KeptOutbox(document, r, None),
               binding := Some(document.binding.value.(seen := r.content)))
   }
 
@@ -434,15 +447,24 @@ abstract module ApplyCore refines StepContracts {
     if Acknowledges(document, r) then r.device == d else r.device != d
   }
 
+  // A commit in flight that the pulled revision does not answer is not
+  // built on it: the device seals a commit on a revision it knows, and the
+  // pulled revision is newer than every revision the row knows. So once the
+  // revision is the base, the commit is superseded (Superseded). #982
+  // proves it of the round, as PulledBy.
+  predicate NotBuiltOn(document: Document, r: Revision) {
+    InFlight(document) && !Acknowledges(document, r) ==> document.outbox.value.baseRev != Some(r.id)
+  }
+
   // The user's delete, or a bound file missing from the listing with no
   // unsaved text at its name (the round records it as the user's delete,
   // which G3_DeleteSeen allows: no file is at the name), against a live
-  // remote revision, with no commit in flight (#1023's): the file comes back
-  // (verified-core.md §4.2, SPEC.md §6.3).
+  // remote revision: the file comes back (verified-core.md §4.2, SPEC.md
+  // §6.3). A commit in flight stays as sealed (Revived, #1023).
   predicate Revives(platform: Platform, document: Document, r: Revision, input: RoundInput)
     requires ListingDistinct(platform, input.listing)
   {
-    !r.deleted && (document.outbox.None? || !document.outbox.value.sealed)
+    !r.deleted
     && ((document.binding.None? && document.absence == UserDeleted)
         || (document.binding.Some?
             && ListedRead(platform, input.listing, document.binding.value.spelling).None?
@@ -451,9 +473,10 @@ abstract module ApplyCore refines StepContracts {
 
   // The revived row: the user's delete loses to the remote edit, so its
   // binding and its unsent delete are dropped, and the document is one with
-  // no file here.
+  // no file here. A commit in flight stays as sealed until its answer (§3.2,
+  // #1023): the apply calls this only for a revision that does not answer it.
   function Revived(document: Document): Document {
-    document.(binding := None, absence := Never, outbox := None)
+    document.(binding := None, absence := Never, outbox := if InFlight(document) then document.outbox else None)
   }
 
   // A document with no file here: created where no file collides, adopting
@@ -504,8 +527,10 @@ abstract module ApplyCore refines StepContracts {
       Applied(IdenticalRow(document, r), [])
     else if Acknowledges(document, r) then
       // The outbox's own revision (verified-core.md §4.1): its
-      // acknowledgement, taken as §3.5's "accepted". Nothing on disk changes.
-      Applied(Accept(document, r, rev), [])
+      // acknowledgement, taken as §3.5's "accepted" on the revision, which
+      // is newer than what the row knows (AcceptOn; Accept where the base
+      // is not past it, AcknowledgedIsAccept). Nothing on disk changes.
+      Applied(AcceptOn(document, BaseOf(r), rev), [])
     else if Revives(platform, document, r, input) then
       // The user's delete, or a bound file missing from the listing (the
       // user's delete, G3_DeleteSeen), against a live remote revision: an
@@ -539,14 +564,20 @@ abstract module ApplyCore refines StepContracts {
                           binding := Some(document.binding.value.(seen := r.content))),
                 [Write(Some(doc), spelling, r.content, r.kind, Some(read.value.0))])
       else Hold(document, r, PathHeld)
-    else if JournalChange(document) || r.deleted then
-      // A user's delete against a commit in flight (#1023's) or a remote
-      // tombstone, or a tombstone of a document with no file here: recorded,
-      // nothing on disk.
-      if r.deleted && !JournalChange(document) then
+    else if r.deleted then
+      // A tombstone of a document with no file here, or against a commit in
+      // flight with no file here (a user's delete, or a live commit whose
+      // file is gone): recorded as the base, the commit in flight kept as
+      // sealed (#1023), nothing on disk. An unsent user's delete against a
+      // remote tombstone waits.
+      if !JournalChange(document) || InFlight(document) then
         Applied(document.(base := Some(BaseOf(r)), ahead := None), [])
       else Hold(document, r, LocalChanges)
-    else Create(platform, doc, document, r, input, bound, claims, rev)
+    else if JournalChange(document) && !InFlight(document) then Hold(document, r, LocalChanges)
+    else
+      // A document with no file here, a commit in flight kept as sealed
+      // (#1023).
+      Create(platform, doc, document, r, input, bound, claims, rev)
   }
 
   // What the revive leaves alone (#1056 review): a bound file missing from
@@ -562,14 +593,18 @@ abstract module ApplyCore refines StepContracts {
 
   // A commit in flight (a sealed outbox) against another device's live
   // revision, where the user deleted the file or it is missing from the
-  // listing, keeps its outbox exactly as sealed until its answer (§3.2;
-  // its settlement is #1023's): the revision waits.
-  lemma CommitInFlightNotRevived(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+  // listing with no unsaved text at its name: the file comes back as for
+  // any user's delete, and the outbox stays exactly as sealed until its
+  // answer (§3.2, #1023).
+  lemma CommitInFlightRevived(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     requires Newer(document, r) && !Acknowledges(document, r) && InFlight(document) && !r.deleted
     requires (document.binding.None? && document.absence == UserDeleted)
-             || (document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).None?)
-    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev) == Hold(document, r, LocalChanges)
+             || (document.binding.Some? && ListedRead(platform, input.listing, document.binding.value.spelling).None?
+                 && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling))
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev)
+            == Create(platform, doc, Revived(document), r, input, bound, claims, rev)
+    ensures ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document.outbox == document.outbox
   {}
 
   // The row the apply decides from: the revived row where the file comes
@@ -591,7 +626,8 @@ abstract module ApplyCore refines StepContracts {
             == Create(platform, doc, Revived(document), r, input, bound, claims, rev)
     ensures Newer(Revived(document), r) && !Acknowledges(Revived(document), r)
             && !Revives(platform, Revived(document), r, input)
-            && Revived(document).binding.None? && !JournalChange(Revived(document)) && !r.deleted
+            && Revived(document).binding.None? && !r.deleted
+            && (!JournalChange(Revived(document)) || InFlight(Revived(document)))
   {}
 
   // A bound file the listing does not read is not on the disk.
@@ -1081,7 +1117,8 @@ abstract module ApplyCore refines StepContracts {
 
   // A round step of device d whose effects are the apply of revision r, a
   // revision the server accepted from another device or, as its outbox's
-  // acknowledgement, from d itself (`PulledBy`), to document doc, with
+  // acknowledgement, from d itself (`PulledBy`), that no commit in flight
+  // is built on (`NotBuiltOn`), to document doc, with
   // the round's input read from the step's state before (RoundInputOf) on a
   // disk with one file per name, `bound` every name a document is bound to,
   // and the step's state after as the effects leave it. The claims only
@@ -1099,6 +1136,7 @@ abstract module ApplyCore refines StepContracts {
           device.journal.documents[other].binding.value.spelling in bound)
     && r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
     && r.doc == doc && PulledBy(device.journal.documents[doc], r, d)
+    && NotBuiltOn(device.journal.documents[doc], r)
     && var applied := ApplyRevision(device.platform, doc, device.journal.documents[doc], r, input, bound, claims, rev);
     step.effects == applied.effects && d in step.post.devices
     && EffectsTake(device.platform, device.disk, applied.effects, step.post.devices[d].disk)
@@ -1137,7 +1175,7 @@ abstract module ApplyCore refines StepContracts {
   // where the step keeps it (a merge of it is sent, or it is saved next to
   // the remote as an untracked copy). Only a tracked file is deleted, and
   // no file with unsaved text is written or deleted.
-  lemma AppliedG2(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+  lemma {:isolate_assertions} AppliedG2(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ApplyStep(step, doc, r, input, bound, claims, rev)
     ensures G2_OnlyWhatItSaw(step) && G2_UnsavedSafe(step) && G2_NoUntrackedDelete(step)
   {
@@ -1286,8 +1324,15 @@ abstract module ApplyCore refines StepContracts {
       }
       assert BoundFile(device, doc).None?;
       assert applied.document.base != document.base;
-      assert applied.document.outbox.None? && applied.document.binding == Some(Binding(r.path, r.content, false, None));
+      assert applied.document.binding == Some(Binding(r.path, r.content, false, None));
       assert after.journal.documents[doc] == applied.document;
+      if InFlight(document) {
+        // The commit in flight stays as sealed, superseded by the head.
+        assert applied.document.outbox == document.outbox;
+        assert Superseded(after.journal.documents[doc]);
+      } else {
+        assert applied.document.outbox.None?;
+      }
       if applied.effects == [] {
         assert after.disk == device.disk;
         assert r.path in device.disk && device.disk[r.path].content == r.content;
@@ -1307,7 +1352,9 @@ abstract module ApplyCore refines StepContracts {
       return;
     }
     if document.binding.None? {
-      assert !LocalChange(device, doc);
+      // No file here and no user's delete (that one revives, above): G6
+      // asks nothing of it, whether or not a commit is in flight.
+      assert BoundFile(device, doc).None? && (document.absence != UserDeleted || r.deleted);
       return;
     }
     var spelling := document.binding.value.spelling;
@@ -1318,6 +1365,11 @@ abstract module ApplyCore refines StepContracts {
       // Both sides hold the same content (G6_Settle's first case): it stays
       // in place, and nothing is saved next to it.
       assert applied.document == IdenticalRow(document, r) && applied.effects == [];
+      if InFlight(document) {
+        // A commit in flight stays as sealed, superseded by the revision.
+        assert applied.document.outbox == document.outbox;
+        assert Superseded(after.journal.documents[doc]);
+      }
       var q := var q :| Holds(platform, device.disk, q, spelling, read.value.0); q;
       assert after.disk == device.disk;
       FileAtIs(device, spelling, q);
@@ -1334,7 +1386,19 @@ abstract module ApplyCore refines StepContracts {
     if EditedAgainstDelete(document, read, r) && !Concurrent(document, read, r) {
       // An edit beats a delete: the document sends the file as read.
       assert applied.document == KeptAgainstDelete(document, read.value, r, rev);
-      assert Outgoing(after, doc) == Some(read.value.0);
+      if InFlight(document) {
+        // The commit in flight stays as sealed, superseded by the
+        // tombstone: the document keeps its file, untouched.
+        assert applied.document.outbox == document.outbox;
+        assert Superseded(after.journal.documents[doc]);
+        var q := var q :| Holds(platform, device.disk, q, spelling, read.value.0); q;
+        assert after.disk == device.disk;
+        FileAtIs(after, spelling, q);
+        assert BoundFile(after, doc) == Some(after.disk[q]);
+        assert Outgoing(after, doc).Some?;
+      } else {
+        assert Outgoing(after, doc) == Some(read.value.0);
+      }
       return;
     }
     if !Concurrent(document, read, r) {
@@ -1360,8 +1424,14 @@ abstract module ApplyCore refines StepContracts {
     }
     var b := document.base.value.content;
     var settledContent := applied.document.binding.value.seen;
+    if InFlight(document) {
+      // The commit in flight stays as sealed, and is superseded: the
+      // document keeps what its file now holds.
+      assert applied.document.outbox == document.outbox;
+      assert Superseded(after.journal.documents[doc]);
+    }
     assert Outgoing(after, doc) == Some(settledContent) by {
-      if applied.document.outbox.None? {
+      if applied.document.outbox.None? || InFlight(document) {
         if applied.effects == [] {
           assert after.disk == device.disk;
           FileAtIs(after, spelling, q);
@@ -1572,14 +1642,14 @@ abstract module ApplyCore refines StepContracts {
     ensures RowInv(ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document)
   {
     if Newer(document, r) && Acknowledges(document, r) {
-      AcceptRow(document, r, rev);
+      AcceptOnRow(document, BaseOf(r), rev);
     } else if Newer(document, r) && document.binding.Some? {
       var read := ListedRead(platform, input.listing, document.binding.value.spelling);
       if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && Concurrent(document, read, r) {
         SettleKeepsRowInv(platform, doc, document, read.value, r, input, bound, claims, rev);
       } else if !UnsavedAt(platform, input.unsaved, document.binding.value.spelling) && EditedAgainstDelete(document, read, r) {
         var kept := KeptAgainstDelete(document, read.value, r, rev);
-        assert kept.binding.Some? && kept.outbox.Some? && !kept.outbox.value.sealed;
+        assert kept.binding.Some? && kept.outbox.Some? && (InFlight(document) || !kept.outbox.value.sealed);
       }
     }
   }
@@ -1619,11 +1689,19 @@ abstract module ApplyCore refines StepContracts {
     requires Newer(document, r) && Acknowledges(document, r)
     ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
       && applied.document == (if SettlesIdentical(platform, document, r, input) then IdenticalRow(document, r)
-                              else Accept(document, r, rev))
+                              else AcceptOn(document, BaseOf(r), rev))
       && applied.effects == []
       && applied.document.base == Some(BaseOf(r)) && applied.document.ahead.None?
   {
   }
+
+  // The apply's acknowledgement is §3.5's accept wherever the base is not
+  // past the revision (always, once a row's waiting revision is newer than
+  // its base).
+  lemma AcknowledgedIsAccept(document: Document, r: Revision, rev: RevId)
+    requires document.base.None? || document.base.value.position <= r.position
+    ensures AcceptOn(document, BaseOf(r), rev) == Accept(document, r, rev)
+  {}
 
   // A revision identical to the file is no conflict (verified-core.md
   // §4.1, ApplySettlesContract's last clause, #1028): a newer live revision
@@ -1706,6 +1784,77 @@ abstract module ApplyCore refines StepContracts {
       && applied.document.outbox.value.baseRev == Some(r.id)
       && applied.document.outbox.value.path == document.binding.value.spelling
       && applied.document.outbox.value.content == read.0 && applied.document.outbox.value.kind == read.1
+  {
+    AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, rev);
+  }
+
+  // A commit in flight against another device's newer live revision at the
+  // base's name (verified-core.md §3.9, #1006, #1023): settled like any
+  // concurrent change, from the content the round read. A revision
+  // identical to the file is no conflict; otherwise a side that left the
+  // content as it was takes the other's, two changed notes the merge
+  // combines are merged, and else the remote is written over the file with
+  // the content read saved as an untracked copy. The revision becomes the
+  // base, `seen` is what the file now holds, and the sealed outbox stays
+  // exactly as it was sealed (superseded, so the document keeps its file's
+  // content). It waits only where no copy name fits (NoCopy: the device
+  // cannot hold the copy's name).
+  lemma CommitInFlightSettles(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(document, r) && InFlight(document) && !Acknowledges(document, r)
+    requires document.binding.Some? && !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+    requires ListedRead(platform, input.listing, document.binding.value.spelling).Some?
+    requires document.absence != UserDeleted && document.base.Some? && !document.base.value.deleted
+    requires !r.deleted && r.path == document.base.value.path && r.id != document.base.value.rev
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      var read := ListedRead(platform, input.listing, document.binding.value.spelling).value;
+      var b := document.base.value.content;
+      var l := read.0;
+      && RowInv(applied.document)
+      && applied.document.outbox == document.outbox
+      && (applied.document.ahead.Some? ==>
+            applied.document.ahead.value.revision == r && applied.document.ahead.value.blocker == Unmaterializable(false))
+      && (applied.document.ahead.None? ==>
+            applied.document.base == Some(BaseOf(r))
+            && applied.document.binding.Some?
+            && applied.document.binding.value.spelling == document.binding.value.spelling
+            && applied.document.binding.value.seen ==
+                 (if document.binding.value.spelling == r.path && read == (r.content, r.kind) then r.content
+                  else if l == b && l == document.binding.value.seen then r.content
+                  else if r.content == b then l
+                  else if l != b && read.1 == Note && r.kind == Note && Merge3(b, l, r.content).Some? then
+                    Merge3(b, l, r.content).value
+                  else r.content))
+  {
+    AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, rev);
+  }
+
+  // A commit in flight that the pulled revision does not answer never makes
+  // it wait for that answer (#1023, ApplySettlesContract): against another
+  // device's newer revision the apply settles it, or hands a name it needs
+  // to the path rule (PathHeld), or waits because the device cannot hold
+  // it, and the sealed outbox stays as sealed. This covers a remote edit, a
+  // move or a delete of a bound file at its base's name, and the user's
+  // delete or a missing file against a live revision; what it leaves out
+  // (unsaved text, a local rename, a tombstone against a missing file) is
+  // no commit in flight's.
+  lemma CommitInFlightNeverWaitsForAnswer(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires Newer(document, r) && InFlight(document) && !Acknowledges(document, r)
+    requires document.binding.Some? ==>
+      var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+      !UnsavedAt(platform, input.unsaved, document.binding.value.spelling)
+      && (read.Some? ==> document.absence != UserDeleted && document.base.Some? && !document.base.value.deleted
+                         && document.binding.value.spelling == document.base.value.path
+                         && r.id != document.base.value.rev)
+      && (read.None? ==> !r.deleted)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      && RowInv(applied.document)
+      && applied.document.outbox == document.outbox
+      && (applied.document.ahead.None? ==> applied.document.base == Some(BaseOf(r)))
+      && (applied.document.ahead.Some? ==>
+            applied.document.ahead.value.revision == r
+            && (CannotHold(applied.document.ahead.value.blocker) || applied.document.ahead.value.blocker.PathHeld?))
   {
     AppliedKeepsRowInv(platform, doc, document, r, input, bound, claims, rev);
   }

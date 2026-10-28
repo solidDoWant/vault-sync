@@ -83,6 +83,11 @@ abstract module PathRuleCore refines ApplyCore {
     set q | q in listing && CollideF(platform, q, p) && own != Some(q)
   }
 
+  lemma InTheWayHas(platform: Platform, listing: Listing, p: Path, own: Option<Path>, x: Path)
+    requires x in listing && CollideF(platform, x, p) && own != Some(x)
+    ensures x in InTheWay(platform, listing, p, own)
+  {}
+
   // The document's own listed file, if any.
   function OwnFile(platform: Platform, document: Document, input: RoundInput): Option<Path>
     requires ListingDistinct(platform, input.listing)
@@ -301,7 +306,7 @@ abstract module PathRuleCore refines ApplyCore {
         binding := Some(Binding(r.path, r.content, false, None)), absence := Never);
     if read.None? then row
     else match MovedContent(document, read.value, r)
-      case None => row.(outbox := None)
+      case None => row.(outbox := KeptOutbox(document, r, None))
       case Some(settled) =>
         Settled(document.(binding := Some(document.binding.value.(spelling := r.path)), absence := Never), r, settled.0, rev)
   }
@@ -562,11 +567,13 @@ abstract module PathRuleCore refines ApplyCore {
   // ---------------------------------------------------------------------
 
   // The apply leaves a revision waiting for its name only for a document
-  // with no change the server lacks.
+  // with no change the server lacks, other than a commit in flight (which
+  // the rule keeps as sealed, #1023).
   lemma HeldHasNoChange(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     ensures HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r)
             ==> !JournalChange(document) || Revives(platform, document, r, input) || MoveRead(platform, document, r, input).Some?
+                || InFlight(document)
   {}
 
   lemma MovedAsideKeepsRowInv(document: Document, to: Path, rev: RevId)
@@ -882,7 +889,7 @@ abstract module PathRuleCore refines ApplyCore {
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
       && ruled.documents == documents[doc := if SettlesIdentical(platform, documents[doc], r, input)
                                              then IdenticalRow(documents[doc], r)
-                                             else Accept(documents[doc], r, revs[doc])]
+                                             else AcceptOn(documents[doc], BaseOf(r), revs[doc])]
       && ruled.effects == []
   {
     AcknowledgementSettles(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
@@ -896,7 +903,7 @@ abstract module PathRuleCore refines ApplyCore {
   // dropped. The revision waits only where the device cannot hold it
   // (CannotHold) or unsaved text collides with its name (a user must act).
   // The outbox's own revision is its acknowledgement instead
-  // (RuleAcknowledges), and a commit in flight is #1023's.
+  // (RuleAcknowledges), and a commit in flight stays as sealed (#1023).
   lemma RuleRevivesDeletedFile(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
@@ -907,7 +914,7 @@ abstract module PathRuleCore refines ApplyCore {
       && (after.ahead.None? ==>
             after.binding == Some(Binding(r.path, r.content, false, None))
             && after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
-            && after.outbox.None? && after.absence == Never)
+            && after.outbox == KeptOutbox(documents[doc], r, None) && after.absence == Never)
       && (after.ahead.Some? ==>
             after.ahead.value.revision == r
             && (CannotHold(after.ahead.value.blocker)
@@ -933,8 +940,8 @@ abstract module PathRuleCore refines ApplyCore {
   // the merge combines are merged, and the settled row (Settled) sends what
   // the file holds where it differs from the revision. Otherwise the file
   // read here stays as an untracked copy and the head is created at its
-  // name, with nothing to send. The revision waits only where the device
-  // cannot hold it (CannotHold) or unsaved text collides with its name (a
+  // name, with nothing to send (a commit in flight stays as sealed, #1023).
+  // The revision waits only where the device cannot hold it (CannotHold) or unsaved text collides with its name (a
   // user must act); where nothing is in the way it is settled.
   lemma RuleSettlesMoveAgainstChange(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires doc in documents && documents.Keys <= revs.Keys
@@ -953,7 +960,8 @@ abstract module PathRuleCore refines ApplyCore {
             && match MovedContent(document, read, r)
                case Some(settled) =>
                  after == Settled(document.(binding := Some(document.binding.value.(spelling := r.path)), absence := Never), r, settled.0, revs[doc])
-               case None => after.binding == Some(Binding(r.path, r.content, false, None)) && after.outbox.None?)
+               case None => after.binding == Some(Binding(r.path, r.content, false, None))
+                            && after.outbox == KeptOutbox(document, r, None))
       && (after.ahead.Some? ==>
             after.ahead.value.revision == r
             && (CannotHold(after.ahead.value.blocker)
@@ -988,6 +996,21 @@ abstract module PathRuleCore refines ApplyCore {
     }
   }
 
+  // A commit in flight that the pulled revision does not answer stays as it
+  // was sealed on the row after the rule too (ApplySettlesContract, #1061,
+  // #1023): the rule settles a revision the apply hands it (a remote move, a
+  // revived file, a held name) with the commit kept, and defers it with the
+  // row as it was.
+  lemma RuleKeepsCommitInFlight(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires InFlight(documents[doc]) && !Acknowledges(documents[doc], r)
+    ensures PathRule(platform, documents, doc, r, input, revs).documents[doc].outbox == documents[doc].outbox
+  {
+    reveal HeadRow();
+    AppliedKeepsCommitInFlight(platform, doc, documents[doc], r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+  }
+
   // Where the apply leaves nothing waiting for a name, the rule's step is the
   // pull apply's step (§3.9's `ApplyStep`, with every binding's name and
   // every row's claims), so the apply's guarantees hold for it: G2's step
@@ -1001,6 +1024,7 @@ abstract module PathRuleCore refines ApplyCore {
       && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[step.event.device].disk)
     requires r.id in step.pre.server.accepted && step.pre.server.accepted[r.id] == r
     requires r.doc == doc && PulledBy(step.pre.devices[step.event.device].journal.documents[doc], r, step.event.device)
+    requires NotBuiltOn(step.pre.devices[step.event.device].journal.documents[doc], r)
     requires var device := step.pre.devices[step.event.device];
       var documents := device.journal.documents;
       !HeldForName(documents[doc], ApplyRevision(device.platform, doc, documents[doc], r, input, BoundNames(documents),
@@ -1593,7 +1617,7 @@ abstract module PathRuleCore refines ApplyCore {
   // arrival leave: each copy holding the file it moved, the head at its
   // name with its content, every file not in the way and not the
   // document's own as it was, and nothing else.
-  lemma ClearWayDisk(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+  lemma {:isolate_assertions} ClearWayDisk(device: Device, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
                      own: Option<Path>, moves: seq<(Path, Path, Hash)>, disk': map<Path, DiskFile>)
     requires doc in documents && input.listing == ListingOf(device)
     requires OneFilePerName(device.platform, device.disk) && ListingDistinct(device.platform, input.listing)
@@ -1652,7 +1676,10 @@ abstract module PathRuleCore refines ApplyCore {
     forall x | x in mid && Some(x) != own ensures !CollideF(platform, x, r.path) {
       if !(exists i | 0 <= i < |moves| :: x == moves[i].1) {
         assert x in disk && forall i | 0 <= i < |moves| :: x != moves[i].0;
-        if CollideF(platform, x, r.path) { assert x in way; }
+        if CollideF(platform, x, r.path) {
+          assert x in listing;
+          InTheWayHas(platform, listing, r.path, own, x);
+        }
       }
     }
     ArriveTakes(platform, doc, arow, ar, own, mid, disk');

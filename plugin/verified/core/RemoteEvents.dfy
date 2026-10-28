@@ -112,6 +112,9 @@ abstract module RemoteCore {
   // document as the device last saw it (its file's name and content, or the
   // user's delete), to be sent again. `rejected` marks a commit the server
   // refused as invalid (SPEC.md §6.2); a later local change clears it (Send).
+  // It is sent on the row's base: when a round made another device's
+  // revision the base while the commit was in flight (verified-core.md
+  // §3.9), its parent is that revision, not the refused commit's (#1006).
   function Reopen(document: Document, rejected: bool): Document
     requires InFlight(document)
   {
@@ -121,27 +124,45 @@ abstract module RemoteCore {
         o.(path := document.binding.value.spelling, content := document.binding.value.seen, deleted := false)
       else if document.absence == UserDeleted then o.(deleted := true)
       else o;
-    document.(outbox := Some(o'.(sealed := false, rejected := rejected)))
+    var parent := if document.base.Some? then Some(document.base.value.rev) else o.baseRev;
+    document.(outbox := Some(o'.(baseRev := parent, sealed := false, rejected := rejected)))
   }
 
-  // The outbox after an accept of revision r: none if r carries the document
-  // as the device last saw it, otherwise a new one, on top of r, with the
-  // change made after the commit was sealed.
-  function AfterAccept(document: Document, r: Revision, nextRev: RevId): Option<Outbox> {
+  // The base an accept of revision r leaves: r, unless the base is already
+  // newer (#1010). That happens only when a round applied another device's
+  // revision built on the commit while it was in flight (verified-core.md
+  // §3.9): the document's history is a line, so that revision descends from
+  // r, and moving the base back would make the device send what it already
+  // has on a parent the server no longer accepts.
+  function AcceptedBase(document: Document, r: Revision): Base {
+    if document.base.Some? && r.position < document.base.value.position then document.base.value
+    else Base(r.id, r.position, r.path, r.content, r.kind, r.deleted)
+  }
+
+  // The outbox after an accept that leaves base `base`: none if the base
+  // carries the document as the device last saw it, otherwise a new one, on
+  // top of the base, with the change made after the commit was sealed.
+  function AfterAccept(document: Document, base: Base, nextRev: RevId): Option<Outbox> {
     if document.binding.Some? then
       var b := document.binding.value;
-      if b.seen == r.content && b.spelling == r.path && !r.deleted then None
-      else Some(Outbox(nextRev, Some(r.id), b.spelling, b.seen, r.kind, false, false, false))
-    else if document.absence == UserDeleted && !r.deleted then
-      Some(Outbox(nextRev, Some(r.id), r.path, r.content, r.kind, true, false, false))
+      if b.seen == base.content && b.spelling == base.path && !base.deleted then None
+      else Some(Outbox(nextRev, Some(base.rev), b.spelling, b.seen, base.kind, false, false, false))
+    else if document.absence == UserDeleted && !base.deleted then
+      Some(Outbox(nextRev, Some(base.rev), base.path, base.content, base.kind, true, false, false))
     else None
   }
 
-  function Accept(document: Document, r: Revision, nextRev: RevId): Document {
-    document.(base := Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted)),
-              ahead := if document.ahead.Some? && document.ahead.value.revision.position <= r.position
+  // The row after an accept that leaves base `base`: what waits no newer
+  // than the base is dropped, and the outbox is AfterAccept's.
+  function AcceptOn(document: Document, base: Base, nextRev: RevId): Document {
+    document.(base := Some(base),
+              ahead := if document.ahead.Some? && document.ahead.value.revision.position <= base.position
                        then None else document.ahead,
-              outbox := AfterAccept(document, r, nextRev))
+              outbox := AfterAccept(document, base, nextRev))
+  }
+
+  function Accept(document: Document, r: Revision, nextRev: RevId): Document {
+    AcceptOn(document, AcceptedBase(document, r), nextRev)
   }
 
   // One document's row after a push result. `nextRev` is the revision id the
@@ -487,42 +508,101 @@ abstract module RemoteCore {
     assert EffectsTake(before.platform, disk, step.effects, disk);
   }
 
+  // The base an accept leaves is the accepted revision, unless a round
+  // already made a newer revision the base (#1010): then that base stays.
+  lemma AcceptedBaseIs(document: Document, r: Revision)
+    ensures document.base.Some? && r.position < document.base.value.position
+            ==> AcceptedBase(document, r) == document.base.value
+    ensures !(document.base.Some? && r.position < document.base.value.position)
+            ==> AcceptedBase(document, r) == Base(r.id, r.position, r.path, r.content, r.kind, r.deleted)
+  {}
+
   // A user's delete made after a live commit was sealed survives its
-  // accept: the device opens a tombstone outbox on top of the accepted
-  // revision (#974 item 4). If the sealed commit was itself the tombstone,
-  // the server has the delete as the document's base.
+  // accept: the device opens a tombstone outbox on top of the base the
+  // accept leaves (#974 item 4): the accepted revision, or a newer base a
+  // round moved past the commit (#1010). If that base is a tombstone, the
+  // server has the delete as the document's base.
   lemma AcceptKeepsUserDelete(doc: DocId, document: Document, r: Revision, nextRev: RevId)
     requires document.binding.None? && document.absence == UserDeleted
     requires InFlight(document) && r.id == document.outbox.value.rev
     ensures var after := PushedDoc(doc, document, Accepted(doc, r), nextRev);
-      after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
-      && (!r.deleted ==>
+      var base := AcceptedBase(document, r);
+      after.base == Some(base)
+      && (!base.deleted ==>
             after.outbox.Some? && after.outbox.value.deleted && !after.outbox.value.sealed
-            && after.outbox.value.baseRev == Some(r.id))
-      && (r.deleted ==> after.base.value.deleted)
-  {}
+            && after.outbox.value.baseRev == Some(base.rev))
+      && (base.deleted ==> after.base.value.deleted && after.outbox.None?)
+  {
+    AcceptedBaseIs(document, r);
+  }
 
   // The bound-document counterpart: an edit or a rename made after a commit
   // was sealed survives its accept, in a new unsealed outbox on top of the
-  // accepted revision that carries the file as the device last saw it. The
-  // row invariant forces it (AheadOfBase: the accepted revision, now the
-  // base, differs from the file), so every transition must keep it (#984).
+  // base the accept leaves (the accepted revision, or a newer base a round
+  // moved past the commit, #1010) that carries the file as the device last
+  // saw it. The row invariant forces it (AheadOfBase: that base differs
+  // from the file), so every transition must keep it (#984).
   lemma AcceptKeepsLaterChange(doc: DocId, document: Document, r: Revision, nextRev: RevId)
     requires document.binding.Some? && InFlight(document) && r.id == document.outbox.value.rev
-    requires var b := document.binding.value; b.spelling != r.path || b.seen != r.content || r.deleted
+    requires var b := document.binding.value; var base := AcceptedBase(document, r);
+      b.spelling != base.path || b.seen != base.content || base.deleted
     ensures var after := PushedDoc(doc, document, Accepted(doc, r), nextRev);
-      after.base == Some(Base(r.id, r.position, r.path, r.content, r.kind, r.deleted))
+      var base := AcceptedBase(document, r);
+      after.base == Some(base)
       && after.binding == document.binding
-      && after.outbox.Some? && !after.outbox.value.sealed && after.outbox.value.baseRev == Some(r.id)
+      && after.outbox.Some? && !after.outbox.value.sealed && after.outbox.value.baseRev == Some(base.rev)
       && after.outbox.value.path == document.binding.value.spelling
       && after.outbox.value.content == document.binding.value.seen
       && !after.outbox.value.deleted
   {
+    AcceptedBaseIs(document, r);
     AcceptRow(document, r, nextRev);
   }
 
+  // #1010's witness: a round applied another device's revision R, built on
+  // the commit in flight (R's position is past the commit's), merged it
+  // into the file and made it the base under the sealed outbox (§3.9). The
+  // commit's "accepted" answer then keeps R as the base (it does not move
+  // it back to the commit) and drops what waits no newer than R. The sealed
+  // outbox goes where the file holds R at R's name; otherwise a new outbox
+  // on top of R sends the file as the device last saw it.
+  lemma AcceptAfterRoundKeepsNewerBase(doc: DocId, document: Document, r: Revision, nextRev: RevId)
+    requires InFlight(document) && r.id == document.outbox.value.rev
+    requires document.base.Some? && r.position < document.base.value.position
+    requires document.binding.Some?
+    ensures var after := PushedDoc(doc, document, Accepted(doc, r), nextRev);
+      var b := document.binding.value;
+      var base := document.base.value;
+      after.base == document.base
+      && after.binding == document.binding
+      && (after.ahead.Some? ==> base.position < after.ahead.value.revision.position)
+      && (b.spelling == base.path && b.seen == base.content && !base.deleted ==> after.outbox.None?)
+      && (!(b.spelling == base.path && b.seen == base.content && !base.deleted) ==>
+            after.outbox == Some(Outbox(nextRev, Some(base.rev), b.spelling, b.seen, base.kind, false, false, false)))
+      && RowInv(after)
+  {
+    AcceptedBaseIs(document, r);
+    AcceptRow(document, r, nextRev);
+  }
+
+  // #1006's obligation on the other answers: a commit in flight that did
+  // not land is reopened on the row's base, so its result is sent on the
+  // revision a round made the base while it was in flight, not refused
+  // again on the old parent.
+  lemma ReopenOnBase(document: Document, rejected: bool)
+    requires InFlight(document) && document.base.Some?
+    ensures Reopen(document, rejected).outbox.value.baseRev == Some(document.base.value.rev)
+    ensures !Reopen(document, rejected).outbox.value.sealed
+  {}
+
   lemma AcceptRow(document: Document, r: Revision, nextRev: RevId)
     ensures RowInv(Accept(document, r, nextRev))
+  {
+    AcceptOnRow(document, AcceptedBase(document, r), nextRev);
+  }
+
+  lemma AcceptOnRow(document: Document, base: Base, nextRev: RevId)
+    ensures RowInv(AcceptOn(document, base, nextRev))
   {}
 
   lemma SameBound(before: Device, after: Device, doc: DocId)
