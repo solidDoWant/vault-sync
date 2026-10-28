@@ -46,7 +46,9 @@ abstract module Guarantees refines EngineModel {
   // file at `p` or freed it (under F), so the state before the step
   // decides, as for any other step. `Freed`: the last such effect removed
   // the file or moved it away. `By(j)`: effect `j` wrote or moved a file
-  // there last.
+  // there last. These readings apply to a sync round and to a crash that
+  // cut one short (RoundEvent), over the effects the step lists: for a
+  // crash, the prefix of the round's effects the shell performed.
   datatype Put = Untouched | Freed | By(index: nat)
 
   ghost function RoundPut(platform: Platform, effects: seq<Effect>, p: Path): (put: Put)
@@ -66,7 +68,7 @@ abstract module Guarantees refines EngineModel {
   // The round's last put at `p` left a file of no document there: a
   // conflict copy, or a file it let go (W(b)).
   ghost predicate RoundLeftUntracked(step: Step, p: Path) {
-    step.event.SyncRound? && step.event.device in step.pre.devices
+    RoundEvent(step.event) && step.event.device in step.pre.devices
     && var put := RoundPut(step.pre.devices[step.event.device].platform, step.effects, p);
     put.By? && PutsUntracked(step.effects[put.index])
   }
@@ -81,7 +83,7 @@ abstract module Guarantees refines EngineModel {
   }
 
   ghost predicate RoundLetGo(step: Step, before: Device, p: Path) {
-    step.event.SyncRound? && step.event.device in step.pre.devices && step.event.device in step.post.devices
+    RoundEvent(step.event) && step.event.device in step.pre.devices && step.event.device in step.post.devices
     && HasFile(before, p)
     && RoundPut(before.platform, step.effects, p).Untouched?
     && forall y :: BoundTo(before, y, p) ==> !BoundTo(step.post.devices[step.event.device], y, p)
@@ -182,7 +184,7 @@ abstract module Guarantees refines EngineModel {
             && !exists d :: d in step.pre.devices && OnDisk(step.pre.devices[d], step.pre.server.accepted[rev].content))
         || (step.event.Restore? && !InHistory(step.post.server, rev))
         || (step.event.User? && step.post.server == step.pre.server)
-        || (rev in step.pre.server.lost && step.event.SyncRound?
+        || (rev in step.pre.server.lost && RoundEvent(step.event)
             && exists doc :: ReadKept(step, doc, step.pre.server.accepted[rev].content))
   }
 
@@ -244,7 +246,7 @@ abstract module Guarantees refines EngineModel {
     requires i <= |step.effects|
     decreases i
   {
-    step.event.SyncRound? && step.event.device in step.pre.devices
+    RoundEvent(step.event) && step.event.device in step.pre.devices
     && var device := step.pre.devices[step.event.device];
     match RoundPut(device.platform, step.effects[..i], p)
     case Untouched => (BoundTo(device, doc, p) && LastSaw(step, device, doc, p, content)) || DocVersion(step, doc, content)
@@ -282,7 +284,7 @@ abstract module Guarantees refines EngineModel {
   // Settling a remote delete keeps the read content
   // only by the first two: an edit beats a delete with the edit itself.
   ghost predicate ReadKept(step: Step, doc: DocId, content: Hash)
-    requires step.event.SyncRound?
+    requires RoundEvent(step.event)
   {
     var d := step.event.device;
     d in step.post.devices
@@ -345,7 +347,7 @@ abstract module Guarantees refines EngineModel {
   ghost predicate RoundTracked(step: Step, i: nat, doc: DocId, p: Path, content: Hash)
     requires i <= |step.effects|
   {
-    step.event.SyncRound? && step.event.device in step.pre.devices
+    RoundEvent(step.event) && step.event.device in step.pre.devices
     && (DocVersion(step, doc, content)
         || exists j :: 0 <= j < i && PutsTracked(step.pre.devices[step.event.device].platform, step.effects[j], p))
   }
@@ -669,7 +671,7 @@ abstract module Guarantees refines EngineModel {
   // document then had no file when the round adopted one for it, as if
   // the drop and the adoption were two steps.
   ghost predicate RoundDroppedOwn(step: Step, doc: DocId) {
-    step.event.SyncRound? && step.event.device in step.pre.devices
+    RoundEvent(step.event) && step.event.device in step.pre.devices
     && ((exists k :: 0 <= k < |step.effects| && RoundDrops(step, k, doc))
         || (BoundFile(step.pre.devices[step.event.device], doc).Some?
             && RoundLetGo(step, step.pre.devices[step.event.device],
@@ -677,7 +679,7 @@ abstract module Guarantees refines EngineModel {
   }
 
   ghost predicate RoundDrops(step: Step, k: nat, doc: DocId)
-    requires step.event.SyncRound? && step.event.device in step.pre.devices && k < |step.effects|
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices && k < |step.effects|
   {
     (step.effects[k].Remove? && step.effects[k].doc == doc
      && RoundOwnName(step, k, doc, step.effects[k].path))
@@ -687,7 +689,7 @@ abstract module Guarantees refines EngineModel {
 
   // Before the round's effect `k`, `doc`'s file is at `p`.
   ghost predicate RoundOwnName(step: Step, k: nat, doc: DocId, p: Path)
-    requires step.event.SyncRound? && step.event.device in step.pre.devices && k <= |step.effects|
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices && k <= |step.effects|
   {
     var device := step.pre.devices[step.event.device];
     match RoundPut(device.platform, step.effects[..k], p)
@@ -859,7 +861,7 @@ abstract module Guarantees refines EngineModel {
   {
     G6_Settle(step, d, doc, remote)
     || exists rs: seq<Revision> :: |rs| > 0 && rs[|rs| - 1] == remote
-         && step.event.SyncRound? && step.event.device == d
+         && RoundEvent(step.event) && step.event.device == d
          && step.pre.devices[d].journal.documents[doc].binding.Some?
          && RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).Some?
          && RoundChain(step, d, doc, rs,
@@ -923,7 +925,7 @@ abstract module Guarantees refines EngineModel {
   // of the chain's contents. A chain of one revision is G6_Settle's
   // both-sides-live case.
   ghost predicate RoundChain(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>, c: Hash) {
-    step.event.SyncRound? && step.event.device == d
+    RoundEvent(step.event) && step.event.device == d
     && d in step.pre.devices && d in step.post.devices && |rs| > 0
     && doc in step.pre.devices[d].journal.documents
     && var document := step.pre.devices[d].journal.documents[doc];
@@ -974,7 +976,7 @@ abstract module Guarantees refines EngineModel {
         d.value in step.post.devices &&
         HasFile(step.post.devices[d.value], effect.to)
         && FileAt(step.post.devices[d.value], effect.to).content == effect.expected)
-    || (step.event.SyncRound? && RoundMovesKeepContents(step))
+    || (RoundEvent(step.event) && RoundMovesKeepContents(step))
   }
 
   // In a sync round (#1094), a move whose precondition held on the disk
@@ -983,7 +985,7 @@ abstract module Guarantees refines EngineModel {
   // its content, unless a later effect of the round acts on it there
   // conditional on exactly that content (RoundMovesOn).
   ghost predicate RoundMovesKeepContents(step: Step) {
-    step.event.SyncRound? &&
+    RoundEvent(step.event) &&
       var d := step.event.device;
       d in step.pre.devices && d in step.post.devices &&
       var platform := step.pre.devices[d].platform;
@@ -1002,7 +1004,7 @@ abstract module Guarantees refines EngineModel {
   ghost predicate RoundMovesOn(step: Step, i: nat)
     requires i < |step.effects| && step.effects[i].Move?
   {
-    step.event.SyncRound? && step.event.device in step.pre.devices
+    RoundEvent(step.event) && step.event.device in step.pre.devices
     && var platform := step.pre.devices[step.event.device].platform;
     var moved := step.effects[i];
     exists j :: i < j < |step.effects| &&

@@ -96,7 +96,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   }
 
   // So do effects acting in order: the first one that changes p matched the
-  // content p had before all of them.
+  // content p had before all of them. Any effect sequence, so any prefix of
+  // a round's effects (a crash cut, #1098).
   lemma EffectsChangeOnlyMatched(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>, p: Path)
     requires EffectsTake(platform, disk, effects, disk')
     requires p in disk && (p !in disk' || disk'[p] != disk[p])
@@ -1366,7 +1367,9 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   // ---------------------------------------------------------------------
 
   // A move that took effect on `mid` puts its content at `to`; the effects
-  // after it keep it there unless one of them matched it there.
+  // after it keep it there unless one of them matched it there. It holds of
+  // any effect sequence, so of any prefix of a round's effects too (a crash
+  // that cut the round short, #1098).
   lemma MoveArrivesOrMovesOn(platform: Platform, effects: seq<Effect>, disk': map<Path, DiskFile>, i: int,
                              mid: map<Path, DiskFile>, q: Path)
     requires 0 <= i < |effects| && effects[i].Move?
@@ -2113,7 +2116,9 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   // ---------------------------------------------------------------------
 
   // A file at a name no effect touches (under F) stays as it was, the same
-  // file, and no file arrives there.
+  // file, and no file arrives there. With EffectsUntouchedKeepFile, this
+  // holds of any effect sequence, so of any prefix of a round's effects (a
+  // crash cut, #1098).
   lemma EffectUntouchedKeepsFile(platform: Platform, disk: map<Path, DiskFile>, effect: Effect, disk': map<Path, DiskFile>, s: Path, x: Path)
     requires EffectTakes(platform, disk, effect, disk')
     requires !Touches(platform, effect, s) && SameF(platform, x, s)

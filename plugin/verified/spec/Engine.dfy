@@ -364,10 +364,20 @@ abstract module EngineModel {
     && (forall i :: 0 <= i < |input.freshDocs| ==> !DocIdUsed(state, input.freshDocs[i]))
   }
 
+  // A sync round, or a crash that cut one short (#1094): a step whose
+  // effects are a sync round's, all of them or the prefix the shell
+  // performed before the crash (CrashCutsShort). The guarantees' readings
+  // of a round's own earlier effects apply to both, over the effects the
+  // step lists.
+  ghost predicate RoundEvent(event: Event) {
+    event.SyncRound? || (event.Crash? && event.cut.Some? && event.cut.value.event.SyncRound?)
+  }
+
   // What a sync round read at `path` (under the device's F): the content of
-  // the file there in the round's listing. It is ReadAt of the state before.
+  // the file there in the round's listing. It is ReadAt of the state before
+  // (for a crash that cut a round short, the state before that round).
   ghost function RoundRead(step: Step, path: Path): Option<(Hash, Kind)>
-    requires step.event.SyncRound? && step.event.device in step.pre.devices
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices
   {
     ReadAt(step.pre.devices[step.event.device], path)
   }
