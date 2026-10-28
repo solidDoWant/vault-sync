@@ -588,18 +588,18 @@ abstract module RecoveryCore refines PathRuleCore {
     r := Revision(o.rev, doc, |pre.server.feed|, o.baseRev, o.path, o.content, o.kind, o.deleted, d);
   }
 
-  // The recovered crash post-state is the state `S` the cut step leaves
-  // (or the base, if the crash came before its journal write) with the
-  // device stopped and the stopped devices' intents dropped.
-  lemma RecoveredIsStopped(step: Step, S: State)
+  // The recovered crash post-state is the state the cut step leaves from
+  // `base` with journal `jS` (`base` itself, if the crash came before the
+  // step's journal write), with the device stopped and the stopped
+  // devices' intents dropped.
+  lemma {:isolate_assertions} RecoveredIsStopped(step: Step, base: State, jS: Journal)
     requires CrashHypotheses(step) && step.event.device in step.pre.devices
-    requires S.server == step.post.server && S.devices.Keys == step.pre.devices.Keys
-    requires forall x :: x in step.pre.devices && x != step.event.device ==> S.devices[x] == step.pre.devices[x]
-    requires var d := step.event.device;
-      S.devices[d] == step.pre.devices[d].(journal := step.post.devices[d].journal.(intents := S.devices[d].journal.intents),
-                                           disk := step.post.devices[d].disk)
-    ensures StoppedFrom(S, Recovered(step.post))
+    requires base == step.pre.(server := step.post.server)
+    requires step.post.devices[step.event.device].journal.(intents := jS.intents) == jS
+    requires step.post.devices[step.event.device].disk == step.pre.devices[step.event.device].disk
+    ensures StoppedFrom(After(base, step.event.device, jS), Recovered(step.post))
   {
+    var S := After(base, step.event.device, jS);
     var R := Recovered(step.post);
     forall x | x in S.devices
       ensures if R.devices[x].running then R.devices[x] == S.devices[x]
@@ -626,38 +626,38 @@ abstract module RecoveryCore refines PathRuleCore {
     var device := pre.devices[d];
     var base := CrashBase(step);
     assert EffectsTake(device.platform, device.disk, step.effects, post.devices[d].disk);
-    var S: State;
+    var jS: Journal;
     if |step.effects| == 0 {
       assert post.devices[d].journal == device.journal;
       assert post.devices[d].disk == device.disk;
-      S := base;
+      jS := device.journal;
+      assert After(base, d, jS) == base;
     } else {
       var j' := CoveredCutEffects(step, base);
       assert step.effects == [PersistJournal(j')];
       assert post.devices[d].journal == j';
       var mid :| EffectTakes(device.platform, device.disk, step.effects[0], mid) && EffectsTake(device.platform, mid, step.effects[1..], post.devices[d].disk);
       assert post.devices[d].disk == device.disk;
-      S := After(base, d, j');
+      jS := j';
       match step.event.cut.value.event
       case Local(_, local) =>
-        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && LocalStep(base, d, local, revs).post == S;
+        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && LocalStep(base, d, local, revs).post == After(base, d, jS);
         assert ClaimsCore(LocalStep(base, d, local, revs).post);
       case Scan(_, _) =>
-        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && ScanStep(base, d, revs).post == S;
+        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && ScanStep(base, d, revs).post == After(base, d, jS);
         assert ClaimsCore(ScanStep(base, d, revs).post);
       case Pushed(_, result) =>
-        var nextRev: RevId :| RefusedStep(base, d, result, nextRev).post == S;
+        var nextRev: RevId :| RefusedStep(base, d, result, nextRev).post == After(base, d, jS);
         assert ClaimsCore(RefusedStep(base, d, result, nextRev).post);
       case Restart(_) =>
-        S := base;
+        jS := device.journal;
+        assert After(base, d, jS) == base;
       case Resync(_) =>
         assert base == pre;
     }
-    assert ClaimsCore(S);
-    assert S.devices[d] == device.(journal := post.devices[d].journal.(intents := S.devices[d].journal.intents),
-                                   disk := post.devices[d].disk);
-    RecoveredIsStopped(step, S);
-    StoppedKeepsClaims(S, Recovered(post));
+    assert ClaimsCore(After(base, d, jS));
+    RecoveredIsStopped(step, base, jS);
+    StoppedKeepsClaims(After(base, d, jS), Recovered(post));
   }
 
   // A crash that leaves the journal's rows as they were keeps the step
