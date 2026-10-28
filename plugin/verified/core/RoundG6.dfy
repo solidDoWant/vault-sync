@@ -3939,4 +3939,125 @@ abstract module RoundG6 refines RoundGuarantees {
         assert x in disk';
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G2 of the round: from the pass's facts to RoundSaw
+  // ---------------------------------------------------------------------
+
+  // What a conditional effect for `e` expecting `c` needs at the start of
+  // its chain of puts: the content is what `e` saw before the round, is
+  // kept, or is a live revision of `e` the server accepted.
+  ghost predicate KeptBase(step: Step, e: DocId, c: Hash)
+    requires RoundEvent(step.event)
+  {
+    var device := step.pre.devices[step.event.device];
+    (e in device.journal.documents && device.journal.documents[e].binding.Some?
+     && c == device.journal.documents[e].binding.value.seen)
+    || ReadKept(step, e, c) || DocVersion(step, e, c)
+  }
+
+  // A file the round wrote for `e` holding `c` is kept, or holds a live
+  // revision of `e`.
+  ghost predicate KeptWrites(step: Step, i: nat, e: DocId, c: Hash)
+    requires RoundEvent(step.event) && i <= |step.effects|
+  {
+    forall j | 0 <= j < i ::
+      (step.effects[j].Write? && step.effects[j].target == Some(e) && step.effects[j].content == c)
+        ==> ReadKept(step, e, c) || DocVersion(step, e, c)
+  }
+
+  // Two files on a disk with one file per name, both the same as `p`
+  // under F, are one.
+  lemma OneAt(platform: Platform, disk: map<Path, DiskFile>, x: Path, y: Path, p: Path)
+    requires OneFilePerName(platform, disk) && x in disk && y in disk
+    requires SameF(platform, x, p) && SameF(platform, y, p)
+    ensures x == y
+  {
+    if x != y {
+      SameFIsEquivalence(platform, x, p, y);
+      assert SameF(platform, x, y);
+      assert CollideF(platform, x, y);
+    }
+  }
+
+  // Every conditional effect of a round whose effects are all performed,
+  // with the pass's history (PassHist), saw what it expects (RoundSaw),
+  // given its chain's start and writes are kept.
+  lemma {:isolate_assertions} CondSaw(step: Step, accepted: map<RevId, Revision>, i: nat)
+    requires step.event.SyncRound? && step.event.device in step.pre.devices && step.event.device in step.post.devices
+    requires var device0 := step.pre.devices[step.event.device];
+      OneFilePerName(device0.platform, device0.disk)
+      && EffectsTake(device0.platform, device0.disk, step.effects, step.post.devices[step.event.device].disk)
+      && Performed(device0.platform, device0.disk, step.effects)
+      && PassHist(device0.platform, device0, accepted, step.effects)
+    requires forall rev | rev in accepted :: rev in step.post.server.accepted && step.post.server.accepted[rev] == accepted[rev]
+    requires i < |step.effects| && IsCond(step.effects[i])
+    requires KeptBase(step, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
+    requires KeptWrites(step, i, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
+    ensures RoundSaw(step, i, CondDoc(step.effects[i]), CondPath(step.effects[i]), CondExpect(step.effects[i]))
+    decreases i
+  {
+    var d := step.event.device;
+    var device0 := step.pre.devices[d];
+    var platform := device0.platform;
+    var disk0 := device0.disk;
+    var effects := step.effects;
+    var effect := effects[i];
+    var e := CondDoc(effect);
+    var p := CondPath(effect);
+    var c := CondExpect(effect);
+    // The disk the effects before it leave, where its precondition holds.
+    assert effects == effects[..i] + effects[i..];
+    EffectsTakeSplit(platform, disk0, effects[..i], effects[i..], step.post.devices[d].disk);
+    var disk: map<Path, DiskFile> :| EffectsTake(platform, disk0, effects[..i], disk) && EffectsTake(platform, disk, effects[i..], step.post.devices[d].disk);
+    assert PreconditionHolds(platform, disk, effect);
+    var q: Path :| Holds(platform, disk, q, p, c);
+    forall k, d' | 0 <= k < |effects[..i]| && EffectsTake(platform, disk0, effects[..i][..k], d')
+      ensures PreconditionHolds(platform, d', effects[..i][k])
+    {
+      assert effects[..i][..k] == effects[..k] && effects[..i][k] == effects[k];
+    }
+    EffectsKeepOneFilePerName(platform, disk0, effects[..i], disk);
+    PutHolds(platform, disk0, effects[..i], disk, p);
+    assert CondAt(platform, device0, accepted, effects, i);
+    var accepts := AcceptedContent(accepted, e, c);
+    if accepts {
+      var rev :| rev in accepted && accepted[rev].doc == e && !accepted[rev].deleted && accepted[rev].content == c;
+      assert DocVersion(step, e, c);
+    }
+    assert effects[..i] == step.effects[..i];
+    match RoundPut(platform, effects[..i], p)
+    case Freed =>
+      assert false;
+    case By(j) =>
+      var x: Path :| x in disk && SameF(platform, x, p) && disk[x].content == PutContent(effects[..i][j]);
+      OneAt(platform, disk, x, q, p);
+      assert effects[..i][j] == effects[j];
+      if !accepts {
+        assert OwnNameIn(platform, device0, effects[..i], e, p);
+        if effects[j].Write? {
+          assert effects[j].target == Some(e) && effects[j].content == c;
+        } else {
+          assert effects[j].Move? && effects[j].mover == Some(e) && effects[j].expected == c;
+          assert IsCond(effects[j]) && CondDoc(effects[j]) == e && CondExpect(effects[j]) == c && CondPath(effects[j]) == effects[j].from;
+          CondSaw(step, accepted, j);
+        }
+      }
+    case Untouched =>
+      if !accepts {
+        assert OwnNameIn(platform, device0, effects[..i], e, p);
+        assert BoundTo(device0, e, p);
+        assert q in disk0 && disk0[q] == disk[q];
+        FileAtIs(device0, p, q);
+        assert RoundRead(step, p) == Some((c, disk0[q].kind));
+        if !DocVersion(step, e, c) {
+          var row := device0.journal.documents[e];
+          if c != row.binding.value.seen {
+            assert ReadKept(step, e, c);
+            assert RoundRead(step, p).Some? && RoundRead(step, p).value.0 == c;
+          }
+          assert LastSaw(step, device0, e, p, c);
+        }
+      }
+  }
 }
