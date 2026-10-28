@@ -7,10 +7,12 @@
 // 1. Re-anchor (ResyncRow). A base or ahead the server no longer holds is
 //    dropped. The base becomes the newest revision of the document the
 //    server holds that this device synced: its kept base, or a later
-//    revision of its own that is not its commit in flight (SPEC.md §8: the
-//    own-commit anchor), or the revision its outbox's commit is on, which it
-//    synced too (its parent, or the entry before a landed commit; #1080).
-//    With none, the row has no base. CoreInv then makes
+//    revision of its own (SPEC.md §8: the own-commit anchor), its landed
+//    commit included, or the parent a commit in flight is sealed on, which
+//    it synced too (#1080). With none, the row has no base. An unsent
+//    outbox whose id the server holds as the device's own landed commit
+//    (reopened after a lost answer) is sent again under a fresh id.
+//    CoreInv then makes
 //    the device send what it holds again: a bound file that differs from the
 //    new base gets an outbox, carrying the file. A user's delete of a
 //    document the server no longer has is dropped (SPEC.md §8, #829); one of
@@ -29,12 +31,12 @@ abstract module ResyncCore refines StepContracts {
   // Re-anchoring (compiled)
   // ---------------------------------------------------------------------
 
-  // A revision of `doc` the server holds that device `d` wrote and that is
-  // not the row's commit in flight (or its unsent outbox).
+  // A revision of `doc` the server holds that device `d` wrote, the row's
+  // landed commit included (#1080): the base may be the outbox's own
+  // revision, which the next round's acknowledgement settles (§4.1).
   predicate OwnSynced(server: Server, d: DeviceId, doc: DocId, document: Document, id: RevId) {
     doc in server.history && id in server.history[doc] && id in server.revisions
     && server.revisions[id].device == d
-    && (document.outbox.None? || document.outbox.value.rev != id)
   }
 
   // The id of the newest such revision in the document's history (the last
@@ -60,10 +62,11 @@ abstract module ResyncCore refines StepContracts {
   }
 
   // The base the resync leaves: the newest of the kept base, the own
-  // anchor, and the revision the row's outbox commit is on (#1080): its
-  // parent, and, where its id is a revision of the device's own the server
-  // holds, the entry before it in the document's history (the head it
-  // landed on). Each is a revision of the document the server holds.
+  // anchor (a landed commit the outbox carries included), and the parent a
+  // commit in flight is sealed on (#1080). Each is a revision of the
+  // document the server holds. Only the last can be another device's, and
+  // the commit made on it is kept as it was, so it settles nothing
+  // (CarriedOnParent).
   function ResyncBase(server: Server, d: DeviceId, doc: DocId, document: Document): Option<Base> {
     var kept := if document.base.Some? && document.base.value.rev in server.revisions then document.base else None;
     var own := OwnAnchor(server, d, doc, document);
@@ -71,7 +74,7 @@ abstract module ResyncCore refines StepContracts {
       if own.Some? && (kept.None? || kept.value.position < server.revisions[own.value].position)
       then Some(BaseOf(server.revisions[own.value]))
       else kept;
-    Raise(server, doc, Raise(server, doc, anchored, ParentOn(document)), LandedOn(server, d, doc, document))
+    Raise(server, doc, anchored, ParentOn(document))
   }
 
   // `base`, or revision `f` of `doc` where the server holds it and it is
@@ -89,55 +92,17 @@ abstract module ResyncCore refines StepContracts {
     else base
   }
 
+  // The parent a commit in flight is sealed on. An unsent outbox is
+  // re-parented on the base the resync leaves, so it raises nothing.
   function ParentOn(document: Document): Option<RevId> {
-    if document.outbox.Some? then document.outbox.value.baseRev else None
+    if document.outbox.Some? && document.outbox.value.sealed then document.outbox.value.baseRev else None
   }
 
-  // The entry just before the outbox's id in the document's history, where
-  // the id is a revision of the device's own of that document.
-  function LandedOn(server: Server, d: DeviceId, doc: DocId, document: Document): Option<RevId> {
-    if document.outbox.Some? && doc in server.history && document.outbox.value.rev in server.revisions
-       && server.revisions[document.outbox.value.rev].device == d
-       && server.revisions[document.outbox.value.rev].doc == doc
-    then EntryBefore(server.history[doc], document.outbox.value.rev)
-    else None
-  }
-
-  function EntryBefore(s: seq<RevId>, x: RevId): Option<RevId> {
-    if |s| < 2 || s[0] == x then None
-    else if s[1] == x then Some(s[0])
-    else EntryBefore(s[1..], x)
-  }
-
-  // Every entry before x's first index k is at or before index k - 1 (the
-  // entry EntryBefore names), and with none, x is first.
-  lemma EntryBeforeFacts(s: seq<RevId>, x: RevId, j: int) returns (k: int)
-    requires 0 <= j < |s| && s[j] != x && x in s[j..]
-    requires forall a, b :: 0 <= a < |s| && 0 <= b < |s| && s[a] == x && s[b] == x ==> a == b
-    ensures j < k < |s| && s[k] == x && EntryBefore(s, x) == Some(s[k - 1])
-    ensures forall i :: 0 <= i < k ==> s[i] != x
-  {
-    var m :| 0 <= m < |s[j..]| && s[j..][m] == x;
-    assert s[j + m] == x && j + m > j;
-    if s[0] == x {
-      assert false;
-    }
-    if s[1] == x {
-      k := 1;
-      assert j == 0;
-    } else {
-      var j' := if j == 0 then 0 else j - 1;
-      assert s[1..][j'] != x && x in s[1..][j'..] by {
-        assert s[1..][j + m - 1] == x;
-        if j == 0 {
-          assert s[1..][j'..] == s[1..];
-        } else {
-          assert s[1..][j'..] == s[j..];
-        }
-      }
-      var k' := EntryBeforeFacts(s[1..], x, j');
-      k := k' + 1;
-    }
+  // The outbox's id is a revision of the device's own of this document
+  // that the server holds: its commit landed.
+  predicate Landed(server: Server, d: DeviceId, doc: DocId, outbox: Outbox) {
+    outbox.rev in server.revisions && server.revisions[outbox.rev].device == d
+    && server.revisions[outbox.rev].doc == doc
   }
 
   function BaseOf(r: Revision): Base {
@@ -164,8 +129,11 @@ abstract module ResyncCore refines StepContracts {
     var parent := if base'.Some? then Some(base'.value.rev) else None;
     var row := document.(base := base', ahead := ahead');
     if document.outbox.Some? && !document.outbox.value.sealed then
-      // An unsent outbox is sent on the new base.
-      row.(outbox := Some(document.outbox.value.(baseRev := parent)))
+      // An unsent outbox is sent on the new base; one whose commit landed
+      // (reopened after a lost answer) under a fresh id, as the base now
+      // covers the landed one (#1080).
+      var id := if Landed(server, d, doc, document.outbox.value) then rev else document.outbox.value.rev;
+      row.(outbox := Some(document.outbox.value.(rev := id, baseRev := parent)))
     else if document.outbox.Some? then
       // A commit in flight stays as it was sealed until its answer (§3.2).
       row
@@ -317,29 +285,25 @@ abstract module ResyncCore refines StepContracts {
       row.outbox.Some? && row.outbox.value.rev == id
   {
     var row := ResyncRow(server, d, doc, document, rev);
-    if document.outbox.Some? && document.outbox.value.rev == id {
-      assert row.outbox.Some? && row.outbox.value.rev == id;
-    } else {
-      assert OwnSynced(server, d, doc, document, id);
-      var history := server.history[doc];
-      var k :| 0 <= k < |history| && history[k] == id;
-      var own := OwnAnchor(server, d, doc, document);
-      assert own.Some?;
-      var j :| 0 <= j < |history| && history[j] == own.value
-               && OwnSynced(server, d, doc, document, own.value)
-               && (forall k2 :: j < k2 < |history| ==> !OwnSynced(server, d, doc, document, history[k2]));
-      assert k <= j;
-      assert server.revisions[id].position <= server.revisions[own.value].position;
-      assert row.base.Some? && row.base.value.position >= server.revisions[own.value].position;
-      assert false;
-    }
+    assert OwnSynced(server, d, doc, document, id);
+    var history := server.history[doc];
+    var k :| 0 <= k < |history| && history[k] == id;
+    var own := OwnAnchor(server, d, doc, document);
+    assert own.Some?;
+    var j :| 0 <= j < |history| && history[j] == own.value
+             && OwnSynced(server, d, doc, document, own.value)
+             && (forall k2 :: j < k2 < |history| ==> !OwnSynced(server, d, doc, document, history[k2]));
+    assert k <= j;
+    assert server.revisions[id].position <= server.revisions[own.value].position;
+    assert row.base.Some? && row.base.value.position >= server.revisions[own.value].position;
+    assert false;
   }
 
   // The re-anchored row keeps CommitsOnBase's clauses (#1080): its parent
-  // is its old one, raised under by ResyncBase, or the new base's id; a
-  // landed commit its outbox carries has the entry before it in the
-  // history at or below the base (LandedOn), or is a revision of the
-  // device's own that the own anchor covers (a new outbox).
+  // is a sealed one, raised under by ResyncBase, or the new base's id; a
+  // landed commit its outbox carries is a revision of the device's own
+  // that the own anchor covers, so everything before it is at or below the
+  // base.
   lemma {:isolate_assertions} ResyncRowCommits(server: Server, d: DeviceId, doc: DocId, document: Document, rev: RevId)
     requires HistoryFollowsFeed(server) && RevisionsAccepted(server) && RevisionsKeyed(server)
     requires RevisionsOnFeed(server) && FeedPositioned(server)
@@ -377,27 +341,15 @@ abstract module ResyncCore refines StepContracts {
         var a :| 0 <= a < |h| && h[a] == id;
         if kx < a { assert server.revisions[h[kx]].position < server.revisions[h[a]].position; }
         assert a < kx;
-        if document.outbox.Some? {
-          assert document.outbox.value.rev == x;
-          assert x in h[a..];
-          var k := EntryBeforeFacts(h, x, a);
-          assert k == kx;
-          var e := h[k - 1];
-          assert LandedOn(server, d, doc, document) == Some(e);
-          assert server.revisions[e].doc == doc;
-          if a < k - 1 { assert server.revisions[h[a]].position < server.revisions[h[k - 1]].position; }
-          assert server.revisions[id].position <= server.revisions[e].position;
-        } else {
-          assert OwnSynced(server, d, doc, document, x);
-          var own := OwnAnchor(server, d, doc, document);
-          assert own.Some?;
-          var j :| 0 <= j < |h| && h[j] == own.value
-                   && OwnSynced(server, d, doc, document, own.value)
-                   && (forall k2 :: j < k2 < |h| ==> !OwnSynced(server, d, doc, document, h[k2]));
-          assert kx <= j;
-          if kx < j { assert server.revisions[h[kx]].position < server.revisions[h[j]].position; }
-          assert server.revisions[x].position <= server.revisions[own.value].position;
-        }
+        assert OwnSynced(server, d, doc, document, x);
+        var own := OwnAnchor(server, d, doc, document);
+        assert own.Some?;
+        var j :| 0 <= j < |h| && h[j] == own.value
+                 && OwnSynced(server, d, doc, document, own.value)
+                 && (forall k2 :: j < k2 < |h| ==> !OwnSynced(server, d, doc, document, h[k2]));
+        assert kx <= j;
+        if kx < j { assert server.revisions[h[kx]].position < server.revisions[h[j]].position; }
+        assert server.revisions[x].position <= server.revisions[own.value].position;
       }
     }
   }
@@ -508,9 +460,8 @@ abstract module ResyncCore refines StepContracts {
             (journal.documents[doc].base.Some? && journal'.documents[doc].base.value.rev == journal.documents[doc].base.value.rev)
             || (journal'.documents[doc].base.value.rev in pre.server.revisions
                 && pre.server.revisions[journal'.documents[doc].base.value.rev].device == d)
-            // The revision the row's commit is on (#1080).
-            || Some(journal'.documents[doc].base.value.rev) == ParentOn(journal.documents[doc])
-            || Some(journal'.documents[doc].base.value.rev) == LandedOn(pre.server, d, doc, journal.documents[doc]))
+            // The parent the row's commit in flight is sealed on (#1080).
+            || Some(journal'.documents[doc].base.value.rev) == ParentOn(journal.documents[doc]))
       && journal'.intents == journal.intents
       // A commit in flight stays as it was sealed (§3.2).
       && (forall doc :: doc in journal.documents && journal.documents[doc].outbox.Some?
@@ -533,8 +484,32 @@ abstract module ResyncCore refines StepContracts {
     requires after.disk == before.disk && after.platform == before.platform
     requires doc in before.journal.documents && doc in after.journal.documents
     requires after.journal.documents[doc].binding == before.journal.documents[doc].binding
+    requires forall p, q :: p in before.disk && q in before.disk && p != q ==> !CollideF(before.platform, p, q)
     ensures BoundFile(after, doc) == BoundFile(before, doc)
-  {}
+  {
+    var binding := before.journal.documents[doc].binding;
+    if binding.Some? && HasFile(before, binding.value.spelling) {
+      var q :| q in before.disk && SameF(before.platform, q, binding.value.spelling);
+      FileAtOnly(before, binding.value.spelling, q);
+      FileAtOnly(after, binding.value.spelling, q);
+    }
+  }
+
+  // With one file per name, the file at `p` is the one at the path `q`
+  // that names it.
+  lemma FileAtOnly(device: Device, p: Path, q: Path)
+    requires forall a, b :: a in device.disk && b in device.disk && a != b ==> !CollideF(device.platform, a, b)
+    requires q in device.disk && SameF(device.platform, q, p)
+    ensures HasFile(device, p) && FileAt(device, p) == device.disk[q]
+  {
+    var q' := var q' :| q' in device.disk && SameF(device.platform, q', p) && FileAt(device, p) == device.disk[q']; q';
+    if q' != q {
+      SameFIsEquivalence(device.platform, q', p, q);
+      SameFIsEquivalence(device.platform, q, p, q);
+      assert SameF(device.platform, q', q);
+      assert CollideF(device.platform, q', q);
+    }
+  }
 
   // A resync settles no conflict: every base it sets is the row's own, or a
   // revision of this device's.
@@ -590,8 +565,9 @@ abstract module ResyncCore refines StepContracts {
     assert G1_LatestNeverPurged(post);
     assert G5_NeverMixedUp(step);
     assert G3_DeleteSeen(step);
-    // G6: every base the resync sets is the row's, or this device's own
-    // revision, so it settles nothing.
+    // G6: every base the resync sets is the row's, this device's own
+    // revision, or the parent its commit in flight is sealed on and kept
+    // on (CarriedOnParent), so it settles nothing.
     forall x, doc, remote | SettlesConcurrent(step, x, doc, remote)
       ensures G6_Settle(step, x, doc, remote)
     {
@@ -601,19 +577,14 @@ abstract module ResyncCore refines StepContracts {
       var document := journal.documents[doc];
       if document.outbox.Some? && document.outbox.value.sealed {
         assert journal'.documents[doc].outbox == document.outbox;
+        assert G7_OneFilePerName(pre);
         SameBoundFile(before, after, doc);
-        if Some(remote.id) == ParentOn(document) {
-          assert CarriedOnParent(step, d, doc, remote);
-          assert false;
-        } else {
-          // OPEN (#1080): the base is raised to the entry before the landed
-          // commit, which is its parent only by a server fact no clause
-          // states yet (a commit lands on its parent, the head).
-        }
+        assert Some(remote.id) == ParentOn(document);
+        assert CarriedOnParent(step, d, doc, remote);
+        assert false;
       } else {
-        // OPEN (#1080): an unsent outbox (or one Reopen unsealed after its
-        // commit landed) whose parent or landing revision is newer than
-        // the kept base; unreachable only by facts no clause states yet.
+        assert ParentOn(document).None?;
+        assert false;
       }
     }
     if !FinishedSyncing(post, d) {
@@ -627,6 +598,79 @@ abstract module ResyncCore refines StepContracts {
     assert EffectTakes(before.platform, disk, PersistJournal(journal'), disk);
     assert EffectsTake(before.platform, disk, step.effects[1..], disk);
     assert EffectsTake(before.platform, disk, step.effects, disk);
+  }
+
+  // ---------------------------------------------------------------------
+  // Witnesses: the resync's anchors for a commit (#1080)
+  // ---------------------------------------------------------------------
+
+  // Another device's `p` (position 0) and device d's landed commit `x` on
+  // it (position 1), in the document's history. The row lost its base.
+  function LandedServer(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, x: RevId, n: Path, pc: Hash, xc: Hash): Server {
+    var rp := Revision(p, doc, 0, None, n, pc, Binary, false, other);
+    var rx := Revision(x, doc, 1, Some(p), n, xc, Binary, false, d);
+    Server(map[p := rp, x := rx], map[doc := [p, x]], [p, x], {}, map[p := rp, x := rx])
+  }
+
+  // A commit in flight that landed with its answer lost: the base becomes
+  // the landed commit itself (an own revision, settling nothing), not the
+  // entry before it, and the commit stays as it was sealed for the next
+  // round's acknowledgement.
+  lemma SealedLandedAnchorsAtCommit(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, x: RevId, y: RevId,
+                                    n: Path, pc: Hash, xc: Hash, yc: Hash, rev: RevId)
+    requires d != other && p != x && y != p && y != x
+    ensures
+      var server := LandedServer(d, other, doc, p, x, n, pc, xc);
+      var outbox := Outbox(x, Some(p), n, xc, Binary, false, true, false);
+      var document := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, xc, false, None)), Never, Some(outbox));
+      var row := ResyncRow(server, d, doc, document, rev);
+      row.base == Some(Base(x, 1, n, xc, Binary, false)) && row.outbox == Some(outbox)
+  {
+    var server := LandedServer(d, other, doc, p, x, n, pc, xc);
+    var outbox := Outbox(x, Some(p), n, xc, Binary, false, true, false);
+    var document := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, xc, false, None)), Never, Some(outbox));
+    assert OwnAnchor(server, d, doc, document) == Some(x);
+  }
+
+  // The same commit reopened (unsent again, re-parented on the lost base):
+  // the base is the landed commit, and the outbox is sent again on it under
+  // a fresh id, carrying the same content.
+  lemma ReopenedLandedFreshOnCommit(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, x: RevId, y: RevId,
+                                    n: Path, pc: Hash, xc: Hash, yc: Hash, rev: RevId)
+    requires d != other && p != x && y != p && y != x && rev != x
+    ensures
+      var server := LandedServer(d, other, doc, p, x, n, pc, xc);
+      var outbox := Outbox(x, Some(y), n, xc, Binary, false, false, false);
+      var document := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, xc, false, None)), Never, Some(outbox));
+      var row := ResyncRow(server, d, doc, document, rev);
+      row.base == Some(Base(x, 1, n, xc, Binary, false))
+      && row.outbox == Some(Outbox(rev, Some(x), n, xc, Binary, false, false, false))
+  {
+    var server := LandedServer(d, other, doc, p, x, n, pc, xc);
+    var outbox := Outbox(x, Some(y), n, xc, Binary, false, false, false);
+    var document := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, xc, false, None)), Never, Some(outbox));
+    assert OwnAnchor(server, d, doc, document) == Some(x);
+  }
+
+  // An unsent outbox on another device's `p`, which the server holds, does
+  // not raise a lost base to `p` (that would settle `p` against the change):
+  // the row has no base and the outbox is sent as a create.
+  lemma UnsentOutboxRaisesNothing(d: DeviceId, other: DeviceId, doc: DocId, p: RevId, x: RevId, y: RevId,
+                                  n: Path, pc: Hash, xc: Hash, yc: Hash, rev: RevId)
+    requires d != other && p != x && y != p
+    ensures
+      var rp := Revision(p, doc, 0, None, n, pc, Binary, false, other);
+      var server := Server(map[p := rp], map[doc := [p]], [p], {}, map[p := rp]);
+      var outbox := Outbox(x, Some(p), n, xc, Binary, false, false, false);
+      var document := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, xc, false, None)), Never, Some(outbox));
+      var row := ResyncRow(server, d, doc, document, rev);
+      row.base.None? && row.outbox == Some(outbox.(baseRev := None))
+  {
+    var rp := Revision(p, doc, 0, None, n, pc, Binary, false, other);
+    var server := Server(map[p := rp], map[doc := [p]], [p], {}, map[p := rp]);
+    var outbox := Outbox(x, Some(p), n, xc, Binary, false, false, false);
+    var document := Document(Some(Base(y, 2, n, yc, Binary, false)), None, Some(Binding(n, xc, false, None)), Never, Some(outbox));
+    assert OwnAnchor(server, d, doc, document).None?;
   }
 
   // ---------------------------------------------------------------------
