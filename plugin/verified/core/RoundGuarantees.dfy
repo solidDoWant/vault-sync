@@ -2880,4 +2880,88 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       ClearWayPutsLast(platform, documents, doc, r, input, revs, e);
     }
   }
+
+  // A put for `e` at `s` that no later effect touches makes `s` e's own
+  // name after all of them.
+  lemma LastPutOwnName(platform: Platform, device0: Device, a: seq<Effect>, b: seq<Effect>, e: DocId, s: Path, m: nat)
+    requires m < |b|
+    requires (b[m].Write? && b[m].target == Some(e) && SameF(platform, b[m].path, s))
+             || (b[m].Move? && b[m].mover == Some(e) && SameF(platform, b[m].to, s))
+    requires forall k | m < k < |b| :: !Touches(platform, b[k], s)
+    ensures OwnNameIn(platform, device0, a + b, e, s)
+  {
+    assert Touches(platform, b[m], s);
+    RoundPutLastTouch(platform, a, b, s, m);
+    assert (a + b)[|a| + m] == b[m];
+  }
+
+  // Effects that do not touch `s` keep what the pass read at `s`.
+  lemma UntouchedTailKeepsReadings(platform: Platform, device0: Device, a: seq<Effect>, b: seq<Effect>, e: DocId, s: Path)
+    requires forall effect :: effect in b ==> !Touches(platform, effect, s)
+    ensures OwnNameIn(platform, device0, a + b, e, s) == OwnNameIn(platform, device0, a, e, s)
+    ensures UntrackedIn(platform, device0, a + b, s) == UntrackedIn(platform, device0, a, s)
+  {
+    RoundPutUntouchedTail(platform, a, b, s);
+    var put := RoundPut(platform, a, s);
+    if put.By? { assert (a + b)[put.index] == a[put.index]; }
+  }
+
+  // A drop stays a drop as the pass goes on.
+  lemma DroppedInGrows(platform: Platform, device0: Device, a: seq<Effect>, b: seq<Effect>, e: DocId)
+    requires DroppedIn(platform, device0, a, e)
+    ensures DroppedIn(platform, device0, a + b, e)
+  {
+    var k :| 0 <= k < |a|
+      && ((a[k].Remove? && a[k].doc == e && OwnNameIn(platform, device0, a[..k], e, a[k].path))
+          || (a[k].Move? && a[k].mover.None? && OwnNameIn(platform, device0, a[..k], e, a[k].from)));
+    assert (a + b)[..k] == a[..k];
+    assert (a + b)[k] == a[k];
+  }
+
+  // Names the same under F read the same.
+  lemma RoundPutSameF(platform: Platform, effects: seq<Effect>, p: Path, q: Path)
+    requires SameF(platform, p, q)
+    ensures RoundPut(platform, effects, p) == RoundPut(platform, effects, q)
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var last := effects[|effects| - 1];
+      SameFIsEquivalence(platform, p, q, q);
+      if last.Write? { SameFIsEquivalence(platform, last.path, p, q); SameFIsEquivalence(platform, last.path, q, p); }
+      if last.Remove? { SameFIsEquivalence(platform, last.path, p, q); SameFIsEquivalence(platform, last.path, q, p); }
+      if last.Move? {
+        SameFIsEquivalence(platform, last.to, p, q); SameFIsEquivalence(platform, last.to, q, p);
+        SameFIsEquivalence(platform, last.from, p, q); SameFIsEquivalence(platform, last.from, q, p);
+      }
+      RoundPutSameF(platform, effects[..|effects| - 1], p, q);
+    }
+  }
+
+  // The rule's remove of a row's own file, or its move aside for no
+  // document, with no earlier effect of the rule touching the name, is a
+  // drop of the row's file.
+  lemma RuleDropDropped(platform: Platform, device0: Device, a: seq<Effect>, b: seq<Effect>, e: DocId, t: Path, i: nat)
+    requires device0.platform == platform
+    requires OwnNameIn(platform, device0, a, e, t)
+    requires i < |b|
+    requires (b[i].Remove? && b[i].doc == e && SameF(platform, b[i].path, t))
+             || (b[i].Move? && b[i].mover.None? && SameF(platform, b[i].from, t))
+    requires forall k | 0 <= k < i :: !Touches(platform, b[k], t)
+    ensures DroppedIn(platform, device0, a + b, e)
+  {
+    var k := |a| + i;
+    assert (a + b)[..k] == a + b[..i];
+    assert (a + b)[k] == b[i];
+    forall effect | effect in b[..i] ensures !Touches(platform, effect, t) {
+      var j :| 0 <= j < i && b[..i][j] == effect;
+    }
+    UntouchedTailKeepsReadings(platform, device0, a, b[..i], e, t);
+    var p := if b[i].Remove? then b[i].path else b[i].from;
+    RoundPutSameF(platform, a + b[..i], p, t);
+    if RoundPut(platform, a + b[..i], t).Untouched? {
+      var x :| BoundTo(device0, e, t) && x == e;
+      SameFIsEquivalence(platform, device0.journal.documents[e].binding.value.spelling, t, p);
+      SameFIsEquivalence(platform, p, t, t);
+    }
+  }
 }
