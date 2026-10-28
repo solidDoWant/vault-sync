@@ -2876,4 +2876,67 @@ abstract module RoundG6 refines RoundGuarantees {
     assert ruled.documents[doc] == document.(ahead := ruled.documents[doc].ahead)
         || ruled.documents[doc] == Revived(document).(ahead := ruled.documents[doc].ahead);
   }
+
+  // ---------------------------------------------------------------------
+  // The push half: saved contents stay saved, and a chain ends in what the
+  // document sends
+  // ---------------------------------------------------------------------
+
+  // An untracked content on the pass's listing is saved next to it on the
+  // device the push leaves: untracked still, or the push's new document.
+  lemma {:isolate_assertions} PushKeepsUntracked(platform: Platform, read: Journal, input: RoundInput, revs: FreshRevs,
+                                                 after: Device, h: Hash)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    requires after.platform == platform && ListingOf(after) == input.listing
+    requires after.journal.documents == OnPush(platform, read, input, revs).0.documents
+    requires UntrackedHolds(platform, read.documents, input.listing, h)
+    ensures SavedNextToIt(after, h)
+  {
+    var p := var p :| p in input.listing && input.listing[p].0 == h
+      && forall e | e in read.documents && read.documents[e].binding.Some? :: !SameF(platform, read.documents[e].binding.value.spelling, p); p;
+    var created := Created(platform, read, input, revs);
+    var creates := Creates(Untracked(platform, read.documents, input.listing), input.freshDocs);
+    assert p in after.disk && after.disk[p].content == h;
+    if Tracked(after, p) {
+      var doc :| BoundTo(after, doc, p);
+      assert after.journal.documents[doc] == Seal(created[doc]);
+      if doc in read.documents {
+        assert created[doc] == read.documents[doc];
+        assert false;
+      }
+      assert doc in creates;
+      assert created[doc] == NewDocument(creates[doc], input.listing[creates[doc]], revs[doc]);
+      assert NewDocumentAt(after, p);
+    }
+  }
+
+  // The content a document sends after the push is what its file holds,
+  // for a row in step with its file.
+  lemma {:isolate_assertions} PushSends(platform: Platform, read: Journal, input: RoundInput, revs: FreshRevs,
+                                        after: Device, doc: DocId)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    requires after.platform == platform && ListingOf(after) == input.listing && Distinct(platform, input.listing)
+    requires after.journal.documents == OnPush(platform, read, input, revs).0.documents
+    requires doc in read.documents && Synced(platform, input.listing, read.documents[doc])
+    ensures Outgoing(after, doc) == LocalContent(LocalSide(platform, input.listing, read.documents[doc]))
+  {
+    var row := read.documents[doc];
+    var created := Created(platform, read, input, revs);
+    assert created[doc] == row;
+    var post := after.journal.documents[doc];
+    assert post == Seal(row);
+    assert post.binding == row.binding && post.base == row.base;
+    if row.binding.Some? {
+      var s := row.binding.value.spelling;
+      var k := ListedAt(platform, input.listing, s);
+      assert k in after.disk && SameF(platform, k, s);
+      assert HasFile(after, s);
+      var q :| q in after.disk && SameF(platform, q, s) && FileAt(after, s) == after.disk[q];
+      if q != k {
+        SameFIsEquivalence(platform, q, s, k);
+        assert false;
+      }
+      assert BoundFile(after, doc).value.content == row.binding.value.seen;
+    }
+  }
 }
