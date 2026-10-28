@@ -3104,4 +3104,21 @@ abstract module RoundG6 refines RoundGuarantees {
     }
     assert RoundChain(step, d, doc, rs, read0.0);
   }
+
+  // G6_Step of the round, for a document bound with a base whose file the
+  // round read: its chain.
+  lemma RoundG6Step(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs, doc: DocId, remote: Revision)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    requires RoundPulledBy(pre, d, input, revs)
+    requires SettlesConcurrent(RoundStepOf(pre, d, input, revs), d, doc, remote)
+    requires var row := pre.devices[d].journal.documents[doc];
+      row.binding.Some? && row.base.Some? && AheadAboveBase(row)
+      && RoundRead(RoundStepOf(pre, d, input, revs), row.binding.value.spelling).Some?
+    ensures G6_Step(RoundStepOf(pre, d, input, revs), d, doc, remote)
+  {
+    RoundG6Chain(pre, d, input, revs, doc, remote);
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+  }
 }
