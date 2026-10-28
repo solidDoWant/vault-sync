@@ -898,15 +898,21 @@ abstract module Guarantees refines EngineModel {
   // Settling `rs` in turn from base content `b` (`bd`: a tombstone) and
   // local side `l` leaves `out`, the content the document sends, and, where
   // `c` is some, it is one of the chain's contents (its start or a link's
-  // result).
+  // result). Before any link, and after the last, the local side may be let
+  // go where its content is saved (SavedInRound): rule W(b) can let the
+  // document's file go untracked in the round, and a later revision of the
+  // document then finds no file here, as a later step of its own would
+  // (#1094).
   ghost predicate ChainThrough(post: State, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
                                out: Option<Hash>, c: Option<Hash>)
-    decreases |rs|
+    decreases |rs|, if l.Some? then 1 else 0
   {
-    if |rs| == 0 then out == LocalContent(l) && (c.None? || c == LocalContent(l))
-    else exists x :: SettleLink(post, d, b, bd, l, rs[0], x)
-           && (ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
-               || (c.Some? && c == LocalContent(l) && ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None)))
+    (l.Some? && SavedInRound(post, d, l.value.0)
+     && ChainThrough(post, d, b, bd, None, rs, out, if c == LocalContent(l) then None else c))
+    || if |rs| == 0 then out == LocalContent(l) && (c.None? || c == LocalContent(l))
+       else exists x :: SettleLink(post, d, b, bd, l, rs[0], x)
+              && (ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
+                  || (c.Some? && c == LocalContent(l) && ChainThrough(post, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None)))
   }
 
   // The round on d settles doc's revisions `rs` (accepted, its own

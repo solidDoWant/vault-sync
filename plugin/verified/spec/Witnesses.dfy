@@ -658,6 +658,7 @@ abstract module GuaranteeWitnesses refines Guarantees {
   lemma ChainKeeps(post: State, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
                    out: Option<Hash>, c: Option<Hash>)
     requires ChainThrough(post, d, b, bd, l, rs, out, c) && l.Some? && l.value.0 != b && |rs| > 0
+    requires !SavedInRound(post, d, l.value.0)
     requires forall k :: 0 <= k < |rs| - 1 ==> !rs[k].deleted && rs[k].content == b
     requires rs[|rs| - 1].deleted || rs[|rs| - 1].content == b
     ensures out == LocalContent(l)
@@ -747,6 +748,13 @@ abstract module GuaranteeWitnesses refines Guarantees {
       }
       var out := var out :| ChainThrough(post, d, b, false, Some(read), rs, out, Some(f.content)) && ChainEnds(post, d, doc, out); out;
       assert out == Outgoing(device', doc);
+      assert !SavedInRound(post, d, read.0) by {
+        forall rev | rev in post.server.accepted && !post.server.accepted[rev].deleted
+          ensures post.server.accepted[rev].content != f.content
+        {
+          assert rev == baseRev.id || rev == remote.id;
+        }
+      }
       ChainKeeps(post, d, b, false, Some(read), rs, out, Some(f.content));
     }
     assert !ReadKept(step, doc, f.content);

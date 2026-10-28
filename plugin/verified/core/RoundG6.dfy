@@ -1838,4 +1838,55 @@ abstract module RoundG6 refines RoundGuarantees {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Each document's chain through the pass
+  // ---------------------------------------------------------------------
+
+  // The revisions a chain settled: accepted revisions of `e`, in feed
+  // order after the base it started from.
+  ghost predicate ChainOrder(accepted: map<RevId, Revision>, e: DocId, base0: Base, rs: seq<Revision>) {
+    (forall k | 0 <= k < |rs| :: AcceptedAs(accepted, rs[k]) && rs[k].doc == e)
+    && (|rs| > 0 ==> base0.position < rs[0].position)
+    && (forall k | 0 <= k < |rs| - 1 :: rs[k].position < rs[k + 1].position)
+  }
+
+  // Document `e`, bound with base `base0` before the round and read as
+  // `read0`, has settled the chain `rs` so far: the chain leaves the local
+  // side the listing reads at its binding, or, where the rule let its file
+  // go untracked (W(b)), a clean side holding its base, saved; its base is
+  // the chain's last revision (the start where it is empty); every content
+  // it saved is still saved.
+  ghost predicate ChainSoFar(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+                             e: DocId, pass: RoundPass, rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)>) {
+    var rows := pass.journal.documents;
+    e in rows && Distinct(platform, pass.listing)
+    && ChainSaved(saved, d, base0.content, base0.deleted, Some(read0), rs, x, Some(read0.0))
+    && ChainOrder(accepted, e, base0, rs)
+    && SavedHeld(platform, accepted, rows, pass.listing, saved)
+    && (|rs| == 0 ==> rows[e].base == Some(base0))
+    && (|rs| > 0 ==> rows[e].base == Some(BaseOf(rs[|rs| - 1])))
+    && (rows[e].binding.Some? ==> x == LocalSide(platform, pass.listing, rows[e]))
+    && (rows[e].binding.None? && x.Some? ==>
+          x.value.0 in saved && x.value.0 == ChainBase(base0.content, rs) && !ChainBaseDeleted(base0.deleted, rs))
+  }
+
+  ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Base, read0: (Hash, Kind),
+                            e: DocId, pass: RoundPass) {
+    !Distinct(platform, pass.listing)
+    || exists rs, saved, x :: ChainSoFar(platform, d, accepted, base0, read0, e, pass, rs, saved, x)
+  }
+
+  // At the start of the round the chain is empty: the row is as it was.
+  lemma PassChainStart(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, e: DocId, start: RoundPass)
+    requires e in start.journal.documents && Distinct(platform, start.listing)
+    requires var row := start.journal.documents[e];
+      row.binding.Some? && row.base.Some? && ListedRead(platform, start.listing, row.binding.value.spelling).Some?
+    ensures var row := start.journal.documents[e];
+      PassChain(platform, d, accepted, row.base.value, ListedRead(platform, start.listing, row.binding.value.spelling).value, e, start)
+  {
+    var row := start.journal.documents[e];
+    var read0 := ListedRead(platform, start.listing, row.binding.value.spelling).value;
+    assert ChainSoFar(platform, d, accepted, row.base.value, read0, e, start, [], {}, Some(read0));
+  }
 }
