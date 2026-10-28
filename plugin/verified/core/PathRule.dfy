@@ -114,10 +114,13 @@ abstract module PathRuleCore refines ApplyCore {
   // collides with the name), and the head is created at its name.
   opaque function Keeps(platform: Platform, document: Document, r: Revision, input: RoundInput): (keep: Option<Path>)
     requires ListingDistinct(platform, input.listing)
-    ensures keep.Some? ==> keep == OwnFile(platform, document, input)
+    ensures keep.Some? ==> keep == OwnFile(platform, document, input) && !Revives(platform, document, r, input)
   {
     var read := MoveRead(platform, document, r, input);
-    if read.Some? && MovedContent(document, read.value, r).None? then None else OwnFile(platform, document, input)
+    // A revived document has no file here: a bound file with no base is
+    // let go untracked, and moves aside where it is in the way (#1068).
+    if Revives(platform, document, r, input) then None
+    else if read.Some? && MovedContent(document, read.value, r).None? then None else OwnFile(platform, document, input)
   }
 
   // The row the head arrives with: for a remote move against a local
@@ -920,8 +923,11 @@ abstract module PathRuleCore refines ApplyCore {
             && (CannotHold(after.ahead.value.blocker)
                 || (after.ahead.value.blocker.PathHeld? && UnsavedCollides(platform, input.unsaved, r.path))))
       // Where nothing is in the way (no listed file collides with the name,
-      // no unsaved text, no other document's server claim), it comes back.
+      // no unsaved text at it or at a file let go untracked, no other
+      // document's server claim), it comes back.
       && ((FreeIn(platform, input.listing, r.path) && !UnsavedCollides(platform, input.unsaved, r.path)
+           && !(OwnFile(platform, documents[doc], input).Some?
+                && UnsavedCollides(platform, input.unsaved, OwnFile(platform, documents[doc], input).value))
            && !StillClaimed(platform, documents, doc, r.path)) ==> after.ahead.None?)
       // ApplySettlesContract's clause, with a user's need to act being
       // unsaved text in the revision's way.
