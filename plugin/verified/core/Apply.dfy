@@ -307,6 +307,40 @@ abstract module ApplyCore refines StepContracts {
                 [Write(None, copy, l, read.1, None), Write(Some(doc), spelling, r.content, r.kind, Some(l))])
   }
 
+  // A live remote move of a bound document with a change the server lacks
+  // (verified-core.md §4.2): the revision gives the document another name
+  // than its base's, while its file is still at the base's name and reads
+  // other than the base or has an unsealed outbox. Path and content are
+  // merged apart (SPEC.md §7): the file takes the remote's name through
+  // #962's rule, which the apply hands it to (PathHeld), with the content
+  // settled as for an edit (MovedContent). A commit in flight waits (#1023).
+  predicate MovedAgainstChange(document: Document, read: Read, r: Revision) {
+    document.binding.Some? && read.Some? && document.absence != UserDeleted
+    && document.base.Some? && !document.base.value.deleted && !r.deleted
+    && r.path != document.base.value.path && r.id != document.base.value.rev
+    && document.binding.value.spelling == document.base.value.path
+    && (document.outbox.None? || !document.outbox.value.sealed)
+    && (document.outbox.Some? || read.value.0 != document.base.value.content)
+  }
+
+  // The content and kind a remote move against a local change settles at
+  // the remote's name, as Settle settles an edit (G6): a side that left the
+  // content as it was takes the other's, and two changed notes that the
+  // merge combines are merged. None where both versions are kept apart:
+  // the file read here stays as an untracked copy and the head is created
+  // at its name (#962's rule).
+  function MovedContent(document: Document, read: (Hash, Kind), r: Revision): Option<(Hash, Kind)>
+    requires document.binding.Some? && document.base.Some?
+  {
+    var b := document.base.value.content;
+    var l := read.0;
+    if l == b && l == document.binding.value.seen then Some((r.content, r.kind))
+    else if r.content == b then Some(read)
+    else if l != b && read.1 == Note && r.kind == Note && Merge(b, l, r.content).Some? then
+      Some((Merge(b, l, r.content).value, Note))
+    else None
+  }
+
   // A remote tombstone against a bound file the listing reads, with a change
   // the server lacks: something to send, or a read other than the content
   // and kind the core last saw (G6). A commit in flight (a sealed outbox)
@@ -467,6 +501,11 @@ abstract module ApplyCore refines StepContracts {
       var read := ListedRead(platform, input.listing, spelling);
       if UnsavedAt(platform, input.unsaved, spelling) then Hold(document, r, LocalChanges)
       else if Concurrent(document, read, r) then Settle(platform, doc, document, read.value, r, input, bound, claims, rev)
+      else if MovedAgainstChange(document, read, r) then
+        // A remote move against a local change: #962's rule moves the file
+        // to the remote's name and settles its content (verified-core.md
+        // §4.2, SPEC.md §7).
+        Hold(document, r, PathHeld)
       else if EditedAgainstDelete(document, read, r) then
         // A remote delete against a change the server lacks: an edit beats a
         // delete (SPEC.md §6.3). The file stays, untouched.
