@@ -3147,6 +3147,9 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     var intents := IntentsFor(doc, r, ruled.effects, pass.n);
     var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
     var effects' := pass.effects + guard + ruled.effects;
+    // Once, here, as in SettleKeepsG5: inside the per-row forall below the
+    // solver's search for this sequence identity is costly.
+    assert effects' == pass.effects + (guard + ruled.effects);
     var listing' := ListingAfter(platform, pass.listing, ruled.effects);
     assert settled.journal.documents == ruled.documents && settled.effects == effects' && settled.listing == listing';
     RuleDeleteSeen(platform, rows, doc, r, inner, revs', first);
@@ -3170,7 +3173,6 @@ abstract module RoundGuarantees refines RoundClaimsCore {
             if effect in guard { assert effect.PersistJournal?; } else { assert effect in ruled.effects; }
           }
           UntouchedTailKeepsReadings(platform, device0, pass.effects, guard + ruled.effects, e, s);
-          assert effects' == pass.effects + (guard + ruled.effects);
           ListingAfterUntouched(platform, pass.listing, ruled.effects, s);
           assert e in documents && rows[e] == documents[e];
           assert RowContent(platform, device0, accepted, pass.effects, pass.listing, e, documents[e]);
