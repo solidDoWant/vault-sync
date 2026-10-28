@@ -234,6 +234,259 @@ abstract module RoundG6 refines RoundGuarantees {
     }
   }
 
+  // After moves of distinct listed files to free, apart names, a listed
+  // name is one moved to, or one that was listed and did not move.
+  lemma MovesKeys(platform: Platform, listing: Listing, front: seq<Effect>)
+    requires Distinct(platform, listing) && Distinct(platform, ListingAfter(platform, listing, front))
+    requires forall i | 0 <= i < |front| :: front[i].Move? && front[i].from in listing && FreeIn(platform, listing, front[i].to)
+    requires forall i, j | 0 <= i < j < |front| :: front[i].from != front[j].from && !CollideF(platform, front[i].to, front[j].to)
+    ensures forall k | k in ListingAfter(platform, listing, front) ::
+      (exists i | 0 <= i < |front| :: k == front[i].to) || (k in listing && forall i | 0 <= i < |front| :: k != front[i].from)
+    decreases |front|
+  {
+    if |front| == 0 { return; }
+    var m := front[0];
+    var mid := ListingAfterEffect(platform, listing, m);
+    if !Distinct(platform, mid) { ListingAfterFrozen(platform, mid, front[1..]); assert false; }
+    SameFIsEquivalence(platform, m.from, m.from, m.from);
+    assert Listed(platform, listing, m.from);
+    assert ListedAt(platform, listing, m.from) == m.from by {
+      var k := ListedAt(platform, listing, m.from);
+      if k != m.from { assert false; }
+    }
+    assert mid == (listing - {m.from})[m.to := listing[m.from]];
+    var rest := front[1..];
+    forall i | 0 <= i < |rest| ensures rest[i].Move? && rest[i].from in mid && FreeIn(platform, mid, rest[i].to) {
+      assert rest[i] == front[i + 1];
+      forall q | q in mid ensures !CollideF(platform, q, rest[i].to) {
+        if q == m.to { assert !CollideF(platform, front[0].to, front[i + 1].to); }
+      }
+    }
+    forall i, j | 0 <= i < j < |rest| ensures rest[i].from != rest[j].from && !CollideF(platform, rest[i].to, rest[j].to) {
+      assert rest[i] == front[i + 1] && rest[j] == front[j + 1];
+    }
+    MovesKeys(platform, mid, rest);
+    forall k | k in ListingAfter(platform, listing, front)
+      ensures (exists i | 0 <= i < |front| :: k == front[i].to) || (k in listing && forall i | 0 <= i < |front| :: k != front[i].from)
+    {
+      if exists i | 0 <= i < |rest| :: k == rest[i].to {
+        var i := var i :| 0 <= i < |rest| && k == rest[i].to; i;
+        assert k == front[i + 1].to;
+      } else if k == m.to {
+        assert k == front[0].to;
+      } else {
+        assert k in listing && k != m.from;
+        forall i | 0 <= i < |front| ensures k != front[i].from {
+          if i > 0 { assert front[i] == rest[i - 1]; }
+        }
+      }
+    }
+  }
+
+  // After the moves aside, the only listed name in the way of the head is
+  // the document's own file.
+  lemma WayCleared(platform: Platform, listing: Listing, front: seq<Effect>, moves: seq<(Path, Path, Hash)>, keep: Option<Path>,
+                   wanted: Path, k: Path)
+    requires Distinct(platform, listing) && Distinct(platform, ListingAfter(platform, listing, front))
+    requires |front| == |moves|
+    requires forall i | 0 <= i < |front| :: front[i].Move? && front[i].from == moves[i].0 && front[i].to == moves[i].1
+    requires forall i | 0 <= i < |moves| :: moves[i].0 in listing && FreeIn(platform, listing, moves[i].1) && !CollideF(platform, moves[i].1, wanted)
+    requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0 && !CollideF(platform, moves[i].1, moves[j].1)
+    requires forall q | q in InTheWay(platform, listing, wanted, keep) :: exists i | 0 <= i < |moves| :: moves[i].0 == q
+    requires k in ListingAfter(platform, listing, front) && CollideF(platform, k, wanted)
+    ensures keep == Some(k) && k in listing
+  {
+    MovesKeys(platform, listing, front);
+    if exists i | 0 <= i < |front| :: k == front[i].to {
+      var i := var i :| 0 <= i < |front| && k == front[i].to; i;
+      assert false;
+    }
+    assert k in listing;
+    if keep != Some(k) {
+      InTheWayHas(platform, listing, wanted, keep, k);
+      var i := var i :| 0 <= i < |moves| && moves[i].0 == k; i;
+      assert front[i].from == k;
+      assert false;
+    }
+  }
+
+  // The arrival's removal of the document's own file in the way leaves
+  // nothing listed in the head's way.
+  lemma {:isolate_assertions} CollideCleared(platform: Platform, listing: Listing, front: seq<Effect>, moves: seq<(Path, Path, Hash)>, keep: Option<Path>,
+                       wanted: Path, mid: Listing, before: Listing, k: Path, spelling: Path, avoid: set<Path>, doc: DocId, seen: Hash)
+    requires Distinct(platform, listing) && mid == ListingAfter(platform, listing, front) && Distinct(platform, mid)
+    requires |front| == |moves|
+    requires forall i | 0 <= i < |front| :: front[i].Move? && front[i].from == moves[i].0 && front[i].to == moves[i].1
+    requires forall i | 0 <= i < |moves| :: (moves[i].0 in listing && FreeIn(platform, listing, moves[i].1) && !CollideF(platform, moves[i].1, wanted)
+                                              && (forall t | t in avoid :: !SameF(platform, t, moves[i].1)))
+    requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0 && !CollideF(platform, moves[i].1, moves[j].1)
+    requires forall q | q in InTheWay(platform, listing, wanted, keep) :: exists i | 0 <= i < |moves| :: moves[i].0 == q
+    requires keep.Some? && keep.value in listing && SameF(platform, keep.value, spelling) && spelling in avoid
+    requires forall i | 0 <= i < |moves| :: moves[i].0 != keep.value
+    requires before == ListingAfterEffect(platform, mid, Remove(doc, keep.value, seen))
+    requires k in before && CollideF(platform, k, wanted)
+    ensures false
+  {
+    var own := keep.value;
+    var rm := Remove(doc, own, seen);
+    assert k in mid by {
+      if Listed(platform, mid, own) { assert before == mid - {ListedAt(platform, mid, own)}; } else { assert before == mid; }
+    }
+    WayCleared(platform, listing, front, moves, keep, wanted, k);
+    assert k == own;
+    forall effect | effect in front ensures !Touches(platform, effect, own) {
+      var i := var i :| 0 <= i < |front| && front[i] == effect; i;
+      assert moves[i].0 != own;
+      if SameF(platform, moves[i].1, own) {
+        SameFIsEquivalence(platform, moves[i].1, own, spelling);
+        assert false;
+      }
+    }
+    ListingAfterUntouched(platform, listing, front, own);
+    SameFIsEquivalence(platform, own, own, own);
+    assert Listed(platform, listing, own);
+    assert Listed(platform, mid, own);
+    var q := ListedAt(platform, mid, own);
+    assert before == mid - {q};
+    assert k != q;
+    MovesKeys(platform, listing, front);
+    if exists i | 0 <= i < |front| :: q == front[i].to {
+      var i := var i :| 0 <= i < |front| && q == front[i].to; i;
+      SameFIsEquivalence(platform, q, own, own);
+      assert CollideF(platform, own, front[i].to);
+      assert false;
+    }
+    assert q in listing;
+    assert q == own;
+  }
+
+  // A move lists what it moved at its new name.
+  lemma MoveReads(platform: Platform, listing: Listing, effect: Effect)
+    requires effect.Move? && Distinct(platform, listing) && Distinct(platform, ListingAfterEffect(platform, listing, effect))
+    requires Listed(platform, listing, effect.from)
+    ensures ListedRead(platform, ListingAfterEffect(platform, listing, effect), effect.to) == ListedRead(platform, listing, effect.from)
+  {
+    var after := ListingAfterEffect(platform, listing, effect);
+    var q := ListedAt(platform, listing, effect.from);
+    SameFIsEquivalence(platform, effect.to, effect.to, effect.to);
+    assert effect.to in after && after[effect.to] == listing[q];
+    var k' := ListedAt(platform, after, effect.to);
+    if k' != effect.to { SameFIsEquivalence(platform, k', effect.to, effect.to); assert false; }
+  }
+
+  // Where the rule clears the way, the head's name reads the arriving
+  // content: written or created there, or the document's own file moved
+  // there as the round read it, where it already held that content.
+  lemma {:isolate_assertions} ClearWayHeadReads(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      var a := Arriving(platform, documents[doc], r, input);
+      var keep := Keeps(platform, documents[doc], r, input);
+      doc in ruled.documents && Distinct(platform, listing') && ruled.documents[doc].ahead.None? ==>
+        ListedRead(platform, listing', r.path) == Some((a.content, a.kind))
+        || (keep.Some? && documents[doc].binding.Some?
+            && a.content == ArrivingRow(platform, documents[doc], r, input).binding.value.seen
+            && ListedRead(platform, listing', r.path) == ListedRead(platform, input.listing, documents[doc].binding.value.spelling))
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if aside.None? || !ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+      assert ruled.documents[doc].ahead.Some?;
+      return;
+    }
+    if !Distinct(platform, listing') { return; }
+    var moves := aside.value;
+    AsideFacts(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    assert ruled.effects == front + arrive;
+    ListingAfterAppend(platform, input.listing, front, arrive);
+    var mid := ListingAfter(platform, input.listing, front);
+    if !Distinct(platform, mid) { ListingAfterFrozen(platform, mid, arrive); assert false; }
+    var row := ArrivingRow(platform, document, r, input);
+    var a := Arriving(platform, document, r, input);
+    if keep.Some? && row.binding.Some? && !(CollideF(platform, keep.value, r.path) && !SameF(platform, keep.value, r.path)) {
+      var own := keep.value;
+      var spelling := document.binding.value.spelling;
+      var seen := row.binding.value.seen;
+      assert own in input.listing && SameF(platform, own, spelling);
+      assert spelling in avoid;
+      forall effect | effect in front ensures !Touches(platform, effect, own) {
+        var i := var i :| 0 <= i < |front| && front[i] == effect; i;
+        assert moves[i].0 in way && moves[i].0 != own;
+        if SameF(platform, moves[i].1, own) {
+          SameFIsEquivalence(platform, moves[i].1, own, spelling);
+          assert false;
+        }
+      }
+      ListingAfterUntouched(platform, input.listing, front, own);
+      SameFIsEquivalence(platform, own, own, own);
+      assert Listed(platform, input.listing, own);
+      assert ListedRead(platform, input.listing, own) == ListedRead(platform, input.listing, spelling) by {
+        SameFIsEquivalence(platform, own, spelling, own);
+        assert ListedAt(platform, input.listing, own) == ListedAt(platform, input.listing, spelling);
+      }
+      var mv := Move(Some(doc), own, r.path, a.content);
+      if a.content == seen {
+        assert arrive == [mv];
+        ListingAfterOne(platform, mid, mv);
+        MoveReads(platform, mid, mv);
+      } else {
+        var w := Write(Some(doc), own, a.content, a.kind, Some(seen));
+        assert arrive == [w, mv];
+        ListingAfterTwo(platform, mid, w, mv);
+        var mid2 := ListingAfterEffect(platform, mid, w);
+        if !Distinct(platform, mid2) { assert ListingAfterEffect(platform, mid2, mv) == mid2; assert false; }
+        WriteReads(platform, mid, w);
+        ListingEffectKeepsListed(platform, mid, w, own);
+        MoveReads(platform, mid2, mv);
+      }
+    } else {
+      var init := arrive[..|arrive| - 1];
+      var last := arrive[|arrive| - 1];
+      assert arrive == init + [last];
+      assert last == Write(Some(doc), r.path, a.content, a.kind, None);
+      ListingAfterSnoc(platform, mid, init, last);
+      var before := ListingAfter(platform, mid, init);
+      if !Distinct(platform, before) { assert ListingAfterEffect(platform, before, last) == before; assert false; }
+      if Listed(platform, before, r.path) {
+        // Nothing is left in the head's way: the moves and the arrival's
+        // removal cleared it.
+        AsideCovers(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+        forall i | 0 <= i < |front| ensures front[i].Move? && front[i].from in input.listing && FreeIn(platform, input.listing, front[i].to) {
+          assert moves[i].0 in way;
+        }
+        var k := ListedAt(platform, before, r.path);
+        assert CollideF(platform, k, r.path);
+        assert forall q | q in way :: exists i | 0 <= i < |moves| :: moves[i].0 == q;
+        if init == [] {
+          assert before == mid && k in mid;
+          WayCleared(platform, input.listing, front, moves, keep, r.path, k);
+          assert keep.Some? && row.binding.Some?;
+          assert false;
+        } else {
+          assert keep.Some? && row.binding.Some? && CollideF(platform, keep.value, r.path) && !SameF(platform, keep.value, r.path);
+          var rm := Remove(doc, keep.value, row.binding.value.seen);
+          assert init == [rm];
+          ListingAfterOne(platform, mid, rm);
+          assert keep.value in input.listing && SameF(platform, keep.value, document.binding.value.spelling);
+          assert document.binding.value.spelling in avoid;
+          forall i | 0 <= i < |moves| ensures moves[i].0 != keep.value { assert moves[i].0 in way; }
+          CollideCleared(platform, input.listing, front, moves, keep, r.path, mid, before, k, document.binding.value.spelling, avoid, doc, row.binding.value.seen);
+        }
+      }
+      WriteReads(platform, before, last);
+    }
+  }
+
   // A row's local side in a listing: the content and kind the listing
   // reads at its bound file, or none.
   function LocalSide(platform: Platform, listing: Listing, row: Document): Option<(Hash, Kind)>
@@ -376,6 +629,185 @@ abstract module RoundG6 refines RoundGuarantees {
       WriteReads(platform, input.listing, applied.effects[0]);
       assert x == Some((r.content, r.kind));
       return;
+    }
+  }
+  // The content a remote move against a local change keeps apart: the
+  // file read stays as an untracked copy (MovedContent is None).
+  ghost function KeptApart(platform: Platform, document: Document, r: Revision, input: RoundInput): set<Hash>
+    requires ListingDistinct(platform, input.listing)
+  {
+    var read := MoveRead(platform, document, r, input);
+    if read.Some? && MovedContent(document, read.value, r).None? then {read.value.0} else {}
+  }
+
+  // A revision held for its name, of a row whose file the listing reads,
+  // that is no remote move against a local change: the file is what the
+  // base holds and what the row last saw, or the revision is the base's.
+  lemma {:isolate_assertions} HeldClean(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput,
+                                        bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.base.Some? && document.binding.Some?
+    requires HeldForName(document, ApplyRevision(platform, doc, document, r, input, bound, claims, rev), r)
+    requires !r.deleted && !Revives(platform, document, r, input) && MoveRead(platform, document, r, input).None?
+    ensures var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+      read.Some? && read.value.0 == document.binding.value.seen
+      && (read.value.0 == document.base.value.content || document.base.value.rev == r.id)
+  {
+    var read := ListedRead(platform, input.listing, document.binding.value.spelling);
+    assert !MovedAgainstChange(document, read, r);
+    assert Newer(document, r) && !Acknowledges(document, r) && !SettlesIdentical(platform, document, r, input);
+    assert !UnsavedAt(platform, input.unsaved, document.binding.value.spelling);
+    assert !Concurrent(document, read, r);
+  }
+
+  // Where the rule clears the way, the head's row settles the revision as
+  // a link of its chain.
+  lemma {:isolate_assertions} ClearWayHeadLink(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                               revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires documents[doc].base.Some? && PulledBy(documents[doc], r, d)
+    requires documents[doc].base.value.rev == r.id ==> documents[doc].base == Some(BaseOf(r))
+    requires HeldForName(documents[doc], ApplyRevision(platform, doc, documents[doc], r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]), r)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      var document := documents[doc];
+      doc in ruled.documents && Distinct(platform, listing') && ruled.documents[doc].ahead.None? ==>
+            ruled.documents[doc].base == document.base
+            || (ruled.documents[doc].base == Some(BaseOf(r))
+                && LinkSaved(SavedBy(ruled.effects) + KeptApart(platform, document, r, input), d,
+                             document.base.value.content, document.base.value.deleted,
+                             LocalSide(platform, input.listing, document), r, LocalSide(platform, listing', ruled.documents[doc])))
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !(doc in ruled.documents && Distinct(platform, listing') && ruled.documents[doc].ahead.None?) { return; }
+    ClearWayHeadReads(platform, documents, doc, r, input, revs);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    assert aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value);
+    var head := HeadRow(platform, document, r, input, revs[doc]);
+    assert ruled.documents[doc] == head;
+    var x := LocalSide(platform, listing', head);
+    assert x == ListedRead(platform, listing', r.path);
+    var l := LocalSide(platform, input.listing, document);
+    var b := document.base.value.content;
+    var bd := document.base.value.deleted;
+    var saved := SavedBy(ruled.effects) + KeptApart(platform, document, r, input);
+    var a := Arriving(platform, document, r, input);
+    var row := ArrivingRow(platform, document, r, input);
+    var read := MoveRead(platform, document, r, input);
+    assert !Acknowledges(document, r);
+    assert r.device != d;
+    assert !r.deleted;
+    if read.Some? {
+      reveal Arriving();
+      reveal ArrivingRow();
+      reveal Keeps();
+      MovedContentSettlesAsG6(document, read.value, r);
+      assert l == read;
+      if MovedContent(document, read.value, r).None? {
+        assert read.value.0 in saved;
+      }
+      assert LinkSaved(saved, d, b, bd, l, r, x);
+    } else if Revives(platform, document, r, input) || document.binding.None? {
+      reveal Arriving();
+      reveal Keeps();
+      assert keep.None?;
+      assert l.None?;
+      assert x == Some((r.content, r.kind));
+    } else {
+      HeldClean(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+      if document.base.value.rev == r.id { return; }
+      reveal Arriving();
+      reveal ArrivingRow();
+      assert a == r && row == document;
+      assert LinkSaved(saved, d, b, bd, l, r, x);
+    }
+  }
+
+  // The rule settles a revision of a row with a base as a link of the
+  // row's chain, or leaves its base as it was.
+  lemma {:isolate_assertions} RuleLink(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                       revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires documents[doc].base.Some? && PulledBy(documents[doc], r, d)
+    requires documents[doc].base.value.rev == r.id ==> documents[doc].base == Some(BaseOf(r))
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      var document := documents[doc];
+      doc in ruled.documents
+      && (Distinct(platform, listing') ==>
+            ruled.documents[doc].base == document.base
+            || (ruled.documents[doc].base == Some(BaseOf(r))
+                && LinkSaved(SavedBy(ruled.effects) + KeptApart(platform, document, r, input), d,
+                             document.base.value.content, document.base.value.deleted,
+                             LocalSide(platform, input.listing, document), r, LocalSide(platform, listing', ruled.documents[doc]))))
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    var saved := SavedBy(ruled.effects) + KeptApart(platform, document, r, input);
+    if !HeldForName(document, applied, r) {
+      assert ruled.documents[doc] == applied.document && ruled.effects == applied.effects;
+      ApplyLink(platform, doc, document, r, input, bound, claims, revs[doc], d);
+      if Distinct(platform, listing') && ruled.documents[doc].base != document.base {
+        LinkSavedGrows(SavedBy(ruled.effects), saved, d, document.base.value.content, document.base.value.deleted,
+                       LocalSide(platform, input.listing, document), r, LocalSide(platform, listing', ruled.documents[doc]));
+      }
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) {
+      assert ruled.documents[doc].base == document.base;
+      return;
+    }
+    assert ruled == ClearWay(platform, documents, doc, r, input, revs);
+    if ruled.documents[doc].ahead.Some? {
+      // Deferred: the base stays.
+      assert ruled.documents[doc].base == document.base;
+      return;
+    }
+    ClearWayHeadLink(platform, documents, doc, r, input, revs, first, d);
+  }
+  // ---------------------------------------------------------------------
+  // The other rows: their bases stay
+  // ---------------------------------------------------------------------
+
+  lemma MoveRowsKeepBases(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs)
+    requires documents.Keys <= revs.Keys
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      rows.Keys == documents.Keys && forall e | e in rows :: rows[e].base == documents[e].base
+    decreases |moves|
+  {
+    if moves != [] { MoveRowsKeepBases(platform, documents, doc, moves[1..], revs); }
+  }
+
+  // The rule changes no other row's base.
+  lemma RuleKeepsOtherBases(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                            revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      ruled.documents.Keys == documents.Keys
+      && forall e | e in documents && e != doc :: ruled.documents[e].base == documents[e].base
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var avoid := BoundNames(documents) + input.unsaved;
+      var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+      if aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+        MoveRowsKeepBases(platform, documents, doc, aside.value, revs);
+      }
     }
   }
 }
