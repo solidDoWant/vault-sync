@@ -1876,6 +1876,25 @@ abstract module RoundG6 refines RoundGuarantees {
   // A row the rule lets go (W(b)): its file stays, untracked
   // ---------------------------------------------------------------------
 
+  // A file moved aside reads at its copy name what it read, where nothing
+  // after the move touches that name.
+  lemma {:isolate_assertions} AsideMoveReads(platform: Platform, listing: Listing, front: seq<Effect>, tail: seq<Effect>,
+                                             moves: seq<(Path, Path, Hash)>, i: nat)
+    requires Distinct(platform, listing) && Distinct(platform, ListingAfter(platform, listing, front + tail))
+    requires i < |moves| && |front| == |moves|
+    requires forall k | 0 <= k < |moves| :: front[k].Move? && front[k].from == moves[k].0 && front[k].to == moves[k].1
+    requires forall k | 0 <= k < |moves| :: moves[k].0 in listing && FreeIn(platform, listing, moves[k].1)
+    requires forall a, b | 0 <= a < b < |moves| :: moves[a].0 != moves[b].0 && !CollideF(platform, moves[a].1, moves[b].1)
+    requires forall effect :: effect in tail ==> !Touches(platform, effect, moves[i].1)
+    ensures ListedRead(platform, ListingAfter(platform, listing, front + tail), moves[i].1) == ListedRead(platform, listing, moves[i].0)
+  {
+    AsideThenTail(platform, listing, front, tail, moves, i);
+    SameFIsEquivalence(platform, moves[i].1, moves[i].1, moves[i].1);
+    var effects := front + tail;
+    assert forall k | 0 <= k < |moves| :: effects[k] == front[k];
+    MovedKeepsRead(platform, listing, effects, moves, i, moves[i].1);
+  }
+
   // Where the rule clears the way, another row it lets go had its file
   // moved aside: the copy holds what the row read, and no row is bound
   // to it.
@@ -1939,9 +1958,8 @@ abstract module RoundG6 refines RoundGuarantees {
     }
     if SameF(platform, r.path, name) { SameFIsEquivalence(platform, r.path, name, name); assert CollideF(platform, name, r.path); assert false; }
     ArriveTouchesOnly(platform, doc, ArrivingRow(platform, document, r, input), Arriving(platform, document, r, input), keep, name);
-    AsideThenTail(platform, input.listing, front, arrive, moves, i);
+    AsideMoveReads(platform, input.listing, front, arrive, moves, i);
     SameFIsEquivalence(platform, name, name, name);
-    MovedKeepsRead(platform, input.listing, ruled.effects, moves, i, name);
     assert ListedAt(platform, input.listing, p) == p by {
       SameFIsEquivalence(platform, p, p, p);
       var k := ListedAt(platform, input.listing, p);
@@ -2471,5 +2489,370 @@ abstract module RoundG6 refines RoundGuarantees {
         (Newer(row.(ahead := None), r) ==> PulledBy(row.(ahead := None), r, d))
         && RetriedInPass(platform, d, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first)
       else RetriedInPass(platform, d, pass, docs[1..], input, revs, first)
+  }
+
+  // ---------------------------------------------------------------------
+  // In step with the file: what the document sends is its local side
+  // ---------------------------------------------------------------------
+
+  // A row in step with its file: a bound row has seen what the listing
+  // reads at its name, and a live outbox the document sends (Outgoing)
+  // carries it.
+  ghost predicate Synced(platform: Platform, listing: Listing, row: Document)
+    requires ListingDistinct(platform, listing)
+  {
+    (row.binding.Some? ==>
+       LocalSide(platform, listing, row).Some? && LocalSide(platform, listing, row).value.0 == row.binding.value.seen)
+    && (row.outbox.Some? && !row.outbox.value.deleted && !Superseded(row) ==>
+          row.binding.Some? && row.outbox.value.content == row.binding.value.seen)
+  }
+
+  // The apply that settles another device's revision leaves the row in
+  // step with its file; its own revision's acknowledgement keeps it so.
+  lemma {:isolate_assertions} ApplySynced(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput,
+                                          bound: set<Path>, claims: Claims, rev: RevId, d: DeviceId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.base.Some? && PulledBy(document, r, d) && NotBuiltOn(document, r)
+    requires document.base.value.rev == r.id ==> document.base == Some(BaseOf(r))
+    requires r.device == d ==> Synced(platform, input.listing, document)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      var listing' := ListingAfter(platform, input.listing, applied.effects);
+      Distinct(platform, listing') && applied.document.base != document.base ==>
+        Synced(platform, listing', applied.document)
+  {
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    var listing' := ListingAfter(platform, input.listing, applied.effects);
+    if !Distinct(platform, listing') || applied.document.base == document.base { return; }
+    var b := document.base.value.content;
+    var after := applied.document;
+    var x := LocalSide(platform, listing', after);
+    assert Newer(document, r);
+    if SettlesIdentical(platform, document, r, input) {
+      assert applied.effects == [] && listing' == input.listing;
+      assert after == IdenticalRow(document, r);
+      return;
+    }
+    if Acknowledges(document, r) {
+      assert applied.effects == [] && listing' == input.listing;
+      return;
+    }
+    assert r.device != d;
+    if Revives(platform, document, r, input) {
+      assert !KeepsUntracked(platform, document, r, input);
+      assert applied == Create(platform, doc, Revived(document), r, input, bound, claims, rev);
+      if |applied.effects| == 1 {
+        ListingAfterOne(platform, input.listing, applied.effects[0]);
+        WriteReads(platform, input.listing, applied.effects[0]);
+      } else if |applied.effects| == 2 {
+        CreateMoveAsideReads(platform, doc, Revived(document), r, input, bound, claims, rev);
+      } else {
+        assert applied.effects == [] && listing' == input.listing;
+        SameFIsEquivalence(platform, r.path, r.path, r.path);
+        assert x == Some((r.content, r.kind));
+      }
+      return;
+    }
+    if document.binding.None? {
+      if r.deleted {
+        assert applied.effects == [] && after.binding.None?;
+        return;
+      }
+      assert applied == Create(platform, doc, document, r, input, bound, claims, rev);
+      if |applied.effects| == 1 {
+        ListingAfterOne(platform, input.listing, applied.effects[0]);
+        WriteReads(platform, input.listing, applied.effects[0]);
+      } else if |applied.effects| == 2 {
+        CreateMoveAsideReads(platform, doc, document, r, input, bound, claims, rev);
+      } else {
+        assert applied.effects == [] && listing' == input.listing;
+        SameFIsEquivalence(platform, r.path, r.path, r.path);
+        assert x == Some((r.content, r.kind));
+      }
+      return;
+    }
+    var spelling := document.binding.value.spelling;
+    var read := ListedRead(platform, input.listing, spelling);
+    if r.deleted && read.None? {
+      return;
+    }
+    if Concurrent(document, read, r) {
+      assert applied == Settle(platform, doc, document, read.value, r, input, bound, claims, rev);
+      var lc := read.value.0;
+      if lc == b && lc == document.binding.value.seen {
+        ListingAfterOne(platform, input.listing, applied.effects[0]);
+        WriteReads(platform, input.listing, applied.effects[0]);
+        assert x == Some((r.content, r.kind));
+      } else if r.content == b {
+        assert applied.effects == [] && listing' == input.listing;
+      } else if lc != b && read.value.1 == Note && r.kind == Note && Merge(b, lc, r.content).Some? {
+        ListingAfterOne(platform, input.listing, applied.effects[0]);
+        WriteReads(platform, input.listing, applied.effects[0]);
+        assert x == Some((Merge(b, lc, r.content).value, Note));
+      } else {
+        var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, spelling, spelling).value;
+        assert applied.effects == [Write(None, copy, lc, read.value.1, None), Write(Some(doc), spelling, r.content, r.kind, Some(lc))];
+        ListingAfterTwo(platform, input.listing, applied.effects[0], applied.effects[1]);
+        var mid := ListingAfterEffect(platform, input.listing, applied.effects[0]);
+        if Listed(platform, input.listing, copy) {
+          var q := ListedAt(platform, input.listing, copy);
+          assert CollideF(platform, q, copy);
+          assert false;
+        }
+        var k := ListedAt(platform, input.listing, spelling);
+        assert k in mid;
+        assert Listed(platform, mid, spelling);
+        WriteReads(platform, mid, applied.effects[1]);
+        assert x == Some((r.content, r.kind));
+      }
+      return;
+    }
+    if EditedAgainstDelete(document, read, r) {
+      assert applied.effects == [] && listing' == input.listing;
+      return;
+    }
+    if MovedAgainstChange(document, read, r) { return; }
+    if !Clean(platform, document, read) && !r.deleted && read.Some? && document.base.value.rev == r.id {
+      assert applied.effects == [] && listing' == input.listing;
+      return;
+    }
+    if !Clean(platform, document, read) { return; }
+    if r.deleted {
+      assert after.binding.None? && after.outbox.None?;
+      return;
+    }
+    if r.path == spelling {
+      ListingAfterOne(platform, input.listing, applied.effects[0]);
+      WriteReads(platform, input.listing, applied.effects[0]);
+      assert x == Some((r.content, r.kind));
+      return;
+    }
+  }
+
+  // Where the rule clears the way, the head's row is in step with its
+  // file.
+  lemma {:isolate_assertions} ClearWayHeadSynced(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                                 revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires documents[doc].base.Some? && PulledBy(documents[doc], r, d) && NotBuiltOn(documents[doc], r)
+    requires HeldForName(documents[doc], ApplyRevision(platform, doc, documents[doc], r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]), r)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      doc in ruled.documents && Distinct(platform, listing') && ruled.documents[doc].ahead.None?
+      && ruled.documents[doc].base != documents[doc].base ==>
+        Synced(platform, listing', ruled.documents[doc])
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !(doc in ruled.documents && Distinct(platform, listing') && ruled.documents[doc].ahead.None?
+         && ruled.documents[doc].base != document.base) { return; }
+    ClearWayHeadReads(platform, documents, doc, r, input, revs);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    assert aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value);
+    var head := HeadRow(platform, document, r, input, revs[doc]);
+    assert ruled.documents[doc] == head;
+    var x := LocalSide(platform, listing', head);
+    assert x == ListedRead(platform, listing', r.path);
+    var a := Arriving(platform, document, r, input);
+    var read := MoveRead(platform, document, r, input);
+    assert !Acknowledges(document, r);
+    assert !r.deleted;
+    reveal HeadRow();
+    if read.Some? {
+      reveal Arriving();
+      reveal ArrivingRow();
+      reveal Keeps();
+      assert x.Some? && x.value.0 == a.content;
+      if MovedContent(document, read.value, r).None? {
+        assert a == r;
+        assert head.binding.value.seen == r.content;
+      } else {
+        assert head.binding.value.seen == a.content;
+      }
+    } else if Revives(platform, document, r, input) || document.binding.None? {
+      reveal Arriving();
+      reveal Keeps();
+      assert keep.None?;
+      assert x == Some((r.content, r.kind));
+    } else {
+      HeldClean(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+      reveal Arriving();
+      reveal ArrivingRow();
+      assert a == r;
+      assert x.Some? && x.value.0 == r.content;
+      assert document.outbox.None?;
+    }
+  }
+
+  // The rule that settles another device's revision leaves the document's
+  // row in step with its file; its own revision's acknowledgement keeps it
+  // so.
+  lemma {:isolate_assertions} RuleSynced(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                         revs: FreshRevs, first: Claims, d: DeviceId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires documents[doc].base.Some? && PulledBy(documents[doc], r, d) && NotBuiltOn(documents[doc], r)
+    requires documents[doc].base.value.rev == r.id ==> documents[doc].base == Some(BaseOf(r))
+    requires r.device == d ==> Synced(platform, input.listing, documents[doc])
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      doc in ruled.documents
+      && (Distinct(platform, listing') && ruled.documents[doc].base != documents[doc].base ==>
+            Synced(platform, listing', ruled.documents[doc]))
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    if !HeldForName(document, applied, r) {
+      assert ruled.documents[doc] == applied.document && ruled.effects == applied.effects;
+      ApplySynced(platform, doc, document, r, input, bound, claims, revs[doc], d);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) {
+      assert ruled.documents[doc].base == document.base;
+      return;
+    }
+    assert ruled == ClearWay(platform, documents, doc, r, input, revs);
+    ClearWayKeys(platform, documents, doc, r, input, revs);
+    if ruled.documents[doc].ahead.Some? {
+      assert ruled.documents[doc].base == document.base;
+      return;
+    }
+    ClearWayHeadSynced(platform, documents, doc, r, input, revs, first, d);
+  }
+
+  // Where the rule clears the way, another row is as it was, or moved
+  // aside, or (its file missing) records the user's delete.
+  lemma {:isolate_assertions} ClearWayOtherRow(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                               input: RoundInput, revs: FreshRevs, e: DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires e in documents && e != doc
+    ensures var rows := ClearWay(platform, documents, doc, r, input, revs).documents;
+      e in rows
+      && (rows[e] == documents[e]
+          || (documents[e].binding.Some? && exists c :: rows[e] == MovedAside(documents[e], c, revs[e]))
+          || MissingIn(platform, input.listing, documents[e]))
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    ClearWayKeys(platform, documents, doc, r, input, revs);
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if !(aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value)) {
+      assert ruled == Defer(documents, doc, r, false) || ruled == Defer(documents, doc, r, true);
+      return;
+    }
+    var moves := aside.value;
+    AsideFacts(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    forall j | 0 <= j < |moves| ensures moves[j].0 in input.listing { assert moves[j].0 in way; }
+    var moved := MoveRows(platform, documents, doc, moves, revs);
+    MoveRowsRow(platform, documents, doc, moves, revs, input.listing, e);
+    if MissingIn(platform, input.listing, documents[e]) { return; }
+    assert ruled.documents[e] == moved[e];
+    if exists j | 0 <= j < |moves| :: FileOf(platform, documents, moves[j].0, e) {
+      var j := var j :| 0 <= j < |moves| && FileOf(platform, documents, moves[j].0, e); j;
+      assert moved[e] == MovedAside(documents[e], moves[j].1, revs[e]);
+    }
+  }
+
+  // The rule keeps every other row in step with its file.
+  lemma {:isolate_assertions} RuleOtherSynced(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                              revs: FreshRevs, first: Claims, e: DocId)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires e in documents && e != doc && Synced(platform, input.listing, documents[e])
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      e in ruled.documents
+      && (Distinct(platform, listing') ==> Synced(platform, listing', ruled.documents[e]))
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    RuleOtherSide(platform, documents, doc, r, input, revs, first, e);
+    if !Distinct(platform, listing') { return; }
+    var before := documents[e];
+    var after := ruled.documents[e];
+    if !HeldForName(document, applied, r) || UnsavedCollides(platform, input.unsaved, r.path) {
+      assert after == before;
+    } else {
+      ClearWayOtherRow(platform, documents, doc, r, input, revs, e);
+      if before.binding.Some? {
+        assert !MissingIn(platform, input.listing, before);
+      }
+    }
+    if after != before {
+      var c :| after == MovedAside(before, c, revs[e]);
+      assert after.base == before.base;
+    }
+  }
+
+  // The apply that leaves a row's base as it was changes at most what
+  // waits (and, reviving, drops the binding: Create holds the revived
+  // row), and touches no file.
+  lemma {:isolate_assertions} ApplyKeepsRow(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput,
+                                            bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.base.Some? && document.base.value.rev != r.id
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      applied.document.base == document.base ==>
+        (applied.document == document.(ahead := applied.document.ahead)
+         || applied.document == Revived(document).(ahead := applied.document.ahead))
+        && forall effect | effect in applied.effects :: effect.Report?
+  {
+    assert BaseOf(r).rev == r.id;
+  }
+
+  // The rule that leaves the document's base as it was keeps its row in
+  // step with its file.
+  lemma {:isolate_assertions} RuleOwnKeepsSynced(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                                                 revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires documents[doc].base.Some? && documents[doc].base.value.rev != r.id
+    requires Synced(platform, input.listing, documents[doc])
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      doc in ruled.documents
+      && (Distinct(platform, listing') && ruled.documents[doc].base == documents[doc].base ==>
+            Synced(platform, listing', ruled.documents[doc]))
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !(Distinct(platform, listing') && ruled.documents[doc].base == document.base) { return; }
+    ApplyKeepsRow(platform, doc, document, r, input, bound, claims, revs[doc]);
+    if !HeldForName(document, applied, r) {
+      ListingAfterReports(platform, input.listing, ruled.effects);
+    } else if UnsavedCollides(platform, input.unsaved, r.path) {
+      ListingAfterOne(platform, input.listing, ruled.effects[0]);
+    } else {
+      assert ruled == ClearWay(platform, documents, doc, r, input, revs);
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var avoid := BoundNames(documents) + input.unsaved;
+      var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+      if aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value) {
+        assert ruled.documents[doc] == HeadRow(platform, document, r, input, revs[doc]);
+        assert false;
+      }
+      ListingAfterOne(platform, input.listing, ruled.effects[0]);
+    }
+    assert listing' == input.listing;
+    assert ruled.documents[doc] == document.(ahead := ruled.documents[doc].ahead)
+        || ruled.documents[doc] == Revived(document).(ahead := ruled.documents[doc].ahead);
   }
 }
