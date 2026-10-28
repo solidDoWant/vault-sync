@@ -116,8 +116,11 @@ abstract module Convergence refines StepContracts {
     var R := S.revisions[id];
     assert BaseRecords(base, doc, S.accepted[id]);
     assert S.accepted[id] == R;
+    assert RevisionsOnFeed(S);
     var i :| 0 <= i < |S.feed| && S.feed[i] == id;
     assert R.doc == doc;
+    assert S.feed[i] in S.revisions && S.revisions[S.feed[i]].doc == doc;
+    assert HistoryFollowsFeed(S);
     assert doc in S.history && id in S.history[doc];
     var hist := S.history[doc];
     var m :| 0 <= m < |hist| && hist[m] == id;
@@ -127,6 +130,7 @@ abstract module Convergence refines StepContracts {
     FinishedKnowsHead(state, d, doc);
     assert R.position >= S.revisions[h].position;
     if m < |hist| - 1 {
+      assert 0 <= m < |hist| - 1 < |S.history[doc]| && hist[m] in S.revisions;
       assert S.revisions[hist[m]].position < S.revisions[hist[|hist| - 1]].position;
       assert false;
     }
