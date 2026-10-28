@@ -1033,7 +1033,6 @@ abstract module ResyncCore refines StepContracts {
   lemma {:isolate_assertions} SettledRowHolds(platform: Platform, server: Server, d: DeviceId, doc: DocId, document: Document,
                                               input: RoundInput, rev: RevId)
     requires RevisionsAccepted(server) && RevisionsKeyed(server) && HistoryFollowsFeed(server) && RevisionsOnFeed(server)
-    requires forall x, r :: x in server.history && r in server.history[x] ==> r in server.revisions
     requires PulledHead(platform, server, d, doc, document, input).Some?
     ensures var h := PulledHead(platform, server, d, doc, document, input).value;
       var row := PulledRow(document, h, rev);
@@ -1064,6 +1063,121 @@ abstract module ResyncCore refines StepContracts {
       assert OwnSynced(server, d, doc, document, x);
       assert OwnAnchor(server, d, doc, document).Some?;
       assert false;
+    }
+  }
+
+
+  // The settled step in terms of the re-anchoring: only d's journal and
+  // disk differ; the journal is the re-anchored one with each settled row
+  // replaced and no open intent; the disk is rewritten.
+  lemma {:isolate_assertions} SettleShape(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires G5_NeverJoined(pre) && G7_OneFilePerName(pre)
+    ensures var device := pre.devices[d];
+      var docs := PulledDocs(device.platform, pre.server, d, device.journal.documents, input);
+      var writes := PulledWrites(device.platform, pre.server, d, device.journal.documents, input, docs);
+      var reanchor := ReanchorStepOf(pre, d, input, revs);
+      var step := ResyncStepOf(pre, d, input, revs);
+      var journal := device.journal;
+      var jr := reanchor.post.devices[d].journal;
+      var journal' := step.post.devices[d].journal;
+      |writes| > 0 ==>
+        step.pre == pre && step.event == Resync(d)
+        && step.post.server == pre.server
+        && step.post.devices.Keys == pre.devices.Keys
+        && (forall x :: x in pre.devices && x != d ==> step.post.devices[x] == pre.devices[x])
+        && step.post.devices[d] == device.(journal := journal', disk := Rewritten(device.disk, writes))
+        && journal'.cursor == jr.cursor && journal'.anchor == jr.anchor && |journal'.intents| == 0
+        && journal'.documents.Keys == jr.documents.Keys
+        && (forall doc :: doc in journal'.documents ==>
+              if doc in journal.documents && PulledHead(device.platform, pre.server, d, doc, journal.documents[doc], input).Some?
+              then journal'.documents[doc] == PulledRow(journal.documents[doc],
+                     PulledHead(device.platform, pre.server, d, doc, journal.documents[doc], input).value, revs[doc])
+              else journal'.documents[doc] == jr.documents[doc])
+        && (forall i | 0 <= i < |writes| :: writes[i].Write? && writes[i].target.Some? && writes[i].target.value in docs)
+        && (forall doc :: doc in docs <==> (doc in journal.documents
+              && PulledHead(device.platform, pre.server, d, doc, journal.documents[doc], input).Some?))
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var documents := device.journal.documents;
+    var docs := PulledDocs(platform, pre.server, d, documents, input);
+    var writes := PulledWrites(platform, pre.server, d, documents, input, docs);
+    if |writes| > 0 {
+      var S := set doc | doc in documents && PulledHead(platform, pre.server, d, doc, documents[doc], input).Some?;
+      assert docs == DocsInOrder(S);
+      PulledWritesEach(platform, pre.server, d, documents, input, docs);
+      SettleDisk(pre, d, input, revs);
+    }
+  }
+
+
+  // The settled journal keeps the journal clauses the re-anchored one has:
+  // each settled row by SettledRowHolds, every other row as it was.
+  lemma {:isolate_assertions} SettleJournalClaims(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && pre.devices[d].running && CoreReachable(pre)
+    requires RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires ResyncKeeps(pre, d, ReanchorStepOf(pre, d, input, revs))
+    ensures var step := ResyncStepOf(pre, d, input, revs);
+      d in step.post.devices
+      && step.post.devices[d].journal.cursor == |pre.server.feed|
+      && JournalOnServer(step.post.server, step.post.devices[d].journal)
+      && OwnRevisionsAcknowledged(step.post, d)
+      && ResyncKeepsUserDelete(pre.devices[d].journal, step.post.devices[d].journal)
+      && CoreInv(step.post) && JournalsNameAccepted(step.post)
+      && CommitsOnBase(step.post) && OutboxParentsAccepted(step.post)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var docs := PulledDocs(platform, pre.server, d, device.journal.documents, input);
+    var writes := PulledWrites(platform, pre.server, d, device.journal.documents, input, docs);
+    var step := ResyncStepOf(pre, d, input, revs);
+    var reanchor := ReanchorStepOf(pre, d, input, revs);
+    if |writes| == 0 {
+      assert step == reanchor;
+      assert ClaimsCore(step.post);
+      return;
+    }
+    assert StateInvariants(pre) && ClaimsCore(pre);
+    SettleShape(pre, d, input, revs);
+    var server := pre.server;
+    var journal := device.journal;
+    var jr := reanchor.post.devices[d].journal;
+    var post := step.post;
+    var journal' := post.devices[d].journal;
+    assert ClaimsCore(reanchor.post);
+    assert reanchor.post.server == server;
+    forall doc | doc in journal.documents && PulledHead(platform, server, d, doc, journal.documents[doc], input).Some?
+      ensures var h := PulledHead(platform, server, d, doc, journal.documents[doc], input).value;
+        var row := PulledRow(journal.documents[doc], h, revs[doc]);
+        RowInv(row)
+        && row.base.Some? && row.base.value.rev in server.revisions && row.base.value.rev in server.accepted
+        && BaseRecords(row.base.value, doc, server.accepted[row.base.value.rev])
+        && row.ahead.None?
+        && OutboxParentAtBase(server, doc, row) && OwnCommitOnBase(server, d, doc, row)
+        && (row.outbox.Some? && row.outbox.value.baseRev.Some? ==> row.outbox.value.baseRev.value in server.accepted)
+        && row.absence == Never
+    {
+      SettledRowHolds(platform, server, d, doc, journal.documents[doc], input, revs[doc]);
+    }
+    // Every other device is as it was, and d's other rows as re-anchored.
+    assert forall x :: x in post.devices && x != d ==> post.devices[x] == reanchor.post.devices[x];
+    CoreInvRows(reanchor.post);
+    CoreInvRows(post);
+    assert ReadsFeed(post, d) <==> ReadsFeed(reanchor.post, d);
+    forall x | x in post.devices ensures ReadsFeed(post, x) <==> ReadsFeed(reanchor.post, x) {}
+    // Unacknowledged revisions of a settled row: none, as it has no own
+    // revision in its history (no own anchor).
+    forall doc, id | Unacknowledged(post, d, doc, id)
+      ensures journal'.documents[doc].outbox.Some? && journal'.documents[doc].outbox.value.rev == id
+    {
+      if doc in journal.documents && PulledHead(platform, server, d, doc, journal.documents[doc], input).Some? {
+        assert OwnSynced(server, d, doc, journal.documents[doc], id);
+        assert OwnAnchor(server, d, doc, journal.documents[doc]).Some?;
+        assert false;
+      } else {
+        assert Unacknowledged(reanchor.post, d, doc, id);
+      }
     }
   }
 
