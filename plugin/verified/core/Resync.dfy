@@ -1019,6 +1019,10 @@ abstract module ResyncCore refines ApplyCore {
                !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
     ensures var writes := PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing));
       EffectsTake(platform, disk, writes, Rewritten(disk, writes)) && disk.Keys <= Rewritten(disk, writes).Keys
+    ensures var final := Rewritten(disk, PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing)));
+      (forall p, q :: p in final && q in final && p != q ==> !CollideF(platform, p, q))
+      && (forall q | q in disk :: q in final && final[q].identity == disk[q].identity)
+      && (forall p | p in final && p !in disk :: forall t | t in BoundSpellings(documents) + input.unsaved :: !SameF(platform, t, p))
     decreases |docs|
   {
     var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
@@ -1110,6 +1114,23 @@ abstract module ResyncCore refines ApplyCore {
     }
   }
 
+  // Some file on the disk holds content `k`.
+  ghost predicate ContentOn(disk: map<Path, DiskFile>, k: Hash) {
+    exists c :: c in disk && disk[c].content == k
+  }
+
+  // Every content on `disk` survives into `final`, or a live head holds it.
+  ghost predicate KeptFrom(server: Server, disk: map<Path, DiskFile>, final: map<Path, DiskFile>) {
+    forall q | q in disk :: HeldByHead(server, disk[q].content) || ContentOn(final, disk[q].content)
+  }
+
+  lemma ContentCarries(server: Server, mid: map<Path, DiskFile>, final: map<Path, DiskFile>, k: Hash)
+    requires KeptFrom(server, mid, final) && ContentOn(mid, k)
+    ensures HeldByHead(server, k) || ContentOn(final, k)
+  {
+    var c :| c in mid && mid[c].content == k;
+  }
+
   // G1's core (#1080, planner ruling (2)): the plan destroys no content.
   // Every content a file held before it is still on the disk after it, or
   // is held by a live head on the server: a write in place replaces only
@@ -1127,16 +1148,16 @@ abstract module ResyncCore refines ApplyCore {
     requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
                && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
                !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
-    ensures var disk' := Rewritten(disk, PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing)));
-      forall q | q in disk :: HeldByHead(server, disk[q].content)
-        || exists c :: c in disk' && disk'[c].content == disk[q].content
-    decreases |docs|
+    ensures KeptFrom(server, disk, Rewritten(disk, PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing))))
+    decreases |docs|, 1
   {
     var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
     var disk' := Rewritten(disk, PulledWrites(documents, input, plan));
     if |docs| == 0 {
-      forall q | q in disk ensures exists c :: c in disk' && disk'[c].content == disk[q].content {
-        assert disk' == disk;
+      assert plan == [];
+      assert disk' == disk;
+      forall q | q in disk ensures ContentOn(disk', disk[q].content) {
+        assert disk'[q].content == disk[q].content;
       }
       return;
     }
@@ -1168,13 +1189,14 @@ abstract module ResyncCore refines ApplyCore {
       PlanKeeps(platform, server, d, documents, input, docs[1..], listing, disk1);
       RewrittenAppend(disk, [w], PulledWrites(documents, input, rest));
       assert disk' == Rewritten(disk1, PulledWrites(documents, input, rest));
-      forall q | q in disk
-        ensures HeldByHead(server, disk[q].content) || exists c :: c in disk' && disk'[c].content == disk[q].content
-      {
+      assert KeptFrom(server, disk1, disk');
+      forall q | q in disk ensures HeldByHead(server, disk[q].content) || ContentOn(disk', disk[q].content) {
         if q == b.spelling {
-          assert disk[q].content == b.seen == document.base.value.content;
+          assert disk[q].content == document.base.value.content;
         } else {
           assert disk1[q] == disk[q];
+          assert ContentOn(disk1, disk[q].content);
+          ContentCarries(server, disk1, disk', disk[q].content);
         }
       }
     } else {
@@ -1191,47 +1213,494 @@ abstract module ResyncCore refines ApplyCore {
           assert plan == rest;
           PlanKeeps(platform, server, d, documents, input, docs[1..], listing, disk);
         } else {
-          var c := copy.value;
-          var listing' := listing[c := listing[sp]];
+          PlanKeepsCopy(platform, server, d, documents, input, docs, listing, disk, copy.value);
+        }
+      }
+    }
+  }
+
+  // PlanKeeps' copy branch: the copy keeps `seen` before the head is
+  // written over the file.
+  lemma {:isolate_assertions} PlanKeepsCopy(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>,
+                                            input: RoundInput, docs: seq<DocId>, listing: Listing, disk: map<Path, DiskFile>, c: Path)
+    requires |docs| > 0
+    requires forall doc :: doc in docs ==> doc in documents
+    requires forall i, j | 0 <= i < j < |docs| :: docs[i] != docs[j]
+    requires listing.Keys == disk.Keys
+    requires forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q)
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling in disk
+               && disk[documents[doc].binding.value.spelling].content == documents[doc].binding.value.seen
+    requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
+               && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
+               !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
+    requires var document := documents[docs[0]];
+      PulledHead(platform, server, d, docs[0], document, input).Some?
+      && !HeldByHead(server, document.base.value.content)
+      && document.binding.value.spelling in listing
+      && PathConflictCopy(platform, listing, BoundSpellings(documents) + input.unsaved,
+                          ClaimsOf(documents, docs[0]).(listed := BoundSpellings(documents)),
+                          document.binding.value.spelling, document.binding.value.spelling) == Some(c)
+    ensures KeptFrom(server, disk, Rewritten(disk, PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing))))
+    decreases |docs|, 0
+  {
+    var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+    var disk' := Rewritten(disk, PulledWrites(documents, input, plan));
+    var doc := docs[0];
+    var document := documents[doc];
+    var head := PulledHead(platform, server, d, doc, document, input);
+    var b := document.binding.value;
+    var sp := b.spelling;
+    forall doc2 | doc2 in docs[1..] && PulledHead(platform, server, d, doc2, documents[doc2], input).Some?
+      ensures sp != documents[doc2].binding.value.spelling
+    {
+      assert doc2 != doc;
+      SameFIsEquivalence(platform, sp, sp, sp);
+    }
+    var listing' := listing[c := listing[sp]];
+    var rest' := PulledPlan(platform, server, d, documents, input, docs[1..], listing');
+    assert plan == [Settlement(doc, head.value, Some(c))] + rest';
+    var wc := Write(None, c, b.seen, input.listing[sp].1, None);
+    var w := Write(Some(doc), sp, head.value.content, head.value.kind, Some(b.seen));
+    assert SettlementWrites(documents, input, plan[0]) == [wc, w];
+    assert PulledWrites(documents, input, plan) == [wc, w] + PulledWrites(documents, input, rest') by {
+      assert plan[1..] == rest';
+    }
+    assert FreeOn(platform, disk, c) by {
+      forall q | q in disk ensures !CollideF(platform, q, c) { assert q in listing; }
+    }
+    CopyTakes(platform, disk, wc);
+    var disk1 := Rewritten(disk, [wc]);
+    forall p, q | p in disk1 && q in disk1 && p != q ensures !CollideF(platform, p, q) {
+      CollideFSymmetric(platform, p, q);
+    }
+    InPlaceTakes(platform, disk1, w);
+    var disk2 := Rewritten(disk1, [w]);
+    assert listing'.Keys == disk2.Keys;
+    PlanKeeps(platform, server, d, documents, input, docs[1..], listing', disk2);
+    var tail := PulledWrites(documents, input, rest');
+    RewrittenAppend(disk, [wc], [w]);
+    assert [wc] + [w] == [wc, w];
+    RewrittenAppend(disk, [wc, w], tail);
+    assert disk' == Rewritten(disk2, tail);
+    assert KeptFrom(server, disk2, disk');
+    assert c != sp;
+    assert c in disk2 && disk2[c].content == b.seen;
+    forall q | q in disk ensures HeldByHead(server, disk[q].content) || ContentOn(disk', disk[q].content) {
+      if q == sp {
+        assert ContentOn(disk2, disk[q].content) by { assert disk2[c].content == disk[q].content; }
+      } else {
+        assert q != c;
+        assert disk2[q] == disk[q];
+        assert ContentOn(disk2, disk[q].content);
+      }
+      ContentCarries(server, disk2, disk', disk[q].content);
+    }
+  }
+
+  // The shape of each write of the plan: a write in place at a settled
+  // row's file, conditional on `seen`; or a copy, unconditional, at a name
+  // no listed file collides with and that is no bound name nor one an
+  // editor holds unsaved text at.
+  ghost predicate PlanWrite(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>, input: RoundInput, w: Effect) {
+    w.Write?
+    && ((w.target.Some? && w.target.value in documents && documents[w.target.value].binding.Some?
+         && PulledHead(platform, server, d, w.target.value, documents[w.target.value], input).Some?
+         && w.path == documents[w.target.value].binding.value.spelling
+         && w.precondition == Some(documents[w.target.value].binding.value.seen))
+        || (w.target.None? && w.precondition.None? && FreeIn(platform, input.listing, w.path)
+            && forall t | t in BoundSpellings(documents) + input.unsaved :: !SameF(platform, t, w.path)))
+  }
+
+  lemma PlanWrites(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>, input: RoundInput,
+                   docs: seq<DocId>, listing: Listing)
+    requires forall doc :: doc in docs ==> doc in documents
+    requires input.listing.Keys <= listing.Keys
+    ensures forall w | w in PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing)) ::
+      PlanWrite(platform, server, d, documents, input, w) && (w.target.Some? ==> w.target.value in docs)
+      && (w.target.Some? ==> PlannedHead(PulledPlan(platform, server, d, documents, input, docs, listing), w.target.value).Some?)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var doc := docs[0];
+      var document := documents[doc];
+      var head := PulledHead(platform, server, d, doc, document, input);
+      var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+      PlanWrites(platform, server, d, documents, input, docs[1..], listing);
+      if head.Some? && !HeldByHead(server, document.base.value.content) && document.binding.value.spelling in listing {
+        var sp := document.binding.value.spelling;
+        var copy := PathConflictCopy(platform, listing, BoundSpellings(documents) + input.unsaved,
+                                     ClaimsOf(documents, doc).(listed := BoundSpellings(documents)), sp, sp);
+        if copy.Some? {
+          var listing' := listing[copy.value := listing[sp]];
+          PlanWrites(platform, server, d, documents, input, docs[1..], listing');
           var rest' := PulledPlan(platform, server, d, documents, input, docs[1..], listing');
-          assert plan == [Settlement(doc, head.value, Some(c))] + rest';
-          var wc := Write(None, c, b.seen, input.listing[sp].1, None);
-          var w := Write(Some(doc), sp, head.value.content, head.value.kind, Some(b.seen));
-          assert SettlementWrites(documents, input, plan[0]) == [wc, w];
-          assert PulledWrites(documents, input, plan) == [wc, w] + PulledWrites(documents, input, rest') by {
-            assert plan[1..] == rest';
+          assert plan == [Settlement(doc, head.value, copy)] + rest';
+          assert plan[1..] == rest';
+          assert FreeIn(platform, input.listing, copy.value) by {
+            forall q | q in input.listing ensures !CollideF(platform, q, copy.value) { assert q in listing; }
           }
-          assert FreeOn(platform, disk, c) by {
-            forall q | q in disk ensures !CollideF(platform, q, c) { assert q in listing; }
-          }
-          CopyTakes(platform, disk, wc);
-          var disk1 := Rewritten(disk, [wc]);
-          forall p, q | p in disk1 && q in disk1 && p != q ensures !CollideF(platform, p, q) {
-            CollideFSymmetric(platform, p, q);
-          }
-          InPlaceTakes(platform, disk1, w);
-          var disk2 := Rewritten(disk1, [w]);
-          assert listing'.Keys == disk2.Keys;
-          PlanKeeps(platform, server, d, documents, input, docs[1..], listing', disk2);
-          var tail := PulledWrites(documents, input, rest');
-          RewrittenAppend(disk, [wc], [w]);
-          assert [wc] + [w] == [wc, w];
-          RewrittenAppend(disk, [wc, w], tail);
-          assert disk' == Rewritten(disk2, tail);
-          assert c != sp;
-          assert c in disk2 && disk2[c].content == b.seen;
-          forall q | q in disk
-            ensures HeldByHead(server, disk[q].content) || exists c' :: c' in disk' && disk'[c'].content == disk[q].content
-          {
-            if q == sp {
-              assert disk[q].content == disk2[c].content;
-            } else {
-              assert q != c;
-              assert disk2[q] == disk[q];
-            }
+        }
+      } else if head.Some? {
+        var rest := PulledPlan(platform, server, d, documents, input, docs[1..], listing);
+        if HeldByHead(server, document.base.value.content) {
+          assert plan[1..] == rest;
+        }
+      }
+    }
+  }
+
+  // A file the plan changes is one a write's precondition matched: the
+  // write in place at the row's file, holding `seen`.
+  ghost predicate ChangedOnlyBy(disk: map<Path, DiskFile>, final: map<Path, DiskFile>, writes: seq<Effect>) {
+    forall q | q in disk :: q in final
+      && (final[q] == disk[q] || exists w :: w in writes && w.Write? && w.path == q && w.precondition == Some(disk[q].content))
+  }
+
+  lemma {:isolate_assertions} PlanChanges(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>,
+                                          input: RoundInput, docs: seq<DocId>, listing: Listing, disk: map<Path, DiskFile>)
+    requires forall doc :: doc in docs ==> doc in documents
+    requires forall i, j | 0 <= i < j < |docs| :: docs[i] != docs[j]
+    requires listing.Keys == disk.Keys
+    requires forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q)
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling in disk
+               && disk[documents[doc].binding.value.spelling].content == documents[doc].binding.value.seen
+    requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
+               && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
+               !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
+    ensures var writes := PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing));
+      ChangedOnlyBy(disk, Rewritten(disk, writes), writes)
+    decreases |docs|, 1
+  {
+    var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+    var writes := PulledWrites(documents, input, plan);
+    var disk' := Rewritten(disk, writes);
+    if |docs| == 0 {
+      assert plan == [] && writes == [] && disk' == disk;
+      return;
+    }
+    var doc := docs[0];
+    var document := documents[doc];
+    var head := PulledHead(platform, server, d, doc, document, input);
+    forall doc2 | doc2 in docs[1..] && PulledHead(platform, server, d, doc2, documents[doc2], input).Some?
+      ensures head.Some? ==> document.binding.value.spelling != documents[doc2].binding.value.spelling
+    {
+      if head.Some? {
+        assert doc2 != doc;
+        SameFIsEquivalence(platform, document.binding.value.spelling, document.binding.value.spelling, document.binding.value.spelling);
+      }
+    }
+    var rest := PulledPlan(platform, server, d, documents, input, docs[1..], listing);
+    if head.None? {
+      assert plan == rest;
+      PlanChanges(platform, server, d, documents, input, docs[1..], listing, disk);
+    } else if HeldByHead(server, document.base.value.content) {
+      var b := document.binding.value;
+      var w := Write(Some(doc), b.spelling, head.value.content, head.value.kind, Some(b.seen));
+      assert plan == [Settlement(doc, head.value, None)] + rest;
+      assert SettlementWrites(documents, input, plan[0]) == [w];
+      var tail := PulledWrites(documents, input, rest);
+      assert writes == [w] + tail by { assert plan[1..] == rest; }
+      InPlaceTakes(platform, disk, w);
+      var disk1 := Rewritten(disk, [w]);
+      PlanChanges(platform, server, d, documents, input, docs[1..], listing, disk1);
+      RewrittenAppend(disk, [w], tail);
+      assert disk' == Rewritten(disk1, tail);
+      assert ChangedOnlyBy(disk1, disk', tail);
+      forall q | q in disk ensures q in disk'
+        && (disk'[q] == disk[q] || exists w' :: w' in writes && w'.Write? && w'.path == q && w'.precondition == Some(disk[q].content))
+      {
+        assert q in disk1;
+        if q == b.spelling {
+          assert w in writes;
+        } else {
+          assert disk1[q] == disk[q];
+          if disk'[q] != disk[q] {
+            var w' :| w' in tail && w'.Write? && w'.path == q && w'.precondition == Some(disk1[q].content);
+            assert w' in writes;
           }
         }
       }
+    } else {
+      var b := document.binding.value;
+      var sp := b.spelling;
+      if sp !in listing {
+        assert plan == rest;
+        PlanChanges(platform, server, d, documents, input, docs[1..], listing, disk);
+      } else {
+        var copy := PathConflictCopy(platform, listing, BoundSpellings(documents) + input.unsaved,
+                                     ClaimsOf(documents, doc).(listed := BoundSpellings(documents)), sp, sp);
+        if copy.None? {
+          assert plan == rest;
+          PlanChanges(platform, server, d, documents, input, docs[1..], listing, disk);
+        } else {
+          PlanChangesCopy(platform, server, d, documents, input, docs, listing, disk, copy.value);
+        }
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} PlanChangesCopy(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>,
+                                              input: RoundInput, docs: seq<DocId>, listing: Listing, disk: map<Path, DiskFile>, c: Path)
+    requires |docs| > 0
+    requires forall doc :: doc in docs ==> doc in documents
+    requires forall i, j | 0 <= i < j < |docs| :: docs[i] != docs[j]
+    requires listing.Keys == disk.Keys
+    requires forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q)
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling in disk
+               && disk[documents[doc].binding.value.spelling].content == documents[doc].binding.value.seen
+    requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
+               && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
+               !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
+    requires var document := documents[docs[0]];
+      PulledHead(platform, server, d, docs[0], document, input).Some?
+      && !HeldByHead(server, document.base.value.content)
+      && document.binding.value.spelling in listing
+      && PathConflictCopy(platform, listing, BoundSpellings(documents) + input.unsaved,
+                          ClaimsOf(documents, docs[0]).(listed := BoundSpellings(documents)),
+                          document.binding.value.spelling, document.binding.value.spelling) == Some(c)
+    ensures var writes := PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing));
+      ChangedOnlyBy(disk, Rewritten(disk, writes), writes)
+    decreases |docs|, 0
+  {
+    var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+    var writes := PulledWrites(documents, input, plan);
+    var disk' := Rewritten(disk, writes);
+    var doc := docs[0];
+    var document := documents[doc];
+    var head := PulledHead(platform, server, d, doc, document, input);
+    var b := document.binding.value;
+    var sp := b.spelling;
+    forall doc2 | doc2 in docs[1..] && PulledHead(platform, server, d, doc2, documents[doc2], input).Some?
+      ensures sp != documents[doc2].binding.value.spelling
+    {
+      assert doc2 != doc;
+      SameFIsEquivalence(platform, sp, sp, sp);
+    }
+    var listing' := listing[c := listing[sp]];
+    var rest' := PulledPlan(platform, server, d, documents, input, docs[1..], listing');
+    assert plan == [Settlement(doc, head.value, Some(c))] + rest';
+    var wc := Write(None, c, b.seen, input.listing[sp].1, None);
+    var w := Write(Some(doc), sp, head.value.content, head.value.kind, Some(b.seen));
+    assert SettlementWrites(documents, input, plan[0]) == [wc, w];
+    var tail := PulledWrites(documents, input, rest');
+    assert writes == [wc, w] + tail by { assert plan[1..] == rest'; }
+    assert FreeOn(platform, disk, c) by {
+      forall q | q in disk ensures !CollideF(platform, q, c) { assert q in listing; }
+    }
+    CopyTakes(platform, disk, wc);
+    var disk1 := Rewritten(disk, [wc]);
+    forall p, q | p in disk1 && q in disk1 && p != q ensures !CollideF(platform, p, q) {
+      CollideFSymmetric(platform, p, q);
+    }
+    InPlaceTakes(platform, disk1, w);
+    var disk2 := Rewritten(disk1, [w]);
+    assert listing'.Keys == disk2.Keys;
+    PlanChanges(platform, server, d, documents, input, docs[1..], listing', disk2);
+    RewrittenAppend(disk, [wc], [w]);
+    assert [wc] + [w] == [wc, w];
+    RewrittenAppend(disk, [wc, w], tail);
+    assert disk' == Rewritten(disk2, tail);
+    assert ChangedOnlyBy(disk2, disk', tail);
+    assert w in writes;
+    forall q | q in disk ensures q in disk'
+      && (disk'[q] == disk[q] || exists w' :: w' in writes && w'.Write? && w'.path == q && w'.precondition == Some(disk[q].content))
+    {
+      assert q in disk2;
+      if q != sp {
+        assert q != c;
+        assert disk2[q] == disk[q];
+        if disk'[q] != disk[q] {
+          var w' :| w' in tail && w'.Write? && w'.path == q && w'.precondition == Some(disk2[q].content);
+          assert w' in writes;
+        }
+      }
+    }
+  }
+
+  // Each settled row's file ends up holding its head's content: later
+  // writes in place are at other rows' files, and copies at new names.
+  ghost predicate SettledFiles(documents: map<DocId, Document>, plan: seq<Settlement>, final: map<Path, DiskFile>) {
+    forall doc | PlannedHead(plan, doc).Some? && doc in documents && documents[doc].binding.Some? ::
+      documents[doc].binding.value.spelling in final
+      && final[documents[doc].binding.value.spelling].content == PlannedHead(plan, doc).value.content
+  }
+
+  // The settled row's file is left alone by the rest of the plan.
+  lemma TailSparesFile(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>, input: RoundInput,
+                       docs: seq<DocId>, listing: Listing, mid: map<Path, DiskFile>, sp: Path)
+    requires forall doc :: doc in docs ==> doc in documents
+    requires forall i, j | 0 <= i < j < |docs| :: docs[i] != docs[j]
+    requires listing.Keys == mid.Keys
+    requires forall p, q :: p in mid && q in mid && p != q ==> !CollideF(platform, p, q)
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling in mid
+               && mid[documents[doc].binding.value.spelling].content == documents[doc].binding.value.seen
+    requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
+               && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
+               !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
+    requires input.listing.Keys <= listing.Keys
+    requires sp in mid
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling != sp
+    ensures var final := Rewritten(mid, PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing)));
+      sp in final && final[sp] == mid[sp]
+  {
+    var writes := PulledWrites(documents, input, PulledPlan(platform, server, d, documents, input, docs, listing));
+    PlanChanges(platform, server, d, documents, input, docs, listing, mid);
+    PlanWrites(platform, server, d, documents, input, docs, listing);
+    var final := Rewritten(mid, writes);
+    if final[sp] != mid[sp] {
+      var w :| w in writes && w.Write? && w.path == sp && w.precondition == Some(mid[sp].content);
+      assert PlanWrite(platform, server, d, documents, input, w);
+      assert w.target.Some? && w.target.value in docs;
+      assert false;
+    }
+  }
+
+  lemma {:isolate_assertions} PlanSettledContent(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>,
+                                                 input: RoundInput, docs: seq<DocId>, listing: Listing, disk: map<Path, DiskFile>)
+    requires forall doc :: doc in docs ==> doc in documents
+    requires forall i, j | 0 <= i < j < |docs| :: docs[i] != docs[j]
+    requires listing.Keys == disk.Keys
+    requires forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q)
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling in disk
+               && disk[documents[doc].binding.value.spelling].content == documents[doc].binding.value.seen
+    requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
+               && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
+               !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
+    requires input.listing.Keys <= listing.Keys
+    ensures var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+      SettledFiles(documents, plan, Rewritten(disk, PulledWrites(documents, input, plan)))
+    decreases |docs|, 1
+  {
+    var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+    if |docs| == 0 { return; }
+    var doc := docs[0];
+    var document := documents[doc];
+    var head := PulledHead(platform, server, d, doc, document, input);
+    forall doc2 | doc2 in docs[1..] && PulledHead(platform, server, d, doc2, documents[doc2], input).Some?
+      ensures head.Some? ==> document.binding.value.spelling != documents[doc2].binding.value.spelling
+    {
+      if head.Some? {
+        assert doc2 != doc;
+        SameFIsEquivalence(platform, document.binding.value.spelling, document.binding.value.spelling, document.binding.value.spelling);
+      }
+    }
+    var rest := PulledPlan(platform, server, d, documents, input, docs[1..], listing);
+    if head.None? {
+      assert plan == rest;
+      PlanSettledContent(platform, server, d, documents, input, docs[1..], listing, disk);
+    } else if HeldByHead(server, document.base.value.content) {
+      var b := document.binding.value;
+      var w := Write(Some(doc), b.spelling, head.value.content, head.value.kind, Some(b.seen));
+      assert plan == [Settlement(doc, head.value, None)] + rest;
+      assert SettlementWrites(documents, input, plan[0]) == [w];
+      var tail := PulledWrites(documents, input, rest);
+      assert PulledWrites(documents, input, plan) == [w] + tail by { assert plan[1..] == rest; }
+      InPlaceTakes(platform, disk, w);
+      var disk1 := Rewritten(disk, [w]);
+      PlanSettledContent(platform, server, d, documents, input, docs[1..], listing, disk1);
+      TailSparesFile(platform, server, d, documents, input, docs[1..], listing, disk1, b.spelling);
+      RewrittenAppend(disk, [w], tail);
+      var final := Rewritten(disk1, tail);
+      assert Rewritten(disk, PulledWrites(documents, input, plan)) == final;
+      forall doc' | PlannedHead(plan, doc').Some? && doc' in documents && documents[doc'].binding.Some?
+        ensures documents[doc'].binding.value.spelling in final
+          && final[documents[doc'].binding.value.spelling].content == PlannedHead(plan, doc').value.content
+      {
+        if doc' != doc { assert PlannedHead(plan, doc') == PlannedHead(rest, doc'); }
+      }
+    } else {
+      var b := document.binding.value;
+      var sp := b.spelling;
+      if sp !in listing {
+        assert plan == rest;
+        PlanSettledContent(platform, server, d, documents, input, docs[1..], listing, disk);
+      } else {
+        var copy := PathConflictCopy(platform, listing, BoundSpellings(documents) + input.unsaved,
+                                     ClaimsOf(documents, doc).(listed := BoundSpellings(documents)), sp, sp);
+        if copy.None? {
+          assert plan == rest;
+          PlanSettledContent(platform, server, d, documents, input, docs[1..], listing, disk);
+        } else {
+          PlanSettledContentCopy(platform, server, d, documents, input, docs, listing, disk, copy.value);
+        }
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} PlanSettledContentCopy(platform: Platform, server: Server, d: DeviceId, documents: map<DocId, Document>,
+                                                     input: RoundInput, docs: seq<DocId>, listing: Listing, disk: map<Path, DiskFile>, c: Path)
+    requires |docs| > 0
+    requires forall doc :: doc in docs ==> doc in documents
+    requires forall i, j | 0 <= i < j < |docs| :: docs[i] != docs[j]
+    requires listing.Keys == disk.Keys
+    requires forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q)
+    requires forall doc | doc in docs && PulledHead(platform, server, d, doc, documents[doc], input).Some? ::
+               documents[doc].binding.value.spelling in disk
+               && disk[documents[doc].binding.value.spelling].content == documents[doc].binding.value.seen
+    requires forall doc1, doc2 | doc1 in docs && doc2 in docs && doc1 != doc2
+               && documents[doc1].binding.Some? && documents[doc2].binding.Some? ::
+               !SameF(platform, documents[doc1].binding.value.spelling, documents[doc2].binding.value.spelling)
+    requires input.listing.Keys <= listing.Keys
+    requires var document := documents[docs[0]];
+      PulledHead(platform, server, d, docs[0], document, input).Some?
+      && !HeldByHead(server, document.base.value.content)
+      && document.binding.value.spelling in listing
+      && PathConflictCopy(platform, listing, BoundSpellings(documents) + input.unsaved,
+                          ClaimsOf(documents, docs[0]).(listed := BoundSpellings(documents)),
+                          document.binding.value.spelling, document.binding.value.spelling) == Some(c)
+    ensures var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+      SettledFiles(documents, plan, Rewritten(disk, PulledWrites(documents, input, plan)))
+    decreases |docs|, 0
+  {
+    var plan := PulledPlan(platform, server, d, documents, input, docs, listing);
+    var doc := docs[0];
+    var document := documents[doc];
+    var head := PulledHead(platform, server, d, doc, document, input);
+    var b := document.binding.value;
+    var sp := b.spelling;
+    forall doc2 | doc2 in docs[1..] && PulledHead(platform, server, d, doc2, documents[doc2], input).Some?
+      ensures sp != documents[doc2].binding.value.spelling
+    {
+      assert doc2 != doc;
+      SameFIsEquivalence(platform, sp, sp, sp);
+    }
+    var listing' := listing[c := listing[sp]];
+    var rest' := PulledPlan(platform, server, d, documents, input, docs[1..], listing');
+    assert plan == [Settlement(doc, head.value, Some(c))] + rest';
+    var wc := Write(None, c, b.seen, input.listing[sp].1, None);
+    var w := Write(Some(doc), sp, head.value.content, head.value.kind, Some(b.seen));
+    assert SettlementWrites(documents, input, plan[0]) == [wc, w];
+    var tail := PulledWrites(documents, input, rest');
+    assert PulledWrites(documents, input, plan) == [wc, w] + tail by { assert plan[1..] == rest'; }
+    assert FreeOn(platform, disk, c) by {
+      forall q | q in disk ensures !CollideF(platform, q, c) { assert q in listing; }
+    }
+    CopyTakes(platform, disk, wc);
+    var disk1 := Rewritten(disk, [wc]);
+    forall p, q | p in disk1 && q in disk1 && p != q ensures !CollideF(platform, p, q) {
+      CollideFSymmetric(platform, p, q);
+    }
+    InPlaceTakes(platform, disk1, w);
+    var disk2 := Rewritten(disk1, [w]);
+    assert listing'.Keys == disk2.Keys;
+    PlanSettledContent(platform, server, d, documents, input, docs[1..], listing', disk2);
+    TailSparesFile(platform, server, d, documents, input, docs[1..], listing', disk2, sp);
+    RewrittenAppend(disk, [wc], [w]);
+    assert [wc] + [w] == [wc, w];
+    RewrittenAppend(disk, [wc, w], tail);
+    var final := Rewritten(disk2, tail);
+    assert Rewritten(disk, PulledWrites(documents, input, plan)) == final;
+    forall doc' | PlannedHead(plan, doc').Some? && doc' in documents && documents[doc'].binding.Some?
+      ensures documents[doc'].binding.value.spelling in final
+        && final[documents[doc'].binding.value.spelling].content == PlannedHead(plan, doc').value.content
+    {
+      if doc' != doc { assert PlannedHead(plan, doc') == PlannedHead(rest', doc'); }
     }
   }
 
@@ -2042,6 +2511,343 @@ abstract module ResyncCore refines ApplyCore {
         assert ResyncStepOf(pre, d, input, revs) == ReanchorStepOf(pre, d, input, revs);
       } else {
         SettleKeepsAll(pre, d, input, revs);
+      }
+    }
+  }
+
+  // The settlement's G1 and G2 (#1080, planner ruling (2)). G1: a version
+  // retrievable before is retrievable after: the server is unchanged, and
+  // every content a file of d held is still on d's disk or held by a live
+  // head (PlanKeeps), which is why a write over the last copy of a lost
+  // base comes after its `base-purged` copy. G2: every write in place is
+  // conditional on `seen` at the row's bound file, which no editor holds
+  // unsaved text at; every copy takes a name no editor holds; nothing is
+  // removed; a file changes only where a write's precondition matched it.
+  lemma {:isolate_assertions} SettleG1G2(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires G5_NeverJoined(pre) && G7_OneFilePerName(pre) && G1_Retained(pre) && G1_LatestNeverPurged(pre)
+    ensures var step := ResyncStepOf(pre, d, input, revs);
+      |PulledWrites(pre.devices[d].journal.documents, input, PlanOf(pre.devices[d].platform, pre.server, d, pre.devices[d].journal.documents, input))| > 0 ==>
+        G1_OnlyRetentionRemoves(step) && G1_Retained(step.post) && G1_LatestNeverPurged(step.post)
+        && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var disk := device.disk;
+    var documents := device.journal.documents;
+    var docs := PulledDocs(platform, pre.server, d, documents, input);
+    var plan := PlanOf(platform, pre.server, d, documents, input);
+    var writes := PulledWrites(documents, input, plan);
+    var step := ResyncStepOf(pre, d, input, revs);
+    if |writes| == 0 { return; }
+    var S := set doc | doc in documents && PulledHead(platform, pre.server, d, doc, documents[doc], input).Some?;
+    assert docs == DocsInOrder(S);
+    DocsInOrderDistinct(S);
+    assert input.listing == DiskListing(device);
+    assert forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q);
+    SettleShape(pre, d, input, revs);
+    PlanKeeps(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    PlanChanges(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    PlanWrites(platform, pre.server, d, documents, input, docs, input.listing);
+    var post := step.post;
+    var disk' := Rewritten(disk, writes);
+    assert post.devices[d].disk == disk';
+    assert post.server == pre.server;
+    var journal' := SettledJournal(device.journal, ReanchorStepOf(pre, d, input, revs).post.devices[d].journal, plan, revs);
+    var first := PersistJournal(device.journal.(intents := PulledIntents(documents, plan, 0)));
+    assert step.effects == [first] + writes + [PersistJournal(journal')];
+    assert forall e | e in step.effects :: e.PersistJournal? || e in writes;
+    // G1.
+    forall rev | rev in pre.server.accepted && Retrievable(pre, rev) ensures Retrievable(post, rev) {
+      var version := pre.server.accepted[rev];
+      if !InHistory(pre.server, rev) && !version.deleted
+         && !(exists doc :: Head(pre.server, doc).Some? && !Head(pre.server, doc).value.deleted
+                            && Head(pre.server, doc).value.content == version.content) {
+        var x :| x in pre.devices && OnDisk(pre.devices[x], version.content);
+        if x == d {
+          var p :| p in disk && disk[p].content == version.content;
+          if HeldByHead(pre.server, version.content) {
+            var doc :| doc in pre.server.history && HeadOf(pre.server, doc).Some? && !HeadOf(pre.server, doc).value.deleted
+                       && HeadOf(pre.server, doc).value.content == version.content;
+            assert false;
+          }
+          assert ContentOn(disk', version.content);
+          assert OnDisk(post.devices[d], version.content);
+        } else {
+          assert post.devices[x] == pre.devices[x];
+          assert OnDisk(post.devices[x], version.content);
+        }
+      }
+    }
+    assert G1_OnlyRetentionRemoves(step);
+    assert G1_Retained(post);
+    assert G1_LatestNeverPurged(post);
+    // G2.
+    assert EventDevice(step.event) == Some(d);
+    forall effect | effect in step.effects
+      ensures effect.Write? && effect.precondition.Some? ==>
+        effect.target.Some? && BoundTo(device, effect.target.value, effect.path)
+        && LastSaw(step, device, effect.target.value, effect.path, effect.precondition.value)
+      ensures !effect.Remove?
+      ensures effect.Write? ==> !HasUnsavedEdits(device, effect.path)
+    {
+      if effect.Write? {
+        assert effect in writes;
+        assert PlanWrite(platform, pre.server, d, documents, input, effect);
+        SameFIsEquivalence(platform, effect.path, effect.path, effect.path);
+        if HasUnsavedEdits(device, effect.path) {
+          var editor :| editor in device.editors && editor.unsaved.Some? && SameF(platform, editor.path, effect.path);
+          assert editor.path in input.unsaved;
+          if effect.target.Some? {
+            var document := documents[effect.target.value];
+            assert !SameF(platform, editor.path, document.binding.value.spelling);
+          } else {
+            assert editor.path in BoundSpellings(documents) + input.unsaved;
+          }
+          assert false;
+        }
+      }
+    }
+    assert G2_OnlyWhatItSaw(step);
+    assert G2_NoUntrackedDelete(step);
+    assert G2_UnsavedSafe(step);
+    forall x, p | x in pre.devices && p in pre.devices[x].disk
+        && (x !in post.devices || p !in post.devices[x].disk || post.devices[x].disk[p] != pre.devices[x].disk[p])
+      ensures EventDevice(step.event) == Some(x)
+      ensures exists effect :: (effect in step.effects &&
+            ((effect.Write? && SameF(pre.devices[x].platform, effect.path, p) && effect.precondition == Some(pre.devices[x].disk[p].content))
+             || (effect.Remove? && SameF(pre.devices[x].platform, effect.path, p) && effect.expected == pre.devices[x].disk[p].content)
+             || (effect.Move? && SameF(pre.devices[x].platform, effect.from, p) && effect.expected == pre.devices[x].disk[p].content)))
+    {
+      assert x == d;
+      var w :| w in writes && w.Write? && w.path == p && w.precondition == Some(disk[p].content);
+      SameFIsEquivalence(platform, p, p, p);
+      assert w in step.effects;
+    }
+    assert G2_Conditional(step);
+  }
+
+  // The settlement's other step guarantees. Every row keeps its binding's
+  // name (a settled row changes only `seen`), so no user delete is
+  // recorded (G3) and no two rows join (G5). A write in place keeps its
+  // file's identity and a copy takes a name no binding holds, so every
+  // bound file is the one it was (G5_NeverMixedUp). Copies take free names
+  // (G7). No move, no report; the effects take effect (SettleDisk).
+  lemma {:isolate_assertions} SettleRest(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && CoreReachable(pre) && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires G5_NeverJoined(pre) && G7_OneFilePerName(pre)
+    ensures var step := ResyncStepOf(pre, d, input, revs);
+      |PulledWrites(pre.devices[d].journal.documents, input, PlanOf(pre.devices[d].platform, pre.server, d, pre.devices[d].journal.documents, input))| > 0 ==>
+        G5_NeverJoined(step.post) && G7_OneFilePerName(step.post)
+        && G3_DeleteSeen(step) && G5_RenameKeepsDocument(step) && G5_NeverMixedUp(step)
+        && G7_MoveKeepsContents(step) && G8_Recovers(step) && G8_PicksUpOfflineChanges(step)
+        && G10_SettledOrReported(step) && DisksFollowEffects(step) && ServerFollowsEvent(step)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var disk := device.disk;
+    var documents := device.journal.documents;
+    var docs := PulledDocs(platform, pre.server, d, documents, input);
+    var plan := PlanOf(platform, pre.server, d, documents, input);
+    var writes := PulledWrites(documents, input, plan);
+    var step := ResyncStepOf(pre, d, input, revs);
+    if |writes| == 0 { return; }
+    var S := set doc | doc in documents && PulledHead(platform, pre.server, d, doc, documents[doc], input).Some?;
+    assert docs == DocsInOrder(S);
+    DocsInOrderDistinct(S);
+    assert input.listing == DiskListing(device);
+    assert forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q);
+    SettleShape(pre, d, input, revs);
+    SettleDisk(pre, d, input, revs);
+    PlanTakes(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    ResyncKeepsBindings(pre, d, input, revs);
+    var post := step.post;
+    var after := post.devices[d];
+    var final := Rewritten(disk, writes);
+    assert after.disk == final && after.platform == platform;
+    var journal := device.journal;
+    var jr := ReanchorStepOf(pre, d, input, revs).post.devices[d].journal;
+    var journal' := after.journal;
+    // Every row's binding names what it named; a new row has none.
+    forall doc | doc in journal'.documents && journal'.documents[doc].binding.Some?
+      ensures doc in documents && documents[doc].binding.Some?
+        && journal'.documents[doc].binding.value.spelling == documents[doc].binding.value.spelling
+    {
+      if doc in journal.documents && journal.documents[doc].binding.Some? && PlannedHead(plan, doc).Some? {
+      } else {
+        assert journal'.documents[doc] == jr.documents[doc];
+      }
+    }
+    assert forall doc | doc in documents && documents[doc].binding.Some? :: doc in journal'.documents && journal'.documents[doc].binding.Some?;
+    assert G5_NeverJoined(post);
+    assert G7_OneFilePerName(post);
+    // Bound files keep their identity.
+    forall doc | BoundIdentity(after, doc).Some? ensures BoundIdentity(after, doc) == BoundIdentity(device, doc) {
+      var sp := journal'.documents[doc].binding.value.spelling;
+      var q :| q in final && SameF(platform, q, sp);
+      if q !in disk {
+        assert sp in BoundSpellings(documents);
+        SameFIsEquivalence(platform, sp, q, q);
+        assert false;
+      }
+      FileAtOnly(after, sp, q);
+      FileAtOnly(device, sp, q);
+    }
+    assert G5_NeverMixedUp(step);
+    forall x, doc | RecordsUserDelete(step, x, doc) ensures false {
+      assert x == d;
+    }
+    assert G3_DeleteSeen(step);
+    PlanWrites(platform, pre.server, d, documents, input, docs, input.listing);
+    var first := PersistJournal(device.journal.(intents := PulledIntents(documents, plan, 0)));
+    assert step.effects == [first] + writes + [PersistJournal(journal')];
+    forall e | e in step.effects ensures !e.Move? && !e.Report? {
+      if e in writes { assert PlanWrite(platform, pre.server, d, documents, input, e); }
+    }
+    assert G7_MoveKeepsContents(step);
+    assert DisksFollowEffects(step);
+    assert ServerFollowsEvent(step);
+  }
+
+  // A row the plan does not settle keeps its bound file: writes in place
+  // are at planned rows' files, which G5 keeps apart from this one, and
+  // copies take names no binding holds.
+  lemma {:isolate_assertions} UnplannedFileSame(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs, doc: DocId)
+    requires d in pre.devices && CoreReachable(pre) && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires G5_NeverJoined(pre) && G7_OneFilePerName(pre)
+    requires var documents := pre.devices[d].journal.documents;
+      doc in documents && documents[doc].binding.Some?
+      && PlannedHead(PlanOf(pre.devices[d].platform, pre.server, d, documents, input), doc).None?
+    requires |PulledWrites(pre.devices[d].journal.documents, input, PlanOf(pre.devices[d].platform, pre.server, d, pre.devices[d].journal.documents, input))| > 0
+    ensures var step := ResyncStepOf(pre, d, input, revs);
+      d in step.post.devices && BoundFile(step.post.devices[d], doc) == BoundFile(pre.devices[d], doc)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var disk := device.disk;
+    var documents := device.journal.documents;
+    var docs := PulledDocs(platform, pre.server, d, documents, input);
+    var plan := PlanOf(platform, pre.server, d, documents, input);
+    var writes := PulledWrites(documents, input, plan);
+    var step := ResyncStepOf(pre, d, input, revs);
+    var S := set doc | doc in documents && PulledHead(platform, pre.server, d, doc, documents[doc], input).Some?;
+    assert docs == DocsInOrder(S);
+    DocsInOrderDistinct(S);
+    assert input.listing == DiskListing(device);
+    assert forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q);
+    SettleShape(pre, d, input, revs);
+    PlanTakes(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    PlanChanges(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    PlanWrites(platform, pre.server, d, documents, input, docs, input.listing);
+    var after := step.post.devices[d];
+    var final := Rewritten(disk, writes);
+    assert after.disk == final && after.platform == platform;
+    var jr := ReanchorStepOf(pre, d, input, revs).post.devices[d].journal;
+    ResyncKeepsBindings(pre, d, input, revs);
+    assert after.journal.documents[doc] == jr.documents[doc];
+    var sp := documents[doc].binding.value.spelling;
+    assert after.journal.documents[doc].binding == documents[doc].binding;
+    if HasFile(device, sp) {
+      var q :| q in disk && SameF(platform, q, sp);
+      if final[q] != disk[q] {
+        var w :| w in writes && w.Write? && w.path == q && w.precondition == Some(disk[q].content);
+        assert PlanWrite(platform, pre.server, d, documents, input, w);
+        var t := w.target.value;
+        assert PlannedHead(plan, t).Some?;
+        assert t != doc;
+        SameFIsEquivalence(platform, documents[t].binding.value.spelling, q, sp);
+        assert false;
+      }
+      FileAtOnly(device, sp, q);
+      FileAtOnly(after, sp, q);
+    } else if HasFile(after, sp) {
+      var q :| q in final && SameF(platform, q, sp);
+      if q in disk { assert HasFile(device, sp); }
+      assert sp in BoundSpellings(documents);
+      SameFIsEquivalence(platform, sp, q, q);
+      assert false;
+    }
+  }
+
+  // G6 for the settlement. A settled row's file held its lost base's
+  // content (the side that left it as it was), so it takes the head's:
+  // the file is written with it, or its kept rename sends it. Any other
+  // row settles nothing, as in the re-anchoring (ResyncGuarantees): its
+  // base is the kept one, the device's own, or the parent its commit in
+  // flight is sealed on and kept on, with its bound file unchanged.
+  lemma {:isolate_assertions} SettleG6(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && CoreReachable(pre) && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires G5_NeverJoined(pre) && G7_OneFilePerName(pre)
+    ensures var step := ResyncStepOf(pre, d, input, revs);
+      |PulledWrites(pre.devices[d].journal.documents, input, PlanOf(pre.devices[d].platform, pre.server, d, pre.devices[d].journal.documents, input))| > 0 ==>
+        forall x, doc, remote :: SettlesConcurrent(step, x, doc, remote) ==> G6_Settle(step, x, doc, remote)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var disk := device.disk;
+    var documents := device.journal.documents;
+    var docs := PulledDocs(platform, pre.server, d, documents, input);
+    var plan := PlanOf(platform, pre.server, d, documents, input);
+    var writes := PulledWrites(documents, input, plan);
+    var step := ResyncStepOf(pre, d, input, revs);
+    if |writes| == 0 { return; }
+    var S := set doc | doc in documents && PulledHead(platform, pre.server, d, doc, documents[doc], input).Some?;
+    assert docs == DocsInOrder(S);
+    DocsInOrderDistinct(S);
+    assert input.listing == DiskListing(device);
+    assert forall p, q :: p in disk && q in disk && p != q ==> !CollideF(platform, p, q);
+    SettleShape(pre, d, input, revs);
+    PlanTakes(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    PlanSettledContent(platform, pre.server, d, documents, input, docs, input.listing, disk);
+    ResyncKeepsBindings(pre, d, input, revs);
+    var post := step.post;
+    var after := post.devices[d];
+    var final := Rewritten(disk, writes);
+    assert after.disk == final && after.platform == platform;
+    var journal := device.journal;
+    var jr := ReanchorStepOf(pre, d, input, revs).post.devices[d].journal;
+    var journal' := after.journal;
+    forall x, doc, remote | SettlesConcurrent(step, x, doc, remote) ensures G6_Settle(step, x, doc, remote) {
+      if x != d {
+        assert post.devices[x] == pre.devices[x];
+        assert false;
+      }
+      assert doc in journal.documents;
+      assert pre.server.accepted[remote.id] == remote;
+      var document := journal.documents[doc];
+      if document.binding.Some? && PlannedHead(plan, doc).Some? {
+        var h := PlannedHead(plan, doc).value;
+        assert PulledHead(platform, pre.server, d, doc, document, input) == Some(h);
+        assert journal'.documents[doc] == PulledRow(document, h, revs[doc]);
+        var sp := document.binding.value.spelling;
+        assert h == HeadOf(pre.server, doc).value;
+        assert remote.id == h.id;
+        assert h.id in pre.server.revisions;
+        assert remote == h;
+        assert disk[sp].content == document.binding.value.seen;
+        SameFIsEquivalence(platform, sp, sp, sp);
+        FileAtOnly(device, sp, sp);
+        assert BoundFile(device, doc) == Some(disk[sp]);
+        assert sp in final && final[sp].content == h.content;
+        FileAtOnly(after, sp, sp);
+        assert Outgoing(after, doc) == Some(h.content);
+      } else {
+        if document.binding.Some? {
+          UnplannedFileSame(pre, d, input, revs, doc);
+        }
+        assert journal'.documents[doc] == jr.documents[doc];
+        if document.outbox.Some? && document.outbox.value.sealed {
+          assert journal'.documents[doc].outbox == document.outbox;
+          if document.binding.None? {
+            assert BoundFile(after, doc).None? && BoundFile(device, doc).None?;
+          }
+          assert Some(remote.id) == ParentOn(document);
+          assert CarriedOnParent(step, d, doc, remote);
+          assert false;
+        } else {
+          assert ParentOn(document).None?;
+          assert false;
+        }
       }
     }
   }
