@@ -491,7 +491,7 @@ The proofs rest on hypotheses that restate lemmas proved elsewhere:
 - `MergedKeepClaims`, proved in `MergedClaims.dfy` as `MergedKeepClaimsHolds`;
 - `ResyncJournalOnly`, proved in `Resync.dfy` as `ResyncJournalOnlyHolds`;
 - `ClaimsImplyMirrorContract`, proved in `ClaimsMirror.dfy`;
-- `LandingKeepsClaims`, the claims after a landed commit, which is #1100's lemma.
+- `LandingKeepsClaims`, the claims after a landed commit, proved in `MergedClaims.dfy` as `LandingKeepsClaimsHolds` from #1100's `LandedKeepsClaims`.
 
 Open, in #1098 (planner, 2026-10-28, decision #52):
 - **Remote revision and accept cuts.** `CoreRequests` does not carry a remote revision's or an accept's preconditions.

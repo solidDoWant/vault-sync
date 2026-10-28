@@ -475,7 +475,8 @@ abstract module RecoveryCore refines PathRuleCore {
   }
 
   // A commit that lands unanswered, with every journal unchanged, keeps
-  // the claims: #1100's lemma, a hypothesis here until it is proved.
+  // the claims: #1100's LandedKeepsClaims, composed in MergedClaims.dfy's
+  // LandingKeepsClaimsHolds (a sibling module, so a hypothesis here).
   ghost predicate LandingKeepsClaims() {
     forall pre: State, d: DeviceId, doc: DocId, r: Revision {:trigger LandsOutbox(pre, d, doc, r)} ::
       CoreReachable(pre) && LandsOutbox(pre, d, doc, r)

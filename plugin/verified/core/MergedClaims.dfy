@@ -1697,4 +1697,20 @@ abstract module MergedClaims refines StepContracts {
       RefusedKeepsClaims(pre, d, result, nextRev);
     }
   }
+
+  // A landed commit keeps the claims, as one statement: Recovery.dfy's
+  // LandingKeepsClaims, the hypothesis of its crash lemmas (a sibling
+  // module, so stated again here, with LandingHappens for its LandsOutbox).
+  lemma LandingKeepsClaimsHolds()
+    ensures forall pre: State, d: DeviceId, doc: DocId, r: Revision {:trigger LandingHappens(pre, d, doc, r)} ::
+      CoreReachable(pre) && LandingHappens(pre, d, doc, r)
+      ==> ClaimsCore(pre.(server := Appended(pre.server, doc, r)))
+  {
+    forall pre: State, d: DeviceId, doc: DocId, r: Revision |
+      CoreReachable(pre) && LandingHappens(pre, d, doc, r)
+      ensures ClaimsCore(pre.(server := Appended(pre.server, doc, r)))
+    {
+      LandedKeepsClaims(pre, d, doc, r);
+    }
+  }
 }
