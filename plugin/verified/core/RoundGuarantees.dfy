@@ -2907,4 +2907,39 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       }
     }
   }
+
+  // The push keeps where each row's bound file came from: it seals
+  // outboxes, and a new document is bound to a listed name of the pass
+  // (ListedTaken), and its effects touch no file.
+  lemma {:isolate_assertions} PushKeepsG5(platform: Platform, device0: Device, settled: RoundPass, read: Journal, input: RoundInput, revs: FreshRevs)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, settled) && read.documents == settled.journal.documents
+    requires Distinct(platform, settled.listing)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    ensures var push := OnPush(platform, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
+      forall e | e in push.0.documents :: RowG5(platform, device0, settled.effects + push.1, e, push.0.documents[e])
+  {
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    var created := Created(platform, read, input', revs);
+    PushTouchesNoFile(platform, read, input', revs);
+    forall e | e in push.0.documents ensures RowG5(platform, device0, settled.effects + push.1, e, push.0.documents[e]) {
+      assert push.0.documents[e] == Seal(created[e]);
+      var row := push.0.documents[e];
+      if row.binding.Some? {
+        var s := row.binding.value.spelling;
+        forall effect | effect in push.1 ensures !Touches(platform, effect, s) { }
+        UntouchedTailKeepsReadings(platform, device0, settled.effects, push.1, e, s);
+        if e in read.documents {
+          assert RowG5(platform, device0, settled.effects, e, settled.journal.documents[e]);
+        } else {
+          var creates := Creates(Untracked(platform, read.documents, input'.listing), input'.freshDocs);
+          assert s == creates[e];
+          assert s in settled.listing;
+          SameFIsEquivalence(platform, s, s, s);
+          assert Listed(platform, settled.listing, s);
+        }
+      }
+    }
+  }
 }
