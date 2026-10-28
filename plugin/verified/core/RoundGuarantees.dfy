@@ -1435,19 +1435,25 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   // own puts a tracked file at; at the name it had, untouched, having seen
   // what it saw or what the listing reads there; or adopting the listed
   // file at its name that holds exactly the live revision, untouched.
-  ghost predicate AppliedOrigin(platform: Platform, listing: Listing, document: Document, r: Revision, after: Document, effects: seq<Effect>, adopt: bool)
+  ghost predicate AppliedOrigin(platform: Platform, listing: Listing, e: DocId, document: Document, r: Revision, after: Document, effects: seq<Effect>, adopt: bool)
     requires ListingDistinct(platform, listing)
   {
     after.binding.Some? ==>
       var s := after.binding.value.spelling;
       var seen := after.binding.value.seen;
-      (exists effect :: effect in effects && PutsTracked(platform, effect, s))
+      (exists effect :: effect in effects && PutsFor(platform, effect, e, s))
       || (document.binding.Some? && s == document.binding.value.spelling
           && (seen == document.binding.value.seen
               || (ListedRead(platform, listing, s).Some? && seen == ListedRead(platform, listing, s).value.0))
           && forall effect :: effect in effects ==> !Touches(platform, effect, s))
       || (adopt && !r.deleted && seen == r.content && ListedRead(platform, listing, s) == Some((r.content, r.kind))
           && forall effect :: effect in effects ==> !Touches(platform, effect, s))
+  }
+
+  // The effect writes or moves document `e`'s file to `p` (G5 (b)).
+  ghost predicate PutsFor(platform: Platform, effect: Effect, e: DocId, p: Path) {
+    (effect.Write? && effect.target == Some(e) && SameF(platform, effect.path, p))
+    || (effect.Move? && effect.mover == Some(e) && SameF(platform, effect.to, p))
   }
 
   // A listed name is its own listed spelling.
@@ -1465,7 +1471,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     ensures var applied := Create(platform, doc, document, r, input, bound, claims, rev);
       applied.document.binding.Some? ==>
         var s := applied.document.binding.value.spelling;
-        (exists effect :: effect in applied.effects && PutsTracked(platform, effect, s))
+        (exists effect :: effect in applied.effects && PutsFor(platform, effect, doc, s))
         || (applied.document.binding == document.binding
             && forall effect :: effect in applied.effects ==> !Touches(platform, effect, s))
         || (!r.deleted && applied.document.binding.value.seen == r.content
@@ -1493,7 +1499,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
           var write := Write(Some(doc), r.path, r.content, r.kind, None);
           assert applied.effects == [Move(None, q, copy.value, input.listing[q].0), write];
           assert applied.document.binding.value.spelling == r.path;
-          assert write in applied.effects && PutsTracked(platform, write, r.path);
+          assert write in applied.effects && PutsFor(platform, write, doc, r.path);
         }
       }
     }
@@ -1506,7 +1512,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     requires document.binding.Some? && document.base.Some?
     requires ListedRead(platform, input.listing, document.binding.value.spelling) == Some(read)
     ensures var applied := Settle(platform, doc, document, read, r, input, bound, claims, rev);
-      AppliedOrigin(platform, input.listing, document, r, applied.document, applied.effects, true)
+      AppliedOrigin(platform, input.listing, doc, document, r, applied.document, applied.effects, true)
   {
     var applied := Settle(platform, doc, document, read, r, input, bound, claims, rev);
     var spelling := document.binding.value.spelling;
@@ -1529,7 +1535,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   lemma {:isolate_assertions} ApplyOrigin(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ListingDistinct(platform, input.listing)
     ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
-      AppliedOrigin(platform, input.listing, document, r, applied.document, applied.effects, true)
+      AppliedOrigin(platform, input.listing, doc, document, r, applied.document, applied.effects, true)
   {
     var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
     if !Newer(document, r) {
@@ -1614,7 +1620,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
 
   // The arrival puts the head's file at its name for the document.
   lemma ArrivePutsHead(platform: Platform, doc: DocId, document: Document, a: Revision, own: Option<Path>)
-    ensures exists effect :: effect in Arrive(platform, doc, document, a, own) && PutsTracked(platform, effect, a.path)
+    ensures exists effect :: effect in Arrive(platform, doc, document, a, own) && PutsFor(platform, effect, doc, a.path)
   {
     var effects := Arrive(platform, doc, document, a, own);
     assert SameF(platform, a.path, a.path);
@@ -1633,7 +1639,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
     requires e in documents && e in ClearWay(platform, documents, doc, r, input, revs).documents
     ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
-      AppliedOrigin(platform, input.listing, documents[e], r, ruled.documents[e], ruled.effects, e == doc)
+      AppliedOrigin(platform, input.listing, e, documents[e], r, ruled.documents[e], ruled.effects, e == doc)
   {
     var document := documents[doc];
     var ruled := ClearWay(platform, documents, doc, r, input, revs);
@@ -1660,7 +1666,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       assert s == r.path;
       var a := Arriving(platform, document, r, input);
       ArrivePutsHead(platform, doc, ArrivingRow(platform, document, r, input), a, keep);
-      var effect := var effect :| effect in arrive && PutsTracked(platform, effect, a.path); effect;
+      var effect := var effect :| effect in arrive && PutsFor(platform, effect, doc, a.path); effect;
       assert effect in ruled.effects;
       return;
     }
@@ -1676,7 +1682,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       assert LocallyPlaced(documents[e]);
       MoveEffectsMover(platform, documents, doc, moves, i, e);
       assert SameF(platform, front[i].to, s);
-      assert front[i] in ruled.effects && PutsTracked(platform, front[i], s);
+      assert front[i] in ruled.effects && PutsFor(platform, front[i], e, s);
     } else {
       assert rows[e].binding == documents[e].binding;
       var t := documents[e].binding.value.spelling;
@@ -1707,7 +1713,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
     requires e in documents
     ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
-      e in ruled.documents && AppliedOrigin(platform, input.listing, documents[e], r, ruled.documents[e], ruled.effects, e == doc)
+      e in ruled.documents && AppliedOrigin(platform, input.listing, e, documents[e], r, ruled.documents[e], ruled.effects, e == doc)
   {
     var document := documents[doc];
     var bound := BoundNames(documents);
@@ -1935,8 +1941,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       var after := ruled.documents[e];
       if after.binding.Some? {
         var s := after.binding.value.spelling;
-        if exists effect :: effect in ruled.effects && PutsTracked(platform, effect, s) {
-          var effect :| effect in ruled.effects && PutsTracked(platform, effect, s);
+        if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
+          var effect :| effect in ruled.effects && PutsFor(platform, effect, e, s);
           var m := var m :| 0 <= m < |ruled.effects| && ruled.effects[m] == effect; m;
           assert PutsTracked(platform, effects'[base + m], s);
         } else {
@@ -2097,6 +2103,180 @@ abstract module RoundGuarantees refines RoundClaimsCore {
           assert step.effects[j] == settled.effects[j];
         }
         assert RoundTracked(step, i, effect.doc, effect.path, effect.expected);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G5_NeverMixedUp: the disk frame (#1094)
+  // ---------------------------------------------------------------------
+
+  // A file at a name no effect touches (under F) stays as it was, the same
+  // file, and no file arrives there.
+  lemma EffectUntouchedKeepsFile(platform: Platform, disk: map<Path, DiskFile>, effect: Effect, disk': map<Path, DiskFile>, s: Path, x: Path)
+    requires EffectTakes(platform, disk, effect, disk')
+    requires !Touches(platform, effect, s) && SameF(platform, x, s)
+    ensures (x in disk <==> x in disk') && (x in disk ==> disk'[x] == disk[x])
+  {
+    match effect
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.Some? {
+        if exists q :: Holds(platform, disk, q, path, precondition.value) {
+          var q := var q :| Holds(platform, disk, q, path, precondition.value)
+            && disk' == disk[q := DiskFile(content, kind, disk[q].identity)]; q;
+          if q == x { SameFIsEquivalence(platform, path, x, s); SameFIsEquivalence(platform, x, path, s); }
+        }
+      } else if FreeOn(platform, disk, path) {
+        if x == path { SameFIsEquivalence(platform, path, x, s); }
+      }
+    case Remove(_, path, expected) =>
+      if exists q :: Holds(platform, disk, q, path, expected) {
+        var q := var q :| Holds(platform, disk, q, path, expected) && disk' == disk - {q}; q;
+        if q == x { SameFIsEquivalence(platform, x, path, s); }
+      }
+    case Move(_, from, to, expected) =>
+      if exists q :: MovableTo(platform, disk, q, from, to, expected) {
+        var q := var q :| MovableTo(platform, disk, q, from, to, expected) && disk' == (disk - {q})[to := disk[q]]; q;
+        if q == x { SameFIsEquivalence(platform, x, from, s); }
+        if to == x { SameFIsEquivalence(platform, to, x, s); }
+      }
+    case _ =>
+  }
+
+  lemma EffectsUntouchedKeepFile(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>, s: Path, x: Path)
+    requires EffectsTake(platform, disk, effects, disk')
+    requires (forall effect :: effect in effects ==> !Touches(platform, effect, s)) && SameF(platform, x, s)
+    ensures (x in disk <==> x in disk') && (x in disk ==> disk'[x] == disk[x])
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :|
+        EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk'); mid;
+      assert effects[0] in effects;
+      EffectUntouchedKeepsFile(platform, disk, effects[0], mid, s, x);
+      assert forall effect :: effect in effects[1..] ==> effect in effects;
+      EffectsUntouchedKeepFile(platform, mid, effects[1..], disk', s, x);
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G5_NeverMixedUp: the pass invariant (#1094, in progress)
+  // ---------------------------------------------------------------------
+
+  // Before the pass's effects so far, `e`'s own file is at `p`: bound to
+  // it before the round where nothing touched the name since, or written
+  // or moved there for it (RoundOwnName, read on the pass).
+  ghost predicate OwnNameIn(platform: Platform, device0: Device, effects: seq<Effect>, e: DocId, p: Path) {
+    match RoundPut(platform, effects, p)
+    case Untouched => BoundTo(device0, e, p)
+    case Freed => false
+    case By(j) => (effects[j].Write? && effects[j].target == Some(e)) || (effects[j].Move? && effects[j].mover == Some(e))
+  }
+
+  // The pass dropped `e`'s own file (RoundDrops, read on the pass).
+  ghost predicate DroppedIn(platform: Platform, device0: Device, effects: seq<Effect>, e: DocId) {
+    exists k :: 0 <= k < |effects|
+      && ((effects[k].Remove? && effects[k].doc == e && OwnNameIn(platform, device0, effects[..k], e, effects[k].path))
+          || (effects[k].Move? && effects[k].mover.None? && OwnNameIn(platform, device0, effects[..k], e, effects[k].from)))
+  }
+
+  // `e` may take another file: it had none before the round, or the pass
+  // dropped the one it had.
+  ghost predicate MayTakeFile(platform: Platform, device0: Device, effects: seq<Effect>, e: DocId) {
+    BoundFile(device0, e).None? || DroppedIn(platform, device0, effects, e)
+  }
+
+  // The file at `p` is untracked as the pass left it (UntrackedThen, read
+  // on the pass): untracked before the round and untouched since, or left
+  // there for no document by the pass.
+  ghost predicate UntrackedIn(platform: Platform, device0: Device, effects: seq<Effect>, p: Path) {
+    match RoundPut(platform, effects, p)
+    case Untouched => HasFile(device0, p) && !Tracked(device0, p)
+    case Freed => false
+    case By(j) => PutsUntracked(effects[j])
+  }
+
+  // Where a row's bound file came from, for G5: its own file (OwnNameIn),
+  // or a file it adopted or took as a new document where it may take one,
+  // at a name untracked as the pass left it. A row that has no file as
+  // the pass left it may take one.
+  ghost predicate RowG5(platform: Platform, device0: Device, effects: seq<Effect>, listing: Listing, e: DocId, row: Document) {
+    (row.binding.Some? ==>
+       OwnNameIn(platform, device0, effects, e, row.binding.value.spelling)
+       || (MayTakeFile(platform, device0, effects, e) && UntrackedIn(platform, device0, effects, row.binding.value.spelling)))
+    && ((row.binding.None? || (Distinct(platform, listing) && !Listed(platform, listing, row.binding.value.spelling)))
+        ==> MayTakeFile(platform, device0, effects, e))
+  }
+
+  ghost predicate PassG5(platform: Platform, device0: Device, pass: RoundPass) {
+    var rows := pass.journal.documents;
+    NeverJoinedRows(platform, rows)
+    && forall e | e in rows :: RowG5(platform, device0, pass.effects, pass.listing, e, rows[e])
+  }
+
+  // The invariant holds at the start of the round: every binding names
+  // the file bound before it, and a row whose file is missing had none.
+  lemma PassG5Start(device0: Device, start: RoundPass, cursor: nat)
+    requires start.journal.documents == device0.journal.documents
+    requires start.listing == ListingOf(device0) && ListingDistinct(device0.platform, start.listing)
+    requires start.effects == [Pull(cursor)]
+    requires NeverJoinedRows(device0.platform, start.journal.documents)
+    ensures PassG5(device0.platform, device0, start)
+  {
+    var platform := device0.platform;
+    var rows := start.journal.documents;
+    forall e | e in rows ensures RowG5(platform, device0, start.effects, start.listing, e, rows[e]) {
+      if rows[e].binding.Some? {
+        var s := rows[e].binding.value.spelling;
+        assert RoundPut(platform, start.effects, s).Untouched?;
+        SameFIsEquivalence(platform, s, s, s);
+        assert BoundTo(device0, e, s);
+        if !Listed(platform, start.listing, s) {
+          assert ListedRead(platform, start.listing, s).None?;
+          UnlistedNotOnDisk(device0, s);
+        }
+      }
+    }
+  }
+
+  // The apply changes its row's binding without an effect only by
+  // adoption (G5 (d)): the row had no file in the listing, and the file
+  // at the head's name, bound to no row, holds exactly the head, which
+  // becomes the base.
+  lemma {:isolate_assertions} ApplyAdoption(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+      (applied.document.binding.Some? && applied.effects == []
+       && (document.binding.None? || applied.document.binding.value.spelling != document.binding.value.spelling)) ==>
+        var s := applied.document.binding.value.spelling;
+        (document.binding.None? || ListedRead(platform, input.listing, document.binding.value.spelling).None?)
+        && !BoundName(platform, bound, s) && s == r.path && !r.deleted
+        && ListedRead(platform, input.listing, s) == Some((r.content, r.kind))
+        && applied.document.base == Some(BaseOf(r))
+        && (document.base.None? || document.base.value.rev != r.id)
+  {
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    if !Newer(document, r) {
+    } else if SettlesIdentical(platform, document, r, input) {
+    } else if Acknowledges(document, r) {
+    } else if Revives(platform, document, r, input) {
+      if !KeepsUntracked(platform, document, r, input) {
+        var revived := Revived(document);
+        if applied.document.binding.Some? && applied.effects == []
+           && !UnsavedAt(platform, input.unsaved, r.path) && !BoundName(platform, bound, r.path)
+           && !FreeIn(platform, input.listing, r.path) && Adoptable(platform, revived, input, r) {
+          ListedAtSelf(platform, input.listing, r.path);
+          assert ListedRead(platform, input.listing, r.path) == Some(input.listing[r.path]);
+        }
+      }
+    } else if document.binding.Some? {
+    } else if r.deleted {
+    } else {
+      if applied.document.binding.Some? && applied.effects == []
+         && !UnsavedAt(platform, input.unsaved, r.path) && !BoundName(platform, bound, r.path)
+         && !FreeIn(platform, input.listing, r.path) && Adoptable(platform, document, input, r) {
+        ListedAtSelf(platform, input.listing, r.path);
+        assert ListedRead(platform, input.listing, r.path) == Some(input.listing[r.path]);
       }
     }
   }
