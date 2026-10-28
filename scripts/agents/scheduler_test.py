@@ -221,6 +221,8 @@ class PlanTest(unittest.TestCase):
         self.assertIn("ends at 19:30 UTC", s.time_box_note(job, now))
         job = s.Job("worker:2", "issue-worker", 5, (0,), "r", "t", 2, None, ("issue:2",), ())
         self.assertIn("ends at 18:45 UTC", s.time_box_note(job, now))
+        self.assertIn("ends at 19:30 UTC", s.time_box_note(job, now, "design(engine): read a round"))
+        self.assertIn("ends at 18:45 UTC", s.time_box_note(job, now, "fix(server): engine timeout"))
 
     def test_special_jobs_and_release_lock(self):
         specials = {"hunt-1": {"role": "bug-hunter", "brief": "sync under faults", "priority": 0},
