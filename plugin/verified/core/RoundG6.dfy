@@ -3365,10 +3365,11 @@ abstract module RoundG6 refines RoundGuarantees {
     var arrive := ArriveOf(platform, doc, document, r, input);
     assert ruled.effects == front + arrive;
     var all := effects0 + ruled.effects;
+    assert all == effects0 + (front + arrive);
     forall i | |effects0| <= i < |all|
       ensures CondAt(platform, device0, accepted, all, i)
     {
-      ClearWayCondOne(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, i - |effects0|);
+      ClearWayCondOne(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, i - |effects0|, all, i);
     }
   }
 
@@ -3376,7 +3377,8 @@ abstract module RoundG6 refines RoundGuarantees {
   // arrival.
   lemma ClearWayCondOne(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
                         effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId, r: Revision,
-                        input: RoundInput, moves: seq<(Path, Path, Hash)>, way: set<Path>, avoid: set<Path>, k: nat)
+                        input: RoundInput, moves: seq<(Path, Path, Hash)>, way: set<Path>, avoid: set<Path>, k: nat,
+                        all: seq<Effect>, i: nat)
     requires doc in documents && device0.platform == platform
     requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing)
     requires forall e | e in documents :: RowG5(platform, device0, effects0, e, documents[e])
@@ -3390,9 +3392,9 @@ abstract module RoundG6 refines RoundGuarantees {
       moves[i].0 in way && moves[i].2 == input.listing[moves[i].0].0 && FreeIn(platform, input.listing, moves[i].1)
     requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0
     requires k < |MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input)|
-    ensures CondAt(platform, device0, accepted,
-                   effects0 + (MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input)),
-                   |effects0| + k)
+    requires all == effects0 + (MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input))
+    requires i == |effects0| + k
+    ensures CondAt(platform, device0, accepted, all, i)
   {
     var front := MoveEffects(platform, documents, doc, moves);
     var arrive := ArriveOf(platform, doc, documents[doc], r, input);
@@ -3986,15 +3988,17 @@ abstract module RoundG6 refines RoundGuarantees {
   // ---------------------------------------------------------------------
 
   // What a conditional effect for `e` expecting `c` needs at the start of
-  // its chain of puts: the content is what `e` saw before the round, is
-  // kept, or is a live revision of `e` the server accepted.
+  // its chain of puts, where that is `e`'s own file before the round and
+  // the round read `c` there: the content is what `e` saw before the
+  // round, is kept, or is a live revision of `e` the server accepted.
   ghost predicate KeptBase(step: Step, e: DocId, c: Hash)
     requires RoundEvent(step.event) && step.event.device in step.pre.devices
   {
     var device := step.pre.devices[step.event.device];
     (e in device.journal.documents && device.journal.documents[e].binding.Some?
-     && c == device.journal.documents[e].binding.value.seen)
-    || ReadKept(step, e, c) || DocVersion(step, e, c)
+     && RoundRead(step, device.journal.documents[e].binding.value.spelling).Some?
+     && RoundRead(step, device.journal.documents[e].binding.value.spelling).value.0 == c)
+    ==> ((c == device.journal.documents[e].binding.value.seen) || ReadKept(step, e, c) || DocVersion(step, e, c))
   }
 
   // A file the round wrote for `e` holding `c` is kept, or holds a live
@@ -4084,12 +4088,27 @@ abstract module RoundG6 refines RoundGuarantees {
         }
       }
     case Untouched =>
-      if !accepts {
-        assert OwnNameIn(platform, device0, effects[..i], e, p);
-        assert BoundTo(device0, e, p);
-        assert q in disk0 && disk0[q] == disk[q];
-        CondSawUntouched(step, e, p, c, q);
-      }
+      CondSawUntouchedAt(step, i, e, p, c, disk, q);
+  }
+
+  // CondSaw's case of a file no earlier effect of the round touched.
+  lemma CondSawUntouchedAt(step: Step, i: nat, e: DocId, p: Path, c: Hash, disk: map<Path, DiskFile>, q: Path)
+    requires step.event.SyncRound? && step.event.device in step.pre.devices && i <= |step.effects|
+    requires var device0 := step.pre.devices[step.event.device];
+      OneFilePerName(device0.platform, device0.disk)
+      && RoundPut(device0.platform, step.effects[..i], p).Untouched?
+      && PutOnDisk(device0.platform, device0.disk, step.effects[..i], disk, p)
+      && Holds(device0.platform, disk, q, p, c)
+      && (OwnNameIn(device0.platform, device0, step.effects[..i], e, p) || DocVersion(step, e, c))
+    requires KeptBase(step, e, c)
+    ensures RoundSaw(step, i, e, p, c)
+  {
+    if !DocVersion(step, e, c) {
+      var device0 := step.pre.devices[step.event.device];
+      assert BoundTo(device0, e, p);
+      assert q in device0.disk && device0.disk[q] == disk[q];
+      CondSawUntouched(step, e, p, c, q);
+    }
   }
 
   // Every conditional write of the pass names a document.
@@ -4386,8 +4405,13 @@ abstract module RoundG6 refines RoundGuarantees {
       (BoundTo(device0, e, p) && LastSaw(step, device0, e, p, c)) || DocVersion(step, e, c)
   {
     var device0 := step.pre.devices[step.event.device];
+    var spelling := device0.journal.documents[e].binding.value.spelling;
+    SameFIsEquivalence(device0.platform, q, p, spelling);
+    SameFIsEquivalence(device0.platform, spelling, p, q);
     FileAtIs(device0, p, q);
+    FileAtIs(device0, spelling, q);
     assert RoundRead(step, p) == Some((c, device0.disk[q].kind));
+    assert RoundRead(step, spelling) == Some((c, device0.disk[q].kind));
     if !DocVersion(step, e, c) {
       var row := device0.journal.documents[e];
       if c != row.binding.value.seen {
