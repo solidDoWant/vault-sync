@@ -2660,4 +2660,56 @@ abstract module PathRuleCore refines ApplyCore {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // Toward OwnRevisionsAcknowledged (#1033, not yet composed): the apply
+  // and the rule never move a base back and keep a commit in flight, and
+  // the outbox's own revision becomes the base.
+  // ---------------------------------------------------------------------
+
+  lemma ApplyBaseGrows(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    requires document.ahead.Some? && document.base.Some? ==> document.base.value.position <= document.ahead.value.revision.position
+    ensures var after := ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document;
+      (document.base.Some? ==> after.base.Some? && document.base.value.position <= after.base.value.position)
+      && (document.outbox.Some? && document.outbox.value.sealed && !Acknowledges(document, r) ==> after.outbox == document.outbox)
+      && (Newer(document, r) && Acknowledges(document, r) ==> after.base.Some? && after.base.value.position == r.position)
+  {}
+
+  // A row's base never moves back, and a commit in flight stays as sealed,
+  // in every row the rule may change (W(a), W(b), a recorded delete).
+  ghost predicate KeepsBaseAndFlight(before: Document, after: Document) {
+    (before.base.Some? ==> after.base.Some? && before.base.value.position <= after.base.value.position)
+    && (before.outbox.Some? && before.outbox.value.sealed ==> after.outbox == before.outbox)
+  }
+
+  lemma MoveRowsKeepBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, moves: seq<(Path, Path, Hash)>, revs: FreshRevs)
+    requires documents.Keys <= revs.Keys
+    ensures var rows := MoveRows(platform, documents, doc, moves, revs);
+      rows.Keys == documents.Keys && forall e | e in documents :: KeepsBaseAndFlight(documents[e], rows[e])
+    decreases |moves|
+  {
+    if moves != [] { MoveRowsKeepBase(platform, documents, doc, moves[1..], revs); }
+  }
+
+  lemma RuleKeepsBase(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    requires var document := documents[doc];
+      document.ahead.Some? && document.base.Some? ==> document.base.value.position <= document.ahead.value.revision.position
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs);
+      ruled.documents.Keys == documents.Keys
+      && (forall e | e in documents && e != doc :: KeepsBaseAndFlight(documents[e], ruled.documents[e]))
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), AllClaims(documents), revs[doc]);
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        MoveRowsKeepBase(platform, documents, doc, aside.value, revs);
+      }
+    }
+  }
 }
