@@ -1461,12 +1461,13 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   // Create binds only at the head's name: written there, adopted there, or
   // not at all (the row keeps its binding and nothing is written).
   lemma {:isolate_assertions} CreateOrigin(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
-    requires ListingDistinct(platform, input.listing)
+    requires ListingDistinct(platform, input.listing) && !r.deleted
     ensures var applied := Create(platform, doc, document, r, input, bound, claims, rev);
       applied.document.binding.Some? ==>
         var s := applied.document.binding.value.spelling;
         (exists effect :: effect in applied.effects && PutsTracked(platform, effect, s))
-        || (applied.document.binding == document.binding && applied.effects == [])
+        || (applied.document.binding == document.binding
+            && forall effect :: effect in applied.effects ==> !Touches(platform, effect, s))
         || (!r.deleted && applied.document.binding.value.seen == r.content
             && ListedRead(platform, input.listing, s) == Some((r.content, r.kind))
             && forall effect :: effect in applied.effects ==> !Touches(platform, effect, s))
@@ -1478,6 +1479,10 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       assert applied.effects[0] in applied.effects;
     } else if Adoptable(platform, document, input, r) {
       ListedAtSelf(platform, input.listing, r.path);
+      assert applied.effects == [];
+      assert applied.document.binding == Some(Binding(r.path, r.content, false, None));
+      assert ListedRead(platform, input.listing, r.path) == Some(input.listing[r.path]);
+      assert input.listing[r.path] == (r.content, r.kind);
     } else {
       var held := Colliders(platform, input.listing, r.path);
       if |held| == 1 && !BoundName(platform, bound, LeastPath(held))
@@ -1485,7 +1490,10 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         var q := LeastPath(held);
         var copy := PathConflictCopy(platform, input.listing, bound + input.unsaved, claims, q, r.path);
         if copy.Some? {
-          assert applied.effects[1] in applied.effects;
+          var write := Write(Some(doc), r.path, r.content, r.kind, None);
+          assert applied.effects == [Move(None, q, copy.value, input.listing[q].0), write];
+          assert applied.document.binding.value.spelling == r.path;
+          assert write in applied.effects && PutsTracked(platform, write, r.path);
         }
       }
     }
@@ -1836,6 +1844,259 @@ abstract module RoundGuarantees refines RoundClaimsCore {
           assert effect in arrive;
           assert keep.Some?;
         }
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // G2_NoUntrackedDelete over the round: the pass invariant
+  // ---------------------------------------------------------------------
+
+  // Some live revision of `e` the server accepted has content `c`.
+  ghost predicate AcceptedContent(accepted: map<RevId, Revision>, e: DocId, c: Hash) {
+    exists rev :: rev in accepted && accepted[rev].doc == e && !accepted[rev].deleted && accepted[rev].content == c
+  }
+
+  // Where a row's bound file came from: a name tracked before the round, a
+  // name an earlier effect of the round put a tracked file at, or a file
+  // holding what the binding saw, a live revision of the document the
+  // server accepted (adopted, or synced).
+  ghost predicate RowOrigin(platform: Platform, device0: Device, accepted: map<RevId, Revision>, effects: seq<Effect>,
+                            listing: Listing, e: DocId, row: Document) {
+    row.binding.Some? ==>
+      var s := row.binding.value.spelling;
+      var seen := row.binding.value.seen;
+      Tracked(device0, s)
+      || (exists j :: 0 <= j < |effects| && PutsTracked(platform, effects[j], s))
+      || (AcceptedContent(accepted, e, seen)
+          && (Distinct(platform, listing) && Listed(platform, listing, s) ==> ListedRead(platform, listing, s).value.0 == seen))
+  }
+
+  // A remove so far is of a name tracked before the round, of a live
+  // accepted revision's content, or of a name an earlier effect put a
+  // tracked file at.
+  ghost predicate RemoveOK(platform: Platform, device0: Device, accepted: map<RevId, Revision>, effects: seq<Effect>, i: int)
+    requires 0 <= i < |effects|
+  {
+    effects[i].Remove? ==>
+      Tracked(device0, effects[i].path) || AcceptedContent(accepted, effects[i].doc, effects[i].expected)
+      || exists j :: 0 <= j < i && PutsTracked(platform, effects[j], effects[i].path)
+  }
+
+  ghost predicate PassNUD(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass) {
+    var rows := pass.journal.documents;
+    NeverJoinedRows(platform, rows) && RowsNameAccepted(accepted, rows)
+    && (forall e | e in rows :: RowOrigin(platform, device0, accepted, pass.effects, pass.listing, e, rows[e]))
+    && (forall i | 0 <= i < |pass.effects| :: RemoveOK(platform, device0, accepted, pass.effects, i))
+  }
+
+  lemma {:isolate_assertions} SettleKeepsNUD(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                                             doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
+    ensures PassNUD(platform, device0, accepted, SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
+    SettleNamesAccepted(platform, accepted, pass, doc, r, input, revs, first);
+    if !Distinct(platform, pass.listing) { return; }
+    if r.path in input.outOfScope {
+      if Newer(row, r) {
+        var rows' := settled.journal.documents;
+        assert rows' == documents[doc := row.(ahead := Some(Ahead(r, OutOfScope, false)))];
+        assert forall e | e in rows' :: (e in documents && rows'[e].binding == documents[e].binding)
+                                        || rows'[e].binding.None?;
+        assert settled.listing == pass.listing && settled.effects == pass.effects;
+        assert NeverJoinedRows(platform, rows');
+      }
+      return;
+    }
+    var rows := documents[doc := row];
+    assert NeverJoinedRows(platform, rows);
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+    var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+    var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+    var effects' := pass.effects + guard + ruled.effects;
+    var listing' := ListingAfter(platform, pass.listing, ruled.effects);
+    assert settled.journal.documents == ruled.documents && settled.effects == effects' && settled.listing == listing';
+    RuleKeepsNeverJoined(platform, rows, doc, r, inner, revs', first);
+    RuleRowsListed(platform, rows, doc, r, inner, revs', first);
+    var base := |pass.effects| + |guard|;
+    assert forall m | 0 <= m < |ruled.effects| :: effects'[base + m] == ruled.effects[m];
+    assert forall j | 0 <= j < |pass.effects| :: effects'[j] == pass.effects[j];
+    // Every row keeps an origin.
+    forall e | e in ruled.documents
+      ensures RowOrigin(platform, device0, accepted, effects', listing', e, ruled.documents[e])
+    {
+      RuleOrigin(platform, rows, doc, r, inner, revs', first, e);
+      var after := ruled.documents[e];
+      if after.binding.Some? {
+        var s := after.binding.value.spelling;
+        if exists effect :: effect in ruled.effects && PutsTracked(platform, effect, s) {
+          var effect :| effect in ruled.effects && PutsTracked(platform, effect, s);
+          var m := var m :| 0 <= m < |ruled.effects| && ruled.effects[m] == effect; m;
+          assert PutsTracked(platform, effects'[base + m], s);
+        } else {
+          ListingAfterUntouched(platform, pass.listing, ruled.effects, s);
+          if rows[e].binding.Some? && s == rows[e].binding.value.spelling
+             && forall effect :: effect in ruled.effects ==> !Touches(platform, effect, s) {
+            assert e in documents;
+            assert RowOrigin(platform, device0, accepted, pass.effects, pass.listing, e, rows[e]);
+            if exists j :: 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s) {
+              var j :| 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s);
+              assert PutsTracked(platform, effects'[j], s);
+            }
+          } else {
+            assert e == doc;
+            assert AcceptedContent(accepted, doc, r.content) by { assert accepted[r.id] == r; }
+          }
+        }
+      }
+    }
+    // Every remove keeps its justification.
+    forall i | 0 <= i < |effects'|
+      ensures RemoveOK(platform, device0, accepted, effects', i)
+    {
+      if i < |pass.effects| {
+        assert RemoveOK(platform, device0, accepted, pass.effects, i);
+      } else if i >= base && effects'[i].Remove? {
+        var effect := effects'[i];
+        assert effect == ruled.effects[i - base];
+        assert effect in ruled.effects;
+        RuleRemovesOwn(platform, rows, doc, r, inner, revs', first);
+        assert effect.doc == doc && RemovesOwn(platform, pass.listing, rows[doc], effect);
+        var s := rows[doc].binding.value.spelling;
+        assert doc in documents;
+        assert RowOrigin(platform, device0, accepted, pass.effects, pass.listing, doc, rows[doc]);
+        if Tracked(device0, s) {
+          var x :| BoundTo(device0, x, s);
+          SameFIsEquivalence(platform, device0.journal.documents[x].binding.value.spelling, s, effect.path);
+          assert BoundTo(device0, x, effect.path);
+        } else if exists j :: 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s) {
+          var j :| 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s);
+          var t := if pass.effects[j].Write? then pass.effects[j].path else pass.effects[j].to;
+          SameFIsEquivalence(platform, t, s, effect.path);
+          assert PutsTracked(platform, effects'[j], effect.path);
+        } else {
+          assert AcceptedContent(accepted, doc, rows[doc].binding.value.seen);
+        }
+      }
+    }
+  }
+
+  lemma SettlePulledKeepsNUD(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                             revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassNUD(platform, device0, accepted, pass)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    ensures PassNUD(platform, device0, accepted, SettlePulled(platform, pass, revisions, input, revs, first))
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleKeepsNUD(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledKeepsNUD(platform, device0, accepted, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsNUD(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                      docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassNUD(platform, device0, accepted, pass)
+    ensures PassNUD(platform, device0, accepted, RetryWaiting(platform, pass, docs, input, revs, first))
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        assert PassNUD(platform, device0, accepted, cleared);
+        SettleKeepsNUD(platform, device0, accepted, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryKeepsNUD(platform, device0, accepted, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsNUD(platform, device0, accepted, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  // G2_NoUntrackedDelete of the round: it removes a file only at a name
+  // tracked before the round, at a name an earlier effect of the round put
+  // a tracked file at, or where the file holds exactly a live revision of
+  // the removed document the server accepted.
+  lemma {:isolate_assertions} RoundG2NoUntrackedDelete(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && G5_NeverJoined(pre) && JournalsNameAccepted(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    ensures G2_NoUntrackedDelete(RoundStepOf(pre, d, input, revs))
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var accepted := pre.server.accepted;
+    assert step.event == SyncRound(d) && step.pre == pre;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    if !(forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs) {
+      assert step.effects == [];
+      return;
+    }
+    var feed := pre.server.feed;
+    var behind := journal.cursor < |feed|;
+    var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var cursor' := if behind then |feed| else journal.cursor;
+    var anchor' := if behind then Some(feed[|feed| - 1]) else journal.anchor;
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var push := OnPush(platform, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
+    assert step.effects == settled.effects + push.1;
+    // The pass invariant from the start, through the retry and the pull.
+    assert RowsNameAccepted(accepted, journal.documents);
+    forall e | e in start.journal.documents
+      ensures RowOrigin(platform, device, accepted, start.effects, start.listing, e, start.journal.documents[e])
+    {
+      if journal.documents[e].binding.Some? {
+        assert SameF(platform, journal.documents[e].binding.value.spelling, journal.documents[e].binding.value.spelling);
+        assert BoundTo(device, e, journal.documents[e].binding.value.spelling);
+      }
+    }
+    assert PassNUD(platform, device, accepted, start);
+    RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    if behind {
+      var ids := feed[journal.cursor..];
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |pulled| ensures AcceptedAs(accepted, pulled[i]) {
+        assert pulled[i] in pulled;
+      }
+    }
+    SettlePulledKeepsNUD(platform, device, accepted, retried, pulled, input, revs, first);
+    PushTouchesNoFile(platform, read, input.(listing := InScope(settled.listing, input.outOfScope)), revs);
+    forall effect | effect in step.effects && effect.Remove?
+      ensures Tracked(device, effect.path)
+              || exists i :: 0 <= i < |step.effects| && step.effects[i] == effect
+                   && RoundTracked(step, i, effect.doc, effect.path, effect.expected)
+    {
+      var i := var i :| 0 <= i < |step.effects| && step.effects[i] == effect; i;
+      if i >= |settled.effects| {
+        assert step.effects[i] in push.1;
+        assert false;
+      }
+      assert settled.effects[i] == effect;
+      assert RemoveOK(platform, device, accepted, settled.effects, i);
+      if !Tracked(device, effect.path) {
+        if AcceptedContent(accepted, effect.doc, effect.expected) {
+          assert DocVersion(step, effect.doc, effect.expected);
+        } else {
+          var j := var j :| 0 <= j < i && PutsTracked(platform, settled.effects[j], effect.path); j;
+          assert step.effects[j] == settled.effects[j];
+        }
+        assert RoundTracked(step, i, effect.doc, effect.path, effect.expected);
       }
     }
   }
