@@ -1,7 +1,9 @@
 // The merged steps keep the claims invariants (#1031, settled by #1050 and
 // #1063, docs/design/verified-core.md §4.1): a local event, the start-up
-// scan, a remote revision, a push refused or not answered, and an accepted
-// push each keep every clause of ClaimsReachable. With
+// scan, a remote revision, a push refused or not answered, an accepted
+// push, and a commit that lands unanswered (#1100: a crash's or an
+// "unavailable" answer's CommitLanded server) each keep every clause of
+// ClaimsReachable. With
 // ClaimsImplyMirrorContract (ClaimsMirror.dfy) the post state is then
 // CoreReachable; the composition is not stated here, because Dafny 4.11's
 // resolver crashes on a module that refines ClaimsMirror.
