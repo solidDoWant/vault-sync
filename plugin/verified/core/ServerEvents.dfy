@@ -69,6 +69,15 @@ abstract module ServerEvents refines StepContracts {
   // A retention purge
   // ---------------------------------------------------------------------
 
+  // A cut of the purged server, with only the purges made before this one,
+  // is a cut of the server before it (#1078: split out of PurgeKeepsAll).
+  lemma PurgedCut(pre: Server, revisions: set<RevId>, cut: Server)
+    requires EarlierServer(pre.(purged := pre.purged + revisions), cut)
+    ensures EarlierServer(pre, cut.(purged := cut.purged * pre.purged))
+    ensures SameButPurges(cut, cut.(purged := cut.purged * pre.purged))
+  {
+  }
+
   lemma {:isolate_assertions} PurgeKeepsAll(step: Step)
     requires ServerEventStep(step) && step.event.Purge?
     requires CoreReachable(step.pre)
@@ -129,8 +138,7 @@ abstract module ServerEvents refines StepContracts {
     assert CutsHeadsApart(post.server) by {
       forall cut | EarlierServer(post.server, cut) ensures LiveHeadsApart(cut) {
         var cut' := cut.(purged := cut.purged * pre.server.purged);
-        assert EarlierServer(pre.server, cut');
-        assert SameButPurges(cut, cut');
+        PurgedCut(pre.server, revisions, cut);
         SameButPurgesSameHeads(cut, cut');
         assert LiveHeadsApart(cut');
       }
@@ -155,8 +163,7 @@ abstract module ServerEvents refines StepContracts {
              && HeadsMirrored(post.(server := cut), post.devices[d])
       {
         var cut' := cut.(purged := cut.purged * pre.server.purged);
-        assert EarlierServer(pre.server, cut');
-        assert SameButPurges(cut, cut');
+        PurgedCut(pre.server, revisions, cut);
         assert pre.(server := cut') == post.(server := cut').(server := cut');
         SameButPurgesSameDevices(post.(server := cut'), cut);
         assert post.(server := cut').(server := cut) == post.(server := cut);
@@ -690,6 +697,69 @@ abstract module ServerEvents refines StepContracts {
     }
   }
 
+  // An append changes no other document's head (#1078: split out of
+  // RestoreFromHistoryKeepsAll, whose context made it seed-fragile).
+  // Server-level only.
+  lemma AppendedOtherHeads(pre: Server, doc: DocId, r: Revision)
+    requires r.id !in pre.revisions
+    requires forall x, e :: x in pre.history && e in pre.history[x] ==> e in pre.revisions
+    ensures forall x :: x != doc ==> Head(Appended(pre, doc, r), x) == Head(pre, x)
+  {
+    forall x | x != doc ensures Head(Appended(pre, doc, r), x) == Head(pre, x) {
+      if x in pre.history && |pre.history[x]| > 0 {
+        assert pre.history[x][|pre.history[x]| - 1] in pre.history[x];
+      }
+    }
+  }
+
+  // An append keeps HistoryFollowsFeed (#1078: split out of
+  // RestoreFromHistoryKeepsAll, whose context made it near the time limit).
+  // Server-level only.
+  lemma {:isolate_assertions} AppendedHistoryFollowsFeed(pre: Server, doc: DocId, r: Revision)
+    requires HistoryFollowsFeed(pre) && FeedPositioned(pre) && FeedAccepted(pre)
+    requires forall x, e :: x in pre.history && e in pre.history[x] ==> e in pre.revisions
+    requires Appendable(pre, doc, r)
+    ensures HistoryFollowsFeed(Appended(pre, doc, r))
+  {
+    var post := Appended(pre, doc, r);
+    assert post.feed[|pre.feed|] == r.id;
+    forall x, j | x in post.history && 0 <= j < |post.history[x]| && post.history[x][j] in post.revisions
+      ensures post.revisions[post.history[x][j]].doc == x && post.history[x][j] in post.feed
+    {
+      if x == doc && j == |post.history[x]| - 1 {
+      } else {
+        assert x in pre.history && post.history[x][j] == pre.history[x][j];
+      }
+    }
+    forall i | 0 <= i < |post.feed| && post.feed[i] in post.revisions
+      ensures var x := post.revisions[post.feed[i]].doc;
+              x in post.history && post.feed[i] in post.history[x]
+    {
+      if i < |pre.feed| {
+        var e := pre.feed[i];
+        assert post.feed[i] == e;
+        if e == r.id { assert e in pre.accepted; }
+        var x := pre.revisions[e].doc;
+        if x == doc { assert post.history[doc] == pre.history[doc] + [r.id]; }
+      }
+    }
+    forall x, j, k | x in post.history && 0 <= j < k < |post.history[x]|
+      && post.history[x][j] in post.revisions && post.history[x][k] in post.revisions
+      ensures post.revisions[post.history[x][j]].position < post.revisions[post.history[x][k]].position
+    {
+      if x == doc && k == |post.history[x]| - 1 {
+        var e := post.history[x][j];
+        assert e == pre.history[doc][j] && e in pre.revisions;
+        var i :| 0 <= i < |pre.feed| && pre.feed[i] == e;
+        assert pre.revisions[e].position == i;
+      } else {
+        assert x in pre.history;
+        assert post.history[x][j] == pre.history[x][j];
+        assert post.history[x][k] == pre.history[x][k];
+      }
+    }
+  }
+
   lemma {:isolate_assertions} RestoreFromHistoryKeepsAll(step: Step)
     requires ServerEventStep(step) && step.event.RestoreFromHistory?
     requires CoreReachable(step.pre)
@@ -707,7 +777,8 @@ abstract module ServerEvents refines StepContracts {
     forall d | d in pre.devices ensures Diverged(post, d) == Diverged(pre, d) {
       AppendSameDivergence(step, d);
     }
-    forall x | x != doc ensures Head(post.server, x) == Head(pre.server, x) {}
+    assert ServerRetains(pre);
+    AppendedOtherHeads(pre.server, doc, r);
     assert Head(post.server, doc) == Some(r);
     forall rev | rev != r.id ensures IsHead(post.server, rev) ==> IsHead(pre.server, rev) {
       if IsHead(post.server, rev) {
@@ -764,43 +835,9 @@ abstract module ServerEvents refines StepContracts {
     assert StateInvariants(post);
     assert CoreInv(post);
     assert FeedPositioned(post.server);
-    assert HistoryFollowsFeed(post.server) by {
-      forall x, j | x in post.server.history && 0 <= j < |post.server.history[x]| && post.server.history[x][j] in post.server.revisions
-        ensures post.server.revisions[post.server.history[x][j]].doc == x && post.server.history[x][j] in post.server.feed
-      {
-        if x == doc && j == |post.server.history[x]| - 1 {
-        } else {
-          assert x in pre.server.history && post.server.history[x][j] == pre.server.history[x][j];
-        }
-      }
-      forall i | 0 <= i < |post.server.feed| && post.server.feed[i] in post.server.revisions
-        ensures var x := post.server.revisions[post.server.feed[i]].doc;
-                x in post.server.history && post.server.feed[i] in post.server.history[x]
-      {
-        if i < |pre.server.feed| {
-          var e := pre.server.feed[i];
-          assert post.server.feed[i] == e;
-          if e == r.id { assert e in pre.server.accepted; }
-          var x := pre.server.revisions[e].doc;
-          if x == doc { assert post.server.history[doc] == pre.server.history[doc] + [r.id]; }
-        }
-      }
-      forall x, j, k | x in post.server.history && 0 <= j < k < |post.server.history[x]|
-        && post.server.history[x][j] in post.server.revisions && post.server.history[x][k] in post.server.revisions
-        ensures post.server.revisions[post.server.history[x][j]].position < post.server.revisions[post.server.history[x][k]].position
-      {
-        if x == doc && k == |post.server.history[x]| - 1 {
-          var e := post.server.history[x][j];
-          assert e == pre.server.history[doc][j] && e in pre.server.revisions;
-          var i :| 0 <= i < |pre.server.feed| && pre.server.feed[i] == e;
-          assert pre.server.revisions[e].position == i;
-        } else {
-          assert x in pre.server.history;
-          assert post.server.history[x][j] == pre.server.history[x][j];
-          assert post.server.history[x][k] == pre.server.history[x][k];
-        }
-      }
-    }
+    assert ServerRetains(pre);
+    AppendedHistoryFollowsFeed(pre.server, doc, r);
+    assert HistoryFollowsFeed(post.server);
     assert RevisionsAccepted(post.server);
     assert JournalsNameAccepted(post);
     assert CutsHeadsApart(post.server) by {
@@ -866,17 +903,40 @@ abstract module ServerEvents refines StepContracts {
   // `accepted`, a restore from backup cuts the feed and keeps `accepted`, a
   // purge changes neither) and RevisionsKeyed (an append stores the
   // revision under its id, a restore restricts the revisions, a purge
-  // changes none). FeedAccepted holds initially (InitialCoreReachable).
+  // changes none), and RevisionsOnFeed (#1078: an append adds the
+  // revision to the feed, a restore keeps only revisions its cut feed
+  // names). They hold initially (InitialCoreReachable).
   lemma ServerClausesKept(step: Step)
     requires ServerFollowsEvent(step)
-    requires FeedAccepted(step.pre.server) && RevisionsKeyed(step.pre.server)
-    ensures FeedAccepted(step.post.server) && RevisionsKeyed(step.post.server)
+    requires FeedAccepted(step.pre.server) && RevisionsKeyed(step.pre.server) && RevisionsOnFeed(step.pre.server)
+    ensures FeedAccepted(step.post.server) && RevisionsKeyed(step.post.server) && RevisionsOnFeed(step.post.server)
   {
     var pre := step.pre.server;
     var post := step.post.server;
     if step.event.Restore? {
       forall i | 0 <= i < |post.feed| ensures post.feed[i] in post.accepted {
         assert post.feed[i] == pre.feed[i];
+      }
+      forall id | id in post.revisions ensures id in post.feed {
+        var i :| 0 <= i < |post.feed| && post.feed[i] == id;
+      }
+    } else if step.event.RestoreFromHistory? {
+      ServerAppendedRevisionsOnFeed(pre, step.event.doc, step.event.revision);
+    }
+  }
+
+  // An append adds its revision to the feed (#1078).
+  lemma ServerAppendedRevisionsOnFeed(pre: Server, doc: DocId, r: Revision)
+    requires RevisionsOnFeed(pre)
+    ensures RevisionsOnFeed(Appended(pre, doc, r))
+  {
+    var post := Appended(pre, doc, r);
+    assert post.feed[|pre.feed|] == r.id;
+    forall id | id in post.revisions ensures id in post.feed {
+      if id != r.id {
+        assert id in pre.feed;
+        var i :| 0 <= i < |pre.feed| && pre.feed[i] == id;
+        assert post.feed[i] == id;
       }
     }
   }

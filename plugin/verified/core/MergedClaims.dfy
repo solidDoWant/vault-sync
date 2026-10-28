@@ -18,9 +18,9 @@ abstract module MergedClaims refines StepContracts {
   // Vocabulary
   // ---------------------------------------------------------------------
 
-  // The clauses of ClaimsReachable that #1025, #1050 and #1063 added.
+  // The clauses of ClaimsReachable that #1025, #1050, #1063 and #1078 added.
   ghost predicate ClaimsClauses(state: State) {
-    FeedPositioned(state.server) && ClaimsCoverCursor(state)
+    FeedPositioned(state.server) && ClaimsCoverCursor(state) && RevisionsOnFeed(state.server)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
     && ScopesClosedUnderF(state) && OwnDocsKnown(state)
@@ -470,18 +470,35 @@ abstract module MergedClaims refines StepContracts {
   }
 
 
+  // An append adds its revision to the feed (#1078).
+  lemma AppendedRevisionsOnFeed(pre: Server, doc: DocId, r: Revision)
+    requires RevisionsOnFeed(pre)
+    ensures RevisionsOnFeed(Appended(pre, doc, r))
+  {
+    var post := Appended(pre, doc, r);
+    assert post.feed[|pre.feed|] == r.id;
+    forall id | id in post.revisions ensures id in post.feed {
+      if id != r.id {
+        assert id in pre.feed;
+        var i :| 0 <= i < |pre.feed| && pre.feed[i] == id;
+        assert post.feed[i] == id;
+      }
+    }
+  }
+
   // The server clauses of ClaimsReachable survive an Appendable append
   // whose new heads collide with no other (G7's server clause after it).
   lemma {:isolate_assertions} AppendKeepsServerClauses(pre: Server, doc: DocId, r: Revision)
     requires FeedPositioned(pre) && HistoryFollowsFeed(pre) && RevisionsAccepted(pre)
-    requires FeedAccepted(pre) && RevisionsKeyed(pre) && CutsHeadsApart(pre)
+    requires FeedAccepted(pre) && RevisionsKeyed(pre) && CutsHeadsApart(pre) && RevisionsOnFeed(pre)
     requires forall x, e :: x in pre.history && e in pre.history[x] ==> e in pre.revisions
     requires Appendable(pre, doc, r)
     requires LiveHeadsApart(Appended(pre, doc, r))
     ensures var post := Appended(pre, doc, r);
       FeedPositioned(post) && HistoryFollowsFeed(post) && RevisionsAccepted(post)
-      && FeedAccepted(post) && RevisionsKeyed(post) && CutsHeadsApart(post)
+      && FeedAccepted(post) && RevisionsKeyed(post) && CutsHeadsApart(post) && RevisionsOnFeed(post)
   {
+    AppendedRevisionsOnFeed(pre, doc, r);
     var post := Appended(pre, doc, r);
     assert r.id !in pre.feed by {
       if r.id in pre.feed {

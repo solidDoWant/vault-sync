@@ -41,8 +41,16 @@ abstract module StepContracts refines PushCore {
   // CoreReachable without MirrorAtCursor, which these clauses imply
   // (ClaimsImplyMirrorContract, #1050).
   ghost predicate ClaimsReachable(state: State) {
-    StateInvariants(state) && CoreInv(state) && ServerRetains(state) && MirrorInv(state)
-    && FeedPositioned(state.server) && ClaimsCoverCursor(state)
+    ClaimsCore(state) && MirrorInv(state)
+  }
+
+  // The claims without MirrorInv (#1078): they imply MirrorInv as well as
+  // MirrorAtCursor (ClaimsImplyMirrorContract), so a step that leaves a
+  // device finished proves ClaimsCore of its post-state and gets MirrorInv
+  // from the contract.
+  ghost predicate ClaimsCore(state: State) {
+    StateInvariants(state) && CoreInv(state) && ServerRetains(state)
+    && FeedPositioned(state.server) && ClaimsCoverCursor(state) && RevisionsOnFeed(state.server)
     && HistoryFollowsFeed(state.server) && RevisionsAccepted(state.server) && JournalsNameAccepted(state)
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
     && ScopesClosedUnderF(state) && OwnDocsKnown(state)
@@ -102,6 +110,18 @@ abstract module StepContracts refines PushCore {
   // restricts the revisions and keeps `accepted`.
   ghost predicate RevisionsAccepted(server: Server) {
     forall id :: id in server.revisions ==> id in server.accepted && server.accepted[id] == server.revisions[id]
+  }
+
+  // Every revision the server holds is a feed entry (#1078, #963's gap):
+  // Appended adds a revision to both, a purge changes neither, and a
+  // restore from backup restricts the revisions to the ids its cut feed
+  // names (EarlierServer). With HistoryFollowsFeed it makes the cut at the
+  // whole feed the server itself (its revisions and heads), so MirrorInv is
+  // MirrorAtCursor at that cut. Without it a finished device's base could be
+  // an off-feed revision of its document, which no clause relates to the
+  // head, and two finished devices could hold different bases of it.
+  ghost predicate RevisionsOnFeed(server: Server) {
+    forall id :: id in server.revisions ==> id in server.feed
   }
 
   // Every feed entry is an id the server accepted (#1063, #950's gap B):
@@ -201,7 +221,7 @@ abstract module StepContracts refines PushCore {
   // that a step's proof may assume it; #1031 proves this implication and
   // uses it to conclude MirrorAtCursor after every step.
   ghost predicate ClaimsImplyMirrorContract() {
-    forall state: State :: ClaimsReachable(state) ==> MirrorAtCursor(state)
+    forall state: State :: ClaimsCore(state) ==> MirrorAtCursor(state) && MirrorInv(state)
   }
 
   // Every revision's position is its index in the feed (Appendable, #1025).
@@ -675,8 +695,9 @@ abstract module StepContracts refines PushCore {
       && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
       // SPEC.md §8 "Divergence" (#1025): every revision the journal names
       // is on the server again, so a base the restore lost is re-anchored
-      // (to the restored head, or none) and CoreInv makes the device send
-      // what it holds again; the device is no longer Diverged.
+      // (to the newest revision of the device's own the server still holds
+      // that is not its outbox's, or none, #1078) and CoreInv makes the
+      // device send what it holds again; the device is no longer Diverged.
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
       && OwnRevisionsAcknowledged(step.post, d)
       && IntentsCoverDiskEffects(step.effects)
