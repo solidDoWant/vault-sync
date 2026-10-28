@@ -3728,4 +3728,120 @@ abstract module RoundG6 refines RoundGuarantees {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G2 of the round: every effect of the pass is performed
+  // ---------------------------------------------------------------------
+
+  // Each effect's precondition holds on every disk the effects before it
+  // can leave.
+  ghost predicate Performed(platform: Platform, disk0: map<Path, DiskFile>, effects: seq<Effect>) {
+    forall i, disk' | 0 <= i < |effects| && EffectsTake(platform, disk0, effects[..i], disk') :: PreconditionHolds(platform, disk', effects[i])
+  }
+
+  lemma InOrderAt(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, k: nat, disk': map<Path, DiskFile>)
+    requires PreconditionsInOrder(platform, disk, effects) && k < |effects|
+    requires EffectsTake(platform, disk, effects[..k], disk')
+    ensures PreconditionHolds(platform, disk', effects[k])
+    decreases k
+  {
+    if k > 0 {
+      assert effects[..k][0] == effects[0];
+      var mid := var mid :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[..k][1..], disk'); mid;
+      assert effects[..k][1..] == effects[1..][..k - 1];
+      InOrderAt(platform, mid, effects[1..], k - 1, disk');
+    } else {
+      assert disk' == disk;
+    }
+  }
+
+  lemma {:isolate_assertions} SettleKeepsPerformed(platform: Platform, device0: Device, pass: RoundPass,
+                                                   doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && Performed(platform, device0.disk, pass.effects)
+    ensures Performed(platform, device0.disk, SettleRevision(platform, pass, doc, r, input, revs, first).effects)
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    if !Distinct(platform, pass.listing) || r.path in input.outOfScope { return; }
+    var rows := documents[doc := row];
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+    var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+    var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+    var e0 := pass.effects + guard;
+    var all := e0 + ruled.effects;
+    assert SettleRevision(platform, pass, doc, r, input, revs, first).effects == all;
+    forall i, disk' | 0 <= i < |all| && EffectsTake(platform, device0.disk, all[..i], disk')
+      ensures PreconditionHolds(platform, disk', all[i])
+    {
+      if i < |pass.effects| {
+        assert all[..i] == pass.effects[..i] && all[i] == pass.effects[i];
+      } else if i < |e0| {
+        assert all[i] in guard;
+      } else {
+        var k := i - |e0|;
+        assert all[..i] == e0 + ruled.effects[..k] && all[i] == ruled.effects[k];
+        EffectsTakeSplit(platform, device0.disk, e0, ruled.effects[..k], disk');
+        var mid1 := var mid1 :| EffectsTake(platform, device0.disk, e0, mid1) && EffectsTake(platform, mid1, ruled.effects[..k], disk'); mid1;
+        EffectsTakeSplit(platform, device0.disk, pass.effects, guard, mid1);
+        var mid0 := var mid0 :| EffectsTake(platform, device0.disk, pass.effects, mid0) && EffectsTake(platform, mid0, guard, mid1); mid0;
+        assert DiskMap(mid0) == pass.listing && OneFilePerName(platform, mid0);
+        if |guard| > 0 {
+          var m := var m :| EffectTakes(platform, mid0, guard[0], m) && EffectsTake(platform, m, guard[1..], mid1); m;
+          assert guard[0].PersistJournal?;
+          assert m == mid0 && mid1 == mid0;
+        }
+        assert mid1 == mid0;
+        var device := Device(platform, true, Journal(map[], 0, [], []), mid1, {}, {});
+        assert ListingOf(device) == pass.listing;
+        RulePreconditionsHold(device, rows, doc, r, inner, revs', first);
+        InOrderAt(platform, mid1, ruled.effects, k, disk');
+      }
+    }
+  }
+
+  lemma SettlePulledKeepsPerformed(platform: Platform, device0: Device, pass: RoundPass,
+                                   revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && Performed(platform, device0.disk, pass.effects)
+    ensures Performed(platform, device0.disk, SettlePulled(platform, pass, revisions, input, revs, first).effects)
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleKeepsPerformed(platform, device0, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsG5(platform, device0, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettlePulledKeepsPerformed(platform, device0, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsPerformed(platform: Platform, device0: Device, pass: RoundPass,
+                            docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && Performed(platform, device0.disk, pass.effects)
+    ensures Performed(platform, device0.disk, RetryWaiting(platform, pass, docs, input, revs, first).effects)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        forall e | e in cleared.journal.documents
+          ensures RowG5(platform, device0, cleared.effects, e, cleared.journal.documents[e])
+        {
+          assert RowG5(platform, device0, pass.effects, e, documents[e]);
+        }
+        assert PassG5(platform, device0, cleared);
+        var r := row.ahead.value.revision;
+        SettleKeepsPerformed(platform, device0, cleared, docs[0], r, input, revs, first);
+        SettleKeepsG5(platform, device0, cleared, docs[0], r, input, revs, first);
+        RetryKeepsPerformed(platform, device0, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsPerformed(platform, device0, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
 }
