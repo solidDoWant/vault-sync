@@ -745,7 +745,9 @@ abstract module GuaranteeWitnesses refines Guarantees {
         assert k == 0 && |rs| == 2;
         assert rs[0].position < rs[1].position;
       }
-      ChainKeeps(device', d, b, false, Some(read), rs, Outgoing(device', doc), Some(f.content));
+      var out := var out :| ChainThrough(device', d, b, false, Some(read), rs, out, Some(f.content)) && ChainEnds(device', doc, out); out;
+      assert out == Outgoing(device', doc);
+      ChainKeeps(device', d, b, false, Some(read), rs, out, Some(f.content));
     }
     assert !ReadKept(step, doc, f.content);
     assert BoundTo(device, doc, p);

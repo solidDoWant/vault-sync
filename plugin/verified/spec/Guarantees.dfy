@@ -899,9 +899,9 @@ abstract module Guarantees refines EngineModel {
   // The round on d settles doc's revisions `rs` (accepted, its own
   // acknowledgements or other devices', in feed order, after the base, the
   // last one the base after the step) in turn against the content it read
-  // in doc's file, ending in what the document sends, and `c` is one of the
-  // chain's contents. A chain of one live revision is G6_Settle's
-  // both-sides-live case.
+  // in doc's file, ending in what the document sends (ChainEnds), and `c`
+  // is one of the chain's contents. A chain of one live revision is
+  // G6_Settle's both-sides-live case.
   ghost predicate RoundChain(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>, c: Hash) {
     RoundEvent(step.event) && step.event.device == d
     && d in step.pre.devices && d in step.post.devices && |rs| > 0
@@ -918,8 +918,18 @@ abstract module Guarantees refines EngineModel {
     && doc in step.post.devices[d].journal.documents
     && step.post.devices[d].journal.documents[doc].base.Some?
     && step.post.devices[d].journal.documents[doc].base.value.rev == rs[|rs| - 1].id
-    && ChainThrough(step.post.devices[d], d, document.base.value.content, document.base.value.deleted, Some(read), rs,
-                    Outgoing(step.post.devices[d], doc), Some(c))
+    && exists out :: ChainThrough(step.post.devices[d], d, document.base.value.content, document.base.value.deleted, Some(read), rs,
+                                  out, Some(c))
+                     && ChainEnds(step.post.devices[d], doc, out)
+  }
+
+  // A chain ends in what the document sends, or, where the document sends
+  // nothing and has no file after the round, in a file left untracked on
+  // the device (#1094): later in the round, after its last settle, rule
+  // W(b) let the document's file go, as a later step of its own would.
+  ghost predicate ChainEnds(after: Device, doc: DocId, out: Option<Hash>) {
+    out == Outgoing(after, doc)
+    || (Outgoing(after, doc).None? && out.Some? && SavedNextToIt(after, out.value))
   }
 
   // ---------------------------------------------------------------------
