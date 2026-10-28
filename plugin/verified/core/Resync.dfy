@@ -2852,13 +2852,161 @@ abstract module ResyncCore refines ApplyCore {
     }
   }
 
-  // OPEN (#1080 item 2): the settlement of #874's rows keeps everything.
-  lemma SettleKeepsAll(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+  // A revision of `doc` the server holds is at or before its head.
+  lemma HeldAtOrBeforeHead(server: Server, doc: DocId, id: RevId)
+    requires HistoryFollowsFeed(server) && RevisionsOnFeed(server)
+    requires id in server.revisions && server.revisions[id].doc == doc && HeadOf(server, doc).Some?
+    ensures server.revisions[id].position <= HeadOf(server, doc).value.position
+  {
+    var i :| 0 <= i < |server.feed| && server.feed[i] == id;
+    assert doc in server.history && id in server.history[doc];
+    var h := server.history[doc];
+    var j :| 0 <= j < |h| && h[j] == id;
+    if j < |h| - 1 {
+      assert server.revisions[h[j]].position < server.revisions[h[|h| - 1]].position;
+    }
+  }
+
+  // The settlement keeps the cursor claims: a settled row knows its head,
+  // which is at or after every revision of its document the server holds;
+  // every other row, every scope and every row's presence is as the
+  // re-anchoring left it.
+  lemma {:isolate_assertions} SettleCursor(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && CoreReachable(pre) && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+    requires G5_NeverJoined(pre) && G7_OneFilePerName(pre)
+    requires ResyncKeeps(pre, d, ReanchorStepOf(pre, d, input, revs))
+    ensures var step := ResyncStepOf(pre, d, input, revs);
+      |PulledWrites(pre.devices[d].journal.documents, input, PlanOf(pre.devices[d].platform, pre.server, d, pre.devices[d].journal.documents, input))| > 0 ==>
+        ClaimsCoverCursor(step.post) && OwnDocsKnown(step.post) && ScopesClosedUnderF(step.post)
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var documents := device.journal.documents;
+    var plan := PlanOf(platform, pre.server, d, documents, input);
+    var writes := PulledWrites(documents, input, plan);
+    var step := ResyncStepOf(pre, d, input, revs);
+    if |writes| == 0 { return; }
+    var reanchor := ReanchorStepOf(pre, d, input, revs);
+    SettleShape(pre, d, input, revs);
+    assert ClaimsCore(reanchor.post);
+    assert reanchor.post.server == pre.server;
+    var post := step.post;
+    var server := pre.server;
+    var jr := reanchor.post.devices[d].journal;
+    var journal' := post.devices[d].journal;
+    assert forall x :: x in post.devices && x != d ==> post.devices[x] == reanchor.post.devices[x];
+    forall x | x in post.devices ensures ReadsFeed(post, x) <==> ReadsFeed(reanchor.post, x) {}
+    forall x, i | ReadsFeed(post, x) && 0 <= i < post.devices[x].journal.cursor
+        && i < |server.feed| && server.feed[i] in server.revisions
+      ensures var r := server.revisions[server.feed[i]];
+        r.doc in post.devices[x].journal.documents
+        && KnownPosition(post.devices[x].journal.documents[r.doc]).Some?
+        && KnownPosition(post.devices[x].journal.documents[r.doc]).value >= r.position
+    {
+      var r := server.revisions[server.feed[i]];
+      assert ReadsFeed(reanchor.post, x);
+      if x == d {
+        var doc := r.doc;
+        assert doc in jr.documents;
+        if doc in documents && documents[doc].binding.Some? && PlannedHead(plan, doc).Some? {
+          var h := PlannedHead(plan, doc).value;
+          assert PulledHead(platform, server, d, doc, documents[doc], input) == Some(h);
+          assert h == HeadOf(server, doc).value;
+          HeldAtOrBeforeHead(server, doc, server.feed[i]);
+          assert KnownPosition(journal'.documents[doc]) == Some(h.position);
+        } else {
+          assert journal'.documents[doc] == jr.documents[doc];
+        }
+      }
+    }
+    assert ClaimsCoverCursor(post);
+    assert OwnDocsKnown(post);
+    assert ScopesClosedUnderF(post);
+  }
+
+  // A step that changes only device d (and keeps the server) keeps every
+  // other device's revisions acknowledged.
+  lemma OthersKeepAcknowledged(a: State, b: State, d: DeviceId)
+    requires a.server == b.server && a.devices.Keys == b.devices.Keys
+    requires forall x :: x in a.devices && x != d ==> b.devices[x] == a.devices[x]
+    requires forall x :: ReadsFeed(a, x) ==> OwnRevisionsAcknowledged(a, x)
+    requires ReadsFeed(b, d) ==> OwnRevisionsAcknowledged(b, d)
+    ensures forall x :: ReadsFeed(b, x) ==> OwnRevisionsAcknowledged(b, x)
+  {
+    forall x | ReadsFeed(b, x) ensures OwnRevisionsAcknowledged(b, x) {
+      if x != d {
+        assert ReadsFeed(a, x);
+        forall doc, id | Unacknowledged(b, x, doc, id)
+          ensures b.devices[x].journal.documents[doc].outbox.Some? && b.devices[x].journal.documents[doc].outbox.value.rev == id
+        {
+          assert Unacknowledged(a, x, doc, id);
+        }
+      }
+    }
+  }
+
+  // The settlement of #874's rows keeps everything (#1080 item 2): its
+  // step guarantees (SettleG1G2, SettleG6, SettleRest), crash safety
+  // (SettleIntents), the journal claims (SettleJournalClaims,
+  // SettleCursor), and MirrorInv as the re-anchoring keeps it: d finished
+  // mirrors the heads by the contract at OthersStopped; d unfinished
+  // leaves every finished device as it was.
+  lemma {:isolate_assertions} SettleKeepsAll(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
     requires ClaimsImplyMirrorContract()
     requires d in pre.devices && pre.devices[d].running && CoreReachable(pre)
        && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
     requires ResyncKeeps(pre, d, ReanchorStepOf(pre, d, input, revs))
     ensures ResyncKeeps(pre, d, ResyncStepOf(pre, d, input, revs))
   {
+    var device := pre.devices[d];
+    var plan := PlanOf(device.platform, pre.server, d, device.journal.documents, input);
+    var writes := PulledWrites(device.journal.documents, input, plan);
+    var step := ResyncStepOf(pre, d, input, revs);
+    if |writes| == 0 {
+      assert step == ReanchorStepOf(pre, d, input, revs);
+      return;
+    }
+    assert StateInvariants(pre) && ClaimsCore(pre);
+    SettleShape(pre, d, input, revs);
+    SettleG1G2(pre, d, input, revs);
+    SettleRest(pre, d, input, revs);
+    SettleG6(pre, d, input, revs);
+    SettleIntents(pre, d, input, revs);
+    SettleJournalClaims(pre, d, input, revs);
+    SettleCursor(pre, d, input, revs);
+    var post := step.post;
+    assert post.server == pre.server;
+    assert StepGuarantees(step);
+    OthersKeepAcknowledged(pre, post, d);
+    assert G1_Retained(post) && G1_LatestNeverPurged(post) && G5_NeverJoined(post) && G7_OneFilePerName(post);
+    assert CoreInv(post) && JournalsNameAccepted(post) && CommitsOnBase(post) && OutboxParentsAccepted(post);
+    assert ClaimsCoverCursor(post) && ScopesClosedUnderF(post) && OwnDocsKnown(post);
+    assert ServerRetains(post) && FeedPositioned(post.server) && RevisionsOnFeed(post.server)
+      && HistoryFollowsFeed(post.server) && RevisionsAccepted(post.server) && FeedAccepted(post.server)
+      && RevisionsKeyed(post.server) && CutsHeadsApart(post.server) by {
+      assert post.server == pre.server;
+      assert ServerRetains(pre);
+    }
+    assert CoreButG9(post);
+    if FinishedSyncing(post, d) {
+      var S := OthersStopped(post, d);
+      OthersStoppedCore(post, d);
+      assert MirrorInv(S);
+      MirrorAtStopped(post, d);
+      forall x | x in post.devices && FinishedSyncing(post, x) && x != d
+        ensures FilesMirrorHeads(post, post.devices[x]) && HeadsMirrored(post, post.devices[x])
+      {
+        MirrorOfUnchanged(pre, post, x);
+      }
+      assert MirrorInv(post);
+    } else {
+      assert KeepsFinished(step);
+      KeepsFinishedKeepsMirror(step);
+    }
+    MirrorImpliesG9(post);
+    assert StateInvariants(post);
+    assert ClaimsCore(post);
+    assert ClaimsReachable(post);
+    assert MirrorAtCursor(post);
   }
 }
