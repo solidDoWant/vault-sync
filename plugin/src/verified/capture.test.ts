@@ -20,6 +20,7 @@ import {
   onScan,
   synced,
 } from "./local-core";
+import type { CoreJournal, CoreRevision } from "./journal-store";
 
 /** An in-memory vault whose listing and reads can run a user's change first. */
 class FakeVault implements VaultReader {
@@ -138,6 +139,19 @@ function device(
   vault.capture = capture;
   return { vault, capture, inputs, journal: () => journal };
 }
+
+/** A server revision of document `doc` at `path`. */
+const revisionAt = (doc: string, path: string): CoreRevision => ({
+  id: `${doc}@1`,
+  doc,
+  position: 1n,
+  parent: null,
+  path,
+  content: "{}",
+  kind: "note",
+  deleted: false,
+  device: "",
+});
 
 const binding = (journal: Journal, id: string): string | null =>
   journal.documents[id]?.binding?.spelling ?? null;
@@ -268,6 +282,43 @@ describe("start-up scan", () => {
     });
   });
 
+  it("hands over an event whose path now reads as another kind than the listing shows", async () => {
+    const { vault, capture, inputs } = device("posix", {
+      x: synced("x", "a.md", "A"),
+    });
+    vault.afterRead = {
+      path: "a.md",
+      run: () => {
+        vault.disk.set("a.md", { content: "A", kind: "binary" });
+        vault.report({ kind: "modified", path: "a.md" });
+      },
+    };
+    await capture.scan();
+    expect(inputs.at(-1)).toEqual({
+      kind: "local",
+      event: { kind: "modified", path: "a.md" },
+      reads: { "a.md": { content: "A", kind: "binary" } },
+    });
+  });
+
+  it("hands each event of a scan over once when a second scan is started while it runs", async () => {
+    const { vault, capture, inputs } = device("posix", {
+      x: synced("x", "a.md", "A"),
+    });
+    const second: Promise<void>[] = [];
+    vault.afterRead = {
+      path: "a.md",
+      run: () => {
+        vault.write("a.md", "A2");
+        second.push(capture.scan());
+      },
+    };
+    await capture.scan();
+    await Promise.all(second);
+    await capture.idle();
+    expect(inputs.map((input) => input.kind)).toEqual(["scan", "local"]);
+  });
+
   it("compares a stale event's names with the listing under the file key", async () => {
     const { vault, capture, inputs, journal } = device("windows", {
       x: synced("x", "a.md", "A"),
@@ -312,6 +363,96 @@ describe("round input", () => {
     expect(input.unsaved).toEqual(new Set(["a.md"]));
     expect(input.outOfScope).toEqual(
       new Set([".obsidian/app.json", ".obsidian/hotkeys.json"]),
+    );
+  });
+
+  it("holds a held revision's path out of scope though the round neither lists nor pulls it", async () => {
+    const { vault, capture } = device("posix");
+    vault.outOfScope.add(".obsidian/x.json");
+    const revision = revisionAt("s", ".obsidian/x.json");
+    const journal: CoreJournal = {
+      documents: {
+        s: {
+          base: null,
+          ahead: {
+            revision,
+            blocker: { kind: "out-of-scope" },
+            postponed: false,
+          },
+          binding: null,
+          absence: "never",
+          outbox: null,
+        },
+      },
+      cursor: 1n,
+      anchor: null,
+      intents: [],
+      conflicts: [],
+    };
+    const input = await capture.roundInput(journal, []);
+    expect(input.outOfScope).toEqual(new Set([".obsidian/x.json"]));
+  });
+
+  it("holds out of scope the paths of the journal's bindings, bases, outboxes and intents", async () => {
+    const { vault, capture } = device("posix");
+    for (const path of [
+      ".o/bound",
+      ".o/user",
+      ".o/base",
+      ".o/out",
+      ".o/from",
+      ".o/to",
+      ".o/result",
+      ".o/copy",
+      ".o/rev",
+    ])
+      vault.outOfScope.add(path);
+    const revision = revisionAt("x", ".o/rev");
+    const input = await capture.roundInput(
+      {
+        documents: {
+          x: {
+            base: { path: ".o/base" },
+            binding: { spelling: ".o/bound", userSpelling: ".o/user" },
+            outbox: { path: ".o/out" },
+          },
+        },
+        intents: [
+          {
+            intent: {
+              kind: "displace",
+              doc: "x",
+              from: ".o/from",
+              to: ".o/to",
+              content: "c",
+            },
+          },
+          {
+            intent: {
+              kind: "merge",
+              doc: "x",
+              revision,
+              result: ".o/result",
+              resultContent: "c",
+              copy: { path: ".o/copy", content: "c" },
+            },
+          },
+        ],
+      },
+      [],
+    );
+    expect(input.outOfScope).toEqual(
+      new Set([
+        ".o/bound",
+        ".o/user",
+        ".o/base",
+        ".o/out",
+        ".o/from",
+        ".o/to",
+        ".o/result",
+        ".o/copy",
+        ".o/rev",
+      ]),
     );
   });
 

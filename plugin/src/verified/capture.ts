@@ -26,6 +26,7 @@
 // shows every file. An event whose change came after the listing (a path
 // reads differently now) is handed over with the reads of now.
 import { filesystemKey, type PathPlatform } from "../core/vaultpath/platform";
+import type { CoreIntentKind } from "./journal-store";
 import type { DiskFile, LocalEvent, Read } from "./local-core";
 
 /** What the shell reads of the device's vault. */
@@ -37,7 +38,12 @@ export interface VaultReader {
   read(path: string): Promise<Read>;
   /** The paths at which an open editor holds text not yet saved to the file. */
   unsaved(): Promise<readonly string[]>;
-  /** Whether the device syncs `path` (SPEC.md §8 ".obsidian/ config sync"). */
+  /**
+   * Whether the device syncs `path` (SPEC.md §8 ".obsidian/ config sync").
+   * It must give one answer for every spelling of a file under the platform's
+   * file key (spec/Contracts.dfy `ScopesClosedUnderF`): the scope is asked per
+   * spelling, and a listed spelling and a pulled path of one file must agree.
+   */
   inScope(path: string): boolean;
 }
 
@@ -52,16 +58,80 @@ export interface RoundInput {
   unsaved: ReadonlySet<string>;
   freshDocs: readonly string[];
   /**
-   * The paths the device does not sync, among those the round names: the
-   * listed files and the pulled revisions' paths (the specification's set,
-   * restricted to every path the round can apply or create a document at).
+   * The paths the device does not sync, among those the round can look the
+   * scope up at (the specification's set restricted to them, `scopePaths`):
+   * the listed files, the pulled revisions' paths, and every path the
+   * journal's rows and intents name.
    */
   outOfScope: ReadonlySet<string>;
 }
 
-/** What `roundInput` needs of the journal: the documents it knows. */
+/** The paths of a journal row that `roundInput` reads (spec/Engine.dfy `Document`). */
+export interface DocumentPaths {
+  readonly base: { readonly path: string } | null;
+  /** Absent from journals that do not model `ahead` (the test adapter's). */
+  readonly ahead?: { readonly revision: { readonly path: string } } | null;
+  readonly binding: {
+    readonly spelling: string;
+    readonly userSpelling: string | null;
+  } | null;
+  readonly outbox: { readonly path: string } | null;
+}
+
+/** What `roundInput` needs of the journal: the documents it knows and the paths they name. */
 export interface JournalDocuments {
-  readonly documents: Readonly<Record<string, unknown>>;
+  readonly documents: Readonly<Record<string, DocumentPaths>>;
+  /** Absent from journals that do not model intents (the test adapter's). */
+  readonly intents?: readonly { readonly intent: CoreIntentKind }[];
+}
+
+/**
+ * Every path a round can look the device's scope up at: the listed files
+ * (the push creates no document for an untracked file out of scope), the
+ * pulled revisions' paths and every path the journal names, a held `ahead`
+ * revision's above all (a revision out of scope waits as `ahead`, blocked by
+ * `OutOfScope`, and a later round judges it again without pulling it again).
+ * The core learns of no other path: it reads the disk only through the
+ * listing, and every revision it holds is a pulled one or a row's.
+ */
+export function scopePaths(
+  listing: Iterable<string>,
+  journal: JournalDocuments,
+  pulled: readonly { path: string }[],
+): Set<string> {
+  const paths = new Set<string>(listing);
+  for (const revision of pulled) paths.add(revision.path);
+  for (const document of Object.values(journal.documents)) {
+    if (document.base) paths.add(document.base.path);
+    if (document.ahead) paths.add(document.ahead.revision.path);
+    if (document.binding) {
+      paths.add(document.binding.spelling);
+      if (document.binding.userSpelling !== null)
+        paths.add(document.binding.userSpelling);
+    }
+    if (document.outbox) paths.add(document.outbox.path);
+  }
+  for (const { intent } of journal.intents ?? []) {
+    switch (intent.kind) {
+      case "apply":
+        paths.add(intent.revision.path);
+        break;
+      case "merge":
+        paths.add(intent.revision.path);
+        paths.add(intent.result);
+        if (intent.copy !== null) paths.add(intent.copy.path);
+        break;
+      case "displace":
+      case "detach":
+        paths.add(intent.from);
+        paths.add(intent.to);
+        break;
+      case "commit":
+      case "resync":
+        break;
+    }
+  }
+  return paths;
 }
 
 /** The paths a local event names. */
@@ -95,6 +165,8 @@ export class EventCapture {
   private chain: Promise<void> = Promise.resolve();
   /** Events that arrived while a scan listed the disk; null when no scan is running. */
   private duringScan: LocalEvent[] | null = null;
+  /** The scan running, if any. */
+  private scanning: Promise<void> | null = null;
 
   constructor(
     private readonly vault: VaultReader,
@@ -113,12 +185,14 @@ export class EventCapture {
 
   /**
    * The start-up scan: lists the disk, hands the core the listing, then the
-   * events that arrived meanwhile except those the listing made stale.
+   * events that arrived meanwhile except those the listing made stale. A
+   * call while a scan runs joins it, so no buffered event is handed over twice.
    */
   scan(): Promise<void> {
-    const buffered: LocalEvent[] = this.duringScan ?? [];
+    if (this.scanning !== null) return this.scanning;
+    const buffered: LocalEvent[] = [];
     this.duringScan = buffered;
-    return this.enqueue(async () => {
+    const run = this.enqueue(async () => {
       try {
         const listing = await this.listing();
         await this.core({ kind: "scan", listing });
@@ -133,6 +207,12 @@ export class EventCapture {
         this.duringScan = null;
       }
     });
+    this.scanning = run;
+    const done = (): void => {
+      this.scanning = null;
+    };
+    run.then(done, done);
+    return run;
   }
 
   /**
@@ -148,7 +228,7 @@ export class EventCapture {
       const listing = await this.listing();
       const unsaved = new Set(await this.vault.unsaved());
       const outOfScope = new Set<string>();
-      for (const path of [...listing.keys(), ...pulled.map((r) => r.path)]) {
+      for (const path of scopePaths(listing.keys(), journal, pulled)) {
         if (!this.vault.inScope(path)) outOfScope.add(path);
       }
       const count = freshDocsNeeded(
