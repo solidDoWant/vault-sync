@@ -1031,4 +1031,34 @@ abstract module ResyncCore refines StepContracts {
       assert MirrorAtCursor(post);
     }
   }
+
+  // The resync is journal-only and keeps the claims, as one statement:
+  // Recovery.dfy's ResyncJournalOnly, the hypothesis of its crash lemmas
+  // (a sibling module, so stated again here).
+  lemma ResyncJournalOnlyHolds()
+    requires ClaimsImplyMirrorContract()
+    ensures forall pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs {:trigger ResyncStepOf(pre, d, input, revs)} ::
+      d in pre.devices && pre.devices[d].running && CoreReachable(pre)
+      && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+      ==> var step := ResyncStepOf(pre, d, input, revs);
+          ClaimsCore(step.post)
+          && ((step.effects == [] && step.post == pre)
+              || exists j' :: step.effects == [PersistJournal(j')] && step.post == After(pre, d, j'))
+  {
+    forall pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs |
+      d in pre.devices && pre.devices[d].running && CoreReachable(pre)
+      && RoundInputOf(pre, d, input) && RevsCover(pre.devices[d].journal, input, revs)
+      ensures var step := ResyncStepOf(pre, d, input, revs);
+          ClaimsCore(step.post)
+          && ((step.effects == [] && step.post == pre)
+              || exists j' :: step.effects == [PersistJournal(j')] && step.post == After(pre, d, j'))
+    {
+      ResyncKeepsAll(pre, d, input, revs);
+      var step := ResyncStepOf(pre, d, input, revs);
+      if pre.devices[d].journal.documents.Keys <= revs.Keys {
+        var j' := ResyncJournal(pre.server, d, pre.devices[d].journal, revs);
+        assert step.effects == [PersistJournal(j')] && step.post == After(pre, d, j');
+      }
+    }
+  }
 }

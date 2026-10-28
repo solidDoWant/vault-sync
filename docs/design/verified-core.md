@@ -466,3 +466,29 @@ The core proves the contract (#1024): `RuleSettlesContract` (`PathRule.dfy`) has
 - A tombstone against no file here records the base and drops the binding and every unsealed outbox, keeping a commit in flight.
 - `Revives` covers an unbound row with an unsealed outbox and a bound file with no base. The file is let go untracked (`Revived`), and the rule's `Keeps` gives a revived document no file of its own, so the file moves aside where it is in the way. Where the head would adopt an untracked file at its name, the apply leaves it to the rule (`KeepsUntracked`): `G5_NeverMixedUp` lets only a document that had no file adopt one.
 - The base's own revision, pulled again past an older waiting one, against a file the listing reads becomes the base again, with the file as read (`Settled`, no effect).
+
+### 4.3 Crash and restart (`Recovery.dfy`, #1018)
+
+**The restart.** The restart (`RestartStepOf`) drops every open intent (`Recover`) and persists the result before the device runs again. It reads nothing but the journal. `CrashInv` is `ClaimsCore` of the state that every stopped device's restart would leave (`Recovered`). `RecoveryContract` is proved (`RecoveryKeepsAll`, given `ClaimsImplyMirrorContract`). No clause of `ClaimsCore` reads an editor or an open intent, and G9 binds only running devices. So stopping a device, or changing a stopped device's intents, keeps the claims (`StoppedKeepsClaims`), and an intent the claims say nothing about is harmless.
+
+**Crash outcomes (owner's policy, engine design §10.3).** The owner's §10.3 policy is that nothing is lost and either outcome is acceptable. The crash proofs follow that policy, not identical outcomes: no V1 guarantee asks a crashed run to end where a crash-free one would. G8_AsIfNoCrash asks only that nothing is lost.
+
+A crash in the middle of a sync round's revision works as follows:
+- The round's guard journals keep the rows from before the revision, with the cursor not yet moved (#1018, option B).
+- Dropping the intents therefore leaves the device as if the round had settled only the revisions before that one.
+- The next round pulls again from the old cursor.
+- Whatever the revision's half-done effects left on disk is the device's own version of the file. The start-up scan records it as a local change, and the next round merges it with the revision.
+- So a crash may leave a conflict copy that a crash-free run would not, but it loses nothing.
+
+**What is proved, and what is open.** `CrashContract` is proved for these crashes (`CrashKeepsAll`):
+- a crash with no cut;
+- a crash that cuts short a local event, the scan, a refused or unanswered push, a restart, or a running device's resync.
+
+The proof needs the server unchanged, and it needs the journal's rows unchanged: either no cut, a cut before the step's journal write, or a restart's cut. Its hypotheses restate sibling modules' lemmas: `MergedKeepClaims` is proved in `MergedClaims.dfy` as `MergedKeepClaimsHolds`, and `ResyncJournalOnly` in `Resync.dfy` as `ResyncJournalOnlyHolds`. `CrashInv` alone (`CrashKeepsClaims`) also holds after the journal write of a local event, a scan, a push answer or a resync.
+
+Still open:
+- **Remote revision and accept cuts** (#1098). `CoreRequests` does not carry a remote revision's or an accept's preconditions (#1018, 2026-10-28).
+- **Rebinding cuts.** G5_NeverMixedUp and G3_DeleteSeen excuse a rebinding only when the step's own event is the local rename or the scan. A crash after such a step's journal write has the crash as its event, so those guarantees fail as stated.
+- **A landed commit.** No lemma yet proves `ClaimsCore` after the server lands a device's sealed outbox with every journal unchanged (`CommitLanded`). That case covers both a crash and an unanswered push.
+
+A round cut's `CrashInv` waits on #1094's restatement (PR #1097).

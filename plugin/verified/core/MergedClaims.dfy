@@ -1661,4 +1661,40 @@ abstract module MergedClaims refines StepContracts {
       assert !InHistory(server, rev);
     }
   }
+
+  // The merged steps' claims, as one statement: Recovery.dfy's
+  // MergedKeepClaims, the hypothesis of its crash lemmas (a sibling
+  // module, so stated again here).
+  lemma MergedKeepClaimsHolds()
+    ensures forall pre: State, d: DeviceId, local: LocalEvent, revs: FreshRevs {:trigger LocalStep(pre, d, local, revs)} ::
+       d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys && ClaimsReachable(pre)
+       ==> ClaimsCore(LocalStep(pre, d, local, revs).post)
+    ensures forall pre: State, d: DeviceId, revs: FreshRevs {:trigger ScanStep(pre, d, revs)} ::
+          d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys
+          && ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d])) && ClaimsReachable(pre)
+          ==> ClaimsCore(ScanStep(pre, d, revs).post)
+    ensures forall pre: State, d: DeviceId, result: PushResult, nextRev: RevId {:trigger RefusedStep(pre, d, result, nextRev)} ::
+          d in pre.devices && !result.Accepted? && ClaimsReachable(pre)
+          ==> ClaimsCore(RefusedStep(pre, d, result, nextRev).post)
+  {
+    forall pre: State, d: DeviceId, local: LocalEvent, revs: FreshRevs |
+       d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys && ClaimsReachable(pre)
+      ensures ClaimsCore(LocalStep(pre, d, local, revs).post)
+    {
+      LocalKeepsClaims(pre, d, local, revs);
+    }
+    forall pre: State, d: DeviceId, revs: FreshRevs |
+       d in pre.devices && pre.devices[d].journal.documents.Keys <= revs.Keys
+       && ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d])) && ClaimsReachable(pre)
+      ensures ClaimsCore(ScanStep(pre, d, revs).post)
+    {
+      ScanKeepsClaims(pre, d, revs);
+    }
+    forall pre: State, d: DeviceId, result: PushResult, nextRev: RevId |
+       d in pre.devices && !result.Accepted? && ClaimsReachable(pre)
+      ensures ClaimsCore(RefusedStep(pre, d, result, nextRev).post)
+    {
+      RefusedKeepsClaims(pre, d, result, nextRev);
+    }
+  }
 }
