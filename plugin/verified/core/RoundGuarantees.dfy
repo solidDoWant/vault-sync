@@ -5,9 +5,10 @@
 // per guarantee; #1034 assembles them into RoundKeepsNoLoss.
 //
 // This module refines PathRuleCore, so it sees the round's body. (Dafny
-// 4.11's precedence linter crashed on any module refining PathRuleCore
-// while PathRule.dfy used the let-such-that *statement* `var x :| P;`; it
-// now uses the expression form `var x := var x :| P; x;`, as Apply.dfy does.)
+// 4.11's resolver and precedence linter crash on any module refining a
+// module that uses the let-such-that *statement* `var x :| P;`, so this
+// file, like PathRule.dfy and Apply.dfy, uses the expression form
+// `var x := var x :| P; x;`: RoundG6.dfy refines this module.)
 include "RoundClaims.dfy"
 
 abstract module RoundGuarantees refines RoundClaimsCore {
@@ -943,8 +944,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         if documents[doc].binding.Some? && SameF(platform, documents[doc].binding.value.spelling, s) {
           assert false;
         }
-        var e' :| e' in documents && e' != doc && FileOf(platform, documents, s, e') && e' in ruled.documents
-           && (ruled.documents[e'].binding.None? || ruled.documents[e'].binding.value.spelling != documents[e'].binding.value.spelling);
+        var e' := var e' :| e' in documents && e' != doc && FileOf(platform, documents, s, e') && e' in ruled.documents
+           && (ruled.documents[e'].binding.None? || ruled.documents[e'].binding.value.spelling != documents[e'].binding.value.spelling); e';
         if e' != e {
           SameFIsEquivalence(platform, documents[e'].binding.value.spelling, s, s);
           assert false;
@@ -1137,7 +1138,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       var moves := aside.value;
       ClearWayRow(platform, documents, doc, r, input, revs, keep, moves, e);
       if exists i | 0 <= i < |moves| :: after.binding.value.spelling == moves[i].1 && FileOf(platform, documents, moves[i].0, e) {
-        var i :| 0 <= i < |moves| && after.binding.value.spelling == moves[i].1 && FileOf(platform, documents, moves[i].0, e);
+        var i := var i :| 0 <= i < |moves| && after.binding.value.spelling == moves[i].1 && FileOf(platform, documents, moves[i].0, e); i;
         assert ruled.effects == MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, document, r, input);
         ClearWayMovedListed(platform, documents, doc, r, input, revs, keep, moves, i);
         return;
@@ -1353,7 +1354,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       assert DeleteJustified(platform, input.listing, rows0, doc);
       var s := rows0[doc].binding.value.spelling;
       if HasFile(device, s) {
-        var q :| q in device.disk && SameF(platform, q, s);
+        var q := var q :| q in device.disk && SameF(platform, q, s); q;
         assert q in input.listing;
         assert false;
       }
@@ -1945,7 +1946,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       if after.binding.Some? {
         var s := after.binding.value.spelling;
         if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
-          var effect :| effect in ruled.effects && PutsFor(platform, effect, e, s);
+          var effect := var effect :| effect in ruled.effects && PutsFor(platform, effect, e, s); effect;
           assert PutsTracked(platform, effect, s);
           var m := var m :| 0 <= m < |ruled.effects| && ruled.effects[m] == effect; m;
           assert effects'[base + m] == effect;
@@ -1956,7 +1957,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
             assert e in documents;
             assert RowOrigin(platform, device0, accepted, pass.effects, pass.listing, e, rows[e]);
             if exists j :: 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s) {
-              var j :| 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s);
+              var j := var j :| 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s); j;
               assert PutsTracked(platform, effects'[j], s);
             }
           } else {
@@ -1982,11 +1983,11 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         assert doc in documents;
         assert RowOrigin(platform, device0, accepted, pass.effects, pass.listing, doc, rows[doc]);
         if Tracked(device0, s) {
-          var x :| BoundTo(device0, x, s);
+          var x := var x :| BoundTo(device0, x, s); x;
           SameFIsEquivalence(platform, device0.journal.documents[x].binding.value.spelling, s, effect.path);
           assert BoundTo(device0, x, effect.path);
         } else if exists j :: 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s) {
-          var j :| 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s);
+          var j := var j :| 0 <= j < |pass.effects| && PutsTracked(platform, pass.effects[j], s); j;
           var t := if pass.effects[j].Write? then pass.effects[j].path else pass.effects[j].to;
           SameFIsEquivalence(platform, t, s, effect.path);
           assert PutsTracked(platform, effects'[j], effect.path);
@@ -2230,7 +2231,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     forall disk' | EffectsTake(platform, device0.disk, start.effects, disk')
       ensures DiskMap(disk') == start.listing && OneFilePerName(platform, disk')
     {
-      var mid :| EffectTakes(platform, device0.disk, start.effects[0], mid) && EffectsTake(platform, mid, start.effects[1..], disk');
+      var mid := var mid :| EffectTakes(platform, device0.disk, start.effects[0], mid) && EffectsTake(platform, mid, start.effects[1..], disk'); mid;
       assert mid == device0.disk;
     }
     var rows := start.journal.documents;
@@ -2431,7 +2432,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     ensures forall effect :: effect in b[m + 1..] ==> !Touches(platform, effect, s)
   {
     forall effect | effect in b[m + 1..] ensures !Touches(platform, effect, s) {
-      var k :| 0 <= k < |b[m + 1..]| && b[m + 1..][k] == effect;
+      var k := var k :| 0 <= k < |b[m + 1..]| && b[m + 1..][k] == effect; k;
       assert effect == b[m + 1 + k];
     }
   }
@@ -2739,7 +2740,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     forall s | Listed(device0.platform, ListingOf(device0), s)
       ensures UntrackedIn(device0.platform, device0, [Pull(cursor)], s)
     {
-      var q :| q in ListingOf(device0) && SameF(device0.platform, q, s);
+      var q := var q :| q in ListingOf(device0) && SameF(device0.platform, q, s); q;
       assert q in device0.disk;
       assert RoundPut(device0.platform, [Pull(cursor)], s).Untouched?;
     }
@@ -2846,6 +2847,9 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     var intents := IntentsFor(doc, r, ruled.effects, pass.n);
     var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
     var effects' := pass.effects + guard + ruled.effects;
+    // Once, here: inside the per-row forall below the solver's search for
+    // this sequence identity timed out on some seeds.
+    assert effects' == pass.effects + (guard + ruled.effects);
     var listing' := ListingAfter(platform, pass.listing, ruled.effects);
     assert settled.journal.documents == ruled.documents && settled.effects == effects' && settled.listing == listing';
     RuleKeepsNeverJoined(platform, rows, doc, r, inner, revs', first);
@@ -2855,12 +2859,12 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       ensures DiskMap(disk'') == listing' && OneFilePerName(platform, disk'')
     {
       EffectsTakeSplit(platform, device0.disk, pass.effects + guard, ruled.effects, disk'');
-      var mid1 :| EffectsTake(platform, device0.disk, pass.effects + guard, mid1) && EffectsTake(platform, mid1, ruled.effects, disk'');
+      var mid1 := var mid1 :| EffectsTake(platform, device0.disk, pass.effects + guard, mid1) && EffectsTake(platform, mid1, ruled.effects, disk''); mid1;
       EffectsTakeSplit(platform, device0.disk, pass.effects, guard, mid1);
-      var mid0 :| EffectsTake(platform, device0.disk, pass.effects, mid0) && EffectsTake(platform, mid0, guard, mid1);
+      var mid0 := var mid0 :| EffectsTake(platform, device0.disk, pass.effects, mid0) && EffectsTake(platform, mid0, guard, mid1); mid0;
       assert DiskMap(mid0) == pass.listing && OneFilePerName(platform, mid0);
       if |guard| > 0 {
-        var m :| EffectTakes(platform, mid0, guard[0], m) && EffectsTake(platform, m, guard[1..], mid1);
+        var m := var m :| EffectTakes(platform, mid0, guard[0], m) && EffectsTake(platform, m, guard[1..], mid1); m;
         assert guard[0].PersistJournal?;
         assert m == mid0 && mid1 == mid0;
       }
@@ -2880,10 +2884,10 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         var s := after.binding.value.spelling;
         if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
           RulePutsLast(platform, rows, doc, r, inner, revs', first, e);
-          var m :| 0 <= m < |ruled.effects|
+          var m := var m :| 0 <= m < |ruled.effects|
             && ((ruled.effects[m].Write? && ruled.effects[m].target == Some(e) && SameF(platform, ruled.effects[m].path, s))
                 || (ruled.effects[m].Move? && ruled.effects[m].mover == Some(e) && SameF(platform, ruled.effects[m].to, s)))
-            && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s);
+            && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s); m;
           LastPutOwnName(platform, device0, pass.effects + guard, ruled.effects, e, s, m);
         } else if rows[e].binding.Some? && s == rows[e].binding.value.spelling
                   && forall effect :: effect in ruled.effects ==> !Touches(platform, effect, s) {
@@ -2892,7 +2896,6 @@ abstract module RoundGuarantees refines RoundClaimsCore {
             if effect in guard { assert effect.PersistJournal?; } else { assert effect in ruled.effects; }
           }
           UntouchedTailKeepsReadings(platform, device0, pass.effects, guard + ruled.effects, e, s);
-          assert effects' == pass.effects + (guard + ruled.effects);
         } else {
           RuleAdopt(platform, rows, doc, r, inner, revs', first, e);
           assert ruled.effects == [] && s == r.path;
@@ -2956,7 +2959,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     var input' := input.(listing := InScope(settled.listing, input.outOfScope));
     var push := OnPush(platform, read, input', revs);
     var created := Created(platform, read, input', revs);
-    var disk :| OneFilePerName(platform, disk) && DiskMap(disk) == settled.listing;
+    var disk := var disk :| OneFilePerName(platform, disk) && DiskMap(disk) == settled.listing; disk;
     OneFileDistinct(platform, disk);
     PushTouchesNoFile(platform, read, input', revs);
     forall e | e in push.0.documents ensures RowG5(platform, device0, settled.effects + push.1, e, push.0.documents[e]) {
@@ -3009,8 +3012,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       EffectsUntouchedKeepFile(platform, before.disk, effects, after.disk, s, x);
     }
     if HasFile(before, s) {
-      var q :| q in before.disk && SameF(platform, q, s) && FileAt(before, s) == before.disk[q];
-      var k :| k in after.disk && SameF(platform, k, s) && FileAt(after, s) == after.disk[k];
+      var q := var q :| q in before.disk && SameF(platform, q, s) && FileAt(before, s) == before.disk[q]; q;
+      var k := var k :| k in after.disk && SameF(platform, k, s) && FileAt(after, s) == after.disk[k]; k;
       assert q in ListingOf(after) && k in ListingOf(after);
       if q != k {
         SameFIsEquivalence(platform, q, s, k);
@@ -3046,8 +3049,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
             assert !CollideF(platform, q, path);
           }
         }
-        var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
-          && m == disk[path := DiskFile(content, kind, identity)];
+        var identity: FileIdentity := var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
+          && m == disk[path := DiskFile(content, kind, identity)]; identity;
         assert DiskMap(m) == listing[path := (content, kind)];
       }
     case Remove(_, path, expected) =>
@@ -3069,7 +3072,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     decreases |effects|
   {
     if |effects| > 0 {
-      var mid :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk');
+      var mid := var mid :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk'); mid;
       EffectDiskMap(platform, disk, effects[0], mid);
       EffectsDiskMap(platform, mid, effects[1..], disk');
     }
@@ -3155,10 +3158,10 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         var s := after.binding.value.spelling;
         if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
           RulePutsLast(platform, rows, doc, r, inner, revs', first, e);
-          var m :| 0 <= m < |ruled.effects|
+          var m := var m :| 0 <= m < |ruled.effects|
             && ((ruled.effects[m].Write? && ruled.effects[m].target == Some(e) && SameF(platform, ruled.effects[m].path, s))
                 || (ruled.effects[m].Move? && ruled.effects[m].mover == Some(e) && SameF(platform, ruled.effects[m].to, s)))
-            && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s);
+            && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s); m;
           LastPutOwnName(platform, device0, pass.effects + guard, ruled.effects, e, s, m);
           assert false;
         } else if rows[e].binding.Some? && s == rows[e].binding.value.spelling
@@ -3242,14 +3245,14 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   {
     var platform := device.platform;
     if HasFile(device, p) {
-      var a :| a in device.disk && SameF(platform, a, p) && FileAt(device, p) == device.disk[a];
+      var a := var a :| a in device.disk && SameF(platform, a, p) && FileAt(device, p) == device.disk[a]; a;
       SameFIsEquivalence(platform, a, p, q);
-      var b :| b in device.disk && SameF(platform, b, q) && FileAt(device, q) == device.disk[b];
+      var b := var b :| b in device.disk && SameF(platform, b, q) && FileAt(device, q) == device.disk[b]; b;
       SameFIsEquivalence(platform, b, q, a);
       SameFIsEquivalence(platform, a, q, b);
       assert a in ListingOf(device) && b in ListingOf(device);
     } else if HasFile(device, q) {
-      var b :| b in device.disk && SameF(platform, b, q);
+      var b := var b :| b in device.disk && SameF(platform, b, q); b;
       SameFIsEquivalence(platform, p, q, b);
       SameFIsEquivalence(platform, b, q, p);
     }
@@ -3328,7 +3331,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     RoundDisksFollowEffects(pre, d, input, revs);
     assert EffectsTake(platform, device.disk, step.effects, after.disk);
     EffectsTakeSplit(platform, device.disk, settled.effects, push.1, after.disk);
-    var mid :| EffectsTake(platform, device.disk, settled.effects, mid) && EffectsTake(platform, mid, push.1, after.disk);
+    var mid := var mid :| EffectsTake(platform, device.disk, settled.effects, mid) && EffectsTake(platform, mid, push.1, after.disk); mid;
     PushKeepsDisk(platform, mid, push.1, after.disk);
     assert DiskMap(after.disk) == settled.listing && OneFilePerName(platform, after.disk);
     assert DiskMap(after.disk) == ListingOf(after);
@@ -3361,7 +3364,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         assert RowContent(platform, device, accepted, settled.effects, settled.listing, doc, settled.journal.documents[doc]);
       } else {
         assert doc in creates;
-        var i :| 0 <= i < |input.freshDocs| && input.freshDocs[i] == doc;
+        var i := var i :| 0 <= i < |input.freshDocs| && input.freshDocs[i] == doc; i;
       }
       RoundG5Doc(step, device, after, settled.effects, settled.listing, settled.journal.documents, doc);
     }
@@ -3375,7 +3378,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     decreases |effects|
   {
     if |effects| > 0 {
-      var m :| EffectTakes(platform, disk, effects[0], m) && EffectsTake(platform, m, effects[1..], disk');
+      var m := var m :| EffectTakes(platform, disk, effects[0], m) && EffectsTake(platform, m, effects[1..], disk'); m;
       assert effects[0] in effects;
       assert m == disk;
       assert forall e | e in effects[1..] :: e in effects;
@@ -3479,7 +3482,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       forall effect | effect in tail ensures !Touches(platform, effect, s) { }
       UntouchedTailKeepsReadings(platform, before, settledEffects, tail, doc, s);
       assert !OwnNameIn(platform, before, settledEffects, doc, s);
-      var k :| k in after.disk && SameF(platform, k, s) && file == after.disk[k];
+      var k := var k :| k in after.disk && SameF(platform, k, s) && file == after.disk[k]; k;
       assert k in listing;
       SameFIsEquivalence(platform, k, s, s);
       assert Listed(platform, listing, s);

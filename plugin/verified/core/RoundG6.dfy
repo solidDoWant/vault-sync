@@ -29,7 +29,7 @@ abstract module RoundG6 refines RoundGuarantees {
     var lk := l.value.1;
     var rc := r.content;
     if lc == rc then
-      x == Some((rc, r.kind)) || (lk == Note && r.kind == Note && Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note)
+      x == Some((rc, r.kind)) || x == l || (lk == Note && r.kind == Note && Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note)
     else if lc == b then x == Some((rc, r.kind))
     else if rc == b then x == l
     else if lk == Note && r.kind == Note && Merge3(b, lc, rc).Some? then Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note

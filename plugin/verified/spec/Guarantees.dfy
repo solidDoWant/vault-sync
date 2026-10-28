@@ -855,7 +855,9 @@ abstract module Guarantees refines EngineModel {
   //   it here (it holds a live base's content), and then the file goes;
   // - a live revision with no file here: the file comes back with it;
   // - a live revision against a file: G6_Settle's both-sides-live cases,
-  //   with a side that does not stay saved next to it in `after`.
+  //   with a side that does not stay saved next to it in `after` (where
+  //   both sides hold the same content, G6_Settle compares content only,
+  //   so the local side may stay with its own kind).
   // The next link's base is `r`.
   ghost predicate SettleLink(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, r: Revision,
                              x: Option<(Hash, Kind)>) {
@@ -868,7 +870,7 @@ abstract module Guarantees refines EngineModel {
     var lk := l.value.1;
     var rc := r.content;
     if lc == rc then
-      x == Some((rc, r.kind)) || (lk == Note && r.kind == Note && Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note)
+      x == Some((rc, r.kind)) || x == l || (lk == Note && r.kind == Note && Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note)
     else if lc == b then x == Some((rc, r.kind))
     else if rc == b then x == l
     else if lk == Note && r.kind == Note && Merge3(b, lc, rc).Some? then Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note
