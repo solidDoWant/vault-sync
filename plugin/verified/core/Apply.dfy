@@ -577,12 +577,12 @@ abstract module ApplyCore refines StepContracts {
         // A remote delete against a change the server lacks: an edit beats a
         // delete (SPEC.md §6.3). The file stays, untouched.
         Applied(KeptAgainstDelete(document, read.value, r, rev), [])
-      else if !Clean(platform, document, read) && !r.deleted && read.Some? then
-        // A live revision against a file the listing reads that no case
-        // above settles (the base's own revision, pulled again past an
-        // older waiting one): it becomes the base, and the file stays as
-        // read, sent where it differs from it (#1068). Nothing on disk
-        // changes.
+      else if !Clean(platform, document, read) && !r.deleted && read.Some?
+              && document.base.Some? && document.base.value.rev == r.id then
+        // The base's own revision, pulled again past an older waiting one,
+        // against a file the listing reads: it becomes the base again, and
+        // the file stays as read, sent where it differs from it (#1068).
+        // Nothing on disk changes.
         Applied(Settled(document, r, read.value.0, rev), [])
       else if !Clean(platform, document, read) then
         Hold(document, r, if JournalChange(document) || read.None? || read.value.0 != document.binding.value.seen
