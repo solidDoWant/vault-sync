@@ -72,9 +72,19 @@ abstract module Guarantees refines EngineModel {
   }
 
   // A file was untracked when the step changed its binding: untracked
-  // before the step, or left untracked by the round's own effects.
+  // before the step, left untracked by the round's own effects, or let go
+  // by the round: no effect of the round touched its name, and every
+  // document bound to it before the step is no longer bound to it after
+  // (a row the round released, as a later step would find it).
   ghost predicate UntrackedThen(step: Step, before: Device, p: Path) {
-    Untracked(before, p) || RoundLeftUntracked(step, p)
+    Untracked(before, p) || RoundLeftUntracked(step, p) || RoundLetGo(step, before, p)
+  }
+
+  ghost predicate RoundLetGo(step: Step, before: Device, p: Path) {
+    step.event.SyncRound? && step.event.device in step.pre.devices && step.event.device in step.post.devices
+    && HasFile(before, p)
+    && RoundPut(before.platform, step.effects, p).Untouched?
+    && forall y :: BoundTo(before, y, p) ==> !BoundTo(step.post.devices[step.event.device], y, p)
   }
 
   // The content of a live revision of `doc` the server accepted: the
