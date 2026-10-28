@@ -2179,15 +2179,17 @@ abstract module RoundGuarantees refines RoundClaimsCore {
     case By(j) => (effects[j].Write? && effects[j].target == Some(e)) || (effects[j].Move? && effects[j].mover == Some(e))
   }
 
-  // The file at `p` is untracked as the pass left it (UntrackedThen, read
-  // on the pass): on disk before the round and untouched since (untracked
-  // before the round, or let go by the round: the end of the round decides
-  // which, RoundLetGo), or left there for no document by the pass.
+  // The file at `p` may be taken as untracked as the pass left it
+  // (UntrackedThen, read on the pass; the end of the round decides which
+  // case): on disk before the round and untouched since (untracked before
+  // the round, or let go: RoundLetGo), or last put there by the pass (for
+  // no document, RoundLeftUntracked, or for one that lets it go,
+  // RoundLetGo).
   ghost predicate UntrackedIn(platform: Platform, device0: Device, effects: seq<Effect>, p: Path) {
     match RoundPut(platform, effects, p)
     case Untouched => HasFile(device0, p)
     case Freed => false
-    case By(j) => PutsUntracked(effects[j])
+    case By(j) => true
   }
 
   // Where a row's bound file came from, for G5: its own file
@@ -2202,7 +2204,8 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   ghost predicate PassG5(platform: Platform, device0: Device, pass: RoundPass) {
     var rows := pass.journal.documents;
     NeverJoinedRows(platform, rows)
-    && forall e | e in rows :: RowG5(platform, device0, pass.effects, e, rows[e])
+    && (forall e | e in rows :: RowG5(platform, device0, pass.effects, e, rows[e]))
+    && ListedTaken(platform, device0, pass.effects, pass.listing)
   }
 
   // The invariant holds at the start of the round: every binding names
@@ -2216,6 +2219,7 @@ abstract module RoundGuarantees refines RoundClaimsCore {
   {
     var platform := device0.platform;
     var rows := start.journal.documents;
+    ListedTakenStart(device0, cursor);
     forall e | e in rows ensures RowG5(platform, device0, start.effects, e, rows[e]) {
       if rows[e].binding.Some? {
         var s := rows[e].binding.value.spelling;
@@ -2703,6 +2707,204 @@ abstract module RoundGuarantees refines RoundClaimsCore {
         SameFIsEquivalence(platform, last.from, p, q); SameFIsEquivalence(platform, last.from, q, p);
       }
       RoundPutSameF(platform, effects[..|effects| - 1], p, q);
+    }
+  }
+
+  // Every name the pass's listing lists may be taken as untracked as the
+  // pass left it (UntrackedIn): a listed name is never freed, and listed
+  // and untouched it is on disk before the round.
+  ghost predicate ListedTaken(platform: Platform, device0: Device, effects: seq<Effect>, listing: Listing) {
+    Distinct(platform, listing) ==> forall s :: Listed(platform, listing, s) ==> UntrackedIn(platform, device0, effects, s)
+  }
+
+  lemma ListedTakenStart(device0: Device, cursor: nat)
+    requires ListingDistinct(device0.platform, ListingOf(device0))
+    ensures ListedTaken(device0.platform, device0, [Pull(cursor)], ListingOf(device0))
+  {
+    forall s | Listed(device0.platform, ListingOf(device0), s)
+      ensures UntrackedIn(device0.platform, device0, [Pull(cursor)], s)
+    {
+      var q :| q in ListingOf(device0) && SameF(device0.platform, q, s);
+      assert q in device0.disk;
+      assert RoundPut(device0.platform, [Pull(cursor)], s).Untouched?;
+    }
+  }
+
+  // A freed name is not listed after the effect that freed it.
+  lemma FreedUnlisted(platform: Platform, listing: Listing, effect: Effect, s: Path)
+    requires Distinct(platform, listing)
+    requires (effect.Remove? && SameF(platform, effect.path, s))
+             || (effect.Move? && SameF(platform, effect.from, s) && !SameF(platform, effect.to, s))
+    ensures !Listed(platform, ListingAfterEffect(platform, listing, effect), s)
+  {
+    var after := ListingAfterEffect(platform, listing, effect);
+    var p := if effect.Remove? then effect.path else effect.from;
+    if k :| k in after && SameF(platform, k, s) {
+      SameFIsEquivalence(platform, k, s, p);
+      SameFIsEquivalence(platform, p, s, k);
+      if Listed(platform, listing, p) {
+        var q := ListedAt(platform, listing, p);
+        SameFIsEquivalence(platform, q, p, k);
+        if effect.Move? && k == effect.to {
+          SameFIsEquivalence(platform, k, s, s);
+        }
+      } else {
+        assert k in listing;
+      }
+    }
+  }
+
+  lemma ListedTakenStep(platform: Platform, device0: Device, effects: seq<Effect>, listing: Listing, effect: Effect)
+    requires ListedTaken(platform, device0, effects, listing)
+    ensures ListedTaken(platform, device0, effects + [effect], ListingAfterEffect(platform, listing, effect))
+  {
+    var after := ListingAfterEffect(platform, listing, effect);
+    var effects' := effects + [effect];
+    assert effects'[..|effects'| - 1] == effects;
+    assert effects'[|effects'| - 1] == effect;
+    if Distinct(platform, after) && Distinct(platform, listing) {
+      forall s | Listed(platform, after, s) ensures UntrackedIn(platform, device0, effects', s) {
+        if !Touches(platform, effect, s) {
+          ListingEffectUntouched(platform, listing, effect, s);
+          assert RoundPut(platform, effects', s) == RoundPut(platform, effects, s);
+        } else if (effect.Write? && SameF(platform, effect.path, s)) || (effect.Move? && SameF(platform, effect.to, s)) {
+          assert RoundPut(platform, effects', s).By?;
+        } else {
+          FreedUnlisted(platform, listing, effect, s);
+        }
+      }
+    } else if !Distinct(platform, listing) {
+      assert after == listing;
+    }
+  }
+
+  lemma ListedTakenAfter(platform: Platform, device0: Device, effects: seq<Effect>, listing: Listing, more: seq<Effect>)
+    requires ListedTaken(platform, device0, effects, listing)
+    ensures ListedTaken(platform, device0, effects + more, ListingAfter(platform, listing, more))
+    decreases |more|
+  {
+    if |more| == 0 {
+      assert effects + more == effects;
+    } else {
+      ListedTakenStep(platform, device0, effects, listing, more[0]);
+      ListedTakenAfter(platform, device0, effects + [more[0]], ListingAfterEffect(platform, listing, more[0]), more[1..]);
+      assert (effects + [more[0]]) + more[1..] == effects + more;
+    }
+  }
+
+  // Settling one revision keeps the G5 pass invariant: a row the rule
+  // puts a file for owns its name (RulePutsLast, LastPutOwnName), a row
+  // the rule left at an untouched name keeps what the pass read there,
+  // and an adoption takes a listed name (RuleAdopt, ListedTaken).
+  lemma {:isolate_assertions} SettleKeepsG5(platform: Platform, device0: Device, pass: RoundPass,
+                                            doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass)
+    ensures PassG5(platform, device0, SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
+    if !Distinct(platform, pass.listing) { return; }
+    if r.path in input.outOfScope {
+      if Newer(row, r) {
+        var rows' := settled.journal.documents;
+        assert rows' == documents[doc := row.(ahead := Some(Ahead(r, OutOfScope, false)))];
+        assert forall e | e in rows' :: (e in documents && rows'[e].binding == documents[e].binding)
+                                        || rows'[e].binding.None?;
+        assert settled.listing == pass.listing && settled.effects == pass.effects;
+        assert NeverJoinedRows(platform, rows');
+        forall e | e in rows' ensures RowG5(platform, device0, settled.effects, e, rows'[e]) {
+          if rows'[e].binding.Some? { assert RowG5(platform, device0, pass.effects, e, documents[e]); }
+        }
+      }
+      return;
+    }
+    var rows := documents[doc := row];
+    assert NeverJoinedRows(platform, rows);
+    forall e | e in rows ensures RowG5(platform, device0, pass.effects, e, rows[e]) {
+      if e in documents && rows[e] == documents[e] { assert RowG5(platform, device0, pass.effects, e, documents[e]); }
+    }
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+    var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+    var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+    var effects' := pass.effects + guard + ruled.effects;
+    var listing' := ListingAfter(platform, pass.listing, ruled.effects);
+    assert settled.journal.documents == ruled.documents && settled.effects == effects' && settled.listing == listing';
+    RuleKeepsNeverJoined(platform, rows, doc, r, inner, revs', first);
+    RuleDeleteSeen(platform, rows, doc, r, inner, revs', first);
+    forall effect | effect in guard ensures !Touches(platform, effect, r.path) && effect.PersistJournal? { }
+    assert ListingAfter(platform, pass.listing, guard) == pass.listing;
+    ListedTakenAfter(platform, device0, pass.effects, pass.listing, guard);
+    ListedTakenAfter(platform, device0, pass.effects + guard, pass.listing, ruled.effects);
+    forall e | e in ruled.documents ensures RowG5(platform, device0, effects', e, ruled.documents[e]) {
+      var after := ruled.documents[e];
+      if after.binding.Some? {
+        var s := after.binding.value.spelling;
+        if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
+          RulePutsLast(platform, rows, doc, r, inner, revs', first, e);
+          var m :| 0 <= m < |ruled.effects|
+            && ((ruled.effects[m].Write? && ruled.effects[m].target == Some(e) && SameF(platform, ruled.effects[m].path, s))
+                || (ruled.effects[m].Move? && ruled.effects[m].mover == Some(e) && SameF(platform, ruled.effects[m].to, s)))
+            && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s);
+          LastPutOwnName(platform, device0, pass.effects + guard, ruled.effects, e, s, m);
+        } else if rows[e].binding.Some? && s == rows[e].binding.value.spelling
+                  && forall effect :: effect in ruled.effects ==> !Touches(platform, effect, s) {
+          assert RowG5(platform, device0, pass.effects, e, rows[e]);
+          forall effect | effect in guard + ruled.effects ensures !Touches(platform, effect, s) {
+            if effect in guard { assert effect.PersistJournal?; } else { assert effect in ruled.effects; }
+          }
+          UntouchedTailKeepsReadings(platform, device0, pass.effects, guard + ruled.effects, e, s);
+          assert effects' == pass.effects + (guard + ruled.effects);
+        } else {
+          RuleAdopt(platform, rows, doc, r, inner, revs', first, e);
+          assert ruled.effects == [] && s == r.path;
+          assert Listed(platform, pass.listing, s);
+          assert listing' == pass.listing;
+        }
+      }
+    }
+  }
+
+  lemma SettlePulledKeepsG5(platform: Platform, device0: Device, pass: RoundPass,
+                            revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass)
+    ensures PassG5(platform, device0, SettlePulled(platform, pass, revisions, input, revs, first))
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleKeepsG5(platform, device0, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettlePulledKeepsG5(platform, device0, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsG5(platform: Platform, device0: Device, pass: RoundPass,
+                     docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass)
+    ensures PassG5(platform, device0, RetryWaiting(platform, pass, docs, input, revs, first))
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        forall e | e in cleared.journal.documents
+          ensures RowG5(platform, device0, cleared.effects, e, cleared.journal.documents[e])
+        {
+          assert RowG5(platform, device0, pass.effects, e, documents[e]);
+        }
+        assert PassG5(platform, device0, cleared);
+        SettleKeepsG5(platform, device0, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryKeepsG5(platform, device0, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsG5(platform, device0, pass, docs[1..], input, revs, first);
+      }
     }
   }
 }
