@@ -921,4 +921,350 @@ abstract module RoundClaimsCore refines PathRuleCore {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // CommitsOnBase: bases never move back and every outbox's parent stays
+  // at or below its base
+  // ---------------------------------------------------------------------
+
+  ghost predicate BaseMoves(before: Document, after: Document) {
+    before.base.Some? ==> after.base.Some? && after.base.value.position >= before.base.value.position
+  }
+
+  // An outbox keeps its parent, or its parent is an accepted revision of
+  // the document at or below its base. Unlike ParentKeptOrBase it composes
+  // over the round's passes, where a base may move after a parent was
+  // taken from it.
+  ghost predicate ParentBelowBase(accepted: map<RevId, Revision>, doc: DocId, before: Document, after: Document) {
+    after.outbox.Some? && after.outbox.value.baseRev.Some? ==>
+      (before.outbox.Some? && after.outbox.value.baseRev == before.outbox.value.baseRev)
+      || (after.base.Some? && var parent := after.outbox.value.baseRev.value;
+          parent in accepted && accepted[parent].doc == doc && accepted[parent].position <= after.base.value.position)
+  }
+
+  // The row a journal had before, or NoRow for one the round added.
+  ghost function Orig(documents: map<DocId, Document>, e: DocId): Document {
+    if e in documents then documents[e] else NoRow()
+  }
+
+  // From the rows `before` to the rows `after`: no row is dropped, no base
+  // moves back, and every outbox's parent stays at or below its base.
+  ghost predicate BasesKept(accepted: map<RevId, Revision>, before: map<DocId, Document>, after: map<DocId, Document>) {
+    before.Keys <= after.Keys
+    && (forall e | e in before :: BaseMoves(before[e], after[e]))
+    && (forall e | e in after :: ParentBelowBase(accepted, e, Orig(before, e), after[e]))
+  }
+
+  lemma BasesKeptTrans(accepted: map<RevId, Revision>, a: map<DocId, Document>, b: map<DocId, Document>, c: map<DocId, Document>)
+    requires BasesKept(accepted, a, b) && BasesKept(accepted, b, c)
+    ensures BasesKept(accepted, a, c)
+  {
+    forall e | e in c ensures ParentBelowBase(accepted, e, Orig(a, e), c[e]) {
+      if e in b {
+        assert ParentBelowBase(accepted, e, Orig(a, e), b[e]);
+        assert BaseMoves(b[e], c[e]);
+      }
+    }
+  }
+
+  // A step that keeps a parent or takes the base's, onto rows whose bases
+  // the server accepted, keeps BasesKept.
+  lemma KeptOrBaseBelow(accepted: map<RevId, Revision>, before: map<DocId, Document>, after: map<DocId, Document>)
+    requires before.Keys <= after.Keys && RowsNameAccepted(accepted, after)
+    requires forall e | e in before :: BaseMoves(before[e], after[e])
+    requires forall e | e in after :: ParentKeptOrBase(Orig(before, e), after[e])
+    ensures BasesKept(accepted, before, after)
+  {
+    forall e | e in after ensures ParentBelowBase(accepted, e, Orig(before, e), after[e]) {
+      assert ParentKeptOrBase(Orig(before, e), after[e]);
+    }
+  }
+
+  lemma ApplyKeepsAheadAboveBase(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing) && AheadAboveBase(document)
+    ensures AheadAboveBase(ApplyRevision(platform, doc, document, r, input, bound, claims, rev).document)
+  {}
+
+  lemma {:isolate_assertions} RuleRowFacts(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && AheadAboveBase(documents[doc])
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first).documents;
+      ruled.Keys == documents.Keys
+      && AheadAboveBase(ruled[doc]) && BaseMoves(documents[doc], ruled[doc])
+      && (forall e | e in documents && e != doc :: KeepsNames(documents[e], ruled[e]))
+      && (forall e | e in documents :: ParentKeptOrBase(documents[e], ruled[e]))
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    ApplyKeepsAheadAboveBase(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    RuleNamesFrom(platform, documents, doc, r, input, revs, first);
+    RuleOwnRowKeepsBase(platform, documents, doc, r, input, revs, first);
+    RuleKeepsParent(platform, documents, doc, r, input, revs, first);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first).documents;
+    if HeldForName(document, applied, r) && !UnsavedCollides(platform, input.unsaved, r.path) {
+      assert Newer(document, r);
+      var keep := Keeps(platform, document, r, input);
+      var way := InTheWay(platform, input.listing, r.path, keep);
+      var aside := Aside(platform, input.listing, BoundNames(documents) + input.unsaved, AllClaims(documents), way, r.path);
+      if aside.Some? {
+        reveal HeadRow();
+      }
+      assert AheadAboveBase(ruled[doc]);
+    }
+  }
+
+  lemma {:isolate_assertions} SettleBases(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, pass.listing) && RowsNameAccepted(accepted, pass.journal.documents)
+    requires AcceptedAs(accepted, r) && r.doc == doc
+    requires doc in pass.journal.documents ==> AheadAboveBase(pass.journal.documents[doc])
+    ensures var documents := pass.journal.documents;
+      var documents' := SettleRevision(platform, pass, doc, r, input, revs, first).journal.documents;
+      ListingOn(platform, SettleRevision(platform, pass, doc, r, input, revs, first).listing)
+      && RowsNameAccepted(accepted, documents') && BasesKept(accepted, documents, documents')
+      && documents'.Keys == documents.Keys + {doc} && AheadAboveBase(documents'[doc])
+      && forall e | e in documents && e != doc :: KeepsNames(documents[e], documents'[e])
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var rows := documents[doc := row];
+    var input' := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    RuleKeepsListingOn(platform, pass.listing, rows, doc, r, input, revs', first);
+    SettleKnows(platform, pass, doc, r, input, revs, first);
+    SettleNamesAccepted(platform, accepted, pass, doc, r, input, revs, first);
+    var pass' := SettleRevision(platform, pass, doc, r, input, revs, first);
+    var documents' := pass'.journal.documents;
+    if r.path in input.outOfScope {
+      if Newer(row, r) {
+        assert documents' == documents[doc := row.(ahead := Some(Ahead(r, OutOfScope, false)))];
+      } else {
+        assert documents' == documents;
+      }
+      assert forall e | e in documents' :: documents'[e].outbox == Orig(documents, e).outbox;
+      KeptOrBaseBelow(accepted, documents, documents');
+    } else {
+      assert input'.(listing := pass.listing) == input';
+      RuleRowFacts(platform, rows, doc, r, input', revs', first);
+      assert documents' == PathRule(platform, rows, doc, r, input', revs', first).documents;
+      assert forall e | e in documents' :: Orig(documents, e) == rows[e];
+      KeptOrBaseBelow(accepted, documents, documents');
+    }
+  }
+
+  lemma SettlePulledBases(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, pass.listing) && RowsNameAccepted(accepted, pass.journal.documents)
+    requires forall e | e in pass.journal.documents :: AheadAboveBase(pass.journal.documents[e])
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    ensures var documents' := SettlePulled(platform, pass, revisions, input, revs, first).journal.documents;
+      RowsNameAccepted(accepted, documents') && BasesKept(accepted, pass.journal.documents, documents')
+    decreases |revisions|
+  {
+    var documents := pass.journal.documents;
+    if |revisions| == 0 {
+      KeptOrBaseBelow(accepted, documents, documents);
+    } else {
+      var next := SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleBases(platform, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledBases(platform, accepted, next, revisions[1..], input, revs, first);
+      BasesKeptTrans(accepted, documents, next.journal.documents, SettlePulled(platform, pass, revisions, input, revs, first).journal.documents);
+    }
+  }
+
+  lemma {:isolate_assertions} RetryBases(platform: Platform, accepted: map<RevId, Revision>, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires ListingOn(platform, pass.listing) && RowsNameAccepted(accepted, pass.journal.documents)
+    requires forall e | e in pass.journal.documents :: AheadAboveBase(pass.journal.documents[e]) || e in docs
+    ensures var pass' := RetryWaiting(platform, pass, docs, input, revs, first);
+      ListingOn(platform, pass'.listing)
+      && RowsNameAccepted(accepted, pass'.journal.documents) && BasesKept(accepted, pass.journal.documents, pass'.journal.documents)
+      && forall e | e in pass'.journal.documents :: AheadAboveBase(pass'.journal.documents[e])
+    decreases |docs|
+  {
+    var documents := pass.journal.documents;
+    var pass' := RetryWaiting(platform, pass, docs, input, revs, first);
+    if |docs| == 0 {
+      KeptOrBaseBelow(accepted, documents, documents);
+    } else {
+      var x := docs[0];
+      if x in documents && documents[x].ahead.Some? {
+        var row := documents[x];
+        var r := row.ahead.value.revision;
+        var cleared := pass.(journal := pass.journal.(documents := documents[x := row.(ahead := None)]));
+        var next := SettleRevision(platform, cleared, x, r, input, revs, first);
+        SettleBases(platform, accepted, cleared, x, r, input, revs, first);
+        assert BasesKept(accepted, documents, next.journal.documents) by {
+          forall e | e in next.journal.documents ensures ParentBelowBase(accepted, e, Orig(documents, e), next.journal.documents[e]) {
+            assert Orig(cleared.journal.documents, e).outbox == Orig(documents, e).outbox;
+          }
+        }
+        forall e | e in next.journal.documents ensures AheadAboveBase(next.journal.documents[e]) || e in docs[1..] {
+          if e != x {
+            assert KeepsNames(cleared.journal.documents[e], next.journal.documents[e]);
+            assert e in docs ==> e in docs[1..];
+          }
+        }
+        RetryBases(platform, accepted, next, docs[1..], input, revs, first);
+        BasesKeptTrans(accepted, documents, next.journal.documents, pass'.journal.documents);
+      } else {
+        forall e | e in documents ensures AheadAboveBase(documents[e]) || e in docs[1..] {
+          assert e in docs && e != x ==> e in docs[1..];
+        }
+        RetryBases(platform, accepted, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} OnRoundBases(platform: Platform, accepted: map<RevId, Revision>, journal: Journal, pulled: seq<Revision>,
+                                           cursor': nat, anchor': Option<RevId>, input: RoundInput, revs: FreshRevs)
+    requires FreshIn(input, revs)
+    requires ListingOn(platform, input.listing) && RowsNameAccepted(accepted, journal.documents)
+    requires forall i | 0 <= i < |pulled| :: AcceptedAs(accepted, pulled[i])
+    ensures BasesKept(accepted, journal.documents, OnRound(platform, journal, pulled, cursor', anchor', input, revs).0.documents)
+  {
+    var start := StartPass(journal, input);
+    var first := RoundClaims(platform, journal, input);
+    var waiting := WaitingRows(journal.documents);
+    assert forall e | e in journal.documents :: AheadAboveBase(journal.documents[e]) || e in waiting;
+    RetryBases(platform, accepted, start, waiting, input, revs, first);
+    var retried := RetryWaiting(platform, start, waiting, input, revs, first);
+    SettlePulledBases(platform, accepted, retried, pulled, input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    BasesKeptTrans(accepted, journal.documents, retried.journal.documents, settled.journal.documents);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    PushKeepsParents(platform, read, input', revs);
+    PushNamesAccepted(platform, accepted, read, input', revs);
+    var journal' := OnPush(platform, read, input', revs).0;
+    assert forall e | e in journal'.documents :: ParentKeptOrBase(Orig(settled.journal.documents, e), journal'.documents[e]);
+    KeptOrBaseBelow(accepted, settled.journal.documents, journal'.documents);
+    BasesKeptTrans(accepted, journal.documents, settled.journal.documents, journal'.documents);
+  }
+
+  // OwnRevisionsAcknowledged, one row at a time (as MergedClaims states it).
+  ghost predicate RowAcknowledged(server: Server, d: DeviceId, doc: DocId, document: Document) {
+    forall id :: doc in server.history && id in server.history[doc] && id in server.revisions
+      && server.revisions[id].device == d
+      && (document.base.None? || document.base.value.position < server.revisions[id].position)
+      ==> document.outbox.Some? && document.outbox.value.rev == id
+  }
+
+  // A row whose base does not move back and whose outbox's parent stays
+  // at or below its base keeps CommitsOnBase's clauses. A landed commit of
+  // the device's own the outbox carries after the round is the one it
+  // carried before, or one the base already covered (RowAcknowledged).
+  lemma RowCommitsOnBase(server: Server, d: DeviceId, doc: DocId, before: Document, after: Document)
+    requires HistoryFollowsFeed(server) && RevisionsOnFeed(server) && RevisionsAccepted(server)
+    requires OutboxParentAtBase(server, doc, before) && OwnCommitOnBase(server, d, doc, before)
+    requires RowAcknowledged(server, d, doc, before)
+    requires BaseMoves(before, after) && ParentBelowBase(server.accepted, doc, before, after)
+    ensures OutboxParentAtBase(server, doc, after) && OwnCommitOnBase(server, d, doc, after)
+  {
+    if after.outbox.Some? && after.outbox.value.rev in server.revisions
+       && server.revisions[after.outbox.value.rev].device == d
+       && server.revisions[after.outbox.value.rev].doc == doc && doc in server.history
+    {
+      var x := after.outbox.value.rev;
+      assert x in server.feed;
+      var i :| 0 <= i < |server.feed| && server.feed[i] == x;
+      assert x in server.history[doc];
+      if before.outbox.Some? && before.outbox.value.rev == x {
+      } else {
+        assert before.base.Some? && server.revisions[x].position <= before.base.value.position;
+      }
+    }
+  }
+
+  // Clause CommitsOnBase.
+  lemma {:isolate_assertions} RoundKeepsCommitsOnBase(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && CommitsOnBase(pre) && !Diverged(pre, d) && RoundInputOf(pre, d, input)
+    requires OwnRevisionsAcknowledged(pre, d) && OwnDocsKnown(pre) && JournalsNameAccepted(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server) && HistoryFollowsFeed(pre.server) && RevisionsOnFeed(pre.server)
+    requires OneFilePerName(pre.devices[d].platform, pre.devices[d].disk)
+    ensures CommitsOnBase(RoundStepOf(pre, d, input, revs).post)
+  {
+    var post := RoundStepOf(pre, d, input, revs).post;
+    var server := pre.server;
+    RoundStepJournal(pre, d, input, revs);
+    var device := pre.devices[d];
+    var journal := device.journal;
+    assert ReadsFeed(pre, d);
+    if FreshIn(input, revs) {
+      var platform := device.platform;
+      assert DiskMap(device.disk) == input.listing;
+      assert ListingOn(platform, input.listing);
+      PulledAccepted(pre, d);
+      assert RowsNameAccepted(server.accepted, journal.documents);
+      OnRoundBases(platform, server.accepted, journal, PulledOf(pre, d), CursorOf(pre, d), AnchorOf(pre, d), input, revs);
+      var journal' := post.devices[d].journal;
+      forall doc | doc in journal'.documents
+        ensures OutboxParentAtBase(server, doc, journal'.documents[doc])
+        ensures OwnCommitOnBase(server, d, doc, journal'.documents[doc])
+      {
+        var after := journal'.documents[doc];
+        assert ParentBelowBase(server.accepted, doc, Orig(journal.documents, doc), after);
+        if doc in journal.documents {
+          var before := journal.documents[doc];
+          assert RowAcknowledged(server, d, doc, before) by {
+            forall id | doc in server.history && id in server.history[doc] && id in server.revisions
+              && server.revisions[id].device == d
+              && (before.base.None? || before.base.value.position < server.revisions[id].position)
+              ensures before.outbox.Some? && before.outbox.value.rev == id
+            {
+              assert Unacknowledged(pre, d, doc, id);
+            }
+          }
+          RowCommitsOnBase(server, d, doc, before, after);
+        } else {
+          if after.outbox.Some? && after.outbox.value.rev in server.revisions
+             && server.revisions[after.outbox.value.rev].device == d
+             && server.revisions[after.outbox.value.rev].doc == doc && doc in server.history
+          {
+            var id := after.outbox.value.rev;
+            assert id in server.feed;
+            var i :| 0 <= i < |server.feed| && server.feed[i] == id;
+            assert id in server.history[doc];
+            assert false;
+          }
+        }
+      }
+    }
+    forall x, doc | ReadsFeed(post, x) && doc in post.devices[x].journal.documents
+      ensures OutboxParentAtBase(post.server, doc, post.devices[x].journal.documents[doc])
+      ensures OwnCommitOnBase(post.server, x, doc, post.devices[x].journal.documents[doc])
+    {
+      if x != d || !FreshIn(input, revs) {
+        assert post.devices[x].journal == pre.devices[x].journal;
+        assert ReadsFeed(pre, x);
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------
+  // All of them, from RoundContract's hypotheses (#1034 assembles these
+  // with #1091's guarantees)
+  // ---------------------------------------------------------------------
+
+  ghost predicate RoundJournalClaims(post: State) {
+    ServerClaims(post) && CoreInv(post) && OwnDocsKnown(post) && JournalsNameAccepted(post)
+    && OutboxParentsAccepted(post) && ClaimsCoverCursor(post) && CommitsOnBase(post)
+  }
+
+  lemma {:isolate_assertions} RoundKeepsJournalClaims(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires RoundHypotheses(pre, d, input, revs)
+    ensures RoundJournalClaims(RoundStepOf(pre, d, input, revs).post)
+  {
+    assert ClaimsCore(pre);
+    assert ServerClaims(pre);
+    assert ReadsFeed(pre, d);
+    assert OwnRevisionsAcknowledged(pre, d);
+    assert G7_OneFilePerName(pre);
+    assert OneFilePerName(pre.devices[d].platform, pre.devices[d].disk);
+    RoundKeepsServerClaims(pre, d, input, revs);
+    RoundKeepsCoreInv(pre, d, input, revs);
+    RoundKeepsOwnDocsKnown(pre, d, input, revs);
+    RoundKeepsNamesAccepted(pre, d, input, revs);
+    RoundKeepsParentsAccepted(pre, d, input, revs);
+    RoundKeepsClaimsCover(pre, d, input, revs);
+    RoundKeepsCommitsOnBase(pre, d, input, revs);
+  }
 }
