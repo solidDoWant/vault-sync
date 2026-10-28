@@ -615,9 +615,12 @@ abstract module Guarantees refines EngineModel {
   // In (c), (d) and (f) contents or names decide, and only these
   // owner-approved rules let them. In a sync round, "the file was
   // untracked" in (d), (e) and (f) also covers a file the round's own
-  // effects left there for no document (UntrackedThen, #1094), and "the
-  // document had no file" in (d) also covers a document whose file the
-  // round itself dropped before adopting another (RoundDroppedOwn).
+  // effects left there for no document (UntrackedThen, #1094), and (d)
+  // does not ask that the document had no file: a round may drop the
+  // document's file (remove it, move it aside, or let it go) before a
+  // later revision of the same document adopts another, as if the drop
+  // and the adoption were two steps. The file it had is untouched (left
+  // on disk) or was handled by the round's effects under G2 and G7.
   ghost predicate G5_NeverMixedUp(step: Step) {
     var d := EventDevice(step.event);
     d.Some? && d.value in step.pre.devices && d.value in step.post.devices ==>
@@ -643,7 +646,7 @@ abstract module Guarantees refines EngineModel {
             && (forall other :: other != doc && FileMissing(before, other) ==>
                   before.journal.documents[other].binding.value.seen != file.content))
         // (d)
-        || ((!hadFile || RoundDroppedOwn(step, doc)) && UntrackedThen(step, before, spelling)
+        || ((!hadFile || RoundEvent(step.event)) && UntrackedThen(step, before, spelling)
             && after.journal.documents[doc].base.Some?
             && (!known || before.journal.documents[doc].base.None?
                 || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
@@ -657,47 +660,6 @@ abstract module Guarantees refines EngineModel {
             && SameK(NewestClaim(before.journal.documents[doc]).value.0, spelling))
         // (g)
         || (step.event.User? && known && before.journal.documents[doc].binding == after.journal.documents[doc].binding)
-  }
-
-  // A sync round dropped the document's own file before a later revision
-  // of the same document in the same round brought it back (#1094): it
-  // removed it (a remote delete), or moved it aside for no document,
-  // letting it go (W(b)), or let the file bound before the round go
-  // without touching its name, so that it is untracked after the round
-  // (RoundLetGo: a revived row with no base, held with no binding,
-  // #1068). A removed or moved file is the one bound to the document
-  // before the round, where no earlier effect of the round put or freed a
-  // file at that name, or one the round wrote or moved there for it. The
-  // document then had no file when the round adopted one for it, as if
-  // the drop and the adoption were two steps.
-  ghost predicate RoundDroppedOwn(step: Step, doc: DocId) {
-    RoundEvent(step.event) && step.event.device in step.pre.devices
-    && ((exists k :: 0 <= k < |step.effects| && RoundDrops(step, k, doc))
-        || (BoundFile(step.pre.devices[step.event.device], doc).Some?
-            && RoundLetGo(step, step.pre.devices[step.event.device],
-                          step.pre.devices[step.event.device].journal.documents[doc].binding.value.spelling)))
-  }
-
-  ghost predicate RoundDrops(step: Step, k: nat, doc: DocId)
-    requires RoundEvent(step.event) && step.event.device in step.pre.devices && k < |step.effects|
-  {
-    (step.effects[k].Remove? && step.effects[k].doc == doc
-     && RoundOwnName(step, k, doc, step.effects[k].path))
-    || (step.effects[k].Move? && step.effects[k].mover.None?
-        && RoundOwnName(step, k, doc, step.effects[k].from))
-  }
-
-  // Before the round's effect `k`, `doc`'s file is at `p`.
-  ghost predicate RoundOwnName(step: Step, k: nat, doc: DocId, p: Path)
-    requires RoundEvent(step.event) && step.event.device in step.pre.devices && k <= |step.effects|
-  {
-    var device := step.pre.devices[step.event.device];
-    match RoundPut(device.platform, step.effects[..k], p)
-    case Untouched => BoundTo(device, doc, p)
-    case Freed => false
-    case By(j) =>
-      (step.effects[j].Write? && step.effects[j].target == Some(doc))
-      || (step.effects[j].Move? && step.effects[j].mover == Some(doc))
   }
 
   ghost predicate G5(trace: Trace) {
