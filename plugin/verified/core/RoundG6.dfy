@@ -3200,4 +3200,67 @@ abstract module RoundG6 refines RoundGuarantees {
       (e.Write? && e.precondition.Some? ==> e.target == Some(doc)) && (e.Remove? ==> e.doc == doc)
   {
   }
+
+  // What the rule's conditional overwrite or remove of `path` expects,
+  // `c`: the row's file is there (under F), and `c` is what the listing
+  // reads at its binding.
+  ghost predicate SawOwn(platform: Platform, listing: Listing, row: Document, path: Path, c: Hash)
+    requires ListingDistinct(platform, listing)
+  {
+    row.binding.Some? && SameF(platform, row.binding.value.spelling, path)
+    && Listed(platform, listing, row.binding.value.spelling)
+    && ListedRead(platform, listing, row.binding.value.spelling).value.0 == c
+  }
+
+  // Every conditional overwrite and every remove of the rule acts on the
+  // settled document's own file, expecting what it last saw or read there.
+  lemma RuleSaws(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput,
+                 revs: FreshRevs, first: Claims)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing)
+    ensures forall e | e in PathRule(platform, documents, doc, r, input, revs, first).effects ::
+      (e.Write? && e.precondition.Some? ==>
+         e.target == Some(doc) && SawOwn(platform, input.listing, documents[doc], e.path, e.precondition.value))
+      && (e.Remove? ==> e.doc == doc && SawOwn(platform, input.listing, documents[doc], e.path, e.expected))
+  {
+    var document := documents[doc];
+    var applied := ApplyRevision(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    if !HeldForName(document, applied, r) {
+      ApplySaws(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+      return;
+    }
+    if UnsavedCollides(platform, input.unsaved, r.path) { return; }
+    var device := Device(platform, true, Journal(documents, 0, [], []), map[], {}, {});
+    ClearWayOnlyWhatItSaw(device, doc, r, input, revs);
+    HeldReadsSeen(platform, doc, document, r, input, BoundNames(documents), ApplyClaims(documents, first), revs[doc]);
+    var cleared := ClearWay(platform, documents, doc, r, input, revs);
+    if Revives(platform, document, r, input) {
+      // A revived document arrives from no file of its own: only moves
+      // and an unconditional write.
+      reveal Keeps();
+      var way := InTheWay(platform, input.listing, r.path, Keeps(platform, document, r, input));
+      var avoid := BoundNames(documents) + input.unsaved;
+      var moves := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+      if moves.Some? && cleared.effects == MoveEffects(platform, documents, doc, moves.value) + ArriveOf(platform, doc, document, r, input) {
+        MoveEffectsShape(platform, documents, doc, moves.value);
+        assert ArriveOf(platform, doc, document, r, input) == [Write(Some(doc), r.path, Arriving(platform, document, r, input).content, Arriving(platform, document, r, input).kind, None)];
+      }
+    }
+  }
+
+  // The apply's conditional overwrites and removes expect what the row
+  // saw or the listing reads at its binding.
+  lemma ApplySaws(platform: Platform, doc: DocId, document: Document, r: Revision, input: RoundInput,
+                  bound: set<Path>, claims: Claims, rev: RevId)
+    requires ListingDistinct(platform, input.listing)
+    ensures forall e | e in ApplyRevision(platform, doc, document, r, input, bound, claims, rev).effects ::
+      (e.Write? && e.precondition.Some? ==>
+         e.target == Some(doc) && SawOwn(platform, input.listing, document, e.path, e.precondition.value))
+      && (e.Remove? ==> e.doc == doc && SawOwn(platform, input.listing, document, e.path, e.expected))
+  {
+    if document.binding.Some? {
+      var spelling := document.binding.value.spelling;
+      SameFIsEquivalence(platform, spelling, spelling, spelling);
+    }
+  }
 }
