@@ -10,6 +10,7 @@ merged core/MergedClaims.dfy        # 257
 server core/ServerEvents.dfy        # 203
 
 core core/RemoteEvents.dfy          # 87
+core core/Convergence.dfy           # 78
 core core/PathRule.dfy              # 69
 core core/ClaimsMirror.dfy          # 45
 core core/Apply.dfy                 # 42
