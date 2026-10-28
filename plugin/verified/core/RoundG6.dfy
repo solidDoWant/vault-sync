@@ -2187,10 +2187,36 @@ abstract module RoundG6 refines RoundGuarantees {
     exists k | 0 <= k < |rs| :: rs[k].device != d
   }
 
+  // The pass's chain of `e`, which settled another device's revision
+  // where `others` says so.
   ghost predicate PassChain(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>,
-                            e: DocId, pass: RoundPass) {
+                            others: bool, e: DocId, pass: RoundPass) {
     !Distinct(platform, pass.listing)
     || exists rs, saved, x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
+                              && (others ==> OthersIn(d, rs))
+  }
+
+  // The settlement of `r` of `doc` links another device's revision into
+  // `e`'s chain: its base moves.
+  ghost predicate LinksOther(d: DeviceId, pass: RoundPass, doc: DocId, r: Revision, settled: RoundPass, e: DocId) {
+    e == doc && r.device != d && doc in settled.journal.documents
+    && settled.journal.documents[doc].base
+       != (if doc in pass.journal.documents then pass.journal.documents[doc].base else None)
+  }
+
+  // A chain known to settle another device's revision is a chain.
+  lemma PassChainWeaken(platform: Platform, d: DeviceId, accepted: map<RevId, Revision>, base0: Option<Base>, b0: Hash, bd0: bool,
+                        read0: Option<(Hash, Kind)>, c0: Option<Hash>, others: bool, others': bool, e: DocId, pass: RoundPass)
+    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, pass)
+    requires others' ==> others
+    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others', e, pass)
+  {
+    if Distinct(platform, pass.listing) {
+      var rs, saved, x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
+                          && (others ==> OthersIn(d, rs));
+      assert ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
+             && (others' ==> OthersIn(d, rs));
+    }
   }
 
   // At the start of the round the chain is empty: the row is as it was,
@@ -2201,7 +2227,7 @@ abstract module RoundG6 refines RoundGuarantees {
     requires var row := start.journal.documents[e];
       AheadAboveBase(row) && (row.base.Some? ==> b0 == row.base.value.content && bd0 == row.base.value.deleted)
     ensures var row := start.journal.documents[e];
-      PassChain(platform, d, accepted, row.base, b0, bd0, LocalSide(platform, start.listing, row), LocalContent(LocalSide(platform, start.listing, row)), e, start)
+      PassChain(platform, d, accepted, row.base, b0, bd0, LocalSide(platform, start.listing, row), LocalContent(LocalSide(platform, start.listing, row)), false, e, start)
   {
     var row := start.journal.documents[e];
     var read0 := LocalSide(platform, start.listing, row);
@@ -2312,6 +2338,8 @@ abstract module RoundG6 refines RoundGuarantees {
       var listing' := ListingAfter(platform, input.listing, ruled.effects);
       Distinct(platform, listing') ==>
         exists rs', saved', x' :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, listing', rs', saved', x')
+          && (OthersIn(d, rs) ==> OthersIn(d, rs'))
+          && (r.device != d && ruled.documents[doc].base != documents[doc].base ==> OthersIn(d, rs'))
   {
     var document := documents[doc];
     var ruled := PathRule(platform, documents, doc, r, input, revs, first);
@@ -2394,21 +2422,25 @@ abstract module RoundG6 refines RoundGuarantees {
 
   // Each settled revision keeps every document's chain.
   lemma {:isolate_assertions} SettleKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
-                                               base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>, e: DocId, pass: RoundPass,
+                                               base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>, others: bool, e: DocId, pass: RoundPass,
                                                doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
     requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==>
                PulledBy(pass.journal.documents[doc], r, d) && NotBuiltOn(pass.journal.documents[doc], r)
                && FirstOwn(pass.journal.documents[doc], r, d)
-    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass)
-    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, SettleRevision(platform, pass, doc, r, input, revs, first))
+    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, pass)
+    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0,
+                      others || LinksOther(d, pass, doc, r, SettleRevision(platform, pass, doc, r, input, revs, first), e),
+                      e, SettleRevision(platform, pass, doc, r, input, revs, first))
   {
     var documents := pass.journal.documents;
     var row := if doc in documents then documents[doc] else NoRow();
     var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
     if !Distinct(platform, pass.listing) { return; }
-    var rs, saved, x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x);
+    var rs, saved, x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                        && (others ==> OthersIn(d, rs));
+    var flag := others || LinksOther(d, pass, doc, r, settled, e);
     if r.path in input.outOfScope {
       if Newer(row, r) {
         var rows' := settled.journal.documents;
@@ -2424,6 +2456,10 @@ abstract module RoundG6 refines RoundGuarantees {
           }
         }
         assert ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, rows', settled.listing, rs, saved, x);
+        assert !LinksOther(d, pass, doc, r, settled, e);
+        assert flag ==> OthersIn(d, rs);
+      } else {
+        assert settled == pass;
       }
       return;
     }
@@ -2443,31 +2479,39 @@ abstract module RoundG6 refines RoundGuarantees {
     var revs' := RevsFor(rows, revs, r);
     var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
     assert settled.journal.documents == ruled.documents && settled.listing == ListingAfter(platform, pass.listing, ruled.effects);
+    if !Distinct(platform, settled.listing) { return; }
     if e == doc {
       RuleChainOwn(platform, d, accepted, base0, b0, bd0, read0, c0, rows, doc, r, inner, revs', first, rs, saved, x);
+      var rs', saved', x' :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
+        && (OthersIn(d, rs) ==> OthersIn(d, rs'))
+        && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs'));
+      assert flag ==> OthersIn(d, rs');
     } else {
       RuleChainOther(platform, d, accepted, base0, b0, bd0, read0, c0, e, rows, doc, r, inner, revs', first, rs, saved, x);
+      var saved', x' :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, ruled.documents, settled.listing, rs, saved', x');
+      assert flag ==> OthersIn(d, rs);
     }
   }
 
   lemma SettlePulledKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
-                               base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>, e: DocId, pass: RoundPass,
+                               base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>, others: bool, e: DocId, pass: RoundPass,
                                revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass)
-    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass)
+    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, pass)
     requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
     // Who made each revision (PulledBy), as the pass meets it.
     requires PulledInPass(platform, d, pass, revisions, input, revs, first)
-    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, SettlePulled(platform, pass, revisions, input, revs, first))
+    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, SettlePulled(platform, pass, revisions, input, revs, first))
     decreases |revisions|
   {
     if |revisions| > 0 {
       var next := SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
-      SettleKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, e, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, others, e, pass, revisions[0].doc, revisions[0], input, revs, first);
+      PassChainWeaken(platform, d, accepted, base0, b0, bd0, read0, c0, others || LinksOther(d, pass, revisions[0].doc, revisions[0], next, e), others, e, next);
       SettleKeepsNUD(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
       assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
-      SettlePulledKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, e, next, revisions[1..], input, revs, first);
+      SettlePulledKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, others, e, next, revisions[1..], input, revs, first);
     }
   }
 
@@ -2495,13 +2539,13 @@ abstract module RoundG6 refines RoundGuarantees {
   }
 
   lemma RetryKeepsChain(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
-                        base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>, e: DocId, pass: RoundPass,
+                        base0: Option<Base>, b0: Hash, bd0: bool, read0: Option<(Hash, Kind)>, c0: Option<Hash>, others: bool, e: DocId, pass: RoundPass,
                         docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
     requires device0.platform == platform
     requires PassNUD(platform, device0, accepted, pass)
-    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass)
+    requires PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, pass)
     requires RetriedInPass(platform, d, pass, docs, input, revs, first)
-    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, RetryWaiting(platform, pass, docs, input, revs, first))
+    ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, RetryWaiting(platform, pass, docs, input, revs, first))
     decreases |docs|
   {
     if |docs| > 0 {
@@ -2511,9 +2555,10 @@ abstract module RoundG6 refines RoundGuarantees {
         var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
         assert NeverJoinedRows(platform, cleared.journal.documents);
         assert PassNUD(platform, device0, accepted, cleared);
-        assert PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, e, cleared) by {
+        assert PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, cleared) by {
           if Distinct(platform, pass.listing) {
-            var rs, saved, x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x);
+            var rs, saved, x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                                && (others ==> OthersIn(d, rs));
             var rows' := cleared.journal.documents;
             assert forall f | f in rows' :: f in documents && rows'[f].binding == documents[f].binding && rows'[f].base == documents[f].base;
             assert SavedHeld(platform, accepted, rows', cleared.listing, saved) by {
@@ -2529,11 +2574,13 @@ abstract module RoundG6 refines RoundGuarantees {
         }
         var r := row.ahead.value.revision;
         assert AcceptedAs(accepted, r) && r.doc == docs[0];
-        SettleKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, e, cleared, docs[0], r, input, revs, first);
+        SettleKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, others, e, cleared, docs[0], r, input, revs, first);
+        var next := SettleRevision(platform, cleared, docs[0], r, input, revs, first);
+        PassChainWeaken(platform, d, accepted, base0, b0, bd0, read0, c0, others || LinksOther(d, cleared, docs[0], r, next, e), others, e, next);
         SettleKeepsNUD(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
-        RetryKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, e, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first);
+        RetryKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, others, e, next, docs[1..], input, revs, first);
       } else {
-        RetryKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, e, pass, docs[1..], input, revs, first);
+        RetryKeepsChain(platform, device0, d, accepted, base0, b0, bd0, read0, c0, others, e, pass, docs[1..], input, revs, first);
       }
     }
   }
@@ -3094,7 +3141,7 @@ abstract module RoundG6 refines RoundGuarantees {
     var b0 := if base0.Some? then base0.value.content else remote.content;
     var bd0 := base0.Some? && base0.value.deleted;
     PassChainStart(platform, d, accepted, doc, start, b0, bd0);
-    RetryKeepsChain(platform, device, d, accepted, base0, b0, bd0, read0, c0, doc, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsChain(platform, device, d, accepted, base0, b0, bd0, read0, c0, false, doc, start, WaitingRows(journal.documents), input, revs, first);
     RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
     if behind {
       var ids := feed[journal.cursor..];
@@ -3103,7 +3150,7 @@ abstract module RoundG6 refines RoundGuarantees {
         assert pulled[i] in pulled;
       }
     }
-    SettlePulledKeepsChain(platform, device, d, accepted, base0, b0, bd0, read0, c0, doc, retried, pulled, input, revs, first);
+    SettlePulledKeepsChain(platform, device, d, accepted, base0, b0, bd0, read0, c0, false, doc, retried, pulled, input, revs, first);
     PushTouchesNoFile(platform, read, input', revs);
     // The disk after the round is the pass's listing.
     RoundDisksFollowEffects(pre, d, input, revs);
