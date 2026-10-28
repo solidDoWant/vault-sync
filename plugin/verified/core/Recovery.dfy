@@ -463,23 +463,46 @@ abstract module RecoveryCore refines PathRuleCore {
     && CoreReachable(step.pre)
   }
 
+  // The commit a landing appends: the device's sealed outbox of `doc`, at
+  // the feed's end (CommitLandedAs, with every journal as it was).
+  ghost predicate LandsOutbox(pre: State, d: DeviceId, doc: DocId, r: Revision) {
+    d in pre.devices && doc in pre.devices[d].journal.documents
+    && var o := pre.devices[d].journal.documents[doc].outbox;
+    o.Some? && o.value.sealed
+    && r == Revision(o.value.rev, doc, |pre.server.feed|, o.value.baseRev, o.value.path, o.value.content,
+                     o.value.kind, o.value.deleted, d)
+    && Appendable(pre.server, doc, r)
+  }
+
+  // A commit that lands unanswered, with every journal unchanged, keeps
+  // the claims: #1100's lemma, a hypothesis here until it is proved.
+  ghost predicate LandingKeepsClaims() {
+    forall pre: State, d: DeviceId, doc: DocId, r: Revision {:trigger LandsOutbox(pre, d, doc, r)} ::
+      CoreReachable(pre) && LandsOutbox(pre, d, doc, r)
+      ==> ClaimsCore(pre.(server := Appended(pre.server, doc, r)))
+  }
+
   // The journal a covered cut persists, if the crash came after its one
-  // effect: every covered step requests exactly [PersistJournal(j')].
-  lemma CoveredCutEffects(step: Step) returns (j': Journal)
+  // effect: every covered step requests exactly [PersistJournal(j')]. The
+  // step's journal is read from the device alone (but for a resync's, which
+  // reads the server), so it is the same from any state `base` with the
+  // same devices: the crash step's state before, or that state with a
+  // commit landed.
+  lemma CoveredCutEffects(step: Step, base: State) returns (j': Journal)
     requires ResyncJournalOnly()
     requires CrashHypotheses(step) && CoveredCut(step) && step.event.cut.Some?
-    requires step.event.device in step.pre.devices
+    requires step.event.device in step.pre.devices && base.devices == step.pre.devices
     ensures |step.effects| == 0 || step.effects == [PersistJournal(j')]
-    ensures var d := step.event.device; var pre := step.pre;
+    ensures var d := step.event.device;
       match step.event.cut.value.event
-      case Local(_, local) => exists revs: FreshRevs :: pre.devices[d].journal.documents.Keys <= revs.Keys
-                                && LocalStep(pre, d, local, revs).post == After(pre, d, j')
-      case Scan(_, _) => ListingDistinct(pre.devices[d].platform, ListingOf(pre.devices[d]))
-                           && exists revs: FreshRevs :: pre.devices[d].journal.documents.Keys <= revs.Keys
-                                && ScanStep(pre, d, revs).post == After(pre, d, j')
-      case Pushed(_, result) => exists nextRev: RevId :: RefusedStep(pre, d, result, nextRev).post == After(pre, d, j')
-      case Restart(_) => j' == Recover(pre.devices[d].journal)
-      case Resync(_) => ClaimsCore(After(pre, d, j'))
+      case Local(_, local) => exists revs: FreshRevs :: base.devices[d].journal.documents.Keys <= revs.Keys
+                                && LocalStep(base, d, local, revs).post == After(base, d, j')
+      case Scan(_, _) => ListingDistinct(base.devices[d].platform, ListingOf(base.devices[d]))
+                           && exists revs: FreshRevs :: base.devices[d].journal.documents.Keys <= revs.Keys
+                                && ScanStep(base, d, revs).post == After(base, d, j')
+      case Pushed(_, result) => exists nextRev: RevId :: RefusedStep(base, d, result, nextRev).post == After(base, d, j')
+      case Restart(_) => j' == Recover(base.devices[d].journal)
+      case Resync(_) => ClaimsCore(After(step.pre, d, j'))
       case _ => false
   {
     var d := step.event.device;
@@ -490,12 +513,15 @@ abstract module RecoveryCore refines PathRuleCore {
     case Local(_, local) =>
       var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && LocalStep(pre, d, local, revs).effects == cut.requested;
       j' := LocalJournal(device.platform, device.journal, local, map p | p in LocalEventPaths(local) :: ReadAt(device, p), revs);
+      assert LocalStep(base, d, local, revs).post == After(base, d, j');
     case Scan(_, _) =>
       var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && ScanStep(pre, d, revs).effects == cut.requested;
       j' := ScanJournal(device.platform, device.journal, ListingOf(device), revs);
+      assert ScanStep(base, d, revs).post == After(base, d, j');
     case Pushed(_, result) =>
       var nextRev: RevId :| RefusedStep(pre, d, result, nextRev).effects == cut.requested;
       j' := PushedJournal(device.journal, result, nextRev);
+      assert RefusedStep(base, d, result, nextRev).post == After(base, d, j');
     case Restart(_) =>
       j' := Recover(device.journal);
     case Resync(_) =>
@@ -511,55 +537,127 @@ abstract module RecoveryCore refines PathRuleCore {
       }
   }
 
+  // The state a crash starts from on the server it leaves: the state before,
+  // or that state with the device's sealed outbox landed (CommitLanded: a
+  // covered cut performs no Commit effect). CoreReachable either way.
+  lemma {:isolate_assertions} CrashBase(step: Step) returns (base: State)
+    requires ResyncJournalOnly() && ClaimsImplyMirrorContract() && LandingKeepsClaims()
+    requires CrashHypotheses(step) && CoveredCut(step) && step.event.device in step.pre.devices
+    ensures base == step.pre.(server := step.post.server) && CoreReachable(base)
+  {
+    var d := step.event.device;
+    var pre := step.pre;
+    base := pre.(server := step.post.server);
+    if step.post.server == pre.server {
+      assert base == pre;
+    } else {
+      CoveredEffectsJournalOnly(step);
+      var doc, r := CrashLanding(step);
+      assert ClaimsCore(pre.(server := Appended(pre.server, doc, r)));
+      assert ClaimsCore(base);
+      assert MirrorAtCursor(base) && MirrorInv(base);
+    }
+  }
+
+  // A covered crash performs journal writes only.
+  lemma CoveredEffectsJournalOnly(step: Step)
+    requires ResyncJournalOnly()
+    requires CrashHypotheses(step) && CoveredCut(step) && step.event.device in step.pre.devices
+    ensures forall effect :: effect in step.effects ==> effect.PersistJournal?
+  {
+    if step.event.cut.Some? && |step.effects| != 0 {
+      var j' := CoveredCutEffects(step, step.pre);
+    }
+  }
+
+  // A covered crash that changed the server landed the device's sealed
+  // outbox (a covered cut performs no Commit effect).
+  lemma {:isolate_assertions} CrashLanding(step: Step) returns (doc: DocId, r: Revision)
+    requires step.event.Crash? && CrashLeaves(step) && step.event.device in step.pre.devices
+    requires forall effect :: effect in step.effects ==> effect.PersistJournal?
+    requires step.post.server != step.pre.server
+    ensures LandsOutbox(step.pre, step.event.device, doc, r)
+    ensures step.post.server == Appended(step.pre.server, doc, r)
+  {
+    var d := step.event.device;
+    var pre := step.pre;
+    assert CommitLanded(step, d);
+    var o: Outbox;
+    doc, o :| CommitLandedAs(step, d, doc, o);
+    assert Commit(doc, o) !in step.effects;
+    r := Revision(o.rev, doc, |pre.server.feed|, o.baseRev, o.path, o.content, o.kind, o.deleted, d);
+  }
+
+  // The recovered crash post-state is the state `S` the cut step leaves
+  // (or the base, if the crash came before its journal write) with the
+  // device stopped and the stopped devices' intents dropped.
+  lemma RecoveredIsStopped(step: Step, S: State)
+    requires CrashHypotheses(step) && step.event.device in step.pre.devices
+    requires S.server == step.post.server && S.devices.Keys == step.pre.devices.Keys
+    requires forall x :: x in step.pre.devices && x != step.event.device ==> S.devices[x] == step.pre.devices[x]
+    requires var d := step.event.device;
+      S.devices[d] == step.pre.devices[d].(journal := step.post.devices[d].journal.(intents := S.devices[d].journal.intents),
+                                           disk := step.post.devices[d].disk)
+    ensures StoppedFrom(S, Recovered(step.post))
+  {
+    var R := Recovered(step.post);
+    forall x | x in S.devices
+      ensures if R.devices[x].running then R.devices[x] == S.devices[x]
+         else R.devices[x] == S.devices[x].(running := false, editors := R.devices[x].editors,
+                                            journal := S.devices[x].journal.(intents := R.devices[x].journal.intents))
+    {}
+  }
+
   // A crash's post-state, recovered, is a state with ClaimsCore with some
-  // devices stopped and some intents changed.
+  // devices stopped and some intents changed. A landed commit enters
+  // through LandingKeepsClaims (#1100); a resync's journal reads the
+  // server, so its cut is covered on an unchanged server only.
   lemma {:isolate_assertions} CrashKeepsClaims(step: Step)
     requires MergedKeepClaims() && ResyncJournalOnly()
+    requires ClaimsImplyMirrorContract() && LandingKeepsClaims()
     requires CrashHypotheses(step) && CoveredCut(step)
     requires step.event.device in step.pre.devices
-    requires step.post.server == step.pre.server
+    requires step.event.cut.Some? && step.event.cut.value.event.Resync? ==> step.post.server == step.pre.server
     ensures CrashInv(step.post)
   {
     var d := step.event.device;
     var pre := step.pre;
     var post := step.post;
     var device := pre.devices[d];
+    var base := CrashBase(step);
     assert EffectsTake(device.platform, device.disk, step.effects, post.devices[d].disk);
     var S: State;
     if |step.effects| == 0 {
       assert post.devices[d].journal == device.journal;
       assert post.devices[d].disk == device.disk;
-      S := pre;
+      S := base;
     } else {
-      var j' := CoveredCutEffects(step);
+      var j' := CoveredCutEffects(step, base);
       assert step.effects == [PersistJournal(j')];
       assert post.devices[d].journal == j';
       var mid :| EffectTakes(device.platform, device.disk, step.effects[0], mid) && EffectsTake(device.platform, mid, step.effects[1..], post.devices[d].disk);
       assert post.devices[d].disk == device.disk;
-      S := After(pre, d, j');
+      S := After(base, d, j');
       match step.event.cut.value.event
       case Local(_, local) =>
-        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && LocalStep(pre, d, local, revs).post == S;
-        assert ClaimsCore(LocalStep(pre, d, local, revs).post);
+        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && LocalStep(base, d, local, revs).post == S;
+        assert ClaimsCore(LocalStep(base, d, local, revs).post);
       case Scan(_, _) =>
-        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && ScanStep(pre, d, revs).post == S;
-        assert ClaimsCore(ScanStep(pre, d, revs).post);
+        var revs: FreshRevs :| device.journal.documents.Keys <= revs.Keys && ScanStep(base, d, revs).post == S;
+        assert ClaimsCore(ScanStep(base, d, revs).post);
       case Pushed(_, result) =>
-        var nextRev: RevId :| RefusedStep(pre, d, result, nextRev).post == S;
-        assert ClaimsCore(RefusedStep(pre, d, result, nextRev).post);
+        var nextRev: RevId :| RefusedStep(base, d, result, nextRev).post == S;
+        assert ClaimsCore(RefusedStep(base, d, result, nextRev).post);
       case Restart(_) =>
-        S := pre;
+        S := base;
       case Resync(_) =>
+        assert base == pre;
     }
     assert ClaimsCore(S);
-    var R := Recovered(post);
-    forall x | x in pre.devices
-      ensures if R.devices[x].running then R.devices[x] == S.devices[x]
-         else R.devices[x] == S.devices[x].(running := false, editors := R.devices[x].editors,
-                                            journal := S.devices[x].journal.(intents := R.devices[x].journal.intents))
-    {}
-    assert StoppedFrom(S, R);
-    StoppedKeepsClaims(S, R);
+    assert S.devices[d] == device.(journal := post.devices[d].journal.(intents := S.devices[d].journal.intents),
+                                   disk := post.devices[d].disk);
+    RecoveredIsStopped(step, S);
+    StoppedKeepsClaims(S, Recovered(post));
   }
 
   // A crash that leaves the journal's rows as they were keeps the step
@@ -579,7 +677,7 @@ abstract module RecoveryCore refines PathRuleCore {
     var device := pre.devices[d];
     assert EffectsTake(device.platform, device.disk, step.effects, post.devices[d].disk);
     if |step.effects| != 0 {
-      var j' := CoveredCutEffects(step);
+      var j' := CoveredCutEffects(step, step.pre);
       var mid :| EffectTakes(device.platform, device.disk, step.effects[0], mid) && EffectsTake(device.platform, mid, step.effects[1..], post.devices[d].disk);
     }
     assert post.devices[d].disk == device.disk;
@@ -615,6 +713,7 @@ abstract module RecoveryCore refines PathRuleCore {
   // answer, and the cuts CoveredCut leaves out are open (#1018's PR).
   lemma CrashKeepsAll(step: Step)
     requires MergedKeepClaims() && ResyncJournalOnly()
+    requires ClaimsImplyMirrorContract() && LandingKeepsClaims()
     requires CoveredCut(step) && step.event.device in step.pre.devices && step.event.device in step.post.devices
     requires step.post.server == step.pre.server
     requires step.post.devices[step.event.device].journal.documents == step.pre.devices[step.event.device].journal.documents

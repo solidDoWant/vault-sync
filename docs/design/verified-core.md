@@ -480,15 +480,22 @@ A crash in the middle of a sync round's revision works as follows:
 - Whatever the revision's half-done effects left on disk is the device's own version of the file. The start-up scan records it as a local change, and the next round merges it with the revision.
 - So a crash may leave a conflict copy that a crash-free run would not, but it loses nothing.
 
-**What is proved, and what is open.** `CrashContract` is proved for these crashes (`CrashKeepsAll`):
+**What is proved, and what is open.** `CrashKeepsClaims` proves `CrashInv` after these crashes:
 - a crash with no cut;
-- a crash that cuts short a local event, the scan, a refused or unanswered push, a restart, or a running device's resync.
+- a crash that cuts short a local event, the scan, a refused or unanswered push, or a restart;
+- a crash that cuts short a running device's resync.
 
-The proof needs the server unchanged, and it needs the journal's rows unchanged: either no cut, a cut before the step's journal write, or a restart's cut. Its hypotheses restate sibling modules' lemmas: `MergedKeepClaims` is proved in `MergedClaims.dfy` as `MergedKeepClaimsHolds`, and `ResyncJournalOnly` in `Resync.dfy` as `ResyncJournalOnlyHolds`. `CrashInv` alone (`CrashKeepsClaims`) also holds after the journal write of a local event, a scan, a push answer or a resync.
+The server may be unchanged or may be one where the device's sealed outbox landed (`CommitLanded`), except that a resync's cut needs an unchanged server, because the resync's journal reads the server. `CrashKeepsAll` proves the whole `CrashContract`, including `StepGuarantees`, for a crash that leaves the journal's rows as they were: no cut, a cut before the step's journal write, or a restart's cut.
 
-Still open:
-- **Remote revision and accept cuts** (#1098). `CoreRequests` does not carry a remote revision's or an accept's preconditions (#1018, 2026-10-28).
-- **Rebinding cuts.** G5_NeverMixedUp and G3_DeleteSeen excuse a rebinding only when the step's own event is the local rename or the scan. A crash after such a step's journal write has the crash as its event, so those guarantees fail as stated.
-- **A landed commit.** No lemma yet proves `ClaimsCore` after the server lands a device's sealed outbox with every journal unchanged (`CommitLanded`). That case covers both a crash and an unanswered push.
+The proofs rest on hypotheses that restate lemmas proved elsewhere:
+- `MergedKeepClaims`, proved in `MergedClaims.dfy` as `MergedKeepClaimsHolds`;
+- `ResyncJournalOnly`, proved in `Resync.dfy` as `ResyncJournalOnlyHolds`;
+- `ClaimsImplyMirrorContract`, proved in `ClaimsMirror.dfy`;
+- `LandingKeepsClaims`, the claims after a landed commit, which is #1100's lemma.
+
+Open, in #1098 (planner, 2026-10-28, decision #52):
+- **Remote revision and accept cuts.** `CoreRequests` does not carry a remote revision's or an accept's preconditions.
+- **Rename and scan-match cuts.** G5_NeverMixedUp's (a) and (c) and G3_DeleteSeen's rename excuse read the step's own event. A crash after such a step's journal write has the crash as its event, so those guarantees fail as stated. `CrashInv` still holds there.
+- **A stopped device's resync cut.** `ResyncContract` assumes the device runs.
 
 A round cut's `CrashInv` waits on #1094's restatement (PR #1097).
