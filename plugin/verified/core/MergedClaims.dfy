@@ -1,7 +1,9 @@
 // The merged steps keep the claims invariants (#1031, settled by #1050 and
 // #1063, docs/design/verified-core.md §4.1): a local event, the start-up
-// scan, a remote revision, a push refused or not answered, and an accepted
-// push each keep every clause of ClaimsReachable. With
+// scan, a remote revision, a push refused or not answered, an accepted
+// push, and a commit that lands unanswered (#1100: a crash's or an
+// "unavailable" answer's CommitLanded server) each keep every clause of
+// ClaimsReachable. With
 // ClaimsImplyMirrorContract (ClaimsMirror.dfy) the post state is then
 // CoreReachable; the composition is not stated here, because Dafny 4.11's
 // resolver crashes on a module that refines ClaimsMirror.
@@ -1298,5 +1300,365 @@ abstract module MergedClaims refines StepContracts {
     AcceptKeepsCommitsOnBase(pre, d, doc, r, nextRev);
     AcceptKeepsParentsAccepted(pre, d, doc, r, nextRev);
     assert ScopesClosedUnderF(post);
+  }
+
+  // ---------------------------------------------------------------------
+  // A commit that lands unanswered (#1100)
+  // ---------------------------------------------------------------------
+
+  // A row's own sealed outbox lands on the server with every journal as it
+  // was (CommitLandedAs, from the row's outbox): a crash's server, or an
+  // "unavailable" answer's (ServerFollowsEvent). It is the accept's
+  // precondition (AcceptHappens) with the revision the server builds.
+  ghost predicate LandingHappens(pre: State, d: DeviceId, doc: DocId, r: Revision) {
+    d in pre.devices && doc in pre.devices[d].journal.documents
+    && var o := pre.devices[d].journal.documents[doc].outbox;
+    o.Some? && o.value.sealed
+    && r == Revision(o.value.rev, doc, |pre.server.feed|, o.value.baseRev, o.value.path, o.value.content,
+                     o.value.kind, o.value.deleted, d)
+    && Appendable(pre.server, doc, r)
+  }
+
+  ghost function LandedState(pre: State, doc: DocId, r: Revision): State {
+    pre.(server := Appended(pre.server, doc, r))
+  }
+
+  // The server's heads after an append: r is doc's, every other is as it was.
+  lemma AppendedHeads(server: Server, doc: DocId, r: Revision)
+    requires r.id !in server.revisions
+    requires forall x, rev :: x in server.history && rev in server.history[x] ==> rev in server.revisions
+    ensures forall x :: Head(Appended(server, doc, r), x) == (if x == doc then Some(r) else Head(server, x))
+  {
+    var server' := Appended(server, doc, r);
+    forall x ensures Head(server', x) == (if x == doc then Some(r) else Head(server, x)) {
+      if x != doc {
+        assert x in server'.history <==> x in server.history;
+        if x in server.history && |server.history[x]| > 0 {
+          var last := server.history[x][|server.history[x]| - 1];
+          assert last in server.revisions;
+          assert last != r.id;
+        }
+      } else {
+        assert server'.history[doc][|server'.history[doc]| - 1] == r.id;
+      }
+    }
+  }
+
+  // The landing keeps the state invariants, the rows' and the server's
+  // retention: the new head collides with no live head (Appendable), every
+  // version retrievable before still is, and no device is finished after
+  // it (the feed grew past every cursor on it, and no anchor is the new id).
+  lemma {:isolate_assertions} LandedSafe(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsCore(pre)
+    ensures var post := LandedState(pre, doc, r);
+      StateInvariants(post) && CoreInv(post) && ServerRetains(post)
+      && (forall x :: x in post.devices ==> !FinishedSyncing(post, x))
+  {
+    var post := LandedState(pre, doc, r);
+    var server := pre.server;
+    var server' := post.server;
+    AppendedHeads(server, doc, r);
+    forall rev | rev in server.accepted ensures IsHead(server', rev) ==> IsHead(server, rev) {
+      if IsHead(server', rev) {
+        var x := var x0 :| Head(server', x0).Some? && Head(server', x0).value.id == rev; x0;
+        assert x != doc;
+      }
+    }
+    assert InHistory(server', r.id) by {
+      assert r.id in server'.history[doc];
+    }
+    forall rev | InHistory(server, rev) ensures InHistory(server', rev) {
+      var x := var x0 :| x0 in server.history && rev in server.history[x0]; x0;
+      assert rev in server'.history[x];
+    }
+    // G1, and ServerInv's retention clause.
+    forall rev | rev in server'.accepted
+      ensures InHistory(server', rev)
+          || (!server'.accepted[rev].deleted
+              && exists x :: x in post.devices && OnDisk(post.devices[x], server'.accepted[rev].content))
+          || (rev in server'.purged && !IsHead(server', rev))
+          || rev in server'.lost
+    {
+      if rev != r.id {
+        assert rev in server.accepted;
+      }
+    }
+    assert G1_Retained(post);
+    forall x | Head(server', x).Some? ensures Head(server', x).value.id !in server'.purged {
+      if x == doc { assert r.id !in server.revisions; }
+    }
+    assert G1_LatestNeverPurged(post);
+    assert G5_NeverJoined(post);
+    // G7: disks unchanged; the new head's path collides with no other live head.
+    forall doc1, doc2 | doc1 != doc2 && Head(server', doc1).Some? && Head(server', doc2).Some?
+      && !Head(server', doc1).value.deleted && !Head(server', doc2).value.deleted
+      ensures !CollideK(Head(server', doc1).value.path, Head(server', doc2).value.path)
+    {}
+    assert G7_OneFilePerName(post);
+    // G9: no device has finished. A cursor one past the old feed has an
+    // accepted anchor (JournalsNameAccepted), so not the new id.
+    forall x | x in post.devices ensures !FinishedSyncing(post, x) {
+      var j := pre.devices[x].journal;
+      if j.cursor == |server.feed| + 1 && j.anchor.Some? {
+        assert j.anchor.value in server.accepted;
+        assert server'.feed[|server.feed|] == r.id;
+      }
+    }
+    assert G9(post);
+    assert CoreInv(post);
+    assert ServerRetains(post);
+  }
+
+  // JournalsNameAccepted and OutboxParentsAccepted: `accepted` only grows,
+  // by an id no journal names.
+  lemma {:isolate_assertions} LandedNamesAccepted(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsCore(pre)
+    ensures JournalsNameAccepted(LandedState(pre, doc, r)) && OutboxParentsAccepted(LandedState(pre, doc, r))
+  {
+    var post := LandedState(pre, doc, r);
+    var server := pre.server;
+    var server' := post.server;
+    assert r.id !in server.accepted;
+    forall x | x in post.devices
+      ensures var j := post.devices[x].journal;
+        (j.anchor.Some? ==> j.anchor.value in server'.accepted)
+        && forall y :: y in j.documents ==> RowNamesAccepted(server', y, j.documents[y])
+    {
+      var j := pre.devices[x].journal;
+      forall y | y in j.documents ensures RowNamesAccepted(server', y, j.documents[y]) {
+        assert RowNamesAccepted(server, y, j.documents[y]);
+      }
+    }
+  }
+
+  // ReadsFeed: the cursor and anchor of a device that reads the feed after
+  // the landing were on the feed before it (no anchor is the new id).
+  lemma {:isolate_assertions} LandedReadsFeed(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsCore(pre)
+    ensures forall x :: ReadsFeed(LandedState(pre, doc, r), x) ==> ReadsFeed(pre, x)
+  {
+    var post := LandedState(pre, doc, r);
+    var server := pre.server;
+    var server' := post.server;
+    forall x | ReadsFeed(post, x) ensures ReadsFeed(pre, x) {
+      var j0 := pre.devices[x].journal;
+      if j0.cursor == |server'.feed| {
+        assert server'.feed[j0.cursor - 1] == r.id;
+        assert j0.anchor.value in server.accepted;
+        assert false;
+      } else if 0 < j0.cursor {
+        assert server'.feed[j0.cursor - 1] == server.feed[j0.cursor - 1];
+      }
+    }
+  }
+
+  // ClaimsCoverCursor: every cursor on the feed is short of the new entry.
+  lemma {:isolate_assertions} LandedCoversCursor(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsCore(pre)
+    requires forall x :: ReadsFeed(LandedState(pre, doc, r), x) ==> ReadsFeed(pre, x)
+    ensures ClaimsCoverCursor(LandedState(pre, doc, r))
+  {
+    var post := LandedState(pre, doc, r);
+    var server := pre.server;
+    var server' := post.server;
+    forall x, i | ReadsFeed(post, x) && 0 <= i < post.devices[x].journal.cursor
+      && i < |server'.feed| && server'.feed[i] in server'.revisions
+      ensures var rv := server'.revisions[server'.feed[i]];
+        rv.doc in post.devices[x].journal.documents
+        && KnownPosition(post.devices[x].journal.documents[rv.doc]).Some?
+        && KnownPosition(post.devices[x].journal.documents[rv.doc]).value >= rv.position
+    {
+      assert ReadsFeed(pre, x);
+      assert i < |server.feed|;
+      assert server'.feed[i] == server.feed[i];
+      assert server.feed[i] != r.id by { assert server.feed[i] in server.accepted; }
+    }
+  }
+
+  // OwnRevisionsAcknowledged: the landed revision is d's row's outbox, and
+  // every other revision is as unacknowledged as it was.
+  lemma {:isolate_assertions} LandedOwnAcknowledged(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsCore(pre)
+    requires forall x :: ReadsFeed(LandedState(pre, doc, r), x) ==> ReadsFeed(pre, x)
+    ensures var post := LandedState(pre, doc, r);
+      forall x :: ReadsFeed(post, x) ==> OwnRevisionsAcknowledged(post, x)
+  {
+    var post := LandedState(pre, doc, r);
+    var server := pre.server;
+    var server' := post.server;
+    forall x | ReadsFeed(post, x) ensures OwnRevisionsAcknowledged(post, x) {
+      assert ReadsFeed(pre, x);
+      assert OwnRevisionsAcknowledged(pre, x);
+      forall y, id | Unacknowledged(post, x, y, id)
+        ensures post.devices[x].journal.documents[y].outbox.Some?
+             && post.devices[x].journal.documents[y].outbox.value.rev == id
+      {
+        if id == r.id {
+          assert server'.revisions[r.id] == r;
+          assert x == d;
+          assert y == doc by {
+            if y != doc { assert y in server.history && r.id in server.history[y]; }
+          }
+        } else {
+          assert id in server.history[y] by {
+            if y == doc && doc in server.history {
+              assert server'.history[doc] == server.history[doc] + [r.id];
+            } else if y == doc {
+              assert server'.history[doc] == [r.id];
+            }
+          }
+          assert Unacknowledged(pre, x, y, id);
+        }
+      }
+    }
+  }
+
+  // OwnDocsKnown: the landed revision is d's own, of a document d has a
+  // row for.
+  lemma {:isolate_assertions} LandedOwnDocsKnown(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsCore(pre)
+    ensures OwnDocsKnown(LandedState(pre, doc, r))
+  {
+    var post := LandedState(pre, doc, r);
+    var server := pre.server;
+    var server' := post.server;
+    forall x, y, id | x in post.devices && y in server'.history && id in server'.history[y]
+      && id in server'.revisions && server'.revisions[id].device == x
+      ensures y in post.devices[x].journal.documents
+    {
+      if id == r.id {
+        assert server'.revisions[r.id] == r;
+        assert y == doc by {
+          if y != doc { assert y in server.history && r.id in server.history[y]; }
+        }
+      } else {
+        assert id in server.revisions && server'.revisions[id] == server.revisions[id];
+        assert y in server.history && id in server.history[y] by {
+          if y == doc && doc in server.history {
+            assert server'.history[doc] == server.history[doc] + [r.id];
+          } else if y == doc {
+            assert server'.history[doc] == [r.id];
+          }
+        }
+      }
+    }
+  }
+
+  // The claims hold after a commit lands unanswered (#1100): from a
+  // reachable state, a device's sealed outbox lands with every journal
+  // unchanged, and the state after it keeps ClaimsCore. MirrorInv holds
+  // too, since no device is finished after it. A crash (#1018's
+  // CrashKeepsClaims) and an "unavailable" answer (UnavailableLandedKeepsClaims)
+  // whose server is CommitLanded build on it.
+  lemma {:isolate_assertions} LandedKeepsClaims(pre: State, d: DeviceId, doc: DocId, r: Revision)
+    requires LandingHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures ClaimsReachable(LandedState(pre, doc, r))
+  {
+    var post := LandedState(pre, doc, r);
+    LandedSafe(pre, d, doc, r);
+    assert MirrorInv(post);
+    assert LiveHeadsApart(post.server);
+    AppendKeepsServerClauses(pre.server, doc, r);
+    LandedNamesAccepted(pre, d, doc, r);
+    LandedReadsFeed(pre, d, doc, r);
+    LandedCoversCursor(pre, d, doc, r);
+    LandedOwnAcknowledged(pre, d, doc, r);
+    LandedOwnDocsKnown(pre, d, doc, r);
+    LandedKeepsCommitsOnBase(pre, d, doc, r);
+    assert ScopesClosedUnderF(post);
+  }
+
+  // An "unavailable" answer whose commit had landed (ServerFollowsEvent's
+  // CommitLanded): the device reopens its outbox as for any "unavailable"
+  // answer, and the server has the sealed outbox appended.
+  ghost function UnavailableLandedStep(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId): Step
+    requires d in pre.devices
+  {
+    var answer := OnPushed(pre.devices[d].journal, Unavailable, nextRev);
+    Step(pre, Pushed(d, Unavailable), answer.1, After(pre, d, answer.0).(server := Appended(pre.server, doc, r)))
+  }
+
+  // The push contract's "unavailable" case on a landed server (#1100): the
+  // step is the landing followed by the refused push's answer on the landed
+  // server, so it keeps the claims (LandedKeepsClaims, RefusedKeepsClaims).
+  lemma {:isolate_assertions} UnavailableLandedKeepsClaims(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires LandingHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures var step := UnavailableLandedStep(pre, d, doc, r, nextRev);
+      ClaimsReachable(step.post) && StepGuarantees(step)
+  {
+    var step := UnavailableLandedStep(pre, d, doc, r, nextRev);
+    var landed := LandedState(pre, doc, r);
+    LandedKeepsClaims(pre, d, doc, r);
+    RefusedKeepsClaims(landed, d, Unavailable, nextRev);
+    var refused := RefusedStep(landed, d, Unavailable, nextRev);
+    assert refused.post == step.post;
+    assert refused.effects == step.effects;
+    UnavailableLandedGuarantees(pre, d, doc, r, nextRev);
+  }
+
+  // The landed step's guarantees: the refused push's on the landed server,
+  // whose devices are the step's before it, and the landing's on the server.
+  lemma {:isolate_assertions} UnavailableLandedGuarantees(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires LandingHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures StepGuarantees(UnavailableLandedStep(pre, d, doc, r, nextRev))
+  {
+    var step := UnavailableLandedStep(pre, d, doc, r, nextRev);
+    var landed := LandedState(pre, doc, r);
+    var refused := RefusedStep(landed, d, Unavailable, nextRev);
+    LandedSafe(pre, d, doc, r);
+    RefusedSafe(landed, d, Unavailable, nextRev);
+    assert refused.post == step.post && refused.effects == step.effects && refused.event == step.event;
+    assert landed.devices == pre.devices;
+    UnavailableLandedRetains(pre, d, doc, r, nextRev);
+    assert G2_OnlyWhatItSaw(step);
+    assert G2_Conditional(step);
+    assert G2_NoUntrackedDelete(step);
+    assert G2_UnsavedSafe(step);
+    assert G3_DeleteSeen(step);
+    assert G5_RenameKeepsDocument(step);
+    assert G5_NeverMixedUp(step);
+    forall x, y, remote | SettlesConcurrent(step, x, y, remote) ensures G6_Settle(step, x, y, remote) {
+      assert SettlesConcurrent(refused, x, y, remote);
+    }
+    assert G7_MoveKeepsContents(step);
+    assert G8_Recovers(step);
+    assert G8_PicksUpOfflineChanges(step);
+    assert G10_SettledOrReported(step);
+    assert DisksFollowEffects(step);
+    var o := pre.devices[d].journal.documents[doc].outbox.value;
+    assert CommitLandedAs(step, d, doc, o);
+    assert ServerFollowsEvent(step);
+  }
+
+  // G1 for the landed step: the append keeps every history entry, the
+  // disks are as they were, and a version kept only by a head's content was
+  // purged or lost (ServerRetains).
+  lemma {:isolate_assertions} UnavailableLandedRetains(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires LandingHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures G1_OnlyRetentionRemoves(UnavailableLandedStep(pre, d, doc, r, nextRev))
+  {
+    var step := UnavailableLandedStep(pre, d, doc, r, nextRev);
+    var post := step.post;
+    var server := pre.server;
+    var server' := post.server;
+    assert server' == Appended(server, doc, r);
+    forall x | x in pre.devices ensures x in post.devices && post.devices[x].disk == pre.devices[x].disk {}
+    forall rev | InHistory(server, rev) ensures InHistory(server', rev) {
+      var x := var x0 :| x0 in server.history && rev in server.history[x0]; x0;
+      assert rev in server'.history[x];
+    }
+    forall rev | rev in server.accepted && rev in server'.accepted && Retrievable(pre, rev) && !Retrievable(post, rev)
+      ensures rev in server.purged
+          || (rev in server.lost
+              && !exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content))
+    {
+      assert server'.accepted[rev] == server.accepted[rev];
+      if exists x :: x in pre.devices && OnDisk(pre.devices[x], server.accepted[rev].content) {
+        var x := var x0 :| x0 in pre.devices && OnDisk(pre.devices[x0], server.accepted[rev].content); x0;
+        assert OnDisk(post.devices[x], server.accepted[rev].content);
+        assert false;
+      }
+      assert !InHistory(server, rev);
+    }
   }
 }
