@@ -4060,4 +4060,210 @@ abstract module RoundG6 refines RoundGuarantees {
         }
       }
   }
+
+  // Every conditional write of the pass names a document.
+  ghost predicate WritesTargeted(effects: seq<Effect>) {
+    forall i | 0 <= i < |effects| :: effects[i].Write? && effects[i].precondition.Some? ==> effects[i].target.Some?
+  }
+
+  lemma SettleKeepsTargeted(platform: Platform, pass: RoundPass, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires WritesTargeted(pass.effects)
+    ensures WritesTargeted(SettleRevision(platform, pass, doc, r, input, revs, first).effects)
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    if !Distinct(platform, pass.listing) || r.path in input.outOfScope { return; }
+    var rows := documents[doc := row];
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+    var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+    var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+    var all := pass.effects + guard + ruled.effects;
+    assert SettleRevision(platform, pass, doc, r, input, revs, first).effects == all;
+    RuleSaws(platform, rows, doc, r, inner, revs', first);
+    forall i | 0 <= i < |all| && all[i].Write? && all[i].precondition.Some? ensures all[i].target.Some? {
+      if i < |pass.effects| { assert all[i] == pass.effects[i]; }
+      else if i < |pass.effects + guard| { assert all[i] in guard; }
+      else { assert all[i] in ruled.effects; }
+    }
+  }
+
+  lemma SettlePulledKeepsTargeted(platform: Platform, pass: RoundPass, revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires WritesTargeted(pass.effects)
+    ensures WritesTargeted(SettlePulled(platform, pass, revisions, input, revs, first).effects)
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleKeepsTargeted(platform, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettlePulledKeepsTargeted(platform, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsTargeted(platform: Platform, pass: RoundPass, docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires WritesTargeted(pass.effects)
+    ensures WritesTargeted(RetryWaiting(platform, pass, docs, input, revs, first).effects)
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        SettleKeepsTargeted(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first);
+        RetryKeepsTargeted(platform, SettleRevision(platform, cleared, docs[0], row.ahead.value.revision, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsTargeted(platform, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
+
+  // The round's effects: all performed, each conditional one acting on a
+  // file whose origin the pass knows, every conditional write naming a
+  // document.
+  lemma {:isolate_assertions} RoundG2Facts(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    ensures var step := RoundStepOf(pre, d, input, revs);
+      var device := pre.devices[d];
+      OneFilePerName(device.platform, device.disk)
+      && EffectsTake(device.platform, device.disk, step.effects, step.post.devices[d].disk)
+      && Performed(device.platform, device.disk, step.effects)
+      && PassHist(device.platform, device, pre.server.accepted, step.effects)
+      && WritesTargeted(step.effects)
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var accepted := pre.server.accepted;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundDisksFollowEffects(pre, d, input, revs);
+    assert OneFilePerName(platform, device.disk);
+    if !(forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs) {
+      assert step.effects == [];
+      return;
+    }
+    var feed := pre.server.feed;
+    var behind := journal.cursor < |feed|;
+    var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var cursor' := if behind then |feed| else journal.cursor;
+    var anchor' := if behind then Some(feed[|feed| - 1]) else journal.anchor;
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    assert step.effects == settled.effects + push.1;
+    assert input.listing == ListingOf(device);
+    OneFileDistinct(platform, device.disk);
+    assert NeverJoinedRows(platform, journal.documents);
+    assert RowsNameAccepted(accepted, journal.documents);
+    forall e | e in start.journal.documents
+      ensures RowOrigin(platform, device, accepted, start.effects, start.listing, e, start.journal.documents[e])
+    {
+      if journal.documents[e].binding.Some? {
+        assert SameF(platform, journal.documents[e].binding.value.spelling, journal.documents[e].binding.value.spelling);
+        assert BoundTo(device, e, journal.documents[e].binding.value.spelling);
+      }
+    }
+    assert PassNUD(platform, device, accepted, start);
+    PassG5Start(device, start, journal.cursor);
+    PassContentStart(device, accepted, start, journal.cursor);
+    assert PassHist(platform, device, accepted, start.effects) by {
+      forall i | 0 <= i < |start.effects| ensures CondAt(platform, device, accepted, start.effects, i) {
+        assert start.effects[i] == Pull(journal.cursor);
+      }
+    }
+    assert Performed(platform, device.disk, start.effects) by {
+      forall i, disk' | 0 <= i < |start.effects| && EffectsTake(platform, device.disk, start.effects[..i], disk')
+        ensures PreconditionHolds(platform, disk', start.effects[i])
+      {
+        assert start.effects[i] == Pull(journal.cursor);
+      }
+    }
+    assert WritesTargeted(start.effects);
+    RetryKeepsHist(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsPerformed(platform, device, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsTargeted(platform, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsG5(platform, device, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsContent(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    if behind {
+      var ids := feed[journal.cursor..];
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |pulled| ensures AcceptedAs(accepted, pulled[i]) {
+        assert pulled[i] in pulled;
+      }
+    }
+    SettlePulledKeepsHist(platform, device, accepted, retried, pulled, input, revs, first);
+    SettlePulledKeepsPerformed(platform, device, retried, pulled, input, revs, first);
+    SettlePulledKeepsTargeted(platform, retried, pulled, input, revs, first);
+    PushTouchesNoFile(platform, read, input', revs);
+    var all := step.effects;
+    forall i | 0 <= i < |all| ensures CondAt(platform, device, accepted, all, i) {
+      if i < |settled.effects| {
+        assert all[i] == settled.effects[i] && all[..i] == settled.effects[..i];
+        assert CondAt(platform, device, accepted, settled.effects, i);
+      } else {
+        assert all[i] in push.1;
+      }
+    }
+    forall i, disk' | 0 <= i < |all| && EffectsTake(platform, device.disk, all[..i], disk')
+      ensures PreconditionHolds(platform, disk', all[i])
+    {
+      if i < |settled.effects| {
+        assert all[i] == settled.effects[i] && all[..i] == settled.effects[..i];
+      } else {
+        assert all[i] in push.1;
+      }
+    }
+    forall i | 0 <= i < |all| && all[i].Write? && all[i].precondition.Some? ensures all[i].target.Some? {
+      if i < |settled.effects| { assert all[i] == settled.effects[i]; } else { assert all[i] in push.1; }
+    }
+  }
+
+  // The round keeps what each of its conditional overwrites and removes
+  // expects, at the start of its chain of puts and where the round wrote
+  // it (KeptBase, KeptWrites). Proved of the round next (#1094).
+  ghost predicate RoundKept(step: Step)
+    requires RoundEvent(step.event)
+  {
+    forall i | 0 <= i < |step.effects| && IsCond(step.effects[i]) && !step.effects[i].Move? ::
+      KeptBase(step, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
+      && KeptWrites(step, i, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
+  }
+
+  // G2_OnlyWhatItSaw of the round, where it keeps what its overwrites and
+  // removes expect (RoundKept).
+  lemma RoundG2OnlyWhatItSawKept(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    requires RoundKept(RoundStepOf(pre, d, input, revs))
+    ensures G2_OnlyWhatItSaw(RoundStepOf(pre, d, input, revs))
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundG2Facts(pre, d, input, revs);
+    var device := pre.devices[d];
+    forall effect | effect in step.effects
+      ensures (effect.Write? && effect.precondition.Some? ==>
+                 effect.target.Some?
+                 && ((BoundTo(device, effect.target.value, effect.path)
+                      && LastSaw(step, device, effect.target.value, effect.path, effect.precondition.value))
+                     || RoundSawEffect(step, effect)))
+      ensures (effect.Remove? ==>
+                 (BoundTo(device, effect.doc, effect.path) && LastSaw(step, device, effect.doc, effect.path, effect.expected))
+                 || RoundSawEffect(step, effect))
+    {
+      var i :| 0 <= i < |step.effects| && step.effects[i] == effect;
+      if (effect.Write? && effect.precondition.Some?) || effect.Remove? {
+        assert IsCond(effect);
+        CondSaw(step, pre.server.accepted, i);
+      }
+    }
+  }
 }
