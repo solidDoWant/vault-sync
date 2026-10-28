@@ -35,6 +35,63 @@ abstract module Guarantees refines EngineModel {
   }
 
   // ---------------------------------------------------------------------
+  // What a sync round itself left at a path (verified-core.md §2.4, #1094)
+  // ---------------------------------------------------------------------
+
+  // A sync round settles several revisions in one step, so a later effect
+  // of the round can act on a file an earlier effect of the same round
+  // wrote or moved. The step guarantees read such a file against what the
+  // round's own earlier effects left there, found from the effects alone
+  // (no engine-internal state is trusted). `Untouched`: no effect put a
+  // file at `p` or freed it (under F), so the state before the step
+  // decides, as for any other step. `Freed`: the last such effect removed
+  // the file or moved it away. `By(j)`: effect `j` wrote or moved a file
+  // there last.
+  datatype Put = Untouched | Freed | By(index: nat)
+
+  ghost function RoundPut(platform: Platform, effects: seq<Effect>, p: Path): (put: Put)
+    ensures put.By? ==> put.index < |effects|
+    decreases |effects|
+  {
+    if |effects| == 0 then Untouched
+    else
+      var last := effects[|effects| - 1];
+      if (last.Write? && SameF(platform, last.path, p)) || (last.Move? && SameF(platform, last.to, p)) then
+        By(|effects| - 1)
+      else if (last.Remove? && SameF(platform, last.path, p)) || (last.Move? && SameF(platform, last.from, p)) then
+        Freed
+      else RoundPut(platform, effects[..|effects| - 1], p)
+  }
+
+  // The round's last put at `p` left a file of no document there: a
+  // conflict copy, or a file it let go (W(b)).
+  ghost predicate RoundLeftUntracked(step: Step, p: Path) {
+    step.event.SyncRound? && step.event.device in step.pre.devices
+    && var put := RoundPut(step.pre.devices[step.event.device].platform, step.effects, p);
+    put.By? && PutsUntracked(step.effects[put.index])
+  }
+
+  // A file was untracked when the step changed its binding: untracked
+  // before the step, or left untracked by the round's own effects.
+  ghost predicate UntrackedThen(step: Step, before: Device, p: Path) {
+    Untracked(before, p) || RoundLeftUntracked(step, p)
+  }
+
+  // The content of a live version of `doc` in the server's history after
+  // the step: a file holding exactly it can be got back from the server.
+  ghost predicate DocVersion(step: Step, doc: DocId, content: Hash) {
+    exists rev :: rev in step.post.server.accepted && InHistory(step.post.server, rev)
+      && step.post.server.accepted[rev].doc == doc
+      && !step.post.server.accepted[rev].deleted && step.post.server.accepted[rev].content == content
+  }
+
+  // A file of no document the round's own effects left at a path: a
+  // conflict copy, or a file it let go (W(b)).
+  ghost predicate PutsUntracked(effect: Effect) {
+    (effect.Write? && effect.target.None?) || (effect.Move? && effect.mover.None?)
+  }
+
+  // ---------------------------------------------------------------------
   // G1. Nothing the server accepted is lost.
   // ---------------------------------------------------------------------
 
@@ -97,7 +154,12 @@ abstract module Guarantees refines EngineModel {
   //   held, and pushes it again (G9, G10);
   // - in the user's own step, which deletes or overwrites a device's copy of
   //   bytes the server no longer has (a write the user replaced themselves).
-  //   A user step never changes the server.
+  //   A user step never changes the server;
+  // - in a sync round that keeps a lost version's bytes the way G2 keeps
+  //   what a round read (ReadKept: what the document sends, saved next to
+  //   it, or merged into what it sends). A lost version a device still
+  //   holds is that device's unsynced change, and the round keeps it as it
+  //   keeps any local change (#1094).
   ghost predicate G1_OnlyRetentionRemoves(step: Step) {
     forall rev :: (rev in step.pre.server.accepted && rev in step.post.server.accepted
       && Retrievable(step.pre, rev) && !Retrievable(step.post, rev)) ==>
@@ -107,6 +169,8 @@ abstract module Guarantees refines EngineModel {
             && !exists d :: d in step.pre.devices && OnDisk(step.pre.devices[d], step.pre.server.accepted[rev].content))
         || (step.event.Restore? && !InHistory(step.post.server, rev))
         || (step.event.User? && step.post.server == step.pre.server)
+        || (rev in step.pre.server.lost && step.event.SyncRound?
+            && exists doc :: ReadKept(step, doc, step.pre.server.accepted[rev].content))
   }
 
   ghost predicate G1(trace: Trace) {
@@ -132,11 +196,53 @@ abstract module Guarantees refines EngineModel {
       d.Some? && d.value in step.pre.devices &&
       var device := step.pre.devices[d.value];
       (effect.Write? && effect.precondition.Some? ==>
-         effect.target.Some? && BoundTo(device, effect.target.value, effect.path)
-         && LastSaw(step, device, effect.target.value, effect.path, effect.precondition.value))
+         effect.target.Some?
+         && ((BoundTo(device, effect.target.value, effect.path)
+              && LastSaw(step, device, effect.target.value, effect.path, effect.precondition.value))
+             || RoundSawEffect(step, effect)))
       && (effect.Remove? ==>
-         BoundTo(device, effect.doc, effect.path)
-         && LastSaw(step, device, effect.doc, effect.path, effect.expected))
+         (BoundTo(device, effect.doc, effect.path)
+          && LastSaw(step, device, effect.doc, effect.path, effect.expected))
+         || RoundSawEffect(step, effect))
+  }
+
+  // In a sync round, an effect may also act on a file the round's own
+  // earlier effects left (#1094): effect `i` overwrites or removes `doc`'s
+  // file at `path`, expecting `content`.
+  ghost predicate RoundSawEffect(step: Step, effect: Effect) {
+    (effect.Write? && effect.target.Some? && effect.precondition.Some?
+     && exists i :: 0 <= i < |step.effects| && step.effects[i] == effect
+          && RoundSaw(step, i, effect.target.value, effect.path, effect.precondition.value))
+    || (effect.Remove?
+        && exists i :: 0 <= i < |step.effects| && step.effects[i] == effect
+             && RoundSaw(step, i, effect.doc, effect.path, effect.expected))
+  }
+
+  // What the core last saw at `doc`'s file `p` before the round's effect
+  // `i` is `content`: where no earlier effect of the round put or freed a
+  // file there, LastSaw against the state before the step; where the
+  // round wrote that content there for `doc`, the content is kept
+  // (ReadKept); where the round moved `doc`'s file there, what it last saw
+  // at the file's old name before the move. A file the round adopted for
+  // `doc` (an untracked file, before the step or left by the round, G5
+  // (d)) qualifies only if it holds exactly a live version of `doc` in the
+  // server's history (DocVersion). A freed file never qualifies.
+  ghost predicate RoundSaw(step: Step, i: nat, doc: DocId, p: Path, content: Hash)
+    requires i <= |step.effects|
+    decreases i
+  {
+    step.event.SyncRound? && step.event.device in step.pre.devices
+    && var device := step.pre.devices[step.event.device];
+    match RoundPut(device.platform, step.effects[..i], p)
+    case Untouched => (BoundTo(device, doc, p) && LastSaw(step, device, doc, p, content)) || DocVersion(step, doc, content)
+    case Freed => false
+    case By(j) =>
+      var effect := step.effects[j];
+      (effect.Write? && effect.target == Some(doc) && effect.content == content
+       && (ReadKept(step, doc, content) || DocVersion(step, doc, content)))
+      || (effect.Move? && effect.mover == Some(doc) && effect.expected == content
+          && RoundSaw(step, j, doc, effect.from, content))
+      || (PutsUntracked(effect) && DocVersion(step, doc, content))
   }
 
   // What the core last saw at the bound file `path` of `doc` is `content`:
@@ -158,7 +264,9 @@ abstract module Guarantees refines EngineModel {
   // is what the document will have on the server (`Outgoing`), or it is in
   // an untracked file on the device, or the step settles another device's
   // live note revision of doc against it and the document sends their merge
-  // (G6's combined edits). Settling a remote delete keeps the read content
+  // (G6's combined edits), or the round settles several of doc's revisions
+  // in turn and the content is one link of that chain (RoundChain, #1094).
+  // Settling a remote delete keeps the read content
   // only by the first two: an edit beats a delete with the edit itself.
   ghost predicate ReadKept(step: Step, doc: DocId, content: Hash)
     requires step.event.SyncRound?
@@ -167,7 +275,8 @@ abstract module Guarantees refines EngineModel {
     d in step.post.devices
     && (Outgoing(step.post.devices[d], doc) == Some(content)
         || SavedNextToIt(step.post.devices[d], content)
-        || exists remote :: MergedRead(step, d, doc, content, remote))
+        || (exists remote :: MergedRead(step, d, doc, content, remote))
+        || (exists rs :: RoundChain(step, d, doc, rs, content)))
   }
 
   // The step settles `remote`, a live note revision of doc, against the
@@ -208,7 +317,27 @@ abstract module Guarantees refines EngineModel {
   ghost predicate G2_NoUntrackedDelete(step: Step) {
     var d := EventDevice(step.event);
     forall effect :: effect in step.effects && effect.Remove? ==>
-      d.Some? && d.value in step.pre.devices && Tracked(step.pre.devices[d.value], effect.path)
+      d.Some? && d.value in step.pre.devices
+      && (Tracked(step.pre.devices[d.value], effect.path)
+          || exists i :: 0 <= i < |step.effects| && step.effects[i] == effect
+               && RoundTracked(step, i, effect.doc, effect.path, effect.expected))
+  }
+
+  // In a sync round, the file at `p` before effect `i` is one the round
+  // itself wrote or moved there for a document, or one it adopted for
+  // `doc` that holds exactly a live version of `doc` on the server
+  // (#1094). A freed file never qualifies.
+  ghost predicate RoundTracked(step: Step, i: nat, doc: DocId, p: Path, content: Hash)
+    requires i <= |step.effects|
+  {
+    step.event.SyncRound? && step.event.device in step.pre.devices
+    && match RoundPut(step.pre.devices[step.event.device].platform, step.effects[..i], p)
+       case Untouched => DocVersion(step, doc, content)
+       case Freed => false
+       case By(j) =>
+         var effect := step.effects[j];
+         (effect.Write? && effect.target.Some?) || (effect.Move? && effect.mover.Some?)
+         || DocVersion(step, doc, content)
   }
 
   // "A file you are editing is never replaced underneath your unsaved
@@ -466,7 +595,9 @@ abstract module Guarantees refines EngineModel {
   //      it): the user, not sync, put another file there, and the engine
   //      learns of it from the vault's report or the start-up scan.
   // In (c), (d) and (f) contents or names decide, and only these
-  // owner-approved rules let them.
+  // owner-approved rules let them. In a sync round, "the file was
+  // untracked" in (d), (e) and (f) also covers a file the round's own
+  // effects left there for no document (UntrackedThen, #1094).
   ghost predicate G5_NeverMixedUp(step: Step) {
     var d := EventDevice(step.event);
     d.Some? && d.value in step.pre.devices && d.value in step.post.devices ==>
@@ -492,15 +623,15 @@ abstract module Guarantees refines EngineModel {
             && (forall other :: other != doc && FileMissing(before, other) ==>
                   before.journal.documents[other].binding.value.seen != file.content))
         // (d)
-        || (!hadFile && Untracked(before, spelling)
+        || (!hadFile && UntrackedThen(step, before, spelling)
             && after.journal.documents[doc].base.Some?
             && (!known || before.journal.documents[doc].base.None?
                 || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
             && file.content == after.journal.documents[doc].base.value.content)
         // (e)
-        || (!known && Untracked(before, spelling) && after.journal.documents[doc].base.None?)
+        || (!known && UntrackedThen(step, before, spelling) && after.journal.documents[doc].base.None?)
         // (f)
-        || (!hadFile && known && Untracked(before, spelling)
+        || (!hadFile && known && UntrackedThen(step, before, spelling)
             && NewestClaim(before.journal.documents[doc]).Some?
             && NewestClaim(before.journal.documents[doc]).value.1
             && SameK(NewestClaim(before.journal.documents[doc]).value.0, spelling))
@@ -658,7 +789,98 @@ abstract module Guarantees refines EngineModel {
 
   ghost predicate G6(trace: Trace) {
     forall i, d, doc, remote :: 0 <= i < |trace| && SettlesConcurrent(trace[i], d, doc, remote) ==>
-      G6_Settle(trace[i], d, doc, remote)
+      G6_Step(trace[i], d, doc, remote)
+  }
+
+  // A step settles a concurrent change as G6_Settle says, or, in a sync
+  // round that settles several of doc's revisions in turn, as a chain of
+  // G6_Settle's outcomes ending in `remote` (#1094).
+  ghost predicate G6_Step(step: Step, d: DeviceId, doc: DocId, remote: Revision)
+    requires SettlesConcurrent(step, d, doc, remote)
+  {
+    G6_Settle(step, d, doc, remote)
+    || exists rs: seq<Revision> :: |rs| > 0 && rs[|rs| - 1] == remote
+         && step.event.SyncRound? && step.event.device == d
+         && step.pre.devices[d].journal.documents[doc].binding.Some?
+         && RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).Some?
+         && RoundChain(step, d, doc, rs,
+                       RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).value.0)
+  }
+
+  // One link of a round's chain: settling another device's live revision
+  // `r` against local content `l` (kind `lk`) on base content `b` leaves
+  // `x` (kind `xk`), by G6_Settle's both-sides-live cases, with a side
+  // that does not stay saved next to it in `after`.
+  ghost predicate SettleLink(after: Device, b: Hash, l: Hash, lk: Kind, r: Revision, x: Hash, xk: Kind) {
+    !r.deleted
+    && var rc := r.content;
+    if l == rc then
+      (x == rc && xk == r.kind) || (lk == Note && r.kind == Note && Merge3(b, l, rc) == Some(x) && xk == Note)
+    else if l == b then x == rc && xk == r.kind
+    else if rc == b then x == l && xk == lk
+    else if lk == Note && r.kind == Note && Merge3(b, l, rc).Some? then Merge3(b, l, rc) == Some(x) && xk == Note
+    else (x == rc && xk == r.kind && SavedNextToIt(after, l)) || (x == l && xk == lk && SavedNextToIt(after, rc))
+  }
+
+  // Settling `rs` in turn from base content `b` and local content `l`
+  // leaves `out`, and `c` is one of the chain's contents (its start or a
+  // link's result).
+  ghost predicate ChainThrough(after: Device, b: Hash, l: Hash, lk: Kind, rs: seq<Revision>, out: Option<Hash>, c: Hash)
+    decreases |rs|
+  {
+    if |rs| == 0 then out == Some(l) && c == l
+    else exists x, xk :: SettleLink(after, b, l, lk, rs[0], x, xk)
+           && (ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c)
+               || (c == l && ChainThrough(after, rs[0].content, x, xk, rs[1..], out, x)))
+  }
+
+  // Every link of a chain settles a live revision.
+  lemma ChainLive(after: Device, b: Hash, l: Hash, lk: Kind, rs: seq<Revision>, out: Option<Hash>, c: Hash, k: int)
+    requires ChainThrough(after, b, l, lk, rs, out, c) && 0 <= k < |rs|
+    ensures !rs[k].deleted
+    decreases |rs|
+  {
+    // (The expression form of let-such-that: the statement form crashes
+    // Dafny 4.11's precedence linter.)
+    var x := var x :| exists xk :: (SettleLink(after, b, l, lk, rs[0], x, xk)
+      && (ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c)
+          || (c == l && ChainThrough(after, rs[0].content, x, xk, rs[1..], out, x)))); x;
+    var xk := var xk :| SettleLink(after, b, l, lk, rs[0], x, xk)
+      && (ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c)
+          || (c == l && ChainThrough(after, rs[0].content, x, xk, rs[1..], out, x))); xk;
+    if k > 0 {
+      if ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c) {
+        ChainLive(after, rs[0].content, x, xk, rs[1..], out, c, k - 1);
+      } else {
+        ChainLive(after, rs[0].content, x, xk, rs[1..], out, x, k - 1);
+      }
+    }
+  }
+
+  // The round on d settles doc's revisions `rs` (accepted, from other
+  // devices, in feed order, after the base, the last one the base after
+  // the step) in turn against the content it
+  // read in doc's file, ending in what the document sends, and `c` is one
+  // of the chain's contents. A chain of one revision is G6_Settle's
+  // both-sides-live case.
+  ghost predicate RoundChain(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>, c: Hash) {
+    step.event.SyncRound? && step.event.device == d
+    && d in step.pre.devices && d in step.post.devices && |rs| > 0
+    && doc in step.pre.devices[d].journal.documents
+    && var document := step.pre.devices[d].journal.documents[doc];
+    document.binding.Some? && document.base.Some?
+    && RoundRead(step, document.binding.value.spelling).Some?
+    && var read := RoundRead(step, document.binding.value.spelling).value;
+    (forall k :: 0 <= k < |rs| ==>
+       rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k]
+       && rs[k].doc == doc && rs[k].device != d)
+    && document.base.value.position < rs[0].position
+    && (forall k :: 0 <= k < |rs| - 1 ==> rs[k].position < rs[k + 1].position)
+    && doc in step.post.devices[d].journal.documents
+    && step.post.devices[d].journal.documents[doc].base.Some?
+    && step.post.devices[d].journal.documents[doc].base.value.rev == rs[|rs| - 1].id
+    && ChainThrough(step.post.devices[d], document.base.value.content, read.0, read.1, rs,
+                    Outgoing(step.post.devices[d], doc), c)
   }
 
   // ---------------------------------------------------------------------
@@ -681,16 +903,54 @@ abstract module Guarantees refines EngineModel {
   // name with its contents intact."
   // A file the engine moves (its precondition held) arrives at its new name
   // with its content; the engine frees a name only by moving, never by
-  // deleting (G2, G3).
+  // deleting (G2, G3). In a sync round, "its precondition held" is read on
+  // the disk the round's earlier effects left, and a later effect of the
+  // same round may act on the moved file in turn (RoundMovesKeepContents).
   ghost predicate G7_MoveKeepsContents(step: Step) {
     var d := EventDevice(step.event);
-    forall effect :: (effect in step.effects && effect.Move?
-      && d.Some? && d.value in step.pre.devices
-      && HasFile(step.pre.devices[d.value], effect.from)
-      && FileAt(step.pre.devices[d.value], effect.from).content == effect.expected) ==>
-      d.value in step.post.devices &&
-      HasFile(step.post.devices[d.value], effect.to)
-      && FileAt(step.post.devices[d.value], effect.to).content == effect.expected
+    (forall effect :: (effect in step.effects && effect.Move?
+        && d.Some? && d.value in step.pre.devices
+        && HasFile(step.pre.devices[d.value], effect.from)
+        && FileAt(step.pre.devices[d.value], effect.from).content == effect.expected) ==>
+        d.value in step.post.devices &&
+        HasFile(step.post.devices[d.value], effect.to)
+        && FileAt(step.post.devices[d.value], effect.to).content == effect.expected)
+    || (step.event.SyncRound? && RoundMovesKeepContents(step))
+  }
+
+  // In a sync round (#1094), a move whose precondition held on the disk
+  // the round's earlier effects left (`mid`, on the way to the disk after
+  // the step) arrives at its new name with
+  // its content, unless a later effect of the round acts on it there
+  // conditional on exactly that content (RoundMovesOn).
+  ghost predicate RoundMovesKeepContents(step: Step) {
+    step.event.SyncRound? &&
+      var d := step.event.device;
+      d in step.pre.devices && d in step.post.devices &&
+      var platform := step.pre.devices[d].platform;
+      forall i, mid, q :: (0 <= i < |step.effects| && step.effects[i].Move?
+        && EffectsTake(platform, step.pre.devices[d].disk, step.effects[..i], mid)
+        && EffectsTake(platform, mid, step.effects[i..], step.post.devices[d].disk)
+        && MovableTo(platform, mid, q, step.effects[i].from, step.effects[i].to, step.effects[i].expected)) ==>
+          (exists k :: k in step.post.devices[d].disk && SameF(platform, k, step.effects[i].to)
+             && step.post.devices[d].disk[k].content == step.effects[i].expected)
+          || RoundMovesOn(step, i)
+  }
+
+  // In a sync round, a later effect of the same round acts on the moved
+  // file at its new name, conditional on exactly the content moved: it
+  // overwrites it, removes it, or moves it on, each under G2 (#1094).
+  ghost predicate RoundMovesOn(step: Step, i: nat)
+    requires i < |step.effects| && step.effects[i].Move?
+  {
+    step.event.SyncRound? && step.event.device in step.pre.devices
+    && var platform := step.pre.devices[step.event.device].platform;
+    var moved := step.effects[i];
+    exists j :: i < j < |step.effects| &&
+      var effect := step.effects[j];
+      (effect.Write? && SameF(platform, effect.path, moved.to) && effect.precondition == Some(moved.expected))
+      || (effect.Remove? && SameF(platform, effect.path, moved.to) && effect.expected == moved.expected)
+      || (effect.Move? && SameF(platform, effect.from, moved.to) && effect.expected == moved.expected)
   }
 
   ghost predicate G7(trace: Trace) {

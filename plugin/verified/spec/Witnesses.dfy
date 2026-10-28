@@ -698,6 +698,13 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert Outgoing(device', doc) == Some(b);
     assert G6_Settle(step, d, doc, remote);
     assert !SavedNextToIt(device', f.content);
+    // No chain of settles ends in the tombstone, the base after the step.
+    forall rs | RoundChain(step, d, doc, rs, f.content)
+      ensures false
+    {
+      var read := RoundRead(step, p).value;
+      ChainLive(device', b, read.0, read.1, rs, Outgoing(device', doc), f.content, |rs| - 1);
+    }
     assert !ReadKept(step, doc, f.content);
     assert BoundTo(device, doc, p);
     assert !LastSaw(step, device, doc, p, f.content);

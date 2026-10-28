@@ -335,7 +335,7 @@ abstract module LocalCore refines Guarantees {
     && G2_OnlyWhatItSaw(step) && G2_Conditional(step) && G2_NoUntrackedDelete(step) && G2_UnsavedSafe(step)
     && G3_DeleteSeen(step)
     && G5_RenameKeepsDocument(step) && G5_NeverMixedUp(step)
-    && (forall d, doc, remote :: SettlesConcurrent(step, d, doc, remote) ==> G6_Settle(step, d, doc, remote))
+    && (forall d, doc, remote :: SettlesConcurrent(step, d, doc, remote) ==> G6_Step(step, d, doc, remote))
     && G7_MoveKeepsContents(step)
     && G8_Recovers(step) && G8_PicksUpOfflineChanges(step)
     && G10_SettledOrReported(step)

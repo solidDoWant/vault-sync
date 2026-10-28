@@ -1358,4 +1358,65 @@ abstract module RoundGuarantees refines PathRuleCore {
       }
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G7_MoveKeepsContents (#1094): a move that took effect leaves its
+  // content at its new name, unless a later effect of the round acts on it
+  // there conditional on exactly that content (RoundMovesKeepContents)
+  // ---------------------------------------------------------------------
+
+  // A move that took effect on `mid` puts its content at `to`; the effects
+  // after it keep it there unless one of them matched it there.
+  lemma MoveArrivesOrMovesOn(platform: Platform, effects: seq<Effect>, disk': map<Path, DiskFile>, i: int,
+                             mid: map<Path, DiskFile>, q: Path)
+    requires 0 <= i < |effects| && effects[i].Move?
+    requires EffectsTake(platform, mid, effects[i..], disk')
+    requires MovableTo(platform, mid, q, effects[i].from, effects[i].to, effects[i].expected)
+    ensures var moved := effects[i];
+      (moved.to in disk' && disk'[moved.to].content == moved.expected)
+      || exists j :: i < j < |effects| && MatchedBy(platform, effects[j], moved.to, moved.expected)
+  {
+    var moved := effects[i];
+    var m1: map<Path, DiskFile> := var m1: map<Path, DiskFile> :|
+      EffectTakes(platform, mid, effects[i..][0], m1) && EffectsTake(platform, m1, effects[i..][1..], disk'); m1;
+    assert effects[i..][0] == moved;
+    assert effects[i..][1..] == effects[i + 1..];
+    var q' := var q' :| MovableTo(platform, mid, q', moved.from, moved.to, moved.expected)
+      && m1 == (mid - {q'})[moved.to := mid[q']]; q';
+    assert moved.to in m1 && m1[moved.to].content == moved.expected;
+    if moved.to !in disk' || disk'[moved.to] != m1[moved.to] {
+      EffectsChangeOnlyMatched(platform, m1, effects[i + 1..], disk', moved.to);
+      var effect: Effect := var effect: Effect :| effect in effects[i + 1..]
+        && MatchedBy(platform, effect, moved.to, m1[moved.to].content); effect;
+      var k := var k :| 0 <= k < |effects[i + 1..]| && effects[i + 1..][k] == effect; k;
+      assert effects[i + 1 + k] == effect;
+    }
+  }
+
+  lemma RoundG7MoveKeepsContents(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices
+    ensures G7_MoveKeepsContents(RoundStepOf(pre, d, input, revs))
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var platform := pre.devices[d].platform;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    forall i, mid, q | 0 <= i < |step.effects| && step.effects[i].Move?
+        && EffectsTake(platform, step.pre.devices[d].disk, step.effects[..i], mid)
+        && EffectsTake(platform, mid, step.effects[i..], step.post.devices[d].disk)
+        && MovableTo(platform, mid, q, step.effects[i].from, step.effects[i].to, step.effects[i].expected)
+      ensures (exists k :: k in step.post.devices[d].disk && SameF(platform, k, step.effects[i].to)
+                 && step.post.devices[d].disk[k].content == step.effects[i].expected)
+              || RoundMovesOn(step, i)
+    {
+      var moved := step.effects[i];
+      MoveArrivesOrMovesOn(platform, step.effects, step.post.devices[d].disk, i, mid, q);
+      if moved.to in step.post.devices[d].disk && step.post.devices[d].disk[moved.to].content == moved.expected {
+        assert SameF(platform, moved.to, moved.to);
+      } else {
+        var j := var j :| i < j < |step.effects| && MatchedBy(platform, step.effects[j], moved.to, moved.expected); j;
+        assert RoundMovesOn(step, i);
+      }
+    }
+    assert RoundMovesKeepContents(step);
+  }
 }
