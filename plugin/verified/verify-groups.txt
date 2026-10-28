@@ -10,6 +10,7 @@ merged core/MergedClaims.dfy        # 257
 server core/ServerEvents.dfy        # 203
 
 round-claims core/RoundClaims.dfy   # 90
+round core/RoundGuarantees.dfy      # 71
 
 core core/Resync.dfy                # 190
 core core/RemoteEvents.dfy          # 87
