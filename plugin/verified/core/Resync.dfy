@@ -354,8 +354,8 @@ abstract module ResyncCore refines StepContracts {
     var row := ResyncRow(server, d, doc, document, rev);
     var base' := ResyncBase(server, d, doc, document);
     assert row.base == base';
-    assert base'.Some? ==> base'.value.rev in server.revisions
-      && server.revisions[base'.value.rev].position == base'.value.position;
+    assert base'.Some? ==> (base'.value.rev in server.revisions
+                            && server.revisions[base'.value.rev].position == base'.value.position);
     if row.outbox.Some? && row.outbox.value.rev in server.revisions
        && server.revisions[row.outbox.value.rev].device == d
        && server.revisions[row.outbox.value.rev].doc == doc && doc in server.history
@@ -507,7 +507,10 @@ abstract module ResyncCore refines StepContracts {
       && (forall doc :: doc in journal.documents && journal'.documents[doc].base.Some? ==>
             (journal.documents[doc].base.Some? && journal'.documents[doc].base.value.rev == journal.documents[doc].base.value.rev)
             || (journal'.documents[doc].base.value.rev in pre.server.revisions
-                && pre.server.revisions[journal'.documents[doc].base.value.rev].device == d))
+                && pre.server.revisions[journal'.documents[doc].base.value.rev].device == d)
+            // The revision the row's commit is on (#1080).
+            || Some(journal'.documents[doc].base.value.rev) == ParentOn(journal.documents[doc])
+            || Some(journal'.documents[doc].base.value.rev) == LandedOn(pre.server, d, doc, journal.documents[doc]))
       && journal'.intents == journal.intents
   {
     var server := pre.server;
