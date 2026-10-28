@@ -629,6 +629,10 @@ abstract module Guarantees refines EngineModel {
   // later revision of the same document adopts another, as if the drop
   // and the adoption were two steps. The file it had is untouched (left
   // on disk) or was handled by the round's effects under G2 and G7.
+  // In a sync round, (d)'s file may also hold any live revision of the
+  // document the server accepted (DocVersion) in place of the base the
+  // journal holds after the round: a later revision of the same document
+  // in the same round may move the base on without touching the file.
   ghost predicate G5_NeverMixedUp(step: Step) {
     var d := EventDevice(step.event);
     d.Some? && d.value in step.pre.devices && d.value in step.post.devices ==>
@@ -655,10 +659,11 @@ abstract module Guarantees refines EngineModel {
                   before.journal.documents[other].binding.value.seen != file.content))
         // (d)
         || ((!hadFile || RoundEvent(step.event)) && UntrackedThen(step, before, spelling)
-            && after.journal.documents[doc].base.Some?
-            && (!known || before.journal.documents[doc].base.None?
-                || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
-            && file.content == after.journal.documents[doc].base.value.content)
+            && ((after.journal.documents[doc].base.Some?
+                 && (!known || before.journal.documents[doc].base.None?
+                     || before.journal.documents[doc].base.value.rev != after.journal.documents[doc].base.value.rev)
+                 && file.content == after.journal.documents[doc].base.value.content)
+                || (RoundEvent(step.event) && DocVersion(step, doc, file.content))))
         // (e)
         || (!known && UntrackedThen(step, before, spelling) && after.journal.documents[doc].base.None?)
         // (f)

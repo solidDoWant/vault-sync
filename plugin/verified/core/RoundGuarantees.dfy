@@ -3074,4 +3074,162 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       EffectsDiskMap(platform, mid, effects[1..], disk');
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G5 (d) content: an adopted file holds an accepted live revision
+  // ---------------------------------------------------------------------
+
+  // A row bound to a file that is not its own (an adoption) at a listed
+  // name: the listing reads there a live revision of the row's document
+  // the server accepted.
+  ghost predicate RowContent(platform: Platform, device0: Device, accepted: map<RevId, Revision>, effects: seq<Effect>,
+                             listing: Listing, e: DocId, row: Document) {
+    (row.binding.Some? && Distinct(platform, listing)
+     && !OwnNameIn(platform, device0, effects, e, row.binding.value.spelling)
+     && Listed(platform, listing, row.binding.value.spelling)) ==>
+      AcceptedContent(accepted, e, ListedRead(platform, listing, row.binding.value.spelling).value.0)
+  }
+
+  ghost predicate PassContent(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass) {
+    forall e | e in pass.journal.documents ::
+      RowContent(platform, device0, accepted, pass.effects, pass.listing, e, pass.journal.documents[e])
+  }
+
+  lemma PassContentStart(device0: Device, accepted: map<RevId, Revision>, start: RoundPass, cursor: nat)
+    requires start.journal.documents == device0.journal.documents
+    requires start.effects == [Pull(cursor)]
+    ensures PassContent(device0.platform, device0, accepted, start)
+  {
+    var platform := device0.platform;
+    forall e | e in start.journal.documents
+      ensures RowContent(platform, device0, accepted, start.effects, start.listing, e, start.journal.documents[e])
+    {
+      var row := start.journal.documents[e];
+      if row.binding.Some? {
+        var s := row.binding.value.spelling;
+        assert RoundPut(platform, start.effects, s).Untouched?;
+        SameFIsEquivalence(platform, s, s, s);
+        assert BoundTo(device0, e, s);
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} SettleKeepsContent(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                                                 doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && PassContent(platform, device0, accepted, pass)
+    requires AcceptedAs(accepted, r) && r.doc == doc
+    ensures PassContent(platform, device0, accepted, SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
+    if !Distinct(platform, pass.listing) { return; }
+    if r.path in input.outOfScope {
+      if Newer(row, r) {
+        var rows' := settled.journal.documents;
+        assert rows' == documents[doc := row.(ahead := Some(Ahead(r, OutOfScope, false)))];
+        assert settled.listing == pass.listing && settled.effects == pass.effects;
+        forall e | e in rows' ensures RowContent(platform, device0, accepted, settled.effects, settled.listing, e, rows'[e]) {
+          if e in documents { assert RowContent(platform, device0, accepted, pass.effects, pass.listing, e, documents[e]); }
+        }
+      }
+      return;
+    }
+    var rows := documents[doc := row];
+    assert NeverJoinedRows(platform, rows);
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+    var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+    var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+    var effects' := pass.effects + guard + ruled.effects;
+    var listing' := ListingAfter(platform, pass.listing, ruled.effects);
+    assert settled.journal.documents == ruled.documents && settled.effects == effects' && settled.listing == listing';
+    RuleDeleteSeen(platform, rows, doc, r, inner, revs', first);
+    forall effect | effect in guard ensures effect.PersistJournal? { }
+    forall e | e in ruled.documents ensures RowContent(platform, device0, accepted, effects', listing', e, ruled.documents[e]) {
+      var after := ruled.documents[e];
+      if after.binding.Some? && Distinct(platform, listing') && !OwnNameIn(platform, device0, effects', e, after.binding.value.spelling)
+         && Listed(platform, listing', after.binding.value.spelling) {
+        var s := after.binding.value.spelling;
+        if exists effect :: effect in ruled.effects && PutsFor(platform, effect, e, s) {
+          RulePutsLast(platform, rows, doc, r, inner, revs', first, e);
+          var m :| 0 <= m < |ruled.effects|
+            && ((ruled.effects[m].Write? && ruled.effects[m].target == Some(e) && SameF(platform, ruled.effects[m].path, s))
+                || (ruled.effects[m].Move? && ruled.effects[m].mover == Some(e) && SameF(platform, ruled.effects[m].to, s)))
+            && forall k | m < k < |ruled.effects| :: !Touches(platform, ruled.effects[k], s);
+          LastPutOwnName(platform, device0, pass.effects + guard, ruled.effects, e, s, m);
+          assert false;
+        } else if rows[e].binding.Some? && s == rows[e].binding.value.spelling
+                  && forall effect :: effect in ruled.effects ==> !Touches(platform, effect, s) {
+          forall effect | effect in guard + ruled.effects ensures !Touches(platform, effect, s) {
+            if effect in guard { assert effect.PersistJournal?; } else { assert effect in ruled.effects; }
+          }
+          UntouchedTailKeepsReadings(platform, device0, pass.effects, guard + ruled.effects, e, s);
+          assert effects' == pass.effects + (guard + ruled.effects);
+          ListingAfterUntouched(platform, pass.listing, ruled.effects, s);
+          assert e in documents && rows[e] == documents[e];
+          assert RowContent(platform, device0, accepted, pass.effects, pass.listing, e, documents[e]);
+        } else {
+          RuleAdopt(platform, rows, doc, r, inner, revs', first, e);
+          assert ruled.effects == [] && s == r.path && e == doc;
+          assert listing' == pass.listing;
+          assert accepted[r.id] == r;
+          assert AcceptedContent(accepted, e, r.content);
+        }
+      }
+    }
+  }
+
+  lemma SettlePulledKeepsContent(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                                 revisions: seq<Revision>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && PassContent(platform, device0, accepted, pass)
+    requires forall i | 0 <= i < |revisions| :: AcceptedAs(accepted, revisions[i])
+    ensures PassContent(platform, device0, accepted, SettlePulled(platform, pass, revisions, input, revs, first))
+    decreases |revisions|
+  {
+    if |revisions| > 0 {
+      SettleKeepsContent(platform, device0, accepted, pass, revisions[0].doc, revisions[0], input, revs, first);
+      SettleKeepsG5(platform, device0, pass, revisions[0].doc, revisions[0], input, revs, first);
+      assert forall i | 0 <= i < |revisions[1..]| :: revisions[1..][i] == revisions[i + 1];
+      SettlePulledKeepsContent(platform, device0, accepted, SettleRevision(platform, pass, revisions[0].doc, revisions[0], input, revs, first), revisions[1..], input, revs, first);
+    }
+  }
+
+  lemma RetryKeepsContent(platform: Platform, device0: Device, accepted: map<RevId, Revision>, pass: RoundPass,
+                          docs: seq<DocId>, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform
+    requires PassG5(platform, device0, pass) && PassContent(platform, device0, accepted, pass)
+    requires PassNUD(platform, device0, accepted, pass)
+    ensures PassContent(platform, device0, accepted, RetryWaiting(platform, pass, docs, input, revs, first))
+    decreases |docs|
+  {
+    if |docs| > 0 {
+      var documents := pass.journal.documents;
+      if docs[0] in documents && documents[docs[0]].ahead.Some? {
+        var row := documents[docs[0]];
+        var cleared := pass.(journal := pass.journal.(documents := documents[docs[0] := row.(ahead := None)]));
+        assert NeverJoinedRows(platform, cleared.journal.documents);
+        forall e | e in cleared.journal.documents
+          ensures RowG5(platform, device0, cleared.effects, e, cleared.journal.documents[e])
+          ensures RowContent(platform, device0, accepted, cleared.effects, cleared.listing, e, cleared.journal.documents[e])
+        {
+          assert RowG5(platform, device0, pass.effects, e, documents[e]);
+          assert RowContent(platform, device0, accepted, pass.effects, pass.listing, e, documents[e]);
+        }
+        assert PassG5(platform, device0, cleared);
+        assert PassNUD(platform, device0, accepted, cleared);
+        var r := row.ahead.value.revision;
+        assert AcceptedAs(accepted, r) && r.doc == docs[0];
+        SettleKeepsContent(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        SettleKeepsG5(platform, device0, cleared, docs[0], r, input, revs, first);
+        SettleKeepsNUD(platform, device0, accepted, cleared, docs[0], r, input, revs, first);
+        RetryKeepsContent(platform, device0, accepted, SettleRevision(platform, cleared, docs[0], r, input, revs, first), docs[1..], input, revs, first);
+      } else {
+        RetryKeepsContent(platform, device0, accepted, pass, docs[1..], input, revs, first);
+      }
+    }
+  }
 }
