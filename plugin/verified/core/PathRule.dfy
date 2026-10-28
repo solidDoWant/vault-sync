@@ -601,7 +601,7 @@ abstract module PathRuleCore refines ApplyCore {
   }
 
   // From rows that keep RowInv, every row the rule returns keeps it.
-  lemma RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
+  lemma {:isolate_assertions} RuleKeepsRowInv(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs)
     requires doc in documents && documents.Keys <= revs.Keys
     requires ListingDistinct(platform, input.listing)
     requires forall e | e in documents :: RowInv(documents[e])
