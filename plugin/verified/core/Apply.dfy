@@ -1175,7 +1175,7 @@ abstract module ApplyCore refines StepContracts {
   // where the step keeps it (a merge of it is sent, or it is saved next to
   // the remote as an untracked copy). Only a tracked file is deleted, and
   // no file with unsaved text is written or deleted.
-  lemma AppliedG2(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
+  lemma {:isolate_assertions} AppliedG2(step: Step, doc: DocId, r: Revision, input: RoundInput, bound: set<Path>, claims: Claims, rev: RevId)
     requires ApplyStep(step, doc, r, input, bound, claims, rev)
     ensures G2_OnlyWhatItSaw(step) && G2_UnsavedSafe(step) && G2_NoUntrackedDelete(step)
   {
