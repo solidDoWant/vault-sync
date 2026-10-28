@@ -910,8 +910,8 @@ abstract module PathRuleCore refines ApplyCore {
       ensures UserMustAct(after, e)
     {
       if e == doc && ruled.documents[doc].ahead != documents[doc].ahead {
-        var u :| u in input.unsaved && CollideF(platform, u, r.path);
-        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+        var u := var u :| u in input.unsaved && CollideF(platform, u, r.path); u;
+        var editor := var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u; editor;
         assert after.editors == device.editors;
       } else {
         assert after.journal.documents[e].ahead == documents[e].ahead;
@@ -1163,18 +1163,18 @@ abstract module PathRuleCore refines ApplyCore {
     forall p ensures HasUnsavedEdits(post, p) <==> UnsavedAt(platform, input.unsaved, p) {
       UnsavedSeen(device, input.unsaved, p);
       if UnsavedAt(platform, input.unsaved, p) {
-        var u :| u in input.unsaved && SameF(platform, u, p);
-        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+        var u := var u :| u in input.unsaved && SameF(platform, u, p); u;
+        var editor := var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u; editor;
       }
     }
     forall p ensures (exists editor :: editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p))
                      <==> UnsavedCollides(platform, input.unsaved, p) {
       if UnsavedCollides(platform, input.unsaved, p) {
-        var u :| u in input.unsaved && CollideF(platform, u, p);
-        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+        var u := var u :| u in input.unsaved && CollideF(platform, u, p); u;
+        var editor := var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u; editor;
       }
       if exists editor :: editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p) {
-        var editor :| editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p);
+        var editor := var editor :| editor in post.editors && editor.unsaved.Some? && CollideF(platform, editor.path, p); editor;
         assert editor.path in input.unsaved;
       }
     }
@@ -1285,7 +1285,7 @@ abstract module PathRuleCore refines ApplyCore {
       var q := moves[0].0;
       var keepers := set e | e in documents && e != doc && FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]);
       if exists e | e in documents && e != doc :: FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]) {
-        var e :| e in documents && e != doc && FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]);
+        var e := var e :| e in documents && e != doc && FileOf(platform, documents, q, e) && LocallyPlaced(documents[e]); e;
         assert e in keepers;
       }
     }
@@ -1515,7 +1515,7 @@ abstract module PathRuleCore refines ApplyCore {
       else {
         assert q' in way - {q};
         assert exists k | 0 <= k < |rest| :: rest[k].0 == q';
-        var k :| 0 <= k < |rest| && rest[k].0 == q';
+        var k := var k :| 0 <= k < |rest| && rest[k].0 == q'; k;
         assert all[k + 1] == rest[k];
       }
     }
@@ -1547,10 +1547,10 @@ abstract module PathRuleCore refines ApplyCore {
     var c := moves[0].1;
     var content := moves[0].2;
     assert effects[1..] == MoveEffects(platform, documents, doc, moves[1..]);
-    var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk');
+    var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk'); mid;
     assert c !in disk by { assert CollideF(platform, c, c); }
     assert MovableTo(platform, disk, q, q, c, content);
-    var q': Path :| MovableTo(platform, disk, q', q, c, content) && mid == (disk - {q'})[c := disk[q']];
+    var q': Path := var q': Path :| MovableTo(platform, disk, q', q, c, content) && mid == (disk - {q'})[c := disk[q']]; q';
     if q' != q { assert CollideF(platform, q', q); }
     EffectKeepsOneFilePerName(platform, disk, effects[0], mid);
     var rest := moves[1..];
@@ -1580,7 +1580,7 @@ abstract module PathRuleCore refines ApplyCore {
            || exists i | 0 <= i < |moves| :: x == moves[i].1
     {
       if exists k | 0 <= k < |rest| :: x == rest[k].1 {
-        var k :| 0 <= k < |rest| && x == rest[k].1;
+        var k := var k :| 0 <= k < |rest| && x == rest[k].1; k;
         assert x == moves[k + 1].1;
       } else if x == c {
         assert x == moves[0].1;
@@ -1630,7 +1630,7 @@ abstract module PathRuleCore refines ApplyCore {
       var write := Write(Some(doc), r.path, r.content, r.kind, None);
       assert effects == [remove, write];
       Unroll2(platform, disk, remove, write, disk');
-      var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, remove, mid) && EffectTakes(platform, mid, write, disk');
+      var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, remove, mid) && EffectTakes(platform, mid, write, disk'); mid;
       assert Holds(platform, disk, o, o, seen);
       assert mid == disk - {o};
       assert FreeOn(platform, mid, r.path);
@@ -1649,7 +1649,7 @@ abstract module PathRuleCore refines ApplyCore {
         var write := Write(Some(doc), o, r.content, r.kind, Some(seen));
         assert effects == [write, move];
         Unroll2(platform, disk, write, move, disk');
-        var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, write, mid) && EffectTakes(platform, mid, move, disk');
+        var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, write, mid) && EffectTakes(platform, mid, move, disk'); mid;
         assert Holds(platform, disk, o, o, seen);
         assert mid == disk[o := DiskFile(r.content, r.kind, disk[o].identity)];
         EffectKeepsOneFilePerName(platform, disk, write, mid);
@@ -1672,11 +1672,11 @@ abstract module PathRuleCore refines ApplyCore {
       assert a + b == b;
       assert EffectsTake(platform, disk, a, disk);
     } else {
-      var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, (a + b)[0], mid) && EffectsTake(platform, mid, (a + b)[1..], disk');
+      var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectTakes(platform, disk, (a + b)[0], mid) && EffectsTake(platform, mid, (a + b)[1..], disk'); mid;
       assert (a + b)[0] == a[0];
       assert (a + b)[1..] == a[1..] + b;
       EffectsTakeSplit(platform, mid, a[1..], b, disk');
-      var mid2: map<Path, DiskFile> :| EffectsTake(platform, mid, a[1..], mid2) && EffectsTake(platform, mid2, b, disk');
+      var mid2: map<Path, DiskFile> := var mid2: map<Path, DiskFile> :| EffectsTake(platform, mid, a[1..], mid2) && EffectsTake(platform, mid2, b, disk'); mid2;
       assert EffectsTake(platform, disk, a, mid2);
     }
   }
@@ -1847,7 +1847,7 @@ abstract module PathRuleCore refines ApplyCore {
     assert back == Arrive(platform, doc, arow, ar, own);
     assert ar.path == r.path;
     EffectsTakeSplit(platform, disk, front, back, disk');
-    var mid: map<Path, DiskFile> :| EffectsTake(platform, disk, front, mid) && EffectsTake(platform, mid, back, disk');
+    var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectsTake(platform, disk, front, mid) && EffectsTake(platform, mid, back, disk'); mid;
     forall i | 0 <= i < |moves|
       ensures moves[i].0 in disk && disk[moves[i].0].content == moves[i].2 && FreeOn(platform, disk, moves[i].1)
       ensures moves[i].1 !in disk
@@ -1908,7 +1908,7 @@ abstract module PathRuleCore refines ApplyCore {
     forall e: Effect | e in effects && e.Move?
       ensures HasFile(after, e.to) && FileAt(after, e.to).content == e.expected
     {
-      var k :| 0 <= k < |effects| && effects[k] == e;
+      var k := var k :| 0 <= k < |effects| && effects[k] == e; k;
       if k < |front| {
         assert e == front[k];
         FileAtIs(after, e.to, e.to);
@@ -2049,7 +2049,7 @@ abstract module PathRuleCore refines ApplyCore {
     var spelling := row.binding.value.spelling;
     assert spelling in BoundNames(documents);
     if HasFile(device, spelling) {
-      var x :| x in disk && SameF(platform, x, spelling);
+      var x := var x :| x in disk && SameF(platform, x, spelling); x;
       FileAtIs(device, spelling, x);
       forall i | 0 <= i < |moves| ensures x != moves[i].0 {
         if x == moves[i].0 { assert FileOf(platform, documents, moves[i].0, doc'); }
@@ -2063,7 +2063,7 @@ abstract module PathRuleCore refines ApplyCore {
       FileAtIs(after, spelling, x);
       assert false;
     } else {
-      var y :| y in after.disk && SameF(platform, y, spelling);
+      var y := var y :| y in after.disk && SameF(platform, y, spelling); y;
       if y == r.path {
         assert !Listed(platform, listing, spelling);
         assert CollideF(platform, spelling, r.path);
@@ -2397,7 +2397,7 @@ abstract module PathRuleCore refines ApplyCore {
           assert intent in intents;
         } else {
           assert effects[i] == effects[1..][i - 1];
-          var intent :| intent in rest && Covers(intent.kind, effects[1..][i - 1]);
+          var intent := var intent :| intent in rest && Covers(intent.kind, effects[1..][i - 1]); intent;
           assert intent in intents;
         }
       }
@@ -2441,13 +2441,13 @@ abstract module PathRuleCore refines ApplyCore {
       {
         if i < k {
           assert after.effects[i] == pass.effects[i];
-          var j :| 0 <= j < i && pass.effects[j].PersistJournal?
-            && exists intent :: intent in pass.effects[j].journal.intents && Covers(intent.kind, pass.effects[i]);
+          var j := var j :| 0 <= j < i && pass.effects[j].PersistJournal?
+            && exists intent :: intent in pass.effects[j].journal.intents && Covers(intent.kind, pass.effects[i]); j;
           assert after.effects[j] == pass.effects[j];
         } else {
           var e := after.effects[i];
           assert e == ruled.effects[i - k - |guard|];
-          var intent :| intent in intents && Covers(intent.kind, e);
+          var intent := var intent :| intent in intents && Covers(intent.kind, e); intent;
           assert |guard| == 1;
           assert after.effects[k] == guard[0];
         }
@@ -2659,8 +2659,8 @@ abstract module PathRuleCore refines ApplyCore {
                 && exists intent :: intent in effects[j].journal.intents && Covers(intent.kind, effects[i])
     {
       assert effects[i] == settled.effects[i];
-      var j :| 0 <= j < i && settled.effects[j].PersistJournal?
-        && exists intent :: intent in settled.effects[j].journal.intents && Covers(intent.kind, settled.effects[i]);
+      var j := var j :| 0 <= j < i && settled.effects[j].PersistJournal?
+        && exists intent :: intent in settled.effects[j].journal.intents && Covers(intent.kind, settled.effects[i]); j;
       assert effects[j] == settled.effects[j];
     }
     forall i | 0 <= i < |effects| && effects[i].Move? ensures !UnsavedCollides(platform, input.unsaved, effects[i].from) {
@@ -2679,9 +2679,9 @@ abstract module PathRuleCore refines ApplyCore {
     {
       assert i >= k;
       assert effects[i] == push.1[i - k];
-      var j :| 0 <= j < i - k && push.1[j].PersistJournal?
+      var j := var j :| 0 <= j < i - k && push.1[j].PersistJournal?
         && push.1[i - k].doc in push.1[j].journal.documents
-        && push.1[j].journal.documents[push.1[i - k].doc].outbox == Some(push.1[i - k].outbox);
+        && push.1[j].journal.documents[push.1[i - k].doc].outbox == Some(push.1[i - k].outbox); j;
       assert effects[j + k] == push.1[j];
     }
   }
@@ -2734,7 +2734,7 @@ abstract module PathRuleCore refines ApplyCore {
       var rest := set i | 0 <= i < |docs[1..]| :: docs[1..][i];
       assert all - {docs[0]} <= rest by {
         forall x | x in all - {docs[0]} ensures x in rest {
-          var i :| 0 <= i < |docs| && docs[i] == x;
+          var i := var i :| 0 <= i < |docs| && docs[i] == x; i;
           assert i > 0 && docs[1..][i - 1] == x;
         }
       }
@@ -2822,8 +2822,8 @@ abstract module PathRuleCore refines ApplyCore {
         ensures UserMustAct(device', doc)
       {
         var path := device'.journal.documents[doc].ahead.value.revision.path;
-        var u :| u in input.unsaved && CollideF(device.platform, u, path);
-        var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u;
+        var u := var u :| u in input.unsaved && CollideF(device.platform, u, path); u;
+        var editor := var editor :| editor in device.editors && editor.unsaved.Some? && editor.path == u; editor;
       }
     }
     if RoundInputOf(pre, d, input) {
