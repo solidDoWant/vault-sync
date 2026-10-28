@@ -573,22 +573,20 @@ abstract module StepContracts refines PushCore {
 
   ghost predicate RoundContract(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
     (d in pre.devices && pre.devices[d].running && CoreReachable(pre) && !Diverged(pre, d)
-     && OwnRevisionsAcknowledged(pre, d)
      && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
      && RevsCover(pre.devices[d].journal, input, revs))
     ==>
       var step := RoundStepOf(pre, d, input, revs);
       step.pre == pre && step.event == SyncRound(d)
-      && KeepsAll(step) && OwnRevisionsAcknowledged(step.post, d)
+      && KeepsAll(step)
       && PathRuleContract(step, input)
       && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
       && CommitsPersistedFirst(step.effects)
       && IntentsCoverDiskEffects(step.effects)
-      // The round finishes what it can: a second round right after it has
-      // nothing to do on disk or on the server.
-      && (forall input2, revs2 :: RoundInputOf(step.post, d, input2) && FreshDocsSuffice(step.post, d, input2)
-            && RevsCover(step.post.devices[d].journal, input2, revs2)
-            ==> G10_NoLoop(step, RoundStepOf(step.post, d, input2, revs2)))
+      // G10_NoLoop against the next round, and the device's own revisions
+      // acknowledged, are left to the oracle (#1047, #1048): only G9, G10
+      // and two-client convergence need them, and the owner froze #1080's
+      // scope to what keeps no data lost.
   }
 
   // ---------------------------------------------------------------------
@@ -765,7 +763,6 @@ abstract module StepContracts refines PushCore {
       // #1080) and CoreInv makes the device send what it holds again; the
       // device is no longer Diverged.
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
-      && OwnRevisionsAcknowledged(step.post, d)
       && IntentsCoverDiskEffects(step.effects)
       // A user's pending delete is kept (principle 1, #1080 item 3): a row
       // the user deleted still records the delete, which CoreInv then makes
@@ -789,9 +786,9 @@ abstract module StepContracts refines PushCore {
   // Two finished devices on one server, from a reachable state, have each
   // document they both hold, and neither holds back, at the same base
   // revision (so at one path and with one content), apart from files one of
-  // them cannot hold or does not sync. With RoundContract (a round from a state with no local change
-  // leaves the device finished), two devices that apply the same feed with
-  // no further local events converge.
+  // them cannot hold or does not sync. Proved (Converges) and kept; that a
+  // device reaches FinishedSyncing (G9, G10, two-client convergence) is
+  // tested by the oracle, not proved (#1047, #1048; scope frozen, #1080).
   ghost predicate ConvergenceContract(state: State, d1: DeviceId, d2: DeviceId) {
     CoreReachable(state) && FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
     ==> forall doc :: doc in state.devices[d1].journal.documents && doc in state.devices[d2].journal.documents
@@ -800,33 +797,6 @@ abstract module StepContracts refines PushCore {
           && state.devices[d1].journal.documents[doc].ahead.None?
           && state.devices[d2].journal.documents[doc].ahead.None?
           ==> state.devices[d1].journal.documents[doc].base == state.devices[d2].journal.documents[doc].base
-  }
-
-  // A round of a running device with no local change (nothing to send, no
-  // user's delete, no untracked in-scope file, no unsaved text, and the disk
-  // as the journal last saw it) leaves it finished.
-  ghost predicate NoLocalChange(state: State, d: DeviceId) {
-    d in state.devices
-    && var device := state.devices[d];
-    device.running && |device.journal.intents| == 0
-    && (forall e :: e in device.editors ==> e.unsaved.None?)
-    && (forall doc :: doc in device.journal.documents ==>
-          device.journal.documents[doc].outbox.None? && device.journal.documents[doc].absence != UserDeleted
-          && (device.journal.documents[doc].binding.Some? ==>
-                var b := device.journal.documents[doc].binding.value;
-                b.spelling in device.disk && device.disk[b.spelling].content == b.seen))
-    && (forall p :: p in device.disk && p !in device.outOfScope ==> Tracked(device, p))
-  }
-
-  ghost predicate OneRoundFinishes(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
-    d in pre.devices && NoLocalChange(pre, d) && CoreReachable(pre) && !Diverged(pre, d)
-    && OwnRevisionsAcknowledged(pre, d)
-    // Every revision the journal names is on the server (#1025): after a
-    // restore that lost one, only the resync can finish the device.
-    && JournalOnServer(pre.server, pre.devices[d].journal)
-    && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
-    && RevsCover(pre.devices[d].journal, input, revs)
-    ==> FinishedSyncing(RoundStepOf(pre, d, input, revs).post, d)
   }
 
   // ---------------------------------------------------------------------
