@@ -116,13 +116,6 @@ abstract module MergedClaims refines StepContracts {
     before.base.Some? ==> after.base.Some? && after.base.value.position >= before.base.value.position
   }
 
-  // A row's outbox keeps its parent or takes the base's id as its parent.
-  ghost predicate OutboxMoves(before: Document, after: Document) {
-    after.outbox.Some? && after.outbox.value.baseRev.Some? ==>
-      (before.outbox.Some? && after.outbox.value.baseRev == before.outbox.value.baseRev)
-      || (after.base.Some? && after.outbox.value.baseRev == Some(after.base.value.rev))
-  }
-
   // OwnRevisionsAcknowledged, one row at a time.
   ghost predicate RowAcknowledged(server: Server, d: DeviceId, doc: DocId, document: Document) {
     forall id :: doc in server.history && id in server.history[doc] && id in server.revisions
@@ -137,10 +130,10 @@ abstract module MergedClaims refines StepContracts {
   // the base already covers or, by the acknowledgement clause, the outbox's
   // before the step, which landed on the base before.
   lemma RowKeepsCommitsOnBase(server: Server, d: DeviceId, doc: DocId, before: Document, after: Document)
-    requires HistoryFollowsFeed(server) && RevisionsOnFeed(server)
+    requires HistoryFollowsFeed(server) && RevisionsOnFeed(server) && RevisionsAccepted(server)
     requires OutboxParentAtBase(server, before) && OwnCommitOnBase(server, d, doc, before)
     requires RowAcknowledged(server, d, doc, before) && RowNamesAccepted(server, doc, after)
-    requires BaseMoves(before, after) && OutboxMoves(before, after)
+    requires BaseMoves(before, after) && ParentKeptOrBase(before, after)
     ensures OutboxParentAtBase(server, after) && OwnCommitOnBase(server, d, doc, after)
   {
     if after.outbox.Some? && after.outbox.value.rev in server.revisions
@@ -166,7 +159,7 @@ abstract module MergedClaims refines StepContracts {
     requires ClaimsCore(pre) && CommitsOnBase(pre) && ClaimsStep(pre, d, journal')
     requires forall doc :: doc in pre.devices[d].journal.documents ==>
       BaseMoves(pre.devices[d].journal.documents[doc], journal'.documents[doc])
-      && OutboxMoves(pre.devices[d].journal.documents[doc], journal'.documents[doc])
+      && ParentKeptOrBase(pre.devices[d].journal.documents[doc], journal'.documents[doc])
     requires forall doc :: doc in journal'.documents && doc !in pre.devices[d].journal.documents ==>
       OutboxParentAtBase(pre.server, journal'.documents[doc])
     ensures CommitsOnBase(After(pre, d, journal'))
@@ -205,6 +198,126 @@ abstract module MergedClaims refines StepContracts {
           assert false;
         }
       } else {
+        assert post.devices[x] == pre.devices[x];
+      }
+    }
+  }
+
+  // OutboxParentsAccepted (#1080), for a step that replaces only device
+  // d's journal: an outbox keeps its parent or takes its base's id, which
+  // the journal names as accepted (RowNamesAccepted), and a new row's
+  // outbox has no parent or an accepted one.
+  lemma {:isolate_assertions} JournalStepKeepsParentsAccepted(pre: State, d: DeviceId, journal': Journal)
+    requires OutboxParentsAccepted(pre) && d in pre.devices
+    requires pre.devices[d].journal.documents.Keys <= journal'.documents.Keys
+    requires forall doc :: doc in journal'.documents ==> RowNamesAccepted(pre.server, doc, journal'.documents[doc])
+    requires forall doc :: doc in pre.devices[d].journal.documents ==>
+      ParentKeptOrBase(pre.devices[d].journal.documents[doc], journal'.documents[doc])
+    requires forall doc :: (doc in journal'.documents && doc !in pre.devices[d].journal.documents
+                            && journal'.documents[doc].outbox.Some? && journal'.documents[doc].outbox.value.baseRev.Some?)
+                           ==> journal'.documents[doc].outbox.value.baseRev.value in pre.server.accepted
+    ensures OutboxParentsAccepted(After(pre, d, journal'))
+  {
+    var post := After(pre, d, journal');
+    forall x, doc | x in post.devices && doc in post.devices[x].journal.documents
+      && post.devices[x].journal.documents[doc].outbox.Some?
+      && post.devices[x].journal.documents[doc].outbox.value.baseRev.Some?
+      ensures post.devices[x].journal.documents[doc].outbox.value.baseRev.value in post.server.accepted
+    {
+      if x == d {
+        assert RowNamesAccepted(pre.server, doc, journal'.documents[doc]);
+      } else {
+        assert post.devices[x] == pre.devices[x];
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} AcceptKeepsParentsAccepted(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
+    requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre)
+    ensures OutboxParentsAccepted(AcceptStep(pre, d, doc, r, nextRev).post)
+  {
+    var post := AcceptStep(pre, d, doc, r, nextRev).post;
+    AcceptShape(pre, d, doc, r, nextRev);
+    forall x, y | x in post.devices && y in post.devices[x].journal.documents
+      && post.devices[x].journal.documents[y].outbox.Some?
+      && post.devices[x].journal.documents[y].outbox.value.baseRev.Some?
+      ensures post.devices[x].journal.documents[y].outbox.value.baseRev.value in post.server.accepted
+    {
+      if x == d && y == doc {
+        assert post.devices[x].journal.documents[y].outbox.value.baseRev
+            == Some(post.devices[x].journal.documents[y].base.value.rev);
+      } else {
+        assert post.devices[x].journal.documents[y] == pre.devices[x].journal.documents[y];
+      }
+    }
+  }
+
+  // For a step that does not change the server, such as the round (#1034
+  // composes it over the round's passes): a row's parent stays at or below
+  // its base while its base does not move back and its outbox keeps its
+  // parent or takes the base's (#1080).
+  lemma RowKeepsParentAtBase(server: Server, doc: DocId, before: Document, after: Document)
+    requires RevisionsAccepted(server)
+    requires OutboxParentAtBase(server, before) && RowNamesAccepted(server, doc, after)
+    requires BaseMoves(before, after) && ParentKeptOrBase(before, after)
+    ensures OutboxParentAtBase(server, after)
+  {}
+
+  // A step that leaves the server as it was and replaces only device d's
+  // journal, which read the feed before the step, keeps CommitsOnBase
+  // and OutboxParentsAccepted where each row's base has not moved back and
+  // each row's parent is accepted and at or below its base. The cursor
+  // may move (the round's). A landed commit of d's own that a row's outbox
+  // carries is one the base before covered or the outbox's before the
+  // step (RowKeepsCommitsOnBase's argument), and a new row holds no
+  // revision of d's own (OwnDocsKnown).
+  lemma {:isolate_assertions} JournalKeepsCommitsOnBase(pre: State, d: DeviceId, journal': Journal)
+    requires ClaimsCore(pre) && d in pre.devices && ReadsFeed(pre, d)
+    requires pre.devices[d].journal.documents.Keys <= journal'.documents.Keys
+    requires forall doc :: doc in pre.devices[d].journal.documents ==>
+      BaseMoves(pre.devices[d].journal.documents[doc], journal'.documents[doc])
+    requires forall doc :: doc in journal'.documents ==>
+      RowNamesAccepted(pre.server, doc, journal'.documents[doc])
+      && OutboxParentAtBase(pre.server, journal'.documents[doc])
+      && (journal'.documents[doc].outbox.Some? && journal'.documents[doc].outbox.value.baseRev.Some?
+          ==> journal'.documents[doc].outbox.value.baseRev.value in pre.server.accepted)
+    ensures CommitsOnBase(After(pre, d, journal')) && OutboxParentsAccepted(After(pre, d, journal'))
+  {
+    var post := After(pre, d, journal');
+    var journal := pre.devices[d].journal;
+    forall x, doc | ReadsFeed(post, x) && doc in post.devices[x].journal.documents
+      ensures OutboxParentAtBase(post.server, post.devices[x].journal.documents[doc])
+      ensures OwnCommitOnBase(post.server, x, doc, post.devices[x].journal.documents[doc])
+    {
+      if x == d {
+        var after := journal'.documents[doc];
+        if after.outbox.Some? && after.outbox.value.rev in pre.server.revisions
+           && pre.server.revisions[after.outbox.value.rev].device == d
+           && pre.server.revisions[after.outbox.value.rev].doc == doc && doc in pre.server.history
+        {
+          var id := after.outbox.value.rev;
+          assert id in pre.server.feed;
+          var i :| 0 <= i < |pre.server.feed| && pre.server.feed[i] == id;
+          assert id in pre.server.history[doc];
+          assert doc in journal.documents;
+          var before := journal.documents[doc];
+          assert OwnCommitOnBase(pre.server, d, doc, before);
+          if before.outbox.Some? && before.outbox.value.rev == id {
+          } else {
+            assert Unacknowledged(pre, d, doc, id) ==> false;
+          }
+        }
+      } else {
+        assert post.devices[x] == pre.devices[x];
+        assert ReadsFeed(pre, x);
+      }
+    }
+    forall x, doc | x in post.devices && doc in post.devices[x].journal.documents
+      && post.devices[x].journal.documents[doc].outbox.Some?
+      && post.devices[x].journal.documents[doc].outbox.value.baseRev.Some?
+      ensures post.devices[x].journal.documents[doc].outbox.value.baseRev.value in post.server.accepted
+    {
+      if x != d {
         assert post.devices[x] == pre.devices[x];
       }
     }
@@ -323,11 +436,11 @@ abstract module MergedClaims refines StepContracts {
   // Each outbox keeps its parent or takes its row's base's (#1080).
   ghost predicate KeepsParents(journal: Journal, journal': Journal) {
     journal.documents.Keys <= journal'.documents.Keys
-    && forall doc :: doc in journal.documents ==> OutboxMoves(journal.documents[doc], journal'.documents[doc])
+    && forall doc :: doc in journal.documents ==> ParentKeptOrBase(journal.documents[doc], journal'.documents[doc])
   }
 
   lemma LocalDocKeepsParents(platform: Platform, document: Document, local: LocalEvent, input: map<Path, Read>, rev: RevId)
-    ensures OutboxMoves(document, LocalDoc(platform, document, local, input, rev))
+    ensures ParentKeptOrBase(document, LocalDoc(platform, document, local, input, rev))
   {
   }
 
@@ -337,14 +450,14 @@ abstract module MergedClaims refines StepContracts {
   {
     var journal' := LocalJournal(platform, journal, local, input, revs);
     LocalKeepsNames(platform, journal, local, input, revs);
-    forall doc | doc in journal.documents ensures OutboxMoves(journal.documents[doc], journal'.documents[doc]) {
+    forall doc | doc in journal.documents ensures ParentKeptOrBase(journal.documents[doc], journal'.documents[doc]) {
       LocalDocKeepsParents(platform, journal.documents[doc], local, input, revs[doc]);
     }
   }
 
   lemma ScanDocKeepsParents(platform: Platform, docs: map<DocId, Document>, listing: Listing, doc: DocId, rev: RevId)
     requires doc in docs && ListingDistinct(platform, listing)
-    ensures OutboxMoves(docs[doc], ScanDoc(platform, docs, listing, doc, rev))
+    ensures ParentKeptOrBase(docs[doc], ScanDoc(platform, docs, listing, doc, rev))
   {
   }
 
@@ -354,7 +467,7 @@ abstract module MergedClaims refines StepContracts {
   {
     var journal' := ScanJournal(platform, journal, listing, revs);
     ScanKeepsNames(platform, journal, listing, revs);
-    forall doc | doc in journal.documents ensures OutboxMoves(journal.documents[doc], journal'.documents[doc]) {
+    forall doc | doc in journal.documents ensures ParentKeptOrBase(journal.documents[doc], journal'.documents[doc]) {
       ScanDocKeepsParents(platform, journal.documents, listing, doc, revs[doc]);
     }
   }
@@ -371,7 +484,7 @@ abstract module MergedClaims refines StepContracts {
   lemma {:isolate_assertions} NamesKeptCommitsOnBase(pre: State, d: DeviceId, journal': Journal)
     requires ClaimsReachable(pre) && CommitsOnBase(pre) && d in pre.devices
     requires KeepsRowNames(pre.devices[d].journal, journal') && KeepsParents(pre.devices[d].journal, journal')
-    ensures CommitsOnBase(After(pre, d, journal'))
+    ensures CommitsOnBase(After(pre, d, journal')) && OutboxParentsAccepted(After(pre, d, journal'))
   {
     var journal := pre.devices[d].journal;
     assert JournalOnServer(pre.server, journal') == JournalOnServer(pre.server, journal);
@@ -381,6 +494,7 @@ abstract module MergedClaims refines StepContracts {
     }
     assert ClaimsStep(pre, d, journal');
     JournalStepKeepsCommitsOnBase(pre, d, journal');
+    JournalStepKeepsParentsAccepted(pre, d, journal');
   }
 
   // ---------------------------------------------------------------------
@@ -527,7 +641,7 @@ abstract module MergedClaims refines StepContracts {
     requires d in pre.devices && ClaimsReachable(pre) && CommitsOnBase(pre) && !Diverged(pre, d)
     requires revision.id in pre.server.revisions && pre.server.revisions[revision.id] == revision
     requires revision.id in pre.server.feed
-    ensures CommitsOnBase(RemoteStep(pre, d, revision).post)
+    ensures CommitsOnBase(RemoteStep(pre, d, revision).post) && OutboxParentsAccepted(RemoteStep(pre, d, revision).post)
   {
     var journal := pre.devices[d].journal;
     var journal' := RemoteJournal(journal, revision);
@@ -540,6 +654,7 @@ abstract module MergedClaims refines StepContracts {
     forall x | x in journal.documents ensures KnowsAtLeast(journal.documents[x], journal'.documents[x]) {}
     assert ClaimsStep(pre, d, journal');
     JournalStepKeepsCommitsOnBase(pre, d, journal');
+    JournalStepKeepsParentsAccepted(pre, d, journal');
   }
 
   // Every revision of a document's history is at or before its head.
@@ -1181,6 +1296,7 @@ abstract module MergedClaims refines StepContracts {
     AcceptOwnAcknowledged(pre, d, doc, r, nextRev);
     AcceptOwnDocsKnown(pre, d, doc, r, nextRev);
     AcceptKeepsCommitsOnBase(pre, d, doc, r, nextRev);
+    AcceptKeepsParentsAccepted(pre, d, doc, r, nextRev);
     assert ScopesClosedUnderF(post);
   }
 }

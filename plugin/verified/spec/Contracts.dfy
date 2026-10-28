@@ -55,7 +55,7 @@ abstract module StepContracts refines PushCore {
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
     && ScopesClosedUnderF(state) && OwnDocsKnown(state)
     && (forall d :: ReadsFeed(state, d) ==> OwnRevisionsAcknowledged(state, d))
-    && CommitsOnBase(state)
+    && CommitsOnBase(state) && OutboxParentsAccepted(state)
   }
 
   // The device's cursor and anchor are on the feed (#1071, #1031's gap 3):
@@ -87,10 +87,10 @@ abstract module StepContracts refines PushCore {
   }
 
   // An outbox's parent is never newer than its row's base (#1080): where
-  // the outbox has a parent, it is a revision the server accepted, and,
-  // where the server still holds it, the row has a base at or after it on
-  // the feed. (A parent a restore removed can never be a head again, since
-  // an append takes an id never accepted, so a commit on it cannot land.) A new outbox and a reopened
+  // the server holds the outbox's parent, the row has a base at or after
+  // it on the feed. A parent a restore removed can never be a head again
+  // (it was accepted, OutboxParentsAccepted, and an append takes an id
+  // never accepted), so a commit on it cannot land. A new outbox and a reopened
   // one (Reopen) take the base's id as their parent, and no step moves a
   // base back (ApplyBaseGrows, RuleKeepsBase). A round may move the base
   // past the parent of a commit in flight; that commit then cannot land,
@@ -98,9 +98,8 @@ abstract module StepContracts refines PushCore {
   ghost predicate OutboxParentAtBase(server: Server, document: Document) {
     document.outbox.Some? && document.outbox.value.baseRev.Some? ==>
       var parent := document.outbox.value.baseRev.value;
-      parent in server.accepted
-      && (parent in server.revisions ==>
-            document.base.Some? && server.revisions[parent].position <= document.base.value.position)
+      parent in server.revisions ==>
+        document.base.Some? && server.revisions[parent].position <= document.base.value.position
   }
 
   // A device's own commit lands on its row's base (#1080): where a row's
@@ -123,6 +122,19 @@ abstract module StepContracts refines PushCore {
       forall id :: id in server.history[doc] && id in server.revisions && id != landed.id
         && server.revisions[id].position < landed.position
         ==> document.base.Some? && server.revisions[id].position <= document.base.value.position
+  }
+
+  // Every outbox's parent is a revision the server accepted, for every
+  // device, a diverged one too (#1080), as JournalsNameAccepted is for
+  // bases: an outbox takes its parent from its row's base, and `accepted`
+  // only grows. So no append takes a parent's id, and a resync, which
+  // binds a diverged device to OutboxParentAtBase again, finds each parent
+  // either held or gone for good.
+  ghost predicate OutboxParentsAccepted(state: State) {
+    forall d, doc :: d in state.devices && doc in state.devices[d].journal.documents
+      && state.devices[d].journal.documents[doc].outbox.Some?
+      && state.devices[d].journal.documents[doc].outbox.value.baseRev.Some?
+      ==> state.devices[d].journal.documents[doc].outbox.value.baseRev.value in state.server.accepted
   }
 
   // Both, for every row of every device that reads the feed: positions are
@@ -746,7 +758,8 @@ abstract module StepContracts refines PushCore {
       // SPEC.md §8 "Divergence" (#1025): every revision the journal names
       // is on the server again, so a base the restore lost is re-anchored
       // (to the newest revision of the device's own the server still holds
-      // that is not its outbox's, or none, #1078) and CoreInv makes the
+      // that is not its outbox's, or none, #1078; at least at the revision
+      // a row's outbox commit is on, where held, #1080) and CoreInv makes the
       // device send what it holds again; the device is no longer Diverged.
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
       && OwnRevisionsAcknowledged(step.post, d)

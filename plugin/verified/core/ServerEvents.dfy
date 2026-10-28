@@ -85,6 +85,7 @@ abstract module ServerEvents refines StepContracts {
   {
     ServerClausesKept(step);
     ServerEventKeepsCommitsOnBase(step);
+    ServerEventKeepsParentsAccepted(step);
     var pre := step.pre;
     var post := step.post;
     var revisions := step.event.revisions;
@@ -432,6 +433,7 @@ abstract module ServerEvents refines StepContracts {
   {
     ServerClausesKept(step);
     ServerEventKeepsCommitsOnBase(step);
+    ServerEventKeepsParentsAccepted(step);
     var pre := step.pre;
     var post := step.post;
     RestoredIsCut(step);
@@ -769,6 +771,7 @@ abstract module ServerEvents refines StepContracts {
   {
     ServerClausesKept(step);
     ServerEventKeepsCommitsOnBase(step);
+    ServerEventKeepsParentsAccepted(step);
     var pre := step.pre;
     var post := step.post;
     var r := step.event.revision;
@@ -990,6 +993,15 @@ abstract module ServerEvents refines StepContracts {
     }
   }
 
+  // Every server event keeps OutboxParentsAccepted (#1080): it changes no
+  // journal, and `accepted` only grows (a restore from backup keeps it).
+  lemma ServerEventKeepsParentsAccepted(step: Step)
+    requires ServerEventStep(step) && OutboxParentsAccepted(step.pre)
+    ensures OutboxParentsAccepted(step.post)
+  {
+    assert step.pre.server.accepted.Keys <= step.post.server.accepted.Keys;
+  }
+
   lemma {:isolate_assertions} RestoreKeepsCommitsOnBase(step: Step)
     requires ServerEventStep(step) && step.event.Restore? && CoreReachable(step.pre)
     ensures CommitsOnBase(step.post)
@@ -1043,6 +1055,7 @@ abstract module ServerEvents refines StepContracts {
 
   lemma AppendRowCommitsOnBase(pre: Server, rdoc: DocId, r: Revision, d: DeviceId, doc: DocId, document: Document)
     requires FeedPositioned(pre) && RevisionsOnFeed(pre) && Appendable(pre, rdoc, r) && r.device != d
+    requires document.outbox.Some? && document.outbox.value.baseRev.Some? ==> document.outbox.value.baseRev.value in pre.accepted
     requires OutboxParentAtBase(pre, document) && OwnCommitOnBase(pre, d, doc, document)
     ensures var post := Appended(pre, rdoc, r);
       OutboxParentAtBase(post, document) && OwnCommitOnBase(post, d, doc, document)

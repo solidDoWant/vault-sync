@@ -372,4 +372,26 @@ abstract module PushCore refines RemoteCore {
     ensures OnPush(platform, journal, input, revs).0.cursor == journal.cursor
     ensures OnPush(platform, journal, input, revs).0.anchor == journal.anchor
   {}
+
+  // CommitsOnBase's row condition (#1080): an outbox keeps its parent or
+  // takes its row's base's id as its parent.
+  ghost predicate ParentKeptOrBase(before: Document, after: Document) {
+    after.outbox.Some? && after.outbox.value.baseRev.Some? ==>
+      (before.outbox.Some? && after.outbox.value.baseRev == before.outbox.value.baseRev)
+      || (after.base.Some? && after.outbox.value.baseRev == Some(after.base.value.rev))
+  }
+
+  // The push keeps every row's base and its outbox's parent (it only
+  // seals), and a document it creates has an outbox with no parent
+  // (#1080, CommitsOnBase).
+  lemma PushKeepsParents(platform: Platform, journal: Journal, input: RoundInput, revs: FreshRevs)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    ensures var journal' := OnPush(platform, journal, input, revs).0;
+      journal.documents.Keys <= journal'.documents.Keys
+      && (forall doc :: doc in journal.documents ==>
+            journal'.documents[doc].base == journal.documents[doc].base
+            && ParentKeptOrBase(journal.documents[doc], journal'.documents[doc]))
+      && (forall doc :: doc in journal'.documents && doc !in journal.documents && journal'.documents[doc].outbox.Some?
+            ==> journal'.documents[doc].outbox.value.baseRev.None?)
+  {}
 }
