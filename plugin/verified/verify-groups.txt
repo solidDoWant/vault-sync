@@ -1,9 +1,11 @@
 # Groups of Dafny files for CI's `verify (<group>)` jobs (make verify-group,
 # scripts/verify-group.sh): one `<group> <file>` line per .dfy file under
 # plugin/verified/, the file relative to this directory. Every file must be in
-# exactly one group. Keep each group well under the jobs' 15-minute limit: a
-# heavy file gets its own group. The figures are seconds of
-# `dafny verify --cores 2 <file>` on the dev VM (#1031).
+# exactly one group. Keep each group under about 10 minutes on CI (the jobs'
+# limit is 20), i.e. about 4 minutes of summed figures: the CI runner is up to
+# ~2.5x slower than the dev VM. A heavy file gets its own group. The figures
+# are seconds of `dafny verify --cores 2 <file>` on the dev VM (#1031; the
+# files of the former `core` group re-measured on master after #1092, #1095).
 
 merged core/MergedClaims.dfy        # 257
 
@@ -12,16 +14,18 @@ server core/ServerEvents.dfy        # 203
 round-claims core/RoundClaims.dfy   # 90
 round core/RoundGuarantees.dfy      # 71
 
-core core/Resync.dfy                # 190
+resync core/Resync.dfy              # 196
+
+path-rule core/PathRule.dfy         # 143
+path-rule core/Apply.dfy            # 46
+path-rule core/LocalEvents.dfy      # 12
+path-rule core/Push.dfy             # 7
+path-rule LocalCoreJs.dfy           # 5
+path-rule Clamp.dfy                 # 1
+
 core core/RemoteEvents.dfy          # 87
-core core/Convergence.dfy           # 38
-core core/PathRule.dfy              # 69
-core core/ClaimsMirror.dfy          # 45
-core core/Apply.dfy                 # 42
-core core/LocalEvents.dfy           # 12
-core core/Push.dfy                  # 7
-core LocalCoreJs.dfy                # 5
-core Clamp.dfy                      # 1
+core core/ClaimsMirror.dfy          # 55
+core core/Convergence.dfy           # 41
 
 spec spec/ContractWitnesses.dfy     # 60
 spec spec/Witnesses.dfy             # 14
