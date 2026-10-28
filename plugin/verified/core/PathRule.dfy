@@ -2890,7 +2890,7 @@ abstract module PathRuleCore refines ApplyCore {
   }
 
   // ---------------------------------------------------------------------
-  // Toward OwnRevisionsAcknowledged (#1033, not yet composed): the apply
+  // Toward OwnRevisionsAcknowledged (#1081 composes it over the round): the apply
   // and the rule never move a base back and keep a commit in flight, and
   // the outbox's own revision becomes the base.
   // ---------------------------------------------------------------------
