@@ -3368,14 +3368,41 @@ abstract module RoundG6 refines RoundGuarantees {
     forall i | |effects0| <= i < |all|
       ensures CondAt(platform, device0, accepted, all, i)
     {
-      var k := i - |effects0|;
-      if k < |front| {
-        FrontCondOrigin(platform, device0, accepted, effects0, documents, doc, input, moves, way, avoid, r.path, k);
-      } else {
-        ArriveCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, k - |front|);
-      }
-      CondAtJoin(platform, device0, accepted, effects0, front, arrive, k);
+      ClearWayCondOne(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, i - |effects0|);
     }
+  }
+
+  // One effect of the rule clearing the way, from the moves aside or the
+  // arrival.
+  lemma ClearWayCondOne(platform: Platform, device0: Device, accepted: map<RevId, Revision>,
+                        effects0: seq<Effect>, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                        input: RoundInput, moves: seq<(Path, Path, Hash)>, way: set<Path>, avoid: set<Path>, k: nat)
+    requires doc in documents && device0.platform == platform
+    requires ListingDistinct(platform, input.listing) && Distinct(platform, input.listing)
+    requires forall e | e in documents :: RowG5(platform, device0, effects0, e, documents[e])
+                                          && RowContent(platform, device0, accepted, effects0, input.listing, e, documents[e])
+    requires Keeps(platform, documents[doc], r, input).Some? ==>
+      ListedRead(platform, input.listing, documents[doc].binding.value.spelling).value.0
+        == ArrivingRow(platform, documents[doc], r, input).binding.value.seen
+    requires way == InTheWay(platform, input.listing, r.path, Keeps(platform, documents[doc], r, input))
+    requires way <= input.listing.Keys
+    requires forall i | 0 <= i < |moves| ::
+      moves[i].0 in way && moves[i].2 == input.listing[moves[i].0].0 && FreeIn(platform, input.listing, moves[i].1)
+    requires forall i, j | 0 <= i < j < |moves| :: moves[i].0 != moves[j].0
+    requires k < |MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input)|
+    ensures CondAt(platform, device0, accepted,
+                   effects0 + (MoveEffects(platform, documents, doc, moves) + ArriveOf(platform, doc, documents[doc], r, input)),
+                   |effects0| + k)
+  {
+    var front := MoveEffects(platform, documents, doc, moves);
+    var arrive := ArriveOf(platform, doc, documents[doc], r, input);
+    MoveEffectsShape(platform, documents, doc, moves);
+    if k < |front| {
+      FrontCondOrigin(platform, device0, accepted, effects0, documents, doc, input, moves, way, avoid, r.path, k);
+    } else {
+      ArriveCondOrigin(platform, device0, accepted, effects0, documents, doc, r, input, moves, way, avoid, k - |front|);
+    }
+    CondAtJoin(platform, device0, accepted, effects0, front, arrive, k);
   }
 
   // CondAt of an effect of `f + g` after `a`, from the one of `f` or `g`.
