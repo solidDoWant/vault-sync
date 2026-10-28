@@ -85,6 +85,52 @@ abstract module StepContracts refines PushCore {
       ==> doc in state.devices[d].journal.documents
   }
 
+  // An outbox's parent is never newer than its row's base (#1080): where
+  // the outbox has a parent, it is a revision the server accepted, and the
+  // row has a base at or after it on the feed. A new outbox and a reopened
+  // one (Reopen) take the base's id as their parent, and no step moves a
+  // base back (ApplyBaseGrows, RuleKeepsBase). A round may move the base
+  // past the parent of a commit in flight; that commit then cannot land,
+  // because its parent is no longer its document's head (ParentIsHead).
+  ghost predicate OutboxParentAtBase(server: Server, document: Document) {
+    document.outbox.Some? && document.outbox.value.baseRev.Some? ==>
+      var parent := document.outbox.value.baseRev.value;
+      parent in server.accepted && document.base.Some?
+      && server.accepted[parent].position <= document.base.value.position
+  }
+
+  // A device's own commit lands on its row's base (#1080): where a row's
+  // outbox carries the id of a revision of the device's own the server
+  // holds (its commit
+  // landed, and the answer may have been lost: the outbox is then sealed,
+  // or unsealed by Reopen), every other revision of the document before it
+  // on the feed is at or below the base. A commit lands only on its
+  // document's head (ParentIsHead) and its parent is at or below the base
+  // (OutboxParentAtBase), so nothing of the document lies between the base
+  // and the landed commit; a later append goes after it on the feed. So a
+  // round that pulls the device's own commit takes it as the outbox's
+  // acknowledgement, never after another revision of the document it would
+  // settle first and drop the outbox for.
+  ghost predicate OwnCommitOnBase(server: Server, d: DeviceId, doc: DocId, document: Document) {
+    document.outbox.Some? && document.outbox.value.rev in server.revisions
+    && server.revisions[document.outbox.value.rev].device == d
+    && server.revisions[document.outbox.value.rev].doc == doc && doc in server.history ==>
+      var landed := server.revisions[document.outbox.value.rev];
+      forall id :: id in server.history[doc] && id in server.revisions && id != landed.id
+        && server.revisions[id].position < landed.position
+        ==> document.base.Some? && server.revisions[id].position <= document.base.value.position
+  }
+
+  // Both, for every row of every device that reads the feed: positions are
+  // compared only for a device on the feed it read, as in
+  // OwnRevisionsAcknowledged (a restore from backup reuses positions,
+  // SPEC.md §8 "Divergence"; the resync sets both up again).
+  ghost predicate CommitsOnBase(state: State) {
+    forall d, doc :: ReadsFeed(state, d) && doc in state.devices[d].journal.documents ==>
+      var document := state.devices[d].journal.documents[doc];
+      OutboxParentAtBase(state.server, document) && OwnCommitOnBase(state.server, d, doc, document)
+  }
+
   // Each document's history is that document's feed entries, in feed order
   // (#1050, gap A): every history entry is a revision of its document and
   // a feed entry, every feed entry the server holds is in its document's

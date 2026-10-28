@@ -968,6 +968,70 @@ abstract module ServerEvents refines StepContracts {
     }
   }
 
+  // CommitsOnBase (#1080) is kept by every server event. A purge changes
+  // nothing it reads. A restore from history appends a revision of no
+  // syncing device, last on the feed, so after every landed commit; and it
+  // only adds to `accepted`. A restore from backup keeps `accepted`, and
+  // keeps a subset of the revisions and of each history; a device that
+  // reads the restored feed read it before (RestoreReadsFeed).
+  lemma {:isolate_assertions} ServerEventKeepsCommitsOnBase(step: Step)
+    requires ServerEventStep(step) && CoreReachable(step.pre) && CommitsOnBase(step.pre)
+    ensures CommitsOnBase(step.post)
+  {
+    var pre := step.pre.server;
+    var post := step.post.server;
+    forall d, doc | ReadsFeed(step.post, d) && doc in step.post.devices[d].journal.documents
+      ensures OutboxParentAtBase(post, step.post.devices[d].journal.documents[doc])
+      ensures OwnCommitOnBase(post, d, doc, step.post.devices[d].journal.documents[doc])
+    {
+      var document := step.pre.devices[d].journal.documents[doc];
+      if step.event.Purge? {
+        assert ReadsFeed(step.pre, d);
+      } else if step.event.Restore? {
+        RestoreReadsFeed(step, d);
+        RestoredIsCut(step);
+        if document.outbox.Some? && document.outbox.value.rev in post.revisions
+           && post.revisions[document.outbox.value.rev].device == d && doc in post.history
+        {
+          var landed := post.revisions[document.outbox.value.rev];
+          assert landed == pre.revisions[document.outbox.value.rev];
+          forall id | id in post.history[doc] && id in post.revisions && id != landed.id
+            && post.revisions[id].position < landed.position
+            ensures document.base.Some? && post.revisions[id].position <= document.base.value.position
+          {
+            var kept := set i | 0 <= i < |post.feed| :: post.feed[i];
+            KeepMember(pre.history[doc], kept, id);
+            assert post.revisions[id] == pre.revisions[id];
+          }
+        }
+      } else {
+        var r := step.event.revision;
+        AppendReadsFeed(step, d);
+        assert r.device != d;
+        if document.outbox.Some? && document.outbox.value.rev in post.revisions
+           && post.revisions[document.outbox.value.rev].device == d && doc in post.history
+        {
+          var o := document.outbox.value.rev;
+          assert o != r.id && o in pre.revisions;
+          var landed := pre.revisions[o];
+          assert o in pre.feed;
+          var i :| 0 <= i < |pre.feed| && pre.feed[i] == o;
+          assert landed.position == i < |pre.feed|;
+          forall id | id in post.history[doc] && id in post.revisions && id != landed.id
+            && post.revisions[id].position < landed.position
+            ensures document.base.Some? && post.revisions[id].position <= document.base.value.position
+          {
+            if id == r.id {
+              assert post.revisions[id].position == |pre.feed|;
+              assert false;
+            }
+            assert id in pre.history[doc];
+          }
+        }
+      }
+    }
+  }
+
   // ServerEventContract (#950), proved for a restore from backup, a purge
   // and a restore from history, with the clauses #1063 settled.
   lemma ServerEventsKeepAll(step: Step)
