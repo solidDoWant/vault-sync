@@ -1439,4 +1439,238 @@ abstract module RoundG6 refines RoundGuarantees {
     }
     UntouchedStaysUntracked(platform, rows', input.listing, applied.effects, p, h);
   }
+
+  // The apply keeps an untracked content untracked, or adopts it for the
+  // head (which holds exactly it): it writes and removes only at its row's
+  // own name and at free copy names, or creates.
+  lemma {:isolate_assertions} ApplyKeepsUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                                  input: RoundInput, claims: Claims, rev: RevId, p: Path, h: Hash)
+    requires ListingDistinct(platform, input.listing) && doc in documents
+    requires p in input.listing && input.listing[p].0 == h
+    requires forall e | e in documents && documents[e].binding.Some? :: !SameF(platform, documents[e].binding.value.spelling, p)
+    ensures var applied := ApplyRevision(platform, doc, documents[doc], r, input, BoundNames(documents), claims, rev);
+      var listing' := ListingAfter(platform, input.listing, applied.effects);
+      Distinct(platform, listing') ==>
+        UntrackedHolds(platform, documents[doc := applied.document], listing', h) || (!r.deleted && h == r.content)
+  {
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, rev);
+    var listing' := ListingAfter(platform, input.listing, applied.effects);
+    var rows' := documents[doc := applied.document];
+    if !Distinct(platform, listing') { return; }
+    var creates := Newer(document, r) && !SettlesIdentical(platform, document, r, input) && !Acknowledges(document, r)
+      && ((Revives(platform, document, r, input) && !KeepsUntracked(platform, document, r, input))
+          || (!Revives(platform, document, r, input) && document.binding.None? && !r.deleted));
+    if creates {
+      if Revives(platform, document, r, input) {
+        assert applied == Create(platform, doc, Revived(document), r, input, bound, claims, rev);
+        CreateKeepsUntracked(platform, documents, doc, Revived(document), r, input, claims, rev, p, h);
+      } else {
+        assert applied == Create(platform, doc, document, r, input, bound, claims, rev);
+        CreateKeepsUntracked(platform, documents, doc, document, r, input, claims, rev, p, h);
+      }
+      return;
+    }
+    AppliedMovesAndCopies(platform, doc, document, r, input, bound, claims, rev);
+    assert applied.effects == [] || document.binding.Some?;
+    assert applied.document.binding.None? || (document.binding.Some? && applied.document.binding.value.spelling == document.binding.value.spelling);
+    forall effect | effect in applied.effects
+      ensures effect.Report? || (effect.Write? && effect.target.None?)
+              || ((effect.Write? || effect.Remove?) && effect.path == document.binding.value.spelling)
+    {
+    }
+    forall effect | effect in applied.effects ensures !Touches(platform, effect, p) {
+      if effect.Write? && effect.target.None? {
+        assert !CollideF(platform, p, effect.path);
+        if SameF(platform, effect.path, p) { SameFIsEquivalence(platform, effect.path, p, p); }
+      } else if effect.Write? || effect.Remove? {
+        var t := document.binding.value.spelling;
+        assert !SameF(platform, t, p);
+      }
+    }
+    forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, p) {
+      if e == doc { assert rows'[e].binding.value.spelling == document.binding.value.spelling; }
+    }
+    UntouchedStaysUntracked(platform, rows', input.listing, applied.effects, p, h);
+  }
+
+  // After a move aside, no later move of the same aside, nor any effect of
+  // a tail that leaves its name alone, touches the name it moved to.
+  lemma {:isolate_assertions} AsideThenTail(platform: Platform, listing: Listing, front: seq<Effect>, tail: seq<Effect>,
+                                            moves: seq<(Path, Path, Hash)>, i: nat)
+    requires i < |moves| && |front| == |moves|
+    requires forall k | 0 <= k < |moves| :: front[k].Move? && front[k].from == moves[k].0 && front[k].to == moves[k].1
+    requires forall k | 0 <= k < |moves| :: moves[k].0 in listing && FreeIn(platform, listing, moves[k].1)
+    requires forall a, b | 0 <= a < b < |moves| :: !CollideF(platform, moves[a].1, moves[b].1)
+    requires forall effect :: effect in tail ==> !Touches(platform, effect, moves[i].1)
+    ensures forall k | i < k < |front + tail| :: !Touches(platform, (front + tail)[k], moves[i].1)
+  {
+    var effects := front + tail;
+    forall k | i < k < |effects| ensures !Touches(platform, effects[k], moves[i].1) {
+      if k < |front| {
+        assert effects[k] == front[k];
+        assert !CollideF(platform, moves[k].0, moves[i].1);
+        assert !CollideF(platform, moves[i].1, moves[k].1);
+        if SameF(platform, moves[k].1, moves[i].1) { SameFIsEquivalence(platform, moves[k].1, moves[i].1, moves[i].1); assert false; }
+      } else {
+        assert effects[k] == tail[k - |front|];
+        assert effects[k] in tail;
+      }
+    }
+  }
+
+  // The rule clearing the way keeps an untracked content untracked: its
+  // file moves aside where it is in the way, and stays otherwise.
+  lemma {:isolate_assertions} ClearWayKeepsUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                                     input: RoundInput, revs: FreshRevs, p: Path, h: Hash)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires p in input.listing && input.listing[p].0 == h
+    requires forall e | e in documents && documents[e].binding.Some? :: !SameF(platform, documents[e].binding.value.spelling, p)
+    ensures var ruled := ClearWay(platform, documents, doc, r, input, revs);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      Distinct(platform, listing') ==> UntrackedHolds(platform, ruled.documents, listing', h)
+  {
+    var document := documents[doc];
+    var ruled := ClearWay(platform, documents, doc, r, input, revs);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !Distinct(platform, listing') { return; }
+    var rows := ruled.documents;
+    var keep := Keeps(platform, document, r, input);
+    var way := InTheWay(platform, input.listing, r.path, keep);
+    var avoid := BoundNames(documents) + input.unsaved;
+    var aside := Aside(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    if !(aside.Some? && ClearsWith(platform, documents, doc, r, input, keep, aside.value)) {
+      assert ruled == Defer(documents, doc, r, false) || ruled == Defer(documents, doc, r, true);
+      forall effect | effect in ruled.effects ensures !Touches(platform, effect, p) { }
+      forall e | e in rows && rows[e].binding.Some? ensures !SameF(platform, rows[e].binding.value.spelling, p) {
+        assert rows[e].binding == documents[e].binding;
+      }
+      UntouchedStaysUntracked(platform, rows, input.listing, ruled.effects, p, h);
+      return;
+    }
+    var moves := aside.value;
+    AsideFacts(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    AsideCovers(platform, input.listing, avoid, AllClaims(documents), way, r.path);
+    MoveEffectsShape(platform, documents, doc, moves);
+    var front := MoveEffects(platform, documents, doc, moves);
+    var arrive := ArriveOf(platform, doc, document, r, input);
+    assert ruled.effects == front + arrive;
+    assert rows[doc] == HeadRow(platform, document, r, input, revs[doc]);
+    if keep.Some? {
+      assert keep == OwnFile(platform, document, input);
+      assert SameF(platform, keep.value, document.binding.value.spelling);
+      if SameF(platform, keep.value, p) { SameFIsEquivalence(platform, document.binding.value.spelling, keep.value, p); assert false; }
+      assert keep.value != p;
+    }
+    forall j | 0 <= j < |moves| ensures moves[j].0 in input.listing { assert moves[j].0 in way; }
+    if CollideF(platform, p, r.path) {
+      InTheWayHas(platform, input.listing, r.path, keep, p);
+      var i := var i :| 0 <= i < |moves| && moves[i].0 == p; i;
+      var name := moves[i].1;
+      reveal ArrivingRow(), Arriving();
+      if keep.Some? { assert !CollideF(platform, keep.value, name); }
+      if SameF(platform, r.path, name) { SameFIsEquivalence(platform, r.path, name, name); assert CollideF(platform, name, r.path); assert false; }
+      ArriveTouchesOnly(platform, doc, ArrivingRow(platform, document, r, input), Arriving(platform, document, r, input), keep, name);
+      AsideThenTail(platform, input.listing, front, arrive, moves, i);
+      MovedKeepsRead(platform, input.listing, ruled.effects, moves, i, name);
+      SameFIsEquivalence(platform, name, name, name);
+      assert ListedAt(platform, input.listing, p) == p by {
+        SameFIsEquivalence(platform, p, p, p);
+        var k := ListedAt(platform, input.listing, p);
+        if k != p { assert SameF(platform, k, p); assert false; }
+      }
+      var k' := ListedAt(platform, listing', name);
+      assert k' in listing' && listing'[k'].0 == h && SameF(platform, k', name);
+      forall e | e in rows && rows[e].binding.Some? ensures !SameF(platform, rows[e].binding.value.spelling, k') {
+        var se := rows[e].binding.value.spelling;
+        if SameF(platform, se, k') {
+          SameFIsEquivalence(platform, se, k', name);
+          if e == doc {
+            assert se == r.path;
+            assert false;
+          } else {
+            ClearWayRow(platform, documents, doc, r, input, revs, keep, moves, e);
+            if rows[e].binding == documents[e].binding {
+              assert se in avoid;
+              assert false;
+            } else {
+              var j := var j :| 0 <= j < |moves| && se == moves[j].1 && FileOf(platform, documents, moves[j].0, e); j;
+              if j == i { assert false; }
+              SameFIsEquivalence(platform, moves[j].1, moves[i].1, moves[i].1);
+              if i < j { assert !CollideF(platform, moves[i].1, moves[j].1); } else { assert !CollideF(platform, moves[j].1, moves[i].1); }
+              assert false;
+            }
+          }
+        }
+      }
+      return;
+    }
+    reveal ArrivingRow(), Arriving();
+    if SameF(platform, r.path, p) { SameFIsEquivalence(platform, r.path, p, p); assert CollideF(platform, p, r.path); assert false; }
+    ArriveTouchesOnly(platform, doc, ArrivingRow(platform, document, r, input), Arriving(platform, document, r, input), keep, p);
+    forall effect | effect in ruled.effects ensures !Touches(platform, effect, p) {
+      if effect in front {
+        var k := var k :| 0 <= k < |front| && front[k] == effect; k;
+        assert moves[k].0 in way && moves[k].0 != p;
+        if SameF(platform, moves[k].0, p) { assert false; }
+        assert !CollideF(platform, p, moves[k].1);
+        if SameF(platform, moves[k].1, p) { SameFIsEquivalence(platform, moves[k].1, p, p); assert false; }
+      } else {
+        assert effect in arrive;
+      }
+    }
+    forall e | e in rows && rows[e].binding.Some? ensures !SameF(platform, rows[e].binding.value.spelling, p) {
+      var se := rows[e].binding.value.spelling;
+      if e == doc {
+        assert se == r.path;
+      } else {
+        ClearWayRow(platform, documents, doc, r, input, revs, keep, moves, e);
+        if rows[e].binding != documents[e].binding {
+          var j := var j :| 0 <= j < |moves| && se == moves[j].1 && FileOf(platform, documents, moves[j].0, e); j;
+          assert !CollideF(platform, p, moves[j].1);
+          if SameF(platform, se, p) { SameFIsEquivalence(platform, se, p, p); assert false; }
+        }
+      }
+    }
+    UntouchedStaysUntracked(platform, rows, input.listing, ruled.effects, p, h);
+  }
+
+  // The path rule keeps every untracked content untracked, or adopts it
+  // for the head, which holds exactly it.
+  lemma {:isolate_assertions} RuleKeepsUntracked(platform: Platform, documents: map<DocId, Document>, doc: DocId, r: Revision,
+                                                 input: RoundInput, revs: FreshRevs, first: Claims, h: Hash)
+    requires doc in documents && documents.Keys <= revs.Keys
+    requires ListingDistinct(platform, input.listing) && NeverJoinedRows(platform, documents)
+    requires UntrackedHolds(platform, documents, input.listing, h)
+    ensures var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+      var listing' := ListingAfter(platform, input.listing, ruled.effects);
+      Distinct(platform, listing') ==>
+        UntrackedHolds(platform, ruled.documents, listing', h) || (!r.deleted && h == r.content)
+  {
+    var p := var p :| p in input.listing && input.listing[p].0 == h
+      && forall e | e in documents && documents[e].binding.Some? :: !SameF(platform, documents[e].binding.value.spelling, p); p;
+    var document := documents[doc];
+    var bound := BoundNames(documents);
+    var claims := ApplyClaims(documents, first);
+    var applied := ApplyRevision(platform, doc, document, r, input, bound, claims, revs[doc]);
+    var ruled := PathRule(platform, documents, doc, r, input, revs, first);
+    var listing' := ListingAfter(platform, input.listing, ruled.effects);
+    if !Distinct(platform, listing') { return; }
+    if !HeldForName(document, applied, r) {
+      ApplyKeepsUntracked(platform, documents, doc, r, input, claims, revs[doc], p, h);
+    } else if UnsavedCollides(platform, input.unsaved, r.path) {
+      assert applied.document.binding.None? || applied.document.binding == document.binding;
+      var rows' := documents[doc := applied.document];
+      assert ruled.documents == rows';
+      forall effect | effect in ruled.effects ensures !Touches(platform, effect, p) { }
+      forall e | e in rows' && rows'[e].binding.Some? ensures !SameF(platform, rows'[e].binding.value.spelling, p) {
+        if e == doc { assert rows'[e].binding == document.binding; }
+      }
+      UntouchedStaysUntracked(platform, rows', input.listing, ruled.effects, p, h);
+    } else {
+      ClearWayKeepsUntracked(platform, documents, doc, r, input, revs, p, h);
+    }
+  }
 }
