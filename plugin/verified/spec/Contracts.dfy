@@ -55,6 +55,7 @@ abstract module StepContracts refines PushCore {
     && FeedAccepted(state.server) && RevisionsKeyed(state.server) && CutsHeadsApart(state.server)
     && ScopesClosedUnderF(state) && OwnDocsKnown(state)
     && (forall d :: ReadsFeed(state, d) ==> OwnRevisionsAcknowledged(state, d))
+    && CommitsOnBase(state) && OutboxParentsAccepted(state)
   }
 
   // The device's cursor and anchor are on the feed (#1071, #1031's gap 3):
@@ -83,6 +84,69 @@ abstract module StepContracts refines PushCore {
     forall d, doc, id :: d in state.devices && doc in state.server.history && id in state.server.history[doc]
       && id in state.server.revisions && state.server.revisions[id].device == d
       ==> doc in state.devices[d].journal.documents
+  }
+
+  // An outbox's parent is never newer than its row's base (#1080): where
+  // the server holds the outbox's parent as a revision of the row's
+  // document, the row has a base at or after it on the feed. (A commit
+  // lands only on its document's head, so a parent of another document
+  // never lets it land.) A parent a restore removed can never be a head again
+  // (it was accepted, OutboxParentsAccepted, and an append takes an id
+  // never accepted), so a commit on it cannot land. A new outbox and a reopened
+  // one (Reopen) take the base's id as their parent, and no step moves a
+  // base back (ApplyBaseGrows, RuleKeepsBase). A round may move the base
+  // past the parent of a commit in flight; that commit then cannot land,
+  // because its parent is no longer its document's head (ParentIsHead).
+  ghost predicate OutboxParentAtBase(server: Server, doc: DocId, document: Document) {
+    document.outbox.Some? && document.outbox.value.baseRev.Some? ==>
+      var parent := document.outbox.value.baseRev.value;
+      parent in server.revisions && server.revisions[parent].doc == doc ==>
+        document.base.Some? && server.revisions[parent].position <= document.base.value.position
+  }
+
+  // A device's own commit lands on its row's base (#1080): where a row's
+  // outbox carries the id of a revision of the device's own the server
+  // holds (its commit
+  // landed, and the answer may have been lost: the outbox is then sealed,
+  // or unsealed by Reopen), every other revision of the document before it
+  // on the feed is at or below the base. A commit lands only on its
+  // document's head (ParentIsHead) and its parent is at or below the base
+  // (OutboxParentAtBase), so nothing of the document lies between the base
+  // and the landed commit; a later append goes after it on the feed. So a
+  // round that pulls the device's own commit takes it as the outbox's
+  // acknowledgement, never after another revision of the document it would
+  // settle first and drop the outbox for.
+  ghost predicate OwnCommitOnBase(server: Server, d: DeviceId, doc: DocId, document: Document) {
+    document.outbox.Some? && document.outbox.value.rev in server.revisions
+    && server.revisions[document.outbox.value.rev].device == d
+    && server.revisions[document.outbox.value.rev].doc == doc && doc in server.history ==>
+      var landed := server.revisions[document.outbox.value.rev];
+      forall id :: id in server.history[doc] && id in server.revisions && id != landed.id
+        && server.revisions[id].position < landed.position
+        ==> document.base.Some? && server.revisions[id].position <= document.base.value.position
+  }
+
+  // Every outbox's parent is a revision the server accepted, for every
+  // device, a diverged one too (#1080), as JournalsNameAccepted is for
+  // bases: an outbox takes its parent from its row's base, and `accepted`
+  // only grows. So no append takes a parent's id, and a resync, which
+  // binds a diverged device to OutboxParentAtBase again, finds each parent
+  // either held or gone for good.
+  ghost predicate OutboxParentsAccepted(state: State) {
+    forall d, doc :: d in state.devices && doc in state.devices[d].journal.documents
+      && state.devices[d].journal.documents[doc].outbox.Some?
+      && state.devices[d].journal.documents[doc].outbox.value.baseRev.Some?
+      ==> state.devices[d].journal.documents[doc].outbox.value.baseRev.value in state.server.accepted
+  }
+
+  // Both, for every row of every device that reads the feed: positions are
+  // compared only for a device on the feed it read, as in
+  // OwnRevisionsAcknowledged (a restore from backup reuses positions,
+  // SPEC.md §8 "Divergence"; the resync sets both up again).
+  ghost predicate CommitsOnBase(state: State) {
+    forall d, doc :: ReadsFeed(state, d) && doc in state.devices[d].journal.documents ==>
+      var document := state.devices[d].journal.documents[doc];
+      OutboxParentAtBase(state.server, doc, document) && OwnCommitOnBase(state.server, d, doc, document)
   }
 
   // Each document's history is that document's feed entries, in feed order
@@ -509,22 +573,20 @@ abstract module StepContracts refines PushCore {
 
   ghost predicate RoundContract(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
     (d in pre.devices && pre.devices[d].running && CoreReachable(pre) && !Diverged(pre, d)
-     && OwnRevisionsAcknowledged(pre, d)
      && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
      && RevsCover(pre.devices[d].journal, input, revs))
     ==>
       var step := RoundStepOf(pre, d, input, revs);
       step.pre == pre && step.event == SyncRound(d)
-      && KeepsAll(step) && OwnRevisionsAcknowledged(step.post, d)
+      && KeepsAll(step)
       && PathRuleContract(step, input)
       && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
       && CommitsPersistedFirst(step.effects)
       && IntentsCoverDiskEffects(step.effects)
-      // The round finishes what it can: a second round right after it has
-      // nothing to do on disk or on the server.
-      && (forall input2, revs2 :: RoundInputOf(step.post, d, input2) && FreshDocsSuffice(step.post, d, input2)
-            && RevsCover(step.post.devices[d].journal, input2, revs2)
-            ==> G10_NoLoop(step, RoundStepOf(step.post, d, input2, revs2)))
+      // G10_NoLoop against the next round, and the device's own revisions
+      // acknowledged, are left to the oracle (#1047, #1048): only G9, G10
+      // and two-client convergence need them, and the owner froze #1080's
+      // scope to what keeps no data lost.
   }
 
   // ---------------------------------------------------------------------
@@ -695,12 +757,26 @@ abstract module StepContracts refines PushCore {
       && d in step.post.devices && step.post.devices[d].journal.cursor == |pre.server.feed|
       // SPEC.md §8 "Divergence" (#1025): every revision the journal names
       // is on the server again, so a base the restore lost is re-anchored
-      // (to the newest revision of the device's own the server still holds
-      // that is not its outbox's, or none, #1078) and CoreInv makes the
-      // device send what it holds again; the device is no longer Diverged.
+      // (to the newest revision of the device's own the server still holds,
+      // a landed commit the outbox carries included, or none, #1078, #1080;
+      // at least at the parent a commit in flight is sealed on, where held,
+      // #1080) and CoreInv makes the device send what it holds again; the
+      // device is no longer Diverged.
       && JournalOnServer(step.post.server, step.post.devices[d].journal)
-      && OwnRevisionsAcknowledged(step.post, d)
       && IntentsCoverDiskEffects(step.effects)
+      // A user's pending delete is kept (principle 1, #1080 item 3): a row
+      // the user deleted still records the delete, which CoreInv then makes
+      // an outbox carry, unless the server no longer has the document live
+      // (no base: the delete is dropped, SPEC.md §8, #829; or a tombstone).
+      && ResyncKeepsUserDelete(pre.devices[d].journal, step.post.devices[d].journal)
+  }
+
+  ghost predicate ResyncKeepsUserDelete(journal: Journal, journal': Journal) {
+    forall doc :: doc in journal.documents && journal.documents[doc].binding.None?
+      && journal.documents[doc].absence == UserDeleted
+      ==> doc in journal'.documents
+          && (journal'.documents[doc].base.None? || journal'.documents[doc].base.value.deleted
+              || journal'.documents[doc].absence == UserDeleted)
   }
 
   // ---------------------------------------------------------------------
@@ -710,9 +786,9 @@ abstract module StepContracts refines PushCore {
   // Two finished devices on one server, from a reachable state, have each
   // document they both hold, and neither holds back, at the same base
   // revision (so at one path and with one content), apart from files one of
-  // them cannot hold or does not sync. With RoundContract (a round from a state with no local change
-  // leaves the device finished), two devices that apply the same feed with
-  // no further local events converge.
+  // them cannot hold or does not sync. Proved (Converges) and kept; that a
+  // device reaches FinishedSyncing (G9, G10, two-client convergence) is
+  // tested by the oracle, not proved (#1047, #1048; scope frozen, #1080).
   ghost predicate ConvergenceContract(state: State, d1: DeviceId, d2: DeviceId) {
     CoreReachable(state) && FinishedSyncing(state, d1) && FinishedSyncing(state, d2)
     ==> forall doc :: doc in state.devices[d1].journal.documents && doc in state.devices[d2].journal.documents
@@ -721,33 +797,6 @@ abstract module StepContracts refines PushCore {
           && state.devices[d1].journal.documents[doc].ahead.None?
           && state.devices[d2].journal.documents[doc].ahead.None?
           ==> state.devices[d1].journal.documents[doc].base == state.devices[d2].journal.documents[doc].base
-  }
-
-  // A round of a running device with no local change (nothing to send, no
-  // user's delete, no untracked in-scope file, no unsaved text, and the disk
-  // as the journal last saw it) leaves it finished.
-  ghost predicate NoLocalChange(state: State, d: DeviceId) {
-    d in state.devices
-    && var device := state.devices[d];
-    device.running && |device.journal.intents| == 0
-    && (forall e :: e in device.editors ==> e.unsaved.None?)
-    && (forall doc :: doc in device.journal.documents ==>
-          device.journal.documents[doc].outbox.None? && device.journal.documents[doc].absence != UserDeleted
-          && (device.journal.documents[doc].binding.Some? ==>
-                var b := device.journal.documents[doc].binding.value;
-                b.spelling in device.disk && device.disk[b.spelling].content == b.seen))
-    && (forall p :: p in device.disk && p !in device.outOfScope ==> Tracked(device, p))
-  }
-
-  ghost predicate OneRoundFinishes(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs) {
-    d in pre.devices && NoLocalChange(pre, d) && CoreReachable(pre) && !Diverged(pre, d)
-    && OwnRevisionsAcknowledged(pre, d)
-    // Every revision the journal names is on the server (#1025): after a
-    // restore that lost one, only the resync can finish the device.
-    && JournalOnServer(pre.server, pre.devices[d].journal)
-    && RoundInputOf(pre, d, input) && FreshDocsSuffice(pre, d, input)
-    && RevsCover(pre.devices[d].journal, input, revs)
-    ==> FinishedSyncing(RoundStepOf(pre, d, input, revs).post, d)
   }
 
   // ---------------------------------------------------------------------

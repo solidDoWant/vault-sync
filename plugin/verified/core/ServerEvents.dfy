@@ -84,6 +84,8 @@ abstract module ServerEvents refines StepContracts {
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
     ServerClausesKept(step);
+    ServerEventKeepsCommitsOnBase(step);
+    ServerEventKeepsParentsAccepted(step);
     var pre := step.pre;
     var post := step.post;
     var revisions := step.event.revisions;
@@ -430,6 +432,8 @@ abstract module ServerEvents refines StepContracts {
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
     ServerClausesKept(step);
+    ServerEventKeepsCommitsOnBase(step);
+    ServerEventKeepsParentsAccepted(step);
     var pre := step.pre;
     var post := step.post;
     RestoredIsCut(step);
@@ -766,6 +770,8 @@ abstract module ServerEvents refines StepContracts {
     ensures CoreReachable(step.post) && StepGuarantees(step)
   {
     ServerClausesKept(step);
+    ServerEventKeepsCommitsOnBase(step);
+    ServerEventKeepsParentsAccepted(step);
     var pre := step.pre;
     var post := step.post;
     var r := step.event.revision;
@@ -964,6 +970,116 @@ abstract module ServerEvents refines StepContracts {
       assert step.pre.server.revisions.Keys <= step.post.server.revisions.Keys;
       if journal.cursor > 0 {
         assert step.post.server.feed[journal.cursor - 1] == step.pre.server.feed[journal.cursor - 1];
+      }
+    }
+  }
+
+  // CommitsOnBase (#1080) is kept by every server event. A purge changes
+  // nothing it reads. A restore from history appends a revision of no
+  // syncing device, last on the feed, so after every landed commit; and it
+  // only adds to `accepted`. A restore from backup keeps `accepted`, and
+  // keeps a subset of the revisions and of each history; a device that
+  // reads the restored feed read it before (RestoreReadsFeed).
+  lemma ServerEventKeepsCommitsOnBase(step: Step)
+    requires ServerEventStep(step) && CoreReachable(step.pre)
+    ensures CommitsOnBase(step.post)
+  {
+    if step.event.Purge? {
+      forall d | ReadsFeed(step.post, d) ensures ReadsFeed(step.pre, d) {}
+    } else if step.event.Restore? {
+      RestoreKeepsCommitsOnBase(step);
+    } else {
+      HistoryAppendKeepsCommitsOnBase(step);
+    }
+  }
+
+  // Every server event keeps OutboxParentsAccepted (#1080): it changes no
+  // journal, and `accepted` only grows (a restore from backup keeps it).
+  lemma ServerEventKeepsParentsAccepted(step: Step)
+    requires ServerEventStep(step) && OutboxParentsAccepted(step.pre)
+    ensures OutboxParentsAccepted(step.post)
+  {
+    assert step.pre.server.accepted.Keys <= step.post.server.accepted.Keys;
+  }
+
+  lemma {:isolate_assertions} RestoreKeepsCommitsOnBase(step: Step)
+    requires ServerEventStep(step) && step.event.Restore? && CoreReachable(step.pre)
+    ensures CommitsOnBase(step.post)
+  {
+    RestoredIsCut(step);
+    forall d, doc | ReadsFeed(step.post, d) && doc in step.post.devices[d].journal.documents
+      ensures OutboxParentAtBase(step.post.server, doc, step.post.devices[d].journal.documents[doc])
+      ensures OwnCommitOnBase(step.post.server, d, doc, step.post.devices[d].journal.documents[doc])
+    {
+      RestoreReadsFeed(step, d);
+      RestoreRowCommitsOnBase(step.pre.server, step.post.server, d, doc, step.pre.devices[d].journal.documents[doc]);
+    }
+  }
+
+  lemma RestoreRowCommitsOnBase(pre: Server, post: Server, d: DeviceId, doc: DocId, document: Document)
+    requires EarlierServer(pre, post.(accepted := pre.accepted, lost := post.lost)) && post.accepted == pre.accepted
+    requires OutboxParentAtBase(pre, doc, document) && OwnCommitOnBase(pre, d, doc, document)
+    ensures OutboxParentAtBase(post, doc, document) && OwnCommitOnBase(post, d, doc, document)
+  {
+    if document.outbox.Some? && document.outbox.value.rev in post.revisions
+       && post.revisions[document.outbox.value.rev].device == d
+       && post.revisions[document.outbox.value.rev].doc == doc && doc in post.history
+    {
+      var landed := post.revisions[document.outbox.value.rev];
+      assert landed == pre.revisions[document.outbox.value.rev];
+      var kept := set i | 0 <= i < |post.feed| :: post.feed[i];
+      forall id | id in post.history[doc] && id in post.revisions && id != landed.id
+        && post.revisions[id].position < landed.position
+        ensures document.base.Some? && post.revisions[id].position <= document.base.value.position
+      {
+        KeepMember(pre.history[doc], kept, id);
+        assert post.revisions[id] == pre.revisions[id];
+      }
+    }
+  }
+
+  lemma {:isolate_assertions} HistoryAppendKeepsCommitsOnBase(step: Step)
+    requires ServerEventStep(step) && step.event.RestoreFromHistory? && CoreReachable(step.pre)
+    ensures CommitsOnBase(step.post)
+  {
+    var r := step.event.revision;
+    forall d, doc | ReadsFeed(step.post, d) && doc in step.post.devices[d].journal.documents
+      ensures OutboxParentAtBase(step.post.server, doc, step.post.devices[d].journal.documents[doc])
+      ensures OwnCommitOnBase(step.post.server, d, doc, step.post.devices[d].journal.documents[doc])
+    {
+      AppendReadsFeed(step, d);
+      assert r.device != d;
+      AppendRowCommitsOnBase(step.pre.server, step.event.doc, r, d, doc, step.pre.devices[d].journal.documents[doc]);
+    }
+  }
+
+  lemma AppendRowCommitsOnBase(pre: Server, rdoc: DocId, r: Revision, d: DeviceId, doc: DocId, document: Document)
+    requires FeedPositioned(pre) && RevisionsOnFeed(pre) && Appendable(pre, rdoc, r) && r.device != d
+    requires document.outbox.Some? && document.outbox.value.baseRev.Some? ==> document.outbox.value.baseRev.value in pre.accepted
+    requires OutboxParentAtBase(pre, doc, document) && OwnCommitOnBase(pre, d, doc, document)
+    ensures var post := Appended(pre, rdoc, r);
+      OutboxParentAtBase(post, doc, document) && OwnCommitOnBase(post, d, doc, document)
+  {
+    var post := Appended(pre, rdoc, r);
+    if document.outbox.Some? && document.outbox.value.rev in post.revisions
+       && post.revisions[document.outbox.value.rev].device == d
+       && post.revisions[document.outbox.value.rev].doc == doc && doc in post.history
+    {
+      var o := document.outbox.value.rev;
+      assert o != r.id && o in pre.revisions;
+      var landed := pre.revisions[o];
+      assert o in pre.feed;
+      var i :| 0 <= i < |pre.feed| && pre.feed[i] == o;
+      assert landed.position == i < |pre.feed|;
+      forall id | id in post.history[doc] && id in post.revisions && id != landed.id
+        && post.revisions[id].position < landed.position
+        ensures document.base.Some? && post.revisions[id].position <= document.base.value.position
+      {
+        if id == r.id {
+          assert post.revisions[id].position == |pre.feed|;
+          assert false;
+        }
+        assert id in pre.history[doc];
       }
     }
   }
