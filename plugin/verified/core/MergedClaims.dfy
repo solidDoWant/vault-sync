@@ -8,8 +8,9 @@
 //
 // A remote revision is delivered only to a device that is not Diverged
 // (ShellRun: a diverged device's pulled revision waits for its resync); so
-// is an accepted push, pending #1031's third gap (an accept can switch a
-// diverged device's divergence off).
+// is an accepted push, a hypothesis #1071 settles (#1031's third gap: an
+// accept can switch a diverged device's divergence off).
+// RemoteKeepsClaims also assumes OwnDocsKnown, which #1071 settles too.
 include "../spec/Contracts.dfy"
 
 abstract module MergedClaims refines StepContracts {
@@ -256,7 +257,7 @@ abstract module MergedClaims refines StepContracts {
   }
 
   // Every document a revision of d's own belongs to has a row in d's
-  // journal. Not a clause of ClaimsReachable (#1031, gap 4): a remote
+  // journal. Not a clause of ClaimsReachable (#1031, gap 4; a hypothesis #1071 settles): a remote
   // revision that creates a row for such a document past d's cursor would
   // leave the own revision unacknowledged with no outbox.
   ghost predicate OwnDocsKnown(state: State, d: DeviceId) {
@@ -267,7 +268,8 @@ abstract module MergedClaims refines StepContracts {
   }
 
   // A remote revision delivered outside a sync round (#949) to a device
-  // that is not Diverged (ShellRun).
+  // that is not Diverged (ShellRun). OwnDocsKnown is a hypothesis #1071
+  // settles.
   lemma {:isolate_assertions} RemoteKeepsClaims(pre: State, d: DeviceId, revision: Revision)
     requires d in pre.devices && ClaimsReachable(pre) && !Diverged(pre, d) && OwnDocsKnown(pre, d)
     requires revision.id in pre.server.revisions && pre.server.revisions[revision.id] == revision
@@ -630,6 +632,7 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
+  // !Diverged(pre, d): a hypothesis #1071 settles.
   lemma {:isolate_assertions} AcceptCoversCursor(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
     requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
     requires var post := AcceptStep(pre, d, doc, r, nextRev).post;
@@ -661,6 +664,7 @@ abstract module MergedClaims refines StepContracts {
     }
   }
 
+  // !Diverged(pre, d): a hypothesis #1071 settles.
   lemma {:isolate_assertions} AcceptOwnAcknowledged(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
     requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
     requires var post := AcceptStep(pre, d, doc, r, nextRev).post;
@@ -710,7 +714,7 @@ abstract module MergedClaims refines StepContracts {
   }
 
   // An accepted push (#949) to a device that is not Diverged (#1031's
-  // third gap). Its appended id is named by no journal (JournalsNameAccepted,
+  // third gap; a hypothesis #1071 settles). Its appended id is named by no journal (JournalsNameAccepted,
   // Appendable), so no other device's divergence changes.
   lemma {:isolate_assertions} AcceptKeepsClaims(pre: State, d: DeviceId, doc: DocId, r: Revision, nextRev: RevId)
     requires AcceptHappens(pre, d, doc, r) && ClaimsReachable(pre) && !Diverged(pre, d)
