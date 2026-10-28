@@ -830,17 +830,19 @@ abstract module Guarantees refines EngineModel {
 
   // A step settles a concurrent change as G6_Settle says, or, in a sync
   // round that settles several of doc's revisions in turn, as a chain of
-  // G6_Settle's outcomes ending in `remote` (#1094).
+  // G6_Settle's outcomes ending in `remote`, from the content it read in
+  // doc's file or from no file (#1094).
   ghost predicate G6_Step(step: Step, d: DeviceId, doc: DocId, remote: Revision)
     requires SettlesConcurrent(step, d, doc, remote)
   {
     G6_Settle(step, d, doc, remote)
-    || exists rs: seq<Revision> :: |rs| > 0 && rs[|rs| - 1] == remote
+    || (exists rs: seq<Revision> :: |rs| > 0 && rs[|rs| - 1] == remote
          && RoundEvent(step.event) && step.event.device == d
          && step.pre.devices[d].journal.documents[doc].binding.Some?
          && RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).Some?
          && RoundChain(step, d, doc, rs,
-                       RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).value.0)
+                       RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).value.0))
+    || (exists rs: seq<Revision> :: |rs| > 0 && rs[|rs| - 1] == remote && RoundChainNoFile(step, d, doc, rs))
   }
 
   // One link of a round's chain on device d: settling revision `r` of the
@@ -943,6 +945,32 @@ abstract module Guarantees refines EngineModel {
     && exists b, bd, out ::
          (document.base.Some? ==> b == document.base.value.content && bd == document.base.value.deleted)
          && ChainThrough(step.post, d, b, bd, Some(read), rs, out, Some(c))
+         && ChainEnds(step.post, d, doc, out)
+  }
+
+  // A document with no file here before the round (the user deleted it, or
+  // its file is missing) settles doc's revisions `rs` as a chain too, from
+  // no local side, with RoundChain's order (#1094): a live revision brings
+  // the file back (an edit beats a delete), and rule W(b) can let it go
+  // later in the round, saved, as a later step of its own would.
+  ghost predicate RoundChainNoFile(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>) {
+    RoundEvent(step.event) && step.event.device == d
+    && d in step.pre.devices && d in step.post.devices && |rs| > 0
+    && doc in step.pre.devices[d].journal.documents
+    && BoundFile(step.pre.devices[d], doc).None?
+    && var document := step.pre.devices[d].journal.documents[doc];
+    (document.base.Some? || rs[0].device == d)
+    && (forall k :: 0 <= k < |rs| ==>
+       rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k]
+       && rs[k].doc == doc)
+    && (document.base.Some? ==> document.base.value.position < rs[0].position)
+    && (forall k :: 0 <= k < |rs| - 1 ==> rs[k].position < rs[k + 1].position)
+    && doc in step.post.devices[d].journal.documents
+    && step.post.devices[d].journal.documents[doc].base.Some?
+    && step.post.devices[d].journal.documents[doc].base.value.rev == rs[|rs| - 1].id
+    && exists b, bd, out ::
+         (document.base.Some? ==> b == document.base.value.content && bd == document.base.value.deleted)
+         && ChainThrough(step.post, d, b, bd, None, rs, out, None)
          && ChainEnds(step.post, d, doc, out)
   }
 
