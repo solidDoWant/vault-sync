@@ -3962,7 +3962,7 @@ abstract module RoundG6 refines RoundGuarantees {
   // its chain of puts: the content is what `e` saw before the round, is
   // kept, or is a live revision of `e` the server accepted.
   ghost predicate KeptBase(step: Step, e: DocId, c: Hash)
-    requires RoundEvent(step.event)
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices
   {
     var device := step.pre.devices[step.event.device];
     (e in device.journal.documents && device.journal.documents[e].binding.Some?
@@ -4243,7 +4243,7 @@ abstract module RoundG6 refines RoundGuarantees {
   // expects, at the start of its chain of puts and where the round wrote
   // it (KeptBase, KeptWrites). Proved of the round next (#1094).
   ghost predicate RoundKept(step: Step)
-    requires RoundEvent(step.event)
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices
   {
     forall i | 0 <= i < |step.effects| && IsCond(step.effects[i]) && !step.effects[i].Move? ::
       KeptBase(step, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
