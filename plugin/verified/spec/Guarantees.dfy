@@ -843,61 +843,62 @@ abstract module Guarantees refines EngineModel {
                        RoundRead(step, step.pre.devices[d].journal.documents[doc].binding.value.spelling).value.0)
   }
 
-  // One link of a round's chain: settling another device's live revision
-  // `r` against local content `l` (kind `lk`) on base content `b` leaves
-  // `x` (kind `xk`), by G6_Settle's both-sides-live cases, with a side
-  // that does not stay saved next to it in `after`.
-  ghost predicate SettleLink(after: Device, b: Hash, l: Hash, lk: Kind, r: Revision, x: Hash, xk: Kind) {
-    !r.deleted
-    && var rc := r.content;
-    if l == rc then
-      (x == rc && xk == r.kind) || (lk == Note && r.kind == Note && Merge3(b, l, rc) == Some(x) && xk == Note)
-    else if l == b then x == rc && xk == r.kind
-    else if rc == b then x == l && xk == lk
-    else if lk == Note && r.kind == Note && Merge3(b, l, rc).Some? then Merge3(b, l, rc) == Some(x) && xk == Note
-    else (x == rc && xk == r.kind && SavedNextToIt(after, l)) || (x == l && xk == lk && SavedNextToIt(after, rc))
+  // One link of a round's chain on device d: settling revision `r` of the
+  // document against its local side `l` (the content and kind of its file
+  // here, or none) on base content `b` (`bd`: the base is a tombstone)
+  // leaves the local side `x`, as a step that settles `r` alone would
+  // (#1094):
+  // - the device's own revision (its outbox's acknowledgement) settles
+  //   nothing: the local side stays, and the revision is the next base;
+  // - a tombstone against a file: an edit beats a delete, so the file
+  //   stays as it is (G6_Settle's "the file stays"), unless nothing changed
+  //   it here (it holds a live base's content), and then the file goes;
+  // - a live revision with no file here: the file comes back with it;
+  // - a live revision against a file: G6_Settle's both-sides-live cases,
+  //   with a side that does not stay saved next to it in `after`.
+  // The next link's base is `r`.
+  ghost predicate SettleLink(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, r: Revision,
+                             x: Option<(Hash, Kind)>) {
+    if r.device == d then x == l
+    else if r.deleted then x == l || (l.Some? && l.value.0 == b && !bd && x.None?)
+    else if l.None? then x == Some((r.content, r.kind))
+    else
+    x.Some? &&
+    var lc := l.value.0;
+    var lk := l.value.1;
+    var rc := r.content;
+    if lc == rc then
+      x == Some((rc, r.kind)) || (lk == Note && r.kind == Note && Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note)
+    else if lc == b then x == Some((rc, r.kind))
+    else if rc == b then x == l
+    else if lk == Note && r.kind == Note && Merge3(b, lc, rc).Some? then Merge3(b, lc, rc) == Some(x.value.0) && x.value.1 == Note
+    else (x == Some((rc, r.kind)) && SavedNextToIt(after, lc)) || (x == l && SavedNextToIt(after, rc))
   }
 
-  // Settling `rs` in turn from base content `b` and local content `l`
-  // leaves `out`, and `c` is one of the chain's contents (its start or a
-  // link's result).
-  ghost predicate ChainThrough(after: Device, b: Hash, l: Hash, lk: Kind, rs: seq<Revision>, out: Option<Hash>, c: Hash)
+  // The content of a chain's local side.
+  ghost function LocalContent(l: Option<(Hash, Kind)>): Option<Hash> {
+    if l.Some? then Some(l.value.0) else None
+  }
+
+  // Settling `rs` in turn from base content `b` (`bd`: a tombstone) and
+  // local side `l` leaves `out`, the content the document sends, and, where
+  // `c` is some, it is one of the chain's contents (its start or a link's
+  // result).
+  ghost predicate ChainThrough(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
+                               out: Option<Hash>, c: Option<Hash>)
     decreases |rs|
   {
-    if |rs| == 0 then out == Some(l) && c == l
-    else exists x, xk :: SettleLink(after, b, l, lk, rs[0], x, xk)
-           && (ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c)
-               || (c == l && ChainThrough(after, rs[0].content, x, xk, rs[1..], out, x)))
+    if |rs| == 0 then out == LocalContent(l) && (c.None? || c == LocalContent(l))
+    else exists x :: SettleLink(after, d, b, bd, l, rs[0], x)
+           && (ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
+               || (c.Some? && c == LocalContent(l) && ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None)))
   }
 
-  // Every link of a chain settles a live revision.
-  lemma ChainLive(after: Device, b: Hash, l: Hash, lk: Kind, rs: seq<Revision>, out: Option<Hash>, c: Hash, k: int)
-    requires ChainThrough(after, b, l, lk, rs, out, c) && 0 <= k < |rs|
-    ensures !rs[k].deleted
-    decreases |rs|
-  {
-    // (The expression form of let-such-that: the statement form crashes
-    // Dafny 4.11's precedence linter.)
-    var x := var x :| exists xk :: (SettleLink(after, b, l, lk, rs[0], x, xk)
-      && (ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c)
-          || (c == l && ChainThrough(after, rs[0].content, x, xk, rs[1..], out, x)))); x;
-    var xk := var xk :| SettleLink(after, b, l, lk, rs[0], x, xk)
-      && (ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c)
-          || (c == l && ChainThrough(after, rs[0].content, x, xk, rs[1..], out, x))); xk;
-    if k > 0 {
-      if ChainThrough(after, rs[0].content, x, xk, rs[1..], out, c) {
-        ChainLive(after, rs[0].content, x, xk, rs[1..], out, c, k - 1);
-      } else {
-        ChainLive(after, rs[0].content, x, xk, rs[1..], out, x, k - 1);
-      }
-    }
-  }
-
-  // The round on d settles doc's revisions `rs` (accepted, from other
-  // devices, in feed order, after the base, the last one the base after
-  // the step) in turn against the content it
-  // read in doc's file, ending in what the document sends, and `c` is one
-  // of the chain's contents. A chain of one revision is G6_Settle's
+  // The round on d settles doc's revisions `rs` (accepted, its own
+  // acknowledgements or other devices', in feed order, after the base, the
+  // last one the base after the step) in turn against the content it read
+  // in doc's file, ending in what the document sends, and `c` is one of the
+  // chain's contents. A chain of one live revision is G6_Settle's
   // both-sides-live case.
   ghost predicate RoundChain(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>, c: Hash) {
     RoundEvent(step.event) && step.event.device == d
@@ -909,14 +910,14 @@ abstract module Guarantees refines EngineModel {
     && var read := RoundRead(step, document.binding.value.spelling).value;
     (forall k :: 0 <= k < |rs| ==>
        rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k]
-       && rs[k].doc == doc && rs[k].device != d)
+       && rs[k].doc == doc)
     && document.base.value.position < rs[0].position
     && (forall k :: 0 <= k < |rs| - 1 ==> rs[k].position < rs[k + 1].position)
     && doc in step.post.devices[d].journal.documents
     && step.post.devices[d].journal.documents[doc].base.Some?
     && step.post.devices[d].journal.documents[doc].base.value.rev == rs[|rs| - 1].id
-    && ChainThrough(step.post.devices[d], document.base.value.content, read.0, read.1, rs,
-                    Outgoing(step.post.devices[d], doc), c)
+    && ChainThrough(step.post.devices[d], d, document.base.value.content, document.base.value.deleted, Some(read), rs,
+                    Outgoing(step.post.devices[d], doc), Some(c))
   }
 
   // ---------------------------------------------------------------------

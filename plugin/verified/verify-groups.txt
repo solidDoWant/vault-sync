@@ -14,6 +14,8 @@ server core/ServerEvents.dfy        # 203
 round-claims core/RoundClaims.dfy   # 90
 round core/RoundGuarantees.dfy      # 110
 
+round-g6 core/RoundG6.dfy           # 10
+
 resync core/Resync.dfy              # 196
 
 path-rule core/PathRule.dfy         # 143

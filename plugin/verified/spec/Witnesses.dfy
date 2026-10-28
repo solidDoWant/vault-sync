@@ -652,6 +652,32 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert !LastSaw(stepGone, pre.devices[d], doc, p, f.content);
   }
 
+  // A chain whose links change nothing on the local side keeps it: every
+  // live link brings the base's own content back, and the last may be a
+  // tombstone, against a local content other than that base.
+  lemma ChainKeeps(after: Device, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
+                   out: Option<Hash>, c: Option<Hash>)
+    requires ChainThrough(after, d, b, bd, l, rs, out, c) && l.Some? && l.value.0 != b && |rs| > 0
+    requires forall k :: 0 <= k < |rs| - 1 ==> !rs[k].deleted && rs[k].content == b
+    requires rs[|rs| - 1].deleted || rs[|rs| - 1].content == b
+    ensures out == LocalContent(l)
+    decreases |rs|
+  {
+    // (The expression form of let-such-that: the statement form crashes
+    // Dafny 4.11's precedence linter.)
+    var x := var x :| SettleLink(after, d, b, bd, l, rs[0], x)
+      && (ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c)
+          || (c.Some? && c == LocalContent(l) && ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, None))); x;
+    assert x == l;
+    if |rs| == 1 {
+      assert rs[1..] == [];
+    } else if ChainThrough(after, d, rs[0].content, rs[0].deleted, x, rs[1..], out, c) {
+      ChainKeeps(after, d, b, false, l, rs[1..], out, c);
+    } else {
+      ChainKeeps(after, d, b, false, l, rs[1..], out, None);
+    }
+  }
+
   // Another device deletes doc while this device's user edits its file to l,
   // unreported yet. A round that settles the tombstone but writes the base
   // content b back over l (conditional on l) and sends nothing keeps a file,
@@ -698,12 +724,28 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert Outgoing(device', doc) == Some(b);
     assert G6_Settle(step, d, doc, remote);
     assert !SavedNextToIt(device', f.content);
-    // No chain of settles ends in the tombstone, the base after the step.
-    forall rs | RoundChain(step, d, doc, rs, f.content)
+    // A chain of settles ending in the tombstone keeps l, which the
+    // document does not send: the server holds only the base's revision
+    // and the tombstone, so a chain is the tombstone alone or the base's
+    // revision (which changes nothing) and then the tombstone.
+    forall rs: seq<Revision> | RoundChain(step, d, doc, rs, f.content)
       ensures false
     {
       var read := RoundRead(step, p).value;
-      ChainLive(device', b, read.0, read.1, rs, Outgoing(device', doc), f.content, |rs| - 1);
+      assert read.0 == f.content;
+      assert rs[|rs| - 1] == remote;
+      forall k | 0 <= k < |rs| ensures rs[k] == baseRev || rs[k] == remote {
+        assert rs[k].id in server.accepted;
+      }
+      if |rs| > 2 {
+        assert rs[0].position < rs[1].position < rs[2].position;
+        assert false;
+      }
+      forall k | 0 <= k < |rs| - 1 ensures !rs[k].deleted && rs[k].content == b {
+        assert k == 0 && |rs| == 2;
+        assert rs[0].position < rs[1].position;
+      }
+      ChainKeeps(device', d, b, false, Some(read), rs, Outgoing(device', doc), Some(f.content));
     }
     assert !ReadKept(step, doc, f.content);
     assert BoundTo(device, doc, p);
