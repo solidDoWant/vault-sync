@@ -3844,4 +3844,99 @@ abstract module RoundG6 refines RoundGuarantees {
       }
     }
   }
+
+  // The content a put leaves at its name: a write's, or, for a move, the
+  // content it expects of the file it moves.
+  ghost function PutContent(effect: Effect): Hash
+    requires effect.Write? || effect.Move?
+  {
+    if effect.Write? then effect.content else effect.expected
+  }
+
+  // Where every effect is performed, the disk the effects leave holds, at
+  // a name, what the last put there left (RoundPut): the file it wrote or
+  // moved there, no file where the last touch freed the name, and the
+  // file as it was where nothing touched it.
+  ghost predicate PutOnDisk(platform: Platform, disk0: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>, p: Path) {
+    match RoundPut(platform, effects, p)
+    case Untouched => forall x | SameF(platform, x, p) :: (x in disk0 <==> x in disk') && (x in disk0 ==> disk'[x] == disk0[x])
+    case Freed => forall x | x in disk' :: !SameF(platform, x, p)
+    case By(j) =>
+      (effects[j].Write? || effects[j].Move?)
+      && exists x :: x in disk' && SameF(platform, x, p) && disk'[x].content == PutContent(effects[j])
+  }
+
+  lemma {:isolate_assertions} PutHolds(platform: Platform, disk0: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>, p: Path)
+    requires OneFilePerName(platform, disk0) && EffectsTake(platform, disk0, effects, disk')
+    requires Performed(platform, disk0, effects)
+    ensures PutOnDisk(platform, disk0, effects, disk', p)
+    decreases |effects|
+  {
+    if |effects| == 0 { return; }
+    var n := |effects| - 1;
+    var front := effects[..n];
+    var last := effects[n];
+    assert effects == front + [last];
+    EffectsTakeSplit(platform, disk0, front, [last], disk');
+    var mid: map<Path, DiskFile> := var mid: map<Path, DiskFile> :| EffectsTake(platform, disk0, front, mid) && EffectsTake(platform, mid, [last], disk'); mid;
+    assert EffectTakes(platform, mid, last, disk') by {
+      var m: map<Path, DiskFile> :| EffectTakes(platform, mid, last, m) && EffectsTake(platform, m, [last][1..], disk');
+      assert [last][1..] == [];
+    }
+    assert PreconditionHolds(platform, mid, last) by { assert effects[..n] == front; }
+    forall i, d | 0 <= i < |front| && EffectsTake(platform, disk0, front[..i], d) ensures PreconditionHolds(platform, d, front[i]) {
+      assert effects[..i] == front[..i] && effects[i] == front[i];
+    }
+    EffectsKeepOneFilePerName(platform, disk0, front, mid);
+    if (last.Write? && SameF(platform, last.path, p)) || (last.Move? && SameF(platform, last.to, p)) {
+      assert RoundPut(platform, effects, p) == By(n);
+      if last.Write? {
+        if last.precondition.Some? {
+          var q: Path := var q: Path :| Holds(platform, mid, q, last.path, last.precondition.value)
+            && disk' == mid[q := DiskFile(last.content, last.kind, mid[q].identity)]; q;
+          SameFIsEquivalence(platform, q, last.path, p);
+          assert disk'[q].content == last.content;
+        } else {
+          var identity: FileIdentity :| (forall q :: q in mid ==> mid[q].identity != identity) && disk' == mid[last.path := DiskFile(last.content, last.kind, identity)];
+          assert disk'[last.path].content == last.content;
+        }
+      } else {
+        var q: Path := var q: Path :| MovableTo(platform, mid, q, last.from, last.to, last.expected) && disk' == (mid - {q})[last.to := mid[q]]; q;
+        assert disk'[last.to].content == last.expected;
+      }
+    } else if (last.Remove? && SameF(platform, last.path, p)) || (last.Move? && SameF(platform, last.from, p)) {
+      assert RoundPut(platform, effects, p) == Freed;
+      var q: Path;
+      if last.Remove? {
+        q := var q: Path :| Holds(platform, mid, q, last.path, last.expected) && disk' == mid - {q}; q;
+      } else {
+        q := var q: Path :| MovableTo(platform, mid, q, last.from, last.to, last.expected) && disk' == (mid - {q})[last.to := mid[q]]; q;
+      }
+      forall x | x in disk' ensures !SameF(platform, x, p) {
+        if SameF(platform, x, p) {
+          if last.Move? && x == last.to { assert false; }
+          assert x in mid && x != q;
+          var w := if last.Remove? then last.path else last.from;
+          SameFIsEquivalence(platform, q, w, p);
+          SameFIsEquivalence(platform, x, p, q);
+          assert SameF(platform, x, q);
+          assert CollideF(platform, x, q);
+        }
+      }
+    } else {
+      assert !Touches(platform, last, p);
+      assert RoundPut(platform, effects, p) == RoundPut(platform, front, p);
+      PutHolds(platform, disk0, front, mid, p);
+      forall x | SameF(platform, x, p) ensures (x in mid <==> x in disk') && (x in mid ==> disk'[x] == mid[x]) {
+        EffectUntouchedKeepsFile(platform, mid, last, disk', p, x);
+      }
+      match RoundPut(platform, front, p)
+      case Untouched =>
+      case Freed =>
+      case By(j) =>
+        assert effects[j] == front[j];
+        var x: Path :| x in mid && SameF(platform, x, p) && mid[x].content == PutContent(front[j]);
+        assert x in disk';
+    }
+  }
 }
