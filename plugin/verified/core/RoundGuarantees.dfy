@@ -2942,4 +2942,44 @@ abstract module RoundGuarantees refines RoundClaimsCore {
       }
     }
   }
+
+  // A name the round's effects left untouched (RoundPut) is touched by
+  // none of them.
+  lemma UntouchedNoTouch(platform: Platform, effects: seq<Effect>, s: Path)
+    requires RoundPut(platform, effects, s).Untouched?
+    ensures forall effect :: effect in effects ==> !Touches(platform, effect, s)
+    decreases |effects|
+  {
+    if |effects| > 0 {
+      var init := effects[..|effects| - 1];
+      UntouchedNoTouch(platform, init, s);
+      assert effects == init + [effects[|effects| - 1]];
+    }
+  }
+
+  // At a name the round's effects left untouched, the device after holds
+  // the same file as before, or none as before (disks distinct under F).
+  lemma UntouchedSameFile(before: Device, after: Device, effects: seq<Effect>, s: Path)
+    requires after.platform == before.platform
+    requires EffectsTake(before.platform, before.disk, effects, after.disk)
+    requires ListingDistinct(before.platform, ListingOf(before)) && ListingDistinct(after.platform, ListingOf(after))
+    requires RoundPut(before.platform, effects, s).Untouched?
+    ensures HasFile(before, s) <==> HasFile(after, s)
+    ensures HasFile(before, s) ==> FileAt(before, s) == FileAt(after, s)
+  {
+    var platform := before.platform;
+    UntouchedNoTouch(platform, effects, s);
+    forall x | SameF(platform, x, s) ensures (x in before.disk <==> x in after.disk) && (x in before.disk ==> after.disk[x] == before.disk[x]) {
+      EffectsUntouchedKeepFile(platform, before.disk, effects, after.disk, s, x);
+    }
+    if HasFile(before, s) {
+      var q :| q in before.disk && SameF(platform, q, s) && FileAt(before, s) == before.disk[q];
+      var k :| k in after.disk && SameF(platform, k, s) && FileAt(after, s) == after.disk[k];
+      assert q in ListingOf(after) && k in ListingOf(after);
+      if q != k {
+        SameFIsEquivalence(platform, q, s, k);
+        SameFIsEquivalence(platform, k, s, q);
+      }
+    }
+  }
 }
