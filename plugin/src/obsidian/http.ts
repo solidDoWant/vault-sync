@@ -17,7 +17,7 @@ export const requestUrlHttpClient: HttpClient = async (request) => {
     ...(request.body === undefined ? {} : { body: request.body }),
     throw: false,
   });
-  return { status: response.status, text: response.text };
+  return { status: response.status, headers: response.headers, text: response.text };
 };
 
 /** The Fetch standard's null body statuses: a Response with one of them must have no body (#413). */
