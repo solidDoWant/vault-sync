@@ -15,12 +15,7 @@ const regenerate = "run 'go generate ./internal/pathkey' and commit the result"
 func loadMappings(t *testing.T) []Mapping {
 	t.Helper()
 
-	file, err := os.Open(SourceFile)
-	require.NoError(t, err)
-
-	t.Cleanup(func() { _ = file.Close() })
-
-	mappings, err := Parse(file)
+	mappings, err := LoadMappings(SourceFile, UnicodeDataFile)
 	require.NoError(t, err)
 
 	return mappings
@@ -110,5 +105,24 @@ func TestVendoredDataIsCompleteAndLocaleIndependent(t *testing.T) {
 	assert.Equal(t, []rune("i"), byCodePoint['I'], "default (non-Turkic) folding of I")
 	assert.Equal(t, []rune("Ꭰ"), byCodePoint['ꭰ'], "Cherokee folds to uppercase")
 	assert.NotContains(t, byCodePoint, rune(0x13A0), "Cherokee uppercase folds to itself")
-	assert.NotContains(t, byCodePoint, rune('ı'), "dotless i folds to itself")
+	assert.Equal(t, []rune("i"), byCodePoint['ı'], "NTFS upcase takes the dotless i for I")
+}
+
+func TestUpcaseMergesOnlyTheDotlessI(t *testing.T) {
+	file, err := os.Open(SourceFile)
+	require.NoError(t, err)
+
+	t.Cleanup(func() { _ = file.Close() })
+
+	folding, err := Parse(file)
+	require.NoError(t, err)
+
+	merged := loadMappings(t)
+	require.Len(t, merged, len(folding)+1)
+
+	for _, mapping := range folding {
+		assert.Contains(t, merged, mapping, "case folding of %U is unchanged", mapping.From)
+	}
+
+	assert.Contains(t, merged, Mapping{From: 'ı', To: []rune("i")})
 }

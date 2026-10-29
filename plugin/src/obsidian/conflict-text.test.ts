@@ -36,6 +36,12 @@ describe("conflict view wording", () => {
     ["too-long-normalized", /8192 bytes once its letters are normalized/],
     ["backslash", /backslash/],
     ["drive-prefix", /character and a colon/],
+    ["forbidden-character", /contains one of/],
+    ["edge-space", /starts or ends with a space/],
+    ["trailing-dot", /ends in a dot/],
+    ["reserved-name", /reserved on Windows/],
+    ["name-too-long", /longer than 255 bytes/],
+    ["path-too-long", /longer than 1024 bytes/],
     ["path-taken", /Another document has this path/],
     ["refused", /^The server refused it: the server's words$/],
   ])("explains why the server refuses a local file: %s", (reason, expected) => {

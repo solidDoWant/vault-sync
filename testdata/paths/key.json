@@ -1,11 +1,12 @@
 {
-  "description": "Shared normalized path length vectors (SPEC.md section 6.2, issue 100). A plaintext path's path_key (SPEC.md section 5: NFC of the case-folded NFD) must be at most 8192 bytes of UTF-8. Normalization can grow a path: U+1D160 (4 bytes) decomposes into three code points of 4 bytes each, which NFC does not recompose, so 683 of them (2732 bytes) have a 8196-byte key. Each vector's path is \"path\" repeated \"repeat\" times (once if absent), followed by \"suffix\" repeated \"suffixRepeat\" times (once if absent; nothing if \"suffix\" is absent). Every path here passes the text rule (testdata/paths/text.json) and is vault-relative and new (testdata/paths/validity.json), so \"valid\" is exactly the normalized length rule. CommitRevision (Go, internal/server/path_integration_test.go) and fitsPathKeyLimit in plugin/src/core/vaultpath (TypeScript, applied before every commit) must return valid exactly as given.",
+  "description": "Shared normalized path length vectors (SPEC.md section 6.2, issue 100). A plaintext path's path_key (SPEC.md section 5: NFC of the case-folded NFD) must be at most 8192 bytes of UTF-8. Normalization can grow a path: U+1D160 (4 bytes) decomposes into three code points of 4 bytes each, which NFC does not recompose, so 683 of them (2732 bytes) have a 8196-byte key. Each vector's path is \"path\" repeated \"repeat\" times (once if absent), followed by \"suffix\" repeated \"suffixRepeat\" times (once if absent; nothing if \"suffix\" is absent). Every path here passes the text rule (testdata/paths/text.json) and is vault-relative (testdata/paths/validity.json), so \"valid\" is exactly the normalized length rule; fitsPathKeyLimit in plugin/src/core/vaultpath (TypeScript, applied before every commit) must return valid exactly as given. \"new\" is whether a commit may create a document at the path: valid, and within the new-path limits of testdata/paths/validity.json (parts of at most 255 bytes, at most 1024 bytes in all), so a path over the normalized limit can only be a document's kept path. CommitRevision (Go, internal/server/path_integration_test.go) must accept a create at exactly the new paths.",
   "vectors": [
-    { "name": "4096 one-byte characters (key 4096 bytes)", "path": "A", "repeat": 4096, "valid": true },
-    { "name": "682 U+1D160 and 8 ASCII (key 8192 bytes)", "path": "𝅘𝅥𝅮", "repeat": 682, "suffix": "a", "suffixRepeat": 8, "valid": true },
-    { "name": "682 U+1D160 and 9 ASCII (key 8193 bytes)", "path": "𝅘𝅥𝅮", "repeat": 682, "suffix": "a", "suffixRepeat": 9, "valid": false },
-    { "name": "683 U+1D160 (key 8196 bytes)", "path": "𝅘𝅥𝅮", "repeat": 683, "valid": false },
-    { "name": "1024 U+1D160 (4096 bytes, key 12288 bytes)", "path": "𝅘𝅥𝅮", "repeat": 1024, "valid": false },
-    { "name": "2048 U+0130 (4096 bytes, key 6144 bytes)", "path": "İ", "repeat": 2048, "valid": true }
+    { "name": "4096 one-byte characters (key 4096 bytes)", "path": "A", "repeat": 4096, "valid": true, "new": false },
+    { "name": "682 U+1D160 and 8 ASCII (key 8192 bytes)", "path": "𝅘𝅥𝅮", "repeat": 682, "suffix": "a", "suffixRepeat": 8, "valid": true, "new": false },
+    { "name": "682 U+1D160 and 9 ASCII (key 8193 bytes)", "path": "𝅘𝅥𝅮", "repeat": 682, "suffix": "a", "suffixRepeat": 9, "valid": false, "new": false },
+    { "name": "683 U+1D160 (key 8196 bytes)", "path": "𝅘𝅥𝅮", "repeat": 683, "valid": false, "new": false },
+    { "name": "1024 U+1D160 (4096 bytes, key 12288 bytes)", "path": "𝅘𝅥𝅮", "repeat": 1024, "valid": false, "new": false },
+    { "name": "2048 U+0130 (4096 bytes, key 6144 bytes)", "path": "İ", "repeat": 2048, "valid": true, "new": false },
+    { "name": "four folders of 63 U+1D160 and one ASCII (1013 bytes, key 3029 bytes)", "path": "𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮𝅘𝅥𝅮/", "repeat": 4, "suffix": "a", "valid": true, "new": true }
   ]
 }

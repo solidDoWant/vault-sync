@@ -15,10 +15,12 @@ import (
 )
 
 type vector struct {
-	Name  string `json:"name"`
-	Path  string `json:"path"`
-	Valid bool   `json:"valid"`
-	New   bool   `json:"new"`
+	Name   string `json:"name"`
+	Path   string `json:"path"`
+	Repeat int    `json:"repeat"`
+	Suffix string `json:"suffix"`
+	Valid  bool   `json:"valid"`
+	New    bool   `json:"new"`
 }
 
 // loadVectors reads the validity vectors shared with the TypeScript client
@@ -35,6 +37,11 @@ func loadVectors(t *testing.T) []vector {
 
 	require.NoError(t, json.Unmarshal(data, &file))
 	require.NotEmpty(t, file.Vectors)
+
+	for index := range file.Vectors {
+		vector := &file.Vectors[index]
+		vector.Path = strings.Repeat(vector.Path, max(vector.Repeat, 1)) + vector.Suffix
+	}
 
 	return file.Vectors
 }
@@ -84,6 +91,17 @@ func TestCheckNewReportsWhichRuleFailed(t *testing.T) {
 		{name: "issue 148: non-ASCII drive-like prefix", path: "é:x.md", errorAssertion: errorIs(vaultpath.ErrDrivePrefix)},
 		{name: "issue 148: drive-like prefix and a backslash", path: `1:\x.md`, errorAssertion: errorIs(vaultpath.ErrNotNew)},
 		{name: "issue 148: backslash is not new", path: `notes\c.md`, errorAssertion: errorIs(vaultpath.ErrNotNew)},
+		{name: "forbidden character", path: "notes/a?.md", errorAssertion: errorIs(vaultpath.ErrForbiddenCharacter)},
+		{name: "colon after the first character", path: "ab:c.md", errorAssertion: errorIs(vaultpath.ErrForbiddenCharacter)},
+		{name: "leading space", path: " a.md", errorAssertion: errorIs(vaultpath.ErrEdgeSpace)},
+		{name: "trailing space in a folder", path: "notes /a.md", errorAssertion: errorIs(vaultpath.ErrEdgeSpace)},
+		{name: "trailing dot", path: "notes./a.md", errorAssertion: errorIs(vaultpath.ErrTrailingDot)},
+		{name: "reserved name", path: "com1.md", errorAssertion: errorIs(vaultpath.ErrReservedName)},
+		{name: "longest name", path: strings.Repeat("a", vaultpath.MaxNameBytes)},
+		{name: "name one byte too long", path: strings.Repeat("a", vaultpath.MaxNameBytes+1), errorAssertion: errorIs(vaultpath.ErrNameTooLong)},
+		{name: "longest path", path: strings.Repeat(strings.Repeat("a", 254)+"/", 4) + "abcd"},
+		{name: "path one byte too long", path: strings.Repeat(strings.Repeat("a", 254)+"/", 4) + "abcde", errorAssertion: errorIs(vaultpath.ErrNewTooLong)},
+		{name: "portable rules are not new", path: "CON.md", errorAssertion: errorIs(vaultpath.ErrNotNew)},
 	}
 
 	for _, test := range tests {
@@ -114,6 +132,7 @@ type textVector struct {
 	Path   string `json:"path"`
 	Repeat int    `json:"repeat"`
 	Valid  bool   `json:"valid"`
+	New    bool   `json:"new"`
 }
 
 // loadTextVectors reads the path text vectors shared with the TypeScript
@@ -159,10 +178,10 @@ func TestCheckTextMatchesSharedVectors(t *testing.T) {
 				assert.Error(t, err, "path of %d bytes", len(vector.Path))
 			}
 
-			// Every non-empty text vector is otherwise a new path, so only
-			// the text rule decides it.
-			if vector.Path != "" {
-				assert.NoError(t, vaultpath.CheckNew(vector.Path))
+			// Every non-empty text vector is otherwise vault-relative, and
+			// new unless it breaks the new-path length limits.
+			if vector.Path != "" && vector.Valid {
+				assert.Equal(t, vector.New, vaultpath.CheckNew(vector.Path) == nil, "path of %d bytes", len(vector.Path))
 			}
 		})
 	}

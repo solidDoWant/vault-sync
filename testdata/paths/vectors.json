@@ -1,5 +1,5 @@
 {
-  "description": "Shared path_key vectors (SPEC.md section 5). path_key = NFC(toCasefold(NFD(path))): Unicode canonical caseless matching with full, locale-independent case folding (CaseFolding.txt statuses C and F). Separators and whitespace are not altered. Both internal/pathkey (Go) and plugin/src/core (TypeScript) must produce path_key exactly for every vector, whatever Unicode version their runtime has: the \"Unicode 16/17\" vectors cover every combining mark and canonical composite added in Unicode 16 or 17, each of which a runtime with older normalization tables (golang.org/x/text 15.0.0, older JavaScript engines) gets wrong.",
+  "description": "Shared path_key vectors (SPEC.md section 5). path_key = NFC(toCasefold(NFD(path))): Unicode canonical caseless matching with full, locale-independent case folding (CaseFolding.txt statuses C and F), with the NTFS upcase mapping (docs/design/engine.md section 6): a code point whose simple uppercase folds differently from it folds as that uppercase does, so the dotless \u0131 and I share a key (with Unicode 17.0.0 \u0131 is the only such code point). Separators and whitespace are not altered. Both internal/pathkey (Go) and plugin/src/core (TypeScript) must produce path_key exactly for every vector, whatever Unicode version their runtime has: the \"Unicode 16/17\" vectors cover every combining mark and canonical composite added in Unicode 16 or 17, each of which a runtime with older normalization tables (golang.org/x/text 15.0.0, older JavaScript engines) gets wrong.",
   "vectors": [
     {
       "name": "empty path",
@@ -62,9 +62,24 @@
       "path_key": "i\u0307stanbul.md"
     },
     {
-      "name": "Turkish dotless i has no default folding",
+      "name": "Turkish dotless i takes the key of I, as NTFS upcase does",
       "path": "K\u0131rm\u0131z\u0131.md",
-      "path_key": "k\u0131rm\u0131z\u0131.md"
+      "path_key": "kirmizi.md"
+    },
+    {
+      "name": "dotless i shares the key of I",
+      "path": "\u0131.md",
+      "path_key": "i.md"
+    },
+    {
+      "name": "capital I shares the key of dotless i",
+      "path": "I.md",
+      "path_key": "i.md"
+    },
+    {
+      "name": "A shares the key of a",
+      "path": "A.md",
+      "path_key": "a.md"
     },
     {
       "name": "i + combining dot above stays decomposed",

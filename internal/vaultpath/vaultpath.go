@@ -16,8 +16,13 @@
 // and "a\b" would otherwise be two live documents naming one file on
 // Windows. It must also not start with any single code point and a colon
 // (decision, #148): Win32 reads any first character followed by ":" as a
-// drive, and drives such as "1:" can be created with subst. Documents
-// committed before these rules keep their paths, which still pass Check.
+// drive, and drives such as "1:" can be created with subst. And it must be
+// portable (docs/design/engine.md §6): no part contains any of <>:"|?*,
+// starts or ends with a space, ends in a dot or is a Windows reserved name
+// (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, in any case, with or
+// without an extension); no part is longer than MaxNameBytes; and the
+// whole path is at most MaxNewBytes. Documents committed before these rules
+// keep their paths, which still pass Check.
 //
 // CheckText is the length and character-set rule every plaintext path must
 // also pass.
@@ -56,6 +61,37 @@ var ErrBackslash = fmt.Errorf(`%w: a new path must not contain "\"; use "/" as t
 // starts with one code point and a colon, such as "1:x". It wraps
 // ErrNotNew.
 var ErrDrivePrefix = fmt.Errorf(`%w: a new path must not start with one character and ":", which Windows reads as a drive`, ErrNotNew)
+
+// MaxNameBytes bounds each part of a path CheckNew accepts (UTF-8 bytes).
+const MaxNameBytes = 255
+
+// MaxNewBytes bounds a path CheckNew accepts (UTF-8 bytes).
+const MaxNewBytes = 1024
+
+// ErrForbiddenCharacter is returned by CheckNew for a path with any of
+// <>:"|?* in a part. It wraps ErrNotNew.
+var ErrForbiddenCharacter = fmt.Errorf(`%w: a new path must not contain any of < > : " | ? *`, ErrNotNew)
+
+// ErrEdgeSpace is returned by CheckNew for a path with a part that starts or
+// ends with a space. It wraps ErrNotNew.
+var ErrEdgeSpace = fmt.Errorf("%w: a file or folder name in a new path must not start or end with a space", ErrNotNew)
+
+// ErrTrailingDot is returned by CheckNew for a path with a part that ends in
+// a dot. It wraps ErrNotNew.
+var ErrTrailingDot = fmt.Errorf("%w: a file or folder name in a new path must not end in a dot", ErrNotNew)
+
+// ErrReservedName is returned by CheckNew for a path with a part that is a
+// Windows reserved name, with or without an extension. It wraps ErrNotNew.
+var ErrReservedName = fmt.Errorf("%w: a file or folder name in a new path must not be a Windows reserved name "+
+	"(CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9), with or without an extension", ErrNotNew)
+
+// ErrNameTooLong is returned by CheckNew for a path with a part longer than
+// MaxNameBytes. It wraps ErrNotNew.
+var ErrNameTooLong = fmt.Errorf("%w: a file or folder name in a new path must be at most %d bytes", ErrNotNew, MaxNameBytes)
+
+// ErrNewTooLong is returned by CheckNew for a path longer than MaxNewBytes.
+// It wraps ErrNotNew.
+var ErrNewTooLong = fmt.Errorf("%w: a new path must be at most %d bytes", ErrNotNew, MaxNewBytes)
 
 // ErrLength is returned by CheckText for an empty path or one longer than
 // MaxBytes.
@@ -106,10 +142,11 @@ func Check(path string) error {
 	}
 }
 
-// CheckNew returns ErrNotRelative unless path is vault-relative, and
-// ErrBackslash or ErrDrivePrefix (both wrapping ErrNotNew) if it is but
-// contains "\" or starts with one code point and a colon: a commit may
-// create or rename a document only into a path that passes CheckNew.
+// CheckNew returns ErrNotRelative unless path is vault-relative, and an
+// error wrapping ErrNotNew if it is but breaks a new-path rule: ErrBackslash,
+// ErrDrivePrefix, ErrForbiddenCharacter, ErrEdgeSpace, ErrTrailingDot,
+// ErrReservedName, ErrNameTooLong or ErrNewTooLong. A commit may create or
+// rename a document only into a path that passes CheckNew.
 func CheckNew(path string) error {
 	if err := Check(path); err != nil {
 		return err
@@ -123,7 +160,54 @@ func CheckNew(path string) error {
 		return ErrDrivePrefix
 	}
 
+	for name := range strings.SplitSeq(path, "/") {
+		if err := checkPortableName(name); err != nil {
+			return err
+		}
+	}
+
+	if len(path) > MaxNewBytes {
+		return ErrNewTooLong
+	}
+
 	return nil
+}
+
+// checkPortableName applies the new-path rules to one part of a path.
+func checkPortableName(name string) error {
+	switch {
+	case strings.ContainsAny(name, `<>:"|?*`):
+		return ErrForbiddenCharacter
+	case strings.HasPrefix(name, " ") || strings.HasSuffix(name, " "):
+		return ErrEdgeSpace
+	case strings.HasSuffix(name, "."):
+		return ErrTrailingDot
+	case isReservedName(name):
+		return ErrReservedName
+	case len(name) > MaxNameBytes:
+		return ErrNameTooLong
+	default:
+		return nil
+	}
+}
+
+// isReservedName reports whether name, up to its first dot, is a Windows
+// reserved device name in any case.
+func isReservedName(name string) bool {
+	base, _, _ := strings.Cut(name, ".")
+
+	switch strings.ToUpper(base) {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+
+	if len(base) != 4 || base[3] < '1' || base[3] > '9' {
+		return false
+	}
+
+	prefix := strings.ToUpper(base[:3])
+
+	return prefix == "COM" || prefix == "LPT"
 }
 
 // checkSegment rejects a segment that is empty, ".", "..", or a form Windows
