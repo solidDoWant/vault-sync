@@ -388,11 +388,11 @@ export class SyncEngine {
     const skipped: SkippedEntry[] = [];
     const taken = await this.taken(state);
     let order = nextOrder(state);
-    const newOp = (documentId: string, path: string, docKind: SyncKind, contentHash: string, contentSize: number): PendingOp => ({
+    const newOp = (documentId: string, path: string, docKind: SyncKind, contentHash: string, contentSize: number, kind: "create" | "rename" = "create"): PendingOp => ({
       opId: uuidv7(this.now()),
       order: order++,
       documentId,
-      kind: "create",
+      kind,
       path,
       docKind,
       revisionId: uuidv7(this.now()),
@@ -405,10 +405,20 @@ export class SyncEngine {
       if (copy === null) throw new Error(`no conflict copy name fits for ${path}`);
       return copy;
     };
+    // The files of documents the restored server doesn't know, by path: step 3 pushes them with their ids.
+    const unknown = new Map<string, string>();
+    for (const projection of projections.values()) if (!heads.has(projection.documentId) && !projection.deleted) unknown.set(projection.path, projection.documentId);
+    // Such documents whose path a head took in step 2: their file became a conflict copy, or already held the head's content, so step 3 has nothing of theirs to push.
+    const displaced = new Set<string>();
+    const displace = (path: string): void => {
+      const owner = unknown.get(path);
+      if (owner !== undefined) displaced.add(owner);
+    };
     /** Moves the local file at `path` to a conflict copy name (rule C), a new document to push. */
     const moveToCopy = async (path: string, documentId: string, hash: string, size: number): Promise<void> => {
       const copy = copyName(path);
       await this.rename(path, copy);
+      displace(path);
       pending.push(newOp(uuidv7(this.now()), copy, kindOfPath(copy), hash, size));
       conflicts.push({ path: copy, documentId, createdAt: this.now() });
     };
@@ -416,7 +426,10 @@ export class SyncEngine {
     const placeHead = async (path: string, content: Uint8Array, documentId: string): Promise<boolean> => {
       const occupant = await this.cache.read(this.vault, path);
       if (occupant !== null) {
-        if (occupant.hash === sha256Hex(content)) return true;
+        if (occupant.hash === sha256Hex(content)) {
+          displace(path);
+          return true;
+        }
         await moveToCopy(path, documentId, occupant.hash, occupant.size);
       }
       return this.write(path, content, null);
@@ -491,8 +504,12 @@ export class SyncEngine {
             conflicts.push({ path: copy, documentId: id, createdAt: this.now() });
           }
         }
-        // At another path than the head's, the next detection records the rename again, on top of the head (step 4).
         docs.push(entry);
+        // At another path than the head's, the file stays there: a rename on top of the head (step 4), so the head's path no longer counts as this file's.
+        if (localPath !== remote.path) {
+          const kept = await this.cache.read(this.vault, localPath);
+          if (kept !== null) pending.push(newOp(id, localPath, entry.kind, kept.hash, kept.size, "rename"));
+        }
         continue;
       }
       if (projection?.deleted === true && projection.base !== undefined) {
@@ -512,7 +529,7 @@ export class SyncEngine {
 
     // Step 3: what the server doesn't know is created again, with its document id and an empty base.
     for (const projection of projections.values()) {
-      if (heads.has(projection.documentId) || projection.deleted) continue;
+      if (heads.has(projection.documentId) || projection.deleted || displaced.has(projection.documentId)) continue;
       const local = await this.cache.read(this.vault, projection.path);
       if (local === null) continue;
       pending.push(newOp(projection.documentId, projection.path, projection.kind, local.hash, local.size));
