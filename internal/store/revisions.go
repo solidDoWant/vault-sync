@@ -33,6 +33,9 @@ var (
 	// ErrBlobSizeMismatch: the claimed content size differs from the
 	// stored blob's size.
 	ErrBlobSizeMismatch = errors.New("content size differs from the stored blob's size")
+	// ErrContentKind: a folder revision has content, or a revision of any
+	// other kind has none.
+	ErrContentKind = errors.New("a folder has no content and every other kind has content")
 	// ErrPathKeyTaken: another live document in the vault has the path key.
 	ErrPathKeyTaken = errors.New("path_key is taken by another live document")
 	// ErrPathFolderTaken: another live document's path_key is a folder of
@@ -93,6 +96,10 @@ type NewRevision struct {
 	// plaintext vault. Anything else is ErrEpochNotCurrent.
 	Epoch int32
 }
+
+// KindFolder is the stored kind of a folder document, which has a path and
+// no content (SPEC.md §5).
+const KindFolder = "folder"
 
 // livePathKeyIndex enforces path_key uniqueness among live documents.
 const livePathKeyIndex = "documents_live_path_key_idx"
@@ -247,21 +254,8 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		}
 	}
 
-	var size int64
-
-	err = tx.QueryRow(ctx, `
-		SELECT size FROM blobs WHERE vault_id = $1 AND blob_id = $2 AND state = $3 FOR KEY SHARE`,
-		vault.vaultID, revision.ContentRef, BlobComplete).Scan(&size)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Revision{}, ErrBlobNotComplete
-	}
-
-	if err != nil {
-		return Revision{}, fmt.Errorf("look up blob: %w", err)
-	}
-
-	if size != revision.ContentSize {
-		return Revision{}, ErrBlobSizeMismatch
+	if err := vault.checkContent(ctx, tx, revision); err != nil {
+		return Revision{}, err
 	}
 
 	var seq int64
@@ -432,6 +426,41 @@ func (vault *VaultStore) sameRevision(ctx context.Context, tx pgx.Tx, existing R
 	}
 
 	return !exists, nil
+}
+
+// checkContent checks a revision's content: none for a folder (with a zero
+// size); otherwise a complete blob in this vault of the claimed size.
+func (vault *VaultStore) checkContent(ctx context.Context, tx pgx.Tx, revision NewRevision) error {
+	if revision.Kind == KindFolder {
+		if revision.ContentRef != nil || revision.ContentSize != 0 {
+			return ErrContentKind
+		}
+
+		return nil
+	}
+
+	if revision.ContentRef == nil {
+		return ErrContentKind
+	}
+
+	var size int64
+
+	err := tx.QueryRow(ctx, `
+		SELECT size FROM blobs WHERE vault_id = $1 AND blob_id = $2 AND state = $3 FOR KEY SHARE`,
+		vault.vaultID, revision.ContentRef, BlobComplete).Scan(&size)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrBlobNotComplete
+	}
+
+	if err != nil {
+		return fmt.Errorf("look up blob: %w", err)
+	}
+
+	if size != revision.ContentSize {
+		return ErrBlobSizeMismatch
+	}
+
+	return nil
 }
 
 // sameRevisionFields compares every field of a retried commit with the

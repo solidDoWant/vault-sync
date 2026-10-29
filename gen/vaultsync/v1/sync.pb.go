@@ -325,7 +325,8 @@ type CommitRevisionRequest struct {
 	Kind DocumentKind `protobuf:"varint,5,opt,name=kind,proto3,enum=vaultsync.v1.DocumentKind" json:"kind,omitempty"`
 	// Content of the document at this revision. Must name a complete blob in
 	// this vault (see BlobService). Required, including for tombstones, where
-	// it is the content being deleted.
+	// it is the content being deleted; absent for DOCUMENT_KIND_FOLDER, which
+	// has no content.
 	ContentRef *ContentRef `protobuf:"bytes,6,opt,name=content_ref,json=contentRef,proto3" json:"content_ref,omitempty"`
 	// Vault-relative path using "/" separators. UTF-8 bytes for plaintext
 	// vaults; suite-versioned ciphertext for E2EE vaults. The server bounds its

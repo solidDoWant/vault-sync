@@ -229,7 +229,8 @@ export type CommitRevisionRequest = Message<"vaultsync.v1.CommitRevisionRequest"
   /**
    * Content of the document at this revision. Must name a complete blob in
    * this vault (see BlobService). Required, including for tombstones, where
-   * it is the content being deleted.
+   * it is the content being deleted; absent for DOCUMENT_KIND_FOLDER, which
+   * has no content.
    *
    * @generated from field: vaultsync.v1.ContentRef content_ref = 6;
    */

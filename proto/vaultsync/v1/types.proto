@@ -30,6 +30,9 @@ enum DocumentKind {
   // Yjs CRDT document (Phase 5, SPEC.md §10). Rejected with INVALID_ARGUMENT
   // until live editing is implemented.
   DOCUMENT_KIND_YJS = 3;
+  // A folder: a path with no content, so empty folders sync. Commits carry
+  // no content_ref; the path rules apply as to any document.
+  DOCUMENT_KIND_FOLDER = 4;
 }
 
 // VaultEncryption is a vault's encryption mode, fixed at creation.
@@ -134,6 +137,7 @@ message Revision {
   DocumentKind kind = 6;
   // Content of the document at this revision. For tombstones (deleted = true)
   // this is the content at the time of deletion, kept reachable in history.
+  // Absent for DOCUMENT_KIND_FOLDER.
   ContentRef content_ref = 7;
   // Vault-relative path using "/" separators. UTF-8 bytes for plaintext
   // vaults; suite-versioned ciphertext for E2EE vaults (SPEC.md §9.3).
