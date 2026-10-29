@@ -55,10 +55,6 @@ func TestVaultAuthorizationAgainstPostgres(t *testing.T) {
 		body := map[string]string{"vault_id": created.GetId()}
 
 		t.Run(procedure, func(t *testing.T) {
-			owner := fixture.callJSON(t, procedure, tokens["alice"], body)
-			assert.NotEqual(t, "permission_denied", owner.code)
-			assert.False(t, owner.deniedAsNonMember())
-
 			editor := fixture.callJSON(t, procedure, tokens["bob"], body)
 			if deniedByRole(store.RoleEditor, access) {
 				assert.Equal(t, "permission_denied", editor.code)
@@ -82,6 +78,13 @@ func TestVaultAuthorizationAgainstPostgres(t *testing.T) {
 			assert.True(t, notMember.deniedAsNonMember(), "%s", notMember.body)
 			assert.Equal(t, nonexistent.status, notMember.status)
 			assert.Equal(t, string(nonexistent.body), string(notMember.body))
+
+			// The owner calls last, so the other calls see the vault
+			// before an owner-only procedure (DeleteVault) changes it;
+			// it is the last procedure in the matrix.
+			owner := fixture.callJSON(t, procedure, tokens["alice"], body)
+			assert.NotEqual(t, "permission_denied", owner.code)
+			assert.False(t, owner.deniedAsNonMember())
 		})
 	}
 }
