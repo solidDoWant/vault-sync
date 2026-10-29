@@ -240,6 +240,13 @@ class PlanTest(unittest.TestCase):
         # A CI failure on an unarmed PR goes to its worker.
         plan = plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1, check="failure")]), cfg=cfg)
         self.assertEqual([(j.key, j.role) for j in plan.jobs], [("worker:1", "issue-worker")])
+        # A request for changes given before reviews were turned off still goes to the worker, unarmed.
+        changed = pr(10, 1, reviews=[review("changes", "h" * 40)])
+        plan = plan_for(snap([issue(1, status="status:in-review")], [changed]), cfg=cfg)
+        self.assertEqual(([(j.key, j.role) for j in plan.jobs], plan.arms), ([("worker:1", "issue-worker")], []))
+        # A rejected head is never armed.
+        rejected = pr(10, 1, reviews=[review("reject", "h" * 40)])
+        self.assertEqual(plan_for(snap([issue(1, status="status:in-review")], [rejected]), cfg=cfg).arms, [])
         # With reviews on, the same green PR gets a reviewer and is not armed.
         plan = plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1)]))
         self.assertEqual(keys(plan), ["reviewer:pr-10"])
