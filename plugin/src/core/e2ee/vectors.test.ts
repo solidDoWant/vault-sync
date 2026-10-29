@@ -150,7 +150,7 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
     const wrapped = new Map(shared.passphrase.map((vector) => [vector.name, vector.wrapped]));
     for (const [precomposed, decomposed] of [
       ["precomposed passphrase", "decomposed passphrase"],
-      ["Unicode 17 mark, precomposed passphrase", "Unicode 17 mark, decomposed passphrase"],
+      ["Unicode 15.0 mark, precomposed passphrase", "Unicode 15.0 mark, decomposed passphrase"],
     ] as const) {
       expect(wrapped.get(precomposed)).toBeDefined();
       expect(wrapped.get(decomposed)).toBe(wrapped.get(precomposed));

@@ -7,45 +7,103 @@
 // upcase mapping on top (docs/design/engine.md §6): a code point whose
 // simple uppercase folds differently from it folds as that uppercase does,
 // so the dotless ı and I share a key. Two paths that would collide on a
-// case-insensitive, normalization-insensitive filesystem get the same key. Nothing else is altered: separators, whitespace and dots
-// are preserved, and no validation is performed.
+// case-insensitive, normalization-insensitive filesystem get the same key.
+// Nothing else is altered: separators, whitespace and dots are preserved,
+// and no validation is performed.
 //
-// Case folding uses a table generated from the vendored Unicode
-// CaseFolding.txt, with the upcase merges from UnicodeData.txt, rather than golang.org/x/text/cases, whose Fold diverges
-// from CaseFolding.txt (e.g. it lowercases Cherokee). Normalization likewise
-// uses tables generated from the vendored UnicodeData.txt and
-// CompositionExclusions.txt rather than golang.org/x/text/unicode/norm, whose
-// Unicode version lags behind. All tables come from one pinned Unicode
-// version (17.0.0). The TypeScript client (plugin/src/core/pathkey) uses
-// tables generated from the same files, so the two agree whatever Unicode
-// version either runtime has; testdata/paths/vectors.json is the shared
-// conformance suite and testdata/paths/NormalizationTest-17.0.0.txt.gz the
-// Unicode normalization conformance suite both pass.
+// Normalization is golang.org/x/text/unicode/norm and case folding
+// golang.org/x/text/cases. New names may only use code points assigned in
+// Unicode 15.0 (internal/vaultpath), whose normalization and case folding
+// Unicode keeps stable, so the TypeScript client (plugin/src/core/pathkey),
+// which uses the runtime's String.prototype.normalize and a case-folding
+// package, computes the same key. testdata/paths/vectors.json is the shared
+// conformance suite.
 package pathkey
 
-//go:generate go run ./gen -source gen/CaseFolding-17.0.0.txt -license gen/LICENSE-UNICODE.txt -go-out casefold_table.go -ts-out ../../plugin/src/core/pathkey/casefold-table.ts -unicode-data gen/UnicodeData-17.0.0.txt.gz -exclusions gen/CompositionExclusions-17.0.0.txt -go-norm-out normalization_table.go -ts-norm-out ../../plugin/src/core/pathkey/normalization-table.ts
+import (
+	"strings"
+	"unicode"
 
-import "strings"
+	"golang.org/x/text/cases"
+	"golang.org/x/text/unicode/norm"
+	"golang.org/x/text/unicode/rangetable"
+)
 
-// Key returns the path_key for path. It is safe for concurrent use.
-func Key(path string) string {
-	return nfc(fold(nfd(path)))
+// UnicodeVersion is the Unicode version whose assigned code points new names
+// and passphrases may use (docs/design/engine.md §6, docs/design/crypto.md).
+const UnicodeVersion = "15.0.0"
+
+// assigned holds the code points assigned in UnicodeVersion.
+var assigned = rangetable.Assigned(UnicodeVersion)
+
+// Assigned reports whether every code point of text is assigned in
+// UnicodeVersion. Private-use code points are assigned; noncharacters,
+// surrogates and code points added in a later version are not. Invalid UTF-8
+// bytes are not assigned.
+func Assigned(text string) bool {
+	for _, codePoint := range text {
+		if !unicode.Is(assigned, codePoint) {
+			return false
+		}
+	}
+
+	return true
 }
 
-// fold applies full case folding to every code point. Invalid UTF-8 bytes
-// become U+FFFD; protobuf strings are always valid UTF-8.
+// NFC returns the canonical composition (NFC) of text. Invalid UTF-8 bytes
+// become U+FFFD. Other packages that need the same normalization as the
+// TypeScript client (internal/e2ee for passphrases) use it.
+func NFC(text string) string {
+	return norm.NFC.String(validUTF8(text))
+}
+
+// Key returns the path_key for path. It is safe for concurrent use.
+// Invalid UTF-8 bytes become U+FFFD; protobuf strings are always valid UTF-8.
+func Key(path string) string {
+	return norm.NFC.String(fold(norm.NFD.String(validUTF8(path))))
+}
+
+// validUTF8 replaces each invalid UTF-8 byte of text with U+FFFD.
+func validUTF8(text string) string {
+	return string([]rune(text))
+}
+
+// fold applies full case folding to every code point, with the NTFS upcase
+// merges: a Basic Multilingual Plane code point whose simple uppercase is
+// also in the BMP and folds differently from it folds as that uppercase.
 func fold(text string) string {
 	var builder strings.Builder
 
 	builder.Grow(len(text))
 
+	caser := cases.Fold()
+
 	for _, codePoint := range text {
-		if folded, ok := foldTable[codePoint]; ok {
-			builder.WriteString(folded)
-		} else {
-			builder.WriteRune(codePoint)
+		folded := foldCodePoint(caser, codePoint)
+
+		if upper := unicode.ToUpper(codePoint); upper != codePoint && codePoint <= 0xFFFF && upper <= 0xFFFF {
+			if upperFolded := foldCodePoint(caser, upper); upperFolded != folded {
+				folded = upperFolded
+			}
 		}
+
+		builder.WriteString(folded)
 	}
 
 	return builder.String()
+}
+
+// foldCodePoint returns the full case folding of codePoint with caser, a
+// cases.Fold caser.
+func foldCodePoint(caser cases.Caser, codePoint rune) string {
+	folded := caser.String(string(codePoint))
+
+	// cases.Fold lowercases the Cherokee capitals, which CaseFolding.txt
+	// leaves as they are and folds the small letters to, so its result is
+	// not a fixed point there. Such a code point folds as its lowercase.
+	if caser.String(folded) != folded {
+		folded = caser.String(string(unicode.ToLower(codePoint)))
+	}
+
+	return folded
 }

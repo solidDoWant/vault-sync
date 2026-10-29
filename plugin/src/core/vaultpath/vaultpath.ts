@@ -1,4 +1,4 @@
-import { nfc } from "../pathkey/normalize";
+import { isAssignedInUnicode15, nfc } from "../pathkey/normalize";
 import { pathKey } from "../pathkey/pathkey";
 
 /**
@@ -43,8 +43,9 @@ function nameProblem(name: string): PathProblem | undefined {
  * portable-name rules of docs/design/engine.md §6 on each part (`<>:"|?*`, a
  * leading or trailing space, a trailing dot, a Windows reserved name in any
  * case with or without an extension, more than {@link maxNameBytes} bytes),
- * then more than {@link maxNewPathBytes} bytes in all, then `not-nfc` (not in
- * Unicode NFC under the pinned tables of SPEC.md §5). The order is
+ * then more than {@link maxNewPathBytes} bytes in all, then `unassigned` (a
+ * code point not assigned in Unicode 15.0), then `not-nfc` (not in Unicode
+ * NFC). The order is
  * `CheckNew`'s in internal/vaultpath (Go).
  */
 function newPathProblem(path: string): PathProblem | undefined {
@@ -56,6 +57,7 @@ function newPathProblem(path: string): PathProblem | undefined {
     if (problem !== undefined) return problem;
   }
   if (encoder.encode(path).length > maxNewPathBytes) return "path-too-long";
+  if (!isAssignedInUnicode15(path)) return "unassigned";
   if (nfc(path) !== path) return "not-nfc";
   return undefined;
 }
@@ -64,7 +66,8 @@ function newPathProblem(path: string): PathProblem | undefined {
  * Reports whether a commit may create or rename a document into `path`
  * (SPEC.md §6.2): it is vault-relative, contains no "\" (decision #191),
  * does not start with one code point and a colon (decision #148), and is
- * portable and in Unicode NFC (docs/design/engine.md §6; see
+ * portable, uses only code points assigned in Unicode 15.0 and is in
+ * Unicode NFC (docs/design/engine.md §6; see
  * {@link newPathProblem}). Windows
  * reads "\" as a separator and other platforms as part of a name, so `a/b`
  * and `a\b` would otherwise be two live documents naming one file on
@@ -130,7 +133,7 @@ export function fitsPathKeyLimit(path: string): boolean {
  * {@link isPathText}; `not-vault-relative` is {@link isVaultRelativePath};
  * `too-long-normalized` is {@link fitsPathKeyLimit}; `backslash`,
  * `drive-prefix`, `forbidden-character`, `edge-space`, `trailing-dot`,
- * `reserved-name`, `name-too-long`, `path-too-long` and `not-nfc` are
+ * `reserved-name`, `name-too-long`, `path-too-long`, `unassigned` and `not-nfc` are
  * {@link isNewVaultPath}'s further rules.
  */
 export type PathProblem =
@@ -147,6 +150,7 @@ export type PathProblem =
   | "reserved-name"
   | "name-too-long"
   | "path-too-long"
+  | "unassigned"
   | "not-nfc";
 
 /**

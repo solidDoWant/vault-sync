@@ -285,8 +285,8 @@
       "wrapped": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbedd40c31b0b1e607e8e89e13bfe343db4eb16261eb7d17df02473f5afefb0061573996071f538c927d1defdfd95f3a64f"
     },
     {
-      "name": "Unicode 17 mark, precomposed passphrase",
-      "passphrase": "é᫝ pass",
+      "name": "Unicode 15.0 mark, precomposed passphrase",
+      "passphrase": "é𐻽 pass",
       "memory": 19456,
       "iterations": 2,
       "parallelism": 1,
@@ -294,13 +294,13 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrap_key": "48d69e655ea53c791667b2cefe4357af4975b2909a8d5fbf3a0a4bf5730b97d5",
-      "auth_key": "c6400266c9bdced633d46f45eaccad3ae2fba01162e62c317fd0a182583a11bc",
-      "wrapped": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe8a95bc7b9468f4c81a495cb1ee7346904ee02c4b716a7e8adafb19d445a311cf51963018d15d6ff5719cb30286668b2f"
+      "wrap_key": "fc01ff14847ad9a493123fd7bb6c85027771042b4e8747c171a6251aa311c9f5",
+      "auth_key": "5f2efe34160e6dc8940a5eb183629620027b616553683d0c3003dd97a0f94f04",
+      "wrapped": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbea135c518824867fecd0ad67df7c191aab3794520c8350ed21a173a7378884180fa8e1cc650d0ee638f987d939da4ec1b"
     },
     {
-      "name": "Unicode 17 mark, decomposed passphrase",
-      "passphrase": "e᫝́ pass",
+      "name": "Unicode 15.0 mark, decomposed passphrase",
+      "passphrase": "é𐻽 pass",
       "memory": 19456,
       "iterations": 2,
       "parallelism": 1,
@@ -308,9 +308,9 @@
       "nonce": "58b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe",
       "secret": "ae42bb1cbb93f02cae485cef43f100ab42a41956e1492bf26cf3f76bb6a4407e",
       "aad": "",
-      "wrap_key": "48d69e655ea53c791667b2cefe4357af4975b2909a8d5fbf3a0a4bf5730b97d5",
-      "auth_key": "c6400266c9bdced633d46f45eaccad3ae2fba01162e62c317fd0a182583a11bc",
-      "wrapped": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe8a95bc7b9468f4c81a495cb1ee7346904ee02c4b716a7e8adafb19d445a311cf51963018d15d6ff5719cb30286668b2f"
+      "wrap_key": "fc01ff14847ad9a493123fd7bb6c85027771042b4e8747c171a6251aa311c9f5",
+      "auth_key": "5f2efe34160e6dc8940a5eb183629620027b616553683d0c3003dd97a0f94f04",
+      "wrapped": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbea135c518824867fecd0ad67df7c191aab3794520c8350ed21a173a7378884180fa8e1cc650d0ee638f987d939da4ec1b"
     }
   ],
   "rejected": [
@@ -530,6 +530,13 @@
       "passphrase": "correct horse battery staple ",
       "aad": "",
       "sealed": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbeb21b7a793bd503cba88397de94a7d669eaeb2d1af9b55d45e587aee775a74cb39b735ffc5681c85e3a7fd3a0d0dd33f4"
+    },
+    {
+      "name": "passphrase: code point not assigned in Unicode 15.0",
+      "kind": "passphrase",
+      "passphrase": "é᫝ pass",
+      "aad": "",
+      "sealed": "0200004c000000000201f448e4e0b71aad83818ceeaa09affed058b0a78ef36962cb842dc786c352d4cc04c2ea47b2650fbe8a95bc7b9468f4c81a495cb1ee7346904ee02c4b716a7e8adafb19d445a311cf51963018d15d6ff5719cb30286668b2f"
     },
     {
       "name": "passphrase: sealed under the auth key",

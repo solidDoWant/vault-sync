@@ -23,7 +23,7 @@ import { hkdf } from "@noble/hashes/hkdf.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
-import { nfc } from "../pathkey/normalize";
+import { isAssignedInUnicode15, nfc } from "../pathkey/normalize";
 import { pathKey as normalizePath } from "../pathkey/pathkey";
 
 /** The suite version byte of every suite 2 symmetric ciphertext and passphrase-wrapped secret. */
@@ -230,15 +230,20 @@ export interface PassphraseKeys {
  * Argon2id(UTF-8(NFC(passphrase)), salt, params, 32), then
  * HKDF-SHA256(stretched, empty salt, info) with the info
  * "vault-sync/v1/passphrase/wrap" and "vault-sync/v1/passphrase/auth". The
- * passphrase is NFC-normalized with the pinned Unicode tables of ../pathkey
- * (not the runtime's), so every device derives the same keys from the same
- * characters. Rejects an empty passphrase, a salt of the wrong size and
- * parameters outside the bounds before deriving. The derivation yields to the
+ * passphrase may only use code points assigned in Unicode 15.0, whose
+ * normalization Unicode keeps stable, and is NFC-normalized with ../pathkey's
+ * nfc, as the Go server does, so every device derives the same keys from the
+ * same characters. Rejects an empty passphrase, a code point not assigned in
+ * Unicode 15.0, a salt of the wrong size and parameters outside the bounds
+ * before deriving. The derivation yields to the
  * event loop as it runs.
  */
 export async function derivePassphraseKeys(passphrase: string, params: Argon2Params, salt: Uint8Array): Promise<PassphraseKeys> {
   if (passphrase === "") {
     throw new Error("e2ee: passphrase is empty");
+  }
+  if (!isAssignedInUnicode15(passphrase)) {
+    throw new Error("e2ee: a passphrase may only use characters assigned in Unicode 15.0");
   }
   if (!validParams(params)) {
     throw new Error(`e2ee: Argon2id parameters out of bounds: ${JSON.stringify(params)}`);
