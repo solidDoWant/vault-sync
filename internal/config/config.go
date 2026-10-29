@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/auth"
@@ -47,6 +48,7 @@ const (
 	EscrowDefaultEnv            = "VAULT_SYNC_ESCROW_DEFAULT"
 	EscrowSigningKeyEnv         = "VAULT_SYNC_ESCROW_SIGNING_KEY"
 	EscrowIdentityFileEnv       = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
+	EscrowJobTokenFileEnv       = "VAULT_SYNC_ESCROW_JOB_TOKEN_FILE"
 	EscrowRetiringKeyIDsEnv     = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
@@ -258,6 +260,10 @@ type Config struct {
 	// and whether new encrypted vaults have escrow by default (SPEC.md
 	// §9.4). Its PublicKey is nil when no escrow key is configured.
 	Escrow api.Escrow
+	// EscrowJobToken is the static bearer token of the export job's escrow
+	// rotation endpoint, read from EscrowJobTokenFileEnv; nil when unset,
+	// which turns the endpoint off.
+	EscrowJobToken []byte
 }
 
 // OIDCConfig identifies the OIDC issuer whose access tokens the server
@@ -352,6 +358,12 @@ func Load(lookup func(string) (string, bool)) (Config, error) {
 	escrow, err := escrowConfig(get)
 	problems = append(problems, err)
 	cfg.Escrow = escrow
+
+	if path := get(EscrowJobTokenFileEnv); path != "" {
+		token, err := loadEscrowJobToken(path)
+		problems = append(problems, err)
+		cfg.EscrowJobToken = token
+	}
 
 	problems = append(problems, checkListenAddress(ListenAddressEnv, cfg.ListenAddress))
 	problems = append(problems, checkListenAddress(MetricsListenAddressEnv, cfg.MetricsListenAddress))
@@ -513,6 +525,45 @@ func loadEscrowIdentities(path string) ([][]byte, error) {
 	}
 
 	return identities, nil
+}
+
+const (
+	// minEscrowJobTokenBytes is the shortest job token accepted: 32 random
+	// bytes in base64 are 44 characters.
+	minEscrowJobTokenBytes = 32
+	// maxEscrowJobTokenBytes bounds the job token file.
+	maxEscrowJobTokenBytes = 4 << 10
+)
+
+// loadEscrowJobToken reads the job token file: one token, surrounding
+// whitespace ignored. Problems never quote the file's content.
+func loadEscrowJobToken(path string) ([]byte, error) {
+	file, err := os.Open(path) //nolint:gosec // the operator's configured path.
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EscrowJobTokenFileEnv, err)
+	}
+
+	defer func() { _ = file.Close() }()
+
+	content, err := io.ReadAll(io.LimitReader(file, maxEscrowJobTokenBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EscrowJobTokenFileEnv, err)
+	}
+
+	if len(content) > maxEscrowJobTokenBytes {
+		return nil, fmt.Errorf("%s: the file is larger than %d bytes", EscrowJobTokenFileEnv, maxEscrowJobTokenBytes)
+	}
+
+	token := strings.TrimSpace(string(content))
+	if len(token) < minEscrowJobTokenBytes {
+		return nil, fmt.Errorf("%s: the token must be at least %d characters", EscrowJobTokenFileEnv, minEscrowJobTokenBytes)
+	}
+
+	if strings.ContainsFunc(token, unicode.IsSpace) {
+		return nil, fmt.Errorf("%s: the token must be a single line without spaces", EscrowJobTokenFileEnv)
+	}
+
+	return []byte(token), nil
 }
 
 // LoadExport reads the export configuration through lookup, like Load. The

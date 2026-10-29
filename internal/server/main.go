@@ -137,6 +137,8 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Membership:               &api.MembershipService{Store: queries, Escrow: escrow, Logger: logger},
 		UserKeys:                 &api.UserKeyService{Store: queries, Logger: logger},
 		VaultKeys:                &api.VaultKeyService{Keys: api.KeysOf(queries), Escrow: escrow, Logger: logger},
+		EscrowJobs:               &api.EscrowJobService{Store: queries, Logger: logger},
+		EscrowJobToken:           cfg.EscrowJobToken,
 		Sync:                     &api.SyncService{Store: queries, Logger: logger},
 		Blobs:                    blobs,
 		Realtime:                 hub,
