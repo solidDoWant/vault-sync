@@ -1,7 +1,7 @@
 import type { Timers } from "../backoff";
 import { InMemoryServer } from "../engine/memory-server";
 import { createProtocolClient } from "../protocol/client";
-import { InMemoryVault } from "../vault/memory";
+import { InMemoryVault, type InMemoryVaultOptions } from "../vault/memory";
 import { SyncEngine, type SyncEngineOptions } from "./engine";
 import { MemorySyncJournal } from "./journal";
 
@@ -40,7 +40,7 @@ export class ManualTimers implements Timers {
 
 /** A device for engine tests: an in-memory vault and journal, and an engine on the shared server. */
 export class Device {
-  readonly vault = new InMemoryVault();
+  readonly vault: InMemoryVault;
   readonly journal = new MemorySyncJournal();
   readonly timers = new ManualTimers();
   engine: SyncEngine;
@@ -49,7 +49,9 @@ export class Device {
     readonly server: InMemoryServer,
     readonly deviceId: string,
     private readonly options: Partial<SyncEngineOptions> = {},
+    vaultOptions: InMemoryVaultOptions = {},
   ) {
+    this.vault = new InMemoryVault(vaultOptions);
     this.engine = this.newEngine();
   }
 

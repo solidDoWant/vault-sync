@@ -1,16 +1,20 @@
-import { Code } from "@connectrpc/connect";
+import { timestampMs } from "@bufbuild/protobuf/wkt";
+import { Code, ConnectError } from "@connectrpc/connect";
 import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 import { errorCode, headMoved } from "../engine/errors";
-import { downloadContent, toIncoming, type PullApi } from "../engine/remote";
+import { baseContent, downloadContent, toIncoming, type PullApi } from "../engine/remote";
 import { uploadContent } from "../engine/upload";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
-import { detectChanges, HashCache, type RenameHint } from "./detect";
-import { applyChange, type DocEntry, type JournalChange, type JournalState, type PendingOp, type SyncJournal, type SyncKind } from "./journal";
+import { uuidv7 } from "../uuid";
+import { conflictCopyName } from "./conflict-name";
+import { detectChanges, HashCache, kindOfPath, project, type Projection, type RenameHint } from "./detect";
+import { applyChange, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SyncJournal, type SyncKind } from "./journal";
+import { mergeContent } from "./merge-rules";
 
 /** The protocol calls the engine makes. */
 export type SyncApi = PullApi;
@@ -20,6 +24,8 @@ export interface SyncEngineOptions {
   vaultId: string;
   /** This device's id (RegisterDevice), sent with every commit. */
   deviceId: string;
+  /** The device's name, in the names of its conflict copies (rule C). Defaults to the device id. */
+  deviceName?: string;
   vault: VaultAdapter;
   journal: SyncJournal;
   /** ListChanges page size; 0 lets the server choose. */
@@ -39,12 +45,24 @@ export interface SyncEngineOptions {
 export type SyncStatus = "idle" | "syncing" | "error";
 
 /**
- * A remote revision whose local state is not one rows A1–A5 decide
- * (docs/design/engine.md §5): the pull stops before it, leaving the cursor,
- * the file and the pending operations as they are.
+ * A remote revision the engine cannot apply now (the file changed since this
+ * cycle's detection, or the decision table has no row for its local state):
+ * the pull stops before it, leaving the cursor, the file and the pending
+ * operations as they are, and the next cycle decides it again.
  */
 const undecided = Symbol("undecided");
 type Outcome = JournalChange | typeof undecided;
+
+/** A remote revision as the decision table reads it. */
+interface Remote {
+  documentId: string;
+  path: string;
+  hash: string;
+  size: bigint;
+  deleted: boolean;
+  /** The revision's `create_time`, in ms since the epoch. */
+  time: number;
+}
 
 /** The server reported that its database was restored to before this device's cursor (SPEC.md §6.1). */
 export class DivergedError extends Error {
@@ -67,6 +85,7 @@ export class SyncEngine {
   private readonly api: SyncApi;
   private readonly vaultId: string;
   private readonly deviceId: string;
+  private readonly deviceName: string;
   private readonly vault: VaultAdapter;
   private readonly journal: SyncJournal;
   private readonly pageSize: number;
@@ -99,6 +118,7 @@ export class SyncEngine {
     this.api = options.api;
     this.vaultId = options.vaultId;
     this.deviceId = options.deviceId;
+    this.deviceName = options.deviceName ?? options.deviceId;
     this.vault = options.vault;
     this.journal = options.journal;
     this.pageSize = options.pageSize ?? 0;
@@ -191,7 +211,9 @@ export class SyncEngine {
     await this.record(detected);
     const pulled = await this.pull();
     const pushed = await this.push();
-    return pulled || pushed;
+    // P1, P2: a refused commit is resolved by what the server holds, so pull it now.
+    const repulled = pushed.pullAgain && (await this.pull());
+    return pulled || pushed.progress || repulled;
   }
 
   private async loadState(): Promise<JournalState> {
@@ -244,40 +266,72 @@ export class SyncEngine {
     if (acknowledged !== undefined) return this.acknowledge(acknowledged, revision);
     // A path the protocol does not allow never reaches the disk.
     if (!incoming.pathAllowed) return {};
-    const kind = syncKind(revision.kind);
-    const target: Omit<DocEntry, "path"> = { documentId: id, kind: entry?.kind ?? kind, baseRevId: remote.revisionId, baseHash: remote.contentHash, baseSize: Number(remote.size) };
+    const target: Omit<DocEntry, "path"> = {
+      documentId: id,
+      kind: entry?.kind ?? syncKind(revision.kind),
+      baseRevId: remote.revisionId,
+      baseHash: remote.contentHash,
+      baseSize: Number(remote.size),
+    };
+    const incomingRevision: Remote = {
+      documentId: id,
+      path: remote.path,
+      hash: remote.contentHash,
+      size: remote.size,
+      deleted: remote.deleted,
+      time: revision.createTime === undefined ? 0 : timestampMs(revision.createTime),
+    };
 
-    if (entry === undefined) {
-      if (ops.length > 0) return undecided;
-      // A2: absent, tombstone.
-      if (remote.deleted) return {};
-      // A1: absent, live.
-      const occupant = await this.cache.read(this.vault, remote.path);
-      if (occupant !== null) {
-        if (occupant.hash !== remote.contentHash || this.claimed(state, remote.path)) return undecided;
+    if (ops.length === 0) {
+      // A document deleted on the server whose re-create this device dropped is absent here.
+      if (entry === undefined || entry.deleted === true) {
+        // A2: absent, tombstone.
+        if (remote.deleted) return entry === undefined ? {} : { deleteDocs: [id] };
+        // A1: absent, live.
+        if ((await this.place(state, incomingRevision)) === undecided) return undecided;
         return { putDocs: [{ ...target, path: remote.path }] };
       }
-      const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
-      if (!(await this.write(remote.path, content, null))) return undecided;
-      return { putDocs: [{ ...target, path: remote.path }] };
+      return this.applyClean(state, entry, incomingRevision, target);
     }
+    // Pending operations of a document the server knows but this device never synced: none of the rows.
+    if (entry === undefined) return undecided;
+    const last = ops[ops.length - 1] as PendingOp;
+    const dropped = ops.map((op) => op.opId);
+    if (last.kind === "delete") {
+      // A11: deleted, tombstone.
+      if (remote.deleted) return { deleteDocs: [id], deletePending: dropped };
+      // A8: deleted, live. The edit wins.
+      if ((await this.place(state, incomingRevision)) === undecided) return undecided;
+      return { putDocs: [{ ...target, path: remote.path }], deletePending: dropped };
+    }
+    return this.applyChanged(state, entry, last, dropped, incomingRevision, target);
+  }
 
-    if (ops.length > 0) return undecided;
+  /** Rows A3–A5: the file is as this device last synced it, and nothing is pending. */
+  private async applyClean(state: JournalState, entry: DocEntry, remote: Remote, target: Omit<DocEntry, "path">): Promise<Outcome> {
     const local = await this.cache.read(this.vault, entry.path);
+    // Changed since this cycle's detection: the next cycle records it, then decides.
     if (local?.hash !== entry.baseHash) return undecided;
 
     // A5: clean, tombstone.
     if (remote.deleted) {
       if (!(await this.delete(entry.path, entry.baseHash))) return undecided;
-      return { deleteDocs: [id] };
+      return { deleteDocs: [entry.documentId] };
     }
     // A4: clean, live, new path.
     if (remote.path !== entry.path) {
-      const sameFile = pathKey(remote.path) === pathKey(entry.path);
-      if (!sameFile && ((await this.cache.read(this.vault, remote.path)) !== null || this.claimed(state, remote.path))) return undecided;
+      if (pathKey(remote.path) !== pathKey(entry.path)) {
+        const cleared = await this.clear(state, entry.documentId, remote.path, remote.hash);
+        if (cleared === undecided) return undecided;
+        // Rule W: a file with the remote content is already there; it is this document's file now.
+        if (cleared === "bound") {
+          if (!(await this.delete(entry.path, entry.baseHash))) return undecided;
+          return { putDocs: [{ ...target, path: remote.path }] };
+        }
+      }
       await this.rename(entry.path, remote.path);
-      if (remote.contentHash !== entry.baseHash) {
-        const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      if (remote.hash !== entry.baseHash) {
+        const content = await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
         // The file was edited after it was checked: it stays at the new path on its old base, an edit the next cycle resolves.
         if (!(await this.write(remote.path, content, entry.baseHash))) {
           await this.record({ putDocs: [{ ...entry, path: remote.path }] });
@@ -287,16 +341,213 @@ export class SyncEngine {
       return { putDocs: [{ ...target, path: remote.path }] };
     }
     // A3: clean, live, same path.
-    if (remote.contentHash !== entry.baseHash) {
-      const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+    if (remote.hash !== entry.baseHash) {
+      const content = await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
       if (!(await this.write(entry.path, content, entry.baseHash))) return undecided;
     }
     return { putDocs: [{ ...target, path: entry.path }] };
   }
 
-  /** Whether a document of this device holds `path`: its synced path or a pending operation's target. */
-  private claimed(state: JournalState, path: string): boolean {
-    return state.pending.some((op) => op.kind !== "delete" && op.path === path) || [...state.docs.values()].some((entry) => entry.path === path);
+  /**
+   * Rows A6, A7, A9 and A10: the document is edited, renamed or both here
+   * (`last` is its last pending operation, `dropped` all of them).
+   */
+  private async applyChanged(state: JournalState, entry: DocEntry, last: PendingOp, dropped: string[], remote: Remote, target: Omit<DocEntry, "path">): Promise<Outcome> {
+    const localPath = last.path;
+    const file = await this.cache.read(this.vault, localPath);
+    // Changed since this cycle's detection: the next cycle records it, then decides.
+    if (file === null || file.hash !== last.contentHash) return undecided;
+    const keepRefusal = (path: string) => (last.refused !== undefined && path === last.path ? { refused: last.refused } : {});
+
+    if (remote.deleted) {
+      // A7, A10: the edit or rename wins. The file stays where it is and is created again on top of the tombstone.
+      const recreate: PendingOp = { ...this.newOp(state, entry.documentId, "create", localPath, entry.kind, file.hash, file.size), ...keepRefusal(localPath) };
+      return { putDocs: [{ ...target, path: remote.path, deleted: true }], deletePending: dropped, putPending: [recreate] };
+    }
+
+    // A6: the server's path. A9: the local path if the server kept the base path; otherwise the server's path wins.
+    const renamed = localPath !== entry.path;
+    const finalPath = renamed && remote.path === entry.path ? localPath : remote.path;
+    const local = await this.vault.read(localPath);
+    if (sha256Hex(local) !== file.hash) return undecided;
+    const remoteContent = remote.hash === file.hash ? local : await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
+    // Rule M.
+    const merged = await mergeContent({
+      kind: entry.kind,
+      local,
+      localHash: file.hash,
+      localTime: file.mtime,
+      remote: remoteContent,
+      remoteHash: remote.hash,
+      remoteTime: remote.time,
+      baseHash: entry.baseHash,
+      base: () => baseContent(this.api, this.vaultId, entry.baseRevId),
+    });
+    const finalHash = sha256Hex(merged.content);
+
+    // Rule C: the losing side is on disk under its copy name before anything is overwritten.
+    if (merged.copy !== null) {
+      const copyPath = conflictCopyName(finalPath, this.deviceName, new Date(this.now()), await this.taken(state));
+      // No copy name fits: nothing is overwritten.
+      if (copyPath === null) return undecided;
+      if (!(await this.write(copyPath, merged.copy, null))) return undecided;
+      const copy = this.newOp(state, uuidv7(this.now()), "create", copyPath, kindOfPath(copyPath), sha256Hex(merged.copy), merged.copy.length);
+      await this.record({ putPending: [copy], putConflicts: [{ path: copyPath, documentId: entry.documentId, createdAt: this.now() }] });
+    }
+    // Rule W at the final path.
+    const cleared = pathKey(finalPath) === pathKey(localPath) ? "free" : await this.clear(state, entry.documentId, finalPath, remote.hash);
+    if (cleared === undecided) return undecided;
+    if (cleared === "bound") {
+      // A file with the remote content is already there: it is this document's file now, and the local file moves into it.
+      if (finalHash !== remote.hash && !(await this.write(finalPath, merged.content, remote.hash))) return undecided;
+      if (!(await this.delete(localPath, file.hash))) return undecided;
+    } else {
+      if (finalHash !== file.hash && !(await this.write(localPath, merged.content, file.hash))) return undecided;
+      if (finalPath !== localPath) await this.rename(localPath, finalPath);
+    }
+
+    const change: JournalChange = { putDocs: [{ ...target, path: remote.path }], deletePending: dropped };
+    // What differs from the server's head is pushed on top of it.
+    if (finalHash !== remote.hash || finalPath !== remote.path) {
+      const kind = finalPath !== remote.path ? "rename" : "edit";
+      change.putPending = [{ ...this.newOp(state, entry.documentId, kind, finalPath, entry.kind, finalHash, merged.content.length), ...keepRefusal(finalPath) }];
+    }
+    return change;
+  }
+
+  /** Rule W, then writes the remote content at its path unless a file with that content is already there. */
+  private async place(state: JournalState, remote: Remote): Promise<"placed" | typeof undecided> {
+    const cleared = await this.clear(state, remote.documentId, remote.path, remote.hash);
+    if (cleared === undecided) return undecided;
+    if (cleared === "free") {
+      const content = await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
+      if (!(await this.write(remote.path, content, null))) return undecided;
+    }
+    return "placed";
+  }
+
+  /**
+   * Rule W: makes `path` free for document `id`. Returns "bound" when a file
+   * holding `hash` (null: never) is there and is untracked or an unpushed
+   * create, so it becomes the document's file (and the create is dropped).
+   * Any other file in the way (an untracked one, an unpushed create, a file
+   * renamed here onto the path, or a file where a folder of the path must
+   * go) and a folder where the file must go are moved to a conflict copy
+   * name, where they stay pending.
+   */
+  private async clear(state: JournalState, id: string, path: string, hash: string | null): Promise<"free" | "bound" | typeof undecided> {
+    const occupant = await this.cache.read(this.vault, path);
+    if (occupant !== null) {
+      const owner = liveAt(state, path);
+      if (owner?.documentId === id) return "bound";
+      if (hash !== null && occupant.hash === hash && owner?.base === undefined) {
+        if (owner !== undefined) await this.record({ deletePending: state.pending.filter((op) => op.documentId === owner.documentId).map((op) => op.opId) });
+        return "bound";
+      }
+      return (await this.moveAside(state, [path])) ? "free" : undecided;
+    }
+    // A file where a folder of the path must go.
+    const parts = path.split("/");
+    for (let length = 1; length < parts.length; length++) {
+      const folder = parts.slice(0, length).join("/");
+      if ((await this.cache.read(this.vault, folder)) !== null) return (await this.moveAside(state, [folder])) ? "free" : undecided;
+    }
+    // A folder where the file must go.
+    const key = pathKey(path);
+    const inside = (await this.vault.list()).filter((file) => pathKey(file).startsWith(`${key}/`));
+    if (inside.length > 0) return (await this.moveAside(state, inside, path)) ? "free" : undecided;
+    // A document of this device whose file is missing since this cycle's detection still claims the path.
+    const claimant = liveAt(state, path);
+    if (claimant !== undefined && claimant.documentId !== id) return undecided;
+    return "free";
+  }
+
+  /**
+   * Moves local files out of the way (rule W) to conflict copy names (rule
+   * C): each file on its own, or with `folder`, the folder they are in. A
+   * moved file of a document stays that document's pending operation under
+   * the new name; an untracked one becomes a pending create. Returns false,
+   * moving nothing, if a file is a synced document's, which the server
+   * cannot also hold at the path, or no copy name fits.
+   */
+  private async moveAside(state: JournalState, files: readonly string[], folder?: string): Promise<boolean> {
+    const owners = new Map<string, Projection>();
+    for (const projection of project(state).values()) if (!projection.deleted) owners.set(pathKey(projection.path), projection);
+    for (const file of files) {
+      const owner = owners.get(pathKey(file));
+      if (owner?.base !== undefined && owner.base.deleted !== true && owner.path === owner.base.path) return false;
+    }
+    const taken = await this.taken(state);
+    const date = new Date(this.now());
+    const copyFolder = folder === undefined ? undefined : conflictCopyName(folder, this.deviceName, date, taken, true);
+    if (copyFolder === null) return false;
+    const copies: [string, string][] = [];
+    for (const file of files) {
+      const copy = folder !== undefined && copyFolder !== undefined ? `${copyFolder}${file.slice(folder.length)}` : conflictCopyName(file, this.deviceName, date, taken);
+      if (copy === null) return false;
+      copies.push([file, copy]);
+    }
+    const change: Required<Pick<JournalChange, "putPending" | "putConflicts">> = { putPending: [], putConflicts: [] };
+    let order = nextOrder(state);
+    for (const [file, copy] of copies) {
+      const occupant = await this.cache.read(this.vault, file);
+      if (occupant === null) continue;
+      await this.rename(file, copy);
+      const owner = owners.get(pathKey(file));
+      const last = owner?.lastOp;
+      let documentId: string;
+      if (owner !== undefined && last !== undefined) {
+        documentId = owner.documentId;
+        // A refused commit was never applied, so an unsent operation keeps its revision id. The new name is not refused.
+        const moved: PendingOp = { ...last, path: copy, sent: false, revisionId: last.sent ? uuidv7(this.now()) : last.revisionId };
+        delete moved.refused;
+        change.putPending.push(moved);
+      } else {
+        documentId = uuidv7(this.now());
+        change.putPending.push({ ...this.newOp(state, documentId, "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
+      }
+      change.putConflicts.push({ path: copy, documentId, createdAt: this.now() });
+    }
+    await this.record(change);
+    return true;
+  }
+
+  /** Whether a path is in use on this device (a file, a folder of one, or a document's path); a name it said is free counts as taken from then on. */
+  private async taken(state: JournalState): Promise<(path: string) => boolean> {
+    const keys = new Set<string>();
+    const add = (path: string) => {
+      const parts = pathKey(path).split("/");
+      for (let length = 1; length <= parts.length; length++) keys.add(parts.slice(0, length).join("/"));
+    };
+    for (const file of await this.vault.list()) add(file);
+    for (const projection of project(state).values()) if (!projection.deleted) add(projection.path);
+    return (path) => {
+      if (keys.has(pathKey(path))) return true;
+      add(path);
+      return false;
+    };
+  }
+
+  /** A new, unsent pending operation at the end of the queue. */
+  private newOp(state: JournalState, documentId: string, kind: PendingKind, path: string, docKind: SyncKind, contentHash: string, contentSize: number): PendingOp {
+    return {
+      opId: uuidv7(this.now()),
+      order: nextOrder(state),
+      documentId,
+      kind,
+      path,
+      docKind,
+      revisionId: uuidv7(this.now()),
+      contentHash,
+      contentSize,
+      sent: false,
+    };
+  }
+
+  /** The paths the server refused for this device's pending operations, with the reasons (rule P3), for the conflict view. */
+  async refusedNames(): Promise<{ documentId: string; path: string; reason: string }[]> {
+    const state = await this.loadState();
+    return state.pending.flatMap((op) => (op.refused === undefined ? [] : [{ documentId: op.documentId, path: op.path, reason: op.refused }]));
   }
 
   private acknowledge(op: PendingOp, revision: Revision): JournalChange {
@@ -314,12 +565,19 @@ export class SyncEngine {
 
   // Push ----------------------------------------------------------------
 
-  private async push(): Promise<boolean> {
+  /** Pushes the pending operations; `pullAgain` when a commit was refused by P1 or P2. */
+  private async push(): Promise<{ progress: boolean; pullAgain: boolean }> {
     const state = await this.loadState();
     const blocked = new Set<string>();
     let progress = false;
+    let pullAgain = false;
     for (const queued of [...state.pending]) {
       if (blocked.has(queued.documentId)) continue;
+      // P3: a refused name waits until the file is renamed.
+      if (queued.refused !== undefined) {
+        blocked.add(queued.documentId);
+        continue;
+      }
       let op = queued;
       if (op.kind !== "delete") {
         const read = () => this.readFile(op.path);
@@ -351,18 +609,44 @@ export class SyncEngine {
           })
         ).revision;
       } catch (error) {
-        // P1 (the head moved) and P2 (the path is taken): keep the operation; the next pull brings what the server holds.
-        if (headMoved(error) || errorCode(error) === Code.AlreadyExists) {
-          blocked.add(op.documentId);
-          continue;
-        }
-        throw error;
+        const refusal = this.refusal(state, op, error);
+        if (refusal === undefined) throw error;
+        // The server checks a commit's revision id before anything else, so a refused commit was never applied: the operation is unsent again.
+        blocked.add(op.documentId);
+        await this.record({ putPending: [{ ...op, sent: false, ...("reason" in refusal ? { refused: refusal.reason } : {}) }] });
+        if ("pull" in refusal) pullAgain = true;
+        continue;
       }
       if (revision === undefined) throw new Error("CommitRevision returned no revision");
       await this.record(this.acknowledge(op, revision));
       progress = true;
     }
-    return progress;
+    return { progress, pullAgain };
+  }
+
+  /**
+   * How a refused commit is handled: pull for P1 (the head moved) and P2
+   * (another document holds the path, and the pull brings it to meet the
+   * file through rule W), the reason for P3 (an unportable name) and for a
+   * P2 whose other document this device already holds (a name that differs
+   * from it only by case, say), and undefined for any other error.
+   */
+  private refusal(state: JournalState, op: PendingOp, error: unknown): { pull: true } | { reason: string } | undefined {
+    if (headMoved(error)) return { pull: true };
+    const code = errorCode(error);
+    const base = state.docs.get(op.documentId);
+    const newPath = op.kind !== "delete" && (base === undefined || base.deleted === true || base.path !== op.path);
+    if (!newPath) return undefined;
+    const reason = error instanceof ConnectError ? error.rawMessage : String(error);
+    if (code === Code.InvalidArgument) return { reason };
+    if (code !== Code.AlreadyExists) return undefined;
+    const key = pathKey(op.path);
+    for (const entry of state.docs.values()) {
+      if (entry.documentId === op.documentId || entry.deleted === true) continue;
+      const other = pathKey(entry.path);
+      if (other === key || other.startsWith(`${key}/`) || key.startsWith(`${other}/`)) return { reason };
+    }
+    return { pull: true };
   }
 
   private async readFile(path: string): Promise<Uint8Array | null> {
@@ -379,6 +663,8 @@ export class SyncEngine {
   /** Writes `content` if the file still holds `expectedHash` (null: no file). Returns false if it changed. */
   private async write(path: string, content: Uint8Array, expectedHash: string | null): Promise<boolean> {
     this.ownWrites.set(path, sha256Hex(content));
+    // A rewrite can keep the size and the mtime, which the cache trusts.
+    this.cache.invalidate(path);
     try {
       await this.vault.write(path, content, { expectedHash });
       return true;
@@ -392,6 +678,8 @@ export class SyncEngine {
   private async rename(from: string, to: string): Promise<void> {
     const key = `${from}\0${to}`;
     count(this.ownRenames, key, 1);
+    this.cache.invalidate(from);
+    this.cache.invalidate(to);
     try {
       await this.vault.rename(from, to);
     } catch (error) {
@@ -403,6 +691,7 @@ export class SyncEngine {
   /** Deletes the file if it still holds `expectedHash`. Returns false if it changed. */
   private async delete(path: string, expectedHash: string): Promise<boolean> {
     count(this.ownDeletes, path, 1);
+    this.cache.invalidate(path);
     try {
       await this.vault.delete(path, { expectedHash });
       return true;
@@ -483,6 +772,18 @@ export class SyncEngine {
       backoffDelay(this.failures, this.backoff, this.random()),
     );
   }
+}
+
+/** The live document whose file is at `path` on this device once its pending operations apply. */
+function liveAt(state: JournalState, path: string): Projection | undefined {
+  const key = pathKey(path);
+  for (const projection of project(state).values()) if (!projection.deleted && pathKey(projection.path) === key) return projection;
+  return undefined;
+}
+
+/** The `order` of a new pending operation: after every queued one. */
+function nextOrder(state: JournalState): number {
+  return (state.pending.at(-1)?.order ?? 0) + 1;
 }
 
 function syncKind(kind: DocumentKind): SyncKind {

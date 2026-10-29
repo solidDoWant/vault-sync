@@ -51,7 +51,7 @@ export function project(state: JournalState): Map<string, Projection> {
       path: entry.path,
       hash: entry.baseHash,
       size: entry.baseSize,
-      deleted: false,
+      deleted: entry.deleted === true,
       base: entry,
       lastOp: undefined,
       beforeLast: undefined,
@@ -238,7 +238,7 @@ function record(projection: Projection, next: State, nextOrder: number, now: () 
   if (before !== undefined && sameState(before, next)) return unsent !== undefined ? "drop" : "none";
   // A delete names the content it deletes, which the server already holds: the state before this operation.
   const content = next.deleted && before !== undefined ? before : next;
-  const kind: PendingKind = next.deleted ? "delete" : before === undefined ? "create" : before.path !== next.path ? "rename" : "edit";
+  const kind: PendingKind = next.deleted ? "delete" : before === undefined || before.deleted ? "create" : before.path !== next.path ? "rename" : "edit";
   return {
     opId: unsent?.opId ?? uuidv7(now()),
     order: unsent?.order ?? nextOrder,
@@ -250,6 +250,8 @@ function record(projection: Projection, next: State, nextOrder: number, now: () 
     contentHash: content.hash,
     contentSize: content.size,
     sent: false,
+    // A refused path stays refused until the file is renamed.
+    ...(unsent?.refused !== undefined && unsent.path === next.path ? { refused: unsent.refused } : {}),
   };
 }
 
