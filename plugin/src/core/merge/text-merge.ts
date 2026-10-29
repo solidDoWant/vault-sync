@@ -3,6 +3,8 @@
 // so a change one refuses as overlapping the other refuses too. Pure, so
 // vitest covers it directly.
 
+import DiffMatchPatch from "diff-match-patch";
+
 /** A replacement of `local[from, to)` by `insert`, in character offsets of the local text. */
 export interface TextChange {
   from: number;
@@ -28,12 +30,20 @@ interface Hunk {
 }
 
 /**
- * Above this many differences between two texts, diff stops searching for a
- * minimal edit script and reports the whole differing middle as one change.
- * That is never wrong, only coarser (more merges are refused as overlapping),
+ * Above this many line differences between two texts, the merge reports the
+ * whole differing middle as one change instead of the diff's. That is never wrong, only coarser (more merges are refused as overlapping),
  * and it bounds time and memory for large, very different notes.
  */
 const maxEditDistance = 4000;
+
+/**
+ * A differing middle longer than this many lines on either side is not diffed
+ * and counts as one change, like one past maxEditDistance. The diff takes time
+ * proportional to the lines times their differences, and it runs on the UI
+ * thread for editor writes. Being deterministic, the limit makes whether a
+ * merge is clean independent of the device's speed.
+ */
+const maxDiffedLines = 10_000;
 
 /**
  * Merges `remote` into `local`, both derived from `base`: the editor case,
@@ -47,10 +57,9 @@ const maxEditDistance = 4000;
  * more text). A change identical on both sides is kept once.
  */
 export function mergeUnsaved(base: string, local: string, remote: string): UnsavedMerge | null {
-  const baseLines = splitLines(base);
   const localLines = splitLines(local);
-  const localHunks = diffLines(baseLines, localLines);
-  const remoteHunks = diffLines(baseLines, splitLines(remote));
+  const localHunks = diffLines(base, local);
+  const remoteHunks = diffLines(base, remote);
   const localOffsets = lineOffsets(localLines);
   const changes: TextChange[] = [];
   // How many lines the merged text has, if no change joins two lines.
@@ -197,124 +206,71 @@ function offsetAt(offsets: readonly number[], line: number): number {
   return offset;
 }
 
-/** The changed regions between two line arrays (Myers' O(ND) diff), in ascending order. */
-function diffLines(before: readonly string[], after: readonly string[]): Hunk[] {
+/**
+ * The changed regions between two texts, line by line, in ascending order of
+ * the `before` lines. The diff is diff-match-patch's, in line mode, run on
+ * the differing middle between the common first and last lines.
+ */
+function diffLines(before: string, after: string): Hunk[] {
+  const beforeLines = splitLines(before);
+  const afterLines = splitLines(after);
   let prefix = 0;
-  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix]) prefix++;
   let suffix = 0;
   while (
-    suffix < before.length - prefix &&
-    suffix < after.length - prefix &&
-    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
   ) {
     suffix++;
   }
-  const left = before.slice(prefix, before.length - suffix);
-  const right = after.slice(prefix, after.length - suffix);
+  const left = beforeLines.slice(prefix, beforeLines.length - suffix);
+  const right = afterLines.slice(prefix, afterLines.length - suffix);
   if (left.length === 0 && right.length === 0) return [];
+  const wholeMiddle: Hunk[] = [{ baseStart: prefix, baseEnd: prefix + left.length, lines: right }];
+  if (left.length > maxDiffedLines || right.length > maxDiffedLines) return wholeMiddle;
 
-  const script = editScript(left, right);
-  if (script === null) return [{ baseStart: prefix, baseEnd: prefix + left.length, lines: right }];
+  const lineDiff = new DiffMatchPatch();
+  // No time limit: the result must not depend on how fast the device is.
+  lineDiff.Diff_Timeout = 0;
+  const { chars1, chars2, lineArray } = lineDiff.diff_linesToChars_(left.join(""), right.join(""));
+  // Every line only one side has is at least one difference, so past
+  // maxEditDistance of them no diff is needed to know the answer.
+  if (unmatchedLines(chars1, chars2) > maxEditDistance) return wholeMiddle;
+  const diffs = lineDiff.diff_main(chars1, chars2, false);
+  lineDiff.diff_charsToLines_(diffs, lineArray);
 
-  // Group consecutive non-equal steps into hunks.
   const hunks: Hunk[] = [];
-  let leftIndex = 0;
-  let rightIndex = 0;
+  let baseLine = prefix;
+  let distance = 0;
   let open: Hunk | null = null;
-  for (const step of script) {
-    if (step === "equal") {
+  for (const [operation, text] of diffs) {
+    const changed = splitLines(text);
+    if (operation === DiffMatchPatch.DIFF_EQUAL) {
       if (open !== null) hunks.push(open);
       open = null;
-      leftIndex++;
-      rightIndex++;
+      baseLine += changed.length;
       continue;
     }
-    open ??= { baseStart: prefix + leftIndex, baseEnd: prefix + leftIndex, lines: [] };
-    if (step === "delete") {
-      leftIndex++;
-      open.baseEnd = prefix + leftIndex;
+    distance += changed.length;
+    open ??= { baseStart: baseLine, baseEnd: baseLine, lines: [] };
+    if (operation === DiffMatchPatch.DIFF_DELETE) {
+      baseLine += changed.length;
+      open.baseEnd = baseLine;
     } else {
-      open.lines.push(right[rightIndex] ?? "");
-      rightIndex++;
+      open.lines.push(...changed);
     }
   }
   if (open !== null) hunks.push(open);
-  return hunks;
+  return distance > maxEditDistance ? wholeMiddle : hunks;
 }
 
-type Step = "equal" | "delete" | "insert";
-
-/**
- * A shortest edit script from `left` to `right`, or null if it needs more
- * than maxEditDistance steps.
- *
- * Backtracking needs, for each distance d, the frontier as it was before
- * step d. Step d only reads the d diagonals -(d-1), -(d-3), ..., d-1 of it,
- * so only those are kept: about 2 * D^2 bytes for D differences (32 MB at
- * maxEditDistance), not a whole frontier per distance (128 MB).
- */
-function editScript(left: readonly string[], right: readonly string[]): Step[] | null {
-  const n = left.length;
-  const m = right.length;
-  const max = Math.min(n + m, maxEditDistance);
-  const offset = max + 1;
-  const frontier = new Int32Array(2 * max + 3);
-  const trace: Int32Array[] = [];
-  for (let distance = 0; distance <= max; distance++) {
-    const live = new Int32Array(distance);
-    for (let index = 0; index < distance; index++) live[index] = at(frontier, offset - (distance - 1) + 2 * index);
-    trace.push(live);
-    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
-      const down = diagonal === -distance || (diagonal !== distance && at(frontier, offset + diagonal - 1) < at(frontier, offset + diagonal + 1));
-      let x = down ? at(frontier, offset + diagonal + 1) : at(frontier, offset + diagonal - 1) + 1;
-      let y = x - diagonal;
-      while (x < n && y < m && left[x] === right[y]) {
-        x++;
-        y++;
-      }
-      frontier[offset + diagonal] = x;
-      if (x >= n && y >= m) return backtrack(trace, n, m);
-    }
-  }
-  return null;
-}
-
-/** The furthest x on `diagonal` before step `distance`, from that step's kept diagonals. */
-function liveAt(live: Int32Array, distance: number, diagonal: number): number {
-  return at(live, (diagonal + distance - 1) / 2);
-}
-
-function backtrack(trace: readonly Int32Array[], n: number, m: number): Step[] {
-  const steps: Step[] = [];
-  let x = n;
-  let y = m;
-  for (let distance = trace.length - 1; distance > 0; distance--) {
-    const live = trace[distance];
-    if (live === undefined) break;
-    const diagonal = x - y;
-    const down = diagonal === -distance || (diagonal !== distance && liveAt(live, distance, diagonal - 1) < liveAt(live, distance, diagonal + 1));
-    const previousDiagonal = down ? diagonal + 1 : diagonal - 1;
-    const previousX = liveAt(live, distance, previousDiagonal);
-    const previousY = previousX - previousDiagonal;
-    while (x > previousX && y > previousY) {
-      steps.push("equal");
-      x--;
-      y--;
-    }
-    steps.push(down ? "insert" : "delete");
-    x = previousX;
-    y = previousY;
-  }
-  while (x > 0 && y > 0) {
-    steps.push("equal");
-    x--;
-    y--;
-  }
-  return steps.reverse();
-}
-
-function at(array: Int32Array, index: number): number {
-  const value = array[index];
-  if (value === undefined) throw new RangeError(`index ${String(index)} is outside the diff frontier`);
-  return value;
+/** How many lines (as diff_linesToChars_ characters) one text has more of than the other, summed over all lines. */
+function unmatchedLines(left: string, right: string): number {
+  const counts = new Map<string, number>();
+  for (const line of left) counts.set(line, (counts.get(line) ?? 0) + 1);
+  for (const line of right) counts.set(line, (counts.get(line) ?? 0) - 1);
+  let unmatched = 0;
+  for (const count of counts.values()) unmatched += Math.abs(count);
+  return unmatched;
 }
