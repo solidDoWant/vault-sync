@@ -63,9 +63,6 @@ func (cluster *deployment) importFolder(t *testing.T, binary, vaultID, source st
 	return code, report
 }
 
-// folderKind is the FOLDER document kind.
-const folderKind = vaultsyncv1.DocumentKind(4)
-
 // syncedFile is one document a device holds after a full sync.
 type syncedFile struct {
 	Kind vaultsyncv1.DocumentKind
@@ -165,8 +162,8 @@ func TestImportSubcommand(t *testing.T) {
 			"Café/menu.md":            {Kind: text, Digest: digest("NFD on disk")},
 			"Attachments/diagram.png": {Kind: blob, Digest: digest(string(attachment))},
 			"Attachments/paper.pdf":   {Kind: blob, Digest: digest(files["Attachments/paper.pdf"])},
-			"Attachments/Empty":       {Kind: folderKind},
-			"Archive/Empty":           {Kind: folderKind},
+			"Attachments/Empty":       {Kind: vaultsyncv1.DocumentKind_DOCUMENT_KIND_FOLDER},
+			"Archive/Empty":           {Kind: vaultsyncv1.DocumentKind_DOCUMENT_KIND_FOLDER},
 		}, device.syncAll(t, server))
 
 		history := device.history(t, headOf(t, device, server, "Welcome.md").GetDocumentId(), 0, server)

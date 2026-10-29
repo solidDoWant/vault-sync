@@ -19,6 +19,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
+	"github.com/solidDoWant/vault-sync/internal/vaultpath"
 )
 
 // Kind is an imported document's kind, as the store names it.
@@ -144,12 +145,7 @@ func (walker *walker) folder(ctx context.Context, directory, diskPath, vaultPath
 		name := pathkey.NFC(entry.Name())
 		childVault := path.Join(vaultPath, name)
 
-		reason := checkName(name)
-		if reason == nil {
-			reason = checkPath(childVault)
-		}
-
-		if reason != nil {
+		if reason := checkPortable(childVault); reason != nil {
 			if entry.IsDir() {
 				walker.skip(childDisk, "unportable name: "+reason.Error()+"; nothing in the folder was imported")
 			} else {
@@ -224,6 +220,17 @@ func (walker *walker) create(ctx context.Context, diskPath string, entry Entry) 
 	walker.result.Bytes += int64(len(entry.Content))
 
 	return nil
+}
+
+// checkPortable returns why path, a vault-relative NFC path whose folders
+// already passed it, may not be given to a new document (engine.md §6), or
+// nil. It is the rule CommitRevision applies to a new path.
+func checkPortable(path string) error {
+	if err := vaultpath.CheckText(path); err != nil {
+		return err
+	}
+
+	return vaultpath.CheckNew(path)
 }
 
 // readFile reads the file at fullPath, unless it holds more than limit

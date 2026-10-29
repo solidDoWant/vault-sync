@@ -103,23 +103,23 @@ func TestImportSkipsAndReportsUnportableNames(t *testing.T) {
 		file   string
 		reason string
 	}{
-		{name: "less-than", file: "a<b.md", reason: `contains '<'`},
-		{name: "greater-than", file: "a>b.md", reason: `contains '>'`},
-		{name: "colon", file: "a:b.md", reason: `contains ':'`},
-		{name: "double quote", file: `a"b.md`, reason: `contains '"'`},
-		{name: "backslash", file: `a\b.md`, reason: `contains '\\'`},
-		{name: "pipe", file: "a|b.md", reason: `contains '|'`},
-		{name: "question mark", file: "a?b.md", reason: `contains '?'`},
-		{name: "asterisk", file: "a*b.md", reason: `contains '*'`},
-		{name: "control character", file: "a\tb.md", reason: "control character U+0009"},
-		{name: "delete character", file: "a\x7fb.md", reason: "control character U+007F"},
-		{name: "leading space", file: " a.md", reason: "starts or ends with a space"},
-		{name: "trailing space", file: "a.md ", reason: "starts or ends with a space"},
-		{name: "trailing dot", file: "a.", reason: `ends with "."`},
-		{name: "reserved name", file: "CON", reason: `"CON" is a reserved name`},
-		{name: "reserved name with an extension", file: "nul.md", reason: `"nul" is a reserved name`},
-		{name: "reserved COM9", file: "com9.txt", reason: `"com9" is a reserved name`},
-		{name: "reserved LPT1", file: "LPT1.md", reason: `"LPT1" is a reserved name`},
+		{name: "less-than", file: "a<b.md", reason: `must not contain any of < > : " | ? *`},
+		{name: "greater-than", file: "a>b.md", reason: `must not contain any of < > : " | ? *`},
+		{name: "colon", file: "ab:c.md", reason: `must not contain any of < > : " | ? *`},
+		{name: "double quote", file: `a"b.md`, reason: `must not contain any of < > : " | ? *`},
+		{name: "backslash", file: `a\b.md`, reason: `must not contain "\"`},
+		{name: "pipe", file: "a|b.md", reason: `must not contain any of < > : " | ? *`},
+		{name: "question mark", file: "a?b.md", reason: `must not contain any of < > : " | ? *`},
+		{name: "asterisk", file: "a*b.md", reason: `must not contain any of < > : " | ? *`},
+		{name: "control character", file: "a\tb.md", reason: "without control characters"},
+		{name: "delete character", file: "a\x7fb.md", reason: "without control characters"},
+		{name: "leading space", file: " a.md", reason: "must not start or end with a space"},
+		{name: "trailing space", file: "a.md ", reason: "must not start or end with a space"},
+		{name: "trailing dot", file: "a.", reason: "must not end in a dot"},
+		{name: "reserved name", file: "CON", reason: "Windows reserved name"},
+		{name: "reserved name with an extension", file: "nul.md", reason: "Windows reserved name"},
+		{name: "reserved COM9", file: "com9.txt", reason: "Windows reserved name"},
+		{name: "reserved LPT1", file: "LPT1.md", reason: "Windows reserved name"},
 		{name: "invalid UTF-8", file: "a\xffb.md", reason: "not valid UTF-8"},
 	}
 
@@ -179,7 +179,7 @@ func TestImportBoundsTheWholePathAt1024Bytes(t *testing.T) {
 	assert.Equal(t, []string{fits}, keys(target.created))
 	require.Len(t, result.Skipped, 1)
 	assert.Equal(t, tooLong, result.Skipped[0].Path)
-	assert.Contains(t, result.Skipped[0].Reason, "longer than 1024 UTF-8 bytes")
+	assert.Contains(t, result.Skipped[0].Reason, "must be at most 1024 bytes")
 }
 
 func TestImportSkipsAFolderWithAnUnportableNameWithItsContents(t *testing.T) {

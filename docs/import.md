@@ -19,7 +19,7 @@ The vault must be a plaintext vault that has never had a document; the subcomman
 
 ## What it skips
 
-It skips the following, lists each in the report with the reason, and imports everything else:
+It skips the following, lists each in the report with the reason, and imports everything else. Names are checked with the same rules the server applies to every new path:
 
 - a name outside the portable set (`engine.md` §6): a `< > : " / \ | ? *` or control character, a leading or trailing space, a trailing `.`, a Windows reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without an extension), a name over 255 UTF-8 bytes, a path over 1024 UTF-8 bytes, or a name that is not valid UTF-8. A folder with such a name is skipped with everything in it;
 - a name that another imported file or folder already takes, ignoring case and Unicode normalization (for example `Note.md` beside `note.md`);
@@ -33,7 +33,7 @@ Rename the skipped files, create a new vault, and import again.
 Logs go to stderr. When it ends, the subcommand writes one line of JSON to stdout:
 
 ```json
-{"status":"partial","vault_id":"0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12","source":"/path/to/notes","imported":{"text":412,"blob":37,"folder":2},"bytes":48213397,"skipped":[{"path":"Inbox/what?.md","reason":"unportable name: the name contains '?'"}]}
+{"status":"partial","vault_id":"0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12","source":"/path/to/notes","imported":{"text":412,"blob":37,"folder":2},"bytes":48213397,"skipped":[{"path":"Inbox/what?.md","reason":"unportable name: a new path may not be created at this path: a new path must not contain any of < > : \" | ? *"}]}
 ```
 
 | `status` | Exit status | Meaning |
