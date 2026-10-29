@@ -50,8 +50,7 @@ export interface CopyCandidateNaming {
 }
 
 /**
- * The shell's candidate generator for the verified core, `CopyCandidate(p,
- * folder, n)` in plugin/verified/core/Apply.dfy: the name with counter `n`
+ * The candidate generator for copy names: the name with counter `n`
  * (1: none) for a copy of `path` (SPEC.md §7 "Copy names"). With `folder` (a
  * folder of `path`, which the core picks as the outermost one a claim holds,
  * #359), that folder takes the suffix instead of the file. Returns null when

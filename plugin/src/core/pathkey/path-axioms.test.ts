@@ -1,9 +1,5 @@
-// The path comparison axioms of the engine specification
-// (plugin/verified/spec/Paths.dfy, docs/design/verified-core.md §2.1) hold
-// for the TypeScript implementations the engine runs (#951). The
-// specification takes `F` and `K` as abstract functions with axioms; here
-// each `lemma {:axiom}` has exactly one property test, named after it
-// (scripts/path-axioms_check.sh fails `make test` otherwise), over every
+// The path comparison axioms hold for the TypeScript implementations the
+// engine runs. Each axiom has one property test, named after it, over every
 // platform's `F`:
 //
 //   F(platform, p)            filesystemKey(p, platform)
@@ -12,9 +8,6 @@
 //   KNorm(p)                  pathKey(p), likewise
 //   Ancestors(p)              PathSpace.ancestors(p)
 //   SameNameModuloFolders     PathSpace.sameButFolderSpelling
-//
-// An axiom a platform turns out to violate is a finding for the
-// specification's design process, not something to patch here.
 //
 // Paths are drawn from segments that mix arbitrary code points with the
 // spellings that make path comparison hard: Turkish dotted and dotless i,
@@ -181,7 +174,7 @@ function assertWithPrecondition<T>(
   expect(held).toBeGreaterThan(runs.numRuns / 10);
 }
 
-describe("path comparison axioms (plugin/verified/spec/Paths.dfy)", () => {
+describe("path comparison axioms", () => {
   it("FNormalizes", () => {
     fc.assert(
       fc.property(
@@ -284,9 +277,9 @@ describe("path comparison axioms (plugin/verified/spec/Paths.dfy)", () => {
   });
 });
 
-describe("path comparison lemmas the specification proves from the axioms", () => {
-  // Proven in Paths.dfy because both relations are key equality; these
-  // check that the engine's predicates are that key equality.
+describe("path comparison lemmas that follow from the axioms", () => {
+  // Both relations are key equality; these check that the engine's
+  // predicates are that key equality.
   const triple = fc
     .tuple(platform, path)
     .chain(([device, p]) =>
@@ -327,7 +320,7 @@ describe("path comparison lemmas the specification proves from the axioms", () =
   });
 });
 
-describe("F and K are not related (Paths.dfy states no axiom between them)", () => {
+describe("F and K are not related (no axiom relates them)", () => {
   it("shares a K but not an F: Straße.md and STRASSE.md", () => {
     expect(K("Straße.md")).toBe(K("STRASSE.md"));
     for (const device of platforms)
