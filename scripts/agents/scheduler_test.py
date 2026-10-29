@@ -223,6 +223,28 @@ class PlanTest(unittest.TestCase):
         # A ready (non-draft) PR still waits for review instead.
         self.assertEqual(keys(plan_for(snap([issue(1)], [pr(10, 1, check="pending")]), {"sessions": sessions})), [])
 
+    def test_reviews_off_routes_prs_without_a_reviewer(self):
+        cfg = s.deep_merge(CFG, {"reviews": False})
+        # A finished PR with green CI is armed by the scheduler, with no reviewer job.
+        plan = plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1)]), cfg=cfg)
+        self.assertEqual(keys(plan), [])
+        self.assertEqual(plan.arms, [(10, "h" * 40)])
+        # ...but not while its worker is still running on it.
+        running = {"running": {"x": {"key": "worker:1"}}}
+        self.assertEqual(plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1)]), running, cfg=cfg).arms, [])
+        # A conflict goes to the cheap merge-fixer, armed or not.
+        for auto in (False, True):
+            plan = plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1, mergeable="CONFLICTING", auto=auto)]),
+                            cfg=cfg)
+            self.assertEqual([(j.key, j.role) for j in plan.jobs], [("fixer:pr-10", "merge-fixer")])
+        # A CI failure on an unarmed PR goes to its worker.
+        plan = plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1, check="failure")]), cfg=cfg)
+        self.assertEqual([(j.key, j.role) for j in plan.jobs], [("worker:1", "issue-worker")])
+        # With reviews on, the same green PR gets a reviewer and is not armed.
+        plan = plan_for(snap([issue(1, status="status:in-review")], [pr(10, 1)]))
+        self.assertEqual(keys(plan), ["reviewer:pr-10"])
+        self.assertEqual(plan.arms, [])
+
     def test_later_phase_work_off_starts_only_current_phase(self):
         cfg = s.deep_merge(CFG, {"later_phase_work": False})
         sessions = {"worker:4": {"role": "issue-worker", "issue": 4, "handoff": {"state": "question"}}}
