@@ -40,7 +40,7 @@ func (fixture *syncFixture) membershipSnapshot(t *testing.T, vaultID string) str
 func (fixture *syncFixture) staleEntry(t *testing.T, lister *keyedMember, entryType e2ee.EntryType, payload []byte, keys ...ed25519.PrivateKey) *vaultsyncv1.LogEntry {
 	t.Helper()
 
-	entries := fixture.vaultLog(t, lister)
+	entries := fixture.listedLog(t, lister)
 	require.GreaterOrEqual(t, len(entries), 2)
 
 	prevHash, err := logEntryOf(lister.vaultID, entries[len(entries)-2]).Hash()
@@ -93,7 +93,7 @@ func (fixture *syncFixture) requireRefusalsThenAccept(t *testing.T, change logCh
 	valid := fixture.nextEntry(t, change.lister, change.entryType, change.payload, change.keys...)
 	require.NoError(t, change.call(valid))
 
-	entries := fixture.vaultLog(t, change.lister)
+	entries := fixture.listedLog(t, change.lister)
 	assert.True(t, proto.Equal(valid, entries[len(entries)-1]), "the entry is appended as signed")
 }
 
@@ -317,7 +317,7 @@ func TestConcurrentLogAppendsLandExactlyOnceAgainstPostgres(t *testing.T) {
 
 	require.NotEqual(t, -1, landed, "one append lands")
 
-	entries := fixture.vaultLog(t, alice)
+	entries := fixture.listedLog(t, alice)
 	require.Len(t, entries, 2)
 	assert.True(t, proto.Equal(invitations[landed].entry, entries[1]))
 	assert.Equal(t, 1, fixture.count(t, "vault_invitations", vaultID))

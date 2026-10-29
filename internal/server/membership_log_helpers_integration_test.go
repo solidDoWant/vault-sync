@@ -8,17 +8,20 @@ import (
 	"testing"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/e2ee"
+	"github.com/solidDoWant/vault-sync/internal/e2ee/logtest"
+	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
 // The client side of an E2EE vault's membership log in these tests: each
 // membership change signs the next entry on top of the log the server lists.
 
-// vaultLog returns the whole log of lister's vault, as lister lists it.
-func (fixture *syncFixture) vaultLog(t *testing.T, lister *keyedMember) []*vaultsyncv1.LogEntry {
+// listedLog returns the whole log of lister's vault, as lister lists it.
+func (fixture *syncFixture) listedLog(t *testing.T, lister *keyedMember) []*vaultsyncv1.LogEntry {
 	t.Helper()
 
 	page, err := fixture.logEntries(t, lister, 1000, "")
@@ -33,7 +36,7 @@ func (fixture *syncFixture) vaultLog(t *testing.T, lister *keyedMember) []*vault
 func (fixture *syncFixture) encrypted(t *testing.T, lister *keyedMember) bool {
 	t.Helper()
 
-	return len(fixture.vaultLog(t, lister)) > 0
+	return len(fixture.listedLog(t, lister)) > 0
 }
 
 // nextEntry is the entry after the head of lister's vault log, signed by
@@ -41,7 +44,7 @@ func (fixture *syncFixture) encrypted(t *testing.T, lister *keyedMember) bool {
 func (fixture *syncFixture) nextEntry(t *testing.T, lister *keyedMember, entryType e2ee.EntryType, payload []byte, keys ...ed25519.PrivateKey) *vaultsyncv1.LogEntry {
 	t.Helper()
 
-	entries := fixture.vaultLog(t, lister)
+	entries := fixture.listedLog(t, lister)
 	require.NotEmpty(t, entries, "an E2EE vault's log starts with its genesis")
 
 	head := entries[len(entries)-1]
@@ -139,4 +142,70 @@ func (member *keyedMember) genesis(t *testing.T, vaultID string) *vaultsyncv1.Lo
 	require.NoError(t, err)
 
 	return signedEntry(t, vaultID, 1, make([]byte, e2ee.HashSize), e2ee.EntryGenesis, payload, member.secret.SignKey())
+}
+
+// signedLog is the vault's stored log with caller's signing key, when the
+// stored log names exactly the vault's keyed members and their roles: the
+// log the members' membership changes built. Otherwise it is false, and the
+// test needs a log rewritten to match the members (vaultLog).
+func (fixture *syncFixture) signedLog(t *testing.T, caller *keyedMember) (*logtest.Log, bool) {
+	t.Helper()
+
+	rows, err := fixture.pool.Query(t.Context(), `
+		SELECT seq, prev_hash, entry_type, payload, signatures FROM vault_log_entries
+		WHERE vault_id = $1 ORDER BY seq`, caller.vaultID)
+	require.NoError(t, err)
+
+	entries, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (e2ee.Entry, error) {
+		entry := e2ee.Entry{VaultID: caller.vaultID}
+
+		var entryType int16
+
+		err := row.Scan(&entry.Seq, &entry.PrevHash, &entryType, &entry.Payload, &entry.Signatures)
+		entry.Type = e2ee.EntryType(entryType)
+
+		return entry, err
+	})
+	require.NoError(t, err)
+
+	states, err := e2ee.ReplayLog(caller.vaultID, entries, e2ee.ReplayOptions{})
+	if err != nil || len(states) == 0 {
+		return nil, false
+	}
+
+	rows, err = fixture.pool.Query(t.Context(), `
+		SELECT m.user_id, m.role FROM vault_members m JOIN user_keys k ON k.user_id = m.user_id
+		WHERE m.vault_id = $1`, caller.vaultID)
+	require.NoError(t, err)
+
+	roles := map[store.Role]e2ee.Role{store.RoleOwner: e2ee.RoleOwner, store.RoleEditor: e2ee.RoleEditor, store.RoleViewer: e2ee.RoleViewer}
+
+	type member struct {
+		userID uuid.UUID
+		role   store.Role
+	}
+
+	members, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (member, error) {
+		var value member
+
+		return value, row.Scan(&value.userID, &value.role)
+	})
+	require.NoError(t, err)
+
+	head := states[len(states)-1]
+	if len(head.Members) != len(members) {
+		return nil, false
+	}
+
+	for _, keyed := range members {
+		logged, ok := head.Members[keyed.userID.String()]
+		if !ok || logged.Role != roles[keyed.role] {
+			return nil, false
+		}
+	}
+
+	return &logtest.Log{
+		VaultID: caller.vaultID, Entries: entries,
+		Secrets: map[string]e2ee.UserSecret{caller.userID.String(): caller.secret},
+	}, true
 }
