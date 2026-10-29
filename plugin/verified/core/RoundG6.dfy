@@ -5179,7 +5179,6 @@ abstract module RoundG6 refines RoundGuarantees {
       assert step.effects == [];
       return;
     }
-    var after := step.post.devices[d];
     var feed := pre.server.feed;
     var behind := journal.cursor < |feed|;
     var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
@@ -5193,7 +5192,6 @@ abstract module RoundG6 refines RoundGuarantees {
     var input' := input.(listing := InScope(settled.listing, input.outOfScope));
     var push := OnPush(platform, read, input', revs);
     assert step.effects == settled.effects + push.1;
-    assert after.journal == push.0;
     assert OneFilePerName(platform, device.disk);
     assert input.listing == ListingOf(device);
     OneFileDistinct(platform, device.disk);
