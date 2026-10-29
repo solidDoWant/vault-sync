@@ -41,6 +41,14 @@ describe("TokenManager", () => {
     expect(idp.refreshes).toBe(0);
   });
 
+  it("starts needing a sign-in when the device signed in before but its refresh token is gone, without calling the provider", async () => {
+    const { manager, idp } = setup({ signedIn: false, manager: { signInRequired: true } });
+
+    expect(manager.state).toBe("sign-in-required");
+    await expect(manager.accessToken()).rejects.toBeInstanceOf(SignInRequiredError);
+    expect(idp.refreshes).toBe(0);
+  });
+
   it("gets an access token with the stored refresh token and reuses it while it is fresh", async () => {
     const { manager, idp } = setup();
     expect(manager.state).toBe("signed-in");

@@ -12,7 +12,11 @@ export interface PluginData {
   oidcIssuer: string;
   /** Optional: the OAuth client the plugin signs in as; its access tokens must carry the server's audience. Empty uses the one GetServerInfo advertises. */
   oidcClientId: string;
-  /** Secret: the device's refresh token (SPEC.md §9.1). Absent when signed out. Never logged or shown. */
+  /**
+   * Secret: the device's refresh token (SPEC.md §9.1). Absent when signed
+   * out. Never logged or shown. Saved to device-local storage, never to
+   * `data.json` (token-storage.ts); read from `data.json` only to move it.
+   */
   refreshToken?: string;
   /** The identity provider the refresh token belongs to, as resolved at sign-in, so refreshing never depends on reaching the server. Kept while signed in. */
   identityProvider?: IdentityProvider;
