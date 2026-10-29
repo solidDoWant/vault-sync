@@ -4,6 +4,7 @@ import { Code, ConnectError, createRouterTransport, type Transport } from "@conn
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { BlobService } from "../../gen/vaultsync/v1/blob_pb";
+import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import { SyncService, type CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
 import { DocumentKind, DocumentSchema, RevisionSchema, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
@@ -41,7 +42,21 @@ export interface InMemoryServerOptions {
    * purged cursor revision as divergence. True by default.
    */
   purgeMarkers?: boolean;
+  /**
+   * An end-to-end encrypted vault (SPEC.md §9.3): commits carry ciphertext
+   * paths, a 32-byte client path_key and the current epoch, blobs are not
+   * checked against their id, and only the exact path_key rule applies
+   * (docs/design/encryption.md, Folder rule). Its current epoch is
+   * `currentEpoch`.
+   */
+  encrypted?: boolean;
 }
+
+/** How a test reads a stored revision's path and content in plain form: as they are, or decrypted in an encrypted vault. */
+export type RevisionReader = (revision: Revision, blob: Uint8Array | undefined) => { path: string; content: Uint8Array | undefined };
+
+/** A plaintext vault's revisions, as they are stored. */
+export const plaintextReader: RevisionReader = (revision, blob) => ({ path: new TextDecoder().decode(revision.path), content: blob });
 
 export interface CommitInput {
   documentId: string;
@@ -116,11 +131,19 @@ export class InMemoryServer {
   private readonly maxUploads: number;
   private readonly maxBlobBytes: number;
   private readonly uploadReclaimIdleMs: number;
+  readonly encrypted: boolean;
+  /** The vault's current key epoch in an encrypted vault: commits must carry it (0 in a plaintext vault). */
+  currentEpoch = 0;
+  /** Reads stored revisions in plain form for liveFiles and liveDocuments. */
+  reader: RevisionReader = plaintextReader;
+  /** The path_key of each revision of an encrypted vault, by revision id. */
+  private readonly pathKeys = new Map<string, string>();
   /** The server clock, read for every revision's create_time; replace it to move time on. */
   now: () => Date;
 
   constructor(options: InMemoryServerOptions = {}) {
     this.vaultId = options.vaultId ?? "vault-1";
+    this.encrypted = options.encrypted ?? false;
     this.maxHistoryPageSize = options.maxHistoryPageSize ?? 1000;
     this.now = options.now ?? (() => new Date());
     this.maxPageSize = options.maxPageSize ?? 1000;
@@ -244,7 +267,7 @@ export class InMemoryServer {
             offset += chunk.length;
           }
           this.uploads.delete(id);
-          if (sha256Hex(content) !== id) throw new ConnectError("content does not match blob_id", Code.InvalidArgument);
+          if (!this.encrypted && sha256Hex(content) !== id) throw new ConnectError("content does not match blob_id", Code.InvalidArgument);
           this.blobs.set(id, content);
           return this.respond("CommitBlob", request, { size: BigInt(content.length) });
         },
@@ -418,7 +441,8 @@ export class InMemoryServer {
       if (revision.deleted || revision.contentRef === undefined) continue;
       const blob = this.blobs.get(bytesToHex(revision.contentRef.blobId));
       if (blob === undefined) throw new Error("head without a blob");
-      files.set(new TextDecoder().decode(revision.path), new TextDecoder().decode(blob));
+      const plain = this.reader(revision, blob);
+      files.set(plain.path, new TextDecoder().decode(plain.content));
     }
     return files;
   }
@@ -457,8 +481,13 @@ export class InMemoryServer {
   /** Path to document id of every live document at its head: which document holds each path. */
   liveDocuments(): Map<string, string> {
     const documents = new Map<string, string>();
-    for (const [documentId, revision] of this.liveHeads()) documents.set(new TextDecoder().decode(revision.path), documentId);
+    for (const [documentId, revision] of this.liveHeads()) documents.set(this.reader(revision, undefined).path, documentId);
     return documents;
+  }
+
+  /** Every path, path key and blob the server stores, as bytes: what its database and object store hold of the vault's content. */
+  storedBytes(): Uint8Array[] {
+    return [...this.revisions.map((revision) => revision.path), ...[...this.pathKeys.values()].map((key) => hexToBytes(key)), ...this.blobs.values()];
   }
 
   /** The id of every document whose head is a tombstone, sorted. */
@@ -494,7 +523,8 @@ export class InMemoryServer {
         existing.deleted === request.deleted &&
         bytesToHex(existing.path) === bytesToHex(request.path) &&
         bytesToHex(existing.contentRef?.blobId ?? new Uint8Array()) === bytesToHex(request.contentRef?.blobId ?? new Uint8Array()) &&
-        existing.contentRef?.size === request.contentRef?.size;
+        existing.contentRef?.size === request.contentRef?.size &&
+        existing.epoch === request.epoch;
       if (!same) throw new ConnectError("revision id reused with other fields", Code.InvalidArgument);
       return existing;
     }
@@ -513,6 +543,53 @@ export class InMemoryServer {
     const blob = this.blobs.get(blobId);
     if (!folder && blob === undefined) throw new ConnectError("content_ref is not a complete blob", Code.FailedPrecondition);
     if (blob !== undefined && BigInt(blob.length) !== request.contentRef?.size) throw new ConnectError("size mismatch", Code.InvalidArgument);
+    if (this.encrypted) {
+      this.checkEncrypted(request);
+    } else {
+      if (request.epoch !== 0 || request.pathKey.length !== 0) throw new ConnectError("epoch and path_key must be unset in a plaintext vault", Code.InvalidArgument);
+      this.checkPlaintextPath(request, head, folder);
+    }
+    this.headSeq++;
+    const revision = create(RevisionSchema, {
+      id: request.revisionId,
+      documentId: request.documentId,
+      vaultId: this.vaultId,
+      seq: this.headSeq,
+      parentRevId: request.baseRevId,
+      kind: request.kind,
+      contentRef: blob === undefined ? undefined : { blobId: hexToBytes(blobId), size: BigInt(blob.length) },
+      path: request.path,
+      deleted: request.deleted,
+      deviceId: request.deviceId,
+      userId: this.deviceUsers.get(request.deviceId) ?? "",
+      createTime: timestampFromDate(this.now()),
+      anchor: this.nextAnchor(),
+      epoch: request.epoch,
+    });
+    this.revisions.push(revision);
+    if (this.encrypted) this.pathKeys.set(revision.id, bytesToHex(request.pathKey));
+    return revision;
+  }
+
+  /** An encrypted vault's commit rules: the current epoch, a sealed path, a 32-byte path_key unique among live documents. */
+  private checkEncrypted(request: CommitRevisionRequest): void {
+    if (request.pathKey.length !== 32) throw new ConnectError("path_key must be 32 bytes in an encrypted vault", Code.InvalidArgument);
+    if (request.path.length === 0) throw new ConnectError("path is empty", Code.InvalidArgument);
+    if (request.epoch === 0) throw new ConnectError("epoch must be the vault's current key epoch", Code.InvalidArgument);
+    if (request.epoch !== this.currentEpoch) {
+      throw new ConnectError("epoch is not the vault's current key epoch", Code.FailedPrecondition, undefined, [
+        { desc: ErrorDetailSchema, value: { reason: ErrorReason.EPOCH_NOT_CURRENT } },
+      ]);
+    }
+    if (request.deleted) return;
+    const key = bytesToHex(request.pathKey);
+    for (const [documentId, live] of this.liveHeads()) {
+      if (documentId !== request.documentId && this.pathKeys.get(live.id) === key) throw new ConnectError("another live document has this path", Code.AlreadyExists);
+    }
+  }
+
+  /** A plaintext vault's path rules (SPEC.md §5, §6.2). */
+  private checkPlaintextPath(request: CommitRevisionRequest, head: Revision | undefined, folder: boolean): void {
     let path: string;
     try {
       path = strictDecoder.decode(request.path);
@@ -546,24 +623,6 @@ export class InMemoryServer {
         }
       }
     }
-    this.headSeq++;
-    const revision = create(RevisionSchema, {
-      id: request.revisionId,
-      documentId: request.documentId,
-      vaultId: this.vaultId,
-      seq: this.headSeq,
-      parentRevId: request.baseRevId,
-      kind: request.kind,
-      contentRef: blob === undefined ? undefined : { blobId: hexToBytes(blobId), size: BigInt(blob.length) },
-      path: request.path,
-      deleted: request.deleted,
-      deviceId: request.deviceId,
-      userId: this.deviceUsers.get(request.deviceId) ?? "",
-      createTime: timestampFromDate(this.now()),
-      anchor: this.nextAnchor(),
-    });
-    this.revisions.push(revision);
-    return revision;
   }
 
   private liveHeads(): Map<string, Revision> {

@@ -1,12 +1,11 @@
 import { timestampMs } from "@bufbuild/protobuf/wkt";
 import { Code, ConnectError } from "@connectrpc/connect";
-import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
 import { errorCode, headMoved } from "./errors";
-import { baseContent, downloadContent, toIncoming, type PullApi } from "./remote";
-import { uploadContent } from "./upload";
+import { type IncomingRevision, type PullApi } from "./remote";
+import { EncryptedCodec, PlaintextCodec, type ContentRefFields, type RevisionCodec, type VaultKeyring } from "./codec";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { v7 as uuidv7 } from "uuid";
@@ -62,6 +61,12 @@ export interface SyncEngineOptions {
    * in Obsidian). Must be given with `readOnly`.
    */
   keepLocalCopy?: (path: string, content: Uint8Array) => Promise<void>;
+  /**
+   * The vault's epoch keys, in an end-to-end encrypted vault: contents and
+   * paths are then sealed on push and opened on pull (codec.ts). Absent for
+   * a plaintext vault.
+   */
+  keys?: VaultKeyring;
 }
 
 /** A local file that is not uploaded because it is larger than the size limit (§7). */
@@ -103,6 +108,7 @@ type Outcome = JournalChange | typeof undecided;
 /** A remote revision as the decision table reads it. */
 interface Remote {
   documentId: string;
+  revisionId: string;
   path: string;
   hash: string;
   size: bigint;
@@ -116,7 +122,8 @@ export class DivergedError extends Error {
   override readonly name = "DivergedError";
 }
 
-const encoder = new TextEncoder();
+/** Commits of one operation when a rotation keeps replacing the epoch it was sealed under. */
+const maxCommitAttempts = 3;
 
 /**
  * The plugin's sync engine (docs/design/engine.md): one sync loop over one
@@ -130,6 +137,7 @@ export class SyncEngine {
   lastError: unknown;
 
   private readonly api: SyncApi;
+  private readonly codec: RevisionCodec;
   private readonly vaultId: string;
   private readonly deviceId: string;
   private readonly deviceName: string;
@@ -175,6 +183,7 @@ export class SyncEngine {
 
   constructor(options: SyncEngineOptions) {
     this.api = options.api;
+    this.codec = options.keys === undefined ? new PlaintextCodec(options.api, options.vaultId) : new EncryptedCodec(options.api, options.vaultId, options.keys);
     this.vaultId = options.vaultId;
     this.deviceId = options.deviceId;
     this.deviceName = options.deviceName ?? options.deviceId;
@@ -289,6 +298,7 @@ export class SyncEngine {
   /** One cycle: detect, pull, push. Returns whether the pull or the push made progress. */
   private async cycle(): Promise<boolean> {
     if (!this.cleaned) await this.removeTemporaryFiles();
+    await this.codec.prepare();
     const state = await this.loadState();
     const renames = this.renames;
     this.renames = [];
@@ -341,7 +351,7 @@ export class SyncEngine {
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
         const before = localPath(state, revision.documentId);
-        const outcome = await this.applyOrSkip(state, revision);
+        const outcome = await this.applyOrSkip(state, revision, await this.codec.decode(revision));
         if (outcome === undecided) return progress;
         const change: JournalChange = { ...outcome, cursor: { seq: revision.seq, anchor: revision.anchor } };
         // A revision that applied replaces an earlier skip of its document.
@@ -447,7 +457,7 @@ export class SyncEngine {
 
     // Step 2: every document on the server.
     for (const [id, head] of heads) {
-      const incoming = toIncoming(head);
+      const incoming = await this.codec.decode(head);
       const remote = incoming.remote;
       // A tombstone (or a path that may not reach the disk) drops the document; a file this device still holds is pushed as a new one.
       if (remote.deleted || !incoming.pathAllowed) continue;
@@ -478,7 +488,7 @@ export class SyncEngine {
         if (local.hash !== remote.contentHash) {
           const localContent = await this.readFile(localPath);
           if (localContent === null) continue;
-          const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+          const content = await this.codec.download(remote.contentHash, remote.size, remote.revisionId);
           // Rule M against the head, with no base.
           const outcome = await mergeContent({
             kind: entry.kind,
@@ -523,7 +533,7 @@ export class SyncEngine {
         skipped.push({ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) });
         continue;
       }
-      const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      const content = await this.codec.download(remote.contentHash, remote.size, remote.revisionId);
       if (await orSkip(remote, () => placeHead(remote.path, content, id))) docs.push(entry);
     }
 
@@ -554,19 +564,18 @@ export class SyncEngine {
    * hold (§6: the platform cannot hold it, or Obsidian would store it under
    * another name) is skipped and listed instead, and the pull continues.
    */
-  private async applyOrSkip(state: JournalState, revision: Revision): Promise<Outcome> {
+  private async applyOrSkip(state: JournalState, revision: Revision, incoming: IncomingRevision): Promise<Outcome> {
     try {
-      return await this.apply(state, revision);
+      return await this.apply(state, revision, incoming);
     } catch (error) {
       if (!isVaultError(error, "unmaterializable") && !isVaultError(error, "path-conflict")) throw error;
-      const { remote } = toIncoming(revision);
+      const { remote } = incoming;
       return { putSkipped: [{ documentId: remote.documentId, path: remote.path, reason: "refused-by-vault", size: Number(remote.size) }] };
     }
   }
 
   /** Applies one remote revision: the file change first, then the returned journal change. */
-  private async apply(state: JournalState, revision: Revision): Promise<Outcome> {
-    const incoming = toIncoming(revision);
+  private async apply(state: JournalState, revision: Revision, incoming: IncomingRevision): Promise<Outcome> {
     const remote = incoming.remote;
     const id = remote.documentId;
     const entry = state.docs.get(id);
@@ -578,7 +587,7 @@ export class SyncEngine {
     if (acknowledged !== undefined) return this.acknowledge(acknowledged, revision);
     // This device's commit, whose reply was lost, made before rule W moved the file aside: it is the base of the move.
     const moved = ops.find((op) => op.earlierRevisionIds?.includes(remote.revisionId) === true);
-    if (moved !== undefined && !remote.deleted) return this.acknowledgeEarlier(moved, revision);
+    if (moved !== undefined && !remote.deleted) return this.acknowledgeEarlier(moved, revision, incoming);
     // A path the protocol does not allow never reaches the disk.
     if (!incoming.pathAllowed) return {};
     // §6, §7: a file over the size limit, or at a path this device cannot hold, is skipped here and listed.
@@ -593,6 +602,7 @@ export class SyncEngine {
     };
     const incomingRevision: Remote = {
       documentId: id,
+      revisionId: remote.revisionId,
       path: remote.path,
       hash: remote.contentHash,
       size: remote.size,
@@ -650,7 +660,7 @@ export class SyncEngine {
       }
       await this.rename(entry.path, remote.path);
       if (remote.hash !== entry.baseHash) {
-        const content = await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
+        const content = await this.codec.download(remote.hash, remote.size, remote.revisionId);
         // The file was edited after it was checked: it stays at the new path on its old base, an edit the next cycle resolves.
         if (!(await this.write(remote.path, content, entry.baseHash))) {
           await this.record({ putDocs: [{ ...entry, path: remote.path }] });
@@ -661,7 +671,7 @@ export class SyncEngine {
     }
     // A3: clean, live, same path.
     if (remote.hash !== entry.baseHash) {
-      const content = await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
+      const content = await this.codec.download(remote.hash, remote.size, remote.revisionId);
       if (!(await this.write(entry.path, content, entry.baseHash))) return undecided;
     }
     return { putDocs: [{ ...target, path: entry.path }] };
@@ -689,7 +699,7 @@ export class SyncEngine {
     const finalPath = renamed && remote.path === entry.path ? localPath : remote.path;
     const local = await this.vault.read(localPath);
     if (sha256Hex(local) !== file.hash) return undecided;
-    const remoteContent = remote.hash === file.hash ? local : await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
+    const remoteContent = remote.hash === file.hash ? local : await this.codec.download(remote.hash, remote.size, remote.revisionId);
     // Rule M.
     const merged = await mergeContent({
       kind: entry.kind,
@@ -700,7 +710,7 @@ export class SyncEngine {
       remoteHash: remote.hash,
       remoteTime: remote.time,
       baseHash: entry.baseHash,
-      base: () => baseContent(this.api, this.vaultId, entry.baseRevId),
+      base: () => this.codec.baseContent(entry.baseRevId),
     });
     const finalHash = sha256Hex(merged.content);
 
@@ -843,7 +853,7 @@ export class SyncEngine {
     const cleared = await this.clear(state, remote.documentId, remote.path, remote.hash);
     if (cleared === undecided) return undecided;
     if (cleared === "free") {
-      const content = await downloadContent(this.api, this.vaultId, remote.hash, remote.size);
+      const content = await this.codec.download(remote.hash, remote.size, remote.revisionId);
       if (!(await this.write(remote.path, content, null))) return undecided;
     }
     return "placed";
@@ -1031,14 +1041,13 @@ export class SyncEngine {
   }
 
   private acknowledge(op: PendingOp, revision: Revision): JournalChange {
-    const contentRef = revision.contentRef;
     const entry: DocEntry = {
       documentId: op.documentId,
       path: op.path,
       kind: op.docKind,
       baseRevId: revision.id,
       baseHash: op.contentHash,
-      baseSize: contentRef === undefined ? op.contentSize : Number(contentRef.size),
+      baseSize: op.contentSize,
     };
     return revision.deleted ? { deleteDocs: [op.documentId], deletePending: [op.opId] } : { putDocs: [entry], deletePending: [op.opId] };
   }
@@ -1049,8 +1058,8 @@ export class SyncEngine {
    * top of it (a rename to the copy name, or an edit), or is dropped when it
    * changes nothing; a sent one is left to be acknowledged.
    */
-  private acknowledgeEarlier(op: PendingOp, revision: Revision): JournalChange {
-    const { remote } = toIncoming(revision);
+  private acknowledgeEarlier(op: PendingOp, revision: Revision, incoming: IncomingRevision): JournalChange {
+    const { remote } = incoming;
     const entry: DocEntry = {
       documentId: op.documentId,
       path: remote.path,
@@ -1101,7 +1110,7 @@ export class SyncEngine {
         if (content === null || sha256Hex(content) !== file.hash) continue;
         await this.keepLocalCopy(projection.path, content);
       }
-      if (atBase) await this.write(base.path, await downloadContent(this.api, this.vaultId, base.baseHash, BigInt(base.baseSize)), file.hash);
+      if (atBase) await this.write(base.path, await this.codec.download(base.baseHash, BigInt(base.baseSize), base.baseRevId), file.hash);
       else await this.delete(projection.path, file.hash);
     }
     // The shared version of every document whose file is missing at its shared path.
@@ -1109,7 +1118,7 @@ export class SyncEngine {
       const base = shared(projection);
       if (projection.kind === "folder" || base === undefined) continue;
       if ((await this.cache.read(this.vault, base.path)) !== null) continue;
-      await this.write(base.path, await downloadContent(this.api, this.vaultId, base.baseHash, BigInt(base.baseSize)), null);
+      await this.write(base.path, await this.codec.download(base.baseHash, BigInt(base.baseSize), base.baseRevId), null);
     }
     // Folders that are not shared ones, deepest first, where they are empty now.
     const added = changed.filter((projection) => projection.kind === "folder" && !projection.deleted && shared(projection)?.path !== projection.path).map((projection) => projection.path);
@@ -1133,53 +1142,72 @@ export class SyncEngine {
         continue;
       }
       let op = queued;
-      if (op.kind !== "delete" && op.docKind !== "folder") {
-        // §7: a file over the size limit stays local and is listed.
-        if (this.tooLargeToUpload(op)) {
-          blocked.add(op.documentId);
-          continue;
-        }
-        const read = () => this.readFile(op.path);
-        let uploaded;
-        try {
-          uploaded = await uploadContent(this.api, this.vaultId, op.contentHash, BigInt(op.contentSize), read);
-        } catch (error) {
-          // The server refuses a size above its limit (CreateUpload: INVALID_ARGUMENT).
-          if (errorCode(error) !== Code.InvalidArgument) throw error;
-          this.uploadRefused.set(op.opId, op.contentHash);
-          blocked.add(op.documentId);
-          continue;
-        }
-        // The file changed since the operation was recorded: the next detection records the newer content.
-        if (uploaded === "missing") {
-          blocked.add(op.documentId);
-          continue;
-        }
-      }
-      if (!op.sent) {
-        op = { ...op, sent: true };
-        await this.record({ putPending: [op] });
+      // §7: a file over the size limit stays local and is listed.
+      if (op.kind !== "delete" && op.docKind !== "folder" && this.tooLargeToUpload(op)) {
+        blocked.add(op.documentId);
+        continue;
       }
       const base = state.docs.get(op.documentId);
       let revision: Revision | undefined;
-      try {
-        revision = (
-          await this.api.sync.commitRevision({
-            vaultId: this.vaultId,
-            documentId: op.documentId,
-            revisionId: op.revisionId,
-            baseRevId: base?.baseRevId ?? "",
-            kind: documentKind(op.docKind),
-            // A folder has no content.
-            ...(op.docKind === "folder" ? {} : { contentRef: { blobId: hexToBytes(op.contentHash), size: BigInt(op.contentSize) } }),
-            path: encoder.encode(op.path),
-            deleted: op.kind === "delete",
-            deviceId: this.deviceId,
-          })
-        ).revision;
-      } catch (error) {
-        const refusal = this.refusal(state, op, error);
-        if (refusal === undefined) throw error;
+      let refused: { error: unknown } | undefined;
+      // A commit under an epoch a rotation replaced is sealed again under the new one and retried (docs/design/encryption.md, Rotation).
+      for (let attempt = 1; ; attempt++) {
+        let contentRef: ContentRefFields | undefined;
+        if (op.docKind !== "folder") {
+          const pushed = op;
+          let uploaded;
+          try {
+            uploaded = await this.codec.content({
+              contentHash: pushed.contentHash,
+              size: pushed.contentSize,
+              deleted: pushed.kind === "delete",
+              baseRevId: base?.baseRevId,
+              read: () => this.readFile(pushed.path),
+            });
+          } catch (error) {
+            // The server refuses a size above its limit (CreateUpload: INVALID_ARGUMENT).
+            if (op.kind === "delete" || errorCode(error) !== Code.InvalidArgument) throw error;
+            this.uploadRefused.set(op.opId, op.contentHash);
+            break;
+          }
+          // The file changed since the operation was recorded: the next detection records the newer content.
+          if (uploaded === "missing") break;
+          contentRef = uploaded;
+        }
+        if (!op.sent) {
+          op = { ...op, sent: true };
+          await this.record({ putPending: [op] });
+        }
+        try {
+          revision = (
+            await this.api.sync.commitRevision({
+              vaultId: this.vaultId,
+              documentId: op.documentId,
+              revisionId: op.revisionId,
+              baseRevId: base?.baseRevId ?? "",
+              kind: documentKind(op.docKind),
+              // A folder has no content.
+              ...(contentRef === undefined ? {} : { contentRef }),
+              ...this.codec.commitFields(op),
+              deleted: op.kind === "delete",
+              deviceId: this.deviceId,
+            })
+          ).revision;
+          refused = undefined;
+          break;
+        } catch (error) {
+          refused = { error };
+          if (attempt >= maxCommitAttempts || !(await this.codec.retryCommit(error))) break;
+        }
+      }
+      if (revision === undefined && refused === undefined) {
+        // Nothing was committed: the content is too large or changed.
+        blocked.add(op.documentId);
+        continue;
+      }
+      if (refused !== undefined) {
+        const refusal = this.refusal(state, op, refused.error);
+        if (refusal === undefined) throw refused.error;
         // The server checks a commit's revision id before anything else, so a refused commit was never applied: the operation is unsent again.
         blocked.add(op.documentId);
         await this.record({ putPending: [{ ...op, sent: false, ...("reason" in refusal ? { refused: refusal.reason } : {}) }] });

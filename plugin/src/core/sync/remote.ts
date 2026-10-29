@@ -131,6 +131,13 @@ function kindName(kind: DocumentKind): DocumentKindName {
  * its size and, for plaintext vaults, that its SHA-256 is the blob id (§5).
  */
 export async function downloadContent(api: PullApi, vaultId: string, contentHash: string, size: bigint): Promise<Uint8Array> {
+  const content = await downloadBlob(api, vaultId, contentHash, size);
+  if (sha256Hex(content) !== contentHash) throw new RemoteContentError(`blob ${contentHash} does not match its content hash`);
+  return content;
+}
+
+/** Downloads a whole blob of `size` bytes with ranged DownloadBlob calls and checks its size; the caller checks its content. */
+export async function downloadBlob(api: PullApi, vaultId: string, contentHash: string, size: bigint): Promise<Uint8Array> {
   if (size > BigInt(Number.MAX_SAFE_INTEGER)) throw new RemoteContentError(`blob ${contentHash} is too large to hold`);
   const total = Number(size);
   const content = new Uint8Array(total);
@@ -145,7 +152,6 @@ export async function downloadContent(api: PullApi, vaultId: string, contentHash
     content.set(response.data, offset);
     offset += response.data.length;
   }
-  if (sha256Hex(content) !== contentHash) throw new RemoteContentError(`blob ${contentHash} does not match its content hash`);
   return content;
 }
 
