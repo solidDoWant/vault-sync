@@ -77,7 +77,8 @@ recipient          = kind (u8) || lp(recipient_id) || SHA-256(recipient_public_k
 epoch_sig          = Ed25519(owner_sign_key, epoch_body)      # prev_commitment of epoch 1 is 32 zero bytes
 
 invite_sign_seed   = HKDF-SHA256(ikm = secret, salt = uuid(vault_id), info = "vault-sync/v1/invitation-sign" || uuid(invitation_id), length = 32)
-invite_anchor      = seal_to(invitation_pub, "vault-sync/v1/invite-anchor" || uuid(vault_id) || genesis_hash (32) || inviter_fingerprint (32))
+invite_mac_key     = HKDF-SHA256(ikm = secret, salt = uuid(vault_id), info = "vault-sync/v1/invite-anchor" || uuid(invitation_id), length = 32)
+invite_anchor      = genesis_hash (32) || inviter_fingerprint (32) || HMAC-SHA256(invite_mac_key, "vault-sync/v1/invite-anchor" || uuid(vault_id) || uuid(invitation_id) || genesis_hash || inviter_fingerprint)
 
 anchor_key         = HKDF-SHA256(ikm = kem_seed, salt = empty, info = "vault-sync/v1/anchors", length = 32)
 anchor_list        = 0x02 || nonce || XChaCha20-Poly1305(anchor_key, nonce, list, ad = 0x02 || "vault-sync/v1/anchors" || uuid(user_id) || version (u64))
@@ -92,13 +93,17 @@ Entry types and payloads:
 | type | Entry | Payload | Signed by |
 |---|---|---|---|
 | 0x01 | genesis | `bundle` of the creator, then `0x00` or `0x01 || escrow_bundle` | the creator |
-| 0x02 | invite | `uuid(invitation_id)` · role (u8) · `invite_sign_pub` (32) | an owner |
+| 0x02 | invite | `uuid(invitation_id)` · role (u8) · `invite_sign_pub` (32) · `invitation_kem_pub` (1216) | an owner |
 | 0x03 | revoke invitation | `uuid(invitation_id)` | an owner |
 | 0x04 | redeem | `uuid(invitation_id)` · newcomer `bundle` | the invitation key **and** the newcomer (two signatures) |
 | 0x05 | remove member | `uuid(user_id)` | an owner |
 | 0x06 | leave | `uuid(user_id)` | that member |
 | 0x07 | set role | `uuid(user_id)` · role (u8) | an owner |
 | 0x08 | escrow | `0x00` (off) or `0x01 || escrow_bundle` (on) | an owner |
+
+The invitation's KEM public key is in the log so that every owner device wraps new epochs to it from the verified log, and verifiers check its recipient hash. Because the server sees that public key, the invitation anchor is authenticated with a MAC under a key derived from `<secret>`, which the server never learns, not by sealing. The redeemer checks the MAC in constant time before trusting the genesis hash.
+
+The replay refuses, as an out-of-order entry: an invite whose invitation id was already used; a redeem or revoke of an invitation that is not pending; a redeem by a user who is already a member; a remove, set-role or leave of a non-member; and any entry that leaves the vault with no owner.
 
 Roles are `0x01` owner, `0x02` editor and `0x03` viewer. An invitation is pending from its invite entry until its redeem or revoke entry. Expiry is enforced by the server, and an owner device appends a revoke entry for an invitation it sees has expired. Recipient kinds and ids are those of the key slots. The escrow recipient's public key is its age recipient string as bytes. Both implementations pass shared vectors for every format above, including rejected inputs: a wrong signer, a broken link, a reordered or omitted recipient, an unsigned rotation, and an unchained escrow key.
 
