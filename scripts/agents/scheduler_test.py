@@ -204,6 +204,16 @@ class PlanTest(unittest.TestCase):
         # Without a hand-back, a todo issue with an open PR is still skipped.
         self.assertEqual(keys(plan_for(sn, {"sessions": {}})), [])
 
+    def test_cloud_draft_pr_is_finished_by_a_local_worker(self):
+        sn = snap([issue(1, labels=("cloud-draft",))], [pr(10, 1, draft=True)])
+        plan = plan_for(sn)
+        self.assertEqual(keys(plan), ["worker:1"])
+        self.assertEqual(plan.jobs[0].pr, 10)
+        self.assertIn("cloud session drafted PR #10", plan.jobs[0].trigger)
+        # While the cloud session works (status:blocked), nothing starts.
+        self.assertEqual(keys(plan_for(snap([issue(1, status="status:blocked", labels=("cloud-draft",))],
+                                            [pr(10, 1, draft=True)]))), [])
+
     def test_later_phase_work_off_starts_only_current_phase(self):
         cfg = s.deep_merge(CFG, {"later_phase_work": False})
         sessions = {"worker:4": {"role": "issue-worker", "issue": 4, "handoff": {"state": "question"}}}
