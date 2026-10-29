@@ -9,7 +9,7 @@ Goals:
 - No acknowledged edit is ever lost — revision history, tombstones, and conflict copies instead of silent overwrites.
 - Desktop (Windows, macOS, Linux) and Android; iOS best-effort.
 - Multiple users with shared vaults, OIDC login.
-- Optional end-to-end encryption, with an opt-in escrow key so an internal backup job can still produce plaintext backups.
+- Optional end-to-end encryption, with an opt-in escrow key so an internal backup job can still produce plaintext backups (see [How encryption works](docs/encryption.md)).
 - Live collaborative editing (CRDT) on top of the same protocol.
 
 See [`SPEC.md`](SPEC.md) for the design and [`CLAUDE.md`](CLAUDE.md) for how work in this repository is done.
