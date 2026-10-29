@@ -50,6 +50,24 @@ export interface VaultAdapter {
    */
   delete(path: string, precondition?: DeletePrecondition): Promise<void>;
 
+  /**
+   * Optional: moves the file `from` over `to` in one atomic step of the file
+   * system (a rename over the target), if `to` still holds what the caller
+   * last saw. Otherwise it rejects with "changed" and moves nothing; "not-found"
+   * if `from` does not exist, "path-conflict" and "unmaterializable" as for
+   * write. Present only where the platform has an atomic replace (desktop);
+   * without it the engine deletes the target and then renames
+   * (docs/design/engine.md §8).
+   */
+  replace?(from: string, to: string, precondition: WritePrecondition): Promise<void>;
+
+  /**
+   * Optional: whether `path` is open in an editor view that may hold unsaved
+   * state. The engine writes such a file with write(), the editor-safe write
+   * in place (docs/design/engine.md §4, §8), rather than replacing it.
+   */
+  isOpenInEditor?(path: string): boolean;
+
   /** Returns a file's metadata, or null if it does not exist. */
   stat(path: string): Promise<FileStat | null>;
 

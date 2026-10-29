@@ -12,6 +12,36 @@ import type { DocEntry, JournalChange, JournalState, PendingKind, PendingOp, Syn
  * one, and otherwise syncs as a delete plus a create.
  */
 
+/**
+ * The engine's temporary files (docs/design/engine.md §8), next to the file
+ * they become. A `.vault-sync-tmp` file may be partial: it is deleted at
+ * startup. A `.vault-sync-new` file replaces an existing file where the
+ * platform has no atomic replace; the target is deleted only once it is
+ * complete, so one whose target is missing is renamed into place at startup.
+ */
+const temporarySuffix = ".vault-sync-tmp";
+const replacementSuffix = ".vault-sync-new";
+
+/** The temporary file a file at `path` is written to before it replaces the target or is renamed into place. */
+export function temporaryPath(path: string): string {
+  return `${path}${temporarySuffix}`;
+}
+
+/** The temporary file that replaces an existing file at `path` by a delete and a rename. */
+export function replacementPath(path: string): string {
+  return `${path}${replacementSuffix}`;
+}
+
+/** The file a replacement file becomes, or null if `path` is none. */
+export function replacementTarget(path: string): string | null {
+  return path.endsWith(replacementSuffix) ? path.slice(0, -replacementSuffix.length) : null;
+}
+
+/** Whether `path` is one of the engine's temporary files, which are never synced. */
+export function isTemporaryPath(path: string): boolean {
+  return path.endsWith(temporarySuffix) || path.endsWith(replacementSuffix);
+}
+
 /** The kind a new document at `path` gets: Markdown is `text`, everything else a `blob`. */
 export function kindOfPath(path: string): SyncKind {
   const name = path.slice(path.lastIndexOf("/") + 1);
@@ -160,6 +190,7 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   const untracked: Observed[] = [];
   const seen = new Set<string>();
   for (const path of await options.vault.list()) {
+    if (isTemporaryPath(path)) continue;
     const file = await options.cache.read(options.vault, path);
     if (file === null) continue;
     seen.add(path);

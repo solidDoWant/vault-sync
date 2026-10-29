@@ -20,6 +20,12 @@ export interface InMemoryVaultOptions {
    * which is case-sensitive.
    */
   pathRules?: PathRules;
+  /**
+   * Whether the vault models a platform with an atomic replace (desktop):
+   * then it has `replace`. False models mobile, which has none. Defaults to
+   * true.
+   */
+  atomicReplace?: boolean;
 }
 
 /** Who made a change, as tests tell them apart (InMemoryVault.handle). */
@@ -62,6 +68,10 @@ export class InMemoryVault implements VaultAdapter {
   private actor: VaultActor = "user";
   private readonly now: () => number;
   private readonly pathRules: PathRules;
+  /** Harness only: the paths open in an editor (isOpenInEditor). */
+  readonly openInEditor = new Set<string>();
+  /** The atomic replace, on a vault modelling desktop (InMemoryVaultOptions.atomicReplace). */
+  readonly replace?: (from: string, to: string, precondition: WritePrecondition) => Promise<void>;
   /** The key a file's or a folder's spellings share, as on a real filesystem (PathSpace.filesystemKey, `F`). */
   private readonly key: (path: string) => string;
 
@@ -81,6 +91,25 @@ export class InMemoryVault implements VaultAdapter {
     this.pathRules = options.pathRules ?? posixPathRules;
     const space = new PathSpace(this.pathRules);
     this.key = (path) => space.filesystemKey(path);
+    if (options.atomicReplace ?? true) this.replace = (from, to, precondition) => this.replaceFile(from, to, precondition);
+  }
+
+  isOpenInEditor(path: string): boolean {
+    return this.openInEditor.has(path);
+  }
+
+  /** The atomic replace: `from`'s content lands at `to` (kept as `to` is spelled) and `from` is gone, in one step. */
+  private replaceFile(from: string, to: string, precondition: WritePrecondition): Promise<void> {
+    const file = this.files.get(this.key(from));
+    if (file === undefined) return Promise.reject(new VaultError("not-found", from));
+    const target = this.files.get(this.key(to));
+    if (!holds(target, precondition.expectedHash)) return Promise.reject(new VaultError("changed", to));
+    if (target === undefined) return this.rename(from, to);
+    this.files.delete(this.key(from));
+    this.files.set(this.key(to), { ...target, data: file.data, mtime: this.now() });
+    this.emit({ type: "delete", path: file.path }, file.inode);
+    this.emit({ type: "modify", path: target.path }, target.inode);
+    return Promise.resolve();
   }
 
   /**
@@ -130,6 +159,8 @@ export class InMemoryVault implements VaultAdapter {
       watch: (listener) => this.watch(listener),
       write: as((path: string, data: Uint8Array, precondition?: WritePrecondition) => this.write(path, data, precondition)),
       rename: as((from: string, to: string) => this.rename(from, to)),
+      ...(this.replace === undefined ? {} : { replace: as((from: string, to: string, precondition: WritePrecondition) => this.replaceFile(from, to, precondition)) }),
+      isOpenInEditor: (path) => this.isOpenInEditor(path),
       renameFolder: as((from: string, to: string) => this.renameFolder(from, to)),
       delete: as((path: string, precondition?: DeletePrecondition) => this.delete(path, precondition)),
     };

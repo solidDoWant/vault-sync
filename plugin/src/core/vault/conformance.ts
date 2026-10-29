@@ -431,4 +431,22 @@ export const vaultAdapterConformance: readonly ConformanceCase[] = [
       }
     },
   },
+  {
+    name: "replace (where the platform has it) moves a file over its target and checks the precondition",
+    run: async (adapter) => {
+      if (adapter.replace === undefined) return;
+      await adapter.write("note.md", bytes("old"));
+      await adapter.write("note.md.next", bytes("new"));
+      await assertRejects(adapter.replace("note.md.next", "note.md", { expectedHash: sha256Hex(bytes("other")) }), "changed", "replace() with a stale precondition");
+      assertEqual(await adapter.read("note.md"), bytes("old"), "target after a refused replace");
+      await adapter.replace("note.md.next", "note.md", { expectedHash: sha256Hex(bytes("old")) });
+      assertEqual(await adapter.read("note.md"), bytes("new"), "target after replace()");
+      assertEqual(await sortedList(adapter), ["note.md"], "list() after replace()");
+      await adapter.write("fresh.md.next", bytes("fresh"));
+      await assertRejects(adapter.replace("fresh.md.next", "note.md", { expectedHash: null }), "changed", "replace() onto a file expected absent");
+      await adapter.replace("fresh.md.next", "folder/fresh.md", { expectedHash: null });
+      assertEqual(await adapter.read("folder/fresh.md"), bytes("fresh"), "a new file after replace()");
+      assertEqual(await sortedList(adapter), ["folder/fresh.md", "note.md"], "list() after replace() onto a new path");
+    },
+  },
 ];

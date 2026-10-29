@@ -15,7 +15,11 @@ vi.mock("obsidian", () => {
   }
   class TextFileView extends EditableFileView {}
   class MarkdownView extends TextFileView {}
-  return { TAbstractFile, TFile: class extends TAbstractFile {}, TFolder: class extends TAbstractFile {}, EditableFileView, TextFileView, MarkdownView, normalizePath: (path: string) => path };
+  // Desktop's adapter class; the fake apps' adapters are not one, so the adapter has no atomic replace.
+  class FileSystemAdapter {
+    readonly name = "desktop";
+  }
+  return { TAbstractFile, TFile: class extends TAbstractFile {}, TFolder: class extends TAbstractFile {}, EditableFileView, TextFileView, MarkdownView, FileSystemAdapter, normalizePath: (path: string) => path };
 });
 
 const { TFile, TFolder } = await import("obsidian");
