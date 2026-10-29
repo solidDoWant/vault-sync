@@ -5,6 +5,10 @@
 // `vault-sync-server export -out DIR` instead writes a plaintext copy of
 // every vault to DIR and exits (docs/export.md, SPEC.md §4).
 //
+// `vault-sync-server export rotate-escrow -server URL -recipient R
+// -signing-public-key K` rotates the deployment's escrow key and exits
+// (docs/export.md).
+//
 // `vault-sync-server import SERVER_URL VAULT_ID DIR` loads a folder of Markdown notes
 // and attachments into an empty vault and exits (docs/import.md).
 //

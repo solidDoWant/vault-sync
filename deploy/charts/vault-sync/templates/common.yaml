@@ -201,7 +201,12 @@
 {{- $escrowSecretName := $config.export.escrow.secretName | default "" -}}
 {{- if and $escrowSecretName $exportEnabled -}}
   {{- $escrowKey := $config.export.escrow.key | default "escrow.key" -}}
-  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController) "keys" (list $escrowKey)) -}}
+  {{- $escrowKeys := list $escrowKey -}}
+  {{- with $config.export.escrow.signingKeysKey -}}
+    {{- $escrowKeys = append $escrowKeys . -}}
+    {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_SIGNING_KEY_FILE" (printf "%s/escrow/%s" $mountRoot .) -}}
+  {{- end -}}
+  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController) "keys" $escrowKeys) -}}
   {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_IDENTITY_FILE" (printf "%s/escrow/%s" $mountRoot $escrowKey) -}}
 {{- end -}}
 

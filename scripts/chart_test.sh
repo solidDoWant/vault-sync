@@ -156,6 +156,13 @@ check "the server Deployment never names the escrow Secret" \
 	"[$deployment | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
 check "nothing but the export CronJob names the escrow Secret" \
 	"[\$docs[] | select(.kind != \"CronJob\") | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
+check "without signingKeysKey the export job has no escrow signing key file" \
+	"([$export_pod | .containers[0].env[] | select(.name == \"VAULT_SYNC_ESCROW_SIGNING_KEY_FILE\")] | length) == 0"
+
+render --set config.export.escrow.signingKeysKey=signing.keys
+check "the export job reads the escrow signing keys from the escrow Secret, and the server does not" \
+	"$(env_value "$export_pod" VAULT_SYNC_ESCROW_SIGNING_KEY_FILE) == \"/etc/vault-sync/escrow/signing.keys\" and ([$export_pod | .volumes[] | select(.secret.secretName == \"$escrow_secret\") | .secret.items[].key] | sort) == [\"escrow.key\", \"signing.keys\"] and ([$server | .containers[0].env[] | select(.name == \"VAULT_SYNC_ESCROW_SIGNING_KEY_FILE\")] | length) == 0 and ([$deployment | .. | strings | select(contains(\"$escrow_secret\"))] | length) == 0"
+render
 
 check "the server and the export job read the escrow job token from the mounted Secret" \
 	"$(env_value "$server" VAULT_SYNC_ESCROW_JOB_TOKEN_FILE) == \"/etc/vault-sync/escrow-job-token/token\" and $(env_value "$export_pod" VAULT_SYNC_ESCROW_JOB_TOKEN_FILE) == \"/etc/vault-sync/escrow-job-token/token\" and $(mounted_secret "$server" /etc/vault-sync/escrow-job-token) == \"vault-sync-escrow-job-token\" and $(mounted_secret "$export_pod" /etc/vault-sync/escrow-job-token) == \"vault-sync-escrow-job-token\""
@@ -307,15 +314,16 @@ render --set config.logLevel=debug --set config.s3.region=r --set config.s3.forc
 	--set config.server.retention.overrideMinKeepDaily=24h --set config.server.realtime.maxConnections=1 \
 	--set config.server.realtime.maxConnectionsPerUser=1 --set config.server.realtime.maxSubscriptions=1 \
 	--set config.server.escrow.recipient=age1pq1x --set config.server.escrow.signingKey=c2lnbg== --set config.server.escrow.default=false \
-	--set config.server.escrow.retiringKeyIds=sha256:00
+	--set config.server.escrow.retiringKeyIds=sha256:00 --set config.export.escrow.signingKeysKey=signing.keys
 documented_vars="$(grep -oE '^\| `VAULT_SYNC_[A-Z0-9_]+`' "$repo_root/docs/configuration.md" | tr -d '|` ')"
 if [[ -z $documented_vars ]]; then
 	fail "found the environment variables in docs/configuration.md"
 fi
-# The escrow identity is the export job's only, so it is looked for there.
+# The escrow identity and signing keys are the export job's only, so they
+# are looked for there.
 for var in $documented_vars; do
 	pod="$server"
-	if [[ $var == VAULT_SYNC_ESCROW_IDENTITY_FILE ]]; then
+	if [[ $var == VAULT_SYNC_ESCROW_IDENTITY_FILE || $var == VAULT_SYNC_ESCROW_SIGNING_KEY_FILE ]]; then
 		pod="$export_pod"
 	fi
 	check "the chart can set $var" "[$pod | .containers[0].env[] | select(.name == \"$var\")] | length == 1"
