@@ -38,6 +38,9 @@ const (
 	VaultServiceCreateVaultProcedure = "/vaultsync.v1.VaultService/CreateVault"
 	// VaultServiceListVaultsProcedure is the fully-qualified name of the VaultService's ListVaults RPC.
 	VaultServiceListVaultsProcedure = "/vaultsync.v1.VaultService/ListVaults"
+	// VaultServiceDeleteVaultProcedure is the fully-qualified name of the VaultService's DeleteVault
+	// RPC.
+	VaultServiceDeleteVaultProcedure = "/vaultsync.v1.VaultService/DeleteVault"
 )
 
 // VaultServiceClient is a client for the vaultsync.v1.VaultService service.
@@ -52,6 +55,15 @@ type VaultServiceClient interface {
 	CreateVault(context.Context, *connect.Request[v1.CreateVaultRequest]) (*connect.Response[v1.CreateVaultResponse], error)
 	// ListVaults lists the vaults the caller is a member of.
 	ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error)
+	// DeleteVault marks a vault deleted. Owner only. From then on every
+	// member's requests naming the vault are NOT_FOUND with an ErrorDetail of
+	// reason ERROR_REASON_VAULT_DELETED, ListVaults no longer lists it, and it
+	// no longer counts toward its owners' vault limit.
+	//
+	// Errors: NOT_FOUND for a non-member or a vault that does not exist (with
+	// ERROR_REASON_VAULT_DELETED for a member of an already deleted vault);
+	// PERMISSION_DENIED for an editor or viewer.
+	DeleteVault(context.Context, *connect.Request[v1.DeleteVaultRequest]) (*connect.Response[v1.DeleteVaultResponse], error)
 }
 
 // NewVaultServiceClient constructs a client for the vaultsync.v1.VaultService service. By default,
@@ -77,6 +89,12 @@ func NewVaultServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 			connect.WithSchema(vaultServiceMethods.ByName("ListVaults")),
 			connect.WithClientOptions(opts...),
 		),
+		deleteVault: connect.NewClient[v1.DeleteVaultRequest, v1.DeleteVaultResponse](
+			httpClient,
+			baseURL+VaultServiceDeleteVaultProcedure,
+			connect.WithSchema(vaultServiceMethods.ByName("DeleteVault")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -84,6 +102,7 @@ func NewVaultServiceClient(httpClient connect.HTTPClient, baseURL string, opts .
 type vaultServiceClient struct {
 	createVault *connect.Client[v1.CreateVaultRequest, v1.CreateVaultResponse]
 	listVaults  *connect.Client[v1.ListVaultsRequest, v1.ListVaultsResponse]
+	deleteVault *connect.Client[v1.DeleteVaultRequest, v1.DeleteVaultResponse]
 }
 
 // CreateVault calls vaultsync.v1.VaultService.CreateVault.
@@ -94,6 +113,11 @@ func (c *vaultServiceClient) CreateVault(ctx context.Context, req *connect.Reque
 // ListVaults calls vaultsync.v1.VaultService.ListVaults.
 func (c *vaultServiceClient) ListVaults(ctx context.Context, req *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error) {
 	return c.listVaults.CallUnary(ctx, req)
+}
+
+// DeleteVault calls vaultsync.v1.VaultService.DeleteVault.
+func (c *vaultServiceClient) DeleteVault(ctx context.Context, req *connect.Request[v1.DeleteVaultRequest]) (*connect.Response[v1.DeleteVaultResponse], error) {
+	return c.deleteVault.CallUnary(ctx, req)
 }
 
 // VaultServiceHandler is an implementation of the vaultsync.v1.VaultService service.
@@ -108,6 +132,15 @@ type VaultServiceHandler interface {
 	CreateVault(context.Context, *connect.Request[v1.CreateVaultRequest]) (*connect.Response[v1.CreateVaultResponse], error)
 	// ListVaults lists the vaults the caller is a member of.
 	ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error)
+	// DeleteVault marks a vault deleted. Owner only. From then on every
+	// member's requests naming the vault are NOT_FOUND with an ErrorDetail of
+	// reason ERROR_REASON_VAULT_DELETED, ListVaults no longer lists it, and it
+	// no longer counts toward its owners' vault limit.
+	//
+	// Errors: NOT_FOUND for a non-member or a vault that does not exist (with
+	// ERROR_REASON_VAULT_DELETED for a member of an already deleted vault);
+	// PERMISSION_DENIED for an editor or viewer.
+	DeleteVault(context.Context, *connect.Request[v1.DeleteVaultRequest]) (*connect.Response[v1.DeleteVaultResponse], error)
 }
 
 // NewVaultServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -129,12 +162,20 @@ func NewVaultServiceHandler(svc VaultServiceHandler, opts ...connect.HandlerOpti
 		connect.WithSchema(vaultServiceMethods.ByName("ListVaults")),
 		connect.WithHandlerOptions(opts...),
 	)
+	vaultServiceDeleteVaultHandler := connect.NewUnaryHandler(
+		VaultServiceDeleteVaultProcedure,
+		svc.DeleteVault,
+		connect.WithSchema(vaultServiceMethods.ByName("DeleteVault")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.VaultService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case VaultServiceCreateVaultProcedure:
 			vaultServiceCreateVaultHandler.ServeHTTP(w, r)
 		case VaultServiceListVaultsProcedure:
 			vaultServiceListVaultsHandler.ServeHTTP(w, r)
+		case VaultServiceDeleteVaultProcedure:
+			vaultServiceDeleteVaultHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -150,4 +191,8 @@ func (UnimplementedVaultServiceHandler) CreateVault(context.Context, *connect.Re
 
 func (UnimplementedVaultServiceHandler) ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultService.ListVaults is not implemented"))
+}
+
+func (UnimplementedVaultServiceHandler) DeleteVault(context.Context, *connect.Request[v1.DeleteVaultRequest]) (*connect.Response[v1.DeleteVaultResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.VaultService.DeleteVault is not implemented"))
 }

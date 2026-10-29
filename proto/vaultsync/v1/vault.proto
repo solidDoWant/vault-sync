@@ -20,6 +20,16 @@ service VaultService {
 
   // ListVaults lists the vaults the caller is a member of.
   rpc ListVaults(ListVaultsRequest) returns (ListVaultsResponse) {}
+
+  // DeleteVault marks a vault deleted. Owner only. From then on every
+  // member's requests naming the vault are NOT_FOUND with an ErrorDetail of
+  // reason ERROR_REASON_VAULT_DELETED, ListVaults no longer lists it, and it
+  // no longer counts toward its owners' vault limit.
+  //
+  // Errors: NOT_FOUND for a non-member or a vault that does not exist (with
+  // ERROR_REASON_VAULT_DELETED for a member of an already deleted vault);
+  // PERMISSION_DENIED for an editor or viewer.
+  rpc DeleteVault(DeleteVaultRequest) returns (DeleteVaultResponse) {}
 }
 
 // CreateVaultRequest describes the vault to create.
@@ -58,3 +68,12 @@ message ListVaultsResponse {
   // Token for the next page. Empty when there are no more vaults.
   string next_page_token = 2;
 }
+
+// DeleteVaultRequest names the vault to delete.
+message DeleteVaultRequest {
+  // Vault to delete.
+  string vault_id = 1;
+}
+
+// DeleteVaultResponse is empty.
+message DeleteVaultResponse {}

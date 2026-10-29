@@ -151,16 +151,18 @@ func ignoreCanceled(ctx context.Context, err error) error {
 
 // MemberHeadSeq returns userID's role in vaultID and the vault's head_seq in
 // one query. Like VaultRole, it returns ErrVaultNotFound both when the vault
-// does not exist and when the user is not a member, through the same path.
+// does not exist and when the user is not a member, through the same path,
+// and ErrVaultDeleted to a member of a deleted vault.
 func (store *Store) MemberHeadSeq(ctx context.Context, vaultID, userID uuid.UUID) (Role, int64, error) {
 	var (
 		role    Role
 		headSeq int64
+		deleted bool
 	)
 
 	err := store.pool.QueryRow(ctx, `
-		SELECT m.role, v.head_seq FROM vault_members m JOIN vaults v ON v.id = m.vault_id
-		WHERE m.vault_id = $1 AND m.user_id = $2`, vaultID, userID).Scan(&role, &headSeq)
+		SELECT m.role, v.head_seq, v.deleted_at IS NOT NULL FROM vault_members m JOIN vaults v ON v.id = m.vault_id
+		WHERE m.vault_id = $1 AND m.user_id = $2`, vaultID, userID).Scan(&role, &headSeq, &deleted)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", 0, ErrVaultNotFound
 	}
@@ -169,30 +171,43 @@ func (store *Store) MemberHeadSeq(ctx context.Context, vaultID, userID uuid.UUID
 		return "", 0, fmt.Errorf("look up vault membership: %w", err)
 	}
 
+	if deleted {
+		return "", 0, ErrVaultDeleted
+	}
+
 	return role, headSeq, nil
 }
 
 // VaultMembers returns which of userIDs are members of vaultID, in one
-// query. A vault that does not exist has no members. Callers bound the
-// length of userIDs.
+// query. A vault that does not exist has no members. For a deleted vault it
+// returns the members together with ErrVaultDeleted, so the caller can tell
+// its members that it was deleted. Callers bound the length of userIDs.
 func (store *Store) VaultMembers(ctx context.Context, vaultID uuid.UUID, userIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
-	rows, err := store.pool.Query(ctx, `SELECT user_id FROM vault_members WHERE vault_id = $1 AND user_id = ANY($2)`,
-		vaultID, userIDs)
+	rows, err := store.pool.Query(ctx, `
+		SELECT m.user_id, v.deleted_at IS NOT NULL FROM vault_members m JOIN vaults v ON v.id = m.vault_id
+		WHERE m.vault_id = $1 AND m.user_id = ANY($2)`, vaultID, userIDs)
 	if err != nil {
 		return nil, fmt.Errorf("look up vault members: %w", err)
 	}
 
 	members := make(map[uuid.UUID]bool, len(userIDs))
 
-	var userID uuid.UUID
+	var (
+		userID  uuid.UUID
+		deleted bool
+	)
 
-	_, err = pgx.ForEachRow(rows, []any{&userID}, func() error {
+	_, err = pgx.ForEachRow(rows, []any{&userID, &deleted}, func() error {
 		members[userID] = true
 
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("look up vault members: %w", err)
+	}
+
+	if deleted {
+		return members, ErrVaultDeleted
 	}
 
 	return members, nil

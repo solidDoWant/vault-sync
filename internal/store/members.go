@@ -169,9 +169,10 @@ func (vault *VaultStore) RevokeInvitation(ctx context.Context, invitationID uuid
 // RedeemInvitation makes userID a member of the vault of the pending
 // invitation whose code hashes to codeHash, with its role, and deletes the
 // invitation, in one transaction. It returns ErrInvitationNotFound for a
-// code that names no pending invitation, ErrAlreadyMember when the user is
-// already a member (the invitation is kept), and ErrMemberLimit when the
-// vault already has memberLimit members (the invitation is kept).
+// code that names no pending invitation or an invitation to a deleted
+// vault, ErrAlreadyMember when the user is already a member (the invitation
+// is kept), and ErrMemberLimit when the vault already has memberLimit
+// members (the invitation is kept).
 func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, codeHash []byte, memberLimit int) (Vault, error) {
 	var joined Vault
 
@@ -198,6 +199,19 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 			}
 
 			return err
+		}
+
+		// A deleted vault is invisible to everyone, so its invitations
+		// name nothing.
+		var deleted bool
+
+		err = tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM vaults WHERE id = $1`, joined.ID).Scan(&deleted)
+		if err != nil {
+			return fmt.Errorf("read vault: %w", err)
+		}
+
+		if deleted {
+			return ErrInvitationNotFound
 		}
 
 		// Re-read the invitation under the vault lock: it may have been

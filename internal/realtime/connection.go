@@ -362,6 +362,11 @@ func (conn *connection) subscribe(requestID uint64, rawVaultID string, limits Li
 		conn.enqueue(notFoundFrame(requestID, vaultID))
 
 		return
+	case errors.Is(err, store.ErrVaultDeleted):
+		hub.unsubscribe(conn, vaultID)
+		conn.enqueue(vaultDeletedFrame(requestID, vaultID))
+
+		return
 	case err != nil:
 		if !existed {
 			hub.unsubscribe(conn, vaultID)
@@ -507,6 +512,15 @@ func (conn *connection) setEndReason(reason string) {
 
 func notFoundFrame(requestID uint64, vaultID uuid.UUID) *vaultsyncv1.ServerFrame {
 	return errorFrame(requestID, vaultsyncv1.ErrorCode_ERROR_CODE_NOT_FOUND, authz.ErrVaultNotFound.Error(), vaultID.String())
+}
+
+// vaultDeletedFrame is the NOT_FOUND frame a member of a deleted vault gets,
+// with reason ERROR_REASON_VAULT_DELETED.
+func vaultDeletedFrame(requestID uint64, vaultID uuid.UUID) *vaultsyncv1.ServerFrame {
+	frame := errorFrame(requestID, vaultsyncv1.ErrorCode_ERROR_CODE_NOT_FOUND, authz.ErrVaultDeleted.Error(), vaultID.String())
+	frame.GetError().Reason = vaultsyncv1.ErrorReason_ERROR_REASON_VAULT_DELETED
+
+	return frame
 }
 
 func vaultChangedFrame(vaultID uuid.UUID, seq int64) *vaultsyncv1.ServerFrame {

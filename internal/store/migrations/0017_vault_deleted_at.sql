@@ -1,0 +1,12 @@
+-- Deleted vaults (docs/design/sharing.md, "Deleting a vault").
+--
+-- An owner's DeleteVault sets vaults.deleted_at; the row and everything in
+-- the vault are kept until the vault is purged. A deleted vault is not listed
+-- and every member's request naming it is refused, and it does not count
+-- toward its owners' owned-vault limit.
+--
+-- Additive and nullable, so adding it rewrites no row, and the previous
+-- release runs unchanged against this schema during a rolling upgrade
+-- (SPEC.md §12): it never names the column and has no DeleteVault, so no
+-- vault is deleted until every replica runs this release.
+ALTER TABLE vaults ADD COLUMN deleted_at timestamptz;

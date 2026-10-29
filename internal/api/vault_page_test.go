@@ -3,6 +3,7 @@ package api_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log/slog"
 	"slices"
 	"testing"
@@ -25,6 +26,10 @@ type listedVaults struct {
 
 func (listed *listedVaults) CreateVault(context.Context, uuid.UUID, store.NewVault, int) (store.Vault, error) {
 	return store.Vault{}, nil
+}
+
+func (listed *listedVaults) DeleteVault(context.Context, uuid.UUID) error {
+	return errors.New("not supported")
 }
 
 func (listed *listedVaults) ListVaults(_ context.Context, _, after uuid.UUID, limit int) ([]store.Vault, error) {

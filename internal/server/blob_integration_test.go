@@ -636,8 +636,11 @@ func TestBlobProceduresEnforceRoles(t *testing.T) {
 		for _, procedure := range vaultScopedProcedures(t) {
 			access := expectedAccessOf(t, procedure)
 
-			for role, token := range tokens {
-				response := fixture.callJSON(t, procedure, token, map[string]string{"vault_id": vault.GetId()})
+			// The owner calls last, so the other roles' calls see the
+			// vault before an owner-only procedure (DeleteVault) changes
+			// it; it is the last procedure in the matrix.
+			for _, role := range []store.Role{store.RoleEditor, store.RoleViewer, "non-member", store.RoleOwner} {
+				response := fixture.callJSON(t, procedure, tokens[role], map[string]string{"vault_id": vault.GetId()})
 
 				switch {
 				case role == "non-member":

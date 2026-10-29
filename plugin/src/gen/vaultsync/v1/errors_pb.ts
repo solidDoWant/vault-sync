@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/errors.proto.
  */
 export const file_vaultsync_v1_errors: GenFile = /*@__PURE__*/
-  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKpMCCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAUSIgoeRVJST1JfUkVBU09OX0VQT0NIX05PVF9DVVJSRU5UEAZCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp]);
+  fileDesc("Chl2YXVsdHN5bmMvdjEvZXJyb3JzLnByb3RvEgx2YXVsdHN5bmMudjEiaAoLRXJyb3JEZXRhaWwSKQoGcmVhc29uGAEgASgOMhkudmF1bHRzeW5jLnYxLkVycm9yUmVhc29uEi4KCnJldHJ5X3RpbWUYAiABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wKrMCCgtFcnJvclJlYXNvbhIcChhFUlJPUl9SRUFTT05fVU5TUEVDSUZJRUQQABIdChlFUlJPUl9SRUFTT05fREVWSUNFX0xJTUlUEAESLQopRVJST1JfUkVBU09OX1RPT19NQU5ZX0NPTkNVUlJFTlRfUkVRVUVTVFMQAhIhCh1FUlJPUl9SRUFTT05fREVWSUNFX05PVF9GT1VORBADEiEKHUVSUk9SX1JFQVNPTl9XUk9OR19QQVNTUEhSQVNFEAQSLgoqRVJST1JfUkVBU09OX1BBU1NQSFJBU0VfQVRURU1QVFNfRVhIQVVTVEVEEAUSIgoeRVJST1JfUkVBU09OX0VQT0NIX05PVF9DVVJSRU5UEAYSHgoaRVJST1JfUkVBU09OX1ZBVUxUX0RFTEVURUQQB0JAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_google_protobuf_timestamp]);
 
 /**
  * ErrorDetail is attached to an error (as a Connect error detail) to give
@@ -115,6 +115,16 @@ export enum ErrorReason {
    * @generated from enum value: ERROR_REASON_EPOCH_NOT_CURRENT = 6;
    */
   EPOCH_NOT_CURRENT = 6,
+
+  /**
+   * NOT_FOUND from any vault-scoped RPC, and in a realtime ErrorFrame: the
+   * caller is a member of the vault, but an owner deleted it (DeleteVault).
+   * It persists unless an operator restores the vault. The client stops
+   * syncing the vault and keeps its local files.
+   *
+   * @generated from enum value: ERROR_REASON_VAULT_DELETED = 7;
+   */
+  VAULT_DELETED = 7,
 }
 
 /**

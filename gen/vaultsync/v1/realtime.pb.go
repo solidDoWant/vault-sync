@@ -311,7 +311,10 @@ func (*ServerFrame_Error) isServerFrame_Frame() {}
 // that does not exist, gets an error frame with ERROR_CODE_NOT_FOUND.
 // Membership is checked again before every notification: a member removed
 // from the vault gets an unsolicited NOT_FOUND error frame naming the vault,
-// and its subscription ends. Subscribing to an already subscribed vault
+// and its subscription ends. A member of a deleted vault (DeleteVault),
+// when subscribing or when the vault is deleted, gets a NOT_FOUND error
+// frame with reason ERROR_REASON_VAULT_DELETED instead, and its
+// subscription ends. Subscribing to an already subscribed vault
 // re-checks membership and answers subscribed again.
 type Subscribe struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -526,7 +529,10 @@ type ErrorFrame struct {
 	// Vault the error concerns, if any.
 	VaultId string `protobuf:"bytes,3,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
 	// Whether the server closes the connection after sending this frame.
-	Fatal         bool `protobuf:"varint,4,opt,name=fatal,proto3" json:"fatal,omitempty"`
+	Fatal bool `protobuf:"varint,4,opt,name=fatal,proto3" json:"fatal,omitempty"`
+	// Why the frame was sent, like the ErrorDetail of an RPC error: set to
+	// ERROR_REASON_VAULT_DELETED when the vault was deleted.
+	Reason        ErrorReason `protobuf:"varint,5,opt,name=reason,proto3,enum=vaultsync.v1.ErrorReason" json:"reason,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -589,11 +595,18 @@ func (x *ErrorFrame) GetFatal() bool {
 	return false
 }
 
+func (x *ErrorFrame) GetReason() ErrorReason {
+	if x != nil {
+		return x.Reason
+	}
+	return ErrorReason_ERROR_REASON_UNSPECIFIED
+}
+
 var File_vaultsync_v1_realtime_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_realtime_proto_rawDesc = "" +
 	"\n" +
-	"\x1bvaultsync/v1/realtime.proto\x12\fvaultsync.v1\"\xb4\x01\n" +
+	"\x1bvaultsync/v1/realtime.proto\x12\fvaultsync.v1\x1a\x19vaultsync/v1/errors.proto\"\xb4\x01\n" +
 	"\vClientFrame\x12\x1d\n" +
 	"\n" +
 	"request_id\x18\x01 \x01(\x04R\trequestId\x127\n" +
@@ -619,13 +632,14 @@ const file_vaultsync_v1_realtime_proto_rawDesc = "" +
 	"\bhead_seq\x18\x02 \x01(\x04R\aheadSeq\";\n" +
 	"\fVaultChanged\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x10\n" +
-	"\x03seq\x18\x02 \x01(\x04R\x03seq\"\x84\x01\n" +
+	"\x03seq\x18\x02 \x01(\x04R\x03seq\"\xb7\x01\n" +
 	"\n" +
 	"ErrorFrame\x12+\n" +
 	"\x04code\x18\x01 \x01(\x0e2\x17.vaultsync.v1.ErrorCodeR\x04code\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x19\n" +
 	"\bvault_id\x18\x03 \x01(\tR\avaultId\x12\x14\n" +
-	"\x05fatal\x18\x04 \x01(\bR\x05fatal*\xfc\x01\n" +
+	"\x05fatal\x18\x04 \x01(\bR\x05fatal\x121\n" +
+	"\x06reason\x18\x05 \x01(\x0e2\x19.vaultsync.v1.ErrorReasonR\x06reason*\xfc\x01\n" +
 	"\tErrorCode\x12\x1a\n" +
 	"\x16ERROR_CODE_UNSPECIFIED\x10\x00\x12\x1f\n" +
 	"\x1bERROR_CODE_INVALID_ARGUMENT\x10\x01\x12\x18\n" +
@@ -659,6 +673,7 @@ var file_vaultsync_v1_realtime_proto_goTypes = []any{
 	(*Subscribed)(nil),   // 5: vaultsync.v1.Subscribed
 	(*VaultChanged)(nil), // 6: vaultsync.v1.VaultChanged
 	(*ErrorFrame)(nil),   // 7: vaultsync.v1.ErrorFrame
+	(ErrorReason)(0),     // 8: vaultsync.v1.ErrorReason
 }
 var file_vaultsync_v1_realtime_proto_depIdxs = []int32{
 	3, // 0: vaultsync.v1.ClientFrame.subscribe:type_name -> vaultsync.v1.Subscribe
@@ -667,11 +682,12 @@ var file_vaultsync_v1_realtime_proto_depIdxs = []int32{
 	5, // 3: vaultsync.v1.ServerFrame.subscribed:type_name -> vaultsync.v1.Subscribed
 	7, // 4: vaultsync.v1.ServerFrame.error:type_name -> vaultsync.v1.ErrorFrame
 	0, // 5: vaultsync.v1.ErrorFrame.code:type_name -> vaultsync.v1.ErrorCode
-	6, // [6:6] is the sub-list for method output_type
-	6, // [6:6] is the sub-list for method input_type
-	6, // [6:6] is the sub-list for extension type_name
-	6, // [6:6] is the sub-list for extension extendee
-	0, // [0:6] is the sub-list for field type_name
+	8, // 6: vaultsync.v1.ErrorFrame.reason:type_name -> vaultsync.v1.ErrorReason
+	7, // [7:7] is the sub-list for method output_type
+	7, // [7:7] is the sub-list for method input_type
+	7, // [7:7] is the sub-list for extension type_name
+	7, // [7:7] is the sub-list for extension extendee
+	0, // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_realtime_proto_init() }
@@ -679,6 +695,7 @@ func file_vaultsync_v1_realtime_proto_init() {
 	if File_vaultsync_v1_realtime_proto != nil {
 		return
 	}
+	file_vaultsync_v1_errors_proto_init()
 	file_vaultsync_v1_realtime_proto_msgTypes[0].OneofWrappers = []any{
 		(*ClientFrame_Subscribe)(nil),
 		(*ClientFrame_Unsubscribe)(nil),

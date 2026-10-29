@@ -37,10 +37,15 @@ type memoryVaults struct {
 	mu      sync.Mutex
 	vaults  map[uuid.UUID]store.Vault
 	members map[uuid.UUID]map[uuid.UUID]store.Role
+	deleted map[uuid.UUID]bool
 }
 
 func newMemoryVaults() *memoryVaults {
-	return &memoryVaults{vaults: map[uuid.UUID]store.Vault{}, members: map[uuid.UUID]map[uuid.UUID]store.Role{}}
+	return &memoryVaults{
+		vaults:  map[uuid.UUID]store.Vault{},
+		members: map[uuid.UUID]map[uuid.UUID]store.Role{},
+		deleted: map[uuid.UUID]bool{},
+	}
 }
 
 func (memory *memoryVaults) CreateVault(_ context.Context, ownerID uuid.UUID, vault store.NewVault, limit int) (store.Vault, error) {
@@ -49,8 +54,8 @@ func (memory *memoryVaults) CreateVault(_ context.Context, ownerID uuid.UUID, va
 
 	owned := 0
 
-	for _, roles := range memory.members {
-		if roles[ownerID] == store.RoleOwner {
+	for id, roles := range memory.members {
+		if roles[ownerID] == store.RoleOwner && !memory.deleted[id] {
 			owned++
 		}
 	}
@@ -81,7 +86,7 @@ func (memory *memoryVaults) ListVaults(_ context.Context, userID, after uuid.UUI
 
 	for id, roles := range memory.members {
 		role, ok := roles[userID]
-		if !ok || bytes.Compare(id[:], after[:]) <= 0 {
+		if !ok || memory.deleted[id] || bytes.Compare(id[:], after[:]) <= 0 {
 			continue
 		}
 
@@ -104,7 +109,28 @@ func (memory *memoryVaults) VaultRole(_ context.Context, vaultID, userID uuid.UU
 		return "", store.ErrVaultNotFound
 	}
 
+	if memory.deleted[vaultID] {
+		return "", store.ErrVaultDeleted
+	}
+
 	return role, nil
+}
+
+func (memory *memoryVaults) DeleteVault(_ context.Context, vaultID uuid.UUID) error {
+	memory.mu.Lock()
+	defer memory.mu.Unlock()
+
+	if _, ok := memory.vaults[vaultID]; !ok {
+		return store.ErrVaultNotFound
+	}
+
+	if memory.deleted[vaultID] {
+		return store.ErrVaultDeleted
+	}
+
+	memory.deleted[vaultID] = true
+
+	return nil
 }
 
 // addMember seeds a membership; membership management is Phase 3.
@@ -306,6 +332,8 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.VaultKeyService/ListMissingSlots": authz.Manage,
 	"/vaultsync.v1.VaultKeyService/RotateEpoch":      authz.Manage,
 	"/vaultsync.v1.VaultKeyService/AddKeySlots":      authz.Manage,
+	// Only owners delete a vault.
+	"/vaultsync.v1.VaultService/DeleteVault": authz.Manage,
 }
 
 // deniedByRole reports whether a member with role must get
@@ -371,19 +399,28 @@ func TestVaultScopedProceduresEnforceRoles(t *testing.T) {
 		tokens[role] = fixture.token(t, string(role))
 	}
 
-	vault := fixture.createVault(t, tokens[store.RoleOwner], "Shared")
-	vaultID := uuid.MustParse(vault.GetId())
+	memberIDs := map[store.Role]uuid.UUID{}
 
 	for _, role := range []store.Role{store.RoleEditor, store.RoleViewer} {
 		userID, err := users.UpsertUser(t.Context(), fixture.issuer.URL, string(role), "")
 		require.NoError(t, err)
-		vaults.addMember(vaultID, userID, role)
+
+		memberIDs[role] = userID
 	}
 
 	for _, procedure := range vaultScopedProcedures(t) {
 		access := expectedAccessOf(t, procedure)
 
-		for _, role := range []store.Role{store.RoleOwner, store.RoleEditor, store.RoleViewer, "non-member"} {
+		// A vault per procedure, so one that changes the vault (an
+		// owner's DeleteVault) does not change the others' outcomes.
+		vault := fixture.createVault(t, tokens[store.RoleOwner], "Shared")
+		for role, userID := range memberIDs {
+			vaults.addMember(uuid.MustParse(vault.GetId()), userID, role)
+		}
+
+		// The owner calls last, so the members' calls see the vault
+		// before an owner-only procedure changes it.
+		for _, role := range []store.Role{store.RoleEditor, store.RoleViewer, "non-member", store.RoleOwner} {
 			t.Run(procedure+" as "+string(role), func(t *testing.T) {
 				response := fixture.callJSON(t, procedure, tokens[role], map[string]string{"vault_id": vault.GetId()})
 
