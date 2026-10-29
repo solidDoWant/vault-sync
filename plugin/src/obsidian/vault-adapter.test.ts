@@ -221,3 +221,93 @@ describe("ObsidianVaultAdapter writing a note open in reading view", () => {
     expect(state.saves).toBe(1);
   });
 });
+
+describe("ObsidianVaultAdapter replacing a file on the desktop disk", () => {
+  /**
+   * A desktop vault whose index holds `from` (`size` bytes) and, if
+   * `targetSize` is given, `to`. The disk's rename leaves the index as
+   * Obsidian's file watcher would once it saw the rename, but with `to` at
+   * `sizeAfter` bytes: the user wrote to the file right after. With
+   * `watcherSeesIt` false the index never learns of the rename.
+   */
+  function desktopVault(options: { size: number; targetSize?: number; sizeAfter: number; watcherSeesIt?: boolean }) {
+    const { FileSystemAdapter } = vi.mocked(obsidian);
+    const file = (path: string, size: number) => Object.assign(new (TFile as unknown as new (path: string) => object)(path), { stat: { size, mtime: 1_000 } });
+    const indexed = new Map<string, unknown>([["note.md.vault-sync-tmp", file("note.md.vault-sync-tmp", options.size)]]);
+    if (options.targetSize !== undefined) indexed.set("note.md", file("note.md", options.targetSize));
+    const vault = {
+      getAbstractFileByPath: (path: string) => indexed.get(path) ?? null,
+      getFileByPath: (path: string) => {
+        const found = indexed.get(path);
+        return found instanceof TFile ? found : null;
+      },
+      readBinary: () => Promise.resolve(toArrayBuffer(bytes)),
+      adapter: Object.assign(Object.create(FileSystemAdapter.prototype as object) as object, { getBasePath: () => "/vault" }),
+    };
+    const rename = () => {
+      if (options.watcherSeesIt !== false) {
+        indexed.delete("note.md.vault-sync-tmp");
+        indexed.set("note.md", Object.assign(file("note.md", options.sizeAfter), { stat: { size: options.sizeAfter, mtime: 2_000 } }));
+      }
+      return Promise.resolve();
+    };
+    vi.stubGlobal("require", (id: string) => (id === "fs" ? { promises: { rename, rmdir: () => Promise.resolve() } } : undefined));
+    return { vault } as unknown as App;
+  }
+
+  /** Starts the replace and reports how it stands: "pending", "resolved", or its error's message. */
+  function replacing(app: App, expectedHash: string | null): () => string {
+    const adapter = new ObsidianVaultAdapter(app);
+    if (adapter.replace === undefined) throw new Error("no atomic replace on the desktop vault");
+    let state = "pending";
+    adapter.replace("note.md.vault-sync-tmp", "note.md", { expectedHash }).then(
+      () => {
+        state = "resolved";
+      },
+      (error: unknown) => {
+        state = String(error);
+      },
+    );
+    return () => state;
+  }
+
+  it("returns once the index shows a new file, though the user edited it right after", async () => {
+    vi.useFakeTimers();
+    try {
+      const done = replacing(desktopVault({ size: 21, sizeAfter: 39 }), null);
+      await vi.advanceTimersByTimeAsync(100);
+      expect(done()).toBe("resolved");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("returns once the index shows a replaced file, though the user edited it right after", async () => {
+    vi.useFakeTimers();
+    try {
+      const done = replacing(desktopVault({ size: 21, targetSize: 4, sizeAfter: 39 }), sha256Hex(bytes));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(done()).toBe("resolved");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("stops waiting for the index after 5 s of elapsed time, however late its timers fire", async () => {
+    vi.useFakeTimers();
+    try {
+      const done = replacing(desktopVault({ size: 21, sizeAfter: 21, watcherSeesIt: false }), null);
+      // Every 10 ms poll takes 100 ms, as in a throttled background window.
+      for (let poll = 0; poll < 55 && done() === "pending"; poll++) {
+        vi.setSystemTime(Date.now() + 90);
+        await vi.advanceTimersByTimeAsync(10);
+      }
+      expect(done()).toBe("resolved");
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});

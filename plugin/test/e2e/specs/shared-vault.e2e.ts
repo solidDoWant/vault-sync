@@ -16,6 +16,8 @@ import {
   openSecondDevice,
   serverHeads,
   setUpDevice,
+  startSyncRecording,
+  syncRecording,
   syncStatus,
   use,
   vaultFiles,
@@ -394,6 +396,8 @@ describe("a vault shared by two users", function () {
     await use(a);
     const vaultId = await connectedVaultId();
     const { code } = await invite(VaultRole.EDITOR);
+    await startSyncRecording(a);
+    await startSyncRecording(b);
 
     await use(b);
     await join(code);
@@ -406,8 +410,13 @@ describe("a vault shared by two users", function () {
     await use(b);
     await writeNote("Shared.md", "written by the owner\nand by the member\n");
     await writeNote("From the member.md", "a note of the member's\n");
-    await waitForText(a, "Shared.md", "written by the owner\nand by the member\n");
-    await waitForText(a, "From the member.md", "a note of the member's\n");
+    // A failure carries what both devices did while the member's edits travelled.
+    try {
+      await waitForText(a, "Shared.md", "written by the owner\nand by the member\n");
+      await waitForText(a, "From the member.md", "a note of the member's\n");
+    } catch (error) {
+      throw new Error(`${String(error)}\n${await syncRecording(b)}\n${await syncRecording(a)}`, { cause: error });
+    }
 
     await use(a);
     await writeNote("Shared.md", "written by the owner\nand by the member\nand the owner again\n");
