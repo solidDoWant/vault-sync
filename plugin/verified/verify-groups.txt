@@ -12,9 +12,18 @@ merged core/MergedClaims.dfy        # 257
 server core/ServerEvents.dfy        # 203
 
 round-claims core/RoundClaims.dfy   # 90
-round core/RoundGuarantees.dfy      # 110
+round core/RoundGuarantees.dfy           # 110
+round core/RoundMovesAndRemoves.dfy      # 91
 
-round-g6 core/RoundG6.dfy           # 10
+round-mixed-up core/RoundNeverMixedUp.dfy  # 156
+
+round-links core/RoundLinks.dfy          # 226
+
+round-chains core/RoundChains.dfy        # 257
+
+round-saw core/RoundWhatItSaw.dfy        # 175
+
+round-kept core/RoundKeeps.dfy           # 204
 
 resync core/Resync.dfy              # 196
 
