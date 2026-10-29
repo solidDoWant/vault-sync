@@ -9,7 +9,7 @@ import { baseContent, downloadContent, toIncoming, type PullApi } from "./remote
 import { uploadContent } from "./upload";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
-import { uuidv7 } from "../uuid";
+import { v7 as uuidv7 } from "uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { posixPathRules, unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { conflictCopyName } from "./conflict-name";
@@ -389,13 +389,13 @@ export class SyncEngine {
     const taken = await this.taken(state);
     let order = nextOrder(state);
     const newOp = (documentId: string, path: string, docKind: SyncKind, contentHash: string, contentSize: number, kind: "create" | "rename" = "create"): PendingOp => ({
-      opId: uuidv7(this.now()),
+      opId: uuidv7({ msecs: this.now() }),
       order: order++,
       documentId,
       kind,
       path,
       docKind,
-      revisionId: uuidv7(this.now()),
+      revisionId: uuidv7({ msecs: this.now() }),
       contentHash,
       contentSize,
       sent: false,
@@ -419,7 +419,7 @@ export class SyncEngine {
       const copy = copyName(path);
       await this.rename(path, copy);
       displace(path);
-      pending.push(newOp(uuidv7(this.now()), copy, kindOfPath(copy), hash, size));
+      pending.push(newOp(uuidv7({ msecs: this.now() }), copy, kindOfPath(copy), hash, size));
       conflicts.push({ path: copy, documentId, createdAt: this.now() });
     };
     /** Writes `content` at the free or freed `path`: a file there with the same content is taken as is, a different one moves to a copy. */
@@ -500,7 +500,7 @@ export class SyncEngine {
             // The newer local file stays (a pending edit on top of the head, found by the next detection); the head is the copy.
             const copy = copyName(localPath);
             if (!(await this.write(copy, content, null))) continue;
-            pending.push(newOp(uuidv7(this.now()), copy, kindOfPath(copy), remote.contentHash, Number(remote.size)));
+            pending.push(newOp(uuidv7({ msecs: this.now() }), copy, kindOfPath(copy), remote.contentHash, Number(remote.size)));
             conflicts.push({ path: copy, documentId: id, createdAt: this.now() });
           }
         }
@@ -710,7 +710,7 @@ export class SyncEngine {
       // No copy name fits: nothing is overwritten.
       if (copyPath === null) return undecided;
       if (!(await this.write(copyPath, merged.copy, null))) return undecided;
-      const copy = this.newOp(state, uuidv7(this.now()), "create", copyPath, kindOfPath(copyPath), sha256Hex(merged.copy), merged.copy.length);
+      const copy = this.newOp(state, uuidv7({ msecs: this.now() }), "create", copyPath, kindOfPath(copyPath), sha256Hex(merged.copy), merged.copy.length);
       await this.record({ putPending: [copy], putConflicts: [{ path: copyPath, documentId: entry.documentId, createdAt: this.now() }] });
     }
     // Rule W at the final path.
@@ -929,12 +929,12 @@ export class SyncEngine {
         // A refused commit was never applied, so an unsent operation keeps its revision id. The new name is not refused.
         // A sent one may have landed: the move is a new commit, and the earlier one is recognised when it arrives.
         const moved: PendingOp = last.sent
-          ? { ...last, path: copy, sent: false, revisionId: uuidv7(this.now()), earlierRevisionIds: [...(last.earlierRevisionIds ?? []), last.revisionId] }
+          ? { ...last, path: copy, sent: false, revisionId: uuidv7({ msecs: this.now() }), earlierRevisionIds: [...(last.earlierRevisionIds ?? []), last.revisionId] }
           : { ...last, path: copy };
         delete moved.refused;
         change.putPending.push(moved);
       } else {
-        change.putPending.push({ ...this.newOp(state, uuidv7(this.now()), "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
+        change.putPending.push({ ...this.newOp(state, uuidv7({ msecs: this.now() }), "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
       }
       change.putConflicts.push({ path: copy, documentId: arriving, createdAt: this.now() });
     }
@@ -973,13 +973,13 @@ export class SyncEngine {
   /** A new, unsent pending operation at the end of the queue. */
   private newOp(state: JournalState, documentId: string, kind: PendingKind, path: string, docKind: SyncKind, contentHash: string, contentSize: number): PendingOp {
     return {
-      opId: uuidv7(this.now()),
+      opId: uuidv7({ msecs: this.now() }),
       order: nextOrder(state),
       documentId,
       kind,
       path,
       docKind,
-      revisionId: uuidv7(this.now()),
+      revisionId: uuidv7({ msecs: this.now() }),
       contentHash,
       contentSize,
       sent: false,
