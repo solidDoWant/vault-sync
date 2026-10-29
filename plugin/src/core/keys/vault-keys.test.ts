@@ -39,7 +39,7 @@ function join(
   member: User,
   role: VaultRole,
 ): void {
-  server.addMember(member.id, role, member.key.publicKey);
+  server.seedMember(member.key, role);
 }
 
 /** A device of `member` with its own epoch key store. */

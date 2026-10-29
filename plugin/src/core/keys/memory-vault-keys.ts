@@ -22,9 +22,12 @@ import { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
 import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
 import { KeyRecipientKind, VaultKeyService, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
 import type { LogEntry } from "../../gen/vaultsync/v1/types_pb";
-import { equalBytes } from "@noble/ciphers/utils.js";
-import { EntryType, LogError, replayLog, type Entry, type LogState } from "../e2ee/memberlog";
-import { fromLogEntry, toLogEntry } from "./member-log";
+import { equalBytes, randomBytes } from "@noble/ciphers/utils.js";
+import { bundleOf, invitationKeyPair, inviteSignSeed, signPublicKey, uuidString } from "../e2ee/identity";
+import { EntryType, LogError, genesisPayload, idPayload, invitePayload, redeemPayload, replayLog, type Entry, type LogState } from "../e2ee/memberlog";
+import { logRole } from "./encrypted-membership";
+import { fromLogEntry, genesisEntry, nextEntry, toLogEntry } from "./member-log";
+import type { UserKeyPair } from "./user-key";
 
 /** A member as the server stores them. */
 export interface StoredMember {
@@ -76,6 +79,11 @@ export class MemoryVaultKeyServer {
   readonly userKeys = new Map<string, Uint8Array>();
   /** The vault's membership log, from genesis. */
   readonly log: Entry[] = [];
+  /** The signing seeds of seeded members, and of the one who signed the genesis. */
+  private readonly signSeeds = new Map<string, Uint8Array>();
+  private founder: Uint8Array | undefined;
+  /** Pending invitations, by id. */
+  readonly invitations = new Map<string, { idHash: Uint8Array; role: VaultRole; slots: StoredSlot[]; anchor: Uint8Array }>();
   /** Users' sealed anchor lists (UserKeyService) and their versions. */
   readonly anchorLists = new Map<string, { version: number; sealed: Uint8Array }>();
   /** Every request any member sent, in order. */
@@ -108,6 +116,11 @@ export class MemoryVaultKeyServer {
    * Appends it and returns the state after it.
    */
   appendEntry(sent: LogEntry | undefined, type: number, matches: (entry: Entry, before: LogState, after: LogState) => boolean): LogState {
+    return this.appendEntryChecked(sent, type, matches, () => undefined);
+  }
+
+  /** {@link appendEntry}, running `check` (which throws to refuse) after the entry verified and before it is appended. */
+  private appendEntryChecked(sent: LogEntry | undefined, type: number, matches: (entry: Entry, before: LogState, after: LogState) => boolean, check: () => void): LogState {
     if (sent === undefined) throw new ConnectError("log_entry is required in an E2EE vault", Code.InvalidArgument);
     const entry = fromLogEntry(this.vaultId, sent);
     if (entry.seq !== this.log.length + 1) throw new ConnectError("the entry's seq is not the log's next", Code.Aborted);
@@ -122,6 +135,7 @@ export class MemoryVaultKeyServer {
     const after = states[states.length - 1];
     const before = states[states.length - 2];
     if (after === undefined || before === undefined || !matches(entry, before, after)) throw new ConnectError("the entry does not record this change", Code.InvalidArgument);
+    check();
     this.log.push(entry);
     return after;
   }
@@ -131,10 +145,37 @@ export class MemoryVaultKeyServer {
     this.members.set(userId, { role, publicKey });
   }
 
-  /** The member leaves (LeaveVault): an owner client must rotate. */
+  /**
+   * Adds a member with their user key and records it in the log as the
+   * server would have: the first member (an owner) signs the genesis, every
+   * later one is invited by that owner (or by `inviter`) and redeems.
+   */
+  seedMember(key: UserKeyPair, role: VaultRole, inviter?: UserKeyPair): void {
+    this.addMember(key.userId, role, key.publicKey);
+    this.signSeeds.set(key.userId, key.signSeed);
+    const bundle = bundleOf({ kemSeed: key.privateKey, signSeed: key.signSeed }, key.userId);
+    if (this.log.length === 0) {
+      if (role !== VaultRole.OWNER) throw new Error("the first seeded member signs the genesis and must be an owner");
+      this.founder = key.signSeed;
+      this.log.push(genesisEntry(this.vaultId, genesisPayload(bundle, undefined), key.signSeed));
+      return;
+    }
+    const founder = inviter?.signSeed ?? this.founder;
+    if (founder === undefined) throw new Error("no owner to invite the member");
+    const secret = randomBytes(16);
+    const invitationId = crypto.randomUUID();
+    const inviteSeed = inviteSignSeed(secret, this.vaultId, invitationId);
+    const payload = invitePayload(invitationId, logRole(role), signPublicKey(inviteSeed), invitationKeyPair(secret, this.vaultId, invitationId).publicKey);
+    this.log.push(nextEntry(this.vaultId, this.log, { type: EntryType.invite, payload, signSeeds: [founder] }));
+    this.log.push(nextEntry(this.vaultId, this.log, { type: EntryType.redeem, payload: redeemPayload(invitationId, bundle), signSeeds: [inviteSeed, key.signSeed] }));
+  }
+
+  /** The member leaves (LeaveVault): an owner client must rotate. A seeded member's leave entry is logged. */
   leave(userId: string): void {
     this.members.delete(userId);
     this.rotationPending = true;
+    const seed = this.signSeeds.get(userId);
+    if (seed !== undefined) this.log.push(nextEntry(this.vaultId, this.log, { type: EntryType.leave, payload: idPayload(userId), signSeeds: [seed] }));
   }
 
   /** The slots of `epoch`, by recipient. */
@@ -272,8 +313,62 @@ export class MemoryVaultKeyServer {
             await this.hold();
             if (!this.members.has(request.userId)) throw new ConnectError("not a member", Code.NotFound);
             this.checkRecipients(nextEpoch, request.userId);
+            this.checkEpochCurrent(nextEpoch);
+            this.appendEntry(request.logEntry, EntryType.removeMember, (_entry, before, after) => before.members.has(request.userId) && !after.members.has(request.userId));
             this.applyNextEpoch(userId, nextEpoch);
             this.members.delete(request.userId);
+            return {};
+          },
+          createInvitation: (request) => {
+            this.owner(userId, request.vaultId);
+            if (request.idHash.length !== 32 || request.inviteAnchor.length !== 96) throw new ConnectError("id_hash and invite_anchor are required", Code.InvalidArgument);
+            const before = new Set(this.invitations.keys());
+            const state = this.appendEntryChecked(
+              request.logEntry,
+              EntryType.invite,
+              (_entry, previous, after) => {
+                const added = [...after.invitations.keys()].filter((id) => !previous.invitations.has(id));
+                return added.length === 1 && after.invitations.get(added[0] ?? "")?.role === logRole(request.role);
+              },
+              () => {
+                // The slots: exactly one per epoch, to the new invitation.
+                const invitationId = request.logEntry === undefined ? "" : uuidString(request.logEntry.payload.subarray(0, 16));
+                const epochs = request.slots.map((slot) => slot.epoch).sort((a, b) => a - b);
+                if (epochs.length !== this.currentEpoch || epochs.some((epoch, index) => epoch !== index + 1)) throw new ConnectError("one slot per epoch", Code.InvalidArgument);
+                if (request.slots.some((slot) => slot.recipientKind !== KeyRecipientKind.INVITATION || slot.recipientId !== invitationId)) {
+                  throw new ConnectError("invitation slots only", Code.InvalidArgument);
+                }
+              },
+            );
+            const invitationId = [...state.invitations.keys()].find((id) => !before.has(id)) ?? "";
+            this.invitations.set(invitationId, {
+              idHash: request.idHash,
+              role: request.role,
+              anchor: request.inviteAnchor,
+              slots: request.slots.map((slot) => ({ epoch: slot.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator: userId })),
+            });
+            return { invitation: { id: invitationId, role: request.role }, code: "" };
+          },
+          revokeInvitation: (request) => {
+            this.owner(userId, request.vaultId);
+            if (!this.invitations.has(request.invitationId)) throw new ConnectError("no such invitation", Code.NotFound);
+            this.appendEntry(request.logEntry, EntryType.revokeInvitation, (_entry, before, after) => before.invitations.has(request.invitationId) && !after.invitations.has(request.invitationId));
+            this.invitations.delete(request.invitationId);
+            return {};
+          },
+          updateMemberRole: (request) => {
+            this.owner(userId, request.vaultId);
+            const member = this.members.get(request.userId);
+            if (member === undefined) throw new ConnectError("not a member", Code.NotFound);
+            this.appendEntry(request.logEntry, EntryType.setRole, (_entry, _before, after) => after.members.get(request.userId)?.role === logRole(request.role));
+            member.role = request.role;
+            return { member: { userId: request.userId, role: request.role } };
+          },
+          leaveVault: (request) => {
+            this.member(userId, request.vaultId);
+            this.appendEntry(request.logEntry, EntryType.leave, (_entry, before, after) => before.members.has(userId) && !after.members.has(userId));
+            this.members.delete(userId);
+            this.rotationPending = true;
             return {};
           },
         });
@@ -330,12 +425,16 @@ export class MemoryVaultKeyServer {
     }
   }
 
-  private applyNextEpoch(creator: string, nextEpoch: NextEpoch): StoredEpoch {
+  private checkEpochCurrent(nextEpoch: NextEpoch): void {
     if (nextEpoch.expectedEpoch !== this.currentEpoch) {
       throw new ConnectError("expected_epoch is not the vault's current epoch", Code.FailedPrecondition, undefined, [
         { desc: ErrorDetailSchema, value: { reason: ErrorReason.EPOCH_NOT_CURRENT } },
       ]);
     }
+  }
+
+  private applyNextEpoch(creator: string, nextEpoch: NextEpoch): StoredEpoch {
+    this.checkEpochCurrent(nextEpoch);
     const epoch: StoredEpoch = { epoch: this.currentEpoch + 1, commitment: nextEpoch.commitment, creator };
     this.epochs.push(epoch);
     for (const slot of nextEpoch.slots) this.slots.push({ epoch: epoch.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator });

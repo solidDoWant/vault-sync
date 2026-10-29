@@ -1,6 +1,6 @@
 import { FileSystemAdapter, Notice, Platform, Plugin, setIcon, TFile, type App, type TAbstractFile } from "obsidian";
 
-import { VaultEncryption, type Vault, type VaultRole } from "./gen/vaultsync/v1/types_pb";
+import { VaultEncryption, VaultRole, type Vault } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
 import { TokenManager, type AuthState } from "./core/auth/tokens";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
@@ -23,7 +23,20 @@ import { pathRulesFor } from "./obsidian/platform-rules";
 import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
 import { VaultSyncSettingTab, type SettingsHost } from "./obsidian/settings";
-import { createInvitation, deleteVault, joinVault, leaveVault, loadSharing, removeMember, revokeInvitation, setMemberRole, type CreatedInvitation, type Sharing } from "./obsidian/sharing";
+import {
+  createInvitation,
+  deleteVault,
+  joinVault,
+  leaveVault,
+  loadSharing,
+  removeMember,
+  revokeInvitation,
+  setMemberRole,
+  type CreatedInvitation,
+  type EncryptedSharing,
+  type Sharing,
+} from "./obsidian/sharing";
+import { VaultKeyManager } from "./core/keys/vault-keys";
 import { SignInCancelledError, SignInModal } from "./obsidian/sign-in-modal";
 import { initialStatus, isStoppedState, statusDescription, statusIcon, statusText, type SyncStatus } from "./obsidian/status";
 import { ObsidianVaultAdapter } from "./obsidian/vault-adapter";
@@ -420,20 +433,47 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   }
 
   /** Creates an invitation to the connected vault; its code is shown once and never stored. */
-  createInvitation(role: VaultRole, days: number | undefined): Promise<CreatedInvitation> {
-    return createInvitation(this.protocolClient(), this.sharedVaultId(), role, days, formatDate);
+  async createInvitation(role: VaultRole, days: number | undefined): Promise<CreatedInvitation> {
+    return createInvitation(this.protocolClient(), this.sharedVaultId(), role, days, formatDate, await this.encryptedSharing());
   }
 
-  revokeInvitation(invitationId: string): Promise<void> {
-    return revokeInvitation(this.protocolClient(), this.sharedVaultId(), invitationId);
+  async revokeInvitation(invitationId: string): Promise<void> {
+    return revokeInvitation(this.protocolClient(), this.sharedVaultId(), invitationId, await this.encryptedSharing());
   }
 
-  setMemberRole(userId: string, role: VaultRole): Promise<void> {
-    return setMemberRole(this.protocolClient(), this.sharedVaultId(), userId, role);
+  async setMemberRole(userId: string, role: VaultRole): Promise<void> {
+    return setMemberRole(this.protocolClient(), this.sharedVaultId(), userId, role, await this.encryptedSharing());
   }
 
-  removeMember(userId: string): Promise<void> {
-    return removeMember(this.protocolClient(), this.sharedVaultId(), userId);
+  async removeMember(userId: string): Promise<void> {
+    return removeMember(this.protocolClient(), this.sharedVaultId(), userId, await this.encryptedSharing());
+  }
+
+  /**
+   * What a membership change of the connected vault needs when it is end-to-end
+   * encrypted: the unlocked user key, which signs the change's log entry,
+   * and the vault's key manager. Undefined for a plaintext vault.
+   */
+  private async encryptedSharing(): Promise<EncryptedSharing | undefined> {
+    const vaultId = this.sharedVaultId();
+    const client = this.protocolClient();
+    const vault = (await listRemoteVaults(client)).find((listed) => listed.id === vaultId);
+    if (vault === undefined || vault.encryption !== VaultEncryption.E2EE) return undefined;
+    const options = this.encryptionOptions();
+    const userKey = await unlockedUserKey(options);
+    const account = await currentAccount(this.data, options.accessToken);
+    const escrow = vault.escrow ? (await this.escrowOffer()).recipient : undefined;
+    if (vault.escrow && escrow === undefined) throw new Error("this server has no escrow key");
+    const manager = new VaultKeyManager({
+      vaultId,
+      userKey,
+      owner: vault.role === VaultRole.OWNER,
+      keys: client.vaultKeys,
+      membership: client.membership,
+      store: pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),
+      escrow,
+    });
+    return { context: { vaultId, userKey, membership: client.membership, log: client.vaultKeys }, manager };
   }
 
   /**
@@ -442,7 +482,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    * The vault stays connected and the local files stay.
    */
   async leaveVault(): Promise<void> {
-    await leaveVault(this.protocolClient(), this.sharedVaultId());
+    await leaveVault(this.protocolClient(), this.sharedVaultId(), await this.encryptedSharing());
     await this.controller?.syncNow();
   }
 

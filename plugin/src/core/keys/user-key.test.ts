@@ -138,8 +138,15 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
     expect(unlocked.publicKey).toEqual(key.publicKey);
     expect(unlocked.privateKey).toEqual(key.privateKey);
     expect(unlocked.signSeed).toEqual(key.signSeed);
+    expect(key.userId).toBe(server.userId);
+    expect(unlocked.userId).toBe(server.userId);
     for (const request of server.requests)
       expect(contains(request.bytes, key.privateKey)).toBe(false);
+  });
+
+  it("refuses a key the server returns without a valid user id", async () => {
+    const server = new MemoryUserKeyServer(undefined, "not-a-uuid");
+    await expect(enableEncryption(device(server), passphrase, cheap)).rejects.toThrow(/no valid user id/);
   });
 
   it("fails with a wrong passphrase", async () => {

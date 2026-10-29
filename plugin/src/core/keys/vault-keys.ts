@@ -18,10 +18,12 @@ import type { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { KeyRecipientKind, type KeySlotSchema, type NextEpochSchema, type VaultKeyService } from "../../gen/vaultsync/v1/vault_key_pb";
 import { DecryptError, generateKey } from "../e2ee/e2ee";
 import { KeyCommitmentError, keyCommitment, openKeySlot, sealKeySlot, verifyKeyCommitment } from "../e2ee/keyslot";
+import { EntryType, idPayload } from "../e2ee/memberlog";
+import { nextEntry, readLog, toLogEntry } from "./member-log";
 import type { UserKeyPair } from "./user-key";
 
 /** The VaultKeyService calls the manager makes (ProtocolClient.vaultKeys). */
-export type VaultKeyClient = Pick<Client<typeof VaultKeyService>, "listKeySlots" | "listEpochs" | "listMissingSlots" | "rotateEpoch" | "addKeySlots">;
+export type VaultKeyClient = Pick<Client<typeof VaultKeyService>, "listKeySlots" | "listEpochs" | "listMissingSlots" | "rotateEpoch" | "addKeySlots" | "listLogEntries">;
 
 /** The MembershipService calls the manager makes on an owner device (ProtocolClient.membership). */
 export type MemberKeyClient = Pick<Client<typeof MembershipService>, "listMembers" | "removeMember">;
@@ -192,19 +194,24 @@ export class VaultKeyManager {
   /**
    * Removes `userId` from the vault: sends RemoveMember with the next epoch,
    * wrapped for every remaining member with a user key and not for the
-   * removed member, so the removal and the new epoch take effect together.
-   * When another epoch change wins meanwhile, adopts it and builds the epoch
-   * after it.
+   * removed member, so the removal and the new epoch take effect together,
+   * and with the remove-member entry signed on top of the log's head.
+   * When another epoch change or log entry wins meanwhile, adopts it and
+   * builds the epoch and the entry after it.
    */
   async removeMember(userId: string): Promise<void> {
     if (!this.options.owner) throw new Error("only an owner can remove a member");
+    const { vaultId, userKey } = this.options;
     for (let attempt = 1; ; attempt++) {
       const view = await this.read();
+      const log = await readLog(this.options.keys, vaultId);
+      const logEntry = toLogEntry(nextEntry(vaultId, log, { type: EntryType.removeMember, payload: idPayload(userId), signSeeds: [userKey.signSeed] }));
       try {
-        await this.createEpoch(view.currentEpoch, userId, (nextEpoch) => this.options.membership.removeMember({ vaultId: this.options.vaultId, userId, nextEpoch }));
+        await this.createEpoch(view.currentEpoch, userId, (nextEpoch) => this.options.membership.removeMember({ vaultId, userId, nextEpoch, logEntry }));
         return;
       } catch (error) {
-        if (!isEpochNotCurrent(error) || attempt >= MAX_REMOVE_ATTEMPTS) throw error;
+        const raced = isEpochNotCurrent(error) || (error instanceof ConnectError && error.code === Code.Aborted);
+        if (!raced || attempt >= MAX_REMOVE_ATTEMPTS) throw error;
       }
     }
   }
