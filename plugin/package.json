@@ -15,6 +15,7 @@
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.16.0",
     "@eslint/js": "^10.0.1",
+    "@types/diff-match-patch": "^1.0.36",
     "@types/mocha": "^10.0.10",
     "@types/node": "^26.6.5",
     "@wdio/cli": "^9.32.0",
@@ -42,7 +43,8 @@
     "@noble/hashes": "^2.4.0",
     "@noble/post-quantum": "^0.5.4",
     "@scure/base": "^2.4.0",
-    "age-encryption": "^0.3.1"
+    "age-encryption": "^0.3.1",
+    "diff-match-patch": "^1.0.5"
   },
   "allowScripts": {
     "esbuild@0.28.2": true
