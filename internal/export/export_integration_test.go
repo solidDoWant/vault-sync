@@ -325,7 +325,7 @@ func TestExportAgainstPostgreSQLAndS3(t *testing.T) {
 
 	assert.Equal(t, total, summary.Bytes)
 	require.Len(t, summary.VaultDetails, 3)
-	assert.Equal(t, export.VaultSummary{ID: secret, Name: "Secret", Encryption: "e2ee", Skipped: export.SkippedE2EE}, summary.VaultDetails[2])
+	assert.Equal(t, export.VaultSummary{ID: secret, Name: "Secret", Encryption: "e2ee", Skipped: export.SkippedNoEscrow}, summary.VaultDetails[2])
 	assert.Equal(t, "Notes", summary.VaultDetails[0].Name)
 	assert.Equal(t, int64(export.DefaultPageSize+1+7), summary.VaultDetails[0].HeadSeq)
 }

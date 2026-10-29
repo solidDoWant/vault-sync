@@ -32,6 +32,9 @@ type fakeSource struct {
 	vaults    []store.Vault
 	documents map[uuid.UUID][]store.LiveDocument
 	content   map[string][]byte
+	epochs    map[uuid.UUID][]store.Epoch
+	// slots are the escrow slots by vault, then escrow key id.
+	slots map[uuid.UUID]map[string][]store.KeySlot
 
 	onDocuments func(ctx context.Context, vaultID uuid.UUID, after uuid.UUID) error
 	onContent   func(ctx context.Context, blobID []byte) (io.ReadCloser, error)
@@ -41,7 +44,10 @@ type fakeSource struct {
 }
 
 func newFakeSource() *fakeSource {
-	return &fakeSource{documents: map[uuid.UUID][]store.LiveDocument{}, content: map[string][]byte{}, seqs: map[uuid.UUID][]int64{}}
+	return &fakeSource{
+		documents: map[uuid.UUID][]store.LiveDocument{}, content: map[string][]byte{}, seqs: map[uuid.UUID][]int64{},
+		epochs: map[uuid.UUID][]store.Epoch{}, slots: map[uuid.UUID]map[string][]store.KeySlot{},
+	}
 }
 
 // addVault adds a vault and returns its id.
@@ -126,6 +132,30 @@ func (source *fakeSource) Content(ctx context.Context, _ uuid.UUID, blobID []byt
 	return io.NopCloser(bytes.NewReader(content)), nil
 }
 
+func (source *fakeSource) Epochs(_ context.Context, vaultID uuid.UUID, after int32, limit int) ([]store.Epoch, error) {
+	var page []store.Epoch
+
+	for _, epoch := range source.epochs[vaultID] {
+		if epoch.Epoch > after && len(page) < limit {
+			page = append(page, epoch)
+		}
+	}
+
+	return page, nil
+}
+
+func (source *fakeSource) EscrowSlots(_ context.Context, vaultID uuid.UUID, keyID string, after int32, limit int) ([]store.KeySlot, error) {
+	var page []store.KeySlot
+
+	for _, slot := range source.slots[vaultID][keyID] {
+		if slot.Epoch > after && len(page) < limit {
+			page = append(page, slot)
+		}
+	}
+
+	return page, nil
+}
+
 // workspace is a directory holding the output directory and its siblings.
 type workspace struct {
 	root   string
@@ -140,14 +170,15 @@ func newWorkspace(t *testing.T) workspace {
 	return workspace{root: root, output: filepath.Join(root, "out")}
 }
 
-func (space workspace) run(t *testing.T, ctx context.Context, source export.Source) (export.Summary, error) {
+func (space workspace) run(t *testing.T, ctx context.Context, source export.Source, identities ...export.EscrowIdentity) (export.Summary, error) {
 	t.Helper()
 
 	return export.Run(ctx, export.Options{
-		Output:   space.output,
-		Source:   source,
-		Logger:   slog.New(slog.DiscardHandler),
-		PageSize: 2,
+		Output:           space.output,
+		Source:           source,
+		Logger:           slog.New(slog.DiscardHandler),
+		PageSize:         2,
+		EscrowIdentities: identities,
 	})
 }
 

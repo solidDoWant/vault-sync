@@ -109,15 +109,28 @@ func runExport(ctx context.Context, output string, lookup func(string) (string, 
 		return Summary{}, err
 	}
 
+	identities := make([]EscrowIdentity, 0, len(cfg.EscrowIdentities))
+
+	for _, privateKey := range cfg.EscrowIdentities {
+		identity, err := NewEscrowIdentity(privateKey)
+		if err != nil {
+			return Summary{}, fmt.Errorf("escrow identity: %w", err)
+		}
+
+		identities = append(identities, identity)
+	}
+
 	summary, err := Run(ctx, Options{
-		Output: output,
-		Source: &StoreSource{Store: store.New(pool), Objects: objects},
-		Logger: logger,
+		Output:           output,
+		Source:           &StoreSource{Store: store.New(pool), Objects: objects},
+		Logger:           logger,
+		EscrowIdentities: identities,
 	})
 	if err != nil {
 		logger.ErrorContext(ctx, "export failed; the previous export is untouched", "error", err)
 	} else {
 		logger.InfoContext(ctx, "export finished", "status", summary.Status, "vaults", summary.Vaults,
+			"skipped_vaults", summary.SkippedVaults, "failed_vaults", summary.FailedVaults,
 			"files", summary.Files, "bytes", summary.Bytes, "unplaced", summary.Unplaced, "document_errors", summary.DocumentErrors)
 	}
 
@@ -149,6 +162,16 @@ func (source *StoreSource) Content(ctx context.Context, vaultID uuid.UUID, blobI
 	}
 
 	return content, err
+}
+
+// Epochs implements Source.
+func (source *StoreSource) Epochs(ctx context.Context, vaultID uuid.UUID, after int32, limit int) ([]store.Epoch, error) {
+	return source.Store.InVault(vaultID).ListEpochs(ctx, after, limit)
+}
+
+// EscrowSlots implements Source.
+func (source *StoreSource) EscrowSlots(ctx context.Context, vaultID uuid.UUID, keyID string, after int32, limit int) ([]store.KeySlot, error) {
+	return source.Store.InVault(vaultID).ListKeySlots(ctx, store.RecipientEscrow, keyID, after, limit)
 }
 
 // problemList flattens errors.Join trees into one message per problem.

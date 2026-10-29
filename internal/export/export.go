@@ -44,6 +44,13 @@ type Source interface {
 	// Content streams a blob's content. It returns ErrContentMissing if
 	// the object does not exist.
 	Content(ctx context.Context, vaultID uuid.UUID, blobID []byte) (io.ReadCloser, error)
+	// Epochs returns up to limit of the vault's key epochs after epoch
+	// after, in epoch order.
+	Epochs(ctx context.Context, vaultID uuid.UUID, after int32, limit int) ([]store.Epoch, error)
+	// EscrowSlots returns up to limit of the vault's escrow slots wrapped
+	// to the escrow key keyID, for epochs after epoch after, in epoch
+	// order.
+	EscrowSlots(ctx context.Context, vaultID uuid.UUID, keyID string, after int32, limit int) ([]store.KeySlot, error)
 }
 
 // ErrContentMissing is returned by Source.Content for a blob whose object
@@ -73,6 +80,10 @@ type Options struct {
 	PageSize int
 	// Now defaults to time.Now.
 	Now func() time.Time
+	// EscrowIdentities decrypt escrowed vaults (SPEC.md §9.4); more than
+	// one during an escrow key rotation. Without any, encrypted vaults are
+	// skipped.
+	EscrowIdentities []EscrowIdentity
 }
 
 // Summary statuses.
@@ -82,8 +93,9 @@ const (
 	// tree is in place.
 	StatusOK = "ok"
 	// StatusPartial: the new tree is in place, but the content of some
-	// documents is missing or corrupt in the object store, so their bytes
-	// are not in it (see DocumentErrors).
+	// documents is missing, corrupt or cannot be decrypted, so their bytes
+	// are not in it (see DocumentErrors), or some encrypted vaults failed
+	// (see FailedVaults).
 	StatusPartial = "partial"
 	// StatusFailed: the export stopped; the previous export, if any, is
 	// untouched.
@@ -98,10 +110,13 @@ type Summary struct {
 	Output          string    `json:"output"`
 	StartedAt       time.Time `json:"started_at"`
 	DurationSeconds float64   `json:"duration_seconds"`
-	// Vaults counts the vaults exported, SkippedVaults those left out
-	// (end-to-end encrypted vaults).
+	// Vaults counts the vaults exported, SkippedVaults the end-to-end
+	// encrypted vaults left out because they cannot be decrypted (no
+	// escrow, or no escrow identity), and FailedVaults the encrypted vaults
+	// left out because their escrow keys do not verify.
 	Vaults        int `json:"vaults"`
 	SkippedVaults int `json:"skipped_vaults"`
+	FailedVaults  int `json:"failed_vaults"`
 	// Files and Bytes count the document files written, in vault trees
 	// and unplaced trees.
 	Files int64 `json:"files"`
@@ -123,8 +138,12 @@ type VaultSummary struct {
 	Encryption string    `json:"encryption"`
 	// HeadSeq is the point in the vault's history that was exported.
 	HeadSeq int64 `json:"head_seq"`
-	// Skipped is why the vault was not exported ("e2ee"), if it was not.
-	Skipped        string          `json:"skipped,omitempty"`
+	// Skipped is why an encrypted vault was not exported (SkippedNoEscrow
+	// or SkippedNoEscrowIdentity), if it was not.
+	Skipped string `json:"skipped,omitempty"`
+	// Failed is why an encrypted vault's escrow keys do not verify, so it
+	// was not exported.
+	Failed         string          `json:"failed,omitempty"`
 	Files          int64           `json:"files"`
 	Bytes          int64           `json:"bytes"`
 	Unplaced       int64           `json:"unplaced"`
@@ -138,9 +157,15 @@ type DocumentError struct {
 	Reason     string    `json:"reason"`
 }
 
-// SkippedE2EE marks an end-to-end encrypted vault, which the export cannot
-// decrypt until escrow exists (SPEC.md §9.4).
-const SkippedE2EE = "e2ee"
+// Why an end-to-end encrypted vault is skipped (SPEC.md §9.4).
+const (
+	// SkippedNoEscrow: the vault has no escrow, so nobody but its members
+	// can decrypt it.
+	SkippedNoEscrow = "no_escrow"
+	// SkippedNoEscrowIdentity: the vault has escrow, but the export was
+	// given no escrow identity.
+	SkippedNoEscrowIdentity = "no_escrow_identity"
+)
 
 // Run exports every vault to options.Output. The returned summary is always
 // filled in; the error is non-nil exactly when its status is StatusFailed.
@@ -163,7 +188,7 @@ func Run(ctx context.Context, options Options) (Summary, error) {
 	case err != nil:
 		run.summary.Status = StatusFailed
 		run.summary.Error = err.Error()
-	case run.summary.DocumentErrors > 0:
+	case run.summary.DocumentErrors > 0, run.summary.FailedVaults > 0:
 		run.summary.Status = StatusPartial
 	default:
 		run.summary.Status = StatusOK
@@ -447,11 +472,41 @@ func (run *run) exportVault(ctx context.Context, staging string, vault store.Vau
 	})
 	details := &run.summary.VaultDetails[len(run.summary.VaultDetails)-1]
 
-	if vault.Encryption != store.EncryptionNone {
-		details.Skipped = SkippedE2EE
-		run.summary.SkippedVaults++
+	var keys map[int32]epochKeys
 
-		return nil
+	if vault.Encryption != store.EncryptionNone {
+		switch {
+		case !vault.Escrow:
+			details.Skipped = SkippedNoEscrow
+		case len(run.options.EscrowIdentities) == 0:
+			details.Skipped = SkippedNoEscrowIdentity
+		}
+
+		if details.Skipped != "" {
+			run.summary.SkippedVaults++
+
+			return nil
+		}
+
+		var (
+			failure *vaultFailure
+			err     error
+		)
+
+		keys, err = run.escrowKeys(ctx, vault.ID)
+
+		switch {
+		case errors.As(err, &failure):
+			run.options.Logger.WarnContext(ctx, "the vault's escrow keys do not verify; it is not in the export",
+				"vault_id", vault.ID, "reason", failure.reason)
+
+			details.Failed = failure.reason
+			run.summary.FailedVaults++
+
+			return nil
+		case err != nil:
+			return err
+		}
 	}
 
 	directory := filepath.Join(staging, vault.ID.String())
@@ -506,7 +561,15 @@ func (run *run) exportVault(ctx context.Context, staging string, vault store.Vau
 				return fmt.Errorf("export interrupted: %w", err)
 			}
 
-			if err := run.exportDocument(ctx, out, document); err != nil {
+			exported := run.storedDocument(ctx, vault.ID, document)
+			if vault.Encryption != store.EncryptionNone {
+				exported, err = run.decryptDocument(ctx, vault.ID, keys, document)
+				if err != nil {
+					return fmt.Errorf("document %s: %w", document.ID, err)
+				}
+			}
+
+			if err := run.exportDocument(ctx, out, exported); err != nil {
 				return fmt.Errorf("document %s: %w", document.ID, err)
 			}
 		}
@@ -538,18 +601,60 @@ type vaultOutput struct {
 	details  *VaultSummary
 }
 
+// exportedDocument is a document as the export writes it: in an encrypted
+// vault, its decrypted path and content.
+type exportedDocument struct {
+	// document is what the manifest describes.
+	document store.LiveDocument
+	// open opens the content to write.
+	open func() (io.ReadCloser, error)
+	// pathProblem, when set, puts the document in the unplaced tree.
+	pathProblem error
+	// contentProblem, when set, leaves the document's bytes out.
+	contentProblem error
+}
+
+// storedDocument exports document's stored path and content as they are.
+func (run *run) storedDocument(ctx context.Context, vaultID uuid.UUID, document store.LiveDocument) exportedDocument {
+	return exportedDocument{document: document, open: func() (io.ReadCloser, error) {
+		content, err := run.options.Source.Content(ctx, vaultID, document.ContentRef)
+		if errors.Is(err, ErrContentMissing) {
+			return nil, refuse(errContentMissing)
+		}
+
+		return content, err
+	}}
+}
+
 // exportDocument writes the document's bytes at its path in the vault tree
 // or, when the path cannot be placed there, in the unplaced tree, and lists
-// it in the manifest. Only missing or corrupt content leaves its bytes out.
-func (run *run) exportDocument(ctx context.Context, out *vaultOutput, document store.LiveDocument) error {
+// it in the manifest. Only missing, corrupt or undecryptable content leaves
+// its bytes out.
+func (run *run) exportDocument(ctx context.Context, out *vaultOutput, exported exportedDocument) error {
+	document := exported.document
 	record := newManifestDocument(document)
+
+	if exported.contentProblem != nil {
+		run.missing(ctx, out, document.ID, exported.contentProblem)
+
+		record.Status = ManifestMissing
+		record.Reason = exported.contentProblem.Error()
+
+		return out.manifest.document(record)
+	}
 
 	var (
 		refused *documentError
 		remove  func() error
+		file    *os.File
+		err     error
 	)
 
-	file, err := out.tree.create(document.Path)
+	if exported.pathProblem != nil {
+		err = refuse(exported.pathProblem)
+	} else {
+		file, err = out.tree.create(document.Path)
+	}
 
 	switch {
 	case errors.As(err, &refused):
@@ -570,16 +675,7 @@ func (run *run) exportDocument(ctx context.Context, out *vaultOutput, document s
 		remove = func() error { return out.tree.remove(document.Path) }
 	}
 
-	open := func() (io.ReadCloser, error) {
-		content, err := run.options.Source.Content(ctx, out.id, document.ContentRef)
-		if errors.Is(err, ErrContentMissing) {
-			return nil, refuse(errContentMissing)
-		}
-
-		return content, err
-	}
-
-	err = writeContent(file, open, document.Size, document.ContentRef)
+	err = writeContent(file, exported.open, document.Size, document.ContentRef)
 
 	switch {
 	case errors.As(err, &refused):
@@ -616,7 +712,7 @@ func (run *run) exportDocument(ctx context.Context, out *vaultOutput, document s
 // missing reports a document whose content is missing or corrupt.
 func (run *run) missing(ctx context.Context, out *vaultOutput, documentID uuid.UUID, reason error) {
 	// The path is user data: log and report the document id only.
-	run.options.Logger.WarnContext(ctx, "document content is missing or corrupt; its bytes are not in the export",
+	run.options.Logger.WarnContext(ctx, "document content is missing, corrupt or cannot be decrypted; its bytes are not in the export",
 		"vault_id", out.id, "document_id", documentID, "reason", reason.Error())
 
 	run.summary.DocumentErrors++

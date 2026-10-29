@@ -217,13 +217,15 @@ config:
         secretName: ""
         accessKeyIdKey: AWS_ACCESS_KEY_ID
         secretAccessKeyKey: AWS_SECRET_ACCESS_KEY
-    # escrow names the Secret holding the escrow private key (SPEC.md §9.4).
-    # It is mounted read-only at /etc/vault-sync/escrow into the export job
-    # only; the chart refuses to render if any value would put it into the
-    # server. The export does not read it until end-to-end encryption ships
-    # (Phase 4); setting it now only prepares the mount.
+    # escrow names the Secret holding the escrow identity (SPEC.md §9.4)
+    # under key (the age-keygen -pq output; both identities during an escrow
+    # key rotation). It is mounted read-only at /etc/vault-sync/escrow into
+    # the export job only, which reads it as VAULT_SYNC_ESCROW_IDENTITY_FILE
+    # to decrypt escrowed vaults; the chart refuses to render if any value
+    # would put it into the server.
     escrow:
       secretName: ""
+      key: escrow.key
 
 # resources follows the bjw-s common library schema
 # (https://github.com/bjw-s-labs/helm-charts/tree/main/charts/library/common)

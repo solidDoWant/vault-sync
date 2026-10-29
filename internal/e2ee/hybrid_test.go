@@ -215,3 +215,52 @@ func TestEscrowKeyIDNamesTheKeyByItsSHA256(t *testing.T) {
 	_, err = e2ee.EscrowKeyID(public[1:])
 	require.Error(t, err)
 }
+
+func TestParseAgeIdentityReturnsTheHybridPrivateKey(t *testing.T) {
+	private, public, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	encoded, err := e2ee.AgeIdentity(private)
+	require.NoError(t, err)
+
+	parsed, err := e2ee.ParseAgeIdentity(encoded)
+	require.NoError(t, err)
+	assert.Equal(t, private, parsed)
+
+	// An identity from age-keygen parses to the key its recipient names.
+	identity, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+
+	parsed, err = e2ee.ParseAgeIdentity(identity.String())
+	require.NoError(t, err)
+
+	derived, err := e2ee.PublicKey(parsed)
+	require.NoError(t, err)
+
+	recipient, err := e2ee.ParseAgeRecipient(identity.Recipient().String())
+	require.NoError(t, err)
+	assert.Equal(t, recipient, derived)
+	assert.NotEqual(t, public, derived)
+}
+
+func TestParseAgeIdentityRefusesOtherStrings(t *testing.T) {
+	classic, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	hybrid, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+
+	encoded := hybrid.String()
+
+	for _, input := range []string{
+		"",
+		"AGE-SECRET-KEY-PQ-1",
+		classic.String(),
+		hybrid.Recipient().String(),
+		encoded[:len(encoded)-1],
+		encoded + "Q",
+	} {
+		_, err := e2ee.ParseAgeIdentity(input)
+		assert.Error(t, err, "%.40q", input)
+	}
+}

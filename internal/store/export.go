@@ -45,10 +45,15 @@ type LiveDocument struct {
 	// changes.
 	Kind       string
 	RevisionID uuid.UUID
-	Path       string
+	// Path is the head revision's path: plaintext at epoch 0, the bytes of
+	// its ciphertext at a later epoch (SPEC.md §9.3).
+	Path string
 	// ContentRef is the content's blob id and Size its stored size.
 	ContentRef []byte
 	Size       int64
+	// Epoch is the key epoch the head revision was encrypted under; 0 for
+	// a plaintext revision.
+	Epoch int32
 }
 
 // LiveDocumentsAt returns up to limit documents of this vault as they were
@@ -63,10 +68,10 @@ type LiveDocument struct {
 // transaction open between pages.
 func (vault *VaultStore) LiveDocumentsAt(ctx context.Context, seq int64, after uuid.UUID, limit int) ([]LiveDocument, error) {
 	rows, err := vault.store.pool.Query(ctx, `
-		SELECT d.id, d.kind, h.id, h.path, h.content_ref, b.size
+		SELECT d.id, d.kind, h.id, h.path, h.content_ref, b.size, h.epoch
 		FROM documents d
 		CROSS JOIN LATERAL (
-			SELECT r.id, r.path, r.content_ref, r.deleted
+			SELECT r.id, r.path, r.content_ref, r.deleted, r.epoch
 			FROM revisions r
 			WHERE r.document_id = d.id AND r.vault_id = d.vault_id AND r.seq <= $2
 			ORDER BY r.seq DESC
@@ -83,7 +88,14 @@ func (vault *VaultStore) LiveDocumentsAt(ctx context.Context, seq int64, after u
 	documents, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (LiveDocument, error) {
 		var document LiveDocument
 
-		err := row.Scan(&document.ID, &document.Kind, &document.RevisionID, &document.Path, &document.ContentRef, &document.Size)
+		var storedPath string
+
+		err := row.Scan(&document.ID, &document.Kind, &document.RevisionID, &storedPath, &document.ContentRef, &document.Size, &document.Epoch)
+		if err != nil {
+			return document, err
+		}
+
+		document.Path, err = loadedText(document.Epoch, storedPath)
 
 		return document, err
 	})

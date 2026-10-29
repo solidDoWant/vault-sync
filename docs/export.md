@@ -43,10 +43,10 @@ An export is a copy of your vaults' current files, meant to be archived. Restori
 
 - **History.** Only each file's latest version is exported. The server keeps earlier versions (SPEC.md §11), but the export does not.
 - **Deleted files.** The server keeps them as tombstones, but the export does not.
-- **End-to-end encrypted vaults.** These are skipped until escrow arrives in Phase 4 (SPEC.md §9.4). The summary lists them as skipped.
+- **End-to-end encrypted vaults without escrow.** Nobody but their members can decrypt them, so they are skipped and listed in the summary as skipped (`no_escrow`). Escrowed vaults are decrypted and exported like plaintext vaults (see [End-to-end encrypted vaults](#end-to-end-encrypted-vaults)); without an escrow identity (`VAULT_SYNC_ESCROW_IDENTITY_FILE`) they are skipped too (`no_escrow_identity`).
 - **Anything not synced to the server.** This covers edits still waiting on a device to be uploaded, and anything clients do not sync (for example Obsidian's `.obsidian/` settings, which clients do not sync yet).
 - **Who has access.** Vault members, roles, users and devices are not exported.
-- **Files whose stored content is missing or corrupt in the object store.** These are the only files whose bytes can be absent. They are still listed in the manifest (as `missing`) and in the summary, and the run reports `partial` with exit status 1.
+- **Files whose stored content is missing or corrupt in the object store,** or, in an escrowed vault, cannot be decrypted. These are the only files whose bytes can be absent. They are still listed in the manifest (as `missing`) and in the summary, and the run reports `partial` with exit status 1.
 - **Changes committed while a vault is being exported.** These belong to the next run.
 
 ## Output layout
@@ -66,7 +66,15 @@ DIR/
 - Every directory inside a vault's directory or unplaced tree holds at least one exported file: a document that ends up unplaced or `missing` leaves no empty directory behind. The vault's directory itself exists even when it holds no file.
 - Only `/` separates directories. A `\` in a document path is written as part of the file name.
 - Directories are created with mode `0750` and files (manifests included) with `0640`, less the process umask. Plaintext notes and paths are never readable by others.
-- End-to-end encrypted vaults get no directory and no manifest (they are listed in the summary with `"skipped": "e2ee"`).
+- Skipped and failed end-to-end encrypted vaults get no directory and no manifest (they are listed in the summary with `skipped` or `failed`).
+
+### End-to-end encrypted vaults
+
+With `VAULT_SYNC_ESCROW_IDENTITY_FILE` set to the escrow identity (`docs/encryption.md`, *Escrow*), the export decrypts every escrowed vault and writes its plaintext tree and manifest exactly like a plaintext vault's: plaintext paths and contents, and in the manifest the plaintext path, size and SHA-256. The manifest's `encryption` is `e2ee`.
+
+- **Keys first.** Before writing anything for a vault, the export opens the escrow slot of every epoch it has one for, with every configured identity (more than one during an escrow key rotation), and checks each key against its epoch's key commitment. A slot that does not open with the identity it names, or whose key fails its commitment, marks the vault `failed` in the summary with the reason. Nothing of it is exported, so nothing is ever written with a wrong key, and the run is `partial`. The other vaults are exported.
+- **Each document** is decrypted with the key of its head revision's epoch: its path, its content, and its content is checked against its blob id. Revisions from before an in-place conversion (epoch 0) are plaintext and exported as they are.
+- **A document that cannot be decrypted** is still listed. Content that does not decrypt or does not match its blob id, or a revision whose epoch has no escrow slot (escrow was turned off for the vault later), makes the document `missing`, with its stored (encrypted) `size` and an empty `sha256`, and counts in `document_errors`. A path that does not decrypt, with content that does, puts the document in the unplaced tree with an empty `path`.
 
 ### Documents that cannot be placed at their path
 
@@ -92,7 +100,7 @@ The file is UTF-8 [JSON Lines](https://jsonlines.org/): one JSON object per line
    | Field | Meaning |
    |---|---|
    | `format` | `2`. |
-   | `vault_id`, `name`, `encryption` | The vault's id, name at export time, and encryption (`none`). |
+   | `vault_id`, `name`, `encryption` | The vault's id, name at export time, and encryption (`none`, or `e2ee` for a decrypted escrowed vault). |
    | `head_seq` | The point in the vault's history that was exported. |
    | `started_at` | When the run started (RFC 3339, UTC). |
 
@@ -160,6 +168,7 @@ On completion, or on any failure after the flags are parsed, the export writes o
   "duration_seconds": 12.5,
   "vaults": 2,
   "skipped_vaults": 1,
+  "failed_vaults": 0,
   "files": 1532,
   "bytes": 48213344,
   "document_errors": 1,
@@ -168,24 +177,24 @@ On completion, or on any failure after the flags are parsed, the export writes o
     {"id": "0192…", "name": "Notes", "encryption": "none", "head_seq": 9123, "files": 1530, "bytes": 48213000, "unplaced": 1,
      "document_errors": [{"document_id": "0192…", "reason": "stored content is missing"}]},
     {"id": "0193…", "name": "Work", "encryption": "none", "head_seq": 12, "files": 2, "bytes": 344, "unplaced": 0},
-    {"id": "0194…", "name": "Private", "encryption": "e2ee", "head_seq": 40, "skipped": "e2ee", "files": 0, "bytes": 0, "unplaced": 0}
+    {"id": "0194…", "name": "Private", "encryption": "e2ee", "head_seq": 40, "skipped": "no_escrow", "files": 0, "bytes": 0, "unplaced": 0}
   ]
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `status` | `ok`: the bytes of every live document of every exported vault are in the new export (at their path or in the unplaced tree), and it is in place. `partial`: the new export is in place, but the content of `document_errors` documents is missing or corrupt in the object store, so their bytes are not in it. `failed`: the run stopped (see `error`), and the previous export, if any, is untouched. |
+| `status` | `ok`: the bytes of every live document of every exported vault are in the new export (at their path or in the unplaced tree), and it is in place. `partial`: the new export is in place, but the content of `document_errors` documents is missing, corrupt or cannot be decrypted, so their bytes are not in it, or `failed_vaults` encrypted vaults are not in it. `failed`: the run stopped (see `error`), and the previous export, if any, is untouched. |
 | `error` | Why a `failed` run stopped. Present only then. |
 | `output` | The absolute export directory. |
 | `started_at`, `duration_seconds` | When the run started (UTC) and how long it took. |
-| `vaults`, `skipped_vaults` | Vaults exported, and vaults skipped (end-to-end encrypted). |
+| `vaults`, `skipped_vaults`, `failed_vaults` | Vaults exported; end-to-end encrypted vaults skipped because they cannot be decrypted (`skipped` is `no_escrow` for a vault without escrow, `no_escrow_identity` when the export has no escrow identity); and escrowed vaults left out because an escrow slot does not open or fails its key commitment (`failed` gives the reason). |
 | `files`, `bytes` | Document files written (in vault trees and unplaced trees) and their total size. |
 | `document_errors` | Documents whose content is missing or corrupt. At most 100 are listed, under their vault, with a reason. All of them are counted, and all of them are in the manifests. |
 | `unplaced` | Documents written to an unplaced tree because their path cannot be placed in the vault's tree. They are exported, so they do not make the run `partial`, but a vault that has any is worth a look. |
-| `vault_details` | Per vault: `id`, `name`, `encryption`, the `head_seq` exported, `files`, `bytes`, `unplaced`, `skipped` if not exported, and listed `document_errors`. On a `failed` run it covers only the vaults reached. |
+| `vault_details` | Per vault: `id`, `name`, `encryption`, the `head_seq` exported, `files`, `bytes`, `unplaced`, `skipped` or `failed` if not exported, and listed `document_errors`. On a `failed` run it covers only the vaults reached. |
 
-When the run does not fail, its last log line (`"msg": "export finished"`) repeats the summary's `status`, `vaults`, `files`, `bytes`, `unplaced` and `document_errors` counts, for operators who alert on logs.
+When the run does not fail, its last log line (`"msg": "export finished"`) repeats the summary's `status`, `vaults`, `skipped_vaults`, `failed_vaults`, `files`, `bytes`, `unplaced` and `document_errors` counts, for operators who alert on logs.
 
 The exit status is `0` only for `ok`. It is `1` for `partial` or `failed`, and `2` for invalid flags. Alert on a non-zero exit (for example a failed Kubernetes Job), and use the summary to tell a `partial` export (in place, with gaps) from a `failed` one (not in place). The job has no metrics endpoint.
 
