@@ -4819,4 +4819,163 @@ abstract module RoundG6 refines RoundGuarantees {
     ChainRowsHere(platform, d, accepted, row0.base, b0, bd0, read0, Some(read0.value.0), doc,
                   settled.journal.documents, settled.listing, rs, saved, x);
   }
+
+  // Each settled revision keeps PassKept.
+  lemma {:isolate_assertions} SettleKeepsKept(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                                              rows0: map<DocId, Document>, listing0: Listing, pass: RoundPass,
+                                              doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims)
+    requires device0.platform == platform && ListingDistinct(platform, listing0)
+    requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
+    requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==>
+               PulledBy(pass.journal.documents[doc], r, d) && NotBuiltOn(pass.journal.documents[doc], r)
+               && FirstOwn(pass.journal.documents[doc], r, d)
+    requires PassKept(platform, d, accepted, rows0, listing0, pass)
+    ensures PassKept(platform, d, accepted, rows0, listing0, SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
+    var documents := pass.journal.documents;
+    // The chains so far.
+    forall e | ReadBefore(platform, rows0, listing0, e)
+      ensures var read0 := LocalSide(platform, listing0, rows0[e]);
+        KeptChain(platform, d, accepted, rows0[e], read0, read0.value.0, false, e, settled)
+    {
+      var read0 := LocalSide(platform, listing0, rows0[e]);
+      SettleKeepsKeptChain(platform, device0, d, accepted, rows0[e], read0, read0.value.0, false, e, pass, doc, r, input, revs, first);
+      PassChainWeaken(platform, d, accepted, rows0[e].base, B0(rows0[e], read0), rows0[e].base.Some? && rows0[e].base.value.deleted,
+                      read0, Some(read0.value.0), LinksOther(d, pass, doc, r, settled, e), false, e, settled);
+    }
+    // The effects before it, and the ones it adds.
+    var added: seq<Effect> := settled.effects[|pass.effects|..];
+    assert settled.effects == pass.effects + added by {
+      if Distinct(platform, pass.listing) && r.path !in input.outOfScope {
+        assert |settled.effects| >= |pass.effects| && settled.effects[..|pass.effects|] == pass.effects;
+      } else {
+        assert settled.effects == pass.effects;
+      }
+    }
+    if added != [] {
+      assert Distinct(platform, pass.listing) && r.path !in input.outOfScope;
+    }
+    var row := if doc in documents then documents[doc] else NoRow();
+    var rows := documents[doc := row];
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    if added != [] {
+      var ruled := PathRule(platform, rows, doc, r, inner, revs', first);
+      var intents := IntentsFor(doc, r, ruled.effects, pass.n);
+      var guard := if |intents| > 0 then [PersistJournal(pass.journal.(intents := intents))] else [];
+      assert added == guard + ruled.effects;
+      RuleSaws(platform, rows, doc, r, inner, revs', first);
+      RuleWritesOwn(platform, rows, doc, r, inner, revs', first);
+    }
+    forall i | 0 <= i < |settled.effects| && IsCond(settled.effects[i]) && !settled.effects[i].Move?
+               && ReadBefore(platform, rows0, listing0, CondDoc(settled.effects[i]))
+               && CondExpect(settled.effects[i]) == LocalSide(platform, listing0, rows0[CondDoc(settled.effects[i])]).value.0
+               && !AcceptedContent(accepted, CondDoc(settled.effects[i]), CondExpect(settled.effects[i]))
+      ensures var e := CondDoc(settled.effects[i]);
+        KeptChain(platform, d, accepted, rows0[e], LocalSide(platform, listing0, rows0[e]), CondExpect(settled.effects[i]), true, e, settled)
+    {
+      var e := CondDoc(settled.effects[i]);
+      var read0 := LocalSide(platform, listing0, rows0[e]);
+      if i < |pass.effects| {
+        assert settled.effects[i] == pass.effects[i];
+        SettleKeepsKeptChain(platform, device0, d, accepted, rows0[e], read0, CondExpect(settled.effects[i]), true, e, pass, doc, r, input, revs, first);
+      } else {
+        CondKept(platform, device0, d, accepted, rows0, listing0, pass, doc, r, input, revs, first, settled.effects[i]);
+      }
+    }
+    forall i | 0 <= i < |settled.effects| && settled.effects[i].Write? && settled.effects[i].target.Some?
+               && ReadBefore(platform, rows0, listing0, settled.effects[i].target.value)
+               && !AcceptedContent(accepted, settled.effects[i].target.value, settled.effects[i].content)
+      ensures var e := settled.effects[i].target.value;
+        KeptChain(platform, d, accepted, rows0[e], LocalSide(platform, listing0, rows0[e]), settled.effects[i].content, true, e, settled)
+    {
+      var e := settled.effects[i].target.value;
+      var read0 := LocalSide(platform, listing0, rows0[e]);
+      if i < |pass.effects| {
+        assert settled.effects[i] == pass.effects[i];
+        SettleKeepsKeptChain(platform, device0, d, accepted, rows0[e], read0, settled.effects[i].content, true, e, pass, doc, r, input, revs, first);
+      } else {
+        WriteKept(platform, device0, d, accepted, rows0, listing0, pass, doc, r, input, revs, first, settled.effects[i]);
+      }
+    }
+  }
+
+  // SettleKeepsKept's case of a conditional effect the rule adds.
+  lemma CondKept(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                 rows0: map<DocId, Document>, listing0: Listing, pass: RoundPass,
+                 doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, effect: Effect)
+    requires device0.platform == platform && ListingDistinct(platform, listing0)
+    requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
+    requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==>
+               PulledBy(pass.journal.documents[doc], r, d) && NotBuiltOn(pass.journal.documents[doc], r)
+               && FirstOwn(pass.journal.documents[doc], r, d)
+    requires PassKept(platform, d, accepted, rows0, listing0, pass)
+    requires Distinct(platform, pass.listing) && r.path !in input.outOfScope
+    requires var documents := pass.journal.documents;
+      var row := if doc in documents then documents[doc] else NoRow();
+      var rows := documents[doc := row];
+      effect in PathRule(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r), first).effects
+    requires IsCond(effect) && !effect.Move? && ReadBefore(platform, rows0, listing0, CondDoc(effect))
+             && CondExpect(effect) == LocalSide(platform, listing0, rows0[CondDoc(effect)]).value.0
+             && !AcceptedContent(accepted, CondDoc(effect), CondExpect(effect))
+    ensures var e := CondDoc(effect);
+      KeptChain(platform, d, accepted, rows0[e], LocalSide(platform, listing0, rows0[e]), CondExpect(effect), true, e,
+                SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var rows := documents[doc := row];
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    RuleSaws(platform, rows, doc, r, inner, revs', first);
+    var e := CondDoc(effect);
+    assert e == doc;
+    var read0 := LocalSide(platform, listing0, rows0[e]);
+    // The document's chain is in the pass's rows.
+    assert KeptChain(platform, d, accepted, rows0[e], read0, read0.value.0, false, e, pass);
+    assert doc in documents;
+    assert rows == documents;
+    RuleCondClass(platform, accepted, rows, doc, r, inner, revs', first, d);
+    var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
+    assert LinksOther(d, pass, doc, r, settled, e);
+    SettleKeepsKeptChain(platform, device0, d, accepted, rows0[e], read0, read0.value.0, false, e, pass, doc, r, input, revs, first);
+  }
+
+  // SettleKeepsKept's case of a write the rule adds.
+  lemma WriteKept(platform: Platform, device0: Device, d: DeviceId, accepted: map<RevId, Revision>,
+                  rows0: map<DocId, Document>, listing0: Listing, pass: RoundPass,
+                  doc: DocId, r: Revision, input: RoundInput, revs: FreshRevs, first: Claims, effect: Effect)
+    requires device0.platform == platform && ListingDistinct(platform, listing0)
+    requires PassNUD(platform, device0, accepted, pass) && AcceptedAs(accepted, r) && r.doc == doc
+    requires doc in pass.journal.documents && Newer(pass.journal.documents[doc], r) ==>
+               PulledBy(pass.journal.documents[doc], r, d) && NotBuiltOn(pass.journal.documents[doc], r)
+               && FirstOwn(pass.journal.documents[doc], r, d)
+    requires PassKept(platform, d, accepted, rows0, listing0, pass)
+    requires Distinct(platform, pass.listing) && r.path !in input.outOfScope
+    requires var documents := pass.journal.documents;
+      var row := if doc in documents then documents[doc] else NoRow();
+      var rows := documents[doc := row];
+      effect in PathRule(platform, rows, doc, r, input.(listing := pass.listing), RevsFor(rows, revs, r), first).effects
+    requires effect.Write? && effect.target.Some? && ReadBefore(platform, rows0, listing0, effect.target.value)
+             && !AcceptedContent(accepted, effect.target.value, effect.content)
+    ensures var e := effect.target.value;
+      KeptChain(platform, d, accepted, rows0[e], LocalSide(platform, listing0, rows0[e]), effect.content, true, e,
+                SettleRevision(platform, pass, doc, r, input, revs, first))
+  {
+    var documents := pass.journal.documents;
+    var row := if doc in documents then documents[doc] else NoRow();
+    var rows := documents[doc := row];
+    var inner := input.(listing := pass.listing);
+    var revs' := RevsFor(rows, revs, r);
+    RuleWritesOwn(platform, rows, doc, r, inner, revs', first);
+    var e := effect.target.value;
+    assert e == doc;
+    var read0 := LocalSide(platform, listing0, rows0[e]);
+    assert KeptChain(platform, d, accepted, rows0[e], read0, read0.value.0, false, e, pass);
+    assert doc in documents;
+    assert rows == documents;
+    RuleWriteClass(platform, accepted, rows, doc, r, inner, revs', first, d);
+    SettleWriteKept(platform, device0, d, accepted, rows0[e], read0, pass, doc, r, input, revs, first, effect.content);
+  }
 }
