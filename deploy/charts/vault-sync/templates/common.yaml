@@ -261,6 +261,7 @@
   "VAULT_SYNC_ESCROW_RECIPIENT" $config.server.escrow.recipient
   "VAULT_SYNC_ESCROW_SIGNING_KEY" $config.server.escrow.signingKey
   "VAULT_SYNC_ESCROW_DEFAULT" $config.server.escrow.default
+  "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS" $config.server.escrow.retiringKeyIds
 -}}
 {{- range $name, $value := $shared -}}
   {{- if and (not (kindIs "invalid" $value)) (ne (toString $value) "") -}}

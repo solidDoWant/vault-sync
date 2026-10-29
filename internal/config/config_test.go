@@ -160,6 +160,34 @@ func TestLoadEscrowSettings(t *testing.T) {
 			assertErr: errorContaining(config.EscrowRecipientEnv),
 		},
 		{
+			name: "retiring escrow key ids, the last of 255 bytes",
+			env: withRequired(map[string]string{
+				config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: signingKey,
+				config.EscrowRetiringKeyIDsEnv: " old-key-1 ,old-key-2," + strings.Repeat("k", 255),
+			}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, RetiringKeyIDs: []string{"old-key-1", "old-key-2", strings.Repeat("k", 255)}, Default: true, Bundle: bundle},
+		},
+		{
+			name:      "retiring escrow key id of 256 bytes",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: signingKey, config.EscrowRetiringKeyIDsEnv: strings.Repeat("k", 256)}),
+			assertErr: errorContaining(config.EscrowRetiringKeyIDsEnv),
+		},
+		{
+			name:      "empty retiring escrow key id",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: signingKey, config.EscrowRetiringKeyIDsEnv: "old-key,,other"}),
+			assertErr: errorContaining(config.EscrowRetiringKeyIDsEnv),
+		},
+		{
+			name:      "retiring escrow key id with a space",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowSigningKeyEnv: signingKey, config.EscrowRetiringKeyIDsEnv: "old key"}),
+			assertErr: errorContaining(config.EscrowRetiringKeyIDsEnv),
+		},
+		{
+			name:      "retiring escrow key ids without an escrow key",
+			env:       withRequired(map[string]string{config.EscrowRetiringKeyIDsEnv: "old-key"}),
+			assertErr: errorContaining(config.EscrowRetiringKeyIDsEnv),
+		},
+		{
 			name:      "default not a boolean",
 			env:       withRequired(map[string]string{config.EscrowDefaultEnv: "maybe"}),
 			assertErr: errorContaining(config.EscrowDefaultEnv),
