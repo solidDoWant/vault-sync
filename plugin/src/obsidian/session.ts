@@ -18,6 +18,8 @@ export interface SyncSessionOptions {
   deviceId: string;
   /** The device's name in conflict-copy names (docs/design/engine.md §5, rule C); the engine falls back to the device id. */
   deviceName?: string;
+  /** The signed-in user's display name in conflict-copy names (docs/design/sharing.md, Attribution). */
+  userName?: string;
   api: SyncApi;
   /**
    * The device's durable journal for this vault and server vault
@@ -198,6 +200,7 @@ export class SyncSession {
       vaultId: options.vaultId,
       deviceId: options.deviceId,
       ...(options.deviceName === undefined ? {} : { deviceName: options.deviceName }),
+      ...(options.userName === undefined ? {} : { userName: options.userName }),
       api: this.gatedApi(),
       vault: this.gateLocal(options.vault, ["list", "read", "write", "rename", "delete", "stat", "replace"]),
       journal: this.gateLocal(options.journal),

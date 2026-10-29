@@ -2,7 +2,7 @@ import { Code, ConnectError } from "@connectrpc/connect";
 
 import { ErrorDetailSchema, ErrorReason } from "../gen/vaultsync/v1/errors_pb";
 import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
-import { jwtSubject } from "../core/auth/oidc";
+import { jwtDisplayName, jwtSubject } from "../core/auth/oidc";
 import type { AuthState } from "../core/auth/tokens";
 import type { ProtocolClient } from "../core/protocol/client";
 import type { SyncJournal } from "../core/sync/journal";
@@ -395,12 +395,18 @@ export class SyncController {
         return;
       }
       const deviceName = deviceNameOf(data.deviceName, this.options.defaultDeviceName);
+      const userName = jwtDisplayName(await this.options.accessToken()) ?? "";
+      if (!live()) {
+        journal.close();
+        return;
+      }
       const realtime = this.options.realtime?.(serverBaseUrl(data));
       const sessionOptions: SyncSessionOptions = {
         ...(realtime === undefined ? {} : { realtime }),
         vaultId: wanted.vault.id,
         deviceId,
         deviceName,
+        userName,
         api: this.watchDevice(client, deviceId, generation),
         journal,
         vault: this.options.vault(),

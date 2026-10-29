@@ -53,6 +53,18 @@ export function deviceLabel(entry: Pick<HistoryEntry, "deviceId" | "deviceName" 
 }
 
 /**
+ * Which user committed a revision: the display name the server reports,
+ * shown and isolated as deviceLabel shows a device's, or by id when it
+ * reports none.
+ */
+export function userLabel(entry: Pick<HistoryEntry, "userId" | "userName">): string {
+  const name = shownName(entry.userName ?? "");
+  if (name !== "") return quotedName(name);
+  if (entry.userId === "") return "an unknown user";
+  return `user ${entry.userId.slice(0, 8)}`;
+}
+
+/**
  * A path to suggest for restoring a document at `path` when another file
  * took that (#420): the same folder and extension, the name marked
  * `(restored)`, numbered past every path `taken` reports.
@@ -91,10 +103,10 @@ export function sizeLabel(size: bigint | number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-/** One line per revision in the history list: when, by which device, and what happened. */
+/** One line per revision in the history list: when, by which user and device, and what happened. */
 export function entryLabel(entry: HistoryEntry, previous: HistoryEntry | undefined, formatTime: (date: Date) => string): Shown {
   const when = entry.createdAt === undefined ? "unknown time" : formatTime(entry.createdAt);
-  return [`${when} · ${deviceLabel(entry)} · `, ...changeLabel(entry, previous)];
+  return [`${when} · ${userLabel(entry)}, ${deviceLabel(entry)} · `, ...changeLabel(entry, previous)];
 }
 
 /**

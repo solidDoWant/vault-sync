@@ -26,6 +26,7 @@ function setup(options: Partial<SyncSessionOptions> = {}, server = new InMemoryS
     vaultId: server.vaultId,
     deviceId: "device-b",
     deviceName: "phone",
+    userName: "Alice",
     api: createProtocolClient({ transport: server.transport }),
     journal,
     vault,
@@ -130,7 +131,7 @@ describe("SyncSession", () => {
     await session.syncNow();
 
     const { conflicts } = await session.listProblems();
-    expect(conflicts).toEqual([{ copy: expect.stringMatching(/^a \(Conflicted copy phone \d{12}\)\.md$/u) as string, original: "a.md", createdAt: expect.any(Number) as number }]);
+    expect(conflicts).toEqual([{ copy: expect.stringMatching(/^a \(Conflicted copy Alice phone \d{12}\)\.md$/u) as string, original: "a.md", createdAt: expect.any(Number) as number }]);
     expect((await statusBecomes(statuses, "idle"))?.conflicts).toBe(1);
     await vault.delete(conflicts[0]?.copy ?? "");
     expect((await session.listProblems()).conflicts).toEqual([]);
@@ -146,7 +147,7 @@ describe("SyncSession", () => {
     await session.start();
 
     const { conflicts } = await session.listProblems();
-    expect(conflicts).toEqual([{ copy: expect.stringMatching(/^a \(Conflicted copy phone \d{12}\)\.md$/u) as string, original: "a.md", createdAt: expect.any(Number) as number }]);
+    expect(conflicts).toEqual([{ copy: expect.stringMatching(/^a \(Conflicted copy Alice phone \d{12}\)\.md$/u) as string, original: "a.md", createdAt: expect.any(Number) as number }]);
     expect(await files(vault)).toEqual({ "a.md": "remote\n", [conflicts[0]?.copy ?? ""]: "local\n" });
     await session.stop();
   });

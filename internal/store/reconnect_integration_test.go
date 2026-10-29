@@ -38,7 +38,7 @@ func TestQueriesSurviveResetConnections(t *testing.T) {
 
 		for index := range concurrency {
 			group.Go(func() {
-				_, errs[index] = queries.UpsertUser(t.Context(), testIssuer, subject)
+				_, errs[index] = queries.UpsertUser(t.Context(), testIssuer, subject, "")
 			})
 		}
 
@@ -72,7 +72,7 @@ func TestQueriesSurviveResetConnections(t *testing.T) {
 	}, 10*time.Second, 10*time.Millisecond, "terminated backends must exit")
 
 	// Every connection in the pool is now dead, yet no query fails.
-	_, err = queries.UpsertUser(t.Context(), testIssuer, "after")
+	_, err = queries.UpsertUser(t.Context(), testIssuer, "after", "")
 	require.NoError(t, err)
 
 	for index, err := range upsertConcurrently("concurrently after") {

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import { RestoreError, restorePathProblem, type HistoryEntry } from "../core/sync/history";
 import { posixPathRules } from "../core/vaultpath/platform";
 import { shownText } from "./display-text";
-import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";
+import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel, userLabel } from "./history-view";
 
 const encoder = new TextEncoder();
 
@@ -20,6 +20,8 @@ function entry(overrides: Partial<HistoryEntry> = {}): HistoryEntry {
     kind: "text",
     contentHash: "aa",
     size: 12n,
+    userId: "0190a5c4-7e1f-7000-8000-0000000000aa",
+    userName: undefined,
     deviceId: "0190a5c4-7e1f-7000-8000-000000000001",
     deviceName: undefined,
     thisDevice: false,
@@ -94,9 +96,18 @@ describe("history view", () => {
       expect(shownText(changeLabel(base, entry({ deleted: true })))).toBe("restored plan.md (12 B)");
     });
 
-    it("puts time, device and change on one line", () => {
+    it("names each version's user and device", () => {
+      const alice = entry({ userName: "Alice Example", deviceName: "Laptop" });
+      const bob = entry({ userId: "0190a5c4-7e1f-7000-8000-0000000000bb", userName: "bob", deviceName: "Phone", contentHash: "bb" });
+      expect(shownText(entryLabel(bob, alice, () => "then"))).toBe(`then · “${iso("bob")}”, device “${iso("Phone")}” · edited (12 B)`);
+      expect(shownText(entryLabel(alice, undefined, () => "then"))).toBe(`then · “${iso("Alice Example")}”, device “${iso("Laptop")}” · earliest kept version of plan.md (12 B)`);
+      expect(userLabel(entry({ userName: "\u202e\u200b" }))).toBe("user 0190a5c4");
+      expect(userLabel(entry({ userId: "" }))).toBe("an unknown user");
+    });
+
+    it("puts time, user, device and change on one line", () => {
       const formatTime = (date: Date) => date.toISOString();
-      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · this device · earliest kept version of plan.md (12 B)");
+      expect(shownText(entryLabel(entry({ thisDevice: true }), undefined, formatTime))).toBe("2026-01-02T03:04:00.000Z · user 0190a5c4, this device · earliest kept version of plan.md (12 B)");
       expect(shownText(entryLabel(entry({ createdAt: undefined }), undefined, formatTime))).toMatch(/^unknown time · /);
     });
 
@@ -121,7 +132,7 @@ describe("history view", () => {
     });
 
     it("isolates another device's name, so right-to-left letters cannot reorder the label and a trailing mark stays inside (#557)", () => {
-      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · device “${iso("حاسوب 2")}” · earliest kept version of plan.md (12 B)`);
+      expect(shownText(entryLabel(entry({ deviceName: "حاسوب 2" }), undefined, () => "then"))).toBe(`then · user 0190a5c4, device “${iso("حاسوب 2")}” · earliest kept version of plan.md (12 B)`);
       expect(deviceLabel(entry({ deviceName: "Phone\u0301" }))).toBe(`device “${iso("Phone\u0301")}”`);
     });
 
@@ -148,7 +159,7 @@ describe("history view", () => {
       const base = entry({ contentHash: "aa" });
       expect(changeLabel(entry({ path, contentHash: "bb" }), base)).toEqual(["moved to ", { path }, " and edited (12 B)"]);
       expect(changeLabel(entry({ path, deleted: true }), base)).toEqual(["deleted ", { path }]);
-      expect(entryLabel(entry({ path, deleted: true }), base, () => "then")).toEqual(["then · device 0190a5c4 · ", "deleted ", { path }]);
+      expect(entryLabel(entry({ path, deleted: true }), base, () => "then")).toEqual(["then · user 0190a5c4, device 0190a5c4 · ", "deleted ", { path }]);
       expect(historyTitle(path)).toEqual(["History of ", { path }]);
       expect(historyTitle("a\u202e.md")).toEqual(["History of ", { path: "a\\u202E.md" }]);
     });

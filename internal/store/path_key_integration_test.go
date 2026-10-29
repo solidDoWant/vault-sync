@@ -51,7 +51,7 @@ func newCommitFixture(t *testing.T) *commitFixture {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	user, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	user, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
 	device, err := queries.RegisterDevice(t.Context(), user, "laptop", nil, 10)

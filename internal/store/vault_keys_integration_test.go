@@ -39,7 +39,7 @@ func randomBytes(t *testing.T, size int) []byte {
 func (fixture *keyFixture) keyedUser(t *testing.T, subject string) uuid.UUID {
 	t.Helper()
 
-	user, err := fixture.queries.UpsertUser(t.Context(), testIssuer, subject)
+	user, err := fixture.queries.UpsertUser(t.Context(), testIssuer, subject, "")
 	require.NoError(t, err)
 
 	require.NoError(t, fixture.queries.CreateUserKey(t.Context(), user, randomBytes(t, 32), store.Wrapping{
@@ -113,7 +113,7 @@ func TestNewE2EEVaultHasNoEpochAndAPendingRotation(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
 	require.NoError(t, err)
 
 	for _, encryption := range []store.Encryption{store.EncryptionE2EE, store.EncryptionNone} {
@@ -134,7 +134,7 @@ func TestNewE2EEVaultRefusesCommitsBeforeItsFirstEpoch(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
 	require.NoError(t, err)
 
 	device, err := queries.RegisterDevice(t.Context(), owner, "laptop", nil, 10)
@@ -285,7 +285,7 @@ func TestEpochRecipientsAreExactlyTheKeyedMembers(t *testing.T) {
 	removed, kept := fixture.members[0], fixture.members[1]
 
 	// A member without a user key is not a recipient.
-	keyless, err := fixture.queries.UpsertUser(t.Context(), testIssuer, "keyless")
+	keyless, err := fixture.queries.UpsertUser(t.Context(), testIssuer, "keyless", "")
 	require.NoError(t, err)
 	_, err = fixture.pool.Exec(t.Context(), `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, 'viewer')`, fixture.vault.VaultID(), keyless)
 	require.NoError(t, err)
@@ -325,10 +325,10 @@ func TestRemoveMemberOfAPlaintextVaultTakesNoNextEpoch(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
 	require.NoError(t, err)
 
-	member, err := queries.UpsertUser(t.Context(), testIssuer, "member")
+	member, err := queries.UpsertUser(t.Context(), testIssuer, "member", "")
 	require.NoError(t, err)
 
 	created, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: "Plain", Encryption: store.EncryptionNone}, 10)
@@ -542,10 +542,10 @@ func TestRemoveMemberLetsAnOwnerRemoveThemselvesFromAPlaintextVault(t *testing.T
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
 	require.NoError(t, err)
 
-	other, err := queries.UpsertUser(t.Context(), testIssuer, "other")
+	other, err := queries.UpsertUser(t.Context(), testIssuer, "other", "")
 	require.NoError(t, err)
 
 	created, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: "Plain", Encryption: store.EncryptionNone}, 10)

@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -346,7 +347,7 @@ type memoryUsers struct {
 	users map[auth.Identity]uuid.UUID
 }
 
-func (users *memoryUsers) UpsertUser(_ context.Context, issuer, subject string) (uuid.UUID, error) {
+func (users *memoryUsers) UpsertUser(_ context.Context, issuer, subject, _ string) (uuid.UUID, error) {
 	users.mu.Lock()
 	defer users.mu.Unlock()
 
@@ -383,6 +384,37 @@ func TestAuthenticatorProvisionsUsersByIssuerAndSubject(t *testing.T) {
 	assert.NotEqual(t, first.ID, other.ID)
 	assert.Equal(t, auth.Identity{Issuer: issuer.URL, Subject: alice}, first.Identity)
 	assert.Equal(t, users.users[first.Identity], first.ID)
+}
+
+func TestVerifierTakesTheDisplayNameFromTheNameClaim(t *testing.T) {
+	tests := map[string]struct {
+		claims   map[string]any
+		expected string
+	}{
+		"name":                                {claims: map[string]any{"name": "Alice Example", "preferred_username": "alice"}, expected: "Alice Example"},
+		"preferred_username without name":     {claims: map[string]any{"preferred_username": "alice"}, expected: "alice"},
+		"preferred_username after empty name": {claims: map[string]any{"name": " ", "preferred_username": "alice"}, expected: "alice"},
+		"preferred_username after bidi name":  {claims: map[string]any{"name": "Al\u202eice", "preferred_username": "alice"}, expected: "alice"},
+		"name of the maximum length":          {claims: map[string]any{"name": strings.Repeat("a", auth.MaxDisplayNameBytes)}, expected: strings.Repeat("a", auth.MaxDisplayNameBytes)},
+		"name over the maximum length":        {claims: map[string]any{"name": strings.Repeat("a", auth.MaxDisplayNameBytes+1), "preferred_username": "alice"}, expected: "alice"},
+		"non-string name":                     {claims: map[string]any{"name": 7}, expected: ""},
+		"neither":                             {claims: map[string]any{}, expected: ""},
+	}
+
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			issuer := authtest.NewIssuer(t)
+			key := issuer.AddKey(t, jose.RS256)
+			clock := newClock()
+
+			claims := issuer.Claims(randomSubject(), clock.Now())
+			maps.Copy(claims, test.claims)
+
+			identity, err := newVerifier(issuer, clock).Verify(t.Context(), authtest.Sign(t, key, claims))
+			require.NoError(t, err)
+			assert.Equal(t, test.expected, identity.DisplayName)
+		})
+	}
 }
 
 func TestAuthenticateHeaderRequiresBearerScheme(t *testing.T) {

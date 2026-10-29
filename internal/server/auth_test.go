@@ -41,7 +41,7 @@ func newMemoryStore() *memoryStore {
 	return &memoryStore{users: map[auth.Identity]uuid.UUID{}}
 }
 
-func (memory *memoryStore) UpsertUser(_ context.Context, issuer, subject string) (uuid.UUID, error) {
+func (memory *memoryStore) UpsertUser(_ context.Context, issuer, subject, _ string) (uuid.UUID, error) {
 	memory.mu.Lock()
 	defer memory.mu.Unlock()
 

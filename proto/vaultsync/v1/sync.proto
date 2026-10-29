@@ -223,6 +223,19 @@ message GetDocumentHistoryResponse {
   // device, so a member sees which device made each revision (SPEC.md §11).
   // Only devices with a revision on this page are named.
   repeated DeviceName device_names = 4;
+  // The display name of each user that committed one of revisions, once per
+  // user, so a member sees who made each revision (docs/design/sharing.md,
+  // Attribution). Only users with a revision on this page are named.
+  repeated UserName user_names = 5;
+}
+
+// UserName names a user that committed a revision in a vault.
+message UserName {
+  // User id (UUIDv7), as in Revision.user_id.
+  string user_id = 1;
+  // The user's display name: the identity provider's name claim, falling
+  // back to preferred_username. Empty if the provider asserted neither.
+  string name = 2;
 }
 
 // DeviceName names a device that committed a revision in a vault.

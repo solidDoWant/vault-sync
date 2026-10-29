@@ -592,7 +592,11 @@ type GetDocumentHistoryResponse struct {
 	// The name of each device that committed one of revisions, once per
 	// device, so a member sees which device made each revision (SPEC.md §11).
 	// Only devices with a revision on this page are named.
-	DeviceNames   []*DeviceName `protobuf:"bytes,4,rep,name=device_names,json=deviceNames,proto3" json:"device_names,omitempty"`
+	DeviceNames []*DeviceName `protobuf:"bytes,4,rep,name=device_names,json=deviceNames,proto3" json:"device_names,omitempty"`
+	// The display name of each user that committed one of revisions, once per
+	// user, so a member sees who made each revision (docs/design/sharing.md,
+	// Attribution). Only users with a revision on this page are named.
+	UserNames     []*UserName `protobuf:"bytes,5,rep,name=user_names,json=userNames,proto3" json:"user_names,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -655,6 +659,69 @@ func (x *GetDocumentHistoryResponse) GetDeviceNames() []*DeviceName {
 	return nil
 }
 
+func (x *GetDocumentHistoryResponse) GetUserNames() []*UserName {
+	if x != nil {
+		return x.UserNames
+	}
+	return nil
+}
+
+// UserName names a user that committed a revision in a vault.
+type UserName struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// User id (UUIDv7), as in Revision.user_id.
+	UserId string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// The user's display name: the identity provider's name claim, falling
+	// back to preferred_username. Empty if the provider asserted neither.
+	Name          string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *UserName) Reset() {
+	*x = UserName{}
+	mi := &file_vaultsync_v1_sync_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *UserName) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*UserName) ProtoMessage() {}
+
+func (x *UserName) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_sync_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use UserName.ProtoReflect.Descriptor instead.
+func (*UserName) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_sync_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *UserName) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
+}
+
+func (x *UserName) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
 // DeviceName names a device that committed a revision in a vault.
 type DeviceName struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -668,7 +735,7 @@ type DeviceName struct {
 
 func (x *DeviceName) Reset() {
 	*x = DeviceName{}
-	mi := &file_vaultsync_v1_sync_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_sync_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -680,7 +747,7 @@ func (x *DeviceName) String() string {
 func (*DeviceName) ProtoMessage() {}
 
 func (x *DeviceName) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_sync_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_sync_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -693,7 +760,7 @@ func (x *DeviceName) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use DeviceName.ProtoReflect.Descriptor instead.
 func (*DeviceName) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_sync_proto_rawDescGZIP(), []int{8}
+	return file_vaultsync_v1_sync_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *DeviceName) GetDeviceId() string {
@@ -757,12 +824,17 @@ const file_vaultsync_v1_sync_proto_rawDesc = "" +
 	"documentId\x12\x1b\n" +
 	"\tpage_size\x18\x03 \x01(\rR\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x04 \x01(\tR\tpageToken\"\xeb\x01\n" +
+	"page_token\x18\x04 \x01(\tR\tpageToken\"\xa2\x02\n" +
 	"\x1aGetDocumentHistoryResponse\x122\n" +
 	"\bdocument\x18\x01 \x01(\v2\x16.vaultsync.v1.DocumentR\bdocument\x124\n" +
 	"\trevisions\x18\x02 \x03(\v2\x16.vaultsync.v1.RevisionR\trevisions\x12&\n" +
 	"\x0fnext_page_token\x18\x03 \x01(\tR\rnextPageToken\x12;\n" +
-	"\fdevice_names\x18\x04 \x03(\v2\x18.vaultsync.v1.DeviceNameR\vdeviceNames\"=\n" +
+	"\fdevice_names\x18\x04 \x03(\v2\x18.vaultsync.v1.DeviceNameR\vdeviceNames\x125\n" +
+	"\n" +
+	"user_names\x18\x05 \x03(\v2\x16.vaultsync.v1.UserNameR\tuserNames\"7\n" +
+	"\bUserName\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\"=\n" +
 	"\n" +
 	"DeviceName\x12\x1b\n" +
 	"\tdevice_id\x18\x01 \x01(\tR\bdeviceId\x12\x12\n" +
@@ -785,7 +857,7 @@ func file_vaultsync_v1_sync_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_sync_proto_rawDescData
 }
 
-var file_vaultsync_v1_sync_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_vaultsync_v1_sync_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_vaultsync_v1_sync_proto_goTypes = []any{
 	(*ListChangesRequest)(nil),         // 0: vaultsync.v1.ListChangesRequest
 	(*ListChangesResponse)(nil),        // 1: vaultsync.v1.ListChangesResponse
@@ -795,34 +867,36 @@ var file_vaultsync_v1_sync_proto_goTypes = []any{
 	(*CommitRevisionResponse)(nil),     // 5: vaultsync.v1.CommitRevisionResponse
 	(*GetDocumentHistoryRequest)(nil),  // 6: vaultsync.v1.GetDocumentHistoryRequest
 	(*GetDocumentHistoryResponse)(nil), // 7: vaultsync.v1.GetDocumentHistoryResponse
-	(*DeviceName)(nil),                 // 8: vaultsync.v1.DeviceName
-	(*Revision)(nil),                   // 9: vaultsync.v1.Revision
-	(DocumentKind)(0),                  // 10: vaultsync.v1.DocumentKind
-	(*ContentRef)(nil),                 // 11: vaultsync.v1.ContentRef
-	(*Document)(nil),                   // 12: vaultsync.v1.Document
+	(*UserName)(nil),                   // 8: vaultsync.v1.UserName
+	(*DeviceName)(nil),                 // 9: vaultsync.v1.DeviceName
+	(*Revision)(nil),                   // 10: vaultsync.v1.Revision
+	(DocumentKind)(0),                  // 11: vaultsync.v1.DocumentKind
+	(*ContentRef)(nil),                 // 12: vaultsync.v1.ContentRef
+	(*Document)(nil),                   // 13: vaultsync.v1.Document
 }
 var file_vaultsync_v1_sync_proto_depIdxs = []int32{
-	9,  // 0: vaultsync.v1.ListChangesResponse.revisions:type_name -> vaultsync.v1.Revision
-	9,  // 1: vaultsync.v1.GetRevisionResponse.revision:type_name -> vaultsync.v1.Revision
-	10, // 2: vaultsync.v1.CommitRevisionRequest.kind:type_name -> vaultsync.v1.DocumentKind
-	11, // 3: vaultsync.v1.CommitRevisionRequest.content_ref:type_name -> vaultsync.v1.ContentRef
-	9,  // 4: vaultsync.v1.CommitRevisionResponse.revision:type_name -> vaultsync.v1.Revision
-	12, // 5: vaultsync.v1.GetDocumentHistoryResponse.document:type_name -> vaultsync.v1.Document
-	9,  // 6: vaultsync.v1.GetDocumentHistoryResponse.revisions:type_name -> vaultsync.v1.Revision
-	8,  // 7: vaultsync.v1.GetDocumentHistoryResponse.device_names:type_name -> vaultsync.v1.DeviceName
-	0,  // 8: vaultsync.v1.SyncService.ListChanges:input_type -> vaultsync.v1.ListChangesRequest
-	2,  // 9: vaultsync.v1.SyncService.GetRevision:input_type -> vaultsync.v1.GetRevisionRequest
-	4,  // 10: vaultsync.v1.SyncService.CommitRevision:input_type -> vaultsync.v1.CommitRevisionRequest
-	6,  // 11: vaultsync.v1.SyncService.GetDocumentHistory:input_type -> vaultsync.v1.GetDocumentHistoryRequest
-	1,  // 12: vaultsync.v1.SyncService.ListChanges:output_type -> vaultsync.v1.ListChangesResponse
-	3,  // 13: vaultsync.v1.SyncService.GetRevision:output_type -> vaultsync.v1.GetRevisionResponse
-	5,  // 14: vaultsync.v1.SyncService.CommitRevision:output_type -> vaultsync.v1.CommitRevisionResponse
-	7,  // 15: vaultsync.v1.SyncService.GetDocumentHistory:output_type -> vaultsync.v1.GetDocumentHistoryResponse
-	12, // [12:16] is the sub-list for method output_type
-	8,  // [8:12] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	10, // 0: vaultsync.v1.ListChangesResponse.revisions:type_name -> vaultsync.v1.Revision
+	10, // 1: vaultsync.v1.GetRevisionResponse.revision:type_name -> vaultsync.v1.Revision
+	11, // 2: vaultsync.v1.CommitRevisionRequest.kind:type_name -> vaultsync.v1.DocumentKind
+	12, // 3: vaultsync.v1.CommitRevisionRequest.content_ref:type_name -> vaultsync.v1.ContentRef
+	10, // 4: vaultsync.v1.CommitRevisionResponse.revision:type_name -> vaultsync.v1.Revision
+	13, // 5: vaultsync.v1.GetDocumentHistoryResponse.document:type_name -> vaultsync.v1.Document
+	10, // 6: vaultsync.v1.GetDocumentHistoryResponse.revisions:type_name -> vaultsync.v1.Revision
+	9,  // 7: vaultsync.v1.GetDocumentHistoryResponse.device_names:type_name -> vaultsync.v1.DeviceName
+	8,  // 8: vaultsync.v1.GetDocumentHistoryResponse.user_names:type_name -> vaultsync.v1.UserName
+	0,  // 9: vaultsync.v1.SyncService.ListChanges:input_type -> vaultsync.v1.ListChangesRequest
+	2,  // 10: vaultsync.v1.SyncService.GetRevision:input_type -> vaultsync.v1.GetRevisionRequest
+	4,  // 11: vaultsync.v1.SyncService.CommitRevision:input_type -> vaultsync.v1.CommitRevisionRequest
+	6,  // 12: vaultsync.v1.SyncService.GetDocumentHistory:input_type -> vaultsync.v1.GetDocumentHistoryRequest
+	1,  // 13: vaultsync.v1.SyncService.ListChanges:output_type -> vaultsync.v1.ListChangesResponse
+	3,  // 14: vaultsync.v1.SyncService.GetRevision:output_type -> vaultsync.v1.GetRevisionResponse
+	5,  // 15: vaultsync.v1.SyncService.CommitRevision:output_type -> vaultsync.v1.CommitRevisionResponse
+	7,  // 16: vaultsync.v1.SyncService.GetDocumentHistory:output_type -> vaultsync.v1.GetDocumentHistoryResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_sync_proto_init() }
@@ -837,7 +911,7 @@ func file_vaultsync_v1_sync_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_sync_proto_rawDesc), len(file_vaultsync_v1_sync_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

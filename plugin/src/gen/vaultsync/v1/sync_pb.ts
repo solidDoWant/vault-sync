@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/sync.proto.
  */
 export const file_vaultsync_v1_sync: GenFile = /*@__PURE__*/
-  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIpUBChJMaXN0Q2hhbmdlc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJc2luY2Vfc2VxGAIgASgEEhEKCXBhZ2Vfc2l6ZRgDIAEoDRIUCgxzaW5jZV9hbmNob3IYBCABKAwSFgoOb3duX2NvbW1pdF9zZXEYBSABKAQSGQoRb3duX2NvbW1pdF9hbmNob3IYBiABKAwidgoTTGlzdENoYW5nZXNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SEAoIaGFzX21vcmUYAiABKAgSEAoIaGVhZF9zZXEYAyABKAQSEAoIZGl2ZXJnZWQYBCABKAgiOwoSR2V0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJIj8KE0dldFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24ilAIKFUNvbW1pdFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRITCgtyZXZpc2lvbl9pZBgDIAEoCRITCgtiYXNlX3Jldl9pZBgEIAEoCRIoCgRraW5kGAUgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmEgwKBHBhdGgYByABKAwSEAoIcGF0aF9rZXkYCCABKAwSDwoHZGVsZXRlZBgJIAEoCBIRCglkZXZpY2VfaWQYCiABKAkSDQoFZXBvY2gYCyABKA0iQgoWQ29tbWl0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiJpChlHZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhEKCXBhZ2Vfc2l6ZRgDIAEoDRISCgpwYWdlX3Rva2VuGAQgASgJIroBChpHZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZRIoCghkb2N1bWVudBgBIAEoCzIWLnZhdWx0c3luYy52MS5Eb2N1bWVudBIpCglyZXZpc2lvbnMYAiADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAMgASgJEi4KDGRldmljZV9uYW1lcxgEIAMoCzIYLnZhdWx0c3luYy52MS5EZXZpY2VOYW1lIi0KCkRldmljZU5hbWUSEQoJZGV2aWNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkygwMKC1N5bmNTZXJ2aWNlElQKC0xpc3RDaGFuZ2VzEiAudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1Jlc3BvbnNlIgASVAoLR2V0UmV2aXNpb24SIC52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVzcG9uc2UiABJdCg5Db21taXRSZXZpc2lvbhIjLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlcXVlc3QaJC52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXNwb25zZSIAEmkKEkdldERvY3VtZW50SGlzdG9yeRInLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
+  fileDesc("Chd2YXVsdHN5bmMvdjEvc3luYy5wcm90bxIMdmF1bHRzeW5jLnYxIpUBChJMaXN0Q2hhbmdlc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkSEQoJc2luY2Vfc2VxGAIgASgEEhEKCXBhZ2Vfc2l6ZRgDIAEoDRIUCgxzaW5jZV9hbmNob3IYBCABKAwSFgoOb3duX2NvbW1pdF9zZXEYBSABKAQSGQoRb3duX2NvbW1pdF9hbmNob3IYBiABKAwidgoTTGlzdENoYW5nZXNSZXNwb25zZRIpCglyZXZpc2lvbnMYASADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SEAoIaGFzX21vcmUYAiABKAgSEAoIaGVhZF9zZXEYAyABKAQSEAoIZGl2ZXJnZWQYBCABKAgiOwoSR2V0UmV2aXNpb25SZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC3JldmlzaW9uX2lkGAIgASgJIj8KE0dldFJldmlzaW9uUmVzcG9uc2USKAoIcmV2aXNpb24YASABKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24ilAIKFUNvbW1pdFJldmlzaW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRITCgtkb2N1bWVudF9pZBgCIAEoCRITCgtyZXZpc2lvbl9pZBgDIAEoCRITCgtiYXNlX3Jldl9pZBgEIAEoCRIoCgRraW5kGAUgASgOMhoudmF1bHRzeW5jLnYxLkRvY3VtZW50S2luZBItCgtjb250ZW50X3JlZhgGIAEoCzIYLnZhdWx0c3luYy52MS5Db250ZW50UmVmEgwKBHBhdGgYByABKAwSEAoIcGF0aF9rZXkYCCABKAwSDwoHZGVsZXRlZBgJIAEoCBIRCglkZXZpY2VfaWQYCiABKAkSDQoFZXBvY2gYCyABKA0iQgoWQ29tbWl0UmV2aXNpb25SZXNwb25zZRIoCghyZXZpc2lvbhgBIAEoCzIWLnZhdWx0c3luYy52MS5SZXZpc2lvbiJpChlHZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0EhAKCHZhdWx0X2lkGAEgASgJEhMKC2RvY3VtZW50X2lkGAIgASgJEhEKCXBhZ2Vfc2l6ZRgDIAEoDRISCgpwYWdlX3Rva2VuGAQgASgJIuYBChpHZXREb2N1bWVudEhpc3RvcnlSZXNwb25zZRIoCghkb2N1bWVudBgBIAEoCzIWLnZhdWx0c3luYy52MS5Eb2N1bWVudBIpCglyZXZpc2lvbnMYAiADKAsyFi52YXVsdHN5bmMudjEuUmV2aXNpb24SFwoPbmV4dF9wYWdlX3Rva2VuGAMgASgJEi4KDGRldmljZV9uYW1lcxgEIAMoCzIYLnZhdWx0c3luYy52MS5EZXZpY2VOYW1lEioKCnVzZXJfbmFtZXMYBSADKAsyFi52YXVsdHN5bmMudjEuVXNlck5hbWUiKQoIVXNlck5hbWUSDwoHdXNlcl9pZBgBIAEoCRIMCgRuYW1lGAIgASgJIi0KCkRldmljZU5hbWUSEQoJZGV2aWNlX2lkGAEgASgJEgwKBG5hbWUYAiABKAkygwMKC1N5bmNTZXJ2aWNlElQKC0xpc3RDaGFuZ2VzEiAudmF1bHRzeW5jLnYxLkxpc3RDaGFuZ2VzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0Q2hhbmdlc1Jlc3BvbnNlIgASVAoLR2V0UmV2aXNpb24SIC52YXVsdHN5bmMudjEuR2V0UmV2aXNpb25SZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkdldFJldmlzaW9uUmVzcG9uc2UiABJdCg5Db21taXRSZXZpc2lvbhIjLnZhdWx0c3luYy52MS5Db21taXRSZXZpc2lvblJlcXVlc3QaJC52YXVsdHN5bmMudjEuQ29tbWl0UmV2aXNpb25SZXNwb25zZSIAEmkKEkdldERvY3VtZW50SGlzdG9yeRInLnZhdWx0c3luYy52MS5HZXREb2N1bWVudEhpc3RvcnlSZXF1ZXN0GigudmF1bHRzeW5jLnYxLkdldERvY3VtZW50SGlzdG9yeVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_vaultsync_v1_types]);
 
 /**
  * ListChangesRequest asks for revisions after a vault-wide cursor.
@@ -389,6 +389,15 @@ export type GetDocumentHistoryResponse = Message<"vaultsync.v1.GetDocumentHistor
    * @generated from field: repeated vaultsync.v1.DeviceName device_names = 4;
    */
   deviceNames: DeviceName[];
+
+  /**
+   * The display name of each user that committed one of revisions, once per
+   * user, so a member sees who made each revision (docs/design/sharing.md,
+   * Attribution). Only users with a revision on this page are named.
+   *
+   * @generated from field: repeated vaultsync.v1.UserName user_names = 5;
+   */
+  userNames: UserName[];
 };
 
 /**
@@ -397,6 +406,35 @@ export type GetDocumentHistoryResponse = Message<"vaultsync.v1.GetDocumentHistor
  */
 export const GetDocumentHistoryResponseSchema: GenMessage<GetDocumentHistoryResponse> = /*@__PURE__*/
   messageDesc(file_vaultsync_v1_sync, 7);
+
+/**
+ * UserName names a user that committed a revision in a vault.
+ *
+ * @generated from message vaultsync.v1.UserName
+ */
+export type UserName = Message<"vaultsync.v1.UserName"> & {
+  /**
+   * User id (UUIDv7), as in Revision.user_id.
+   *
+   * @generated from field: string user_id = 1;
+   */
+  userId: string;
+
+  /**
+   * The user's display name: the identity provider's name claim, falling
+   * back to preferred_username. Empty if the provider asserted neither.
+   *
+   * @generated from field: string name = 2;
+   */
+  name: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.UserName.
+ * Use `create(UserNameSchema)` to create a new message.
+ */
+export const UserNameSchema: GenMessage<UserName> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_sync, 8);
 
 /**
  * DeviceName names a device that committed a revision in a vault.
@@ -424,7 +462,7 @@ export type DeviceName = Message<"vaultsync.v1.DeviceName"> & {
  * Use `create(DeviceNameSchema)` to create a new message.
  */
 export const DeviceNameSchema: GenMessage<DeviceName> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_sync, 8);
+  messageDesc(file_vaultsync_v1_sync, 9);
 
 /**
  * SyncService pulls and pushes document revisions (SPEC.md §6).

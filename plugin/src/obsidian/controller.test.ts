@@ -24,7 +24,7 @@ import type { SyncStatus } from "./status";
 const bytes = (value: string) => new TextEncoder().encode(value);
 
 /** An unsigned JWT for `subject`: the plugin only reads its claims. */
-const tokenFor = (subject: string) => `e30.${btoa(JSON.stringify({ sub: subject, exp: 4_000_000_000 })).replace(/=+$/, "")}.sig`;
+const tokenFor = (subject: string) => `e30.${btoa(JSON.stringify({ sub: subject, exp: 4_000_000_000, preferred_username: subject, name: `${subject} Example` })).replace(/=+$/, "")}.sig`;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -559,7 +559,7 @@ describe("SyncController", () => {
     expect((await f.controller.session?.listProblems())?.skipped.map(({ path, reason }) => ({ path, reason }))).toEqual([{ path: "CON.md", reason: "reserved-name" }]);
   });
 
-  it("names conflict copies after the Device name setting without its invisible characters (#557)", async () => {
+  it("names conflict copies after the signed-in user's name and the Device name setting, without its invisible characters (#557)", async () => {
     const server = fakeServer();
     server.sync.commit({ documentId: "remote", path: "a.md", content: "remote version\n" });
     const f = fixture(server, connected({ ...settings, deviceName: "\u202eWork\u200b lap\u2066top\u2069\u200d" }, server.sync.vaultId));
@@ -570,7 +570,7 @@ describe("SyncController", () => {
 
     const copies = (await f.vault.list()).filter((path) => path !== "a.md");
     expect(copies).toHaveLength(1);
-    expect(copies[0]).toMatch(/^a \(Conflicted copy Work laptop \d{12}\)\.md$/u);
+    expect(copies[0]).toMatch(/^a \(Conflicted copy alice Example Work laptop \d{12}\)\.md$/u);
     await f.controller.stop();
   });
 

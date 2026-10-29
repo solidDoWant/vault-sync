@@ -282,9 +282,10 @@ func historyPage(header http.Header, limitBytes int, history store.History) *vau
 	budget := newPageBudget(header, limitBytes)
 	hasMore := history.HasMore
 
-	// Each device is named once, with the first revision of the page it
-	// committed, and charged to the budget with it.
+	// Each device and each user is named once, with the first revision of
+	// the page it committed, and charged to the budget with it.
 	named := make(map[uuid.UUID]bool)
+	namedUsers := make(map[uuid.UUID]bool)
 
 	for _, revision := range history.Revisions {
 		message := revisionMessage(revision)
@@ -296,6 +297,14 @@ func historyPage(header http.Header, limitBytes int, history store.History) *vau
 		if known && !named[revision.DeviceID] {
 			deviceName = &vaultsyncv1.DeviceName{DeviceId: revision.DeviceID.String(), Name: name}
 			entries = append(entries, deviceName)
+		}
+
+		userName, knownUser := history.UserNames[revision.UserID]
+
+		var user *vaultsyncv1.UserName
+		if knownUser && !namedUsers[revision.UserID] {
+			user = &vaultsyncv1.UserName{UserId: revision.UserID.String(), Name: userName}
+			entries = append(entries, user)
 		}
 
 		if !budget.admit(entries...) {
@@ -310,6 +319,12 @@ func historyPage(header http.Header, limitBytes int, history store.History) *vau
 			named[revision.DeviceID] = true
 
 			response.DeviceNames = append(response.DeviceNames, deviceName)
+		}
+
+		if user != nil {
+			namedUsers[revision.UserID] = true
+
+			response.UserNames = append(response.UserNames, user)
 		}
 	}
 
