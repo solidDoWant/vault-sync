@@ -76,11 +76,13 @@ func fold(text string) string {
 
 	builder.Grow(len(text))
 
+	caser := cases.Fold()
+
 	for _, codePoint := range text {
-		folded := foldCodePoint(codePoint)
+		folded := foldCodePoint(caser, codePoint)
 
 		if upper := unicode.ToUpper(codePoint); upper != codePoint && codePoint <= 0xFFFF && upper <= 0xFFFF {
-			if upperFolded := foldCodePoint(upper); upperFolded != folded {
+			if upperFolded := foldCodePoint(caser, upper); upperFolded != folded {
 				folded = upperFolded
 			}
 		}
@@ -91,9 +93,9 @@ func fold(text string) string {
 	return builder.String()
 }
 
-// foldCodePoint returns the full case folding of codePoint.
-func foldCodePoint(codePoint rune) string {
-	caser := cases.Fold()
+// foldCodePoint returns the full case folding of codePoint with caser, a
+// cases.Fold caser.
+func foldCodePoint(caser cases.Caser, codePoint rune) string {
 	folded := caser.String(string(codePoint))
 
 	// cases.Fold lowercases the Cherokee capitals, which CaseFolding.txt
