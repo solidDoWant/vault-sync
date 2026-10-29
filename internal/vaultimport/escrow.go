@@ -78,11 +78,12 @@ func ReadEscrowIdentityFile(path string) ([]EscrowIdentity, error) {
 // escrowSlots opens the vault's escrow slots with whichever identity the
 // slot names: during an escrow key rotation an epoch's slot may still be
 // wrapped to the retiring key.
-func escrowSlots(identities []EscrowIdentity) slotOpener {
+func escrowSlots(identities []EscrowIdentity, genesisHash []byte) slotOpener {
 	return slotOpener{
-		kind:    vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW,
-		whose:   "the escrow",
-		missing: "the vault has no escrow slot for epoch %d: is escrow on for this vault?",
+		genesisHash: genesisHash,
+		kind:        vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW,
+		whose:       "the escrow",
+		missing:     "the vault has no escrow slot for epoch %d: is escrow on for this vault?",
 		open: func(vaultID uuid.UUID, slot *vaultsyncv1.KeySlot) ([]byte, error) {
 			for _, identity := range identities {
 				if identity.KeyID != slot.GetRecipientId() {

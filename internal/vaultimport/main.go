@@ -19,7 +19,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
 
-const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE | -escrow-identity-file FILE | -escrow] SERVER_URL VAULT_ID DIR"
+const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE | -escrow-identity-file FILE -genesis HASH | -escrow -genesis HASH] SERVER_URL VAULT_ID DIR"
 
 // DeviceName names the device the import's revisions are attributed to. It
 // is registered for the signed-in user for the run and removed afterwards.
@@ -59,6 +59,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	privateKeyFile := flags.String("private-key-file", "", "file holding your private key as an age identity, for an end-to-end encrypted vault")
 	escrowIdentityFile := flags.String("escrow-identity-file", "", "file holding the deployment's escrow identity (age identity file), for an escrowed end-to-end encrypted vault")
 	escrowPrompt := flags.Bool("escrow", false, "type the deployment's escrow identity at the terminal, for an escrowed end-to-end encrypted vault")
+	genesis := flags.String("genesis", "", "the vault's genesis hash (its vault fingerprint in the plugin), required with -escrow-identity-file and -escrow")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -88,6 +89,31 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		return 2
 	}
 
+	escrow := *escrowIdentityFile != "" || *escrowPrompt
+
+	if escrow && *genesis == "" {
+		_, _ = fmt.Fprintf(stderr, "the escrow import needs -genesis: the vault fingerprint the plugin shows in the vault's settings\n%s\n", usage)
+
+		return 2
+	}
+
+	if !escrow && *genesis != "" {
+		_, _ = fmt.Fprintf(stderr, "-genesis is only for the escrow import; with your own key the import reads the vault's genesis from your anchor list\n%s\n", usage)
+
+		return 2
+	}
+
+	var genesisHash []byte
+
+	if escrow {
+		var err error
+		if genesisHash, err = ParseGenesisHash(*genesis); err != nil {
+			_, _ = fmt.Fprintf(stderr, "%v\n%s\n", err, usage)
+
+			return 2
+		}
+	}
+
 	serverURL, err := url.Parse(flags.Arg(0))
 	if err != nil || (serverURL.Scheme != "https" && serverURL.Scheme != "http") || serverURL.Host == "" {
 		_, _ = fmt.Fprintf(stderr, "%q is not an http(s) server URL\n%s\n", flags.Arg(0), usage)
@@ -109,6 +135,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		privateKeyFile:     *privateKeyFile,
 		escrowIdentityFile: *escrowIdentityFile,
 		escrowPrompt:       *escrowPrompt,
+		genesisHash:        genesisHash,
 		prompt:             stderr,
 	}
 
@@ -165,12 +192,14 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 	target := &APITarget{client: client, vaultID: vaultID}
 
 	if encrypted {
-		opener, err := secrets.opener(ctx, client)
+		opener, err := secrets.opener(ctx, client, vaultID)
 		if err != nil {
 			return empty, err
 		}
 
-		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, opener) }
+		seen := &verifiedState{}
+
+		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, opener, seen) }
 		if target.keys, err = target.refreshKeys(ctx); err != nil {
 			return empty, err
 		}
@@ -216,6 +245,8 @@ type secretSource struct {
 	privateKeyFile     string
 	escrowIdentityFile string
 	escrowPrompt       bool
+	// genesisHash is the escrow import's trust anchor (-genesis).
+	genesisHash []byte
 	// prompt is where the terminal prompt is written.
 	prompt io.Writer
 }
@@ -254,7 +285,7 @@ func readTerminalSecret(prompt io.Writer, label, what, notTerminal string) (stri
 // opener returns what opens the vault's key slots: the escrow identity for
 // the escrow slots, or else the user's private key, unlocked through the
 // server, for the user's own slots.
-func (source secretSource) opener(ctx context.Context, client *apiClient) (slotOpener, error) {
+func (source secretSource) opener(ctx context.Context, client *apiClient, vaultID uuid.UUID) (slotOpener, error) {
 	switch {
 	case source.escrowIdentityFile != "":
 		identities, err := ReadEscrowIdentityFile(source.escrowIdentityFile)
@@ -262,7 +293,7 @@ func (source secretSource) opener(ctx context.Context, client *apiClient) (slotO
 			return slotOpener{}, err
 		}
 
-		return escrowSlots(identities), nil
+		return escrowSlots(identities, source.genesisHash), nil
 	case source.escrowPrompt:
 		typed, err := readTerminalEscrowIdentity(source.prompt)
 		if err != nil {
@@ -274,7 +305,7 @@ func (source secretSource) opener(ctx context.Context, client *apiClient) (slotO
 			return slotOpener{}, fmt.Errorf("the escrow identity: %w", err)
 		}
 
-		return escrowSlots(identities), nil
+		return escrowSlots(identities, source.genesisHash), nil
 	}
 
 	secret, err := source.read()
@@ -287,7 +318,7 @@ func (source secretSource) opener(ctx context.Context, client *apiClient) (slotO
 		return slotOpener{}, err
 	}
 
-	return userSlots(privateKey), nil
+	return client.userOpener(ctx, vaultID, privateKey)
 }
 
 func (source secretSource) read() (UserSecret, error) {

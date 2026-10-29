@@ -120,7 +120,7 @@ If you forget your recovery passphrase:
 
 - **Your devices keep your files.** Every device that was unlocked keeps your key and your vault's files, and keeps syncing until you sign out. Don't sign out of your last unlocked device.
 - **Without escrow**, the server's copy of every vault that no other member can open is lost for good. Nobody, including the operator, can decrypt it.
-- **With escrow**, the operator can restore the vault: the export job writes its current files in plaintext (see [export.md](export.md)), and the operator gives you that copy, or imports it into an encrypted vault with the import tool, which encrypts with the vault's key unwrapped through the escrow identity.
+- **With escrow**, the operator can restore the vault: the export job writes its current files in plaintext (see [export.md](export.md)), and the operator gives you that copy, or imports it into an encrypted vault with the import tool, which encrypts with the vault's key unwrapped through the escrow identity. The import needs the vault fingerprint from a member, so that it can verify the vault's membership log instead of trusting the server.
 
 Other members of a shared vault are not affected: they keep their own keys and passphrases.
 

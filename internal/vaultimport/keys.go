@@ -197,14 +197,18 @@ type slotOpener struct {
 	// open opens a slot of kind and returns the epoch key it holds. It is
 	// checked against the key commitment afterwards.
 	open func(vaultID uuid.UUID, slot *vaultsyncv1.KeySlot) ([]byte, error)
+	// genesisHash is the trust anchor the vault's membership log is
+	// verified from: the user's anchor list's, or the operator's -genesis.
+	genesisHash []byte
 }
 
 // userSlots opens the user's own key slots with the user's private key.
-func userSlots(privateKey []byte) slotOpener {
+func userSlots(privateKey, genesisHash []byte) slotOpener {
 	return slotOpener{
-		kind:    vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER,
-		whose:   "your",
-		missing: "you hold no key for the vault's epoch %d yet: wait until an owner's device shares it",
+		genesisHash: genesisHash,
+		kind:        vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER,
+		whose:       "your",
+		missing:     "you hold no key for the vault's epoch %d yet: wait until an owner's device shares it",
 		open: func(vaultID uuid.UUID, slot *vaultsyncv1.KeySlot) ([]byte, error) {
 			key, err := e2ee.OpenKeySlot(privateKey, slot.GetWrappedKey(), e2ee.KeySlot{
 				VaultID: vaultID.String(), Epoch: uint64(slot.GetEpoch()), RecipientKind: e2ee.RecipientUser, RecipientID: slot.GetRecipientId(),
@@ -220,9 +224,18 @@ func userSlots(privateKey []byte) slotOpener {
 
 // vaultKeys opens the key slots of epoch 1 and of the vault's current
 // epoch with opener, and checks each key against its epoch's key
-// commitment before it is used.
-func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opener slotOpener) (*vaultKeys, error) {
+// commitment before it is used. Before it opens a slot, it verifies the
+// vault's membership log from opener's genesis and the owner-signed records
+// of both epochs, and refuses a log or epoch rolled back from seen, which it
+// then advances.
+func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opener slotOpener, seen *verifiedState) (*vaultKeys, error) {
+	states, err := client.verifiedLog(ctx, vaultID, opener.genesisHash, seen)
+	if err != nil {
+		return nil, err
+	}
+
 	commitments := map[uint64][]byte{}
+	records := map[uint64]*vaultsyncv1.EpochRecord{}
 
 	var current uint64
 
@@ -238,6 +251,7 @@ func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opene
 
 		for _, epoch := range response.Msg.GetEpochs() {
 			commitments[uint64(epoch.GetEpoch())] = epoch.GetCommitment()
+			records[uint64(epoch.GetEpoch())] = epoch.GetRecord()
 		}
 
 		if pageToken = response.Msg.GetNextPageToken(); pageToken == "" {
@@ -247,6 +261,16 @@ func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opene
 
 	if current == 0 {
 		return nil, errors.New("the vault has no key yet: open it in the plugin on an owner's device first")
+	}
+
+	if current < seen.epoch {
+		return nil, notVerified("the vault's epoch was rolled back from %d to %d", seen.epoch, current)
+	}
+
+	for _, epoch := range []uint64{1, current} {
+		if err := verifyEpoch(vaultID, states, epoch, commitments, records); err != nil {
+			return nil, err
+		}
 	}
 
 	epochKeys := map[uint64][]byte{}
@@ -288,6 +312,9 @@ func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opene
 			return nil, fmt.Errorf(opener.missing, epoch)
 		}
 	}
+
+	last := states[len(states)-1]
+	*seen = verifiedState{logSeq: last.Seq, logHash: last.Hash, epoch: current}
 
 	return deriveVaultKeys(current, epochKeys[current], epochKeys[1])
 }

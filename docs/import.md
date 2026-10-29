@@ -36,19 +36,30 @@ vault-sync-server import -private-key-file ~/identity.txt https://sync.example.c
 
 The secret itself is never a command-line argument. Files may be at most 64 KiB. With the passphrase, the subcommand unlocks your key the way a new device does (`GetUserKeyParams`, then `UnlockUserKey`): a wrong passphrase counts against the server's limit of attempts. With either secret, it opens your key slots for the vault's first and current epochs and checks each key against its epoch's key commitment before using it. If a key rotation replaces the epoch during the import, it re-encrypts under the new epoch and retries.
 
-You must have enabled encryption in the plugin, and the vault must already have a key: open it in the plugin on an owner's device first, and as an editor, wait until an owner's device has shared the vault key with you. Otherwise the subcommand refuses the import and imports nothing.
+You must have enabled encryption in the plugin, and the vault must already have a key: open it in the plugin on an owner's device first, and as an editor, wait until an owner's device has shared the vault key with you. The vault must also be in your anchor list, which the plugin keeps when you create, join or open the vault. Otherwise the subcommand refuses the import and imports nothing.
+
+### Verification against the server
+
+The subcommand does not take the server's word for any key (`docs/design/encryption.md`, *Protection against an active server*). Before it uses an epoch key, it verifies the vault the way a plugin device does:
+
+- It replays the vault's membership log (`ListLogEntries`) from its genesis, checking every hash link, every signature and every signer's right to sign. The genesis must be the one it trusts: with your passphrase or private key, the genesis hash in your anchor list (`GetAnchorList`, opened with your key); with the escrow identity, the hash given with `-genesis`.
+- It uses a key only from an epoch whose record an owner signed at a position of that log, with exactly the log's members, pending invitations and escrow key as recipients. This holds for both epochs it reads, the first and the current.
+- When it reads the keys again after a rotation, it refuses a shorter log, another entry at a position it already verified, or a lower epoch.
+
+Any failure stops the import before anything is imported, with the error "the server sent key or membership data that doesn't verify" and what failed.
 
 ### With the escrow identity
 
 An operator who holds the deployment's escrow identity (`docs/encryption.md`, `docs/export.md`) can import into a vault that has escrow, without any member's passphrase or key:
 
 ```sh
-vault-sync-server import -escrow-identity-file /secure/escrow-identity.txt https://sync.example.com 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 /path/to/notes
-vault-sync-server import -escrow https://sync.example.com 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 /path/to/notes
+vault-sync-server import -escrow-identity-file /secure/escrow-identity.txt -genesis "$VAULT_FINGERPRINT" https://sync.example.com 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 /path/to/notes
+vault-sync-server import -escrow -genesis "$VAULT_FINGERPRINT" https://sync.example.com 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 /path/to/notes
 ```
 
 - `-escrow-identity-file FILE`: an age identity file holding one or more escrow identities (`AGE-SECRET-KEY-PQ-1…`), with blank lines and `#` comments ignored: the same file the export job reads from `VAULT_SYNC_ESCROW_IDENTITY_FILE`. During an escrow key rotation, list both the new and the retiring identity. At most 64 KiB.
 - `-escrow`: type the escrow identity at the terminal, without echo. When standard input is not a terminal, the subcommand fails instead.
+- `-genesis HASH`: required with either. The vault's genesis hash, the **vault fingerprint** the plugin shows in the vault's settings, as 64 hexadecimal digits (spaces and colons between them are ignored). Get it from a member, not from the server: the escrow import has no anchor list, so this is what it verifies the vault's membership log from. Without it, the subcommand refuses to run; with another vault's hash, it refuses the import. `-genesis` is refused with your own key, whose anchor list holds the hash.
 
 The identity is never a command-line argument, and never logged or sent to the server. You still sign in as an owner or editor of the vault: the identity only unlocks the vault's keys on your machine. The subcommand lists the vault's escrow slots (`ListKeySlots` with the escrow recipient kind, open to editors and owners only), opens those of the first and current epochs with the identity that each names, and checks each key against its epoch's key commitment before using it. A vault without escrow, or an identity file that doesn't hold the key a slot is wrapped to, is refused, and nothing is imported. It encrypts and retries after a rotation exactly as with your own key.
 
