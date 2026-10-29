@@ -5,6 +5,8 @@ import { fileURLToPath } from "node:url";
 
 import esbuild from "esbuild";
 
+import { argon2WorkerDefine } from "./scripts/argon2-worker.js";
+
 // Plugin e2e suite: the built plugin inside a real, pinned Obsidian, driven by
 // WebdriverIO through wdio-obsidian-service (SPEC.md §13,
 // docs/testing/e2e.md). `make test-e2e` runs it through the `e2e`-tagged Go
@@ -84,6 +86,8 @@ await esbuild.build({
   target: "es2022",
   logLevel: "warning",
   outfile: path.join(harnessOut, "main.js"),
+  // The Argon2id Web Worker's script, as the release build inlines it.
+  define: await argon2WorkerDefine(),
 });
 await copyFile(path.join(harnessDir, "manifest.json"), path.join(harnessOut, "manifest.json"));
 

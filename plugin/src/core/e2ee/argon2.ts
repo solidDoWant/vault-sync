@@ -1,33 +1,30 @@
 /**
- * Argon2id for the passphrase wrapping: hash-wasm's WebAssembly Argon2id where
- * it loads and gives the right answer, @noble/hashes' pure-JavaScript
- * `argon2idAsync` otherwise. Both are Argon2id version 0x13 (RFC 9106) and
- * produce the same output.
+ * Argon2id for the passphrase wrapping. Where the runtime has Web Workers,
+ * each derivation runs hash-wasm's WebAssembly Argon2id in a worker of its
+ * own, started from a Blob URL of the script the build inlines
+ * (`ARGON2_WORKER_SOURCE`, built from ./argon2-worker-entry). The worker first
+ * runs a known-answer self-test (./argon2-wasm). Elsewhere, or when the worker
+ * does not start, fails, or fails its self-test, every derivation of the
+ * session uses @noble/hashes' pure-JavaScript `argon2idAsync` on the main
+ * thread instead.
  *
- * Before the first derivation, the WebAssembly implementation runs a
- * known-answer test (a small vector computed with Go's golang.org/x/crypto).
- * If it fails to load or gives another answer, every derivation of this
- * session uses @noble/hashes. That guards against JavaScript engines that
- * compile the module wrongly.
+ * Neither path holds the UI thread: the worker runs off it, and
+ * `argon2idAsync` yields to the event loop every few milliseconds. Both are
+ * Argon2id version 0x13 (RFC 9106) and produce the same output.
  */
 import { argon2idAsync } from "@noble/hashes/argon2.js";
-import { bytesToHex } from "@noble/hashes/utils.js";
-import { argon2id as wasmArgon2id } from "hash-wasm";
 
-export interface Argon2idInput {
-  password: Uint8Array;
-  salt: Uint8Array;
-  /** Memory cost in KiB. */
-  memory: number;
-  /** Passes. */
-  iterations: number;
-  /** Lanes. */
-  parallelism: number;
-  /** Output length in bytes. */
-  length: number;
-}
+import { describe, type Argon2idInput, type Argon2WorkerResponse } from "./argon2-wasm";
 
-/** Which implementation derives, and why WebAssembly does not when it does not. */
+export type { Argon2idInput } from "./argon2-wasm";
+
+/**
+ * The bundled worker script, defined by the build (scripts/argon2-worker.ts);
+ * undefined where nothing defines it, as in unit tests.
+ */
+declare const ARGON2_WORKER_SOURCE: string | undefined;
+
+/** Which implementation derived, and why not WebAssembly when it was not. */
 export type Argon2Implementation = { kind: "webassembly" } | { kind: "javascript"; reason: string };
 
 /**
@@ -36,33 +33,17 @@ export type Argon2Implementation = { kind: "webassembly" } | { kind: "javascript
  */
 const JAVASCRIPT_ASYNC_TICK_MS = 10;
 
-const encoder = new TextEncoder();
+/**
+ * How long a worker may take to answer before the derivation falls back. Far
+ * above the slowest derivation the bounds allow on a phone.
+ */
+const WORKER_TIMEOUT_MS = 5 * 60_000;
 
-/** The known answer: Argon2id(t = 2, m = 64 KiB, p = 1, 32 bytes) of the inputs, by golang.org/x/crypto/argon2. */
-const SELF_TEST: Readonly<Argon2idInput> = Object.freeze({
-  password: encoder.encode("vault-sync argon2id self-test"),
-  salt: encoder.encode("self-test salt 16"),
-  memory: 64,
-  iterations: 2,
-  parallelism: 1,
-  length: 32,
-});
-const SELF_TEST_ANSWER = "09795e828b75172af2d0ef2c0d14447a0d7442ee9a69e8522e484399f3576eab";
+/** The reason the session derives in pure JavaScript, once it does. */
+let fallbackReason: string | undefined;
+let lastImplementation: Argon2Implementation | undefined;
 
-/** The WebAssembly Argon2id, without the self-test. */
-export async function argon2idWebAssembly(input: Argon2idInput): Promise<Uint8Array> {
-  return wasmArgon2id({
-    password: input.password,
-    salt: input.salt,
-    iterations: input.iterations,
-    memorySize: input.memory,
-    parallelism: input.parallelism,
-    hashLength: input.length,
-    outputType: "binary",
-  });
-}
-
-/** The pure-JavaScript Argon2id, which yields to the event loop as it runs. */
+/** @noble/hashes' Argon2id, which yields to the event loop as it runs. */
 export async function argon2idJavaScript(input: Argon2idInput): Promise<Uint8Array> {
   return argon2idAsync(input.password, input.salt, {
     m: input.memory,
@@ -73,26 +54,59 @@ export async function argon2idJavaScript(input: Argon2idInput): Promise<Uint8Arr
   });
 }
 
-let chosen: Promise<Argon2Implementation> | undefined;
-
-/** The implementation this session derives with; runs the self-test once. */
-export function argon2Implementation(): Promise<Argon2Implementation> {
-  chosen ??= selfTest();
-  return chosen;
+/** The implementation the last derivation of this session used, if any ran. */
+export function lastArgon2Implementation(): Argon2Implementation | undefined {
+  return lastImplementation;
 }
 
-async function selfTest(): Promise<Argon2Implementation> {
-  try {
-    const answer = bytesToHex(await argon2idWebAssembly(SELF_TEST));
-    if (answer === SELF_TEST_ANSWER) return { kind: "webassembly" };
-    return { kind: "javascript", reason: "the WebAssembly Argon2id gave a wrong known answer" };
-  } catch (error) {
-    return { kind: "javascript", reason: `the WebAssembly Argon2id did not run: ${error instanceof Error ? error.message : String(error)}` };
-  }
-}
-
-/** Argon2id of `input` with the implementation {@link argon2Implementation} chose. The caller validates the parameters. */
+/** Argon2id of `input`, in the worker or, failing that, in pure JavaScript. The caller validates the parameters. */
 export async function argon2id(input: Argon2idInput): Promise<Uint8Array> {
-  const implementation = await argon2Implementation();
-  return implementation.kind === "webassembly" ? argon2idWebAssembly(input) : argon2idJavaScript(input);
+  if (fallbackReason === undefined) {
+    const response = await deriveInWorker(input);
+    if (response.kind === "output") {
+      lastImplementation = { kind: "webassembly" };
+      return response.output;
+    }
+    fallbackReason = response.reason;
+  }
+  lastImplementation = { kind: "javascript", reason: fallbackReason };
+  return argon2idJavaScript(input);
+}
+
+async function deriveInWorker(input: Argon2idInput): Promise<Argon2WorkerResponse> {
+  if (typeof ARGON2_WORKER_SOURCE !== "string") {
+    return { kind: "fallback", reason: "the Argon2id worker is not bundled" };
+  }
+  if (typeof Worker !== "function" || typeof Blob !== "function" || typeof URL.createObjectURL !== "function") {
+    return { kind: "fallback", reason: "this runtime has no Web Workers" };
+  }
+  let url: string | undefined;
+  let worker: Worker | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    url = URL.createObjectURL(new Blob([ARGON2_WORKER_SOURCE], { type: "text/javascript" }));
+    const started = new Worker(url);
+    worker = started;
+    return await new Promise<Argon2WorkerResponse>((resolve) => {
+      started.onmessage = (event: MessageEvent<Argon2WorkerResponse>) => {
+        resolve(event.data);
+      };
+      started.onerror = (event: ErrorEvent) => {
+        resolve({ kind: "fallback", reason: `the Argon2id worker failed: ${event.message || "no message"}` });
+      };
+      started.onmessageerror = () => {
+        resolve({ kind: "fallback", reason: "the Argon2id worker's answer could not be read" });
+      };
+      timer = setTimeout(() => {
+        resolve({ kind: "fallback", reason: "the Argon2id worker did not answer" });
+      }, WORKER_TIMEOUT_MS);
+      started.postMessage(input);
+    });
+  } catch (error) {
+    return { kind: "fallback", reason: `the Argon2id worker did not start: ${describe(error)}` };
+  } finally {
+    clearTimeout(timer);
+    worker?.terminate();
+    if (url !== undefined) URL.revokeObjectURL(url);
+  }
 }
