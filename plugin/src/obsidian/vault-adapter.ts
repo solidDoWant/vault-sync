@@ -104,17 +104,21 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     }
     if (target === null) await this.ensureParentFolders(to);
     const size = file.stat.size;
+    const before = target instanceof TFile ? { size: target.stat.size, mtime: target.stat.mtime } : undefined;
     try {
       await disk.rename(`${disk.base}/${from}`, `${disk.base}/${to}`);
     } catch (error) {
       throw await this.unmaterializableOr(error, to, to, from);
     }
-    // Obsidian learns of the rename from its file watcher.
-    for (let waited = 0; waited < indexWaitMs; waited += indexPollMs) {
+    // Obsidian learns of the rename from its file watcher. Its index has it
+    // once `from` is gone and `to` is no longer the file it replaced: the
+    // replacement, or what the user wrote over it since, so an edit right
+    // after the replace does not keep the sync waiting.
+    await waitForIndex(() => {
       const moved = this.vault.getFileByPath(to);
-      if (this.vault.getFileByPath(from) === null && moved !== null && moved.stat.size === size) return;
-      await new Promise((resolve) => setTimeout(resolve, indexPollMs));
-    }
+      if (this.vault.getFileByPath(from) !== null || moved === null) return false;
+      return before === undefined || moved.stat.size === size || moved.stat.size !== before.size || moved.stat.mtime !== before.mtime;
+    });
   }
 
   private get vault() {
@@ -174,9 +178,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
       throw error;
     }
     // Obsidian learns of the delete from its file watcher.
-    for (let waited = 0; waited < indexWaitMs && this.vault.getFolderByPath(path) !== null; waited += indexPollMs) {
-      await new Promise((resolve) => setTimeout(resolve, indexPollMs));
-    }
+    await waitForIndex(() => this.vault.getFolderByPath(path) === null);
   }
 
   async read(path: string): Promise<Uint8Array> {
@@ -475,6 +477,16 @@ export class ObsidianVaultAdapter implements VaultAdapter {
 /** How long replaceOnDisk waits for Obsidian's index to show a rename, and how often it looks. */
 const indexWaitMs = 5_000;
 const indexPollMs = 10;
+
+/**
+ * Waits until `updated` holds or indexWaitMs have passed, whichever comes
+ * first. The bound is elapsed time, not a count of polls: in a background
+ * window the platform may fire timers far later than asked.
+ */
+async function waitForIndex(updated: () => boolean): Promise<void> {
+  const deadline = Date.now() + indexWaitMs;
+  while (!updated() && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, indexPollMs));
+}
 
 /** The desktop file system under the vault: its folder and Node's rename. */
 interface DesktopDisk {

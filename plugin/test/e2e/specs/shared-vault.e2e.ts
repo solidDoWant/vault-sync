@@ -410,18 +410,13 @@ describe("a vault shared by two users", function () {
     await use(b);
     await writeNote("Shared.md", "written by the owner\nand by the member\n");
     await writeNote("From the member.md", "a note of the member's\n");
-    // What both devices did while the member's edits travelled: the e2e
-    // output shows it on every run, and a failure carries it.
-    const travelled = (async () => {
+    // A failure carries what both devices did while the member's edits travelled.
+    try {
       await waitForText(a, "Shared.md", "written by the owner\nand by the member\n");
       await waitForText(a, "From the member.md", "a note of the member's\n");
-    })();
-    await travelled.catch(() => undefined);
-    const recorded = `${await syncRecording(b)}\n${await syncRecording(a)}`;
-    console.log(`[P3-01] the member's edits on their way to the owner:\n${recorded}`);
-    await travelled.catch((error: unknown) => {
-      throw new Error(`${String(error)}\n${recorded}`);
-    });
+    } catch (error) {
+      throw new Error(`${String(error)}\n${await syncRecording(b)}\n${await syncRecording(a)}`, { cause: error });
+    }
 
     await use(a);
     await writeNote("Shared.md", "written by the owner\nand by the member\nand the owner again\n");
