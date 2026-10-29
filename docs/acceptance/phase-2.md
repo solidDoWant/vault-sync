@@ -9,13 +9,13 @@ Phase 2 is done when every scenario below passes as an automated test on `master
 - Scenarios that involve Obsidian are end-to-end tests in `plugin/test/e2e/specs/`.
 - AC-22 and AC-23 are server integration tests.
 - AC-25 is an end-to-end or integration test against a real server.
-- `make acceptance` runs every `[AC-nn]` test and prints the scoreboard: passing out of total.
+- `make acceptance` runs every `[AC-nn]` test and prints the scoreboard: passing out of total (25 scenarios; AC-01 was removed).
 
 Unless stated otherwise, A and B are two devices: two Obsidian vaults with the plugin, signed in to the same server vault.
 
 ## Setup
 
-- **AC-01** The server runs from the Helm chart with PostgreSQL and S3. The plugin signs in to it.
+- **AC-01** (Removed by the owner, 2026-10-29: deploying to the homelab is not part of the checklist. The id is kept so the others keep their numbers.)
 - **AC-02** Connecting a vault: an empty vault connects. A vault that already has files connects, and its files are uploaded.
 - **AC-03** A second device connects to the same vault and downloads every file. If it already has files, it warns first, and nothing is lost (`engine.md` §12, X2).
 
