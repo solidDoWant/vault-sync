@@ -43,9 +43,11 @@
     "@noble/hashes": "^2.4.0",
     "@noble/post-quantum": "^0.5.4",
     "@scure/base": "^2.4.0",
+    "@unicode/unicode-15.0.0": "2.1.0",
     "age-encryption": "^0.3.1",
     "diff-match-patch": "^1.0.5",
-    "oauth4webapi": "^3.8.8"
+    "oauth4webapi": "^3.8.8",
+    "unicode-case-folding": "1.1.2"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

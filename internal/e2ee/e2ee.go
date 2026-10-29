@@ -240,9 +240,9 @@ const (
 // stretched = Argon2id(UTF-8(NFC(passphrase)), salt, params, 32), then
 // HKDF-SHA256(stretched, empty salt, info) with the info
 // "vault-sync/v1/passphrase/wrap" and "vault-sync/v1/passphrase/auth". The
-// passphrase is NFC-normalized with the pinned Unicode tables of
-// internal/pathkey (not the runtime's), so every device derives the same keys
-// from the same characters. It refuses an empty passphrase, a salt of the
+// passphrase is NFC-normalized with internal/pathkey.NFC, as the TypeScript
+// client does, so every device derives the same keys from the same
+// characters assigned in Unicode 15.0, whose normalization is stable. It refuses an empty passphrase, a salt of the
 // wrong size and parameters outside the bounds before deriving.
 func DerivePassphraseKeys(passphrase string, params Argon2Params, salt []byte) (PassphraseKeys, error) {
 	if passphrase == "" {

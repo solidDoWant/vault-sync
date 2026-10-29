@@ -1,27 +1,22 @@
-import { CASE_FOLDING_DATA } from "./casefold-table";
+import { caseFold } from "unicode-case-folding";
 import { nfc, nfd } from "./normalize";
 
-let foldTable: Map<number, string> | undefined;
-
-function getFoldTable(): Map<number, string> {
-  if (foldTable === undefined) {
-    foldTable = new Map();
-    for (const entry of CASE_FOLDING_DATA.split(",")) {
-      const [from, ...to] = entry.split(" ").map((hex) => Number.parseInt(hex, 16));
-      if (from === undefined || to.length === 0) throw new Error(`malformed case-folding entry ${JSON.stringify(entry)}`);
-      foldTable.set(from, String.fromCodePoint(...to));
-    }
-  }
-  return foldTable;
-}
-
-/** Applies full, locale-independent case folding (CaseFolding.txt C + F) with the NTFS upcase merges. */
+/**
+ * Applies full, locale-independent case folding (CaseFolding.txt C + F) with
+ * the NTFS upcase merges: a Basic Multilingual Plane code point whose simple
+ * uppercase is one BMP code point and folds differently from it folds as
+ * that uppercase does.
+ */
 function fold(text: string): string {
-  const table = getFoldTable();
   let out = "";
   for (const char of text) {
-    const codePoint = char.codePointAt(0);
-    out += (codePoint === undefined ? undefined : table.get(codePoint)) ?? char;
+    let folded = caseFold(char);
+    const upper = char.toUpperCase();
+    if (char.length === 1 && upper.length === 1 && upper !== char) {
+      const upperFolded = caseFold(upper);
+      if (upperFolded !== folded) folded = upperFolded;
+    }
+    out += folded;
   }
   return out;
 }
@@ -35,11 +30,10 @@ function fold(text: string): string {
  * share a key. Separators, whitespace and dots are preserved.
  *
  * Must match internal/pathkey (Go) exactly; testdata/paths/vectors.json is the
- * shared conformance suite. The folding and normalization tables are
- * generated from the same pinned Unicode data (17.0.0) as the Go tables.
- * Normalization deliberately does not use String.prototype.normalize: its
- * tables depend on the Electron or WebView release, and a client with older
- * tables would compute a different key for characters added since.
+ * shared conformance suite. New names may only use code points assigned in
+ * Unicode 15.0 (docs/design/engine.md §6), whose normalization and case
+ * folding Unicode keeps stable, so the runtime's normalization and the
+ * case-folding package agree with Go's golang.org/x/text.
  */
 export function pathKey(path: string): string {
   return nfc(fold(nfd(path)));

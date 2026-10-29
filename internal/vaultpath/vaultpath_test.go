@@ -106,6 +106,11 @@ func TestCheckNewReportsWhichRuleFailed(t *testing.T) {
 		{name: "decomposed accent", path: "Cafe\u0301.md", errorAssertion: errorIs(vaultpath.ErrNotNFC)},
 		{name: "decomposed accent in a folder", path: "Re\u0301sume\u0301/a.md", errorAssertion: errorIs(vaultpath.ErrNotNFC)},
 		{name: "not NFC is not new", path: "Cafe\u0301.md", errorAssertion: errorIs(vaultpath.ErrNotNew)},
+		{name: "assigned in Unicode 15.0", path: "\U0001FAE8.md"},
+		{name: "assigned in Unicode 15.1", path: "\u2FFC.md", errorAssertion: errorIs(vaultpath.ErrUnassigned)},
+		{name: "assigned in Unicode 16.0", path: "notes/\u1C89.md", errorAssertion: errorIs(vaultpath.ErrUnassigned)},
+		{name: "unassigned", path: "a\u0378.md", errorAssertion: errorIs(vaultpath.ErrUnassigned)},
+		{name: "unassigned is not new", path: "a\u0378.md", errorAssertion: errorIs(vaultpath.ErrNotNew)},
 	}
 
 	for _, test := range tests {
