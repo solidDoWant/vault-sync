@@ -102,6 +102,10 @@ func TestCheckNewReportsWhichRuleFailed(t *testing.T) {
 		{name: "longest path", path: strings.Repeat(strings.Repeat("a", 254)+"/", 4) + "abcd"},
 		{name: "path one byte too long", path: strings.Repeat(strings.Repeat("a", 254)+"/", 4) + "abcde", errorAssertion: errorIs(vaultpath.ErrNewTooLong)},
 		{name: "portable rules are not new", path: "CON.md", errorAssertion: errorIs(vaultpath.ErrNotNew)},
+		{name: "composed accent", path: "Caf\u00e9.md"},
+		{name: "decomposed accent", path: "Cafe\u0301.md", errorAssertion: errorIs(vaultpath.ErrNotNFC)},
+		{name: "decomposed accent in a folder", path: "Re\u0301sume\u0301/a.md", errorAssertion: errorIs(vaultpath.ErrNotNFC)},
+		{name: "not NFC is not new", path: "Cafe\u0301.md", errorAssertion: errorIs(vaultpath.ErrNotNew)},
 	}
 
 	for _, test := range tests {

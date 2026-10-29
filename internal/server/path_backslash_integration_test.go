@@ -27,9 +27,9 @@ func requireInvalidArgument(t require.TestingT, err error, msgAndArgs ...any) {
 }
 
 // seedLegacyPath gives a live document, committed through the API, the path
-// legacy instead, as a commit accepted before the backslash (#191) or
-// drive-like prefix (#148) rule would have left it: its head revision's
-// path and its path_key.
+// legacy instead, as a commit accepted before the backslash (#191),
+// drive-like prefix (#148) or NFC rule would have left it: its head
+// revision's path and its path_key.
 func (fixture *syncFixture) seedLegacyPath(t *testing.T, head *vaultsyncv1.Revision, legacy string) *vaultsyncv1.Revision {
 	t.Helper()
 
@@ -45,6 +45,23 @@ func (fixture *syncFixture) seedLegacyPath(t *testing.T, head *vaultsyncv1.Revis
 	seeded.Path = []byte(legacy)
 
 	return seeded
+}
+
+// createLive commits a new document at path through the API. A path that is
+// not in Unicode NFC can no longer be created, so such a document is created
+// at the NFC spelling and then given path as a legacy path; both spellings
+// share one path_key.
+func (fixture *syncFixture) createLive(t *testing.T, client *syncClient, path string, content *vaultsyncv1.ContentRef) *vaultsyncv1.Revision {
+	t.Helper()
+
+	composed := pathkey.NFC(path)
+
+	head := client.mustCommit(t, client.create(t, composed, content))
+	if composed == path {
+		return head
+	}
+
+	return fixture.seedLegacyPath(t, head, path)
 }
 
 // Issue #191: "\" is a separator on Windows only, so a commit may never

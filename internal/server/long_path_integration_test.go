@@ -123,7 +123,8 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 
 	// accentedPath returns a random path ending in "é", which is 2 bytes
 	// composed (NFC) and 3 decomposed (NFD), so its NFD spelling is exactly
-	// the maximum length.
+	// the maximum length. No commit may create an NFD path, so an existing
+	// one is a legacy path (createLive).
 	accentedPath := func(t *testing.T) string {
 		t.Helper()
 
@@ -149,10 +150,10 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 
 			return path, strings.ToUpper(path)
 		}},
-		{name: "NFC and NFD", collide: true, paths: func(t *testing.T) (string, string) {
+		{name: "NFD and NFC", collide: true, paths: func(t *testing.T) (string, string) {
 			path := accentedPath(t)
 
-			return norm.NFC.String(path), norm.NFD.String(path)
+			return norm.NFD.String(path), norm.NFC.String(path)
 		}},
 		{name: "NFD and upper-case NFC", collide: true, paths: func(t *testing.T) (string, string) {
 			path := accentedPath(t)
@@ -176,7 +177,7 @@ func TestMaximumLengthPathKeyCollisions(t *testing.T) {
 			existing, other := test.paths(t)
 			require.Len(t, existing, maxNewPathBytes-strings.Count(existing, "é"))
 
-			alice.mustCommit(t, alice.create(t, existing, content))
+			fixture.createLive(t, alice, existing, content)
 
 			before := fixture.headSeq(t, alice.vaultID)
 			_, err := alice.commit(t, alice.create(t, other, content))

@@ -595,8 +595,8 @@ func TestPathKeyCollisions(t *testing.T) {
 		existing, other string
 		collide         bool
 	}{
-		{name: "NFD and NFC", existing: "Café.md", other: "café.md", collide: true},
-		{name: "NFC and NFD", existing: "café.md", other: "CAFÉ.md", collide: true},
+		{name: "NFD and NFC", existing: "Cafe\u0301.md", other: "caf\u00e9.md", collide: true},
+		{name: "upper-case NFD and NFC", existing: "CAFE\u0301.md", other: "caf\u00e9.md", collide: true},
 		{name: "identical", existing: "note.md", other: "note.md", collide: true},
 		{name: "ASCII case", existing: "Notes/Todo.md", other: "notes/TODO.MD", collide: true},
 		{name: "German sharp s", existing: "Straße.md", other: "STRASSE.md", collide: true},
@@ -612,7 +612,7 @@ func TestPathKeyCollisions(t *testing.T) {
 	for index, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			directory := fmt.Sprintf("case-%d/", index)
-			alice.mustCommit(t, alice.create(t, directory+test.existing, content))
+			fixture.createLive(t, alice, directory+test.existing, content)
 
 			before := fixture.headSeq(t, alice.vaultID)
 			_, err := alice.commit(t, alice.create(t, directory+test.other, content))

@@ -1,3 +1,4 @@
+import { nfc } from "../pathkey/normalize";
 import { pathKey } from "../pathkey/pathkey";
 
 /**
@@ -42,7 +43,8 @@ function nameProblem(name: string): PathProblem | undefined {
  * portable-name rules of docs/design/engine.md §6 on each part (`<>:"|?*`, a
  * leading or trailing space, a trailing dot, a Windows reserved name in any
  * case with or without an extension, more than {@link maxNameBytes} bytes),
- * then more than {@link maxNewPathBytes} bytes in all. The order is
+ * then more than {@link maxNewPathBytes} bytes in all, then `not-nfc` (not in
+ * Unicode NFC under the pinned tables of SPEC.md §5). The order is
  * `CheckNew`'s in internal/vaultpath (Go).
  */
 function newPathProblem(path: string): PathProblem | undefined {
@@ -54,6 +56,7 @@ function newPathProblem(path: string): PathProblem | undefined {
     if (problem !== undefined) return problem;
   }
   if (encoder.encode(path).length > maxNewPathBytes) return "path-too-long";
+  if (nfc(path) !== path) return "not-nfc";
   return undefined;
 }
 
@@ -61,7 +64,8 @@ function newPathProblem(path: string): PathProblem | undefined {
  * Reports whether a commit may create or rename a document into `path`
  * (SPEC.md §6.2): it is vault-relative, contains no "\" (decision #191),
  * does not start with one code point and a colon (decision #148), and is
- * portable (docs/design/engine.md §6; see {@link newPathProblem}). Windows
+ * portable and in Unicode NFC (docs/design/engine.md §6; see
+ * {@link newPathProblem}). Windows
  * reads "\" as a separator and other platforms as part of a name, so `a/b`
  * and `a\b` would otherwise be two live documents naming one file on
  * Windows; and Win32 reads any first character followed by ":" (`1:x.md`,
@@ -126,7 +130,7 @@ export function fitsPathKeyLimit(path: string): boolean {
  * {@link isPathText}; `not-vault-relative` is {@link isVaultRelativePath};
  * `too-long-normalized` is {@link fitsPathKeyLimit}; `backslash`,
  * `drive-prefix`, `forbidden-character`, `edge-space`, `trailing-dot`,
- * `reserved-name`, `name-too-long` and `path-too-long` are
+ * `reserved-name`, `name-too-long`, `path-too-long` and `not-nfc` are
  * {@link isNewVaultPath}'s further rules.
  */
 export type PathProblem =
@@ -142,7 +146,8 @@ export type PathProblem =
   | "trailing-dot"
   | "reserved-name"
   | "name-too-long"
-  | "path-too-long";
+  | "path-too-long"
+  | "not-nfc";
 
 /**
  * The first rule of the server's (SPEC.md §6.2) that a commit giving a

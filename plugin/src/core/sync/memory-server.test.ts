@@ -201,6 +201,15 @@ describe("InMemoryServer's path text rule (SPEC.md §6.2, #148)", () => {
     expect(await commit(server, "d", "d1", "", `${"d".repeat(254)}/`.repeat(4) + "abcde")).toBe("InvalidArgument");
   });
 
+  it("refuses to create or rename a document into a path that is not in NFC, and keeps one already there (engine.md §6)", async () => {
+    const server = new InMemoryServer();
+    expect(await commit(server, "a", "a1", "", "Cafe\u0301.md")).toBe("InvalidArgument");
+    expect(await commit(server, "a", "a1", "", "Caf\u00e9.md")).toBe("ok");
+    expect(await commit(server, "a", "a2", "a1", "Re\u0301sume\u0301/Caf\u00e9.md")).toBe("InvalidArgument");
+    const kept = server.commit({ documentId: "kept", path: "Ole\u0301.md", content: "kept" });
+    expect(await commit(server, "kept", "kept2", kept.id, "Ole\u0301.md")).toBe("ok");
+  });
+
   // U+1D160 decomposes into three 4-byte code points (testdata/paths/key.json). Only a
   // document kept at a path from before the 1024-byte limit can reach the normalized limit.
   it("refuses an edit in place of a path longer than 8192 bytes once normalized, and accepts one of exactly 8192", async () => {

@@ -41,7 +41,8 @@ func TestCommitRefusesFileFolderCollisions(t *testing.T) {
 		// document at renameFrom to renameTo (as a tombstone if
 		// renameDeletes); or resurrect the tombstoned document at
 		// resurrect. NFC and NFD forms are spelled out in the
-		// names, since the literals look alike.
+		// names, since they look alike; a live NFD path is a legacy
+		// path (createLive), as no commit may create one.
 		create               string
 		renameFrom, renameTo string
 		renameDeletes        bool
@@ -57,8 +58,8 @@ func TestCommitRefusesFileFolderCollisions(t *testing.T) {
 		{name: "file then deep descendant", live: []string{"notes"}, create: "notes/a/b/c.md", assertion: requireAlreadyExists},
 		{name: "deep descendant then top-level file", live: []string{"x/y/z.md"}, create: "x", assertion: requireAlreadyExists},
 		{name: "full case folding, ß under SS", live: []string{"straße"}, create: "STRASSE/a.md", assertion: requireAlreadyExists},
-		{name: "NFC file then NFD child", live: []string{"café"}, create: "café/a.md", assertion: requireAlreadyExists},
-		{name: "NFD child then NFC file", live: []string{"café/a.md"}, create: "CAFÉ", assertion: requireAlreadyExists},
+		{name: "NFD file then NFC child", live: []string{"cafe\u0301"}, create: "caf\u00e9/a.md", assertion: requireAlreadyExists},
+		{name: "NFD child then NFC file", live: []string{"cafe\u0301/a.md"}, create: "CAF\u00c9", assertion: requireAlreadyExists},
 		{name: "file then child of a folder below it", live: []string{"a/b"}, create: "a/b/c/d.md", assertion: requireAlreadyExists},
 
 		{name: "rename under a live file", live: []string{"notes", "other.md"}, renameFrom: "other.md", renameTo: "Notes/c.md", assertion: requireAlreadyExists},
@@ -92,7 +93,7 @@ func TestCommitRefusesFileFolderCollisions(t *testing.T) {
 			}
 
 			for _, path := range test.live {
-				heads[path] = client.mustCommit(t, client.create(t, path, content))
+				heads[path] = fixture.createLive(t, client, path, content)
 			}
 
 			var request *vaultsyncv1.CommitRevisionRequest
