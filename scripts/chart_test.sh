@@ -150,6 +150,8 @@ check "export writes to its volume" \
 
 check "export job mounts the escrow Secret read-only" \
 	"$(mounted_secret "$export_pod" /etc/vault-sync/escrow) == \"$escrow_secret\" and ($export_pod | .containers[0].volumeMounts[] | select(.mountPath == \"/etc/vault-sync/escrow\") | .readOnly) == true"
+check "export job reads the escrow identity from the mounted Secret" \
+	"$(env_value "$export_pod" VAULT_SYNC_ESCROW_IDENTITY_FILE) == \"/etc/vault-sync/escrow/escrow.key\" and ([$server | .containers[0].env[] | select(.name == \"VAULT_SYNC_ESCROW_IDENTITY_FILE\")] | length) == 0"
 check "the server Deployment never names the escrow Secret" \
 	"[$deployment | .. | strings | select(contains(\"$escrow_secret\"))] | length == 0"
 check "nothing but the export CronJob names the escrow Secret" \
@@ -304,8 +306,13 @@ documented_vars="$(grep -oE '^\| `VAULT_SYNC_[A-Z0-9_]+`' "$repo_root/docs/confi
 if [[ -z $documented_vars ]]; then
 	fail "found the environment variables in docs/configuration.md"
 fi
+# The escrow identity is the export job's only, so it is looked for there.
 for var in $documented_vars; do
-	check "the chart can set $var" "[$server | .containers[0].env[] | select(.name == \"$var\")] | length == 1"
+	pod="$server"
+	if [[ $var == VAULT_SYNC_ESCROW_IDENTITY_FILE ]]; then
+		pod="$export_pod"
+	fi
+	check "the chart can set $var" "[$pod | .containers[0].env[] | select(.name == \"$var\")] | length == 1"
 done
 
 # Every config value must be documented in docs/deployment.md.

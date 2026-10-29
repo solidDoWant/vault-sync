@@ -122,6 +122,31 @@ func AgeIdentity(privateKey []byte) (string, error) {
 	return strings.ToUpper(encoded), nil
 }
 
+// ParseAgeIdentity returns the hybrid private key of an age hybrid identity
+// string (AGE-SECRET-KEY-PQ-1…). age validates the string first, so only an
+// identity age itself accepts is decoded; any other string is refused.
+func ParseAgeIdentity(encoded string) ([]byte, error) {
+	if _, err := age.ParseHybridIdentity(encoded); err != nil {
+		return nil, fmt.Errorf("e2ee: %w", err)
+	}
+
+	_, words, err := bech32.DecodeNoLimit(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: invalid age identity: %w", err)
+	}
+
+	privateKey, err := bech32.ConvertBits(words, 5, 8, false)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: invalid age identity: %w", err)
+	}
+
+	if len(privateKey) != PrivateKeySize {
+		return nil, fmt.Errorf("e2ee: private key must be %d bytes, got %d", PrivateKeySize, len(privateKey))
+	}
+
+	return privateKey, nil
+}
+
 // SealTo encrypts plaintext to a hybrid public key as a binary age file with
 // a single mlkem768x25519 recipient stanza (age's hybrid post-quantum
 // recipient type).

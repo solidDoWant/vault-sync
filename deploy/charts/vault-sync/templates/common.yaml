@@ -200,7 +200,9 @@
    server. */}}
 {{- $escrowSecretName := $config.export.escrow.secretName | default "" -}}
 {{- if and $escrowSecretName $exportEnabled -}}
-  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController)) -}}
+  {{- $escrowKey := $config.export.escrow.key | default "escrow.key" -}}
+  {{- $_ := set $secretMounts "escrow" (dict "secretName" $escrowSecretName "path" (printf "%s/escrow" $mountRoot) "controllers" (list $exportController) "keys" (list $escrowKey)) -}}
+  {{- $_ := set $exportEnv "VAULT_SYNC_ESCROW_IDENTITY_FILE" (printf "%s/escrow/%s" $mountRoot $escrowKey) -}}
 {{- end -}}
 
 {{/* ============================================================ */}}

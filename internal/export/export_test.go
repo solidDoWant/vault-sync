@@ -106,7 +106,7 @@ func TestExportMirrorsEveryVaultsLiveDocuments(t *testing.T) {
 		{ID: notes, Name: "Notes", Encryption: "none", HeadSeq: 42, Files: 7, Bytes: int64(4 + 5 + 8 + len(binary) + 0 + 23 + 2)},
 		{ID: work, Name: "Notes", Encryption: "none", HeadSeq: 42, Files: 1, Bytes: 6},
 		{ID: empty, Name: "Empty", Encryption: "none", HeadSeq: 42},
-		{ID: secret, Name: "Secret", Encryption: "e2ee", HeadSeq: 42, Skipped: export.SkippedE2EE},
+		{ID: secret, Name: "Secret", Encryption: "e2ee", HeadSeq: 42, Skipped: export.SkippedNoEscrow},
 	}, summary.VaultDetails)
 
 	assert.Equal(t, []string{".out.lock", "out"}, space.siblings(t), "no staging directory is left behind")

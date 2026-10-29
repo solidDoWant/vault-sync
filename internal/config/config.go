@@ -5,9 +5,11 @@ package config
 import (
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/url"
+	"os"
 	"slices"
 	"strconv"
 	"strings"
@@ -41,6 +43,7 @@ const (
 	OIDCClientIDEnv             = "VAULT_SYNC_OIDC_CLIENT_ID"
 	EscrowRecipientEnv          = "VAULT_SYNC_ESCROW_RECIPIENT"
 	EscrowDefaultEnv            = "VAULT_SYNC_ESCROW_DEFAULT"
+	EscrowIdentityFileEnv       = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
@@ -455,6 +458,57 @@ type ExportConfig struct {
 	S3 blobstore.Config
 	// LogLevel is the minimum level logged.
 	LogLevel slog.Level
+	// EscrowIdentities are the hybrid private keys of the escrow
+	// identities in EscrowIdentityFileEnv, in file order; none when it is
+	// unset.
+	EscrowIdentities [][]byte
+}
+
+// maxEscrowIdentityFileBytes bounds the escrow identity file: a few
+// identities of about 90 characters each, with comments.
+const maxEscrowIdentityFileBytes = 64 << 10
+
+// loadEscrowIdentities reads an age identity file: one AGE-SECRET-KEY-PQ-1…
+// identity per line, with blank lines and lines starting with "#" (as
+// age-keygen writes) ignored. Problems never quote the file's content.
+func loadEscrowIdentities(path string) ([][]byte, error) {
+	file, err := os.Open(path) //nolint:gosec // the operator's configured path.
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EscrowIdentityFileEnv, err)
+	}
+
+	defer func() { _ = file.Close() }()
+
+	content, err := io.ReadAll(io.LimitReader(file, maxEscrowIdentityFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EscrowIdentityFileEnv, err)
+	}
+
+	if len(content) > maxEscrowIdentityFileBytes {
+		return nil, fmt.Errorf("%s: the file is larger than %d bytes", EscrowIdentityFileEnv, maxEscrowIdentityFileBytes)
+	}
+
+	var identities [][]byte
+
+	for number, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+
+		privateKey, err := e2ee.ParseAgeIdentity(line)
+		if err != nil {
+			return nil, fmt.Errorf("%s: line %d is not an age hybrid post-quantum identity (AGE-SECRET-KEY-PQ-1…)", EscrowIdentityFileEnv, number+1)
+		}
+
+		identities = append(identities, privateKey)
+	}
+
+	if len(identities) == 0 {
+		return nil, fmt.Errorf("%s: the file holds no identity", EscrowIdentityFileEnv)
+	}
+
+	return identities, nil
 }
 
 // LoadExport reads the export configuration through lookup, like Load. The
@@ -493,6 +547,15 @@ func LoadExport(lookup func(string) (string, bool)) (ExportConfig, error) {
 		problems = append(problems, fmt.Errorf("%s and the other VAULT_SYNC_S3_* variables are required: the export reads blob contents from S3", S3BucketEnv))
 	} else {
 		cfg.S3 = *s3
+	}
+
+	if path := get(EscrowIdentityFileEnv); path != "" {
+		identities, err := loadEscrowIdentities(path)
+		if err != nil {
+			problems = append(problems, err)
+		}
+
+		cfg.EscrowIdentities = identities
 	}
 
 	if err := errors.Join(problems...); err != nil {

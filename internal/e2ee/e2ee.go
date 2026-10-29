@@ -174,6 +174,47 @@ func BlobID(blobIDSecret, plaintext []byte) ([]byte, error) {
 	return mac(blobIDSecret, plaintext)
 }
 
+// The labels of the associated data of paths and contents.
+const (
+	pathADLabel    = "vault-sync/v1/path"
+	contentADLabel = "vault-sync/v1/content"
+)
+
+// PathAD returns the associated data a revision's path is sealed with
+// (docs/design/crypto.md): "vault-sync/v1/path" || vault_id (16) ||
+// document_id (16) || epoch (u64 BE), where epoch is the revision's. Both
+// ids must be canonical lowercase UUIDs.
+func PathAD(vaultID, documentID string, epoch uint64) ([]byte, error) {
+	vault, err := canonicalUUID(vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: vault id: %w", err)
+	}
+
+	document, err := canonicalUUID(documentID)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: document id: %w", err)
+	}
+
+	ad := slices.Concat([]byte(pathADLabel), vault, document)
+
+	return binary.BigEndian.AppendUint64(ad, epoch), nil
+}
+
+// ContentAD returns the associated data a revision's content is sealed with
+// (docs/design/crypto.md): "vault-sync/v1/content" || vault_id (16) ||
+// epoch (u64 BE), where epoch is the revision's. It binds no document, so
+// equal contents of two documents share one blob.
+func ContentAD(vaultID string, epoch uint64) ([]byte, error) {
+	vault, err := canonicalUUID(vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: vault id: %w", err)
+	}
+
+	ad := slices.Concat([]byte(contentADLabel), vault)
+
+	return binary.BigEndian.AppendUint64(ad, epoch), nil
+}
+
 func mac(secret, data []byte) ([]byte, error) {
 	if len(secret) != KeySize {
 		return nil, fmt.Errorf("e2ee: secret must be %d bytes, got %d", KeySize, len(secret))

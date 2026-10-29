@@ -307,3 +307,31 @@ func TestPathKeyIgnoresCaseAndNormalization(t *testing.T) {
 	assert.NotEqual(t, lower, other)
 	assert.Len(t, lower, e2ee.MACSize)
 }
+
+func TestPathADAndContentADFollowTheDocumentedLayout(t *testing.T) {
+	const (
+		vaultID    = "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e"
+		documentID = "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f"
+	)
+
+	vault := []byte{0x01, 0x90, 0xd6, 0xe4, 0x8c, 0x1e, 0x7a, 0x3b, 0x9d, 0x2f, 0x5e, 0x6a, 0x7b, 0x8c, 0x9d, 0x0e}
+	document := []byte{0x01, 0x90, 0xd6, 0xe4, 0x8c, 0x1e, 0x7a, 0x3b, 0x9d, 0x2f, 0x5e, 0x6a, 0x7b, 0x8c, 0x9d, 0x0f}
+	epoch := []byte{0, 0, 0, 0, 0, 0, 0x01, 0x02}
+
+	pathAD, err := e2ee.PathAD(vaultID, documentID, 0x0102)
+	require.NoError(t, err)
+	assert.Equal(t, slices.Concat([]byte("vault-sync/v1/path"), vault, document, epoch), pathAD)
+
+	contentAD, err := e2ee.ContentAD(vaultID, 0x0102)
+	require.NoError(t, err)
+	assert.Equal(t, slices.Concat([]byte("vault-sync/v1/content"), vault, epoch), contentAD)
+
+	_, err = e2ee.PathAD("0190D6E4-8C1E-7A3B-9D2F-5E6A7B8C9D0E", documentID, 1)
+	require.Error(t, err)
+
+	_, err = e2ee.PathAD(vaultID, "not-a-uuid", 1)
+	require.Error(t, err)
+
+	_, err = e2ee.ContentAD("", 1)
+	require.Error(t, err)
+}
