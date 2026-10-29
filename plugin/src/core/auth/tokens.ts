@@ -10,6 +10,13 @@ export type AuthState = "signed-out" | "signed-in" | "sign-in-required";
 export interface TokenManagerOptions {
   /** The stored refresh token, if the device signed in before. */
   refreshToken?: string;
+  /**
+   * The device was signed in, but its stored refresh token is gone (the
+   * device-local storage holding it was cleared). Without `refreshToken`, the
+   * manager then starts in `sign-in-required`, as after a revoked token,
+   * instead of `signed-out`.
+   */
+  signInRequired?: boolean;
   /** Exchanges a refresh token for new tokens (refreshAccessToken bound to the provider). */
   refresh: (refreshToken: string) => Promise<TokenSet>;
   /**
@@ -40,8 +47,8 @@ interface CachedToken {
 const defaultRefreshMarginMs = 60_000;
 
 /**
- * Holds the device's tokens (SPEC.md §9.1): the refresh token, persisted in
- * plugin data, and the current access token, in memory only. accessToken()
+ * Holds the device's tokens (SPEC.md §9.1): the refresh token, persisted on
+ * the device with `persist`, and the current access token, in memory only. accessToken()
  * refreshes ahead of expiry, and concurrent callers share one refresh. A
  * refresh refused with `invalid_grant` drops the refresh token and moves to
  * `sign-in-required`; nothing else (in particular no local change) is
@@ -64,7 +71,7 @@ export class TokenManager {
 
   constructor(options: TokenManagerOptions) {
     this.refreshToken = options.refreshToken === "" ? undefined : options.refreshToken;
-    this.current = this.refreshToken === undefined ? "signed-out" : "signed-in";
+    this.current = this.refreshToken !== undefined ? "signed-in" : options.signInRequired === true ? "sign-in-required" : "signed-out";
     this.refresh = options.refresh;
     this.persist = options.persist;
     this.onStateChange = options.onStateChange ?? (() => undefined);

@@ -9,6 +9,7 @@ import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
+import { loadRefreshToken, refreshTokenLost, savePluginData } from "./obsidian/token-storage";
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
@@ -59,6 +60,13 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   override async onload(): Promise<void> {
     console.debug(`vault-sync loaded (protocol v${String(PROTOCOL_VERSION)})`);
     this.data = parsePluginData(await this.loadData());
+    if (loadRefreshToken(this.data, this.app)) {
+      // data.json still holds the refresh token: move it to local storage.
+      // If this fails, the token stays in memory and the next save moves it.
+      await this.saveSettings().catch((error: unknown) => {
+        console.warn(`vault-sync: could not move the refresh token out of data.json: ${error instanceof Error ? error.message : String(error)}`);
+      });
+    }
     this.tokens = this.createTokenManager();
     const viewerMode = new ViewerMode(this);
     this.controller = new SyncController({
@@ -191,14 +199,14 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     return this.saveQueued();
   }
 
-  private readonly saveQueued = serialized(() => this.saveData(this.data));
+  private readonly saveQueued = serialized(() => savePluginData(this.data, this.app, (file) => this.saveData(file)));
 
   /**
    * Signs in with the OAuth device flow (SPEC.md §9.1): checks that the
    * server speaks a compatible protocol and takes the identity provider it
    * advertises (the settings may override it), shows the verification URL and user
    * code in a dialog, polls the identity provider, and stores the refresh
-   * token in plugin data. Resolves whether the sign-in succeeded; closing the
+   * token in device-local storage. Resolves whether the sign-in succeeded; closing the
    * dialog cancels it and leaves the state as it was. A signed-in device must
    * sign out first: that is what unlocks the server and identity provider
    * settings, which also stay locked while the sign-in runs. Sync starts once
@@ -526,6 +534,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     const stored = options.stored ? this.data.refreshToken : undefined;
     return new TokenManager({
       ...(stored === undefined ? {} : { refreshToken: stored }),
+      signInRequired: options.stored && refreshTokenLost(this.data),
       refresh: oidcRefresher(requestUrlHttpClient, config),
       persist: (refreshToken) => persistRefreshToken(this.data, refreshToken, options.provider, () => this.saveSettings()),
       onStateChange: (state) => {
