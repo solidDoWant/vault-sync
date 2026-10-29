@@ -413,3 +413,18 @@ func (vault *VaultStore) BlobUploadActiveWithin(ctx context.Context, blobID []by
 
 	return active, nil
 }
+
+// RecordCompleteBlob records blobID as a complete blob of size bytes, without
+// an upload session. Call it only once the blob's object is in place.
+// Recording an already-complete blob changes nothing.
+func (vault *VaultStore) RecordCompleteBlob(ctx context.Context, blobID []byte, size int64) error {
+	_, err := vault.store.pool.Exec(ctx, `
+		INSERT INTO blobs (vault_id, blob_id, size, state) VALUES ($1, $2, $3, 'complete')
+		ON CONFLICT (vault_id, blob_id) DO UPDATE SET state = 'complete', size = EXCLUDED.size
+			WHERE blobs.state <> 'complete'`, vault.vaultID, blobID, size)
+	if err != nil {
+		return fmt.Errorf("record complete blob: %w", err)
+	}
+
+	return nil
+}

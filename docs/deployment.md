@@ -10,7 +10,7 @@ What you deploy:
 
 ## The image
 
-`ghcr.io/soliddowant/vault-sync:<version>` holds one static binary, `/bin/vault-sync-server`, and CA roots: no shell and no package manager. It runs as user and group `65532` and needs no writable path except, for the export, its output volume. The same image runs the server (no arguments) and the export (`export -out DIR`).
+`ghcr.io/soliddowant/vault-sync:<version>` holds one static binary, `/bin/vault-sync-server`, and CA roots: no shell and no package manager. It runs as user and group `65532` and needs no writable path except, for the export, its output volume. The same image runs the server (no arguments), the export (`export -out DIR`) and the Markdown import (`import VAULT_ID DIR`, see [import.md](import.md)).
 
 It is built reproducibly with Nix (`nix/server.nix`, `nix/server-image.nix`, `dockerTools.streamLayeredImage`), with the flake's pinned Go toolchain, and every build checks the binary with `govulncheck -mode=binary` (see [Releasing](#releasing)).
 
