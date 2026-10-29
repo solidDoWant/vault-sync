@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
@@ -491,6 +492,125 @@ func TestVaultAlwaysKeepsAnOwnerAgainstPostgres(t *testing.T) {
 			vaultID, userID(t, fixture.pool, fixture.issuer.URL, "bob"), userID(t, fixture.pool, fixture.issuer.URL, "carol"))
 		require.NoError(t, err)
 	}
+}
+
+// A member's pending invitations end with their ownership: removing them,
+// their leaving, or demoting them deletes the invitations they created, so a
+// former owner cannot redeem one to get back in. A current owner's
+// invitations are unaffected.
+func TestFormerOwnersInvitationsCannotBeRedeemedAgainstPostgres(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+	alice := fixture.token(t, "alice")
+	vaultID := fixture.createVault(t, alice, "Shared").GetId()
+
+	pendingIDs := func(t *testing.T) []string {
+		t.Helper()
+
+		listed, err := fixture.members(1).ListInvitations(t.Context(), authorized(&vaultsyncv1.ListInvitationsRequest{VaultId: vaultID}, alice))
+		require.NoError(t, err)
+
+		ids := []string{}
+		for _, invitation := range listed.Msg.GetInvitations() {
+			ids = append(ids, invitation.GetId())
+		}
+
+		return ids
+	}
+
+	// joinAsOwnerWithBackdoor makes subject an owner who then creates an
+	// owner invitation of their own, and returns that invitation.
+	joinAsOwnerWithBackdoor := func(t *testing.T, subject string) (string, *vaultsyncv1.CreateInvitationResponse) {
+		t.Helper()
+
+		token := fixture.token(t, subject)
+		_, err := fixture.redeem(t, token, fixture.mustInvite(t, alice, vaultID, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER).GetCode())
+		require.NoError(t, err)
+
+		backdoor, err := fixture.invite(t, token, vaultID, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, 30*24*3600)
+		require.NoError(t, err)
+
+		return token, backdoor
+	}
+
+	tests := []struct {
+		name string
+		// lose takes the owner's ownership away, leaving token either a
+		// non-member or a member who is not an owner.
+		lose func(t *testing.T, subject, token string)
+	}{
+		{
+			name: "removed by another owner",
+			lose: func(t *testing.T, subject, _ string) {
+				t.Helper()
+				require.NoError(t, fixture.removeMember(t, alice, vaultID, subject))
+			},
+		},
+		{
+			name: "left the vault",
+			lose: func(t *testing.T, _, token string) {
+				t.Helper()
+				require.NoError(t, fixture.leave(t, token, vaultID))
+			},
+		},
+		{
+			name: "demoted to editor",
+			lose: func(t *testing.T, subject, _ string) {
+				t.Helper()
+				require.NoError(t, fixture.setRole(t, alice, vaultID, subject, vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR))
+			},
+		},
+		{
+			name: "demoted to viewer, then left",
+			lose: func(t *testing.T, subject, token string) {
+				t.Helper()
+				require.NoError(t, fixture.setRole(t, alice, vaultID, subject, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER))
+				require.NoError(t, fixture.leave(t, token, vaultID))
+			},
+		},
+	}
+
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			// A current owner's invitation, created before the change.
+			kept := fixture.mustInvite(t, alice, vaultID, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER)
+
+			subject := fmt.Sprintf("mallory-%d", index)
+			token, backdoor := joinAsOwnerWithBackdoor(t, subject)
+			require.Contains(t, pendingIDs(t), backdoor.GetInvitation().GetId())
+
+			test.lose(t, subject, token)
+
+			assert.NotContains(t, pendingIDs(t), backdoor.GetInvitation().GetId(), "a former owner's invitation is no longer listed")
+			assert.Contains(t, pendingIDs(t), kept.GetInvitation().GetId(), "a current owner's invitation is kept")
+
+			role := fixture.roleIn(t, token, vaultID)
+			assert.NotEqual(t, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, role)
+
+			_, err := fixture.redeem(t, token, backdoor.GetCode())
+			requireCode(t, connect.CodeNotFound, err)
+			assert.Equal(t, role, fixture.roleIn(t, token, vaultID), "the former owner's role is unchanged")
+
+			// Nobody else can use the code either.
+			outsider := fixture.token(t, fmt.Sprintf("outsider-%d", index))
+			_, err = fixture.redeem(t, outsider, backdoor.GetCode())
+			requireCode(t, connect.CodeNotFound, err)
+
+			// The current owner's invitation still works.
+			joined, err := fixture.redeem(t, outsider, kept.GetCode())
+			require.NoError(t, err)
+			assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER, joined.GetRole())
+		})
+	}
+
+	// Setting an owner's role to owner is not a demotion and
+	// keeps their invitations.
+	token, invitation := joinAsOwnerWithBackdoor(t, "trent")
+	require.NoError(t, fixture.setRole(t, alice, vaultID, "trent", vaultsyncv1.VaultRole_VAULT_ROLE_OWNER))
+	assert.Contains(t, pendingIDs(t), invitation.GetInvitation().GetId())
+	assert.Equal(t, vaultsyncv1.VaultRole_VAULT_ROLE_OWNER, fixture.roleIn(t, token, vaultID))
+
+	_, err := fixture.redeem(t, fixture.token(t, "peggy"), invitation.GetCode())
+	require.NoError(t, err)
 }
 
 // Invitations and memberships are bounded (SPEC.md §2, principle 4).
