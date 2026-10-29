@@ -33,28 +33,17 @@ describe("Platform path rules", function () {
     // Linux and the app runs in an emulator.
     const platform = await obsidianPage.getPlatform();
     expect(platform.isAndroidApp).toBe(e2eEnvironment.android);
-    let path: string;
-    let reason: string;
-    if (platform.isWin) {
-      // Windows rules: a reserved device name. POSIX rules would let the engine write it.
-      path = "CON.md";
-      reason = "reserved-name";
-    } else if (platform.isAndroidApp) {
-      // Android's rules: shared storage's character set. The vault is in the
-      // app's own storage, which would hold the name, so only the rules
-      // refuse it. Obsidian exposes no vault folder path there to count.
-      expect(await callHarness("vaultBasePath")).toBeNull();
-      path = "Meeting: notes.md";
-      reason = "forbidden-character";
-    } else {
-      const root = await callHarness("vaultBasePath");
-      expect(root).not.toBeNull();
-      // PATH_MAX less its terminator: 1023 bytes on macOS, 4095 on Linux.
-      const pathMax = platform.isMacOS ? 1023 : 4095;
-      path = pathOfLength(pathMax);
-      expect(new TextEncoder().encode(path).length + new TextEncoder().encode(root ?? "").length + 1).toBeGreaterThan(pathMax);
-      reason = "path-too-long";
-    }
+    // The server accepts only portable paths of at most 1024 bytes (engine.md §6), so only
+    // a path too long for the device once its vault folder is counted is one the rules refuse.
+    // Linux (PATH_MAX 4096) and Android hold every such path.
+    if (!platform.isWin && !platform.isMacOS) this.skip();
+    const root = await callHarness("vaultBasePath");
+    expect(root).not.toBeNull();
+    // Windows: MAX_PATH, 260 UTF-16 code units less its terminator; macOS: PATH_MAX, 1023 bytes.
+    const pathMax = platform.isWin ? 259 : 1023;
+    const path = pathOfLength(pathMax);
+    expect(new TextEncoder().encode(path).length + new TextEncoder().encode(root ?? "").length + 1).toBeGreaterThan(pathMax);
+    const reason = "path-too-long";
     await callHarness("commitRemote", "doc-platform", path, "a path this device cannot hold\n");
     await callHarness("startSession");
 
