@@ -154,3 +154,35 @@ func TestReadEscrowIdentityFile(t *testing.T) {
 		})
 	}
 }
+
+func TestMainEscrowImportNeedsGenesis(t *testing.T) {
+	genesis := strings.Repeat("ab", 32)
+
+	for _, test := range []struct {
+		name    string
+		flags   []string
+		message string
+	}{
+		{name: "escrow identity file without -genesis", flags: []string{"-escrow-identity-file", "a"}, message: "needs -genesis"},
+		{name: "escrow prompt without -genesis", flags: []string{"-escrow"}, message: "needs -genesis"},
+		{name: "a -genesis of 31 bytes", flags: []string{"-escrow", "-genesis", genesis[:62]}, message: "not a genesis hash"},
+		{name: "a -genesis that is not hexadecimal", flags: []string{"-escrow", "-genesis", strings.Repeat("zz", 32)}, message: "not a genesis hash"},
+		{name: "-genesis with the passphrase", flags: []string{"-passphrase-file", "a", "-genesis", genesis}, message: "only for the escrow import"},
+	} {
+		t.Run(test.name+" is refused", func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+
+			code := vaultimport.Main(t.Context(), append(test.flags, "https://sync.example.com", "0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12", t.TempDir()),
+				func(string) (string, bool) { return "", false }, &stdout, &stderr)
+
+			assert.Equal(t, 2, code)
+			assert.Contains(t, stderr.String(), test.message)
+		})
+	}
+}
+
+func TestParseGenesisHash(t *testing.T) {
+	hash, err := vaultimport.ParseGenesisHash(" " + strings.Repeat("AB:", 31) + "ab ")
+	require.NoError(t, err)
+	assert.Equal(t, bytes.Repeat([]byte{0xab}, 32), hash)
+}

@@ -88,6 +88,7 @@ func createEscrowedVault(t *testing.T, server *instance, member *encryptedMember
 
 	member.userID = userID.String()
 	member.epochKeys = map[uint64][]byte{}
+	member.anchorVault(t, server, log)
 
 	keys := vaultsyncv1connect.NewVaultKeyServiceClient(httpClient, server.apiURL)
 
@@ -190,7 +191,7 @@ func TestImportIntoAnEscrowedVault(t *testing.T) {
 		// path keys under epoch 1's path_key_secret.
 		vault := createEscrowedVault(t, server, member, escrow, "Escrowed", 2)
 
-		code, report, logs := cluster.importFolderWithLogs(t, binary, server, flow, "alice", vault.GetId(), source, "-escrow-identity-file", identityFile)
+		code, report, logs := cluster.importFolderWithLogs(t, binary, server, flow, "alice", vault.GetId(), source, "-escrow-identity-file", identityFile, "-genesis", member.genesis(vault.GetId()))
 		importLogs += logs
 
 		require.Equal(t, vaultimport.StatusOK, report.Status, report.Error)
@@ -206,12 +207,26 @@ func TestImportIntoAnEscrowedVault(t *testing.T) {
 		wrongFile := filepath.Join(t.TempDir(), "wrong-identity.txt")
 		require.NoError(t, os.WriteFile(wrongFile, []byte(retiring.identity+"\n"), 0o600))
 
-		code, report, logs := cluster.importFolderWithLogs(t, binary, server, flow, "alice", vault.GetId(), source, "-escrow-identity-file", wrongFile)
+		code, report, logs := cluster.importFolderWithLogs(t, binary, server, flow, "alice", vault.GetId(), source, "-escrow-identity-file", wrongFile, "-genesis", member.genesis(vault.GetId()))
 		importLogs += logs
 
 		assert.Equal(t, 1, code)
 		assert.Equal(t, vaultimport.StatusFailed, report.Status)
 		assert.Contains(t, report.Error, "escrow identity file does not hold")
+		assert.Empty(t, member.decryptAll(t, server, vault.GetId()))
+	})
+
+	t.Run("P4-20 an escrow import given another vault's genesis imports nothing", func(t *testing.T) {
+		other := createEscrowedVault(t, server, member, escrow, "Other", 1)
+		vault := createEscrowedVault(t, server, member, escrow, "Wrong genesis", 1)
+
+		code, report, logs := cluster.importFolderWithLogs(t, binary, server, flow, "alice", vault.GetId(), source,
+			"-escrow-identity-file", identityFile, "-genesis", member.genesis(other.GetId()))
+		importLogs += logs
+
+		assert.Equal(t, 1, code)
+		assert.Equal(t, vaultimport.StatusFailed, report.Status)
+		assert.Contains(t, report.Error, "doesn't verify")
 		assert.Empty(t, member.decryptAll(t, server, vault.GetId()))
 	})
 

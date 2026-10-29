@@ -44,6 +44,33 @@ type encryptedMember struct {
 	epochKeys map[uint64][]byte
 	// allEpochKeys are the epoch keys of every vault created.
 	allEpochKeys [][]byte
+	// anchors are the genesis hashes of every vault created, in the
+	// member's sealed anchor list at anchorVersion.
+	anchors       []e2ee.Anchor
+	anchorVersion uint64
+}
+
+// anchorVault adds the vault whose log is log to the member's anchor list
+// and stores the list, as the creator's plugin device does.
+func (member *encryptedMember) anchorVault(t *testing.T, server *instance, log *logtest.Log) {
+	t.Helper()
+
+	genesisHash, err := log.Entries[0].Hash()
+	require.NoError(t, err)
+
+	anchorKey, err := e2ee.AnchorKey(member.privateKey)
+	require.NoError(t, err)
+
+	member.anchors = append(member.anchors, e2ee.Anchor{VaultID: log.VaultID, GenesisHash: genesisHash})
+	member.anchorVersion++
+
+	sealed, err := e2ee.SealAnchorList(anchorKey, member.userID, member.anchorVersion, member.anchors)
+	require.NoError(t, err)
+
+	_, err = vaultsyncv1connect.NewUserKeyServiceClient(httpClient, server.apiURL).PutAnchorList(t.Context(), authorized(&vaultsyncv1.PutAnchorListRequest{
+		Version: member.anchorVersion, SealedList: sealed,
+	}, member.token))
+	require.NoError(t, err)
 }
 
 // newEncryptedMember creates a user key for the user of token, wrapped under
@@ -105,6 +132,7 @@ func createEncryptedVault(t *testing.T, server *instance, member *encryptedMembe
 	vault := response.Msg.GetVault()
 	member.userID = userID.String()
 	member.epochKeys = map[uint64][]byte{}
+	member.anchorVault(t, server, log)
 
 	keys := vaultsyncv1connect.NewVaultKeyServiceClient(httpClient, server.apiURL)
 
@@ -459,4 +487,16 @@ func TestImportIntoAnEncryptedVault(t *testing.T) {
 		// carry the passphrase or a key either.
 		assertNoSecrets(t, "the import's logs", []byte(importLogs), member.secretNeedles(t))
 	})
+}
+
+// genesis returns the genesis hash of vaultID, as the plugin shows it for
+// -genesis (hexadecimal).
+func (member *encryptedMember) genesis(vaultID string) string {
+	for _, anchor := range member.anchors {
+		if anchor.VaultID == vaultID {
+			return hex.EncodeToString(anchor.GenesisHash)
+		}
+	}
+
+	return ""
 }
