@@ -105,8 +105,8 @@ export function forgetEncryptionKeys(data: PluginData): boolean {
 
 /**
  * The epoch key store of `vaultId` for `account`, in the device's plugin
- * data (data.json, never synced). Keys cached for another account or vault
- * are not read, and are replaced by the first save.
+ * data (saved to device-local storage, never to data.json). Keys cached for
+ * another account or vault are not read, and are replaced by the first save.
  */
 export function pluginDataEpochKeyStore(data: PluginData, save: () => Promise<void>, account: Account, vaultId: string): EpochKeyStore {
   return {

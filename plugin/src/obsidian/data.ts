@@ -15,7 +15,7 @@ export interface PluginData {
   /**
    * Secret: the device's refresh token (SPEC.md §9.1). Absent when signed
    * out. Never logged or shown. Saved to device-local storage, never to
-   * `data.json` (token-storage.ts); read from `data.json` only to move it.
+   * `data.json` (device-storage.ts); read from `data.json` only to move it.
    */
   refreshToken?: string;
   /** The identity provider the refresh token belongs to, as resolved at sign-in, so refreshing never depends on reaching the server. Kept while signed in. */
@@ -42,16 +42,18 @@ export interface PluginData {
   /**
    * Secret: the user's unlocked end-to-end encryption key pair (SPEC.md
    * §9.3), cached on this device after it was created or unlocked with the
-   * recovery passphrase, for the account it belongs to. Kept only here,
-   * never synced, logged or shown; dropped on sign-out.
+   * recovery passphrase, for the account it belongs to. Saved to
+   * device-local storage, never to `data.json` (device-storage.ts); read
+   * from `data.json` only to move it. Never synced, logged or shown;
+   * dropped on sign-out.
    */
   userKey?: CachedUserKey;
   /**
    * Secret: the epoch keys of the connected end-to-end encrypted vault
    * (SPEC.md §9.3), unwrapped from the user's key slots and checked against
-   * their key commitments, for the account and vault they belong to. Kept
-   * only here, never synced, logged or shown; dropped on sign-out with
-   * `userKey`.
+   * their key commitments, for the account and vault they belong to. Saved
+   * to device-local storage like `userKey`, never to `data.json`. Never
+   * synced, logged or shown; dropped on sign-out with `userKey`.
    */
   vaultKeys?: CachedVaultKeys;
 }
@@ -151,8 +153,8 @@ export function parsePluginData(raw: unknown): PluginData {
   if (vault !== undefined) data.vault = vault;
   const configSync = parseConfigSync(stored.configSync);
   if (configSync !== undefined) data.configSync = configSync;
-  const userKey = record(stored.userKey, ["publicKey", "privateKey", "serverUrl", "issuer", "subject"]);
-  if (userKey !== undefined && hexPublicKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey)) data.userKey = userKey;
+  const userKey = parseUserKey(stored.userKey);
+  if (userKey !== undefined) data.userKey = userKey;
   const vaultKeys = parseVaultKeys(stored.vaultKeys);
   if (vaultKeys !== undefined) data.vaultKeys = vaultKeys;
   return data;
@@ -171,8 +173,14 @@ const hexPublicKey = /^(?:[0-9a-f]{64}|[0-9a-f]{2432})$/;
 /** A positive epoch number in decimal, without leading zeros. */
 const epochNumber = /^[1-9][0-9]{0,9}$/;
 
+/** A stored user key pair, or undefined if it is malformed (the device is then locked). */
+export function parseUserKey(raw: unknown): CachedUserKey | undefined {
+  const userKey = record(raw, ["publicKey", "privateKey", "serverUrl", "issuer", "subject"]);
+  return userKey !== undefined && hexPublicKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey) ? userKey : undefined;
+}
+
 /** Stored epoch keys; a malformed entry is dropped (the device unwraps that epoch's slot again). */
-function parseVaultKeys(raw: unknown): CachedVaultKeys | undefined {
+export function parseVaultKeys(raw: unknown): CachedVaultKeys | undefined {
   const owner = record(raw, ["serverUrl", "issuer", "subject", "vaultId"]);
   if (owner === undefined) return undefined;
   const stored = (raw as Record<string, unknown>).epochs;

@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { parsePluginData, persistRefreshToken, type PluginData } from "./data";
-import { loadRefreshToken, refreshTokenLost, savePluginData, type DeviceStorage } from "./token-storage";
+import { forgetEncryptionKeys } from "./encryption";
+import { loadDeviceSecrets, refreshTokenLost, savePluginData, type DeviceStorage } from "./device-storage";
 
 /** Obsidian's local storage and the plugin's data.json, in memory. */
 function device(initial: { file?: unknown; local?: Record<string, unknown> } = {}) {
@@ -19,10 +20,10 @@ function device(initial: { file?: unknown; local?: Record<string, unknown> } = {
       disk.file = structuredClone(file);
       return Promise.resolve();
     });
-  /** Loads the plugin data as onload does: data.json, then the token from local storage, saving if data.json held one. */
+  /** Loads the plugin data as onload does: data.json, then the secrets from local storage, saving if data.json held any. */
   const load = async (): Promise<PluginData> => {
     const data = parsePluginData(disk.file);
-    if (loadRefreshToken(data, storage)) await save(data);
+    if (loadDeviceSecrets(data, storage)) await save(data);
     return data;
   };
   return { local, storage, disk, save, load };
@@ -106,5 +107,77 @@ describe("the refresh token in device-local storage", () => {
     const { load } = device({ file: settings, local: { [tokenKey]: 42 } });
 
     expect((await load()).refreshToken).toBeUndefined();
+  });
+});
+
+const account = { serverUrl: "https://sync.example", issuer: "https://idp.example/", subject: "alice" };
+const userKey = { publicKey: "ab".repeat(1216), privateKey: "cd".repeat(32), ...account };
+const vaultKeys = { ...account, vaultId: "vault-1", epochs: { "1": "ef".repeat(32), "2": "12".repeat(32) } };
+const userKeyKey = "vault-sync-user-key";
+const vaultKeysKey = "vault-sync-vault-keys";
+
+describe("the encryption keys in device-local storage", () => {
+  it("stores the unlocked user key and the epoch keys in local storage, never in data.json", async () => {
+    const { local, disk, save, load } = device({ file: settings });
+    const data = await load();
+
+    data.userKey = structuredClone(userKey);
+    data.vaultKeys = structuredClone(vaultKeys);
+    await save(data);
+
+    expect(local.get(userKeyKey)).toEqual(userKey);
+    expect(local.get(vaultKeysKey)).toEqual(vaultKeys);
+    expect(disk.file).toEqual(settings);
+    const file = JSON.stringify(disk.file);
+    expect(file).not.toContain(userKey.privateKey);
+    for (const key of Object.values(vaultKeys.epochs)) expect(file).not.toContain(key);
+    const reloaded = await load();
+    expect(reloaded.userKey).toEqual(userKey);
+    expect(reloaded.vaultKeys).toEqual(vaultKeys);
+  });
+
+  it("moves keys data.json still holds to local storage and rewrites data.json without them", async () => {
+    const { local, disk, load } = device({ file: { ...settings, userKey, vaultKeys } });
+
+    const data = await load();
+
+    expect(data.userKey).toEqual(userKey);
+    expect(data.vaultKeys).toEqual(vaultKeys);
+    expect(local.get(userKeyKey)).toEqual(userKey);
+    expect(local.get(vaultKeysKey)).toEqual(vaultKeys);
+    expect(disk.file).toEqual(settings);
+    expect(JSON.stringify(disk.file)).not.toContain(userKey.privateKey);
+    const reloaded = await load();
+    expect(reloaded.userKey).toEqual(userKey);
+    expect(reloaded.vaultKeys).toEqual(vaultKeys);
+  });
+
+  it("moves epoch keys alone when data.json holds no user key", async () => {
+    const { local, disk, load } = device({ file: { ...settings, vaultKeys } });
+
+    await load();
+
+    expect(local.get(vaultKeysKey)).toEqual(vaultKeys);
+    expect(disk.file).toEqual(settings);
+  });
+
+  it("clears the keys from local storage when they are forgotten on sign-out", async () => {
+    const { local, save, load } = device({ file: settings, local: { [userKeyKey]: userKey, [vaultKeysKey]: vaultKeys } });
+    const data = await load();
+
+    forgetEncryptionKeys(data);
+    await save(data);
+
+    expect(local.has(userKeyKey)).toBe(false);
+    expect(local.has(vaultKeysKey)).toBe(false);
+  });
+
+  it("ignores malformed keys in local storage", async () => {
+    const { load } = device({ file: settings, local: { [userKeyKey]: { ...userKey, privateKey: "zz" }, [vaultKeysKey]: "keys" } });
+
+    const data = await load();
+
+    expect(data.userKey).toBeUndefined();
+    expect(data.vaultKeys).toBeUndefined();
   });
 });
