@@ -179,14 +179,19 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   // Where each live document's file is now, after the reported renames.
   const pathOf = new Map<string, string>();
   for (const projection of projections.values()) if (!projection.deleted) pathOf.set(projection.documentId, projection.path);
+  // Documents whose file a reported rename took the place of: deleted (or renamed unobserved) before the rename.
+  const replaced = new Set<string>();
   // A folder rename is reported as one rename per folder and per file in it.
   for (const [from, to] of options.renames) {
     const byPath = new Map([...pathOf].map(([id, path]) => [path, id]));
     const moved = byPath.get(from);
     if (moved === undefined) continue;
     // A file replaced by the rename has lost its file.
-    const replaced = byPath.get(to);
-    if (replaced !== undefined && replaced !== moved) pathOf.delete(replaced);
+    const previous = byPath.get(to);
+    if (previous !== undefined && previous !== moved) {
+      pathOf.delete(previous);
+      replaced.add(previous);
+    }
     pathOf.set(moved, to);
   }
   const byPath = new Map([...pathOf].map(([id, path]) => [path, id]));
@@ -226,7 +231,7 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
   }
 
   // Documents whose file is gone: renamed while unobserved when one new file has their content and no other document shares it. A folder is matched by its rename event only.
-  const missing = [...pathOf].filter(([, path]) => !seen.has(path)).map(([id]) => id);
+  const missing = [...pathOf].filter(([, path]) => !seen.has(path)).map(([id]) => id).concat([...replaced]);
   const missingByHash = groupBy(
     missing.filter((id) => !isFolder(id)),
     (id) => projections.get(id)?.hash ?? "",
@@ -250,8 +255,11 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
 
   // A folder and the files in it may arrive on another device in either order: applying either one first is a no-op for the other (Pull's removeEmptied, placeFolder).
   type Step = { id: string; next: State } | { create: Observed; kind: SyncKind };
+  // A file delete goes first, so a name it frees is free on the server before the rename or create that takes it is pushed.
+  const isFileDelete = ([id, next]: [string, State]) => next.deleted && !isFolder(id);
   const steps: Step[] = [
-    ...[...changed].map(([id, next]) => ({ id, next })),
+    ...[...changed].filter(isFileDelete).map(([id, next]) => ({ id, next })),
+    ...[...changed].filter((entry) => !isFileDelete(entry)).map(([id, next]) => ({ id, next })),
     ...creates.map((file) => ({ create: file, kind: kindOfPath(file.path) })),
     ...folderCreates.map((folder) => ({ create: folder, kind: "folder" as const })),
   ];
