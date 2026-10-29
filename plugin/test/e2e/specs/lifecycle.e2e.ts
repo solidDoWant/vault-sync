@@ -20,8 +20,8 @@ describe("vault-sync disabled and re-enabled", function () {
   it("resumes from the journal without a full resync", async function () {
     await callHarness("setUpSession");
 
-    // First sync on this device: the whole feed, from seq 0. The push that
-    // follows every start pulls again first, from the new cursor.
+    // First sync on this device: the whole feed, from seq 0. A cycle that
+    // made progress is followed by another, which pulls from the new cursor.
     expect(await callHarness("startSession")).toEqual({ cursor: "1", applied: 1, listChangesSince: ["0", "1"] });
     expect(await fileText("Synced.md")).toBe("synced from the server\n");
 
@@ -29,19 +29,12 @@ describe("vault-sync disabled and re-enabled", function () {
     expect(await reloadPlugin(pluginId)).toBe(true);
 
     // Sync starts again from the stored cursor: nothing is pulled again or rewritten.
-    expect(await callHarness("startSession")).toEqual({ cursor: "1", applied: 0, listChangesSince: ["1", "1"] });
+    expect(await callHarness("startSession")).toEqual({ cursor: "1", applied: 0, listChangesSince: ["1"] });
 
-    // A user edit after re-enabling is reported once, by the new session
-    // only: the disabled plugin's session no longer watches the vault.
+    // A user edit after re-enabling syncs once, from the new session: the
+    // disabled plugin's session no longer touches the vault or the server.
     await callHarness("modifyFile", "Synced.md", "edited locally\n");
-    await callHarness("modifyFile", "Synced.md", "edited again\n");
-    await browser.waitUntil(async () => ((await callHarness("sessionLocalChanges"))[1] ?? []).length >= 2);
-    expect(await callHarness("sessionLocalChanges")).toEqual([
-      [],
-      [
-        { type: "modify", path: "Synced.md" },
-        { type: "modify", path: "Synced.md" },
-      ],
-    ]);
+    expect(await callHarness("syncSession")).toBe(1);
+    expect(await callHarness("serverFiles")).toEqual({ "Synced.md": "edited locally\n" });
   });
 });

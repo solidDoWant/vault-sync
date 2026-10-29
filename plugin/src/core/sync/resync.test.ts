@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { Device } from "./testing";
 
 const decoder = new TextDecoder();

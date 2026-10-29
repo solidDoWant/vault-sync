@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { Device, settle } from "./testing";
 
 const encoder = new TextEncoder();
@@ -143,7 +143,7 @@ describe("two devices", () => {
     await a.write("a.md", "one");
     await a.sync();
     await b.sync();
-    a.engine.start();
+    void a.engine.start();
     await a.vault.rename("a.md", "b.md");
     // A live rename keeps the document even when the file is edited too.
     await a.write("b.md", "one, edited");
@@ -192,7 +192,7 @@ describe("two devices", () => {
     await b.sync();
     expect(await b.files()).toEqual({ "projects/one.md": "1", "projects/sub/two.md": "2" });
 
-    a.engine.start();
+    void a.engine.start();
     await a.vault.handle("user").renameFolder("projects", "archive");
     await a.sync();
     a.engine.stop();
@@ -248,7 +248,7 @@ describe("the engine's own writes", () => {
     const { server, a, b } = setup();
     await a.write("a.md", "one");
     await a.sync();
-    b.engine.start();
+    void b.engine.start();
     await b.sync();
     await settle();
     expect(b.timers.delays()).not.toContain(2_000);
@@ -271,7 +271,7 @@ describe("the engine's own writes", () => {
     await a.write("a.md", "one");
     await a.sync();
     await b.sync();
-    b.engine.start();
+    void b.engine.start();
     await a.write("a.md", "two");
     await a.sync();
     // The user saves the moment the engine has written the remote edit.

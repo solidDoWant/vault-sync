@@ -1,4 +1,4 @@
-import type { HistoryEntry, RestoreError } from "../core/engine/history";
+import type { HistoryEntry, RestoreError } from "../core/sync/history";
 import { quotedName, shownName, shownPath, type Shown } from "./display-text";
 
 // What the history views show for a revision (SPEC.md §11). No Obsidian

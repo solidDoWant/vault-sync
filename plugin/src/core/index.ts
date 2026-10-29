@@ -1,24 +1,11 @@
 // Public surface of the platform-independent sync engine (SPEC.md §4). It
 // must never import `obsidian` or src/obsidian (lint-enforced).
-export { defaultMaxDownloadBytes, SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type RejectedReason, type SyncEngineOptions, type TooLargeDocument, type UnmaterializableDocument } from "./engine/engine";
-export { openConflicts, type OpenConflict } from "./engine/conflicts";
-export { RestoreError, type HistoryEntry, type HistoryPage, type RestoreFailure } from "./engine/history";
-export { deferMerge, threeWayMerge, type MergeHook, type MergeOutcome, type MergeRequest } from "./engine/merge";
-export { classifyByExtension, classifyByExtensions, defaultTextExtensions, RemoteContentError, type PullApi } from "./engine/remote";
+export { DivergedError, SyncEngine, type RefusedName, type SyncApi, type SyncEngineOptions, type SyncProblems, type SyncStatus, type TooLargeFile } from "./sync/engine";
+export { commitRestore, documentHistory, readRevision, RestoreError, type HistoryEntry, type HistoryPage, type RestoreFailure } from "./sync/history";
+export { IndexedDbSyncJournal } from "./sync/indexeddb";
+export { MemorySyncJournal, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingOp, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./sync/journal";
+export { RemoteContentError, type DocumentKindName, type PullApi, type RemoteRevision } from "./sync/remote";
 export { sha256Hex } from "./hash";
-export type {
-  ConflictReason,
-  ConflictRecord,
-  DeferReason,
-  DeferredRevision,
-  DocumentKindName,
-  DocumentState,
-  Journal,
-  PendingOperation,
-  RemoteRevision,
-} from "./journal/journal";
-export { InMemoryJournal } from "./journal/memory";
-export { conflictCopyPath } from "./merge/conflict-name";
 export { mergeText } from "./merge/text-merge";
 export { pathKey } from "./pathkey/pathkey";
 export {

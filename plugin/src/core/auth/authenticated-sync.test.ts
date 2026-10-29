@@ -2,10 +2,10 @@ import { Code, ConnectError, type Transport } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import type { CommitRevisionRequest } from "../../gen/vaultsync/v1/sync_pb";
-import { SyncEngine } from "../engine/engine";
-import { InMemoryServer } from "../engine/memory-server";
-import { InMemoryJournal } from "../journal/memory";
 import { createProtocolClient } from "../protocol/client";
+import { SyncEngine } from "../sync/engine";
+import { MemorySyncJournal } from "../sync/journal";
+import { InMemoryServer } from "../sync/memory-server";
 import { InMemoryVault } from "../vault/memory";
 import { InMemoryIdentityProvider } from "./memory-idp";
 import { jwtExpiry, refreshAccessToken, SignInRequiredError, type OidcEndpoints } from "./oidc";
@@ -51,16 +51,14 @@ function setup() {
     now,
   });
   const vault = new InMemoryVault();
-  const journal = new InMemoryJournal();
-  let ids = 0;
+  const journal = new MemorySyncJournal();
   const engine = new SyncEngine({
     vaultId: server.vaultId,
     deviceId: "device-1",
     api: createProtocolClient({ transport: authenticating, auth: manager }),
     vault,
     journal,
-    pushDebounceMs: null,
-    newId: () => `id-${String(++ids)}`,
+    now,
   });
   const commits: CommitRevisionRequest[] = [];
   server.interceptor = (method, request) => {
@@ -73,13 +71,13 @@ describe("sync over refreshable tokens", () => {
   it("refreshes a token before it expires, so routine expiry fails no request", async () => {
     const { time, idp, engine, vault, server, unauthenticated } = setup();
     await vault.write("a.md", encoder.encode("one"));
-    await engine.push();
+    await engine.sync();
 
     // Past the first token's exp: without a refresh ahead of time the next
     // request would be refused.
     time.now += 300_000;
     await vault.write("a.md", encoder.encode("two"));
-    await engine.push();
+    await engine.sync();
 
     expect(unauthenticated).toEqual([]);
     expect(server.liveFiles()).toEqual(new Map([["a.md", "two"]]));
@@ -91,7 +89,7 @@ describe("sync over refreshable tokens", () => {
     refusedTokens.add(await manager.accessToken());
     await vault.write("a.md", encoder.encode("one"));
 
-    await engine.push();
+    await engine.sync();
 
     expect(unauthenticated).toEqual(["ListChanges"]);
     expect(server.liveFiles()).toEqual(new Map([["a.md", "one"]]));
@@ -109,26 +107,25 @@ describe("sync over refreshable tokens", () => {
     };
     await vault.write("a.md", encoder.encode("one"));
 
-    const summary = await engine.push();
+    await engine.sync();
 
-    expect(summary.committed).toBe(1);
     expect(commits).toHaveLength(2);
     expect(commits[1]?.revisionId).toBe(commits[0]?.revisionId);
     expect(server.revisionCount).toBe(1);
-    expect(await journal.listPending()).toEqual([]);
+    expect((await journal.load()).pending).toEqual([]);
   });
 
   it("keeps local changes journaled while sign-in is required and pushes them after the next sign-in", async () => {
     const { idp, manager, engine, vault, journal, server } = setup();
     await vault.write("a.md", encoder.encode("one"));
-    await engine.push();
+    await engine.sync();
     idp.revokeAll();
     // The cached access token stays usable until it expires; the refresh after that fails.
     manager.invalidate(await manager.accessToken());
 
     await vault.write("a.md", encoder.encode("offline edit"));
     await vault.write("b.md", encoder.encode("new note"));
-    const failed = engine.push();
+    const failed = engine.sync();
 
     await expect(failed).rejects.toMatchObject({ code: Code.Unauthenticated });
     await expect(failed).rejects.toHaveProperty("cause", expect.any(SignInRequiredError));
@@ -139,15 +136,14 @@ describe("sync over refreshable tokens", () => {
 
     const tokens = idp.issue();
     await manager.signIn({ accessToken: tokens.accessToken, refreshToken: tokens.refreshToken, obtainedAt: 1_000_000_000 });
-    const summary = await engine.push();
+    await engine.sync();
 
-    expect(summary.pending).toBe(0);
     expect(server.liveFiles()).toEqual(
       new Map([
         ["a.md", "offline edit"],
         ["b.md", "new note"],
       ]),
     );
-    expect(await journal.listPending()).toEqual([]);
+    expect((await journal.load()).pending).toEqual([]);
   });
 });

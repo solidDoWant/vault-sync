@@ -42,15 +42,6 @@ describe("Paths that Obsidian's normalizePath would change", function () {
         expect(result.listed).toEqual(["inside.md"]);
         expect(result.inside).toBe("inside\n");
       });
-
-      it(`are refused by the config folder adapter: a dot-dot segment with ${name} ${where} the dots`, async function () {
-        const result = await callHarness("configPathScope", `${segment}/evil.json`);
-
-        expect(result.write).toBe("path-conflict");
-        expect(result.rename).toBe("path-conflict");
-        expect(result.files).toHaveLength(1);
-        expect(result.files[0]).toMatch(/\/vault-sync-e2e-paths\/inside\.json$/u);
-      });
     }
   }
 

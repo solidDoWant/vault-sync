@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { conflictCopyName, maxPartBytes, maxPathBytes } from "./conflict-name";
 import { Device } from "./testing";
 

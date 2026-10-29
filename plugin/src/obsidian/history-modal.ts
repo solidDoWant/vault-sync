@@ -1,8 +1,7 @@
-import { FuzzySuggestModal, Modal, Notice, Setting, type App } from "obsidian";
+import { Modal, Notice, Setting, type App } from "obsidian";
 
-import { RestoreError, type HistoryEntry } from "../core/engine/history";
-import type { DocumentState } from "../core/journal/journal";
-import { shownPath, visiblePath, type Shown } from "./display-text";
+import { RestoreError, type HistoryEntry } from "../core/sync/history";
+import { shownPath, type Shown } from "./display-text";
 import { entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";
 import { renderShown, shownFragment } from "./shown-dom";
 import type { VaultHistory } from "./session";
@@ -194,29 +193,5 @@ export class HistoryModal extends Modal {
           });
         }),
       );
-  }
-}
-
-/** Picks one of the deleted files this device knows of, most recently deleted first, and opens its history. */
-export class DeletedFilesModal extends FuzzySuggestModal<DocumentState> {
-  constructor(
-    app: App,
-    private readonly history: VaultHistory,
-    private readonly deleted: DocumentState[],
-  ) {
-    super(app);
-    this.setPlaceholder(deleted.length === 0 ? "No deleted files" : "Find a deleted file to restore");
-  }
-
-  getItems(): DocumentState[] {
-    return this.deleted;
-  }
-
-  getItemText(item: DocumentState): string {
-    return visiblePath(item.path);
-  }
-
-  onChooseItem(item: DocumentState): void {
-    new HistoryModal(this.app, this.history, item.documentId, item.path).open();
   }
 }

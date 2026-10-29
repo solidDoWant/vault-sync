@@ -1,8 +1,8 @@
-import type { ConflictEntry, Cursor, DocEntry, JournalChange, JournalState, PendingOp, SyncJournal } from "./journal";
+import type { ConflictEntry, Cursor, DocEntry, JournalChange, JournalState, PendingOp, SkippedEntry, SyncJournal } from "./journal";
 
 /** The schema version of the database. */
 const version = 1;
-const stores = ["meta", "docs", "pending", "conflicts"] as const;
+const stores = ["meta", "docs", "pending", "conflicts", "skipped"] as const;
 
 interface StoredCursor {
   /** The meta store's record key: "cursor". */
@@ -37,6 +37,7 @@ export class IndexedDbSyncJournal implements SyncJournal {
         db.createObjectStore("docs", { keyPath: "documentId" });
         db.createObjectStore("pending", { keyPath: "opId" });
         db.createObjectStore("conflicts", { keyPath: "path" });
+        db.createObjectStore("skipped", { keyPath: "documentId" });
       };
       request.onsuccess = () => {
         resolve(new IndexedDbSyncJournal(request.result));
@@ -53,11 +54,12 @@ export class IndexedDbSyncJournal implements SyncJournal {
 
   async load(): Promise<JournalState> {
     const transaction = this.db.transaction([...stores], "readonly");
-    const [meta, docs, pending, conflicts] = await Promise.all([
+    const [meta, docs, pending, conflicts, skipped] = await Promise.all([
       all<StoredCursor>(transaction.objectStore("meta")),
       all<DocEntry>(transaction.objectStore("docs")),
       all<PendingOp>(transaction.objectStore("pending")),
       all<ConflictEntry>(transaction.objectStore("conflicts")),
+      all<SkippedEntry>(transaction.objectStore("skipped")),
     ]);
     const stored = meta.find((record) => record.key === "cursor");
     const cursor: Cursor = stored === undefined ? { seq: 0n, anchor: new Uint8Array() } : { seq: BigInt(stored.seq), anchor: stored.anchor };
@@ -66,6 +68,7 @@ export class IndexedDbSyncJournal implements SyncJournal {
       docs: new Map(docs.map((entry) => [entry.documentId, entry])),
       pending: pending.sort((a, b) => a.order - b.order),
       conflicts: new Map(conflicts.map((entry) => [entry.path, entry])),
+      skipped: new Map(skipped.map((entry) => [entry.documentId, entry])),
     };
   }
 
@@ -100,6 +103,9 @@ export class IndexedDbSyncJournal implements SyncJournal {
       const conflicts = transaction.objectStore("conflicts");
       for (const path of change.deleteConflicts ?? []) conflicts.delete(path);
       for (const entry of change.putConflicts ?? []) conflicts.put(entry);
+      const skipped = transaction.objectStore("skipped");
+      for (const id of change.deleteSkipped ?? []) skipped.delete(id);
+      for (const entry of change.putSkipped ?? []) skipped.put(entry);
     });
   }
 }

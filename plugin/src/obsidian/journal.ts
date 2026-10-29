@@ -1,6 +1,6 @@
 import type { App } from "obsidian";
 
-import { IndexedDbJournal, type JournalOpenOptions } from "../core/journal/indexeddb";
+import { IndexedDbSyncJournal } from "../core/sync/indexeddb";
 
 /** Which server vault a local vault syncs with. */
 export interface JournalKey {
@@ -16,22 +16,20 @@ export interface JournalKey {
  * origin, and the journal describes one local disk syncing one server vault,
  * so the name has all three: two local vaults never share a journal, even
  * when they sync the same server vault, and switching a local vault to
- * another server or vault starts a separate one.
+ * another server or vault starts a separate one. The prefix names the
+ * journal's schema (docs/design/engine.md §2), which is never migrated from
+ * an earlier one, so a database an earlier plugin version left under another
+ * prefix is never opened.
  */
 export function journalDatabaseName(localVaultId: string, key: JournalKey): string {
   if (localVaultId === "") throw new Error("the local vault id is empty");
   if (key.vaultId === "") throw new Error("the server vault id is empty");
-  return ["vault-sync-journal", localVaultId, key.vaultId, normalizeServerUrl(key.serverUrl)].map(encodeURIComponent).join("/");
+  return ["vault-sync-engine-journal", localVaultId, key.vaultId, normalizeServerUrl(key.serverUrl)].map(encodeURIComponent).join("/");
 }
 
-/**
- * Opens the durable journal for `key` in the open vault (SPEC.md §8),
- * creating or upgrading it as needed. `options.onBlocked` hears about an
- * upgrade that has to wait for another connection (another Obsidian window
- * running an older vault-sync).
- */
-export async function openVaultJournal(app: App, key: JournalKey, factory: IDBFactory = window.indexedDB, options: JournalOpenOptions = {}): Promise<IndexedDbJournal> {
-  return await IndexedDbJournal.open(factory, journalDatabaseName(localVaultId(app), key), undefined, options);
+/** Opens the durable journal for `key` in the open vault (docs/design/engine.md §2), creating it if needed. */
+export async function openVaultJournal(app: App, key: JournalKey, factory: IDBFactory = window.indexedDB): Promise<IndexedDbSyncJournal> {
+  return await IndexedDbSyncJournal.open(factory, journalDatabaseName(localVaultId(app), key));
 }
 
 /**

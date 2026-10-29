@@ -1,17 +1,13 @@
-import { openConflicts, type OpenConflict } from "../core/engine/conflicts";
-import { deferredDocuments, type DeferredDocument } from "../core/engine/deferred";
-import { SyncEngine, type PullSummary, type PushSummary, type RejectedOperation, type TooLargeDocument, type UnmaterializableDocument } from "../core/engine/engine";
-import type { HistoryEntry, HistoryPage } from "../core/engine/history";
-import type { MergeHook } from "../core/engine/merge";
-import type { PullApi } from "../core/engine/remote";
 import { RealtimeClient, type RealtimeClientOptions } from "../core/realtime/client";
-import type { DocumentState, Journal, RemoteRevision } from "../core/journal/journal";
-import type { VaultAdapter, VaultEvent } from "../core/vault/adapter";
+import { SyncEngine, type RefusedName, type SyncApi, type TooLargeFile } from "../core/sync/engine";
+import { commitRestore, documentHistory, readRevision, type HistoryEntry, type HistoryPage } from "../core/sync/history";
+import type { SkippedEntry, SyncJournal } from "../core/sync/journal";
+import type { RemoteRevision } from "../core/sync/remote";
+import { uuidv7 } from "../core/uuid";
+import type { VaultAdapter } from "../core/vault/adapter";
 import type { PathRules } from "../core/vaultpath/platform";
-import { rejectedReasonText } from "./conflict-text";
 import { visiblePath } from "./display-text";
 import { errorMessage, isOffline } from "./status";
-import { UnsavedEditsError } from "./unsaved-edits";
 
 // No Obsidian import: the plugin passes the Obsidian adapter and its
 // layout-ready signal, and the unit tests pass in-memory ones.
@@ -20,76 +16,76 @@ export interface SyncSessionOptions {
   vaultId: string;
   /** This install's registered device, recorded with every commit. */
   deviceId: string;
-  /** The device's name in conflict-copy names (SPEC.md §7); the engine falls back to the device id. */
+  /** The device's name in conflict-copy names (docs/design/engine.md §5, rule C); the engine falls back to the device id. */
   deviceName?: string;
-  api: PullApi;
+  api: SyncApi;
   /**
    * The device's durable journal for this vault and server vault
    * (`openVaultJournal`, ./journal.ts); it is what lets a restarted session
    * resume. The caller owns it and closes it once `stop()` has resolved.
    */
-  journal: Journal;
+  journal: SyncJournal;
   /** The open vault (ObsidianVaultAdapter in the plugin). */
   vault: VaultAdapter;
   /** Resolves once the vault may be synced: in Obsidian, when the workspace layout is ready, after startup indexing. */
   ready?: () => Promise<void>;
-  merge?: MergeHook;
-  /** The user's vault changes, to be pushed (SPEC.md §8). */
-  onLocalChange?: (event: VaultEvent) => void;
-  /** How long after the last local change of a burst the engine pushes (SyncEngineOptions.pushDebounceMs); null turns that off. */
+  /** How long after the last local change a sync starts, in milliseconds; null: only on the timer, the realtime channel and syncNow. */
   pushDebounceMs: number | null;
-  /**
-   * How often to push (which pulls first) on a timer, in milliseconds, so
-   * remote changes arrive and a pending operation is retried without waiting
-   * for the user's next edit; null turns the timer off.
-   */
+  /** The fallback interval between syncs, in milliseconds; null turns the timer off. */
   syncIntervalMs: number | null;
-  /** The local platform's file-name rules (SyncEngineOptions.pathRules); the engine defaults to POSIX. */
+  /** The local platform's file-name rules: a remote path this device cannot hold is skipped (docs/design/engine.md §6). */
   pathRules?: PathRules;
-  /** The largest remote content the engine downloads (SyncEngineOptions.maxDownloadBytes); the engine defaults to 1 GiB. */
+  /** The largest file this device uploads or downloads (docs/design/engine.md §7). */
   maxDownloadBytes?: number;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
   /**
    * The realtime channel (SPEC.md §6.4). When set, the started session
-   * subscribes to the vault and pulls after every (re)subscribe and every
-   * notification of it whose head is above the journal's cursor (not, then,
-   * for its own commits, nor for a subscribe with nothing new). The pull
-   * timer runs either way.
+   * subscribes to the vault and syncs after every (re)subscribe and every
+   * notification of it. The fallback timer runs either way.
    */
   realtime?: Omit<RealtimeClientOptions, "vaultId" | "onChange">;
 }
 
 export interface SessionStatus {
   state: "syncing" | "idle" | "offline" | "error";
-  /**
-   * Local changes the server has not acknowledged: the journal's pending
-   * operations, and the paths of local changes seen since the last push that
-   * succeeded which no pending operation covers yet (a push that failed
-   * before recording them, while the server was unreachable, say).
-   */
+  /** Local changes the server has not acknowledged: the journal's pending operations. */
   pending: number;
-  /** Unresolved conflicts (see SyncStatus.conflicts). */
+  /** Conflict copies this device created that are still on disk. */
   conflicts: number;
   message?: string;
 }
 
-/** A running session's history browsing and restore (SPEC.md §11), what the history views use. */
+/** A conflict copy, with the document it was taken from, for the conflict view. */
+export interface ListedConflict {
+  /** The conflict copy's path. */
+  copy: string;
+  /** The path of the document the copy was taken from, or null if it no longer exists here. */
+  original: string | null;
+  /** Milliseconds since the epoch. */
+  createdAt: number;
+}
+
+/** What the conflict view lists (docs/design/engine.md §10). */
+export interface SyncProblemList {
+  conflicts: ListedConflict[];
+  /** Local files whose names the server refused (rule P3). */
+  refused: RefusedName[];
+  /** Remote documents this device skipped: over the size limit, or at a path it cannot hold (§6, §7). */
+  skipped: SkippedEntry[];
+  /** Local files over the size limit, not uploaded (§7). */
+  tooLarge: TooLargeFile[];
+}
+
+/** A running session's history browsing and restore (docs/design/engine.md §10), what the history views use. */
 export interface VaultHistory {
   /** The id of the synced document at `path`, if a live one is there. */
   documentAt(path: string): Promise<string | undefined>;
   history(documentId: string, pageToken?: string): Promise<HistoryPage>;
-  /** `entry`'s content; with `limit`, only its first `limit` bytes when it is larger (#656), for a preview. */
+  /** `entry`'s content; with `limit`, only its first `limit` bytes when it is larger, for a preview. */
   readRevision(entry: HistoryEntry, limit?: number): Promise<Uint8Array>;
-  /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one; `path` restores it there instead of at its own path (#420). */
+  /** Restores `entry` as the document's new head revision; `content` is its preview, if the user saw one; `path` restores it there instead of at its own path. */
   restore(entry: HistoryEntry, content?: Uint8Array, path?: string): Promise<RemoteRevision>;
-  /**
-   * The deleted documents the user can restore here (SyncEngine.deletedDocuments),
-   * without those at a path this vault does not sync now: a config file
-   * restored while config sync (or its category) is off would be deferred as
-   * `out-of-scope` and not show up (#417).
-   */
-  deletedDocuments(): Promise<DocumentState[]>;
   /**
    * Whether the signed-in user may restore versions in this vault: false for
    * a `viewer`, whom the server refuses. Resolves true when the role cannot
@@ -107,16 +103,14 @@ export class SessionStoppedError extends Error {
 }
 
 /**
- * One running sync of the open vault: the vault adapter and the sync engine
+ * One running sync of the open vault: the sync engine (docs/design/engine.md)
  * over the device's journal. It starts once `ready` resolves, resumes from
- * the journal's cursor (so disabling and re-enabling the plugin, or
- * restarting Obsidian, never starts a full resync), pulls, and pushes. It
- * then pushes after local changes (debounced) and on a timer, and pulls when
- * the realtime channel reports a remote change.
+ * the journal's cursor, and syncs: at the start, after local changes
+ * (debounced), when the realtime channel reports a remote change, and on a
+ * fallback timer.
  *
  * Stopping never loses a local change: an edit the session had not pushed
- * yet stays on disk, and the next session's first push scans the whole vault
- * (the engine does that after every start), so it is found and pushed then.
+ * yet stays on disk, and the next session's first cycle detects it.
  */
 export class SyncSession {
   private engine: SyncEngine | undefined;
@@ -124,29 +118,7 @@ export class SyncSession {
   private stopping: Promise<void> | undefined;
   private starting: Promise<unknown> = Promise.resolve();
   private readonly abort = new AbortController();
-  private timer: ReturnType<typeof setInterval> | undefined;
   private realtime: RealtimeClient | undefined;
-  private timerRun: Promise<unknown> | undefined;
-  private busy = false;
-  /** The last pull or push's failure; undefined after a success. */
-  private failure: unknown;
-  /** The local operations the last push reported as refused for good (#100). */
-  private refused: RejectedOperation[] = [];
-  /** The file whose open view refused the last pull's write (UnsavedEditsError), until a pull or push succeeds. */
-  private heldByView: string | undefined;
-  /**
-   * Vault events received so far. The session numbers them as they arrive
-   * (`received`, the latest number per path); the engine classifies them
-   * later, and a push classifies every event received before it was called
-   * before it looks for changes.
-   */
-  private events = 0;
-  private readonly received = new Map<string, number>();
-  private unwatch: (() => void) | undefined;
-  /** Local changes the engine reported since the last push that succeeded, by path, with the number of their latest event. */
-  private readonly unpushed = new Map<string, number>();
-  /** `events` when the engine's current pull or push was called, at the latest: a push that succeeds has seen every event numbered below it. */
-  private pushMark = 0;
   private counts = { pending: 0, conflicts: 0 };
   /** Bumped by every report, so only the latest one's counts are kept. */
   private reports = 0;
@@ -156,50 +128,40 @@ export class SyncSession {
     this.onStatus = options.onStatus ?? (() => undefined);
   }
 
-  /**
-   * Starts syncing: pulls, then pushes every local change since the last
-   * session. Resolves with the pull's summary, or undefined if the session
-   * was stopped first or the pull failed (the status says why, and the timer
-   * tries again).
-   */
-  start(): Promise<PullSummary | undefined> {
+  /** Starts syncing. Resolves once the first sync finished (or failed: the status says why, and the engine retries), or the session was stopped first. */
+  start(): Promise<void> {
     const run = this.run();
     this.starting = run.catch(() => undefined);
     return run;
   }
 
-  /** Pulls and pushes now, unless the session is stopped. Resolves with the push's summary, or undefined if it failed. */
-  async syncNow(): Promise<PushSummary | undefined> {
+  /** Syncs now, unless the session is stopped. Resolves once the sync finished: with its failure, which the status also shows, or undefined. */
+  async syncNow(): Promise<{ error: unknown } | undefined> {
     const engine = this.engine;
     if (engine === undefined || this.stopped) return undefined;
-    return this.attempt(() => engine.push());
+    try {
+      await engine.sync();
+      return undefined;
+    } catch (error) {
+      return { error };
+    }
   }
 
-  /**
-   * History browsing and restore for the session's vault (SPEC.md §11), once
-   * its engine runs; undefined before that and after the stop.
-   */
+  /** History browsing and restore for the session's vault, once its engine runs; undefined before that and after the stop. */
   history(): VaultHistory | undefined {
     const engine = this.engine;
     if (engine === undefined || this.stopped) return undefined;
-    const { journal } = this.options;
+    const { vaultId, deviceId } = this.options;
+    const api = this.gatedApi();
     return {
-      documentAt: async (path) => {
-        const state = await journal.findDocumentByPath(path);
-        return state === undefined || state.deleted ? undefined : state.documentId;
-      },
-      history: (documentId, pageToken) => engine.history(documentId, pageToken),
-      readRevision: (entry, limit) => engine.readRevision(entry, limit),
+      documentAt: (path) => engine.documentAt(path),
+      history: (documentId, pageToken) => documentHistory(api, vaultId, deviceId, documentId, pageToken),
+      readRevision: (entry, limit) => readRevision(api, vaultId, entry, limit),
       restore: async (entry, content, path) => {
-        try {
-          return await engine.restore(entry, content, path);
-        } finally {
-          void this.report();
-        }
-      },
-      deletedDocuments: async () => {
-        const { vault } = this.options;
-        return (await engine.deletedDocuments()).filter((state) => vault.isSynced?.(state.path) ?? true);
+        const revision = await commitRestore(api, vaultId, deviceId, entry, uuidv7(), content, path);
+        // The restore is a new head revision: the next pull brings it here like any other.
+        engine.notifyRemoteChange();
+        return revision;
       },
     };
   }
@@ -208,17 +170,14 @@ export class SyncSession {
    * Stops the session and resolves once its engine has settled: from then on
    * it neither touches the vault or the journal nor calls the server, so a new
    * session can start over the same journal. A call still waiting for the
-   * server is not waited for; its response is dropped. A scheduled push is
-   * cancelled; what it would have pushed is found by the next session's scan.
+   * server is not waited for; its response is dropped.
    */
   stop(): Promise<void> {
     if (this.stopping !== undefined) return this.stopping;
     this.stopped = true;
     this.abort.abort(new SessionStoppedError());
-    if (this.timer !== undefined) clearInterval(this.timer);
     this.realtime?.stop();
-    this.unwatch?.();
-    this.engine?.dispose();
+    this.engine?.stop();
     this.stopping = (async () => {
       await this.starting;
       await this.engine?.settled();
@@ -226,74 +185,69 @@ export class SyncSession {
     return this.stopping;
   }
 
-  private async run(): Promise<PullSummary | undefined> {
+  private async run(): Promise<void> {
     const stoppedFirst = new Promise<void>((resolve) => {
       this.abort.signal.addEventListener("abort", () => {
         resolve();
       });
     });
     await Promise.race([this.options.ready?.() ?? Promise.resolve(), stoppedFirst]);
-    if (this.stopped) return undefined;
+    if (this.stopped) return;
     const { options } = this;
-    // Numbered before the engine sees them (it subscribes below).
-    this.unwatch = options.vault.watch((event) => {
-      this.received.set(event.path, this.events++);
-    });
     const engine = new SyncEngine({
       vaultId: options.vaultId,
       deviceId: options.deviceId,
       ...(options.deviceName === undefined ? {} : { deviceName: options.deviceName }),
-      api: {
-        sync: this.gateNetwork(options.api.sync),
-        blobs: this.gateNetwork(options.api.blobs),
-      },
-      vault: this.gateLocal(options.vault, ["list", "read", "write", "rename", "delete", "stat"]),
+      api: this.gatedApi(),
+      vault: this.gateLocal(options.vault, ["list", "read", "write", "rename", "delete", "stat", "replace"]),
       journal: this.gateLocal(options.journal),
-      ...(options.merge === undefined ? {} : { merge: options.merge }),
-      onLocalChange: (event) => {
-        this.localChange(event);
-        options.onLocalChange?.(event);
-      },
-      pushDebounceMs: options.pushDebounceMs,
+      debounceMs: options.pushDebounceMs,
+      intervalMs: options.syncIntervalMs,
       ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
-      ...(options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: options.maxDownloadBytes }),
-      onBusyChange: (busy) => {
-        this.busy = busy;
-        if (busy) this.pushMark = this.events;
+      ...(options.maxDownloadBytes === undefined ? {} : { maxFileBytes: options.maxDownloadBytes }),
+      onChange: () => {
         void this.report();
-      },
-      onPushComplete: (summary) => {
-        this.succeeded(summary);
-      },
-      onPushError: (error) => {
-        this.failed(error);
       },
     });
     this.engine = engine;
-    const pulled = await this.attempt(() => engine.pull());
-    if (this.isStopped()) return undefined;
-    // Push at startup too: a pending operation (one left after its commit
-    // retries ran out, say) must not wait for the user's next edit.
-    await this.attempt(() => engine.push());
-    if (this.isStopped()) return undefined;
+    const first = engine.start();
     if (options.realtime !== undefined) {
       this.realtime = new RealtimeClient({
         ...options.realtime,
         vaultId: options.vaultId,
-        onChange: (seq) => this.attempt(() => engine.pullIfBehind(seq)),
+        onChange: () => engine.sync().catch(() => undefined),
       });
       this.realtime.start();
     }
-    if (options.syncIntervalMs !== null) {
-      this.timer = setInterval(() => {
-        // One timer push at a time: on a slow network ticks never pile up.
-        if (this.timerRun !== undefined) return;
-        this.timerRun = this.attempt(() => engine.push()).finally(() => {
-          this.timerRun = undefined;
-        });
-      }, options.syncIntervalMs);
+    await first.catch(() => undefined);
+  }
+
+  /** The server client, refused once the session stopped (gateNetwork). */
+  private gatedApi(): SyncApi {
+    const { api } = this.options;
+    return { sync: this.gateNetwork(api.sync), blobs: this.gateNetwork(api.blobs) };
+  }
+
+  /** Emits the current status, with the journal's counts as they are now. */
+  private async report(): Promise<void> {
+    if (this.stopped) return;
+    const engine = this.engine;
+    if (engine === undefined) return;
+    const report = ++this.reports;
+    if (engine.status === "syncing") {
+      this.onStatus({ state: "syncing", ...this.counts });
+      return;
     }
-    return pulled;
+    let problems: SyncProblemList | undefined;
+    try {
+      problems = await this.listProblems();
+      const counts = { pending: await engine.pendingCount(), conflicts: problems.conflicts.length };
+      if (report === this.reports) this.counts = counts;
+    } catch {
+      // Stopped, or the journal is gone; keep the last counts.
+    }
+    if (this.isStopped() || report !== this.reports) return;
+    this.onStatus(this.status(engine, problems));
   }
 
   /** Read through a call, so a check after an await is not narrowed away by the one before it. */
@@ -301,154 +255,35 @@ export class SyncSession {
     return this.stopped;
   }
 
-  /** Runs a pull or push, recording its outcome for the status; a task that resolves with undefined did nothing and changes no status. */
-  private async attempt<T extends PullSummary | PushSummary>(task: () => Promise<T | undefined>): Promise<T | undefined> {
-    try {
-      const result = await task();
-      if (result !== undefined) this.succeeded(result);
-      return result;
-    } catch (error) {
-      this.failed(error);
-      return undefined;
+  private status(engine: SyncEngine, problems: SyncProblemList | undefined): SessionStatus {
+    if (engine.status === "syncing") return { state: "syncing", ...this.counts };
+    if (engine.status === "error") {
+      const failure = engine.lastError;
+      return { state: isOffline(failure) ? "offline" : "error", ...this.counts, message: errorMessage(failure) };
     }
-  }
-
-  /** Counts a local change as pending until a push called after its event arrived succeeds. */
-  private localChange(event: VaultEvent): void {
-    if (this.stopped) return;
-    this.unpushed.set(event.path, this.received.get(event.path) ?? this.events);
-    void this.report();
-  }
-
-  private succeeded(result: PullSummary | PushSummary): void {
-    if (this.stopped) return;
-    this.failure = undefined;
-    this.heldByView = undefined;
-    if ("rejected" in result) {
-      // Recorded in the journal (or parked, or committed) by this push.
-      for (const [path, event] of this.unpushed) if (event < this.pushMark) this.unpushed.delete(path);
-      for (const [path, event] of this.received) if (event < this.pushMark) this.received.delete(path);
-    }
-    // The engine's next pull or push begins after this one ended.
-    this.pushMark = this.events;
-    // A pull says nothing about refused operations; a push does, every time
-    // (it looks at every pending operation), so a file the user renamed or
-    // removed drops off the list with the next push.
-    if ("rejected" in result) this.refused = result.rejected;
-    void this.report();
-  }
-
-  private failed(error: unknown): void {
-    if (this.stopped) return;
-    this.failure = error;
-    if (error instanceof UnsavedEditsError) this.heldByView = error.path;
-    this.pushMark = this.events;
-    void this.report();
-  }
-
-  /** Emits the current status, with the journal's counts as they are now. */
-  private async report(): Promise<void> {
-    if (this.stopped) return;
-    const report = ++this.reports;
-    if (this.busy) {
-      this.onStatus({ state: "syncing", ...this.counts });
-      return;
-    }
-    try {
-      const counts = await this.countJournal();
-      if (report === this.reports) this.counts = counts;
-    } catch {
-      // Stopped, or the journal is gone; keep the last counts.
-    }
-    if (this.isStopped() || report !== this.reports) return;
-    this.onStatus(this.status());
-  }
-
-  private status(): SessionStatus {
-    if (this.busy) return { state: "syncing", ...this.counts };
-    if (this.failure !== undefined) {
-      return {
-        state: isOffline(this.failure) ? "offline" : "error",
-        ...this.counts,
-        message: errorMessage(this.failure),
-      };
-    }
-    const [first] = this.refused;
+    const [first] = problems?.refused ?? [];
     if (first !== undefined) {
-      const path = visiblePath(first.operation.path);
-      const reason = rejectedReasonText(first.reason, errorMessage(first.error));
+      const refused = problems?.refused.length ?? 1;
+      const path = visiblePath(first.path);
       const message =
-        this.refused.length === 1
-          ? `Cannot sync "${path}": ${reason} Rename or move it to sync it.`
-          : `Cannot sync ${String(this.refused.length)} local files, among them "${path}": ${reason} The Sync conflicts view lists them all.`;
+        refused === 1
+          ? `Cannot sync "${path}": the server refused its name (${first.reason}). Rename or move it to sync it.`
+          : `Cannot sync ${String(refused)} local files, among them "${path}": the server refused their names. The Sync conflicts view lists them all.`;
       return { state: "error", ...this.counts, message };
     }
     return { state: "idle", ...this.counts };
   }
 
-  private async countJournal(): Promise<{
-    pending: number;
-    conflicts: number;
-  }> {
-    const { journal, vault } = this.options;
-    const operations = await journal.listPending();
-    const covered = new Set(operations.map((operation) => operation.path));
-    const unrecorded = [...this.unpushed.keys()].filter((path) => !covered.has(path)).length;
-    const conflicts = (await openConflicts(journal, vault)).length;
-    return { pending: operations.length + unrecorded, conflicts };
-  }
-
-  /**
-   * The conflicts the user has not resolved yet, newest first: what the
-   * conflict view lists. Empty once the session is stopped (its journal may
-   * be closed).
-   */
-  async conflicts(): Promise<OpenConflict[]> {
-    if (this.stopped) return [];
-    return openConflicts(this.options.journal, this.options.vault);
-  }
-
-  /** The documents the local platform cannot hold at their server paths (SPEC.md §8), for the conflict view. Empty before the session started and once it is stopped. */
-  async unmaterializable(): Promise<UnmaterializableDocument[]> {
+  /** What the conflict view lists. Empty before the session started and once it is stopped (its journal may be closed). */
+  async listProblems(): Promise<SyncProblemList> {
     const engine = this.engine;
-    if (engine === undefined || this.stopped) return [];
-    return engine.unmaterializable();
-  }
-
-  /** The documents whose remote revision is larger than the download cap (SPEC.md §8), for the conflict view. Empty before the session started and once it is stopped. */
-  async tooLarge(): Promise<TooLargeDocument[]> {
-    const engine = this.engine;
-    if (engine === undefined || this.stopped) return [];
-    return engine.tooLarge();
-  }
-
-  /**
-   * The remote revisions deferred for their path (an invalid path, a path the
-   * vault refuses, a move out of scope of a document with a file here; #417),
-   * for the conflict view. Empty before the session started and once it is
-   * stopped.
-   */
-  async deferred(): Promise<DeferredDocument[]> {
-    if (this.engine === undefined || this.stopped) return [];
-    return deferredDocuments(this.options.journal, this.options.vault);
-  }
-
-  /**
-   * The file whose open view refused the last pull's write (#417), so sync
-   * waits at that change until the view is saved or closed; undefined once a
-   * pull or push succeeds, and once the session is stopped.
-   */
-  heldByOpenView(): string | undefined {
-    return this.stopped ? undefined : this.heldByView;
-  }
-
-  /**
-   * The local files the server refuses for good, as the last push found
-   * them (#100), for the conflict view: each stays on disk, unsynced, until
-   * the user renames or removes it. Empty once the session is stopped.
-   */
-  rejected(): Promise<RejectedOperation[]> {
-    return Promise.resolve(this.stopped ? [] : [...this.refused]);
+    if (engine === undefined || this.stopped) return { conflicts: [], refused: [], skipped: [], tooLarge: [] };
+    const problems = await engine.problems();
+    const conflicts: ListedConflict[] = [];
+    for (const entry of problems.conflicts) {
+      conflicts.push({ copy: entry.path, original: (await engine.pathOf(entry.documentId)) ?? null, createdAt: entry.createdAt });
+    }
+    return { conflicts, refused: problems.refused, skipped: problems.skipped, tooLarge: problems.tooLarge };
   }
 
   /**

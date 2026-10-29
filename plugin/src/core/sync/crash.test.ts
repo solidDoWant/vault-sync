@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { createProtocolClient } from "../protocol/client";
 import type { DeletePrecondition, FileStat, VaultAdapter, VaultListener, WritePrecondition } from "../vault/adapter";
 import { InMemoryVault } from "../vault/memory";
@@ -216,7 +216,7 @@ describe("a journal write failure", () => {
     await vault.write("a.md", encoder.encode("one"));
     // The journal refuses the write that records the pending create.
     steps.crashAt = 0;
-    engine.start();
+    void engine.start();
     await settle();
     expect(engine.status).toBe("error");
     expect(engine.lastError).toBeInstanceOf(Crash);

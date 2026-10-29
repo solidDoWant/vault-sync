@@ -4,8 +4,8 @@ import { ErrorDetailSchema, ErrorReason } from "../gen/vaultsync/v1/errors_pb";
 import { VaultEncryption, VaultRole, type Vault } from "../gen/vaultsync/v1/types_pb";
 import { jwtSubject } from "../core/auth/oidc";
 import type { AuthState } from "../core/auth/tokens";
-import type { Journal } from "../core/journal/journal";
 import type { ProtocolClient } from "../core/protocol/client";
+import type { SyncJournal } from "../core/sync/journal";
 import type { VaultAdapter } from "../core/vault/adapter";
 import { uuidv7 } from "../core/uuid";
 import type { PathRules } from "../core/vaultpath/platform";
@@ -210,7 +210,7 @@ export function connectedVault(data: PluginData): ConnectedVault | undefined {
 }
 
 /** The journal a session runs over; closed by the controller once the session stopped. */
-export type ClosableJournal = Journal & { close(): void };
+export type ClosableJournal = SyncJournal & { close(): void };
 
 export interface SyncControllerOptions {
   data: () => PluginData;

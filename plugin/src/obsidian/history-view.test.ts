@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { RestoreError, restorePathProblem, type HistoryEntry } from "../core/engine/history";
+import { RestoreError, restorePathProblem, type HistoryEntry } from "../core/sync/history";
 import { posixPathRules } from "../core/vaultpath/platform";
 import { shownText } from "./display-text";
 import { alternativePath, changeLabel, deviceLabel, entryLabel, historyTitle, maxPreviewBytes, otherPathValue, previewOf, restoreFailureText, sizeLabel } from "./history-view";

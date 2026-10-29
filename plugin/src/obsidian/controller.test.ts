@@ -9,8 +9,8 @@ import type { CommitRevisionRequest } from "../gen/vaultsync/v1/sync_pb";
 import { DeviceSchema, VaultEncryption, VaultRole, VaultSchema, type Device, type Revision } from "../gen/vaultsync/v1/types_pb";
 import { VaultService } from "../gen/vaultsync/v1/vault_pb";
 import type { AuthState } from "../core/auth/tokens";
-import { InMemoryServer } from "../core/engine/memory-server";
-import { InMemoryJournal } from "../core/journal/memory";
+import { InMemoryServer } from "../core/sync/memory-server";
+import { MemorySyncJournal } from "../core/sync/journal";
 import { InMemoryRealtimeServer } from "../core/realtime/memory";
 import { createProtocolClient, type ProtocolClient } from "../core/protocol/client";
 import { InMemoryVault } from "../core/vault/memory";
@@ -57,7 +57,7 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
   const devices: Device[] = [];
   /** Removed device ids: their commits are refused as the server refuses them (#590). */
   const removed = new Set<string>();
-  sync.interceptor = (method, request) => {
+  sync.interceptor = (method: string, request: unknown) => {
     if (method !== "CommitRevision") return;
     const commit = request as CommitRevisionRequest;
     if (removed.has(commit.deviceId)) throw deviceNotFound();
@@ -144,7 +144,7 @@ function connected(data: PluginData, vaultId: string): PluginData {
 
 /** A journal that records whether it was closed. */
 function closable(): ClosableJournal & { closed: boolean } {
-  return Object.assign(new InMemoryJournal(), {
+  return Object.assign(new MemorySyncJournal(), {
     closed: false,
     close() {
       this.closed = true;
@@ -556,7 +556,7 @@ describe("SyncController", () => {
     await statusBecomes(f.statuses, "idle");
 
     expect(await f.vault.list()).toEqual(["ok.md"]);
-    expect((await f.controller.session?.unmaterializable())?.map(({ path, reason }) => ({ path, reason }))).toEqual([{ path: "CON.md", reason: "reserved-name" }]);
+    expect((await f.controller.session?.listProblems())?.skipped.map(({ path, reason }) => ({ path, reason }))).toEqual([{ path: "CON.md", reason: "reserved-name" }]);
   });
 
   it("names conflict copies after the Device name setting without its invisible characters (#557)", async () => {
@@ -570,7 +570,7 @@ describe("SyncController", () => {
 
     const copies = (await f.vault.list()).filter((path) => path !== "a.md");
     expect(copies).toHaveLength(1);
-    expect(copies[0]).toMatch(/^a \(conflict Work laptop \d{4}-\d{2}-\d{2} \d{6}\)\.md$/u);
+    expect(copies[0]).toMatch(/^a \(Conflicted copy Work laptop \d{12}\)\.md$/u);
     await f.controller.stop();
   });
 
@@ -860,7 +860,7 @@ describe("a device removed from another device (#590)", () => {
     expect(f.data.device).toEqual({ id: "device-2", serverUrl: "https://sync.example", issuer: "https://auth.example/", subject: "alice" });
     expect(server.sync.liveFiles()).toEqual(new Map([["unsynced.md", "written after the removal"]]));
     expect(server.sync.revisionAt(1n).deviceId).toBe("device-2");
-    expect(await f.controller.session?.rejected()).toEqual([]);
+    expect((await f.controller.session?.listProblems())?.refused).toEqual([]);
     await f.controller.stop();
   });
 
@@ -892,7 +892,7 @@ describe("a device removed from another device (#590)", () => {
     await statusBecomes(f.statuses, "idle");
 
     let lost = false;
-    server.sync.responseInterceptor = (method, request) => {
+    server.sync.responseInterceptor = (method: string, request: unknown) => {
       if (method !== "CommitRevision" || lost) return;
       lost = true;
       // The commit landed; the device is removed before the response arrives.
@@ -901,14 +901,14 @@ describe("a device removed from another device (#590)", () => {
     };
     await f.vault.write("note.md", bytes("the edit"));
     await f.controller.syncNow();
-    await statusBecomes(f.statuses, "device-removed");
     expect(server.sync.currentHeadSeq).toBe(1n);
 
-    await f.controller.registerAgain();
+    // The next sync finds the landed commit in the change list before it would commit again.
+    await f.controller.syncNow();
     const status = await statusBecomes(f.statuses, "idle");
 
     expect(status).toEqual({ state: "idle", conflicts: 0, pending: 0 });
-    expect(await f.controller.session?.rejected()).toEqual([]);
+    expect((await f.controller.session?.listProblems())?.refused).toEqual([]);
     // Committed once, by the device that committed it.
     expect(server.sync.currentHeadSeq).toBe(1n);
     expect(server.sync.revisionAt(1n).deviceId).toBe("device-1");
@@ -923,7 +923,7 @@ describe("a device removed from another device (#590)", () => {
     await f.controller.update();
     await statusBecomes(f.statuses, "idle");
 
-    server.sync.interceptor = (method) => {
+    server.sync.interceptor = (method: string) => {
       if (method === "CommitRevision") throw new ConnectError("vault not found", Code.NotFound);
     };
     await f.vault.write("note.md", bytes("the edit"));

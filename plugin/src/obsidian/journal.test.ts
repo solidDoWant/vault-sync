@@ -2,12 +2,16 @@ import { IDBFactory as FakeIDBFactory } from "fake-indexeddb";
 import type { App } from "obsidian";
 import { describe, expect, it } from "vitest";
 
-import { samplePending } from "../core/journal/conformance";
-import { journalMigrations } from "../core/journal/indexeddb";
+import type { IndexedDbSyncJournal } from "../core/sync/indexeddb";
+import type { PendingOp } from "../core/sync/journal";
 import { journalDatabaseName, openVaultJournal } from "./journal";
 
 /** The part of Obsidian's App the journal reads: the open vault's id. */
 const vault = (appId: unknown) => ({ appId }) as unknown as App;
+
+const setCursor = (journal: IndexedDbSyncJournal, seq: bigint) => journal.commit({ cursor: { seq, anchor: new Uint8Array() } });
+const getCursor = async (journal: IndexedDbSyncJournal) => (await journal.load()).cursor.seq;
+const pending: PendingOp = { opId: "op-1", order: 1, documentId: "doc-1", kind: "create", path: "a.md", docKind: "text", revisionId: "rev-1", contentHash: "", contentSize: 0, sent: false };
 
 const key = { serverUrl: "https://sync.example.com", vaultId: "vault-1" };
 
@@ -18,13 +22,13 @@ describe("openVaultJournal", () => {
     const first = await openVaultJournal(vault("aaaa1111"), key, origin);
     const second = await openVaultJournal(vault("bbbb2222"), key, origin);
 
-    await first.setCursor(5n);
-    await first.addPending(samplePending());
+    await setCursor(first, 5n);
+    await first.commit({ putPending: [pending] });
 
-    expect(await second.getCursor()).toBe(0n);
-    expect(await second.listPending()).toEqual([]);
-    await second.setCursor(2n);
-    expect(await first.getCursor()).toBe(5n);
+    expect(await getCursor(second)).toBe(0n);
+    expect((await second.load()).pending).toEqual([]);
+    await setCursor(second, 2n);
+    expect(await getCursor(first)).toBe(5n);
     first.close();
     second.close();
   });
@@ -32,11 +36,11 @@ describe("openVaultJournal", () => {
   it("reopens the same journal for the same vault, server and server vault", async () => {
     const origin = new FakeIDBFactory();
     const before = await openVaultJournal(vault("aaaa1111"), key, origin);
-    await before.setCursor(5n);
+    await setCursor(before, 5n);
     before.close();
 
     const after = await openVaultJournal(vault("aaaa1111"), { serverUrl: "https://SYNC.example.com:443/", vaultId: "vault-1" }, origin);
-    expect(await after.getCursor()).toBe(5n);
+    expect(await getCursor(after)).toBe(5n);
     after.close();
   });
 
@@ -47,9 +51,9 @@ describe("openVaultJournal", () => {
   ])("keeps a separate journal for %s", async (_name, other) => {
     const origin = new FakeIDBFactory();
     const first = await openVaultJournal(vault("aaaa1111"), key, origin);
-    await first.setCursor(5n);
+    await setCursor(first, 5n);
     const second = await openVaultJournal(vault("aaaa1111"), other, origin);
-    expect(await second.getCursor()).toBe(0n);
+    expect(await getCursor(second)).toBe(0n);
     first.close();
     second.close();
   });
@@ -86,28 +90,6 @@ describe("journalDatabaseName", () => {
         vaultId: "vault-1",
       }),
     );
-  });
-
-  it("reports an open that waits for another connection", async () => {
-    const origin = new FakeIDBFactory();
-    const name = journalDatabaseName("aaaa1111", key);
-    // An old schema, held open by a connection that ignores versionchange.
-    const stale = await new Promise<IDBDatabase>((resolve) => {
-      const request = origin.open(name, 1);
-      request.onupgradeneeded = () => {
-        if (request.transaction !== null) journalMigrations[0]?.(request.transaction, { fileKey: (path) => path });
-      };
-      request.onsuccess = () => {
-        resolve(request.result);
-      };
-    });
-    let blocked = false;
-    const opening = openVaultJournal(vault("aaaa1111"), key, origin, {
-      onBlocked: () => (blocked = true),
-    });
-    await expect.poll(() => blocked).toBe(true);
-    stale.close();
-    (await opening).close();
   });
 
   it("cannot be confused by separators inside its parts", () => {

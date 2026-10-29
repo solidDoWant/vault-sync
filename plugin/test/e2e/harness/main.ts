@@ -3,19 +3,17 @@ import { FileSystemAdapter, FileView, MarkdownView, normalizePath, Plugin, TextF
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
-import type { ConfigSyncSettings } from "../../../src/core/config/policy";
-import type { HistoryEntry } from "../../../src/core/engine/history";
-import { InMemoryServer } from "../../../src/core/engine/memory-server";
 import { sha256Hex } from "../../../src/core/hash";
-import { journalConformance, runJournalConformanceCase } from "../../../src/core/journal/conformance";
-import { IndexedDbJournal } from "../../../src/core/journal/indexeddb";
 import { createProtocolClient } from "../../../src/core/protocol/client";
+import type { HistoryEntry } from "../../../src/core/sync/history";
+import { IndexedDbSyncJournal } from "../../../src/core/sync/indexeddb";
+import type { JournalState } from "../../../src/core/sync/journal";
+import { InMemoryServer } from "../../../src/core/sync/memory-server";
 import { uuidv7 } from "../../../src/core/uuid";
 import { VaultError, type FileStat, type VaultEvent } from "../../../src/core/vault/adapter";
 import { isVaultRelativePath } from "../../../src/core/vaultpath/vaultpath";
 import { runConformanceCase, vaultAdapterConformance, type VaultAdapterFactory } from "../../../src/core/vault/conformance";
 import type VaultSyncPlugin from "../../../src/main";
-import { configFolderHost, ObsidianConfigAdapter } from "../../../src/obsidian/config-adapter";
 import { HistoryModal } from "../../../src/obsidian/history-modal";
 import { journalDatabaseName, localVaultId, openVaultJournal, type JournalKey } from "../../../src/obsidian/journal";
 import type { SyncSession, VaultHistory } from "../../../src/obsidian/session";
@@ -173,15 +171,6 @@ export interface PathScopeResult {
   inside: string;
 }
 
-/** What the config folder adapter makes of one path (paths.e2e.ts). */
-export interface ConfigPathScopeResult {
-  /** Each call's outcome: "ok", a VaultError code, or the error. */
-  write: string;
-  rename: string;
-  /** Every file on disk afterwards in the test folder, and a stray evil.json in the config folder, sorted. */
-  files: string[];
-}
-
 /** What one sync session start saw (lifecycle.e2e.ts). bigints as strings, to cross executeObsidian. */
 export interface SessionStart {
   cursor: string | null;
@@ -262,22 +251,12 @@ export default class VaultSyncE2EHarness extends Plugin {
   /** Events an Obsidian adapter watched from onload on, i.e. through Obsidian's startup indexing. */
   private readonly sinceLoad: VaultEvent[] = [];
 
-  private session: { server: InMemoryServer; journalKey: JournalKey; journal: IndexedDbJournal | undefined; listChangesSince: string[]; localChanges: VaultEvent[][] } | undefined;
-
-  /** Paths (relative to the config folder) a config folder adapter watched from onload on reported, in order. */
-  private readonly configSinceLoad: string[] = [];
+  private session: { server: InMemoryServer; journalKey: JournalKey; journal: IndexedDbSyncJournal | undefined; listChangesSince: string[] } | undefined;
 
   override onload(): void {
     // Registered as early as a plugin can: Obsidian may still be indexing.
     const stop = new ObsidianVaultAdapter(this.app).watch((event) => this.sinceLoad.push(event));
     this.register(stop);
-    // Obsidian saves community-plugins.json again once it has loaded every enabled plugin, this one included (config.e2e.ts).
-    this.register(new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)).watch((event) => this.configSinceLoad.push(event.path)));
-  }
-
-  /** The config files (relative to the config folder) Obsidian wrote since this plugin loaded. */
-  configWritesSinceLoad(): string[] {
-    return [...new Set(this.configSinceLoad)];
   }
 
   /** The conformance case names, in suite order. */
@@ -333,74 +312,32 @@ export default class VaultSyncE2EHarness extends Plugin {
   }
 
   /**
-   * The same for the config folder adapter (paths.e2e.ts, #148): `relative`
-   * is written and renamed onto under the config folder's
-   * `vault-sync-e2e-paths/` folder, which holds only inside.json, and every
-   * file then in that folder (and an evil.json the write might have put in
-   * the config folder itself) is reported, then removed.
+   * Writes every kind of record to a journal on Obsidian's own IndexedDB, in
+   * a database of its own, and reads it back through a new connection, as
+   * after an app restart. Resolves with what the second connection read,
+   * which must equal what the first one wrote.
    */
-  async configPathScope(relative: string): Promise<ConfigPathScopeResult> {
-    const host = configFolderHost(this.app, normalizePath);
-    const disk = this.app.vault.adapter;
-    const folder = "vault-sync-e2e-paths";
-    const root = `${host.configDir}/${folder}`;
-    const adapter = new ObsidianConfigAdapter(host);
-    await adapter.write(`${folder}/inside.json`, encoder.encode("{}"));
-    const outcome = async (run: () => Promise<unknown>) => {
-      try {
-        await run();
-        return "ok";
-      } catch (error) {
-        return error instanceof VaultError ? error.code : describeError(error);
-      }
-    };
-    const path = `${folder}/${relative}`;
-    const write = await outcome(() => adapter.write(path, encoder.encode("{}")));
-    const rename = await outcome(() => adapter.rename(`${folder}/inside.json`, path));
-    const files: string[] = [];
-    const folders = [root];
-    for (let next = folders.pop(); next !== undefined; next = folders.pop()) {
-      const listed = await disk.list(next);
-      files.push(...listed.files);
-      folders.push(...listed.folders);
-    }
-    const stray = `${host.configDir}/evil.json`;
-    if (await disk.exists(stray)) {
-      files.push(stray);
-      await disk.remove(stray);
-    }
-    await disk.rmdir(root, true);
-    return { write, rename, files: files.sort() };
-  }
-
-  /** The Journal conformance case names, in suite order. */
-  journalConformanceCaseNames(): string[] {
-    return journalConformance.map((testCase) => testCase.name);
-  }
-
-  /** Runs one Journal conformance case against an IndexedDbJournal on Obsidian's own IndexedDB, in a database of its own. */
-  async runJournalConformanceCase(name: string): Promise<CaseResult> {
-    const testCase = journalConformance.find((candidate) => candidate.name === name);
-    if (testCase === undefined) return { ok: false, error: `no journal conformance case named ${JSON.stringify(name)}` };
-    const database = `vault-sync-e2e-journal-conformance-${String(Date.now())}-${String(Math.random()).slice(2)}`;
-    let current: IndexedDbJournal | undefined;
+  async journalSurvivesReopen(): Promise<{ written: string; read: string }> {
+    const database = `vault-sync-e2e-journal-${String(Date.now())}-${String(Math.random()).slice(2)}`;
+    const first = await IndexedDbSyncJournal.open(window.indexedDB, database);
     try {
-      const first = await IndexedDbJournal.open(window.indexedDB, database);
-      current = first;
-      await runJournalConformanceCase(testCase, () => ({
-        journal: first,
-        // An app restart: a new connection to the same database.
-        reopen: async () => {
-          current?.close();
-          current = await IndexedDbJournal.open(window.indexedDB, database);
-          return current;
-        },
-      }));
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: describeError(error) };
+      await first.commit({
+        cursor: { seq: 7n, anchor: new Uint8Array([1, 2, 3]) },
+        putDocs: [{ documentId: "doc-1", path: "a.md", kind: "text", baseRevId: "rev-1", baseHash: "ab", baseSize: 2 }],
+        putPending: [{ opId: "op-1", order: 1, documentId: "doc-1", kind: "edit", path: "a.md", docKind: "text", revisionId: "rev-2", contentHash: "cd", contentSize: 3, sent: true }],
+        putConflicts: [{ path: "a (Conflicted copy).md", documentId: "doc-1", createdAt: 1 }],
+        putSkipped: [{ documentId: "doc-2", path: "big.bin", reason: "too-large", size: 9 }],
+      });
+      const written = journalText(await first.load());
+      first.close();
+      const second = await IndexedDbSyncJournal.open(window.indexedDB, database);
+      try {
+        return { written, read: journalText(await second.load()) };
+      } finally {
+        second.close();
+      }
     } finally {
-      current?.close();
+      first.close();
       await deleteDatabase(database);
     }
   }
@@ -414,7 +351,7 @@ export default class VaultSyncE2EHarness extends Plugin {
   async setJournalCursor(key: JournalKey, seq: string): Promise<void> {
     const journal = await openVaultJournal(this.app, key);
     try {
-      await journal.resetCursor(BigInt(seq));
+      await journal.commit({ cursor: { seq: BigInt(seq), anchor: new Uint8Array() } });
     } finally {
       journal.close();
     }
@@ -425,9 +362,9 @@ export default class VaultSyncE2EHarness extends Plugin {
    * `vaultId` (default: the open vault), read from this window's IndexedDB.
    */
   async journalCursor(key: JournalKey, vaultId?: string): Promise<string> {
-    const journal = await IndexedDbJournal.open(window.indexedDB, journalDatabaseName(vaultId ?? localVaultId(this.app), key));
+    const journal = await IndexedDbSyncJournal.open(window.indexedDB, journalDatabaseName(vaultId ?? localVaultId(this.app), key));
     try {
-      return String(await journal.getCursor());
+      return String((await journal.load()).cursor.seq);
     } finally {
       journal.close();
     }
@@ -699,49 +636,39 @@ export default class VaultSyncE2EHarness extends Plugin {
     await emptyVault(this.app);
     const server = new InMemoryServer();
     const listChangesSince: string[] = [];
-    server.interceptor = (method, request) => {
+    server.interceptor = (method: string, request: unknown) => {
       if (method === "ListChanges") listChangesSince.push(String((request as { sinceSeq: bigint }).sinceSeq));
     };
     server.commit({ documentId: "doc-synced", path: "Synced.md", content: "synced from the server\n" });
     const journalKey = { serverUrl: "https://e2e.invalid", vaultId: server.vaultId };
     this.session?.journal?.close();
     await this.deleteJournal(journalKey);
-    this.session = { server, journalKey, journal: undefined, listChangesSince, localChanges: [] };
+    this.session = { server, journalKey, journal: undefined, listChangesSince };
   }
 
   /**
    * Starts sync in the vault-sync plugin over the session's server and the
    * open vault's IndexedDB journal, through a new connection each time: only
    * what the journal stored survives vault-sync's disable/enable cycle.
-   * The session never pushes on its own (no debounced push after a local
-   * change or a merge, and no sync timer), so the only pulls and pushes
-   * after the start are the spec's (syncSession, typeThenSync). A push the
-   * engine started on its own would otherwise run first whenever it falls
-   * due while a spec awaits, and the spec's own push, queued behind it,
-   * would see what that one left (#589). No spec relies on automatic pushes
-   * through the harness, so every session runs without them (#600).
+   * The session never syncs on its own (no debounced sync after a local
+   * change, and no sync timer), so the only syncs after the start are the
+   * spec's (syncSession, typeThenSync).
    */
   async startSession(): Promise<SessionStart> {
     const session = this.requireSession();
     session.journal?.close();
     session.journal = await openVaultJournal(this.app, session.journalKey);
     session.listChangesSince.length = 0;
-    const changes: VaultEvent[] = [];
-    session.localChanges.push(changes);
-    const summary = await this.vaultSync().startSync({
+    const before = (await session.journal.load()).cursor.seq;
+    await this.vaultSync().startSync({
       vaultId: session.server.vaultId,
       deviceId: "e2e-device",
       api: createProtocolClient({ transport: session.server.transport }),
       journal: session.journal,
-      onLocalChange: (event) => changes.push(event),
       pushDebounceMs: null,
     });
-    return { cursor: summary === undefined ? null : String(summary.cursor), applied: summary?.applied ?? 0, listChangesSince: [...session.listChangesSince] };
-  }
-
-  /** The local changes each started session reported, in start order. */
-  sessionLocalChanges(): VaultEvent[][] {
-    return this.requireSession().localChanges.map((changes) => [...changes]);
+    const after = (await session.journal.load()).cursor.seq;
+    return { cursor: String(after), applied: Number(after - before), listChangesSince: [...session.listChangesSince] };
   }
 
   /** Commits `content` at `path` on the session's server, as another device would. */
@@ -749,18 +676,11 @@ export default class VaultSyncE2EHarness extends Plugin {
     this.requireSession().server.commit({ documentId, path, content });
   }
 
-  /** Sets vault-sync's config sync settings for the sessions startSession starts from now on (config.e2e.ts). */
-  setConfigSync(settings: ConfigSyncSettings | null): void {
-    const plugin = this.vaultSync();
-    if (settings === null) delete plugin.data.configSync;
-    else plugin.data.configSync = settings;
-  }
-
-  /** The documents the session startSession started tracks as unmaterializable, with their reasons, sorted by path. */
+  /** The documents the session startSession started skips because this device cannot hold their paths, with their reasons, sorted by path. */
   async sessionUnmaterializable(): Promise<{ path: string; reason: string }[]> {
     const session = (this.vaultSync() as unknown as { session: SyncSession | undefined }).session;
     if (session === undefined) throw new Error("startSession() first");
-    return (await session.unmaterializable()).map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));
+    return (await session.listProblems()).skipped.map(({ path, reason }) => ({ path, reason })).sort((left, right) => (left.path < right.path ? -1 : 1));
   }
 
   /** Writes `content` at `path` through the Obsidian adapter, with no precondition: "ok" or the error it rejected with (platform.e2e.ts). */
@@ -881,13 +801,15 @@ export default class VaultSyncE2EHarness extends Plugin {
     return adapter instanceof FileSystemAdapter ? adapter.getBasePath() : null;
   }
 
-  /** Pulls and pushes now in the session startSession started; resolves with what the push committed. */
+  /** Syncs now in the session startSession started; resolves with the number of revisions the server gained. */
   async syncSession(): Promise<number> {
     const session = (this.vaultSync() as unknown as { session: SyncSession | undefined }).session;
     if (session === undefined) throw new Error("startSession() first");
-    const summary = await session.syncNow();
-    if (summary === undefined) throw new Error(`the sync failed: ${describeError((session as unknown as { failure: unknown }).failure)}`);
-    return summary.committed;
+    const { server } = this.requireSession();
+    const before = server.revisionCount;
+    const failure = await session.syncNow();
+    if (failure !== undefined) throw new Error(`the sync failed: ${describeError(failure.error)}`);
+    return server.revisionCount - before;
   }
 
   /** The session server's live paths, sorted, and its newest seq. */
@@ -905,20 +827,6 @@ export default class VaultSyncE2EHarness extends Plugin {
   commitOnServer(path: string, content: string): void {
     const { server } = this.requireSession();
     server.commit({ documentId: server.liveDocuments().get(path) ?? `remote-${path}`, path, content });
-  }
-
-  /** Paths (relative to the config folder) a config folder adapter reported since watchConfigFolder(), in order. */
-  private readonly configEvents: string[] = [];
-
-  /** Starts recording the changes an Obsidian config folder adapter reports, to show they happen. */
-  watchConfigFolder(): void {
-    this.configEvents.length = 0;
-    this.register(new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)).watch((event) => this.configEvents.push(event.path)));
-  }
-
-  /** What watchConfigFolder() recorded. */
-  reportedConfigChanges(): string[] {
-    return [...this.configEvents];
   }
 
   /** Modifies a file the way a user edit lands on disk. */
@@ -1000,7 +908,6 @@ export default class VaultSyncE2EHarness extends Plugin {
       history: (documentId) => Promise.resolve({ documentId, headRevisionId: "role-2", entries, nextPageToken: "" }),
       readRevision: (revision) => Promise.resolve(encoder.encode(contents.get(revision.revisionId) ?? "")),
       restore: () => Promise.reject(new Error("restoring is not part of this check")),
-      deletedDocuments: () => Promise.resolve([]),
       canRestore: () => (role === "unknown" ? Promise.reject(new Error("ListVaults failed")) : Promise.resolve(role === "editor")),
     };
     new HistoryModal(this.app, history, "role-check", "Role.md").open();
@@ -1220,4 +1127,14 @@ function deleteDatabase(name: string): Promise<void> {
 
 function describeError(error: unknown): string {
   return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+}
+
+/** A journal's state as text, for comparing two reads of it. */
+function journalText(state: JournalState): string {
+  return JSON.stringify(state, (_key, value: unknown) => {
+    if (typeof value === "bigint") return value.toString();
+    if (value instanceof Map) return [...(value as Map<unknown, unknown>).entries()];
+    if (value instanceof Uint8Array) return [...value];
+    return value;
+  });
 }
