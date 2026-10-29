@@ -16,7 +16,10 @@ Out of scope for Phase 2: vault sharing, end-to-end encryption, live co-editing,
 ## 2. Model
 
 - **Server.** One ordered change list per vault (`ListChanges`, `seq` ascending). A document has a stable id, a path, a kind and a head revision. Commits are optimistic: `CommitRevision` succeeds only if `base_rev_id` is the document's head, and is idempotent by `revision_id` (SPEC §6.2). The server refuses a path that collides with another live document (`ALREADY_EXISTS`).
-- **Document kinds.** `TEXT` is Markdown (`.md`), merged three-way. `BLOB` is everything else: the newest wins, and the loser becomes a conflict copy. `FOLDER` is new: a folder with no content, so empty folders sync.
+- **Document kinds.** `TEXT` is Markdown (`.md`), merged three-way. `BLOB` is everything else: the newest wins, and the loser becomes a conflict copy. `FOLDER` is new: a folder with no content. **Every folder is a `FOLDER` document**, not only empty ones, so each device's folders mirror the server the same way its files do.
+  - **Detection:** a folder on disk with no document is a create, including folders Obsidian makes as a new file's parent. A folder document whose folder is gone is a delete. Obsidian's folder rename event keeps the document.
+  - **Remote folder revision:** a live revision creates or moves the folder with its contents, using rule W for the path. If a child is already at its target, that step is a no-op. A tombstone deletes the folder only if nothing live remains in it.
+  - **A live item keeps its ancestors live:** a device that keeps, re-creates or writes an item whose parent folder document is missing or deleted creates the folder and pushes its document as a create, or as a re-create on the tombstone.
 - **Device journal** (IndexedDB, one per vault, a fresh schema; there is no migration from the old engine's journal):
   - `cursor`: the last applied `seq`, plus its `anchor`.
   - `docs`: `document_id` → `{ path, kind, base_rev_id, base_hash }`. `base_*` is the revision this device last synced for the document; `base_hash` is the SHA-256 of its content.
