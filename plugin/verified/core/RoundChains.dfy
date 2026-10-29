@@ -638,6 +638,12 @@ abstract module RoundChains refines RoundLinks {
     if !Distinct(platform, settled.listing) { return; }
     if e == doc {
       RuleChainOwn(platform, d, accepted, base0, b0, bd0, read0, c0, rows, doc, r, inner, revs', first, rs, saved, x);
+      assert exists rs', saved', x' :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
+          && (OthersIn(d, rs) ==> OthersIn(d, rs'))
+          && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs'));
+      assert exists rs' :: exists saved', x' :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
+          && (OthersIn(d, rs) ==> OthersIn(d, rs'))
+          && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs')));
       var rs' := var rs' :| exists saved', x' :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
           && (OthersIn(d, rs) ==> OthersIn(d, rs'))
           && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs'))); rs';
