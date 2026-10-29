@@ -181,7 +181,10 @@ type KeyEpoch struct {
 	// The owner who created the epoch.
 	CreatorUserId string `protobuf:"bytes,3,opt,name=creator_user_id,json=creatorUserId,proto3" json:"creator_user_id,omitempty"`
 	// When the epoch was created.
-	CreateTime    *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	CreateTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=create_time,json=createTime,proto3" json:"create_time,omitempty"`
+	// The owner's signed epoch record (docs/design/crypto.md), as RotateEpoch
+	// stored it. Unset for an epoch created without one (a member removal).
+	Record        *EpochRecord `protobuf:"bytes,5,opt,name=record,proto3" json:"record,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -244,6 +247,157 @@ func (x *KeyEpoch) GetCreateTime() *timestamppb.Timestamp {
 	return nil
 }
 
+func (x *KeyEpoch) GetRecord() *EpochRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+// EpochRecipient is one recipient of a signed epoch record.
+type EpochRecipient struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The recipient kind byte: 1 (user), 2 (escrow) or 3 (invitation).
+	Kind uint32 `protobuf:"varint,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// The encoded recipient id: the 16 bytes of the user or invitation id,
+	// or the escrow key id.
+	RecipientId []byte `protobuf:"bytes,2,opt,name=recipient_id,json=recipientId,proto3" json:"recipient_id,omitempty"`
+	// SHA-256 of the recipient's public key as the membership log records it
+	// (32 bytes).
+	KeyHash       []byte `protobuf:"bytes,3,opt,name=key_hash,json=keyHash,proto3" json:"key_hash,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EpochRecipient) Reset() {
+	*x = EpochRecipient{}
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EpochRecipient) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EpochRecipient) ProtoMessage() {}
+
+func (x *EpochRecipient) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EpochRecipient.ProtoReflect.Descriptor instead.
+func (*EpochRecipient) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *EpochRecipient) GetKind() uint32 {
+	if x != nil {
+		return x.Kind
+	}
+	return 0
+}
+
+func (x *EpochRecipient) GetRecipientId() []byte {
+	if x != nil {
+		return x.RecipientId
+	}
+	return nil
+}
+
+func (x *EpochRecipient) GetKeyHash() []byte {
+	if x != nil {
+		return x.KeyHash
+	}
+	return nil
+}
+
+// EpochRecord is an owner's signature over a new epoch
+// (docs/design/crypto.md, epoch_body). The vault, the epoch number, its
+// commitment and the previous epoch's commitment are the epoch's own and
+// are not repeated here.
+type EpochRecord struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The membership log position the record names, from 1.
+	LogSeq uint64 `protobuf:"varint,1,opt,name=log_seq,json=logSeq,proto3" json:"log_seq,omitempty"`
+	// The hash of the log entry at log_seq (32 bytes).
+	LogHash []byte `protobuf:"bytes,2,opt,name=log_hash,json=logHash,proto3" json:"log_hash,omitempty"`
+	// Every recipient of the epoch, sorted by kind, then recipient id: the
+	// members at log_seq, the pending invitations and the escrow key if
+	// escrow is on.
+	Recipients []*EpochRecipient `protobuf:"bytes,3,rep,name=recipients,proto3" json:"recipients,omitempty"`
+	// The Ed25519 signature of epoch_body by an owner at log_seq (64 bytes).
+	Signature     []byte `protobuf:"bytes,4,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EpochRecord) Reset() {
+	*x = EpochRecord{}
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EpochRecord) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EpochRecord) ProtoMessage() {}
+
+func (x *EpochRecord) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EpochRecord.ProtoReflect.Descriptor instead.
+func (*EpochRecord) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *EpochRecord) GetLogSeq() uint64 {
+	if x != nil {
+		return x.LogSeq
+	}
+	return 0
+}
+
+func (x *EpochRecord) GetLogHash() []byte {
+	if x != nil {
+		return x.LogHash
+	}
+	return nil
+}
+
+func (x *EpochRecord) GetRecipients() []*EpochRecipient {
+	if x != nil {
+		return x.Recipients
+	}
+	return nil
+}
+
+func (x *EpochRecord) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 // NextEpoch is the epoch that replaces the vault's current one.
 type NextEpoch struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -261,7 +415,7 @@ type NextEpoch struct {
 
 func (x *NextEpoch) Reset() {
 	*x = NextEpoch{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[2]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -273,7 +427,7 @@ func (x *NextEpoch) String() string {
 func (*NextEpoch) ProtoMessage() {}
 
 func (x *NextEpoch) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[2]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -286,7 +440,7 @@ func (x *NextEpoch) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use NextEpoch.ProtoReflect.Descriptor instead.
 func (*NextEpoch) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{2}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *NextEpoch) GetExpectedEpoch() uint32 {
@@ -326,7 +480,7 @@ type MissingSlot struct {
 
 func (x *MissingSlot) Reset() {
 	*x = MissingSlot{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[3]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -338,7 +492,7 @@ func (x *MissingSlot) String() string {
 func (*MissingSlot) ProtoMessage() {}
 
 func (x *MissingSlot) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[3]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -351,7 +505,7 @@ func (x *MissingSlot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MissingSlot.ProtoReflect.Descriptor instead.
 func (*MissingSlot) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{3}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *MissingSlot) GetEpoch() uint32 {
@@ -391,7 +545,7 @@ type ListKeySlotsRequest struct {
 
 func (x *ListKeySlotsRequest) Reset() {
 	*x = ListKeySlotsRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[4]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -403,7 +557,7 @@ func (x *ListKeySlotsRequest) String() string {
 func (*ListKeySlotsRequest) ProtoMessage() {}
 
 func (x *ListKeySlotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[4]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -416,7 +570,7 @@ func (x *ListKeySlotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListKeySlotsRequest.ProtoReflect.Descriptor instead.
 func (*ListKeySlotsRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{4}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *ListKeySlotsRequest) GetVaultId() string {
@@ -453,7 +607,7 @@ type ListKeySlotsResponse struct {
 
 func (x *ListKeySlotsResponse) Reset() {
 	*x = ListKeySlotsResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[5]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -465,7 +619,7 @@ func (x *ListKeySlotsResponse) String() string {
 func (*ListKeySlotsResponse) ProtoMessage() {}
 
 func (x *ListKeySlotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[5]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -478,7 +632,7 @@ func (x *ListKeySlotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListKeySlotsResponse.ProtoReflect.Descriptor instead.
 func (*ListKeySlotsResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{5}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *ListKeySlotsResponse) GetSlots() []*KeySlot {
@@ -511,7 +665,7 @@ type ListEpochsRequest struct {
 
 func (x *ListEpochsRequest) Reset() {
 	*x = ListEpochsRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[6]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -523,7 +677,7 @@ func (x *ListEpochsRequest) String() string {
 func (*ListEpochsRequest) ProtoMessage() {}
 
 func (x *ListEpochsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[6]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -536,7 +690,7 @@ func (x *ListEpochsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEpochsRequest.ProtoReflect.Descriptor instead.
 func (*ListEpochsRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{6}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *ListEpochsRequest) GetVaultId() string {
@@ -578,7 +732,7 @@ type ListEpochsResponse struct {
 
 func (x *ListEpochsResponse) Reset() {
 	*x = ListEpochsResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[7]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -590,7 +744,7 @@ func (x *ListEpochsResponse) String() string {
 func (*ListEpochsResponse) ProtoMessage() {}
 
 func (x *ListEpochsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[7]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -603,7 +757,7 @@ func (x *ListEpochsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListEpochsResponse.ProtoReflect.Descriptor instead.
 func (*ListEpochsResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{7}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *ListEpochsResponse) GetEpochs() []*KeyEpoch {
@@ -650,7 +804,7 @@ type ListMissingSlotsRequest struct {
 
 func (x *ListMissingSlotsRequest) Reset() {
 	*x = ListMissingSlotsRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -662,7 +816,7 @@ func (x *ListMissingSlotsRequest) String() string {
 func (*ListMissingSlotsRequest) ProtoMessage() {}
 
 func (x *ListMissingSlotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[8]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -675,7 +829,7 @@ func (x *ListMissingSlotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMissingSlotsRequest.ProtoReflect.Descriptor instead.
 func (*ListMissingSlotsRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{8}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *ListMissingSlotsRequest) GetVaultId() string {
@@ -712,7 +866,7 @@ type ListMissingSlotsResponse struct {
 
 func (x *ListMissingSlotsResponse) Reset() {
 	*x = ListMissingSlotsResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[9]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -724,7 +878,7 @@ func (x *ListMissingSlotsResponse) String() string {
 func (*ListMissingSlotsResponse) ProtoMessage() {}
 
 func (x *ListMissingSlotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[9]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -737,7 +891,7 @@ func (x *ListMissingSlotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListMissingSlotsResponse.ProtoReflect.Descriptor instead.
 func (*ListMissingSlotsResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{9}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *ListMissingSlotsResponse) GetMissingSlots() []*MissingSlot {
@@ -760,14 +914,23 @@ type RotateEpochRequest struct {
 	// The vault. The caller must be an owner.
 	VaultId string `protobuf:"bytes,1,opt,name=vault_id,json=vaultId,proto3" json:"vault_id,omitempty"`
 	// The new epoch.
-	NextEpoch     *NextEpoch `protobuf:"bytes,2,opt,name=next_epoch,json=nextEpoch,proto3" json:"next_epoch,omitempty"`
+	NextEpoch *NextEpoch `protobuf:"bytes,2,opt,name=next_epoch,json=nextEpoch,proto3" json:"next_epoch,omitempty"`
+	// The new epoch's signed record. Required for an E2EE vault: it must be
+	// signed by an owner at its log position, and its recipients must be
+	// exactly those the log names there and match next_epoch's slots.
+	Record *EpochRecord `protobuf:"bytes,3,opt,name=record,proto3" json:"record,omitempty"`
+	// The owner's signed escrow on/off entry (type 8), to turn the vault's
+	// escrow on or off with this rotation. It is appended to the membership
+	// log in the same transaction as the epoch, and the record's log
+	// position must be this entry.
+	EscrowEntry   *LogEntry `protobuf:"bytes,4,opt,name=escrow_entry,json=escrowEntry,proto3" json:"escrow_entry,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RotateEpochRequest) Reset() {
 	*x = RotateEpochRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[10]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -779,7 +942,7 @@ func (x *RotateEpochRequest) String() string {
 func (*RotateEpochRequest) ProtoMessage() {}
 
 func (x *RotateEpochRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[10]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -792,7 +955,7 @@ func (x *RotateEpochRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RotateEpochRequest.ProtoReflect.Descriptor instead.
 func (*RotateEpochRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{10}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *RotateEpochRequest) GetVaultId() string {
@@ -809,6 +972,20 @@ func (x *RotateEpochRequest) GetNextEpoch() *NextEpoch {
 	return nil
 }
 
+func (x *RotateEpochRequest) GetRecord() *EpochRecord {
+	if x != nil {
+		return x.Record
+	}
+	return nil
+}
+
+func (x *RotateEpochRequest) GetEscrowEntry() *LogEntry {
+	if x != nil {
+		return x.EscrowEntry
+	}
+	return nil
+}
+
 // RotateEpochResponse returns the new epoch.
 type RotateEpochResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
@@ -820,7 +997,7 @@ type RotateEpochResponse struct {
 
 func (x *RotateEpochResponse) Reset() {
 	*x = RotateEpochResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[11]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +1009,7 @@ func (x *RotateEpochResponse) String() string {
 func (*RotateEpochResponse) ProtoMessage() {}
 
 func (x *RotateEpochResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[11]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +1022,7 @@ func (x *RotateEpochResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RotateEpochResponse.ProtoReflect.Descriptor instead.
 func (*RotateEpochResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{11}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RotateEpochResponse) GetEpoch() *KeyEpoch {
@@ -868,7 +1045,7 @@ type AddKeySlotsRequest struct {
 
 func (x *AddKeySlotsRequest) Reset() {
 	*x = AddKeySlotsRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[12]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -880,7 +1057,7 @@ func (x *AddKeySlotsRequest) String() string {
 func (*AddKeySlotsRequest) ProtoMessage() {}
 
 func (x *AddKeySlotsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[12]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -893,7 +1070,7 @@ func (x *AddKeySlotsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddKeySlotsRequest.ProtoReflect.Descriptor instead.
 func (*AddKeySlotsRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{12}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *AddKeySlotsRequest) GetVaultId() string {
@@ -921,7 +1098,7 @@ type AddKeySlotsResponse struct {
 
 func (x *AddKeySlotsResponse) Reset() {
 	*x = AddKeySlotsResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[13]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -933,7 +1110,7 @@ func (x *AddKeySlotsResponse) String() string {
 func (*AddKeySlotsResponse) ProtoMessage() {}
 
 func (x *AddKeySlotsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[13]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -946,7 +1123,7 @@ func (x *AddKeySlotsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AddKeySlotsResponse.ProtoReflect.Descriptor instead.
 func (*AddKeySlotsResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{13}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AddKeySlotsResponse) GetAdded() uint32 {
@@ -972,7 +1149,7 @@ type ListLogEntriesRequest struct {
 
 func (x *ListLogEntriesRequest) Reset() {
 	*x = ListLogEntriesRequest{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[14]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -984,7 +1161,7 @@ func (x *ListLogEntriesRequest) String() string {
 func (*ListLogEntriesRequest) ProtoMessage() {}
 
 func (x *ListLogEntriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[14]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -997,7 +1174,7 @@ func (x *ListLogEntriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLogEntriesRequest.ProtoReflect.Descriptor instead.
 func (*ListLogEntriesRequest) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{14}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *ListLogEntriesRequest) GetVaultId() string {
@@ -1034,7 +1211,7 @@ type ListLogEntriesResponse struct {
 
 func (x *ListLogEntriesResponse) Reset() {
 	*x = ListLogEntriesResponse{}
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[15]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1046,7 +1223,7 @@ func (x *ListLogEntriesResponse) String() string {
 func (*ListLogEntriesResponse) ProtoMessage() {}
 
 func (x *ListLogEntriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[15]
+	mi := &file_vaultsync_v1_vault_key_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1059,7 +1236,7 @@ func (x *ListLogEntriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ListLogEntriesResponse.ProtoReflect.Descriptor instead.
 func (*ListLogEntriesResponse) Descriptor() ([]byte, []int) {
-	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{15}
+	return file_vaultsync_v1_vault_key_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ListLogEntriesResponse) GetEntries() []*LogEntry {
@@ -1089,7 +1266,7 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"wrappedKey\x12&\n" +
 	"\x0fcreator_user_id\x18\x05 \x01(\tR\rcreatorUserId\x12;\n" +
 	"\vcreate_time\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"createTime\"\xa5\x01\n" +
+	"createTime\"\xd8\x01\n" +
 	"\bKeyEpoch\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\rR\x05epoch\x12\x1e\n" +
 	"\n" +
@@ -1097,7 +1274,19 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"commitment\x12&\n" +
 	"\x0fcreator_user_id\x18\x03 \x01(\tR\rcreatorUserId\x12;\n" +
 	"\vcreate_time\x18\x04 \x01(\v2\x1a.google.protobuf.TimestampR\n" +
-	"createTime\"\x7f\n" +
+	"createTime\x121\n" +
+	"\x06record\x18\x05 \x01(\v2\x19.vaultsync.v1.EpochRecordR\x06record\"b\n" +
+	"\x0eEpochRecipient\x12\x12\n" +
+	"\x04kind\x18\x01 \x01(\rR\x04kind\x12!\n" +
+	"\frecipient_id\x18\x02 \x01(\fR\vrecipientId\x12\x19\n" +
+	"\bkey_hash\x18\x03 \x01(\fR\akeyHash\"\x9d\x01\n" +
+	"\vEpochRecord\x12\x17\n" +
+	"\alog_seq\x18\x01 \x01(\x04R\x06logSeq\x12\x19\n" +
+	"\blog_hash\x18\x02 \x01(\fR\alogHash\x12<\n" +
+	"\n" +
+	"recipients\x18\x03 \x03(\v2\x1c.vaultsync.v1.EpochRecipientR\n" +
+	"recipients\x12\x1c\n" +
+	"\tsignature\x18\x04 \x01(\fR\tsignature\"\x7f\n" +
 	"\tNextEpoch\x12%\n" +
 	"\x0eexpected_epoch\x18\x01 \x01(\rR\rexpectedEpoch\x12\x1e\n" +
 	"\n" +
@@ -1134,11 +1323,13 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"page_token\x18\x03 \x01(\tR\tpageToken\"\x82\x01\n" +
 	"\x18ListMissingSlotsResponse\x12>\n" +
 	"\rmissing_slots\x18\x01 \x03(\v2\x19.vaultsync.v1.MissingSlotR\fmissingSlots\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"g\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"\xd5\x01\n" +
 	"\x12RotateEpochRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x126\n" +
 	"\n" +
-	"next_epoch\x18\x02 \x01(\v2\x17.vaultsync.v1.NextEpochR\tnextEpoch\"C\n" +
+	"next_epoch\x18\x02 \x01(\v2\x17.vaultsync.v1.NextEpochR\tnextEpoch\x121\n" +
+	"\x06record\x18\x03 \x01(\v2\x19.vaultsync.v1.EpochRecordR\x06record\x129\n" +
+	"\fescrow_entry\x18\x04 \x01(\v2\x16.vaultsync.v1.LogEntryR\vescrowEntry\"C\n" +
 	"\x13RotateEpochResponse\x12,\n" +
 	"\x05epoch\x18\x01 \x01(\v2\x16.vaultsync.v1.KeyEpochR\x05epoch\"\\\n" +
 	"\x12AddKeySlotsRequest\x12\x19\n" +
@@ -1180,57 +1371,63 @@ func file_vaultsync_v1_vault_key_proto_rawDescGZIP() []byte {
 }
 
 var file_vaultsync_v1_vault_key_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_vaultsync_v1_vault_key_proto_msgTypes = make([]protoimpl.MessageInfo, 16)
+var file_vaultsync_v1_vault_key_proto_msgTypes = make([]protoimpl.MessageInfo, 18)
 var file_vaultsync_v1_vault_key_proto_goTypes = []any{
 	(KeyRecipientKind)(0),            // 0: vaultsync.v1.KeyRecipientKind
 	(*KeySlot)(nil),                  // 1: vaultsync.v1.KeySlot
 	(*KeyEpoch)(nil),                 // 2: vaultsync.v1.KeyEpoch
-	(*NextEpoch)(nil),                // 3: vaultsync.v1.NextEpoch
-	(*MissingSlot)(nil),              // 4: vaultsync.v1.MissingSlot
-	(*ListKeySlotsRequest)(nil),      // 5: vaultsync.v1.ListKeySlotsRequest
-	(*ListKeySlotsResponse)(nil),     // 6: vaultsync.v1.ListKeySlotsResponse
-	(*ListEpochsRequest)(nil),        // 7: vaultsync.v1.ListEpochsRequest
-	(*ListEpochsResponse)(nil),       // 8: vaultsync.v1.ListEpochsResponse
-	(*ListMissingSlotsRequest)(nil),  // 9: vaultsync.v1.ListMissingSlotsRequest
-	(*ListMissingSlotsResponse)(nil), // 10: vaultsync.v1.ListMissingSlotsResponse
-	(*RotateEpochRequest)(nil),       // 11: vaultsync.v1.RotateEpochRequest
-	(*RotateEpochResponse)(nil),      // 12: vaultsync.v1.RotateEpochResponse
-	(*AddKeySlotsRequest)(nil),       // 13: vaultsync.v1.AddKeySlotsRequest
-	(*AddKeySlotsResponse)(nil),      // 14: vaultsync.v1.AddKeySlotsResponse
-	(*ListLogEntriesRequest)(nil),    // 15: vaultsync.v1.ListLogEntriesRequest
-	(*ListLogEntriesResponse)(nil),   // 16: vaultsync.v1.ListLogEntriesResponse
-	(*timestamppb.Timestamp)(nil),    // 17: google.protobuf.Timestamp
-	(*LogEntry)(nil),                 // 18: vaultsync.v1.LogEntry
+	(*EpochRecipient)(nil),           // 3: vaultsync.v1.EpochRecipient
+	(*EpochRecord)(nil),              // 4: vaultsync.v1.EpochRecord
+	(*NextEpoch)(nil),                // 5: vaultsync.v1.NextEpoch
+	(*MissingSlot)(nil),              // 6: vaultsync.v1.MissingSlot
+	(*ListKeySlotsRequest)(nil),      // 7: vaultsync.v1.ListKeySlotsRequest
+	(*ListKeySlotsResponse)(nil),     // 8: vaultsync.v1.ListKeySlotsResponse
+	(*ListEpochsRequest)(nil),        // 9: vaultsync.v1.ListEpochsRequest
+	(*ListEpochsResponse)(nil),       // 10: vaultsync.v1.ListEpochsResponse
+	(*ListMissingSlotsRequest)(nil),  // 11: vaultsync.v1.ListMissingSlotsRequest
+	(*ListMissingSlotsResponse)(nil), // 12: vaultsync.v1.ListMissingSlotsResponse
+	(*RotateEpochRequest)(nil),       // 13: vaultsync.v1.RotateEpochRequest
+	(*RotateEpochResponse)(nil),      // 14: vaultsync.v1.RotateEpochResponse
+	(*AddKeySlotsRequest)(nil),       // 15: vaultsync.v1.AddKeySlotsRequest
+	(*AddKeySlotsResponse)(nil),      // 16: vaultsync.v1.AddKeySlotsResponse
+	(*ListLogEntriesRequest)(nil),    // 17: vaultsync.v1.ListLogEntriesRequest
+	(*ListLogEntriesResponse)(nil),   // 18: vaultsync.v1.ListLogEntriesResponse
+	(*timestamppb.Timestamp)(nil),    // 19: google.protobuf.Timestamp
+	(*LogEntry)(nil),                 // 20: vaultsync.v1.LogEntry
 }
 var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	0,  // 0: vaultsync.v1.KeySlot.recipient_kind:type_name -> vaultsync.v1.KeyRecipientKind
-	17, // 1: vaultsync.v1.KeySlot.create_time:type_name -> google.protobuf.Timestamp
-	17, // 2: vaultsync.v1.KeyEpoch.create_time:type_name -> google.protobuf.Timestamp
-	1,  // 3: vaultsync.v1.NextEpoch.slots:type_name -> vaultsync.v1.KeySlot
-	1,  // 4: vaultsync.v1.ListKeySlotsResponse.slots:type_name -> vaultsync.v1.KeySlot
-	2,  // 5: vaultsync.v1.ListEpochsResponse.epochs:type_name -> vaultsync.v1.KeyEpoch
-	4,  // 6: vaultsync.v1.ListMissingSlotsResponse.missing_slots:type_name -> vaultsync.v1.MissingSlot
-	3,  // 7: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
-	2,  // 8: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
-	1,  // 9: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
-	18, // 10: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
-	5,  // 11: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
-	7,  // 12: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
-	9,  // 13: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
-	11, // 14: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
-	13, // 15: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
-	15, // 16: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
-	6,  // 17: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
-	8,  // 18: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
-	10, // 19: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
-	12, // 20: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
-	14, // 21: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
-	16, // 22: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
-	17, // [17:23] is the sub-list for method output_type
-	11, // [11:17] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	19, // 1: vaultsync.v1.KeySlot.create_time:type_name -> google.protobuf.Timestamp
+	19, // 2: vaultsync.v1.KeyEpoch.create_time:type_name -> google.protobuf.Timestamp
+	4,  // 3: vaultsync.v1.KeyEpoch.record:type_name -> vaultsync.v1.EpochRecord
+	3,  // 4: vaultsync.v1.EpochRecord.recipients:type_name -> vaultsync.v1.EpochRecipient
+	1,  // 5: vaultsync.v1.NextEpoch.slots:type_name -> vaultsync.v1.KeySlot
+	1,  // 6: vaultsync.v1.ListKeySlotsResponse.slots:type_name -> vaultsync.v1.KeySlot
+	2,  // 7: vaultsync.v1.ListEpochsResponse.epochs:type_name -> vaultsync.v1.KeyEpoch
+	6,  // 8: vaultsync.v1.ListMissingSlotsResponse.missing_slots:type_name -> vaultsync.v1.MissingSlot
+	5,  // 9: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
+	4,  // 10: vaultsync.v1.RotateEpochRequest.record:type_name -> vaultsync.v1.EpochRecord
+	20, // 11: vaultsync.v1.RotateEpochRequest.escrow_entry:type_name -> vaultsync.v1.LogEntry
+	2,  // 12: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
+	1,  // 13: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
+	20, // 14: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
+	7,  // 15: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
+	9,  // 16: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
+	11, // 17: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
+	13, // 18: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
+	15, // 19: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
+	17, // 20: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
+	8,  // 21: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
+	10, // 22: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
+	12, // 23: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
+	14, // 24: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
+	16, // 25: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
+	18, // 26: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
+	21, // [21:27] is the sub-list for method output_type
+	15, // [15:21] is the sub-list for method input_type
+	15, // [15:15] is the sub-list for extension type_name
+	15, // [15:15] is the sub-list for extension extendee
+	0,  // [0:15] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_vault_key_proto_init() }
@@ -1245,7 +1442,7 @@ func file_vaultsync_v1_vault_key_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_vault_key_proto_rawDesc), len(file_vaultsync_v1_vault_key_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   16,
+			NumMessages:   18,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

@@ -125,6 +125,7 @@ func KeyError(err error) error {
 	case errors.Is(err, store.ErrNextEpochRequired),
 		errors.Is(err, store.ErrUnexpectedNextEpoch),
 		errors.Is(err, store.ErrInvalidRecipients),
+		errors.Is(err, store.ErrEpochRecord),
 		errors.Is(err, store.ErrEpochNotFound):
 		return connect.NewError(connect.CodeInvalidArgument, err)
 	default:
@@ -274,6 +275,20 @@ func (service VaultKeyService) RotateEpoch(ctx context.Context, request *connect
 	if err != nil {
 		return nil, err
 	}
+
+	membership, _ := authz.MembershipFromContext(ctx)
+
+	signed, err := parseSignedEpoch(membership.VaultID, request.Msg.GetRecord(), request.Msg.GetEscrowEntry())
+	if err != nil {
+		return nil, err
+	}
+
+	if next.Record, err = encodeEpochRecord(signed.record); err != nil {
+		return nil, service.internal(ctx, "cannot rotate epoch", err)
+	}
+
+	next.EscrowEntry = signed.escrowEntry
+	next.Check = signed.check(next)
 
 	epoch, err := vault.RotateEpoch(ctx, user.ID, next)
 	if err != nil {
@@ -494,5 +509,6 @@ func epochMessage(epoch store.Epoch) *vaultsyncv1.KeyEpoch {
 		Commitment:    epoch.Commitment,
 		CreatorUserId: epoch.CreatedBy.String(),
 		CreateTime:    timestamppb.New(epoch.CreatedAt),
+		Record:        decodeEpochRecord(epoch.Record),
 	}
 }

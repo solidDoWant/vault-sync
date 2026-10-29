@@ -78,7 +78,8 @@ type VaultKeyServiceClient interface {
 	//
 	// Errors: INVALID_ARGUMENT for out-of-bounds fields, or slots that are not
 	// exactly the epoch's recipients (one per member with a user key, plus at
-	// most one escrow slot in an escrow vault); FAILED_PRECONDITION with an
+	// most one escrow slot in an escrow vault), a missing or unverifiable
+	// epoch record or escrow entry (nothing changes); FAILED_PRECONDITION with an
 	// ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT when expected_epoch
 	// is not the vault's current epoch (another rotation won: adopt it), and
 	// without that reason for a plaintext vault.
@@ -216,7 +217,8 @@ type VaultKeyServiceHandler interface {
 	//
 	// Errors: INVALID_ARGUMENT for out-of-bounds fields, or slots that are not
 	// exactly the epoch's recipients (one per member with a user key, plus at
-	// most one escrow slot in an escrow vault); FAILED_PRECONDITION with an
+	// most one escrow slot in an escrow vault), a missing or unverifiable
+	// epoch record or escrow entry (nothing changes); FAILED_PRECONDITION with an
 	// ErrorDetail of reason ERROR_REASON_EPOCH_NOT_CURRENT when expected_epoch
 	// is not the vault's current epoch (another rotation won: adopt it), and
 	// without that reason for a plaintext vault.
