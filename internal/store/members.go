@@ -77,17 +77,27 @@ func lockVault(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID) (int64, error)
 // CreateInvitation stores a pending invitation to the vault with the given
 // role, created by creatorID and redeemable for ttl, whose code hashes to
 // codeHash. It first deletes the vault's expired invitations, then returns
-// ErrInvitationLimit when the vault already has limit pending ones.
-func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID uuid.UUID, role Role, codeHash []byte, ttl time.Duration, limit int) (Invitation, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return Invitation{}, fmt.Errorf("generate invitation id: %w", err)
+// ErrInvitationLimit when the vault already has limit pending ones. The
+// invitation's id is id, or a new one for uuid.Nil. entry is its membership
+// log entry, appended in the same transaction (see appendLog).
+func (vault *VaultStore) CreateInvitation(ctx context.Context, creatorID, id uuid.UUID, role Role, codeHash []byte, ttl time.Duration, limit int, entry *LogAppend) (Invitation, error) {
+	if id == uuid.Nil {
+		generated, err := uuid.NewV7()
+		if err != nil {
+			return Invitation{}, fmt.Errorf("generate invitation id: %w", err)
+		}
+
+		id = generated
 	}
 
 	invitation := Invitation{ID: id, VaultID: vault.vaultID, Role: role, CreatedBy: creatorID}
 
-	err = pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
+	err := pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
 		if _, err := lockVault(ctx, tx, vault.vaultID); err != nil {
+			return err
+		}
+
+		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
 			return err
 		}
 
@@ -152,18 +162,36 @@ func (vault *VaultStore) ListInvitations(ctx context.Context) ([]Invitation, err
 
 // RevokeInvitation deletes a pending invitation of the vault. It returns
 // ErrInvitationNotFound when the vault has no such pending invitation.
-func (vault *VaultStore) RevokeInvitation(ctx context.Context, invitationID uuid.UUID) error {
-	tag, err := vault.store.pool.Exec(ctx, `DELETE FROM vault_invitations WHERE vault_id = $1 AND id = $2 AND expires_at > now()`,
-		vault.vaultID, invitationID)
-	if err != nil {
-		return fmt.Errorf("revoke invitation: %w", err)
-	}
+//
+// In an E2EE vault entry is the revoke entry, appended in the same
+// transaction (see appendLog), and its verification decides whether the
+// invitation is pending: owner devices revoke in the log the invitations
+// they see have expired, whose rows may already be gone.
+func (vault *VaultStore) RevokeInvitation(ctx context.Context, invitationID uuid.UUID, entry *LogAppend) error {
+	return pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
+		if _, err := lockVault(ctx, tx, vault.vaultID); err != nil {
+			return err
+		}
 
-	if tag.RowsAffected() == 0 {
-		return ErrInvitationNotFound
-	}
+		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
+			return err
+		}
 
-	return nil
+		// appendLog accepted an entry only for an E2EE vault.
+		logged := entry != nil
+
+		tag, err := tx.Exec(ctx, `DELETE FROM vault_invitations WHERE vault_id = $1 AND id = $2 AND ($3 OR expires_at > now())`,
+			vault.vaultID, invitationID, logged)
+		if err != nil {
+			return fmt.Errorf("revoke invitation: %w", err)
+		}
+
+		if tag.RowsAffected() == 0 && !logged {
+			return ErrInvitationNotFound
+		}
+
+		return nil
+	})
 }
 
 // RedeemInvitation makes userID a member of the vault of the pending
@@ -172,8 +200,9 @@ func (vault *VaultStore) RevokeInvitation(ctx context.Context, invitationID uuid
 // code that names no pending invitation or an invitation to a deleted
 // vault, ErrAlreadyMember when the user is already a member (the invitation
 // is kept), and ErrMemberLimit when the vault already has memberLimit
-// members (the invitation is kept).
-func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, codeHash []byte, memberLimit int) (Vault, error) {
+// members (the invitation is kept). entry is the redeem entry, appended in
+// the same transaction (see appendLog).
+func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, codeHash []byte, memberLimit int, entry *LogAppend) (Vault, error) {
 	var joined Vault
 
 	err := pgx.BeginFunc(ctx, store.pool, func(tx pgx.Tx) error {
@@ -245,6 +274,10 @@ func (store *Store) RedeemInvitation(ctx context.Context, userID uuid.UUID, code
 
 		if members >= memberLimit {
 			return ErrMemberLimit
+		}
+
+		if err := appendLog(ctx, tx, joined.ID, invitationID, entry); err != nil {
+			return err
 		}
 
 		_, err = tx.Exec(ctx, `INSERT INTO vault_members (vault_id, user_id, role) VALUES ($1, $2, $3)`, joined.ID, userID, joined.Role)
@@ -340,8 +373,9 @@ func lockMember(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID) (role
 // UpdateMemberRole sets userID's role in the vault; demoting an owner also
 // deletes the invitations they created. It returns
 // ErrMemberNotFound when the user is not a member and ErrLastOwner when it
-// would demote the vault's last owner.
-func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID, role Role) (Member, error) {
+// would demote the vault's last owner. entry is the set-role entry, appended
+// in the same transaction (see appendLog).
+func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID, role Role, entry *LogAppend) (Member, error) {
 	member := Member{UserID: userID, Role: role}
 
 	err := pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
@@ -352,6 +386,10 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 
 		if current == RoleOwner && role != RoleOwner && otherOwners == 0 {
 			return ErrLastOwner
+		}
+
+		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
+			return err
 		}
 
 		err = tx.QueryRow(ctx, `
@@ -389,9 +427,10 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 // ErrLastOwner when they are the vault's last owner. The removal is
 // announced on VaultChangedChannel at the vault's current head_seq, so every
 // replica re-checks the vault's realtime subscribers at once and ends the
-// removed member's subscriptions (SPEC.md §6.4).
-func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uuid.UUID, next *NextEpoch) error {
-	return vault.removeMember(ctx, userID, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
+// removed member's subscriptions (SPEC.md §6.4). entry is the remove-member
+// entry, appended in the same transaction (see appendLog).
+func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uuid.UUID, next *NextEpoch, entry *LogAppend) error {
+	return vault.removeMember(ctx, userID, entry, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
 		switch {
 		case state.Encryption == EncryptionE2EE && removedBy == userID:
 			return ErrSelfRemoval
@@ -413,8 +452,9 @@ func (vault *VaultStore) RemoveMember(ctx context.Context, removedBy, userID uui
 // RemoveMember. No owner client takes part, so in an E2EE vault it marks a
 // rotation pending instead of creating the next epoch: revisions are still
 // accepted under the current epoch until an owner rotates (SPEC.md §9.3).
-func (vault *VaultStore) LeaveVault(ctx context.Context, userID uuid.UUID) error {
-	return vault.removeMember(ctx, userID, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
+// entry is the leave entry, appended in the same transaction (see appendLog).
+func (vault *VaultStore) LeaveVault(ctx context.Context, userID uuid.UUID, entry *LogAppend) error {
+	return vault.removeMember(ctx, userID, entry, func(ctx context.Context, tx pgx.Tx, state KeyState) error {
 		if state.Encryption != EncryptionE2EE {
 			return nil
 		}
@@ -428,9 +468,9 @@ func (vault *VaultStore) LeaveVault(ctx context.Context, userID uuid.UUID) error
 	})
 }
 
-// removeMember removes userID and the invitations they created and then runs
-// rekey, in one transaction under the vault row lock.
-func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, rekey func(context.Context, pgx.Tx, KeyState) error) error {
+// removeMember removes userID and the invitations they created, runs rekey
+// and then appends entry, in one transaction under the vault row lock.
+func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, entry *LogAppend, rekey func(context.Context, pgx.Tx, KeyState) error) error {
 	return pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
 		current, otherOwners, headSeq, err := lockMember(ctx, tx, vault.vaultID, userID)
 		if err != nil {
@@ -457,6 +497,10 @@ func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, rek
 		}
 
 		if err := rekey(ctx, tx, state); err != nil {
+			return err
+		}
+
+		if err := appendLog(ctx, tx, vault.vaultID, uuid.Nil, entry); err != nil {
 			return err
 		}
 

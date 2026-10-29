@@ -17,6 +17,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/authz"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -140,9 +141,24 @@ func (service MembershipService) CreateInvitation(ctx context.Context, request *
 	code := inviteCodeEncoding.EncodeToString(raw)
 	hash := sha256.Sum256(raw)
 
-	invitation, err := vault.CreateInvitation(ctx, user.ID, role, hash[:], ttl, MaxPendingInvitationsPerVault)
+	// In an E2EE vault the invitation's id is the one its invite entry names.
+	invitationID, err := inviteEntryID(request.Msg.GetLogEntry())
+	if err != nil {
+		return nil, err
+	}
+
+	entry, err := logAppend(request.Msg.GetLogEntry(), recordsInvite(invitationID, role))
+	if err != nil {
+		return nil, err
+	}
+
+	invitation, err := vault.CreateInvitation(ctx, user.ID, invitationID, role, hash[:], ttl, MaxPendingInvitationsPerVault, entry)
 	if errors.Is(err, store.ErrInvitationLimit) {
 		return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("a vault may have at most %d pending invitations", MaxPendingInvitationsPerVault))
+	}
+
+	if mapped := LogError(err); mapped != nil {
+		return nil, mapped
 	}
 
 	if err != nil {
@@ -184,9 +200,20 @@ func (service MembershipService) RevokeInvitation(ctx context.Context, request *
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invitation_id: %w", err))
 	}
 
-	err = vault.RevokeInvitation(ctx, invitationID)
+	payload, _ := e2ee.IDPayload(invitationID.String()) // a parsed id is canonical.
+
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryRevokeInvitation, payload))
+	if err != nil {
+		return nil, err
+	}
+
+	err = vault.RevokeInvitation(ctx, invitationID, entry)
 	if errors.Is(err, store.ErrInvitationNotFound) {
 		return nil, connect.NewError(connect.CodeNotFound, errors.New("invitation not found"))
+	}
+
+	if mapped := LogError(err); mapped != nil {
+		return nil, mapped
 	}
 
 	if err != nil {
@@ -208,7 +235,15 @@ func (service MembershipService) RedeemInvitation(ctx context.Context, request *
 		return nil, connect.NewError(connect.CodeNotFound, errInvitationNotFound)
 	}
 
-	vault, err := service.Store.RedeemInvitation(ctx, user.ID, hash, MaxMembersPerVault)
+	entry, err := logAppend(request.Msg.GetLogEntry(), recordsRedeem(user.ID))
+	if err != nil {
+		return nil, err
+	}
+
+	vault, err := service.Store.RedeemInvitation(ctx, user.ID, hash, MaxMembersPerVault, entry)
+	if mapped := LogError(err); mapped != nil {
+		return nil, mapped
+	}
 
 	switch {
 	case errors.Is(err, store.ErrInvitationNotFound):
@@ -252,6 +287,10 @@ func (service MembershipService) memberChangeError(ctx context.Context, message 
 	case errors.Is(err, store.ErrLastOwner):
 		return connect.NewError(connect.CodeFailedPrecondition, store.ErrLastOwner)
 	default:
+		if mapped := LogError(err); mapped != nil {
+			return mapped
+		}
+
 		if mapped := KeyError(err); mapped != nil {
 			return mapped
 		}
@@ -277,7 +316,14 @@ func (service MembershipService) UpdateMemberRole(ctx context.Context, request *
 		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("role must be VAULT_ROLE_OWNER, VAULT_ROLE_EDITOR or VAULT_ROLE_VIEWER"))
 	}
 
-	member, err := vault.UpdateMemberRole(ctx, userID, role)
+	payload, _ := e2ee.SetRolePayload(userID.String(), logRole(role)) // a parsed id and a known role.
+
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntrySetRole, payload))
+	if err != nil {
+		return nil, err
+	}
+
+	member, err := vault.UpdateMemberRole(ctx, userID, role, entry)
 	if err != nil {
 		return nil, service.memberChangeError(ctx, "cannot update member role", err)
 	}
@@ -316,7 +362,14 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 		next = &parsed
 	}
 
-	if err := vault.RemoveMember(ctx, owner.ID, userID, next); err != nil {
+	payload, _ := e2ee.IDPayload(userID.String()) // a parsed id is canonical.
+
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryRemoveMember, payload))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := vault.RemoveMember(ctx, owner.ID, userID, next, entry); err != nil {
 		return nil, service.memberChangeError(ctx, "cannot remove member", err)
 	}
 
@@ -324,7 +377,7 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 }
 
 // LeaveVault removes the caller from the vault.
-func (service MembershipService) LeaveVault(ctx context.Context, _ *connect.Request[vaultsyncv1.LeaveVaultRequest]) (*connect.Response[vaultsyncv1.LeaveVaultResponse], error) {
+func (service MembershipService) LeaveVault(ctx context.Context, request *connect.Request[vaultsyncv1.LeaveVaultRequest]) (*connect.Response[vaultsyncv1.LeaveVaultResponse], error) {
 	user, ok := auth.UserFromContext(ctx)
 	if !ok {
 		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrUnauthenticated)
@@ -335,7 +388,14 @@ func (service MembershipService) LeaveVault(ctx context.Context, _ *connect.Requ
 		return nil, err
 	}
 
-	if err := vault.LeaveVault(ctx, user.ID); err != nil {
+	payload, _ := e2ee.IDPayload(user.ID.String()) // a user id is canonical.
+
+	entry, err := logAppend(request.Msg.GetLogEntry(), records(e2ee.EntryLeave, payload))
+	if err != nil {
+		return nil, err
+	}
+
+	if err := vault.LeaveVault(ctx, user.ID, entry); err != nil {
 		return nil, service.memberChangeError(ctx, "cannot leave vault", err)
 	}
 

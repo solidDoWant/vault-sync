@@ -86,6 +86,7 @@ func TestListLogEntriesPagesTheLogForMembersOnlyAgainstPostgres(t *testing.T) {
 	outsider := fixture.keyedMember(t, "outsider")
 
 	request := e2eeCreateRequest(t, "Secret", alice.userID, nil)
+	request.Genesis = alice.genesis(t, request.GetNewVaultId())
 	response, err := fixture.vaultClient().CreateVault(t.Context(), authorized(request, alice.token))
 	require.NoError(t, err)
 	require.Equal(t, request.GetNewVaultId(), response.Msg.GetVault().GetId(), "the vault has the id the genesis signs")
@@ -100,13 +101,12 @@ func TestListLogEntriesPagesTheLogForMembersOnlyAgainstPostgres(t *testing.T) {
 
 	page, err := fixture.logEntries(t, viewer, 0, "")
 	require.NoError(t, err)
-	require.Len(t, page.GetEntries(), 1)
+	require.Len(t, page.GetEntries(), 3, "the genesis, then the viewer's invite and redeem entries")
 	assert.True(t, proto.Equal(request.GetGenesis(), page.GetEntries()[0]), "the genesis is stored as signed")
 	assert.Empty(t, page.GetNextPageToken())
 
-	// Later entries are appended by membership changes; the listing pages
-	// through whatever the log holds, in seq order.
-	for seq := 2; seq <= 5; seq++ {
+	// The listing pages through whatever the log holds, in seq order.
+	for seq := 4; seq <= 5; seq++ {
 		_, err := fixture.pool.Exec(t.Context(), `
 			INSERT INTO vault_log_entries (vault_id, seq, prev_hash, entry_type, payload, signatures)
 			VALUES ($1, $2, $3, 2, $4, $5)`,

@@ -68,7 +68,7 @@ func TestRedeemInvitationLocksTheVaultBeforeTheInvitation(t *testing.T) {
 	require.NoError(t, err)
 
 	codeHash := []byte("about-to-expire-code-hash-000000")
-	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, store.RoleEditor, codeHash, time.Hour, 10)
+	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, uuid.Nil, store.RoleEditor, codeHash, time.Hour, 10, nil)
 	require.NoError(t, err)
 
 	holder, err := pool.Acquire(t.Context())
@@ -87,7 +87,7 @@ func TestRedeemInvitationLocksTheVaultBeforeTheInvitation(t *testing.T) {
 	var group sync.WaitGroup
 
 	group.Go(func() {
-		_, redeemErr = queries.RedeemInvitation(t.Context(), guest, codeHash, 10)
+		_, redeemErr = queries.RedeemInvitation(t.Context(), guest, codeHash, 10, nil)
 	})
 
 	awaitBlockedBy(t, pool, holder.Conn().PgConn().PID())
@@ -126,7 +126,7 @@ func TestConcurrentRedemptionsOfOneCodeAdmitOneMember(t *testing.T) {
 	require.NoError(t, err)
 
 	codeHash := []byte("contended-code-hash-000000000000")
-	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, store.RoleViewer, codeHash, time.Hour, 10)
+	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, uuid.Nil, store.RoleViewer, codeHash, time.Hour, 10, nil)
 	require.NoError(t, err)
 
 	users := make([]uuid.UUID, racers)
@@ -145,7 +145,7 @@ func TestConcurrentRedemptionsOfOneCodeAdmitOneMember(t *testing.T) {
 		group.Go(func() {
 			<-start
 
-			_, errs[racer] = queries.RedeemInvitation(t.Context(), users[racer], codeHash, racers+1)
+			_, errs[racer] = queries.RedeemInvitation(t.Context(), users[racer], codeHash, racers+1, nil)
 		})
 	}
 

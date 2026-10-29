@@ -24,6 +24,17 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 // Membership changes take effect on the caller's next request, on every
 // server replica, and end a removed member's open realtime subscriptions to
 // the vault (with a NOT_FOUND error frame).
+//
+// In an end-to-end encrypted vault every change but ListInvitations and
+// ListMembers carries its signed membership log entry (docs/design/crypto.md,
+// "Identity keys, the membership log and signed epochs"). The server replays
+// it onto the stored log (signatures, hash chain, the signer's right to sign),
+// checks that it records exactly the requested change, and appends it in the
+// same transaction as the change, under the vault row lock. A missing entry,
+// an entry in a plaintext vault, or one that does not verify or does not match
+// the request gets INVALID_ARGUMENT; an entry whose seq is not the log's next
+// gets ABORTED, and the client retries on top of the new head
+// (VaultKeyService.ListLogEntries). A refused change changes nothing.
 service MembershipService {
   // CreateInvitation creates a single-use invitation to the vault and
   // returns its code. The code is returned only here: the server stores only
@@ -140,6 +151,11 @@ message CreateInvitationRequest {
   // How long the invitation stays redeemable, in seconds. Zero selects the
   // server default (7 days); the maximum is 30 days.
   uint32 ttl_seconds = 3;
+  // The signed invite entry of an end-to-end encrypted vault's membership
+  // log (docs/design/crypto.md): required there, and must be unset in a
+  // plaintext vault. Its invitation id becomes the invitation's id and its
+  // role must be the requested role.
+  LogEntry log_entry = 4;
 }
 
 // CreateInvitationResponse returns the invitation and its code.
@@ -169,6 +185,11 @@ message RevokeInvitationRequest {
   string vault_id = 1;
   // Id of a pending invitation to the vault (Invitation.id).
   string invitation_id = 2;
+  // The signed revoke-invitation entry for invitation_id: required in an
+  // end-to-end encrypted vault, and must be unset in a plaintext vault. In
+  // an end-to-end encrypted vault an invitation that has expired but is
+  // still pending in the log can be revoked this way.
+  LogEntry log_entry = 3;
 }
 
 // RevokeInvitationResponse confirms the revocation. It has no fields.
@@ -178,6 +199,10 @@ message RevokeInvitationResponse {}
 message RedeemInvitationRequest {
   // The code from CreateInvitationResponse.code.
   string code = 1;
+  // The redeem entry, signed by the invitation key and then by the caller,
+  // carrying the caller's bundle: required for an invitation to an
+  // end-to-end encrypted vault, and must be unset for a plaintext vault.
+  LogEntry log_entry = 2;
 }
 
 // RedeemInvitationResponse returns the vault the caller joined.
@@ -206,6 +231,9 @@ message UpdateMemberRoleRequest {
   string user_id = 2;
   // The new role. Must not be unspecified.
   VaultRole role = 3;
+  // The signed set-role entry for user_id and role: required in an
+  // end-to-end encrypted vault, and must be unset in a plaintext vault.
+  LogEntry log_entry = 4;
 }
 
 // UpdateMemberRoleResponse returns the updated member.
@@ -226,6 +254,9 @@ message RemoveMemberRequest {
   // at most one escrow slot in an escrow vault), and not to the removed
   // member.
   NextEpoch next_epoch = 3;
+  // The signed remove-member entry for user_id: required in an end-to-end
+  // encrypted vault, and must be unset in a plaintext vault.
+  LogEntry log_entry = 4;
 }
 
 // RemoveMemberResponse confirms the removal. It has no fields.
@@ -235,6 +266,9 @@ message RemoveMemberResponse {}
 message LeaveVaultRequest {
   // The vault. The caller must be a member.
   string vault_id = 1;
+  // The leave entry for the caller, signed by the caller: required in an
+  // end-to-end encrypted vault, and must be unset in a plaintext vault.
+  LogEntry log_entry = 2;
 }
 
 // LeaveVaultResponse confirms the caller left. It has no fields.
