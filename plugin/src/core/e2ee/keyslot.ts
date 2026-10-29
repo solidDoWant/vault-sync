@@ -50,7 +50,7 @@ export class KeyCommitmentError extends Error {
   }
 }
 
-function uuidBytes(name: string, value: string): Uint8Array {
+export function uuidBytes(name: string, value: string): Uint8Array {
   if (!CANONICAL_UUID.test(value)) {
     throw new Error(`e2ee: ${name} ${JSON.stringify(value)} is not a canonical lowercase UUID`);
   }
@@ -67,7 +67,7 @@ function epochBytes(epoch: number): Uint8Array {
   return out;
 }
 
-function concat(...parts: Uint8Array[]): Uint8Array {
+export function concat(...parts: Uint8Array[]): Uint8Array {
   const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
   let offset = 0;
   for (const part of parts) {
