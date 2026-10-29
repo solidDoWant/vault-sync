@@ -141,6 +141,8 @@ export class SyncEngine {
   /** Renames and deletes the engine made, until their events arrive. */
   private readonly ownRenames = new Map<string, number>();
   private readonly ownDeletes = new Map<string, number>();
+  /** Folder creates and deletes the engine made, by event type and path, until their events arrive. */
+  private readonly ownFolderChanges = new Map<string, number>();
 
   /** Whether this engine has deleted the temporary files a crash left behind. */
   private cleaned = false;
@@ -308,12 +310,15 @@ export class SyncEngine {
       if (response.diverged) return this.resync();
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
+        const before = localPath(state, revision.documentId);
         const outcome = await this.applyOrSkip(state, revision);
         if (outcome === undecided) return progress;
         const change: JournalChange = { ...outcome, cursor: { seq: revision.seq, anchor: revision.anchor } };
         // A revision that applied replaces an earlier skip of its document.
         if (outcome.putSkipped === undefined && state.skipped.has(revision.documentId)) change.deleteSkipped = [revision.documentId];
         await this.record(change);
+        // The item left its place here: a folder it leaves empty, which no live document holds, goes too.
+        if (before !== undefined && localPath(state, revision.documentId)?.path !== before.path) await this.removeEmptied(state, before.path, before.kind === "folder");
         progress = true;
       }
       if (!response.hasMore || response.revisions.length === 0) return progress;
@@ -397,6 +402,13 @@ export class SyncEngine {
       const localPath = projection !== undefined && !projection.deleted ? projection.path : null;
       const local = localPath === null ? null : await this.cache.read(this.vault, localPath);
       const entry: DocEntry = { documentId: id, path: remote.path, kind: projection?.kind ?? syncKind(head.kind), baseRevId: remote.revisionId, baseHash: remote.contentHash, baseSize: Number(remote.size) };
+      if (entry.kind === "folder") {
+        // A folder has no content: it is there or it is created, unless a pending delete is re-applied (step 4). At another path, the next detection records the rename.
+        const pendingDelete = projection?.deleted === true && projection.base !== undefined;
+        if (!pendingDelete && (localPath === null || !(await this.folderExists(localPath)))) await this.createFolder(remote.path);
+        docs.push(entry);
+        continue;
+      }
       if (localPath !== null && local !== null) {
         if (local.hash !== remote.contentHash) {
           const localContent = await this.readFile(localPath);
@@ -516,6 +528,7 @@ export class SyncEngine {
       time: revision.createTime === undefined ? 0 : timestampMs(revision.createTime),
     };
 
+    if (target.kind === "folder") return this.applyFolder(state, entry, ops, incomingRevision, target);
     if (ops.length === 0) {
       // A document deleted on the server whose re-create this device dropped is absent here.
       if (entry === undefined || entry.deleted === true) {
@@ -649,6 +662,110 @@ export class SyncEngine {
     return change;
   }
 
+  /**
+   * The rows of §5 for a folder document. A folder has no content, so only
+   * the path rules apply (rule M). A live revision puts the folder at its
+   * path; the files and folders in it move by their own revisions, and the
+   * folder it leaves goes once they have (Pull's removeEmptied). A tombstone
+   * deletes the folder only if it is empty; otherwise the folder stays, and
+   * the document stays here as a tombstone that the next detection creates
+   * again on (a live item keeps its folders live, engine.md §2).
+   */
+  private async applyFolder(state: JournalState, entry: DocEntry | undefined, ops: PendingOp[], remote: Remote, target: Omit<DocEntry, "path">): Promise<Outcome> {
+    const id = remote.documentId;
+    if (ops.length === 0) {
+      if (entry === undefined || entry.deleted === true) {
+        // A2: absent, tombstone.
+        if (remote.deleted) return entry === undefined ? {} : { deleteDocs: [id] };
+        // A1: absent, live.
+        if ((await this.placeFolder(state, id, remote.path)) === undecided) return undecided;
+        return { putDocs: [{ ...target, path: remote.path }] };
+      }
+      // Gone since this cycle's detection: the next cycle records the delete, then decides.
+      if (!(await this.folderExists(entry.path))) return undecided;
+      // A5: clean, tombstone.
+      if (remote.deleted) {
+        if (await this.deleteFolder(entry.path)) return { deleteDocs: [id] };
+        return { putDocs: [{ ...target, path: entry.path, deleted: true }] };
+      }
+      // A4: clean, live, new path. A3 (the same path) changes nothing.
+      if (pathKey(remote.path) !== pathKey(entry.path) && (await this.placeFolder(state, id, remote.path)) === undecided) return undecided;
+      return { putDocs: [{ ...target, path: remote.path }] };
+    }
+    // Pending operations of a document the server knows but this device never synced: none of the rows.
+    if (entry === undefined) return undecided;
+    const last = ops[ops.length - 1] as PendingOp;
+    const dropped = ops.map((op) => op.opId);
+    if (last.kind === "delete") {
+      // A11: deleted, tombstone.
+      if (remote.deleted) return { deleteDocs: [id], deletePending: dropped };
+      // A8: deleted, live. The folder comes back.
+      if ((await this.placeFolder(state, id, remote.path)) === undecided) return undecided;
+      return { putDocs: [{ ...target, path: remote.path }], deletePending: dropped };
+    }
+    if (!(await this.folderExists(last.path))) return undecided;
+    // A10, A7: the local rename or re-create wins over the tombstone. The folder stays and is created again on it.
+    if (remote.deleted) {
+      return { putDocs: [{ ...target, path: remote.path, deleted: true }], deletePending: dropped, putPending: [this.newOp(state, id, "create", last.path, "folder", "", 0)] };
+    }
+    // A9: the local path if the server kept the base path; otherwise the server's path wins.
+    if (entry.deleted !== true && remote.path === entry.path && last.path !== remote.path) {
+      return { putDocs: [{ ...target, path: remote.path }], deletePending: dropped, putPending: [this.newOp(state, id, "rename", last.path, "folder", "", 0)] };
+    }
+    if (pathKey(remote.path) !== pathKey(last.path) && (await this.placeFolder(state, id, remote.path)) === undecided) return undecided;
+    return { putDocs: [{ ...target, path: remote.path }], deletePending: dropped };
+  }
+
+  /**
+   * Rule W for a folder: a file at the path, or where one of its folders
+   * must go, moves to a conflict copy name; a folder already at the path is
+   * the document's folder (another folder document's unpushed operations
+   * there are dropped: it is the same folder). Otherwise the folder is
+   * created.
+   */
+  private async placeFolder(state: JournalState, id: string, path: string): Promise<"placed" | typeof undecided> {
+    const parts = path.split("/");
+    for (let length = parts.length; length >= 1; length--) {
+      const prefix = parts.slice(0, length).join("/");
+      if ((await this.cache.read(this.vault, prefix)) === null) continue;
+      if (!(await this.moveAside(state, id, [prefix]))) return undecided;
+      break;
+    }
+    if (await this.folderExists(path)) {
+      const owner = liveAt(state, path);
+      if (owner !== undefined && owner.documentId !== id) {
+        if (owner.kind !== "folder") return undecided;
+        await this.record({ deletePending: state.pending.filter((op) => op.documentId === owner.documentId).map((op) => op.opId) });
+      }
+      return "placed";
+    }
+    await this.createFolder(path);
+    return "placed";
+  }
+
+  /**
+   * Removes the folders that `path` (a file's or, with `self`, a folder's)
+   * leaves empty, deepest first: each one that no live document of this
+   * device holds and that nothing is in. A folder document kept here as a
+   * tombstone (applyFolder) is dropped with its folder.
+   */
+  private async removeEmptied(state: JournalState, path: string, self: boolean): Promise<void> {
+    const parts = path.split("/");
+    for (let length = self ? parts.length : parts.length - 1; length >= 1; length--) {
+      const folder = parts.slice(0, length).join("/");
+      if (liveAt(state, folder) !== undefined) return;
+      // Already gone (the revision deleted it): its folder may be emptied too.
+      if ((await this.folderExists(folder)) && !(await this.deleteFolder(folder))) return;
+      const kept = [...state.docs.values()].filter((entry) => entry.kind === "folder" && entry.deleted === true && pathKey(entry.path) === pathKey(folder) && !state.pending.some((op) => op.documentId === entry.documentId));
+      if (kept.length > 0) await this.record({ deleteDocs: kept.map((entry) => entry.documentId) });
+    }
+  }
+
+  private async folderExists(path: string): Promise<boolean> {
+    const key = pathKey(path);
+    return (await this.vault.listFolders()).some((folder) => pathKey(folder) === key);
+  }
+
   /** Rule W, then writes the remote content at its path unless a file with that content is already there. */
   private async place(state: JournalState, remote: Remote): Promise<"placed" | typeof undecided> {
     const cleared = await this.clear(state, remote.documentId, remote.path, remote.hash);
@@ -689,7 +806,7 @@ export class SyncEngine {
     // A folder where the file must go.
     const key = pathKey(path);
     const inside = (await this.vault.list()).filter((file) => pathKey(file).startsWith(`${key}/`));
-    if (inside.length > 0) return (await this.moveAside(state, id, inside, path)) ? "free" : undecided;
+    if (inside.length > 0 || (await this.folderExists(path))) return (await this.moveAside(state, id, inside, path)) ? "free" : undecided;
     // A document of this device whose file is missing since this cycle's detection still claims the path.
     const claimant = liveAt(state, path);
     if (claimant !== undefined && claimant.documentId !== id) return undecided;
@@ -701,14 +818,20 @@ export class SyncEngine {
    * C): each file on its own, or with `folder`, the folder they are in. A
    * moved file of a document stays that document's pending operation under
    * the new name; an untracked one becomes a pending create. Returns false,
-   * moving nothing, if a file is a synced document's, which the server
-   * cannot also hold at the path, or no copy name fits. Each copy is listed
-   * as a conflict with `arriving`, the document that takes the path.
+   * moving nothing, if a file (or a folder in `folder`) is a synced
+   * document's, which the server cannot also hold at the path, or no copy
+   * name fits. Each copy is listed as a conflict with `arriving`, the
+   * document that takes the path. With `folder`, its folders move too: they
+   * are created under the copy's name (where the next detection finds them
+   * as new folders) and removed here, and the unpushed operations of their
+   * folder documents are dropped.
    */
   private async moveAside(state: JournalState, arriving: string, files: readonly string[], folder?: string): Promise<boolean> {
     const owners = new Map<string, Projection>();
     for (const projection of project(state).values()) if (!projection.deleted) owners.set(pathKey(projection.path), projection);
-    for (const file of files) {
+    const folderKey = folder === undefined ? undefined : pathKey(folder);
+    const tree = folderKey === undefined ? [] : (await this.vault.listFolders()).filter((path) => pathKey(path) === folderKey || pathKey(path).startsWith(`${folderKey}/`));
+    for (const file of [...files, ...tree]) {
       const owner = owners.get(pathKey(file));
       if (owner?.base !== undefined && owner.base.deleted !== true && owner.path === owner.base.path) return false;
     }
@@ -741,6 +864,17 @@ export class SyncEngine {
       change.putConflicts.push({ path: copy, documentId: arriving, createdAt: this.now() });
     }
     await this.record(change);
+    if (folder !== undefined && copyFolder !== undefined && tree.length > 0) {
+      // Shallowest first to create, deepest first to remove.
+      tree.sort((a, b) => a.length - b.length);
+      for (const path of tree) await this.createFolder(`${copyFolder}${path.slice(folder.length)}`);
+      const unpushed = tree.flatMap((path) => {
+        const owner = owners.get(pathKey(path));
+        return owner === undefined ? [] : state.pending.filter((op) => op.documentId === owner.documentId).map((op) => op.opId);
+      });
+      if (unpushed.length > 0) await this.record({ deletePending: unpushed });
+      for (const path of tree.reverse()) await this.deleteFolder(path);
+    }
     return true;
   }
 
@@ -752,6 +886,7 @@ export class SyncEngine {
       for (let length = 1; length <= parts.length; length++) keys.add(parts.slice(0, length).join("/"));
     };
     for (const file of await this.vault.list()) add(file);
+    for (const folder of await this.vault.listFolders()) add(folder);
     for (const projection of project(state).values()) if (!projection.deleted) add(projection.path);
     return (path) => {
       if (keys.has(pathKey(path))) return true;
@@ -847,7 +982,7 @@ export class SyncEngine {
         continue;
       }
       let op = queued;
-      if (op.kind !== "delete") {
+      if (op.kind !== "delete" && op.docKind !== "folder") {
         // §7: a file over the size limit stays local and is listed.
         if (this.tooLargeToUpload(op)) {
           blocked.add(op.documentId);
@@ -883,8 +1018,9 @@ export class SyncEngine {
             documentId: op.documentId,
             revisionId: op.revisionId,
             baseRevId: base?.baseRevId ?? "",
-            kind: op.docKind === "text" ? DocumentKind.TEXT : DocumentKind.BLOB,
-            contentRef: { blobId: hexToBytes(op.contentHash), size: BigInt(op.contentSize) },
+            kind: documentKind(op.docKind),
+            // A folder has no content.
+            ...(op.docKind === "folder" ? {} : { contentRef: { blobId: hexToBytes(op.contentHash), size: BigInt(op.contentSize) } }),
             path: encoder.encode(op.path),
             deleted: op.kind === "delete",
             deviceId: this.deviceId,
@@ -926,7 +1062,8 @@ export class SyncEngine {
     for (const entry of state.docs.values()) {
       if (entry.documentId === op.documentId || entry.deleted === true) continue;
       const other = pathKey(entry.path);
-      if (other === key || other.startsWith(`${key}/`) || key.startsWith(`${other}/`)) return { reason };
+      // A folder document may hold other documents (SPEC.md §5).
+      if (other === key || (op.docKind !== "folder" && other.startsWith(`${key}/`)) || (entry.kind !== "folder" && key.startsWith(`${other}/`))) return { reason };
     }
     return { pull: true };
   }
@@ -1067,12 +1204,46 @@ export class SyncEngine {
     }
   }
 
+  private async createFolder(path: string): Promise<void> {
+    const key = `folder-create\0${path}`;
+    count(this.ownFolderChanges, key, 1);
+    try {
+      await this.vault.createFolder(path);
+    } catch (error) {
+      count(this.ownFolderChanges, key, -1);
+      throw error;
+    }
+  }
+
+  /** Deletes the folder if it is there and empty. Returns false otherwise. */
+  private async deleteFolder(path: string): Promise<boolean> {
+    const key = `folder-delete\0${path}`;
+    count(this.ownFolderChanges, key, 1);
+    try {
+      await this.vault.deleteFolder(path);
+      return true;
+    } catch (error) {
+      count(this.ownFolderChanges, key, -1);
+      if (isVaultError(error, "changed") || isVaultError(error, "not-found")) return false;
+      throw error;
+    }
+  }
+
   // Events and scheduling ------------------------------------------------------
 
   /** A vault event: a hint that something changed. The engine's own changes are recognised and start no cycle. */
   private onVaultEvent(event: VaultEvent): void {
     if (isTemporaryPath(event.path)) return;
     switch (event.type) {
+      case "folder-rename":
+        this.renames.push([event.oldPath, event.path]);
+        this.scheduleLocalChange();
+        return;
+      case "folder-create":
+      case "folder-delete":
+        if (count(this.ownFolderChanges, `${event.type}\0${event.path}`, -1)) return;
+        this.scheduleLocalChange();
+        return;
       case "rename": {
         this.cache.invalidate(event.oldPath);
         this.cache.invalidate(event.path);
@@ -1156,7 +1327,21 @@ function nextOrder(state: JournalState): number {
 }
 
 function syncKind(kind: DocumentKind): SyncKind {
+  if (kind === DocumentKind.FOLDER) return "folder";
   return kind === DocumentKind.TEXT ? "text" : "blob";
+}
+
+function documentKind(kind: SyncKind): DocumentKind {
+  if (kind === "folder") return DocumentKind.FOLDER;
+  return kind === "text" ? DocumentKind.TEXT : DocumentKind.BLOB;
+}
+
+/** Where a document's file or folder is on this device once its pending operations apply, and its kind; undefined if it is not live here. */
+function localPath(state: JournalState, documentId: string): { path: string; kind: SyncKind } | undefined {
+  const entry = state.docs.get(documentId);
+  const last = state.pending.filter((op) => op.documentId === documentId).at(-1);
+  if (last !== undefined) return last.kind === "delete" ? undefined : { path: last.path, kind: last.docKind };
+  return entry === undefined || entry.deleted === true ? undefined : { path: entry.path, kind: entry.kind };
 }
 
 /** Adds `delta` to a counter; for -1, returns whether there was one to take (and takes it). */

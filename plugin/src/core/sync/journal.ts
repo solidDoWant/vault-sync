@@ -8,8 +8,11 @@ import type { UnmaterializableReason } from "../vaultpath/platform";
  * leaves each engine step either fully recorded or not at all.
  */
 
-/** A document's kind: `text` is Markdown, merged three-way; `blob` is everything else. */
-export type SyncKind = "text" | "blob";
+/**
+ * A document's kind: `text` is Markdown, merged three-way; `blob` is every
+ * other file; `folder` is a folder, with no content (docs/design/engine.md §2).
+ */
+export type SyncKind = "text" | "blob" | "folder";
 
 /** The last applied change-list position, and the anchor the server sent with it (SPEC.md §6.1). */
 export interface Cursor {
@@ -24,7 +27,7 @@ export interface DocEntry {
   path: string;
   kind: SyncKind;
   baseRevId: string;
-  /** SHA-256 (lowercase hex) of the base revision's content. */
+  /** SHA-256 (lowercase hex) of the base revision's content; empty for a folder. */
   baseHash: string;
   /** Size in bytes of the base revision's content: a tombstone names the content it deletes. */
   baseSize: number;
@@ -51,7 +54,7 @@ export interface PendingOp {
   docKind: SyncKind;
   /** Chosen once and kept until the commit is acknowledged, so a retry is idempotent. */
   revisionId: string;
-  /** SHA-256 of the content the operation commits (a delete: the content it deletes). */
+  /** SHA-256 of the content the operation commits (a delete: the content it deletes); empty for a folder. */
   contentHash: string;
   contentSize: number;
   /**

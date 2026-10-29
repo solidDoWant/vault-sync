@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { browser } from "@wdio/globals";
 
+import { DocumentKind } from "../../src/gen/vaultsync/v1/types_pb";
 import type VaultSyncPlugin from "../../src/main";
 import { pluginId } from "./environment";
 import { callHarness } from "./obsidian";
@@ -341,15 +342,17 @@ export function contentOf(text: string): string {
   return `sha256:${createHash("sha256").update(text, "utf8").digest("hex")}`;
 }
 
-/** The server's live documents in the connected vault, path to content SHA-256 (as `vaultFiles` shows binaries), read through the current device's client. */
+/** The server's live file documents in the connected vault (not folder documents), path to content SHA-256 (as `vaultFiles` shows binaries), read through the current device's client. */
 export function serverHeads() {
-  return browser.executeObsidian(async ({ app }, id) => {
+  return browser.executeObsidian(async ({ app }, id, folderKind) => {
     const plugin = (app as unknown as Plugins).plugins.plugins[id];
     const vaultId = plugin?.connectedVault?.id;
     if (plugin === undefined || vaultId === undefined) throw new Error("vault-sync is not connected");
     const decoder = new TextDecoder();
     const heads = new Map<string, { path: string; deleted: boolean; seq: bigint; hash: string }>();
     for (const revision of (await plugin.protocolClient().sync.listChanges({ vaultId, sinceSeq: 0n })).revisions) {
+      // A folder has no content.
+      if (revision.kind === folderKind) continue;
       const head = heads.get(revision.documentId);
       if (head !== undefined && revision.seq <= head.seq) continue;
       const blobId = revision.contentRef?.blobId ?? new Uint8Array();
@@ -363,7 +366,7 @@ export function serverHeads() {
     const live: Record<string, string> = {};
     for (const head of heads.values()) if (!head.deleted) live[head.path] = `sha256:${head.hash}`;
     return live;
-  }, pluginId);
+  }, pluginId, DocumentKind.FOLDER);
 }
 
 /** Waits until the server's live documents, read from `device`, satisfy `check`: a change made there has been committed. */

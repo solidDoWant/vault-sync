@@ -110,6 +110,7 @@ Renames and deletes keep a note's identity and history (`docs/design/engine.md` 
 - A file you create where a deleted or renamed note used to be is a new note, not an edit of the old one.
 - An edit, or a rename not synced yet, wins over another device's delete of the same note: the note comes back, under your name for it, with your edit.
 - When two devices rename the same note, the name that reached the server first wins, and the content is merged.
+- Folders sync too, empty ones included (`docs/design/engine.md` §2). Creating, renaming or deleting a folder does the same on your other devices. A deleted folder stays deleted. The exception is a folder that still holds a file another device kept or edited: that folder comes back, with the file in it.
 - When another device puts a note at a path this device has a file at, a file with the same content becomes that note; a different one is moved to a conflict-copy name and kept. vault-sync renames files to make room, never deletes them.
 
 Stopping sync (signing out, disabling the plugin, quitting) never loses a local change. An edit that was not pushed yet stays on disk, and the next sync finds and pushes it.

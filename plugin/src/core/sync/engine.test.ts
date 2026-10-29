@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
+
 import { InMemoryServer } from "./memory-server";
 import { Device, settle } from "./testing";
 
@@ -10,7 +12,7 @@ function setup(): { server: InMemoryServer; a: Device; b: Device } {
   return { server, a: new Device(server, "device-a"), b: new Device(server, "device-b") };
 }
 
-/** Every revision on the server, as [document id, path, deleted]. */
+/** Every revision of a file on the server (folder documents' are left out), as [document id, path, deleted]. */
 function revisions(server: InMemoryServer): [string, string, boolean][] {
   const all: [string, string, boolean][] = [];
   for (let seq = 1n; ; seq++) {
@@ -20,6 +22,7 @@ function revisions(server: InMemoryServer): [string, string, boolean][] {
     } catch {
       return all;
     }
+    if (revision.kind === DocumentKind.FOLDER) continue;
     all.push([revision.documentId, new TextDecoder().decode(revision.path), revision.deleted]);
   }
 }

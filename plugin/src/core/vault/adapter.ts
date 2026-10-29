@@ -8,12 +8,31 @@
  * slash, and given as the engine means them. On a case-insensitive platform
  * the vault may resolve a path of another spelling to the same file, and
  * keeps the spelling the file has (collision handling is the engine's job,
- * via path keys and its platform path rules, SPEC.md §8). Only files are
- * modelled; folders exist implicitly as the ancestors of files.
+ * via path keys and its platform path rules, SPEC.md §8). Files and folders
+ * are modelled: a folder stays when its last file leaves it, as on disk, and
+ * every folder is a document of its own (docs/design/engine.md §2).
  */
 export interface VaultAdapter {
   /** Lists the paths of all files in the vault, in no particular order. */
   list(): Promise<string[]>;
+
+  /** Lists the paths of all folders in the vault (not the vault's root), in no particular order. */
+  listFolders(): Promise<string[]>;
+
+  /**
+   * Creates a folder and its missing parent folders. Resolves, changing
+   * nothing, if the folder exists. Rejects with "path-conflict" if a file is
+   * at the path or at one of its ancestors, and with "unmaterializable" if
+   * the platform cannot hold a folder there.
+   */
+  createFolder(path: string): Promise<void>;
+
+  /**
+   * Deletes an empty folder. Rejects with "not-found" if there is no folder
+   * at the path, and with "changed", deleting nothing, if anything (a file
+   * or a folder) is in it.
+   */
+  deleteFolder(path: string): Promise<void>;
 
   /** Reads a file's bytes. Rejects with VaultError "not-found" if it does not exist. */
   read(path: string): Promise<Uint8Array>;
@@ -72,11 +91,13 @@ export interface VaultAdapter {
   stat(path: string): Promise<FileStat | null>;
 
   /**
-   * Subscribes to file changes (folders are not reported) made through this adapter or by anything else
+   * Subscribes to changes of files and folders made through this adapter or by anything else
    * (the user, other plugins). Engine-initiated writes are reported too; echo
    * suppression is the engine's job (SPEC.md §8). Returns an unsubscribe
    * function. Events may be delivered synchronously or asynchronously, but in
-   * the order the changes happened.
+   * the order the changes happened. A folder rename is reported as a
+   * `folder-rename` of the folder and of each folder in it, and a `rename` of
+   * each file in it.
    */
   watch(listener: VaultListener): () => void;
 }
@@ -111,7 +132,15 @@ export type VaultEvent =
   | { type: "create"; path: string }
   | { type: "modify"; path: string }
   | { type: "delete"; path: string }
-  | { type: "rename"; path: string; oldPath: string };
+  | { type: "rename"; path: string; oldPath: string }
+  | { type: "folder-create"; path: string }
+  | { type: "folder-delete"; path: string }
+  | { type: "folder-rename"; path: string; oldPath: string };
+
+/** Whether `event` is about a folder rather than a file. */
+export function isFolderEvent(event: VaultEvent): event is Extract<VaultEvent, { type: `folder-${string}` }> {
+  return event.type.startsWith("folder-");
+}
 
 export type VaultListener = (event: VaultEvent) => void;
 

@@ -1205,9 +1205,10 @@ export default class VaultSyncE2EHarness extends Plugin {
   private lostCommitResponses: { answered: number } | undefined;
 
   /**
-   * Every revision of vault-sync's connected server vault, in seq order:
-   * its document, path, whether it is a delete and its content's SHA-256
-   * (the blob id of an unencrypted vault). Read through vault-sync's client.
+   * Every file revision of vault-sync's connected server vault, in seq
+   * order (folder documents, which have no content, are left out): its
+   * document, path, whether it is a delete and its content's SHA-256 (the
+   * blob id of an unencrypted vault). Read through vault-sync's client.
    */
   async serverRevisions(): Promise<{ seq: string; documentId: string; path: string; deleted: boolean; sha256: string }[]> {
     const plugin = this.vaultSync();
@@ -1218,6 +1219,8 @@ export default class VaultSyncE2EHarness extends Plugin {
     for (let sinceSeq = 0n; ; ) {
       const page = await client.sync.listChanges({ vaultId, sinceSeq });
       for (const revision of page.revisions) {
+        sinceSeq = revision.seq;
+        if (revision.kind === DocumentKind.FOLDER) continue;
         revisions.push({
           seq: String(revision.seq),
           documentId: revision.documentId,
@@ -1225,7 +1228,6 @@ export default class VaultSyncE2EHarness extends Plugin {
           deleted: revision.deleted,
           sha256: bytesToHex(revision.contentRef?.blobId ?? new Uint8Array()),
         });
-        sinceSeq = revision.seq;
       }
       if (!page.hasMore) return revisions;
     }

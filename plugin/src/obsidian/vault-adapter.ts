@@ -33,7 +33,7 @@ export const syncEditOrigin = "vault-sync";
  * The engine's VaultAdapter (src/core/vault/adapter.ts) on Obsidian's Vault
  * API (SPEC.md §4, §8).
  *
- * - Files only, as the Vault indexes them. Paths with a hidden segment
+ * - Files and folders, as the Vault indexes them. Paths with a hidden segment
  *   (".obsidian/", ".trash/", any ".name") are outside it: Obsidian does not
  *   index them and config sync is separate (#28), so they are never listed,
  *   read or reported, and writes or renames onto them are refused as
@@ -73,8 +73,12 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   /** The file system's atomic rename over a file, on desktop only (docs/design/engine.md §8). */
   readonly replace?: (from: string, to: string, precondition: WritePrecondition) => Promise<void>;
 
+  /** The desktop file system, where there is one. */
+  private readonly disk: DesktopDisk | undefined;
+
   constructor(private readonly app: App) {
     const disk = desktopDisk(app);
+    this.disk = disk;
     if (disk !== undefined) this.replace = (from, to, precondition) => this.replaceOnDisk(disk, from, to, precondition);
   }
 
@@ -119,6 +123,60 @@ export class ObsidianVaultAdapter implements VaultAdapter {
 
   list(): Promise<string[]> {
     return Promise.resolve(this.vault.getFiles().map((file) => file.path).filter((path) => inScope(path)));
+  }
+
+  listFolders(): Promise<string[]> {
+    return Promise.resolve(
+      this.vault
+        .getAllLoadedFiles()
+        .filter((entry) => entry instanceof TFolder && !entry.isRoot())
+        .map((folder) => folder.path)
+        .filter((path) => inScope(path)),
+    );
+  }
+
+  async createFolder(path: string): Promise<void> {
+    if (!inScope(path)) throw new VaultError("path-conflict", path);
+    const existing = this.vault.getAbstractFileByPath(path);
+    if (existing instanceof TFolder) return;
+    if (existing !== null) throw new VaultError("path-conflict", path);
+    await this.ensureParentFolders(path);
+    try {
+      await this.vault.createFolder(path);
+    } catch (error) {
+      // Created meanwhile, e.g. by Obsidian as a new file's parent.
+      if (this.vault.getFolderByPath(path) !== null) return;
+      if (await this.vault.adapter.exists(path)) throw new VaultError("path-conflict", path);
+      throw await this.unmaterializableOr(error, path, path);
+    }
+  }
+
+  async deleteFolder(path: string): Promise<void> {
+    const folder = inScope(path) ? this.vault.getFolderByPath(path) : null;
+    if (folder === null || folder.isRoot()) throw new VaultError("not-found", path);
+    // Hidden entries Obsidian does not index (".name") count too: the folder must be empty on disk.
+    const listed = await this.vault.adapter.list(path);
+    if (folder.children.length > 0 || listed.files.length > 0 || listed.folders.length > 0) throw new VaultError("changed", path);
+    const disk = this.disk;
+    if (disk === undefined) {
+      // Mobile: Obsidian's own delete, a moment after the check. Only Obsidian writes to its vault there.
+      await this.vault.delete(folder, true);
+      return;
+    }
+    // Desktop: the file system's rmdir, which refuses a folder that is not
+    // empty in the same step, so nothing created after the check is lost.
+    // Vault.delete of a folder without `force` fails there (EISDIR in 1.14.4),
+    // and with it removes whatever is in the folder.
+    try {
+      await disk.rmdir(`${disk.base}/${path}`);
+    } catch (error) {
+      if (isNotEmptyOsError(error)) throw new VaultError("changed", path);
+      throw error;
+    }
+    // Obsidian learns of the delete from its file watcher.
+    for (let waited = 0; waited < indexWaitMs && this.vault.getFolderByPath(path) !== null; waited += indexPollMs) {
+      await new Promise((resolve) => setTimeout(resolve, indexPollMs));
+    }
   }
 
   async read(path: string): Promise<Uint8Array> {
@@ -197,22 +255,23 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   watch(listener: VaultListener): () => void {
-    const deliver = (file: TAbstractFile, event: VaultEvent) => {
-      if (!(file instanceof TFile) || !inScope(file.path) || !this.app.workspace.layoutReady) return;
-      listener(event);
+    const deliver = (file: TAbstractFile, event: VaultEvent, folderEvent?: VaultEvent) => {
+      if (!inScope(file.path) || !this.app.workspace.layoutReady) return;
+      if (file instanceof TFile) listener(event);
+      else if (file instanceof TFolder && folderEvent !== undefined) listener(folderEvent);
     };
     const references: EventRef[] = [
       this.vault.on("create", (file) => {
-        deliver(file, { type: "create", path: file.path });
+        deliver(file, { type: "create", path: file.path }, { type: "folder-create", path: file.path });
       }),
       this.vault.on("modify", (file) => {
         deliver(file, { type: "modify", path: file.path });
       }),
       this.vault.on("delete", (file) => {
-        deliver(file, { type: "delete", path: file.path });
+        deliver(file, { type: "delete", path: file.path }, { type: "folder-delete", path: file.path });
       }),
       this.vault.on("rename", (file, oldPath) => {
-        deliver(file, { type: "rename", path: file.path, oldPath });
+        deliver(file, { type: "rename", path: file.path, oldPath }, { type: "folder-rename", path: file.path, oldPath });
       }),
     ];
     return () => {
@@ -411,6 +470,8 @@ const indexPollMs = 10;
 interface DesktopDisk {
   base: string;
   rename(from: string, to: string): Promise<void>;
+  /** Removes an empty folder; rejects with ENOTEMPTY (EEXIST on some systems) if it is not empty. */
+  rmdir(path: string): Promise<void>;
 }
 
 /**
@@ -422,10 +483,17 @@ function desktopDisk(app: App): DesktopDisk | undefined {
   const adapter = app.vault.adapter;
   if (!(adapter instanceof FileSystemAdapter)) return undefined;
   const load = (globalThis as { require?: (id: string) => unknown }).require;
-  const fs = typeof load === "function" ? (load("fs") as { promises?: { rename?: (from: string, to: string) => Promise<void> } } | undefined) : undefined;
+  const fs = typeof load === "function" ? (load("fs") as { promises?: { rename?: (from: string, to: string) => Promise<void>; rmdir?: (path: string) => Promise<void> } } | undefined) : undefined;
   const rename = fs?.promises?.rename;
-  if (rename === undefined) return undefined;
-  return { base: adapter.getBasePath(), rename: (from, to) => rename(from, to) };
+  const rmdir = fs?.promises?.rmdir;
+  if (rename === undefined || rmdir === undefined) return undefined;
+  return { base: adapter.getBasePath(), rename: (from, to) => rename(from, to), rmdir: (path) => rmdir(path) };
+}
+
+/** Whether `error` is the OS refusing to remove a folder that is not empty. */
+function isNotEmptyOsError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  return code === "ENOTEMPTY" || code === "EEXIST";
 }
 
 /** Whether `path` is a non-hidden path that Obsidian stores under exactly this name. */
