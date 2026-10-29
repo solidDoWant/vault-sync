@@ -411,12 +411,14 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	unsigned := oneToTwo
 	unsigned.Signature = must(SignEscrowRotation(ed25519.NewKeyFromSeed(escrowTwoSeed), escrowOne, escrowTwo)).Signature
 	unchained := twoToThree
+	misnamed := must(SignEscrowRotation(ed25519.NewKeyFromSeed(escrowOneSeed), escrowThree, escrowTwo))
 	tampered := rotationJSON(oneToTwo)
 	tampered.NewBundle = hex.EncodeToString(must(escrowThree.Encode()))
 
 	vectors.RejectedEscrowChains = []escrowChainVector{
 		{Name: "rotation signed by the new key", Pinned: encodedOne, Rotations: []escrowRotationJSON{rotationJSON(unsigned)}},
 		{Name: "unchained escrow key: rotation from another bundle", Pinned: encodedOne, Rotations: []escrowRotationJSON{rotationJSON(unchained)}},
+		{Name: "unchained escrow key: signed by the pinned key for another bundle", Pinned: encodedOne, Rotations: []escrowRotationJSON{rotationJSON(misnamed)}},
 		{Name: "rotation with a swapped new bundle", Pinned: encodedOne, Rotations: []escrowRotationJSON{tampered}},
 		{Name: "rotations out of order", Pinned: encodedOne, Rotations: []escrowRotationJSON{rotationJSON(twoToThree), rotationJSON(oneToTwo)}},
 	}
@@ -535,6 +537,18 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 		entries[4].PrevHash = entries[2].Hash
 
 		return entries
+	})
+	reject("broken link: signed entry naming another prev hash", func(entries []entryJSON) []entryJSON {
+		rebuilt := &logBuilder{vaultID: vectorVaultID, entries: slices.Clone(entries[:3])}
+		rebuilt.addRaw(4, must(hex.DecodeString(entries[1].Hash)), EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), aliceSeed)
+
+		return rebuilt.entries
+	})
+	reject("signed entry skipping a seq", func(entries []entryJSON) []entryJSON {
+		rebuilt := &logBuilder{vaultID: vectorVaultID, entries: slices.Clone(entries[:3])}
+		rebuilt.addRaw(5, must(hex.DecodeString(entries[2].Hash)), EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), aliceSeed)
+
+		return rebuilt.entries
 	})
 	reject("omitted entry", func(entries []entryJSON) []entryJSON { return slices.Delete(entries, 3, 4) })
 	reject("reordered entries", func(entries []entryJSON) []entryJSON {
