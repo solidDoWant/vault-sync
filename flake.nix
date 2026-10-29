@@ -182,12 +182,6 @@
             # scripts/chart_test.sh.
             pkgs.kubernetes-helm
             pkgs.yq-go
-
-            # Dafny (pinned by flake.lock; the nixpkgs package wraps the .NET
-            # runtime and the z3 it needs) for the verified modules in
-            # plugin/verified/: make verify proves them and make build
-            # compiles them to JavaScript for the plugin (#946).
-            pkgs.dafny
           ];
 
           # The loader comes from the same nixpkgs as the libraries, so that

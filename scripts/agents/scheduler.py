@@ -929,8 +929,8 @@ def fresh_prompt(job: Job, wt: Path, branch_note: str, sess: dict | None, why: s
     return "\n".join(lines)
 
 
-# Verified-core and engine work: a restart reloads a very large context and
-# Dafny runs take minutes, so a 45-minute box leaves little time to work.
+# Engine work: a restart reloads a very large context, so a 45-minute box
+# leaves little time to work.
 LONG_BOX_TITLE = re.compile(r"^(feat|design|test|refactor)\(engine\)")
 
 
