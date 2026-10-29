@@ -164,21 +164,25 @@ The server stores `SHA-256(auth_key)` and returns the wrapped private key only t
 
 ### Non-blocking derivation
 
-In TypeScript, `derivePassphraseKeys`, `wrapWithPassphrase` and `unwrapWithPassphrase` return promises. They derive with `@noble/hashes`' `argon2idAsync`, which hands control back to the event loop after every 10 ms of work. A derivation that takes seconds on a phone (see Measurements) therefore never holds Obsidian's UI thread for more than a few milliseconds at a time. The derivation runs no faster, and its memory is the same. The Go implementation has no UI and derives synchronously.
+In TypeScript, `derivePassphraseKeys`, `wrapWithPassphrase` and `unwrapWithPassphrase` return promises. Both TypeScript implementations (below) hand control back to the event loop after every 10 ms of work. A derivation that takes seconds on a phone (see Measurements) therefore never holds Obsidian's UI thread for more than a few milliseconds at a time. The Go implementation has no UI and derives synchronously.
+
+### WebAssembly
+
+The plugin derives Argon2id with `hash-wasm`'s WebAssembly Argon2id (MIT; scalar WebAssembly, since `hash-wasm` does not use SIMD yet) and with `@noble/hashes`' pure-JavaScript `argon2idAsync` otherwise (`plugin/src/core/e2ee/argon2.ts`). Before the first derivation of a session it runs a known-answer test through `hash-wasm`: Argon2id(t = 2, m = 64 KiB, p = 1) of a fixed password and salt, with the answer computed by Go's `golang.org/x/crypto/argon2`. If `hash-wasm` does not load or gives another answer, every derivation of that session uses `@noble/hashes`. This guards against engine bugs, such as wrong results from WebAssembly in some WebKit versions. Both implementations must produce the same output: `argon2.test.ts` runs both on every `passphrase` vector and on random small parameters, and checks both fallbacks.
 
 The default is RFC 9106 §4's second recommended setting (64 MiB, 3 passes) with one lane, since the plugin derives in a single JavaScript thread and more lanes would only add sequential work there.
 
 ### Measurements
 
-Derivation time of one Argon2id key with `@noble/hashes` (pure JavaScript, the implementation the plugin runs on desktop and Android) on Node 24, one core of an AMD EPYC (Turin) VM, best of three:
+Derivation time of one Argon2id key on Node 24, one core of an AMD EPYC (Turin) VM, best of three, with `hash-wasm` (what the plugin runs on desktop and Android) and the pure-JavaScript fallback (`@noble/hashes`):
 
-| Parameters | Time | Process RSS after |
-|---|---|---|
-| 19 MiB, t = 2 (minimum) | 150 ms | 105 MiB |
-| 64 MiB, t = 3 (default) | 680 ms | 153 MiB |
-| 128 MiB, t = 8 (maximum) | 3.7 s | 217 MiB |
+| Parameters | WebAssembly (`hash-wasm`) | Pure JavaScript | Process RSS after (WebAssembly) |
+|---|---|---|---|
+| 19 MiB, t = 2 (minimum) | 31 ms | 150 ms | 122 MiB |
+| 64 MiB, t = 3 (default) | 175 ms | 680 ms | 133 MiB |
+| 128 MiB, t = 8 (maximum) | 835 ms | 3.7 s | 197 MiB |
 
-Not yet measured on a real low-end Android device (no device in the development VM; Android checks are in `docs/testing/android.md`). Pure-JavaScript integer code on a low-end ARM phone's WebView typically runs 5 to 10 times slower than this, which puts the default at roughly 3.5 to 7 seconds and 64 MiB of memory. The derivation runs once per device, when it first unwraps the user's private key, so this is tolerable; the maximum bounds a hostile value to well under a minute. The derivation yields to the event loop as it runs (see Non-blocking derivation). These estimates must be replaced by a measurement on a real low-end Android device before E2EE ships (section 11 of the Android release checklist, `docs/testing/android.md`); if the default turns out too slow there, it can be lowered within the bounds without a new suite, since the parameters are stored with each wrapped key.
+The `[P4-15]` e2e test (`plugin/test/e2e/specs/encryption.e2e.ts`) times an unlock at the default parameters inside Obsidian and requires the WebAssembly implementation and under 5 seconds; it runs in the Android emulator job too and logs the time and, if WebAssembly was not used, why. Not yet measured on a real low-end Android device (no device in the development VM; Android checks are in `docs/testing/android.md`). Code on a low-end ARM phone's WebView typically runs 5 to 10 times slower than this, which puts the default at roughly 1 to 2 seconds on WebAssembly (3.5 to 7 seconds in pure JavaScript) and 64 MiB of memory. The derivation runs once per device, when it first unwraps the user's private key, so this is tolerable; the maximum bounds a hostile value to well under a minute. The derivation yields to the event loop as it runs (see Non-blocking derivation). These estimates must be replaced by a measurement on a real low-end Android device before E2EE ships (section 11 of the Android release checklist, `docs/testing/android.md`); if the default turns out too slow there, it can be lowered within the bounds without a new suite, since the parameters are stored with each wrapped key.
 
 ## Vectors
 
