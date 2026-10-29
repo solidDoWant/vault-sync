@@ -2,6 +2,13 @@
   $schema: "https://docs.renovatebot.com/renovate-schema.json",
   description: "Approval gates, version holds and reminders for what Renovate can't regenerate",
   packageRules: [
+    // First: later rules match on the overridden (docker.io/...) name.
+    {
+      description: "mirror.gcr.io lists only cached tags; look up Docker Hub (same digests)",
+      matchDatasources: ["docker"],
+      matchPackageNames: ["/^mirror\\.gcr\\.io//"],
+      overridePackageName: "{{{replace '^mirror\\.gcr\\.io/' 'docker.io/' packageName}}}",
+    },
     {
       description: "Major updates wait for a Dependency Dashboard checkbox",
       matchUpdateTypes: ["major"],
