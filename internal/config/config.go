@@ -3,6 +3,7 @@
 package config
 
 import (
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +44,7 @@ const (
 	OIDCClientIDEnv             = "VAULT_SYNC_OIDC_CLIENT_ID"
 	EscrowRecipientEnv          = "VAULT_SYNC_ESCROW_RECIPIENT"
 	EscrowDefaultEnv            = "VAULT_SYNC_ESCROW_DEFAULT"
+	EscrowSigningKeyEnv         = "VAULT_SYNC_ESCROW_SIGNING_KEY"
 	EscrowIdentityFileEnv       = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
@@ -1005,8 +1007,9 @@ func LoadVaultCommand(lookup func(string) (string, bool)) (store.Config, error) 
 	return cfg, checkDatabase(cfg)
 }
 
-// escrowConfig reads the escrow public key (an age hybrid recipient,
-// age1pq1…) and the escrow default, which is on unless set to false.
+// escrowConfig reads the escrow bundle, the escrow public key (an age hybrid
+// recipient, age1pq1…) with its escrow signing public key (base64 Ed25519),
+// and the escrow default, which is on unless set to false.
 func escrowConfig(get func(string) string) (api.Escrow, error) {
 	escrow := api.Escrow{Default: true}
 
@@ -1021,8 +1024,26 @@ func escrowConfig(get func(string) string) (api.Escrow, error) {
 		escrow.Default = value
 	}
 
-	if raw := get(EscrowRecipientEnv); raw != "" {
-		publicKey, err := e2ee.ParseAgeRecipient(strings.TrimSpace(raw))
+	recipient := strings.TrimSpace(get(EscrowRecipientEnv))
+	rawSigningKey := strings.TrimSpace(get(EscrowSigningKeyEnv))
+
+	if (recipient == "") != (rawSigningKey == "") {
+		problems = append(problems, fmt.Errorf("%s and %s must be set together", EscrowRecipientEnv, EscrowSigningKeyEnv))
+	}
+
+	var signingKey []byte
+
+	if rawSigningKey != "" {
+		decoded, err := base64.StdEncoding.DecodeString(rawSigningKey)
+		if err != nil || len(decoded) != e2ee.SignPublicKeySize {
+			problems = append(problems, fmt.Errorf("%s: not a base64 Ed25519 public key (%d bytes)", EscrowSigningKeyEnv, e2ee.SignPublicKeySize))
+		} else {
+			signingKey = decoded
+		}
+	}
+
+	if recipient != "" {
+		publicKey, err := e2ee.ParseAgeRecipient(recipient)
 		if err != nil {
 			// The value is a public key, but the error need not repeat it.
 			problems = append(problems, fmt.Errorf("%s: not an age hybrid post-quantum recipient (age1pq1…)", EscrowRecipientEnv))
@@ -1030,6 +1051,13 @@ func escrowConfig(get func(string) string) (api.Escrow, error) {
 			escrow.PublicKey = publicKey
 			escrow.KeyID, err = e2ee.EscrowKeyID(publicKey)
 			problems = append(problems, err)
+		}
+	}
+
+	if escrow.PublicKey != nil && signingKey != nil {
+		escrow.Bundle = &e2ee.EscrowBundle{SignPub: signingKey, Recipient: recipient}
+		if _, err := escrow.Bundle.Encode(); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %w", EscrowRecipientEnv, err))
 		}
 	}
 

@@ -155,6 +155,10 @@ config:
       # recipient (age1pq1…). Public; the escrow private key goes into the
       # export job only (config.export.escrow).
       recipient: ""
+      # VAULT_SYNC_ESCROW_SIGNING_KEY: the escrow signing public key (base64
+      # Ed25519), set together with recipient. Public; its private key stays
+      # with the escrow identity.
+      signingKey: ""
       # VAULT_SYNC_ESCROW_DEFAULT: whether new encrypted vaults have escrow
       # unless their owner turns it off (true when unset).
       default: ""

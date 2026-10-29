@@ -156,8 +156,12 @@ func TestSchemaEveryDocumentCarriesKind(t *testing.T) {
 // in step.
 func TestSchemaServerInfoResponseHasOnlyPublicFields(t *testing.T) {
 	// The escrow fields are the escrow public key (never its private key),
-	// its id and the escrow default (SPEC.md §9.4).
-	public := []string{"version", "protocol_version", "max_realtime_subscriptions", "oidc_issuer_url", "oidc_client_id", "escrow_public_key", "escrow_key_id", "escrow_default"}
+	// its id, the escrow default, and the escrow chain: public bundles and
+	// the signatures over them (SPEC.md §9.4).
+	public := []string{
+		"version", "protocol_version", "max_realtime_subscriptions", "oidc_issuer_url", "oidc_client_id",
+		"escrow_public_key", "escrow_key_id", "escrow_default", "escrow_root_bundle", "escrow_rotations",
+	}
 
 	fields := findMessage(t, "GetServerInfoResponse").Fields()
 

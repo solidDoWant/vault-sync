@@ -94,8 +94,19 @@ type GetServerInfoResponse struct {
 	// turns it off (VAULT_SYNC_ESCROW_DEFAULT, on by default). Always false
 	// when the server has no escrow key.
 	EscrowDefault bool `protobuf:"varint,8,opt,name=escrow_default,json=escrowDefault,proto3" json:"escrow_default,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// The deployment's escrow chain (docs/design/encryption.md, "Escrow
+	// key"): its root escrow bundle, encoded as in docs/design/crypto.md
+	// ("vault-sync/v1/escrow" || signing public key || lp(age recipient)),
+	// the first bundle the deployment published. Empty when the server has no
+	// escrow key.
+	EscrowRootBundle []byte `protobuf:"bytes,9,opt,name=escrow_root_bundle,json=escrowRootBundle,proto3" json:"escrow_root_bundle,omitempty"`
+	// The escrow rotation statements after escrow_root_bundle, in order. The
+	// last one's new_bundle (or the root, with none) is the current escrow
+	// bundle, whose recipient is escrow_public_key. Empty when the server has
+	// no escrow key or has never rotated it.
+	EscrowRotations []*EscrowRotationStatement `protobuf:"bytes,10,rep,name=escrow_rotations,json=escrowRotations,proto3" json:"escrow_rotations,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *GetServerInfoResponse) Reset() {
@@ -184,12 +195,91 @@ func (x *GetServerInfoResponse) GetEscrowDefault() bool {
 	return false
 }
 
+func (x *GetServerInfoResponse) GetEscrowRootBundle() []byte {
+	if x != nil {
+		return x.EscrowRootBundle
+	}
+	return nil
+}
+
+func (x *GetServerInfoResponse) GetEscrowRotations() []*EscrowRotationStatement {
+	if x != nil {
+		return x.EscrowRotations
+	}
+	return nil
+}
+
+// EscrowRotationStatement moves the escrow key from one bundle to the next,
+// signed by the previous bundle's escrow signing key (docs/design/crypto.md).
+type EscrowRotationStatement struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// SHA-256 of the encoded previous bundle (32 bytes).
+	OldBundleHash []byte `protobuf:"bytes,1,opt,name=old_bundle_hash,json=oldBundleHash,proto3" json:"old_bundle_hash,omitempty"`
+	// The encoded new bundle.
+	NewBundle []byte `protobuf:"bytes,2,opt,name=new_bundle,json=newBundle,proto3" json:"new_bundle,omitempty"`
+	// The previous escrow signing key's Ed25519 signature (64 bytes).
+	Signature     []byte `protobuf:"bytes,3,opt,name=signature,proto3" json:"signature,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EscrowRotationStatement) Reset() {
+	*x = EscrowRotationStatement{}
+	mi := &file_vaultsync_v1_server_info_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EscrowRotationStatement) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EscrowRotationStatement) ProtoMessage() {}
+
+func (x *EscrowRotationStatement) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_server_info_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EscrowRotationStatement.ProtoReflect.Descriptor instead.
+func (*EscrowRotationStatement) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_server_info_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *EscrowRotationStatement) GetOldBundleHash() []byte {
+	if x != nil {
+		return x.OldBundleHash
+	}
+	return nil
+}
+
+func (x *EscrowRotationStatement) GetNewBundle() []byte {
+	if x != nil {
+		return x.NewBundle
+	}
+	return nil
+}
+
+func (x *EscrowRotationStatement) GetSignature() []byte {
+	if x != nil {
+		return x.Signature
+	}
+	return nil
+}
+
 var File_vaultsync_v1_server_info_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_server_info_proto_rawDesc = "" +
 	"\n" +
 	"\x1evaultsync/v1/server_info.proto\x12\fvaultsync.v1\"\x16\n" +
-	"\x14GetServerInfoRequest\"\xdf\x02\n" +
+	"\x14GetServerInfoRequest\"\xdf\x03\n" +
 	"\x15GetServerInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x12<\n" +
@@ -198,7 +288,15 @@ const file_vaultsync_v1_server_info_proto_rawDesc = "" +
 	"\x0eoidc_client_id\x18\x05 \x01(\tR\foidcClientId\x12*\n" +
 	"\x11escrow_public_key\x18\x06 \x01(\fR\x0fescrowPublicKey\x12\"\n" +
 	"\rescrow_key_id\x18\a \x01(\tR\vescrowKeyId\x12%\n" +
-	"\x0eescrow_default\x18\b \x01(\bR\rescrowDefault2o\n" +
+	"\x0eescrow_default\x18\b \x01(\bR\rescrowDefault\x12,\n" +
+	"\x12escrow_root_bundle\x18\t \x01(\fR\x10escrowRootBundle\x12P\n" +
+	"\x10escrow_rotations\x18\n" +
+	" \x03(\v2%.vaultsync.v1.EscrowRotationStatementR\x0fescrowRotations\"~\n" +
+	"\x17EscrowRotationStatement\x12&\n" +
+	"\x0fold_bundle_hash\x18\x01 \x01(\fR\roldBundleHash\x12\x1d\n" +
+	"\n" +
+	"new_bundle\x18\x02 \x01(\fR\tnewBundle\x12\x1c\n" +
+	"\tsignature\x18\x03 \x01(\fR\tsignature2o\n" +
 	"\x11ServerInfoService\x12Z\n" +
 	"\rGetServerInfo\x12\".vaultsync.v1.GetServerInfoRequest\x1a#.vaultsync.v1.GetServerInfoResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 
@@ -214,19 +312,21 @@ func file_vaultsync_v1_server_info_proto_rawDescGZIP() []byte {
 	return file_vaultsync_v1_server_info_proto_rawDescData
 }
 
-var file_vaultsync_v1_server_info_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
+var file_vaultsync_v1_server_info_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
 var file_vaultsync_v1_server_info_proto_goTypes = []any{
-	(*GetServerInfoRequest)(nil),  // 0: vaultsync.v1.GetServerInfoRequest
-	(*GetServerInfoResponse)(nil), // 1: vaultsync.v1.GetServerInfoResponse
+	(*GetServerInfoRequest)(nil),    // 0: vaultsync.v1.GetServerInfoRequest
+	(*GetServerInfoResponse)(nil),   // 1: vaultsync.v1.GetServerInfoResponse
+	(*EscrowRotationStatement)(nil), // 2: vaultsync.v1.EscrowRotationStatement
 }
 var file_vaultsync_v1_server_info_proto_depIdxs = []int32{
-	0, // 0: vaultsync.v1.ServerInfoService.GetServerInfo:input_type -> vaultsync.v1.GetServerInfoRequest
-	1, // 1: vaultsync.v1.ServerInfoService.GetServerInfo:output_type -> vaultsync.v1.GetServerInfoResponse
-	1, // [1:2] is the sub-list for method output_type
-	0, // [0:1] is the sub-list for method input_type
-	0, // [0:0] is the sub-list for extension type_name
-	0, // [0:0] is the sub-list for extension extendee
-	0, // [0:0] is the sub-list for field type_name
+	2, // 0: vaultsync.v1.GetServerInfoResponse.escrow_rotations:type_name -> vaultsync.v1.EscrowRotationStatement
+	0, // 1: vaultsync.v1.ServerInfoService.GetServerInfo:input_type -> vaultsync.v1.GetServerInfoRequest
+	1, // 2: vaultsync.v1.ServerInfoService.GetServerInfo:output_type -> vaultsync.v1.GetServerInfoResponse
+	2, // [2:3] is the sub-list for method output_type
+	1, // [1:2] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_server_info_proto_init() }
@@ -240,7 +340,7 @@ func file_vaultsync_v1_server_info_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_server_info_proto_rawDesc), len(file_vaultsync_v1_server_info_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   2,
+			NumMessages:   3,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
