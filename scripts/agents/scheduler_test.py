@@ -201,8 +201,8 @@ class PlanTest(unittest.TestCase):
         self.assertEqual(keys(plan), ["worker:1"])
         self.assertEqual(plan.jobs[0].pr, 10)
         self.assertIn("answered or unblocked", plan.jobs[0].trigger)
-        # Without a hand-back, a todo issue with an open PR is still skipped.
-        self.assertEqual(keys(plan_for(sn, {"sessions": {}})), [])
+        # Without a hand-back, a todo issue whose open PR is a draft resumes on it (sent back for more work).
+        self.assertEqual(keys(plan_for(sn, {"sessions": {}})), ["worker:1"])
 
     def test_cloud_draft_pr_is_finished_by_a_local_worker(self):
         sn = snap([issue(1, labels=("cloud-draft",))], [pr(10, 1, draft=True)])
@@ -213,6 +213,15 @@ class PlanTest(unittest.TestCase):
         # While the cloud session works (status:blocked), nothing starts.
         self.assertEqual(keys(plan_for(snap([issue(1, status="status:blocked", labels=("cloud-draft",))],
                                             [pr(10, 1, draft=True)]))), [])
+
+    def test_todo_issue_with_only_a_draft_pr_resumes_on_it(self):
+        sessions = {"worker:1": {"role": "issue-worker", "issue": 1, "handoff": {"state": "pr-ready"}}}
+        plan = plan_for(snap([issue(1)], [pr(10, 1, draft=True)]), {"sessions": sessions})
+        self.assertEqual(keys(plan), ["worker:1"])
+        self.assertEqual(plan.jobs[0].pr, 10)
+        self.assertIn("sent back for more work", plan.jobs[0].trigger)
+        # A ready (non-draft) PR still waits for review instead.
+        self.assertEqual(keys(plan_for(snap([issue(1)], [pr(10, 1, check="pending")]), {"sessions": sessions})), [])
 
     def test_later_phase_work_off_starts_only_current_phase(self):
         cfg = s.deep_merge(CFG, {"later_phase_work": False})
