@@ -4,11 +4,10 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import type { Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
-import type { DocumentKindName, RemoteRevision } from "../journal/journal";
 import { unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { pathProblem } from "../vaultpath/vaultpath";
 import { blobMissing, errorCode, headMoved } from "./errors";
-import { downloadContent, downloadStart, RemoteContentError, toIncoming, type PullApi } from "./remote";
+import { downloadContent, downloadStart, RemoteContentError, toIncoming, type DocumentKindName, type PullApi, type RemoteRevision } from "./remote";
 import { uploadContent } from "./upload";
 
 /** One retained revision of a document, as the history view shows it (SPEC.md §11). */

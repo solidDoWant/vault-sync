@@ -1,5 +1,5 @@
 import type { Timers } from "../backoff";
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { createProtocolClient } from "../protocol/client";
 import { InMemoryVault, type InMemoryVaultOptions } from "../vault/memory";
 import { SyncEngine, type SyncEngineOptions } from "./engine";

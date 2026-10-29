@@ -19,7 +19,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { PathSpace } from "../engine/pathspace";
+import { PathSpace } from "../vaultpath/pathspace";
 import { filesystemKey, type PathPlatform } from "../vaultpath/platform";
 import { pathKey } from "./pathkey";
 

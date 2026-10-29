@@ -1,39 +1,26 @@
-import { ItemView, normalizePath, Notice, TFile, type WorkspaceLeaf } from "obsidian";
+import { ItemView, Notice, TFile, type WorkspaceLeaf } from "obsidian";
 
-import type { OpenConflict } from "../core/engine/conflicts";
-import type { DeferredDocument } from "../core/engine/deferred";
-import type { RejectedOperation, TooLargeDocument, UnmaterializableDocument } from "../core/engine/engine";
-import { conflictReasonText, deferredReasonText, openViewText, pathConflictCause, rejectedReasonText, tooLargeText, unmaterializableReasonText } from "./conflict-text";
+import { skippedReasonText, tooLargeUploadText } from "./conflict-text";
 import { shownPath, visiblePath } from "./display-text";
+import type { ListedConflict, SyncProblemList } from "./session";
 import { pathClass, renderShown, shownFragment } from "./shown-dom";
-import { errorMessage } from "./status";
 
 export const conflictViewType = "vault-sync-conflicts";
 
 /** Where the view reads what it lists: the running sync session, if any. */
 export interface ConflictSource {
   /** Undefined while sync is not running. */
-  problems():
-    | {
-        conflicts(): Promise<OpenConflict[]>;
-        unmaterializable(): Promise<UnmaterializableDocument[]>;
-        tooLarge(): Promise<TooLargeDocument[]>;
-        rejected(): Promise<RejectedOperation[]>;
-        deferred(): Promise<DeferredDocument[]>;
-        heldByOpenView(): string | undefined;
-      }
-    | undefined;
+  problems(): { listProblems(): Promise<SyncProblemList> } | undefined;
 }
 
 /**
- * The conflict view (SPEC.md §7, §8): the open conflicts of the conflict
- * log, each with a link to both versions and a button that opens them side
- * by side, the documents this device's platform cannot hold, each with its
- * server path and why, the documents too large to download on this device
- * (#316), and the files that are not synced, each with its path and why:
- * local files the server refuses (#100), remote revisions deferred for
- * their path, and a pull an open view holds back (#417). It reads the journal through the session and
- * keeps no state of its own; deleting a conflict copy resolves its entry.
+ * The conflict view (docs/design/engine.md §10): the conflict copies this
+ * device created, each with a link to both versions and a button that opens
+ * them side by side; the remote files this device skipped, because they are
+ * over the size limit or their path cannot be held here (§6, §7); local
+ * files over the size limit; and local files whose names the server refused
+ * (rule P3). It reads the journal through the session and keeps no state of
+ * its own; deleting or renaming a conflict copy resolves its entry.
  */
 export class ConflictView extends ItemView {
   /** Bumped by every refresh, so only the latest one renders. */
@@ -75,20 +62,15 @@ export class ConflictView extends ItemView {
     return Promise.resolve();
   }
 
-  /** Reads the conflicts and unmaterializable documents again and shows them. */
+  /** Reads what the session lists again and shows it. */
   async refresh(): Promise<void> {
     const render = ++this.renderCount;
-    const problems = this.conflictSource.problems();
-    let conflicts: OpenConflict[] = [];
-    let unmaterializable: UnmaterializableDocument[] = [];
-    let tooLarge: TooLargeDocument[] = [];
-    let rejected: RejectedOperation[] = [];
-    let deferred: DeferredDocument[] = [];
+    const source = this.conflictSource.problems();
+    let problems: SyncProblemList = { conflicts: [], refused: [], skipped: [], tooLarge: [] };
     let failure: string | undefined;
-    const heldByOpenView = problems?.heldByOpenView();
-    if (problems !== undefined) {
+    if (source !== undefined) {
       try {
-        [conflicts, unmaterializable, tooLarge, rejected, deferred] = await Promise.all([problems.conflicts(), problems.unmaterializable(), problems.tooLarge(), problems.rejected(), problems.deferred()]);
+        problems = await source.listProblems();
       } catch (error) {
         failure = error instanceof Error ? error.message : String(error);
       }
@@ -97,76 +79,55 @@ export class ConflictView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("vault-sync-conflict-view");
-    if (problems === undefined) {
+    if (source === undefined) {
       root.createEl("p", { text: "Sync is not running, so there is nothing to show. Sign in and connect this vault in the Vault Sync settings.", cls: "vault-sync-conflicts-idle" });
       return;
     }
     if (failure !== undefined) root.createEl("p", { text: `Could not read the sync journal: ${failure}`, cls: "vault-sync-conflicts-error" });
 
     root.createEl("h4", { text: "Conflicts" });
-    if (conflicts.length === 0) root.createEl("p", { text: "No conflicts.", cls: "vault-sync-conflicts-empty" });
+    if (problems.conflicts.length === 0) root.createEl("p", { text: "No conflicts.", cls: "vault-sync-conflicts-empty" });
     else {
-      root.createEl("p", { text: "The other device's version stayed in place; this device's version was kept as a conflict copy. Copy what you need into the note, then delete the conflict copy to resolve the conflict." });
+      root.createEl("p", { text: "The server's version stayed in place; the other version was kept as a conflict copy. Copy what you need into the note, then delete the conflict copy to resolve the conflict." });
       const list = root.createEl("ul", { cls: "vault-sync-conflicts" });
-      for (const conflict of conflicts) this.renderConflict(list.createEl("li", { cls: "vault-sync-conflict" }), conflict);
+      for (const conflict of problems.conflicts) this.renderConflict(list.createEl("li", { cls: "vault-sync-conflict" }), conflict);
     }
 
-    if (unmaterializable.length > 0) {
-      root.createEl("h4", { text: "Files this device cannot hold" });
-      root.createEl("p", { text: "These documents are synced, but their path on the server is not a valid file name here. Rename them on another device to bring them here. Local changes to them are not synced until then." });
-      const list = root.createEl("ul", { cls: "vault-sync-unmaterializable" });
-      for (const document of unmaterializable) this.renderUnmaterializable(list.createEl("li", { cls: "vault-sync-unmaterializable-document" }), document);
+    if (problems.skipped.length > 0) {
+      root.createEl("h4", { text: "Files not on this device" });
+      root.createEl("p", { text: "These files are synced, but this device cannot hold them. They stay on the server and on your other devices." });
+      const list = root.createEl("ul", { cls: "vault-sync-skipped" });
+      for (const document of problems.skipped) {
+        const item = list.createEl("li", { cls: "vault-sync-skipped-document" });
+        item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-skipped-path" });
+        item.createDiv({ text: skippedReasonText(document.reason, document.size), cls: "vault-sync-skipped-reason" });
+      }
     }
 
-    if (tooLarge.length > 0) {
-      root.createEl("h4", { text: "Files too large for this device" });
-      root.createEl("p", { text: "These documents are synced, but their newest version on the server is larger than this device downloads. A smaller version brings them here. Local changes to them are not synced until then." });
+    if (problems.tooLarge.length > 0 || problems.refused.length > 0) root.createEl("h4", { text: "Files that are not synced" });
+    if (problems.tooLarge.length > 0) {
       const list = root.createEl("ul", { cls: "vault-sync-too-large" });
-      for (const document of tooLarge) {
-        const item = list.createEl("li", { cls: "vault-sync-too-large-document" });
-        item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-too-large-path" });
-        item.createDiv({ text: tooLargeText(document.size), cls: "vault-sync-too-large-reason" });
-        if (document.localPath !== undefined) this.fileLine(item, "Earlier version on this device", document.localPath, "vault-sync-too-large-local");
+      for (const file of problems.tooLarge) {
+        const item = list.createEl("li", { cls: "vault-sync-too-large-file" });
+        this.fileLine(item, "File", file.path, "vault-sync-too-large-path");
+        item.createDiv({ text: tooLargeUploadText(file.size), cls: "vault-sync-too-large-reason" });
       }
     }
-
-    if (rejected.length > 0 || deferred.length > 0 || heldByOpenView !== undefined) root.createEl("h4", { text: "Files that are not synced" });
-    if (heldByOpenView !== undefined) {
-      const item = root.createDiv({ cls: "vault-sync-held" });
-      this.fileLine(item, "Waiting for", heldByOpenView, "vault-sync-held-path");
-      renderShown(item.createDiv({ cls: "vault-sync-held-reason" }), openViewText(heldByOpenView));
-    }
-    if (rejected.length > 0) {
-      root.createEl("p", { text: "The server does not accept these files' paths, so they stay on this device only. Rename or move a file to a valid path to sync it." });
+    if (problems.refused.length > 0) {
+      root.createEl("p", { text: "The server does not accept these files' names, so they stay on this device only. Rename or move a file to a valid name to sync it." });
       const list = root.createEl("ul", { cls: "vault-sync-rejected" });
-      for (const { operation, reason, error } of rejected) {
+      for (const refused of problems.refused) {
         const item = list.createEl("li", { cls: "vault-sync-rejected-file" });
-        this.fileLine(item, operation.deleted ? "Deleted file" : "File", operation.path, "vault-sync-rejected-path");
-        item.createDiv({ text: rejectedReasonText(reason, errorMessage(error)), cls: "vault-sync-rejected-reason" });
-      }
-    }
-    if (deferred.length > 0) {
-      root.createEl("p", { text: "These documents changed on another device, but the change cannot be written here because of its path. Nothing is lost: they arrive once their path can be written here." });
-      const list = root.createEl("ul", { cls: "vault-sync-deferred" });
-      for (const document of deferred) {
-        const item = list.createEl("li", { cls: "vault-sync-deferred-document" });
-        item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-deferred-path" });
-        item.createDiv({ text: deferredReasonText(document.reason, pathConflictCause(document.path, normalizePath)), cls: "vault-sync-deferred-reason" });
-        if (document.localPath !== undefined) this.fileLine(item, "Version on this device", document.localPath, "vault-sync-deferred-local");
+        this.fileLine(item, "File", refused.path, "vault-sync-rejected-path");
+        item.createDiv({ text: `The server refused it: ${refused.reason}`, cls: "vault-sync-rejected-reason" });
       }
     }
   }
 
-  private renderConflict(item: HTMLElement, { record, original, copy }: OpenConflict): void {
-    item.createDiv({ text: conflictReasonText(record.reason), cls: "vault-sync-conflict-reason" });
-    renderShown(item.createDiv({ cls: "vault-sync-conflict-path" }), ["Path: ", shownPath(record.path), ` · ${new Date(record.at).toLocaleString()}`]);
+  private renderConflict(item: HTMLElement, { copy, original, createdAt }: ListedConflict): void {
+    renderShown(item.createDiv({ cls: "vault-sync-conflict-path" }), ["Conflict copy: ", shownPath(copy), ` · ${new Date(createdAt).toLocaleString()}`]);
     const versions = item.createDiv();
-    if (copy === null) {
-      this.fileLine(versions, "This device's version (not synced)", original, "vault-sync-conflict-original");
-      versions.createDiv({ text: "No conflict-copy name fits the path length limits, so the file stays where it is. Move it to a shorter path to sync it.", cls: "vault-sync-conflict-no-copy" });
-      return;
-    }
-    this.fileLine(versions, record.reason === "path-taken" ? "The other document" : "Kept in place", original, "vault-sync-conflict-original");
+    this.fileLine(versions, "Kept in place", original, "vault-sync-conflict-original");
     this.fileLine(versions, "Conflict copy", copy, "vault-sync-conflict-copy");
     if (original !== null) {
       const compare = item.createEl("button", { text: "Compare side by side", cls: "vault-sync-compare" });
@@ -174,12 +135,6 @@ export class ConflictView extends ItemView {
         void this.compare(original, copy);
       });
     }
-  }
-
-  private renderUnmaterializable(item: HTMLElement, document: UnmaterializableDocument): void {
-    item.createDiv({ text: visiblePath(document.path), cls: "vault-sync-unmaterializable-path" });
-    item.createDiv({ text: unmaterializableReasonText(document.reason), cls: "vault-sync-unmaterializable-reason" });
-    if (document.localPath !== undefined) this.fileLine(item, "Earlier version on this device", document.localPath, "vault-sync-unmaterializable-local");
   }
 
   /** A label and a link that opens `path`, or "no longer exists". */

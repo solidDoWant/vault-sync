@@ -1,24 +1,19 @@
-import { FileSystemAdapter, normalizePath, Notice, Platform, Plugin, setIcon, TFile, type App } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, setIcon, TFile, type App } from "obsidian";
 
 import { VaultEncryption, type Vault, type VaultRole } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
 import { TokenManager, type AuthState } from "./core/auth/tokens";
-import { ConfigSyncVault } from "./core/config/config-vault";
-import type { ConfigSyncSettings } from "./core/config/policy";
-import type { PullSummary } from "./core/engine/engine";
-import { PathSpace } from "./core/engine/pathspace";
 import { createHttpTransport, createProtocolClient, type ProtocolClient } from "./core/protocol/client";
 import type { PathRules } from "./core/vaultpath/platform";
 import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
-import { configFolderHost, ObsidianConfigAdapter, reloadNotifier } from "./obsidian/config-adapter";
 import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
-import { configSyncSettings, oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
+import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { enableOnDevice, encryptionState, forgetEncryptionKeys, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
-import { DeletedFilesModal, HistoryModal } from "./obsidian/history-modal";
+import { HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
 import { pathRulesFor } from "./obsidian/platform-rules";
@@ -68,7 +63,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       client: () => this.protocolClient(),
       accessToken: () => (this.tokens === undefined ? Promise.reject(new Error("vault-sync is not loaded")) : this.tokens.accessToken()),
       defaultDeviceName: platformName(),
-      openJournal: (key, onBlocked) => openVaultJournal(this.app, key, window.indexedDB, { onBlocked, fileKey: localFileKey(this.app) }),
+      openJournal: (key) => openVaultJournal(this.app, key),
       vault: () => this.syncedVault(),
       ready: () => this.layoutReady(),
       pushDebounceMs,
@@ -124,7 +119,6 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
         return true;
       },
     });
-    this.addCommand({ id: "browse-deleted-files", name: "Browse deleted files", callback: () => void this.browseDeletedFiles() });
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
         if (!(file instanceof TFile)) return;
@@ -284,16 +278,6 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     new HistoryModal(this.app, history, documentId, path).open();
   }
 
-  /** Lists the deleted files this device knows of, to find one and restore it (SPEC.md §11). */
-  async browseDeletedFiles(): Promise<void> {
-    const history = this.vaultHistory();
-    if (history === undefined) {
-      new Notice("Vault Sync: deleted files can be restored while this vault syncs.");
-      return;
-    }
-    new DeletedFilesModal(this.app, history, await history.deletedDocuments()).open();
-  }
-
   /** The signed-in user's devices, as the settings list them (#590). */
   async listDevices(): Promise<DeviceRow[]> {
     return deviceRows(await listDevices(this.protocolClient()), currentDeviceId(this.data), (date) => date.toLocaleString());
@@ -434,9 +418,9 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
    * Starts a sync session of the open vault with explicit options, outside
    * the account and vault settings (the e2e harness uses it with an
    * in-memory server). It replaces such a session started before, once that
-   * one has stopped, and resolves with the first pull's summary.
+   * one has stopped, and resolves once the first sync finished.
    */
-  async startSync(options: Omit<SyncSessionOptions, "vault" | "ready" | "pushDebounceMs" | "syncIntervalMs"> & Partial<SyncSessionOptions>): Promise<PullSummary | undefined> {
+  async startSync(options: Omit<SyncSessionOptions, "vault" | "ready" | "pushDebounceMs" | "syncIntervalMs"> & Partial<SyncSessionOptions>): Promise<void> {
     await this.stopSync();
     const session = new SyncSession({ vault: this.syncedVault(), ready: () => this.layoutReady(), pushDebounceMs, syncIntervalMs: null, pathRules: localPathRules(this.app), maxDownloadBytes: localMaxDownloadBytes(), ...options });
     this.session = session;
@@ -465,39 +449,9 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     for (const leaf of this.app.workspace.getLeavesOfType(conflictViewType)) if (leaf.view instanceof ConflictView) void leaf.view.refresh();
   }
 
-  /** The open vault's config folder. */
-  get configDir(): string {
-    return this.app.vault.configDir;
-  }
-
-  /** Stores this device's config sync settings for this vault (never synced or set by the server) and restarts sync with them. */
-  async setConfigSync(settings: ConfigSyncSettings): Promise<void> {
-    this.data.configSync = settings;
-    await this.saveSettings();
-    await this.controller?.restart();
-  }
-
-  /** Tells the user to reload once sync changed config files (Obsidian reads them only at startup); never reloads by itself. */
-  private readonly configChanged = reloadNotifier((message) => {
-    new Notice(`Vault Sync: ${message}`, 0);
-  }, 1000);
-
-  /**
-   * What a session syncs: the notes, plus the config folder files this
-   * device's config sync settings select (SPEC.md §8). Built for every
-   * session start, so a settings change applies from the next one.
-   */
+  /** What a session syncs: the notes. Config-folder sync is not part of this engine (docs/design/engine.md §1). */
   private syncedVault(): VaultAdapter {
-    const configPrefix = `${this.app.vault.configDir}/`;
-    const own = this.manifest.dir;
-    return new ConfigSyncVault({
-      notes: new ObsidianVaultAdapter(this.app),
-      config: new ObsidianConfigAdapter(configFolderHost(this.app, normalizePath)),
-      settings: configSyncSettings(this.data),
-      // Where Obsidian installed this plugin, as well as plugins/vault-sync.
-      ownFolders: own?.startsWith(configPrefix) === true ? [own.slice(configPrefix.length)] : [],
-      onConfigChange: this.configChanged,
-    });
+    return new ObsidianVaultAdapter(this.app);
   }
 
   private layoutReady(): Promise<void> {
@@ -575,15 +529,6 @@ function platformName(): string {
  */
 function localMaxDownloadBytes(): number {
   return Platform.isMobile ? 256 * 1024 * 1024 : 1024 * 1024 * 1024;
-}
-
-/**
- * The filesystem key (`F`, PathSpace.filesystemKey) of the device Obsidian
- * runs on, for the journal's schema upgrades.
- */
-function localFileKey(app: App): (path: string) => string {
-  const paths = new PathSpace(localPathRules(app));
-  return (path) => paths.filesystemKey(path);
 }
 
 /** The file-name rules of the device Obsidian runs on (pathRulesFor). */

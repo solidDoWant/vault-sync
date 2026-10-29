@@ -147,6 +147,8 @@ describe("history and restore", function () {
     const rows = await historyRows();
     for (const row of rows) expect(row).toContain(" · this device · ");
     expect(rows[0]).toContain("(current)");
+    // The path in the title is laid out on its own (#605).
+    expect(await renderedPaths(".modal-title")).toEqual(isolated(note));
 
     await clickRow(1);
     await browser.waitUntil(async () => (await previewText()) === firstVersion, { timeoutMsg: "the preview never showed the first version" });
@@ -158,37 +160,6 @@ describe("history and restore", function () {
     await closeHistory();
   });
 
-  it("finds the deleted note among the deleted files and restores it", async function () {
-    await browser.executeObsidian(async ({ app }, path) => {
-      const file = app.vault.getFileByPath(path);
-      if (file === null) throw new Error(`no ${path}`);
-      await app.vault.delete(file);
-    }, note);
-    await browser.waitUntil(async () => (await remoteRevisions(note)) === 4, { timeoutMsg: "the delete never reached the server" });
-    await waitForIdle();
-
-    await browser.executeObsidian(async ({ app }, id) => {
-      await (app as unknown as { plugins: { plugins: Record<string, VaultSyncPlugin> } }).plugins.plugins[id]?.browseDeletedFiles();
-    }, pluginId);
-    await browser.waitUntil(async () => browser.executeObsidian(() => [...document.querySelectorAll(".suggestion-item")].some((item) => item.textContent === "History.md")), {
-      timeoutMsg: "the deleted note was never listed",
-    });
-    // The only deleted file is the selected suggestion: Enter chooses it.
-    await browser.keys("Enter");
-    await browser.waitUntil(async () => (await historyRows()).length === 4, { timeoutMsg: "the deleted note's history was never listed" });
-    expect((await historyRows())[0]).toContain("deleted History.md");
-    // The path in the title and in the row is laid out on its own (#605).
-    expect(await renderedPaths(".modal-title")).toEqual(isolated(note));
-    expect(await renderedPaths(".vault-sync-history-entry")).toEqual(isolated(note));
-
-    await clickRow(0);
-    await browser.waitUntil(async () => (await previewText()) === firstVersion, { timeoutMsg: "the preview never showed the content at the delete" });
-    await clickRestore();
-
-    await browser.waitUntil(async () => (await fileText(note)) === firstVersion, { timeoutMsg: "the deleted note never came back" });
-    expect(await remoteRevisions(note)).toBe(5);
-    await closeHistory();
-  });
   describe("for a member who may not restore (#527)", function () {
     /** Opens the harness's two-version history as `role`, previews the older version and returns what the preview offers once the role check settled. */
     async function previewOlderAs(role: "viewer" | "editor" | "unknown") {

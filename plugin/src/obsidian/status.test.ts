@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { discoverOidc, IdentityProviderError, refreshAccessToken, type HttpClient, type OidcEndpoints } from "../core/auth/oidc";
 import { createProtocolClient } from "../core/protocol/client";
-import { InMemoryServer } from "../core/engine/memory-server";
+import { InMemoryServer } from "../core/sync/memory-server";
 import { isOffline, statusDescription, statusIcon, statusText, type SyncState } from "./status";
 
 describe("statusText", () => {

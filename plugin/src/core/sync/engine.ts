@@ -4,16 +4,17 @@ import { hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { backoffDelay, globalTimers, type Backoff, type Timers } from "../backoff";
-import { errorCode, headMoved } from "../engine/errors";
-import { baseContent, downloadContent, toIncoming, type PullApi } from "../engine/remote";
-import { uploadContent } from "../engine/upload";
+import { errorCode, headMoved } from "./errors";
+import { baseContent, downloadContent, toIncoming, type PullApi } from "./remote";
+import { uploadContent } from "./upload";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
 import { uuidv7 } from "../uuid";
 import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
+import { posixPathRules, unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { conflictCopyName } from "./conflict-name";
 import { detectChanges, HashCache, isTemporaryPath, kindOfPath, project, replacementPath, replacementTarget, temporaryPath, type Projection, type RenameHint } from "./detect";
-import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SyncJournal, type SyncKind } from "./journal";
+import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SkippedEntry, type SkipReason, type SyncJournal, type SyncKind } from "./journal";
 import { mergeContent } from "./merge-rules";
 
 /** The protocol calls the engine makes. */
@@ -34,12 +35,43 @@ export interface SyncEngineOptions {
   now?: () => number;
   /** Timers for the debounce, the fallback interval and the backoff. */
   timers?: Timers;
-  /** Delay after the last local change before a cycle starts, in ms. */
-  debounceMs?: number;
-  /** Fallback interval between cycles, in ms. */
-  intervalMs?: number;
+  /** Delay after the last local change before a cycle starts, in ms; null: local changes start no cycle. */
+  debounceMs?: number | null;
+  /** Fallback interval between cycles, in ms; null: no fallback timer. */
+  intervalMs?: number | null;
   backoff?: Backoff;
   random?: () => number;
+  /** Files larger than this, in bytes, are neither uploaded nor downloaded (docs/design/engine.md §7). Defaults to no limit. */
+  maxFileBytes?: number;
+  /** This device's path rules: a revision at a path the device cannot hold is skipped (§6). Defaults to POSIX. */
+  pathRules?: PathRules;
+  /** Called when the status changes and after every sync. */
+  onChange?: () => void;
+}
+
+/** A local file that is not uploaded because it is larger than the size limit (§7). */
+export interface TooLargeFile {
+  documentId: string;
+  path: string;
+  size: number;
+}
+
+/** A local file whose name the server refused (rule P3). */
+export interface RefusedName {
+  documentId: string;
+  path: string;
+  reason: string;
+}
+
+/** What the conflict view lists (docs/design/engine.md §10). */
+export interface SyncProblems {
+  /** Conflict copies this device created that are still on disk, newest first. */
+  conflicts: ConflictEntry[];
+  refused: RefusedName[];
+  /** Remote documents this device skipped: over the size limit, or at a path it cannot hold. */
+  skipped: SkippedEntry[];
+  /** Local files over the size limit, not uploaded. */
+  tooLarge: TooLargeFile[];
 }
 
 export type SyncStatus = "idle" | "syncing" | "error";
@@ -78,7 +110,7 @@ const encoder = new TextEncoder();
  * pending operations oldest first (§3).
  */
 export class SyncEngine {
-  status: SyncStatus = "idle";
+  private currentStatus: SyncStatus = "idle";
   /** The last cycle's error, while the status is `error`. */
   lastError: unknown;
 
@@ -91,10 +123,15 @@ export class SyncEngine {
   private readonly pageSize: number;
   private readonly now: () => number;
   private readonly timers: Timers;
-  private readonly debounceMs: number;
-  private readonly intervalMs: number;
+  private readonly debounceMs: number | null;
+  private readonly intervalMs: number | null;
   private readonly backoff: Backoff;
   private readonly random: () => number;
+  private readonly maxFileBytes: number;
+  private readonly pathRules: PathRules;
+  private readonly onChange: () => void;
+  /** Pending operations whose upload the server refused as too large, by op id, with the content hash then. */
+  private readonly uploadRefused = new Map<string, string>();
 
   private state: JournalState | undefined;
   private readonly cache = new HashCache();
@@ -126,21 +163,45 @@ export class SyncEngine {
     this.pageSize = options.pageSize ?? 0;
     this.now = options.now ?? Date.now;
     this.timers = options.timers ?? globalTimers;
-    this.debounceMs = options.debounceMs ?? 2_000;
-    this.intervalMs = options.intervalMs ?? 60_000;
+    this.debounceMs = options.debounceMs === undefined ? 2_000 : options.debounceMs;
+    this.intervalMs = options.intervalMs === undefined ? 60_000 : options.intervalMs;
     this.backoff = options.backoff ?? { initialMs: 1_000, maxMs: 5 * 60_000 };
     this.random = options.random ?? Math.random;
+    this.maxFileBytes = options.maxFileBytes ?? Number.POSITIVE_INFINITY;
+    this.pathRules = options.pathRules ?? posixPathRules;
+    this.onChange = options.onChange ?? (() => undefined);
   }
 
-  /** Subscribes to vault events and starts syncing: now, after local changes, and every interval. */
-  start(): void {
-    if (!this.stopped) return;
+  /** idle, syncing, or error (the last sync failed; `lastError` says why). */
+  get status(): SyncStatus {
+    return this.currentStatus;
+  }
+
+  private setStatus(status: SyncStatus): void {
+    this.currentStatus = status;
+    this.onChange();
+  }
+
+  /**
+   * Subscribes to vault events and starts syncing: now, after local changes,
+   * and every interval. Returns the first sync, which rejects if it failed
+   * (the engine then retries after a backoff).
+   */
+  start(): Promise<void> {
+    if (!this.stopped) return this.running ?? Promise.resolve();
     this.stopped = false;
     this.unwatch = this.vault.watch((event) => {
       this.onVaultEvent(event);
     });
     this.scheduleInterval();
-    void this.sync().catch(() => undefined);
+    const first = this.sync();
+    first.catch(() => undefined);
+    return first;
+  }
+
+  /** Resolves once no cycle runs. */
+  async settled(): Promise<void> {
+    while (this.running !== undefined) await this.running.catch(() => undefined);
   }
 
   /** Stops scheduling cycles; a cycle in progress finishes. */
@@ -168,7 +229,7 @@ export class SyncEngine {
       return this.running;
     }
     const run = (async () => {
-      this.status = "syncing";
+      this.setStatus("syncing");
       try {
         do {
           this.again = false;
@@ -177,12 +238,12 @@ export class SyncEngine {
           }
         } while (this.rerunRequested());
         this.failures = 0;
-        this.status = "idle";
         this.lastError = undefined;
+        this.setStatus("idle");
       } catch (error) {
         this.failures++;
-        this.status = "error";
         this.lastError = error;
+        this.setStatus("error");
         this.scheduleRetry();
         throw error;
       } finally {
@@ -247,9 +308,12 @@ export class SyncEngine {
       if (response.diverged) return this.resync();
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
-        const outcome = await this.apply(state, revision);
+        const outcome = await this.applyOrSkip(state, revision);
         if (outcome === undecided) return progress;
-        await this.record({ ...outcome, cursor: { seq: revision.seq, anchor: revision.anchor } });
+        const change: JournalChange = { ...outcome, cursor: { seq: revision.seq, anchor: revision.anchor } };
+        // A revision that applied replaces an earlier skip of its document.
+        if (outcome.putSkipped === undefined && state.skipped.has(revision.documentId)) change.deleteSkipped = [revision.documentId];
+        await this.record(change);
         progress = true;
       }
       if (!response.hasMore || response.revisions.length === 0) return progress;
@@ -286,6 +350,7 @@ export class SyncEngine {
     const docs: DocEntry[] = [];
     const pending: PendingOp[] = [];
     const conflicts: ConflictEntry[] = [];
+    const skipped: SkippedEntry[] = [];
     const taken = await this.taken(state);
     let order = nextOrder(state);
     const newOp = (documentId: string, path: string, docKind: SyncKind, contentHash: string, contentSize: number): PendingOp => ({
@@ -371,7 +436,12 @@ export class SyncEngine {
         docs.push(entry);
         continue;
       }
-      // Unknown to the journal, or missing with no pending delete: write the head.
+      // Unknown to the journal, or missing with no pending delete: write the head, unless this device skips it (§6, §7).
+      const skip = this.skipReason(remote.path, remote.size);
+      if (skip !== undefined) {
+        skipped.push({ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) });
+        continue;
+      }
       const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
       if (await placeHead(remote.path, content, id)) docs.push(entry);
     }
@@ -392,8 +462,25 @@ export class SyncEngine {
       deletePending: state.pending.map((op) => op.opId),
       putPending: pending,
       putConflicts: conflicts,
+      deleteSkipped: [...state.skipped.keys()],
+      putSkipped: skipped,
     });
     return true;
+  }
+
+  /**
+   * Applies one remote revision; a revision whose path the vault refuses to
+   * hold (§6: the platform cannot hold it, or Obsidian would store it under
+   * another name) is skipped and listed instead, and the pull continues.
+   */
+  private async applyOrSkip(state: JournalState, revision: Revision): Promise<Outcome> {
+    try {
+      return await this.apply(state, revision);
+    } catch (error) {
+      if (!isVaultError(error, "unmaterializable") && !isVaultError(error, "path-conflict")) throw error;
+      const { remote } = toIncoming(revision);
+      return { putSkipped: [{ documentId: remote.documentId, path: remote.path, reason: "refused-by-vault", size: Number(remote.size) }] };
+    }
   }
 
   /** Applies one remote revision: the file change first, then the returned journal change. */
@@ -410,6 +497,9 @@ export class SyncEngine {
     if (acknowledged !== undefined) return this.acknowledge(acknowledged, revision);
     // A path the protocol does not allow never reaches the disk.
     if (!incoming.pathAllowed) return {};
+    // §6, §7: a file over the size limit, or at a path this device cannot hold, is skipped here and listed.
+    const skip = remote.deleted ? undefined : this.skipReason(remote.path, remote.size);
+    if (skip !== undefined) return { putSkipped: [{ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) }] };
     const target: Omit<DocEntry, "path"> = {
       documentId: id,
       kind: entry?.kind ?? syncKind(revision.kind),
@@ -588,18 +678,18 @@ export class SyncEngine {
         if (owner !== undefined) await this.record({ deletePending: state.pending.filter((op) => op.documentId === owner.documentId).map((op) => op.opId) });
         return "bound";
       }
-      return (await this.moveAside(state, [path])) ? "free" : undecided;
+      return (await this.moveAside(state, id, [path])) ? "free" : undecided;
     }
     // A file where a folder of the path must go.
     const parts = path.split("/");
     for (let length = 1; length < parts.length; length++) {
       const folder = parts.slice(0, length).join("/");
-      if ((await this.cache.read(this.vault, folder)) !== null) return (await this.moveAside(state, [folder])) ? "free" : undecided;
+      if ((await this.cache.read(this.vault, folder)) !== null) return (await this.moveAside(state, id, [folder])) ? "free" : undecided;
     }
     // A folder where the file must go.
     const key = pathKey(path);
     const inside = (await this.vault.list()).filter((file) => pathKey(file).startsWith(`${key}/`));
-    if (inside.length > 0) return (await this.moveAside(state, inside, path)) ? "free" : undecided;
+    if (inside.length > 0) return (await this.moveAside(state, id, inside, path)) ? "free" : undecided;
     // A document of this device whose file is missing since this cycle's detection still claims the path.
     const claimant = liveAt(state, path);
     if (claimant !== undefined && claimant.documentId !== id) return undecided;
@@ -612,9 +702,10 @@ export class SyncEngine {
    * moved file of a document stays that document's pending operation under
    * the new name; an untracked one becomes a pending create. Returns false,
    * moving nothing, if a file is a synced document's, which the server
-   * cannot also hold at the path, or no copy name fits.
+   * cannot also hold at the path, or no copy name fits. Each copy is listed
+   * as a conflict with `arriving`, the document that takes the path.
    */
-  private async moveAside(state: JournalState, files: readonly string[], folder?: string): Promise<boolean> {
+  private async moveAside(state: JournalState, arriving: string, files: readonly string[], folder?: string): Promise<boolean> {
     const owners = new Map<string, Projection>();
     for (const projection of project(state).values()) if (!projection.deleted) owners.set(pathKey(projection.path), projection);
     for (const file of files) {
@@ -639,18 +730,15 @@ export class SyncEngine {
       await this.rename(file, copy);
       const owner = owners.get(pathKey(file));
       const last = owner?.lastOp;
-      let documentId: string;
       if (owner !== undefined && last !== undefined) {
-        documentId = owner.documentId;
         // A refused commit was never applied, so an unsent operation keeps its revision id. The new name is not refused.
         const moved: PendingOp = { ...last, path: copy, sent: false, revisionId: last.sent ? uuidv7(this.now()) : last.revisionId };
         delete moved.refused;
         change.putPending.push(moved);
       } else {
-        documentId = uuidv7(this.now());
-        change.putPending.push({ ...this.newOp(state, documentId, "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
+        change.putPending.push({ ...this.newOp(state, uuidv7(this.now()), "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
       }
-      change.putConflicts.push({ path: copy, documentId, createdAt: this.now() });
+      change.putConflicts.push({ path: copy, documentId: arriving, createdAt: this.now() });
     }
     await this.record(change);
     return true;
@@ -689,9 +777,45 @@ export class SyncEngine {
   }
 
   /** The paths the server refused for this device's pending operations, with the reasons (rule P3), for the conflict view. */
-  async refusedNames(): Promise<{ documentId: string; path: string; reason: string }[]> {
+  async refusedNames(): Promise<RefusedName[]> {
     const state = await this.loadState();
     return state.pending.flatMap((op) => (op.refused === undefined ? [] : [{ documentId: op.documentId, path: op.path, reason: op.refused }]));
+  }
+
+  /** What the conflict view lists: conflict copies still on disk, refused names, skipped remote documents and local files over the size limit. */
+  async problems(): Promise<SyncProblems> {
+    const state = await this.loadState();
+    const conflicts: ConflictEntry[] = [];
+    for (const entry of state.conflicts.values()) if ((await this.vault.stat(entry.path)) !== null) conflicts.push(entry);
+    conflicts.sort((a, b) => b.createdAt - a.createdAt);
+    const tooLarge = state.pending.filter((op) => op.kind !== "delete" && this.tooLargeToUpload(op)).map((op) => ({ documentId: op.documentId, path: op.path, size: op.contentSize }));
+    return { conflicts, refused: await this.refusedNames(), skipped: [...state.skipped.values()], tooLarge };
+  }
+
+  /** The number of local operations the server has not acknowledged. */
+  async pendingCount(): Promise<number> {
+    return (await this.loadState()).pending.length;
+  }
+
+  /** Where the document's file is on this device once its pending operations apply, if it is live here. */
+  async pathOf(documentId: string): Promise<string | undefined> {
+    const projection = project(await this.loadState()).get(documentId);
+    return projection === undefined || projection.deleted ? undefined : projection.path;
+  }
+
+  /** The synced document whose file is at `path` on this device, if any. */
+  async documentAt(path: string): Promise<string | undefined> {
+    return liveAt(await this.loadState(), path)?.documentId;
+  }
+
+  /** Why this device skips a revision at `path` of `size` bytes, if it does (§6, §7). */
+  private skipReason(path: string, size: bigint): SkipReason | undefined {
+    if (Number(size) > this.maxFileBytes) return "too-large";
+    return unmaterializableReason(path, this.pathRules);
+  }
+
+  private tooLargeToUpload(op: PendingOp): boolean {
+    return op.contentSize > this.maxFileBytes || this.uploadRefused.get(op.opId) === op.contentHash;
   }
 
   private acknowledge(op: PendingOp, revision: Revision): JournalChange {
@@ -724,8 +848,22 @@ export class SyncEngine {
       }
       let op = queued;
       if (op.kind !== "delete") {
+        // §7: a file over the size limit stays local and is listed.
+        if (this.tooLargeToUpload(op)) {
+          blocked.add(op.documentId);
+          continue;
+        }
         const read = () => this.readFile(op.path);
-        const uploaded = await uploadContent(this.api, this.vaultId, op.contentHash, BigInt(op.contentSize), read);
+        let uploaded;
+        try {
+          uploaded = await uploadContent(this.api, this.vaultId, op.contentHash, BigInt(op.contentSize), read);
+        } catch (error) {
+          // The server refuses a size above its limit (CreateUpload: INVALID_ARGUMENT).
+          if (errorCode(error) !== Code.InvalidArgument) throw error;
+          this.uploadRefused.set(op.opId, op.contentHash);
+          blocked.add(op.documentId);
+          continue;
+        }
         // The file changed since the operation was recorded: the next detection records the newer content.
         if (uploaded === "missing") {
           blocked.add(op.documentId);
@@ -972,21 +1110,24 @@ export class SyncEngine {
   }
 
   private scheduleLocalChange(): void {
-    if (this.stopped) return;
+    const debounceMs = this.debounceMs;
+    if (this.stopped || debounceMs === null) return;
     if (this.debounceTimer !== undefined) this.timers.clearTimeout(this.debounceTimer);
     this.debounceTimer = this.timers.setTimeout(() => {
       this.debounceTimer = undefined;
       void this.sync().catch(() => undefined);
-    }, this.debounceMs);
+    }, debounceMs);
   }
 
   private scheduleInterval(): void {
     if (this.stopped) return;
+    const intervalMs = this.intervalMs;
+    if (intervalMs === null) return;
     this.intervalTimer = this.timers.setTimeout(() => {
       this.intervalTimer = undefined;
       this.scheduleInterval();
       void this.sync().catch(() => undefined);
-    }, this.intervalMs);
+    }, intervalMs);
   }
 
   private scheduleRetry(): void {

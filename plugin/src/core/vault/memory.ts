@@ -1,5 +1,5 @@
 import { sha256Hex } from "../hash";
-import { PathSpace } from "../engine/pathspace";
+import { PathSpace } from "../vaultpath/pathspace";
 import { posixPathRules, unmaterializableReason, type PathRules } from "../vaultpath/platform";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "./adapter";
 

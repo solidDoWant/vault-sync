@@ -1,7 +1,7 @@
 import { IDBFactory } from "fake-indexeddb";
 import { describe, expect, it } from "vitest";
 
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { createProtocolClient } from "../protocol/client";
 import { InMemoryVault } from "../vault/memory";
 import { SyncEngine } from "./engine";

@@ -1,25 +1,17 @@
 import { browser, expect } from "@wdio/globals";
 
-import { journalConformance } from "../../../src/core/journal/conformance";
 import { harnessId } from "../environment";
 import { callHarness, reloadPlugin } from "../obsidian";
 
 // The IndexedDB journal inside Obsidian's renderer, on Obsidian's own
-// IndexedDB (Chromium's, not fake-indexeddb): the shared Journal conformance
-// suite (src/core/journal/conformance.ts), each case in a database of its
-// own and reopened through a new connection before it checks what it wrote,
-// and the per-vault key of the journals vault-sync opens.
+// IndexedDB (Chromium's, not fake-indexeddb): what it stores survives a new
+// connection, and the journals vault-sync opens are keyed per vault.
 
 describe("IndexedDB journal inside Obsidian", function () {
-  it("runs the harness built from the current suite", async function () {
-    expect(await callHarness("journalConformanceCaseNames")).toEqual(journalConformance.map((testCase) => testCase.name));
+  it("reads back through a new connection everything it stored", async function () {
+    const { written, read } = await callHarness("journalSurvivesReopen");
+    expect(read).toBe(written);
   });
-
-  for (const testCase of journalConformance) {
-    it(testCase.name, async function () {
-      expect(await callHarness("runJournalConformanceCase", testCase.name)).toEqual({ ok: true });
-    });
-  }
 
   // Journals are keyed by Obsidian's vault id (app.appId, not in the public
   // typings): it must exist and differ between vaults. That journals with

@@ -3,10 +3,28 @@ import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 
 import { DocumentKind, type Revision } from "../../gen/vaultsync/v1/types_pb";
 import { sha256Hex } from "../hash";
-import type { DocumentKindName, RemoteRevision } from "../journal/journal";
 import type { ProtocolClient } from "../protocol/client";
 import { isPathText, isVaultRelativePath } from "../vaultpath/vaultpath";
 import { errorCode } from "./errors";
+
+export type DocumentKindName = "blob" | "text" | "yjs";
+
+/** A revision received from the server's change feed (SPEC.md §6.1), in plain form. */
+export interface RemoteRevision {
+  revisionId: string;
+  documentId: string;
+  seq: bigint;
+  /** Empty for a document's first revision. */
+  parentRevisionId: string;
+  kind: DocumentKindName;
+  path: string;
+  deleted: boolean;
+  /** Blob id (hex): for plaintext vaults the SHA-256 of the content (SPEC.md §5). */
+  contentHash: string;
+  size: bigint;
+  /** The device that committed the revision (the server's `device_id`, SPEC.md §6.1). */
+  deviceId?: string;
+}
 
 /** The protocol calls the engine uses, to pull and to push. */
 export type PullApi = Pick<ProtocolClient, "sync" | "blobs">;

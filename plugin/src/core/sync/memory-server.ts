@@ -31,6 +31,8 @@ export interface InMemoryServerOptions {
   now?: () => Date;
   /** Upload sessions that may be in progress at once (VAULT_SYNC_BLOB_MAX_UPLOADS_PER_VAULT); unlimited by default. */
   maxUploads?: number;
+  /** Largest blob BeginBlob accepts (VAULT_SYNC_BLOB_MAX_SIZE_BYTES); unlimited by default. */
+  maxBlobBytes?: number;
   /** How long a session must be idle before a BeginBlob at the limit reclaims it (VAULT_SYNC_BLOB_UPLOAD_RECLAIM_IDLE). */
   uploadReclaimIdleMs?: number;
   /**
@@ -107,6 +109,7 @@ export class InMemoryServer {
   readonly maxChunkBytes: number;
   private readonly maxHistoryPageSize: number;
   private readonly maxUploads: number;
+  private readonly maxBlobBytes: number;
   private readonly uploadReclaimIdleMs: number;
   /** The server clock, read for every revision's create_time; replace it to move time on. */
   now: () => Date;
@@ -119,6 +122,7 @@ export class InMemoryServer {
     this.maxDownloadBytes = options.maxDownloadBytes ?? 1 << 20;
     this.maxChunkBytes = options.maxChunkBytes ?? 1 << 20;
     this.maxUploads = options.maxUploads ?? Infinity;
+    this.maxBlobBytes = options.maxBlobBytes ?? Infinity;
     this.uploadReclaimIdleMs = options.uploadReclaimIdleMs ?? 10 * 60_000;
     this.purgeMarkers = options.purgeMarkers ?? true;
     this.transport = createRouterTransport(({ service }) => {
@@ -187,6 +191,7 @@ export class InMemoryServer {
           const maxChunkSize = this.maxChunkBytes;
           if (complete !== undefined) return this.respond("BeginBlob", request, { complete: true, receivedSize: BigInt(complete.length), maxChunkSize });
           const size = Number(request.size);
+          if (size > this.maxBlobBytes) throw new ConnectError(`size is larger than the server's limit of ${String(this.maxBlobBytes)} bytes`, Code.InvalidArgument);
           let upload = this.uploads.get(id);
           if (upload === undefined) {
             // At the limit, sessions idle for longer than the reclaim

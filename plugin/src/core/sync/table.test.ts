@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { InMemoryServer } from "../engine/memory-server";
+import { InMemoryServer } from "./memory-server";
 import { Device } from "./testing";
 
 /**
@@ -230,7 +230,7 @@ async function run(testCase: Case): Promise<{ server: InMemoryServer; a: Device;
   const { base, renamed, moved } = paths(testCase.kind);
 
   // B watches its vault from the start, so its renames are live events; nothing triggers its cycles but the test.
-  b.engine.start();
+  void b.engine.start();
   await b.sync();
   await a.write(base, BASE);
   await a.sync();
