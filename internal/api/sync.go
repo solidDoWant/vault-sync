@@ -428,6 +428,14 @@ func (service SyncService) commitError(ctx context.Context, err error) error {
 	case errors.Is(err, store.ErrEpochNotCurrent):
 		return ReasonError(connect.CodeFailedPrecondition, vaultsyncv1.ErrorReason_ERROR_REASON_EPOCH_NOT_CURRENT,
 			errors.New("epoch is not the vault's current key epoch; list the vault's epochs, encrypt under the current one and retry"))
+	// The caller was removed, demoted or the vault deleted after the
+	// request was authorized: the errors the authz interceptor gives.
+	case errors.Is(err, store.ErrVaultNotFound):
+		return connect.NewError(connect.CodeNotFound, authz.ErrVaultNotFound)
+	case errors.Is(err, store.ErrVaultDeleted):
+		return authz.VaultDeletedError()
+	case errors.Is(err, store.ErrReadOnlyMember):
+		return connect.NewError(connect.CodePermissionDenied, store.ErrReadOnlyMember)
 	case errors.Is(err, store.ErrDeviceNotFound):
 		return ReasonError(connect.CodeNotFound, vaultsyncv1.ErrorReason_ERROR_REASON_DEVICE_NOT_FOUND,
 			errors.New("device not found: it was removed or is not yours; register this installation again"))

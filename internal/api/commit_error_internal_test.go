@@ -26,6 +26,10 @@ func TestCommitErrorMapsStoreRefusalsToClientCodes(t *testing.T) {
 		{err: store.ErrPathNotCurrent, code: connect.CodeInvalidArgument},
 		{err: store.ErrPathKeyTaken, code: connect.CodeAlreadyExists},
 		{err: store.ErrIDInUse, code: connect.CodeInvalidArgument},
+		// The caller lost write access after the request was authorized.
+		{err: store.ErrVaultNotFound, code: connect.CodeNotFound},
+		{err: store.ErrVaultDeleted, code: connect.CodeNotFound},
+		{err: store.ErrReadOnlyMember, code: connect.CodePermissionDenied},
 	}
 
 	for _, test := range tests {

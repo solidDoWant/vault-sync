@@ -54,6 +54,10 @@ var (
 	// key epoch (SPEC.md §9.3). Also returned by an epoch change whose
 	// expected epoch is not the current one.
 	ErrEpochNotCurrent = errors.New("epoch is not the vault's current key epoch")
+	// ErrReadOnlyMember: the committing user is a viewer of the vault.
+	// A user who is not a member gets ErrVaultNotFound, and a member of a
+	// deleted vault ErrVaultDeleted, as from VaultRole.
+	ErrReadOnlyMember = errors.New("viewers cannot write to this vault")
 )
 
 // HeadMovedError is returned when a commit's base is not the document's
@@ -185,6 +189,41 @@ func lockDevice(ctx context.Context, tx pgx.Tx, deviceID, userID uuid.UUID) erro
 	return nil
 }
 
+// checkWriter returns nil if userID is an owner or editor of vaultID and the
+// vault is not deleted: ErrVaultNotFound if they are not a member,
+// ErrVaultDeleted if the vault is deleted, ErrReadOnlyMember if they are a
+// viewer. It runs under the vault row lock, which every membership change
+// and DeleteVault take too, in a statement of its own: at READ COMMITTED it
+// sees every such change that committed while the commit waited for the
+// lock. The caller's role was checked before the commit started (authz),
+// but a removal, demotion or deletion may have committed since, and no
+// commit is applied after it.
+func checkWriter(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID) error {
+	var (
+		role    *Role
+		deleted bool
+	)
+
+	err := tx.QueryRow(ctx, `
+		SELECT (SELECT role FROM vault_members WHERE vault_id = $1 AND user_id = $2),
+		       deleted_at IS NOT NULL
+		FROM vaults WHERE id = $1`, vaultID, userID).Scan(&role, &deleted)
+	if err != nil {
+		return fmt.Errorf("look up committing member: %w", err)
+	}
+
+	switch {
+	case role == nil:
+		return ErrVaultNotFound
+	case deleted:
+		return ErrVaultDeleted
+	case *role == RoleViewer:
+		return ErrReadOnlyMember
+	default:
+		return nil
+	}
+}
+
 func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision NewRevision) (Revision, error) {
 	// NO KEY UPDATE, like BeginBlobUpload: inserts referencing the vault
 	// take KEY SHARE locks on it and must not be blocked.
@@ -196,6 +235,10 @@ func (vault *VaultStore) commitRevision(ctx context.Context, tx pgx.Tx, revision
 		Scan(&encryption, &currentEpoch)
 	if err != nil {
 		return Revision{}, notFound(err, "lock vault")
+	}
+
+	if err := checkWriter(ctx, tx, vault.vaultID, revision.UserID); err != nil {
+		return Revision{}, err
 	}
 
 	if err := lockDevice(ctx, tx, revision.DeviceID, revision.UserID); err != nil {
