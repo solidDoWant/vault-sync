@@ -41,9 +41,26 @@ var procedures = map[string]authz.Access{
 
 // memberships is an in-memory MembershipStore.
 type memberships struct {
-	roles   map[[2]uuid.UUID]store.Role
-	err     error
-	lookups atomic.Int64
+	roles map[[2]uuid.UUID]store.Role
+	// invitations maps the id hash of each pending invitation to its vault.
+	invitations map[string]uuid.UUID
+	err         error
+	lookups     atomic.Int64
+}
+
+func (memberships *memberships) InvitationVault(_ context.Context, idHash []byte) (uuid.UUID, error) {
+	memberships.lookups.Add(1)
+
+	if memberships.err != nil {
+		return uuid.Nil, memberships.err
+	}
+
+	vaultID, ok := memberships.invitations[string(idHash)]
+	if !ok {
+		return uuid.Nil, store.ErrInvitationNotFound
+	}
+
+	return vaultID, nil
 }
 
 func (memberships *memberships) VaultRole(_ context.Context, vaultID, userID uuid.UUID) (store.Role, error) {

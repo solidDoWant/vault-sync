@@ -232,8 +232,10 @@ var VaultProcedures = map[string]authz.Access{
 	// need to read the vault; only owners wrap keys (SPEC.md §9.3).
 	vaultsyncv1connect.VaultKeyServiceListKeySlotsProcedure: authz.Read,
 	vaultsyncv1connect.VaultKeyServiceListEpochsProcedure:   authz.Read,
-	// Every member replays the membership log (docs/design/crypto.md).
-	vaultsyncv1connect.VaultKeyServiceListLogEntriesProcedure:   authz.Read,
+	// Every member replays the membership log (docs/design/crypto.md), and
+	// so does a newcomer holding a pending invitation's id before it signs
+	// its redeem entry (docs/design/encryption.md).
+	vaultsyncv1connect.VaultKeyServiceListLogEntriesProcedure:   authz.ReadOrInvitation,
 	vaultsyncv1connect.VaultKeyServiceListMissingSlotsProcedure: authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceRotateEpochProcedure:      authz.Manage,
 	vaultsyncv1connect.VaultKeyServiceAddKeySlotsProcedure:      authz.Manage,

@@ -24,7 +24,8 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 // member without a user key cannot be wrapped to; once they create one they
 // appear in ListMissingSlots for every epoch of the vault.
 //
-// ListKeySlots, ListEpochs and ListLogEntries are open to every member; ListMissingSlots,
+// ListKeySlots, ListEpochs and ListLogEntries are open to every member, and
+// ListLogEntries also to the holder of a pending invitation's id; ListMissingSlots,
 // RotateEpoch and AddKeySlots are owner-only (PERMISSION_DENIED for editors
 // and viewers). A caller who is not a member gets NOT_FOUND, as for a vault
 // that does not exist. On a plaintext vault the lists are empty, and
@@ -82,7 +83,16 @@ service VaultKeyService {
   // in ascending seq order, from the genesis entry. A plaintext vault has
   // no log, so its list is empty.
   //
-  // Errors: INVALID_ARGUMENT for a malformed page_token.
+  // A caller who is not a member reads the log with invitation_id, the
+  // `<id>` of a pending invitation to the vault, so that a newcomer can
+  // verify the log from the invite anchor's genesis hash and sign its
+  // redeem entry over the head (docs/design/encryption.md, "Redemption
+  // takes two steps"). Members need no invitation_id.
+  //
+  // Errors: INVALID_ARGUMENT for a malformed page_token; NOT_FOUND, the
+  // same as GetInvitationSlots returns, for a non-member's invitation_id
+  // that is malformed, unknown, expired, revoked, redeemed or for another
+  // vault.
   rpc ListLogEntries(ListLogEntriesRequest) returns (ListLogEntriesResponse) {}
 }
 
@@ -295,13 +305,19 @@ message AddKeySlotsResponse {
 
 // ListLogEntriesRequest pages through the vault's membership log.
 message ListLogEntriesRequest {
-  // The vault. The caller must be a member.
+  // The vault. The caller must be a member or hold invitation_id.
   string vault_id = 1;
   // Maximum number of entries to return. Zero selects the server default
   // (100); larger values are capped at 1000.
   uint32 page_size = 2;
   // Opaque token from a previous response. Empty for the first page.
   string page_token = 3;
+  // Optional. For a caller who is not a member: the `<id>` of the E2EE
+  // invite code `<id>.<secret>` (22 characters of base64url without
+  // padding) of a pending, unexpired invitation to vault_id. The server
+  // matches SHA-256 of its 16 bytes against the invitation's id_hash.
+  // Ignored for members.
+  string invitation_id = 4;
 }
 
 // ListLogEntriesResponse is one page of the vault's membership log.

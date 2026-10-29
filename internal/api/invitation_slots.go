@@ -9,6 +9,7 @@ import (
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/auth"
+	"github.com/solidDoWant/vault-sync/internal/authz"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -39,19 +40,6 @@ func decodeInvitationPart(part string) ([]byte, bool) {
 	}
 
 	return raw, true
-}
-
-// hashInvitationID returns the stored hash of an E2EE invite code's <id>:
-// SHA-256 of its 16 bytes, or false for an id that cannot have been issued.
-func hashInvitationID(id string) ([]byte, bool) {
-	raw, ok := decodeInvitationPart(id)
-	if !ok {
-		return nil, false
-	}
-
-	sum := sha256.Sum256(raw)
-
-	return sum[:], true
 }
 
 // parseInvitationSlots bounds and parses an invitation's or a redemption's
@@ -112,7 +100,7 @@ func (service MembershipService) GetInvitationSlots(ctx context.Context, request
 		return nil, connect.NewError(connect.CodeUnauthenticated, auth.ErrUnauthenticated)
 	}
 
-	hash, ok := hashInvitationID(request.Msg.GetId())
+	hash, ok := authz.HashInvitationID(request.Msg.GetId())
 	if !ok {
 		return nil, connect.NewError(connect.CodeNotFound, errInvitationNotFound)
 	}

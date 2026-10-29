@@ -155,3 +155,26 @@ func (store *Store) GetInvitationSlots(ctx context.Context, idHash []byte) (Invi
 
 	return found, nil
 }
+
+// InvitationVault returns the vault of the pending invitation to an E2EE
+// vault whose id hashes to idHash. It returns ErrInvitationNotFound for an
+// unknown, expired, revoked or used invitation, an invitation to a
+// plaintext or deleted vault alike, as GetInvitationSlots does.
+func (store *Store) InvitationVault(ctx context.Context, idHash []byte) (uuid.UUID, error) {
+	var vaultID uuid.UUID
+
+	err := store.pool.QueryRow(ctx, `
+		SELECT i.vault_id
+		FROM vault_invitations i JOIN vaults v ON v.id = i.vault_id
+		WHERE i.code_hash = $1 AND i.expires_at > now() AND i.invite_anchor IS NOT NULL
+			AND v.deleted_at IS NULL AND v.encryption = $2`, idHash, EncryptionE2EE).Scan(&vaultID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrInvitationNotFound
+	}
+
+	if err != nil {
+		return uuid.Nil, fmt.Errorf("look up invitation: %w", err)
+	}
+
+	return vaultID, nil
+}

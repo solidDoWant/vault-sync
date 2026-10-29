@@ -122,6 +122,10 @@ func (memory *memoryVaults) VaultRole(_ context.Context, vaultID, userID uuid.UU
 	return role, nil
 }
 
+func (memory *memoryVaults) InvitationVault(context.Context, []byte) (uuid.UUID, error) {
+	return uuid.Nil, store.ErrInvitationNotFound
+}
+
 func (memory *memoryVaults) DeleteVault(_ context.Context, vaultID uuid.UUID) error {
 	memory.mu.Lock()
 	defer memory.mu.Unlock()
@@ -352,7 +356,7 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.VaultKeyService/ListKeySlots": authz.Read,
 	"/vaultsync.v1.VaultKeyService/ListEpochs":   authz.Read,
 	// Every member replays the membership log.
-	"/vaultsync.v1.VaultKeyService/ListLogEntries":   authz.Read,
+	"/vaultsync.v1.VaultKeyService/ListLogEntries":   authz.ReadOrInvitation,
 	"/vaultsync.v1.VaultKeyService/ListMissingSlots": authz.Manage,
 	"/vaultsync.v1.VaultKeyService/RotateEpoch":      authz.Manage,
 	"/vaultsync.v1.VaultKeyService/AddKeySlots":      authz.Manage,

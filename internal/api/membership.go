@@ -43,7 +43,7 @@ var inviteCodeEncoding = base64.RawURLEncoding
 
 // errInvitationNotFound is the single error every failed redemption gets,
 // whatever the reason, so it reveals nothing about any vault.
-var errInvitationNotFound = errors.New("invitation not found or no longer valid")
+var errInvitationNotFound = authz.ErrInvitationNotFound
 
 // MembershipService implements vaultsync.v1.MembershipService. Every
 // procedure but RedeemInvitation is vault-scoped and authorized by the authz
@@ -85,7 +85,7 @@ func hashInviteCode(code string) ([]byte, bool) {
 			return nil, false
 		}
 
-		return hashInvitationID(id)
+		return authz.HashInvitationID(id)
 	}
 
 	if len(code) != inviteCodeEncoding.EncodedLen(inviteCodeBytes) {
