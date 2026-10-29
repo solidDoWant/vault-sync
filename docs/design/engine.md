@@ -135,7 +135,10 @@ The server has a configurable maximum file size (default 200 MiB). Files over th
 
 ## 8. Crash safety
 
-- **Writes.** Write to a temporary file in the same folder, then rename it over the target. A crash leaves the old file or the new one, never half of one. On startup, delete leftover temporary files.
+- **Writes.** Write to a temporary file in the same folder, then replace the target with it. A crash leaves the old file or the new one, never half of one.
+  - **Desktop:** the file system's atomic rename over the target.
+  - **Mobile** (no atomic replace): write the temporary file completely, delete the target, then rename the temporary file to the target. At startup, a temporary file whose target exists is deleted, because it may be partial. A temporary file whose target is missing is complete, so it is renamed into place as the engine's own write.
+  - **A file open in Obsidian's editor:** the §4 editor-safe write in place, which is Obsidian's own save path.
 - **Order.** Change the file first, then the journal. After a crash between the two, the startup scan sees a file that differs from `base` (or is missing), and the rules above treat it as a local change. That is safe: the result is merged against the server, never lost.
 - **Commits.** `revision_id` is stored in `pending` before the first attempt, so a retry after a crash or a lost reply is the same commit (the server is idempotent).
 - **Uploads.** Uploads resume, and content the server already has is skipped (SPEC §6.2).

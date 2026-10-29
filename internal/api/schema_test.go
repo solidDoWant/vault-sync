@@ -135,7 +135,7 @@ func TestSchemaEveryDocumentCarriesKind(t *testing.T) {
 	kind, ok := descriptor.(protoreflect.EnumDescriptor)
 	require.True(t, ok)
 
-	for _, value := range []protoreflect.Name{"DOCUMENT_KIND_BLOB", "DOCUMENT_KIND_TEXT", "DOCUMENT_KIND_YJS"} {
+	for _, value := range []protoreflect.Name{"DOCUMENT_KIND_BLOB", "DOCUMENT_KIND_TEXT", "DOCUMENT_KIND_YJS", "DOCUMENT_KIND_FOLDER"} {
 		assert.NotNil(t, kind.Values().ByName(value), "DocumentKind must define %s", value)
 	}
 

@@ -232,7 +232,7 @@ func TestSchemaConstraints(t *testing.T) {
 		{
 			name: "unknown document kind",
 			statements: func() []statement {
-				return []statement{{"UPDATE documents SET kind = 'folder' WHERE id = $1", []any{f.document}}}
+				return []statement{{"UPDATE documents SET kind = 'directory' WHERE id = $1", []any{f.document}}}
 			},
 			code: checkViolation, constraint: "documents_kind_valid",
 		},
@@ -289,13 +289,6 @@ func TestSchemaConstraints(t *testing.T) {
 				return []statement{{"INSERT INTO revisions (id, document_id, vault_id, seq, parent_rev_id, content_ref, path, device_id) VALUES ($1, $2, $3, 1001, $4, $5, 'note.md', $6)", []any{newID(), f.document, f.vault, f.head, f.blob2, f.device}}}
 			},
 			code: foreignKeyViolation, constraint: "revisions_content_fkey",
-		},
-		{
-			name: "live revision without content",
-			statements: func() []statement {
-				return []statement{{"INSERT INTO revisions (id, document_id, vault_id, seq, parent_rev_id, path, device_id) VALUES ($1, $2, $3, 1002, $4, 'note.md', $5)", []any{newID(), f.document, f.vault, f.head, f.device}}}
-			},
-			code: checkViolation, constraint: "revisions_live_has_content",
 		},
 		{
 			name: "empty path",
