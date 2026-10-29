@@ -192,6 +192,71 @@ describe("the resync after a server restore", () => {
     expect(contents(serverDocs(server))).toEqual(files);
     expect((await a.journal.load()).pending).toEqual([]);
   });
+
+  describe("with a note the restored server does not know, at a name it gives another document", () => {
+    async function settle(a: Device, b: Device): Promise<void> {
+      for (let round = 0; round < 3; round++) {
+        await a.sync();
+        await b.sync();
+      }
+    }
+
+    async function expectSettled(server: InMemoryServer, a: Device, b: Device): Promise<void> {
+      expect(new Map(Object.entries(await a.files()))).toEqual(server.liveFiles());
+      expect(new Map(Object.entries(await b.files()))).toEqual(server.liveFiles());
+      expect(await a.engine.refusedNames()).toEqual([]);
+      expect(await b.engine.refusedNames()).toEqual([]);
+      expect((await a.journal.load()).pending).toEqual([]);
+      expect((await b.journal.load()).pending).toEqual([]);
+    }
+
+    it("keeps a note re-created at a deleted note's name, and its later edits sync", async () => {
+      const server = new InMemoryServer();
+      const a = new Device(server, "device-a");
+      const b = new Device(server, "device-b");
+      await a.engine.start();
+      await b.engine.start();
+      await a.write("a.md", "original note\n");
+      await settle(a, b);
+      const backupSeq = server.currentHeadSeq;
+      await a.vault.delete("a.md");
+      await settle(a, b);
+      await a.write("a.md", "a new note\n");
+      await settle(a, b);
+      server.restoreTo(backupSeq);
+      await settle(a, b);
+      await expectSettled(server, a, b);
+      // The re-created note is not lost: each device that held it keeps it as a conflict copy.
+      expect([...server.liveFiles().values()]).toContain("a new note\n");
+      await a.write("a.md", "edited on A after the resync\n");
+      await settle(a, b);
+      await expectSettled(server, a, b);
+      expect((await b.files())["a.md"]).toBe("edited on A after the resync\n");
+    });
+
+    it("keeps both a note renamed away from a name and the new note at that name", async () => {
+      const server = new InMemoryServer();
+      const a = new Device(server, "device-a");
+      const b = new Device(server, "device-b");
+      await a.engine.start();
+      await b.engine.start();
+      await a.write("a.md", "original note\n");
+      await settle(a, b);
+      const backupSeq = server.currentHeadSeq;
+      await a.vault.rename("a.md", "b.md");
+      await a.write("a.md", "a new note\n");
+      await settle(a, b);
+      server.restoreTo(backupSeq);
+      await settle(a, b);
+      await expectSettled(server, a, b);
+      const contents = [...server.liveFiles().values()];
+      expect(contents).toContain("original note\n");
+      expect(contents).toContain("a new note\n");
+      await b.write("a.md", "edited on B after the resync\n");
+      await settle(a, b);
+      await expectSettled(server, a, b);
+    });
+  });
 });
 
 describe("the resync after a server restore, on a device that cannot hold every path", () => {
