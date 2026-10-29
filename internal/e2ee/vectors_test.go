@@ -197,6 +197,8 @@ type vectorFile struct {
 	KeyCommitment          []keyCommitmentVector   `json:"key_commitment"`
 	RejectedKeySlots       []rejectedKeySlotVector `json:"rejected_key_slots"`
 	RejectedKeyCommitments []keyCommitmentVector   `json:"rejected_key_commitments"`
+
+	IdentityKeys identityVectors `json:"identity_keys"`
 }
 
 // fixed returns n deterministic bytes for a test input named by label.
@@ -435,6 +437,8 @@ func generate(t *testing.T) vectorFile {
 	file.Rejected = rejected(t, file)
 
 	generateKeySlots(&file)
+
+	file.IdentityKeys = generateIdentityVectors(t)
 
 	return file
 }
