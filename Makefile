@@ -45,6 +45,7 @@ test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest 
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
 	./scripts/release_test.sh
+	./scripts/build-images_test.sh
 	./scripts/agents/wait-ci_test.sh
 	./scripts/agents/scheduler_test.py
 	./scripts/with-native-s3.sh --check-pin
@@ -160,19 +161,18 @@ plugin-release-assets: plugin-build ## Collect the plugin release assets (main.j
 	cp $(PLUGIN_DIR)/dist/main.js $(PLUGIN_DIR)/dist/styles.css "$(RELEASE_ASSET_DIR)/"
 	jq --arg version "$(VERSION)" '.version = $$version' $(PLUGIN_DIR)/dist/manifest.json > "$(RELEASE_ASSET_DIR)/manifest.json"
 
-# Dry run by default: the image and chart are built (not pushed) and the tag,
-# tag push and GitHub release are printed. PUSH_ALL=true releases for real.
-# The preflight (version, gh auth, a non-empty CHANGELOG.md section for the
-# version, and for a real release a clean tree, HEAD
-# equal to origin/master and a new tag) runs before anything is built, and
-# the plugin assets are built and checked before the image and chart are
-# pushed, so the pushes are the last steps before tagging.
+# Dry run by default: the tag, tag push and GitHub release are printed.
+# PUSH_ALL=true releases for real. The preflight (version, gh auth, a non-empty
+# CHANGELOG.md section for the version, and for a real release a clean tree,
+# HEAD equal to origin/master and a new tag) runs first, and the plugin
+# assets are built and checked before anything is tagged. Pushing the tag
+# starts the release workflow
+# (.github/workflows/release.yml), which publishes the image and chart, so
+# this target needs no registry credentials.
 .PHONY: release
-release: ## Release VERSION: build and (PUSH_ALL=true) push the image and chart, tag VERSION and create a GitHub release whose notes are VERSION's CHANGELOG.md section, with the plugin's main.js, manifest.json and styles.css for BRAT. Dry run unless PUSH_ALL=true. Requires gh.
+release: ## Release VERSION: tag VERSION and create a GitHub release whose notes are VERSION's CHANGELOG.md section, with the plugin's main.js, manifest.json and styles.css for BRAT; the tag starts the workflow that publishes the image and chart. Dry run unless PUSH_ALL=true. Requires gh.
 	./scripts/release.sh preflight "$(VERSION)" "$(PUSH_ALL)"
 	$(MAKE) plugin-release-assets VERSION="$(VERSION)"
-	./scripts/release.sh check-assets "$(VERSION)" "$(PUSH_ALL)" "$(RELEASE_ASSET_DIR)"
-	$(MAKE) build-images helm VERSION="$(VERSION)" PUSH_ALL="$(PUSH_ALL)"
 	./scripts/release.sh publish "$(VERSION)" "$(PUSH_ALL)" "$(RELEASE_ASSET_DIR)"
 
 ##@ Dependencies

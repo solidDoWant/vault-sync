@@ -1,0 +1,42 @@
+name: release
+
+# Publishes the server image and the Helm chart for a release tag
+# (docs/deployment.md, Releasing). `make release` only tags and creates the
+# GitHub release; pushing the tag starts this workflow, which builds the
+# image with Nix exactly as `make build-images` does (govulncheck included),
+# pushes ghcr.io/soliddowant/vault-sync:<tag> (plus :latest for a final
+# version, never for a pre-release such as 0.4.0-rc.1), pushes the chart to
+# oci://ghcr.io/soliddowant/charts and checks that both resolve.
+on:
+  push:
+    tags:
+      - '[0-9]+.[0-9]+.[0-9]+'
+      - '[0-9]+.[0-9]+.[0-9]+-*'
+
+permissions:
+  contents: read
+  packages: write # push the image and the chart to ghcr.io with GITHUB_TOKEN
+
+# One publish per tag; a re-run of the same tag waits for the running one.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ github.ref_name }}
+      REGISTRY: ghcr.io
+    steps:
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/nix-dev-shell
+      - name: Log in to ghcr.io
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GITHUB_TOKEN" | docker login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
+          printf '%s' "$GITHUB_TOKEN" | nix develop -c helm registry login "$REGISTRY" --username "$GITHUB_ACTOR" --password-stdin
+      - name: Build, check and push the image and chart
+        run: nix develop -c ./scripts/publish-release.sh "$VERSION"
