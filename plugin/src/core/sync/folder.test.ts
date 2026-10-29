@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { DocumentKind } from "../../gen/vaultsync/v1/types_pb";
@@ -151,6 +152,28 @@ describe("folder documents", () => {
     await converge(server, a, b);
     expect(await folders(b)).toEqual([]);
     expect(await b.files()).toEqual({});
+  });
+
+  it("A5: nested folders deleted on A stay deleted when B syncs between A's commits", async () => {
+    const { server, a, b } = await setup();
+    await a.vault.createFolder("Archive/Sub");
+    await converge(server, a, b);
+    expect(await folders(b)).toEqual(["Archive", "Archive/Sub"]);
+
+    await a.vault.deleteFolder("Archive/Sub");
+    await a.vault.deleteFolder("Archive");
+    // A's connection drops after its first commit; B syncs before A pushes the rest.
+    let commits = 0;
+    server.interceptor = (method) => {
+      if (method === "CommitRevision" && ++commits === 2) throw new ConnectError("unavailable", Code.Unavailable);
+    };
+    await expect(a.sync()).rejects.toThrow();
+    server.interceptor = undefined;
+    await b.sync();
+    await converge(server, a, b);
+    expect(await folders(a)).toEqual([]);
+    expect(await folders(b)).toEqual([]);
+    expect(serverFolders(server)).toEqual(new Map());
   });
 
   it("A5, a live item keeps its folders live: a file edited on B in a folder A deleted brings the folder back as the same document", async () => {

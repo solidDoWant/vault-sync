@@ -248,7 +248,11 @@ export async function detectChanges(state: JournalState, options: DetectOptions)
     }
     creates.push(file);
   }
-  for (const id of [...missingByHash.values()].flat().concat(missing.filter(isFolder))) {
+  // Folder deletes go deepest-first, so a parent's tombstone lands only after its children's: a device that pulls between
+  // the commits keeps no folder whose only content is one already deleted (rule 3 would bring it back).
+  const depth = (id: string) => (projections.get(id)?.path ?? "").split("/").length;
+  const folderDeletes = missing.filter(isFolder).sort((left, right) => depth(right) - depth(left));
+  for (const id of [...missingByHash.values()].flat().concat(folderDeletes)) {
     const projection = projections.get(id);
     if (projection !== undefined) changed.set(id, { path: projection.path, hash: projection.hash, size: projection.size, deleted: true });
   }
