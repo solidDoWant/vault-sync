@@ -1,7 +1,7 @@
 /**
  * The sync engine's only view of a vault (SPEC.md §4). The Obsidian adapter
  * (src/obsidian) implements it on top of Obsidian's Vault API; InMemoryVault
- * implements it for unit tests and the simulation harness. Every
+ * implements it for unit tests. Every
  * implementation must pass the conformance suite in ./conformance.ts.
  *
  * Paths are vault-relative, "/"-separated, without a leading or trailing

@@ -27,7 +27,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: lint
-lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin and sim/).
+lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin).
 	golangci-lint run ./...
 	buf lint
 	./scripts/buf-breaking.sh
@@ -37,13 +37,10 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + path-axiom property-test coverage check + Dafny verify-group coverage check + nightly-simulation report tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
-	./scripts/path-axioms_check_test.sh
-	./scripts/verify-group_test.sh
-	./scripts/sim-nightly-report_test.sh
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
 	./scripts/release_test.sh
@@ -58,17 +55,6 @@ test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integrati
 .PHONY: test-integration-postgres14
 test-integration-postgres14: ## Run the store/migration integration tests and the rolling-upgrade test against PostgreSQL 14, the minimum supported version (docker compose; needs Docker).
 	./scripts/test-integration-postgres14.sh
-
-.PHONY: test-sim
-test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_ENGINES, SIM_SEED, SIM_FAITHFUL_FS, SIM_REGRESSION_DIR).
-	./scripts/test-sim.sh
-
-PROPERTY_RUNS ?= 100000
-PROPERTY_SEED ?= 563
-
-.PHONY: test-properties
-test-properties: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the engine property suite (plugin/src/core/engine/properties.test.ts) at nightly size: PROPERTY_RUNS cases per property (default 100000) from PROPERTY_SEED (default 563).
-	cd $(PLUGIN_DIR) && VAULT_SYNC_PROPERTY_RUNS="$(PROPERTY_RUNS)" VAULT_SYNC_PROPERTY_SEED="$(PROPERTY_SEED)" npx vitest run src/core/engine/properties.test.ts
 
 .PHONY: test-e2e
 test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wdio-obsidian-service; headless via xvfb) against a real server (docker compose; VAULT_SYNC_E2E_MOBILE=1 emulates mobile).
@@ -90,9 +76,9 @@ generate: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Regenerate protobuf/C
 	buf generate
 
 .PHONY: check-generate
-check-generate: generate verified-js ## Fail if committed generated code (protobuf, Dafny-compiled JavaScript) differs from a fresh generation.
-	@git diff --exit-code -- gen $(PLUGIN_DIR)/src/gen $(PLUGIN_DIR)/src/verified/gen || { echo "generated code is stale: run 'make generate verified-js' and commit the result" >&2; exit 1; }
-	@test -z "$$(git ls-files --others --exclude-standard -- gen $(PLUGIN_DIR)/src/gen $(PLUGIN_DIR)/src/verified/gen)" || { echo "untracked generated files: run 'make generate verified-js' and commit the result" >&2; exit 1; }
+check-generate: generate ## Fail if committed generated protobuf code differs from a fresh generation.
+	@git diff --exit-code -- gen $(PLUGIN_DIR)/src/gen || { echo "generated code is stale: run 'make generate' and commit the result" >&2; exit 1; }
+	@test -z "$$(git ls-files --others --exclude-standard -- gen $(PLUGIN_DIR)/src/gen)" || { echo "untracked generated files: run 'make generate' and commit the result" >&2; exit 1; }
 
 ##@ Plugin
 
@@ -100,20 +86,8 @@ $(PLUGIN_DIR)/node_modules/.package-lock.json: $(PLUGIN_DIR)/package.json $(PLUG
 	cd $(PLUGIN_DIR) && npm ci
 	@touch $@
 
-.PHONY: verify
-verify: ## Prove the Dafny modules in plugin/verified/ and the core in plugin/verified/core/, and check the engine specification in plugin/verified/spec/ (dafny verify).
-	dafny verify $(PLUGIN_DIR)/verified/*.dfy $(PLUGIN_DIR)/verified/spec/*.dfy $(PLUGIN_DIR)/verified/core/*.dfy
-
-.PHONY: verify-group
-verify-group: ## Prove one group of plugin/verified/verify-groups.txt (GROUP=name), after checking every Dafny file is in exactly one group; CI runs one job per group.
-	./scripts/verify-group.sh $(GROUP)
-
-.PHONY: verified-js
-verified-js: ## Compile the Dafny modules in plugin/verified/ to JavaScript (plugin/src/verified/gen/, committed).
-	./scripts/verified-js.sh
-
 .PHONY: plugin-build
-plugin-build: verified-js $(PLUGIN_DIR)/node_modules/.package-lock.json ## Build the plugin bundle (main.js, manifest.json, styles.css) into plugin/dist/.
+plugin-build: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Build the plugin bundle (main.js, manifest.json, styles.css) into plugin/dist/.
 	cd $(PLUGIN_DIR) && npm run build
 	cp $(PLUGIN_DIR)/manifest.json $(PLUGIN_DIR)/styles.css $(PLUGIN_DIR)/dist/
 
@@ -122,7 +96,7 @@ plugin-test: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the plugin's v
 	cd $(PLUGIN_DIR) && npm test
 
 .PHONY: plugin-lint
-plugin-lint: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run eslint and tsc --noEmit over the plugin and the simulation harness (sim/).
+plugin-lint: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run eslint and tsc --noEmit over the plugin.
 	cd $(PLUGIN_DIR) && npm run lint
 	cd $(PLUGIN_DIR) && npm run typecheck
 

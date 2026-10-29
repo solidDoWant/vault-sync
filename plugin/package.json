@@ -8,7 +8,7 @@
     "build": "tsc --noEmit && node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
     "test": "vitest run",
-    "lint": "eslint . ../sim",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/e2e && node scripts/check-core-program.ts"
   },
   "license": "AGPL-3.0-only",
@@ -39,8 +39,7 @@
     "@connectrpc/connect-web": "^2.2.0",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
-    "@noble/hashes": "^2.4.0",
-    "bignumber.js": "^9.3.1"
+    "@noble/hashes": "^2.4.0"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

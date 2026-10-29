@@ -11,6 +11,17 @@ on:
   schedule:
     - cron: "41 4 * * *"
   workflow_dispatch:
+    inputs:
+      gpu:
+        description: "The emulator's -gpu mode (docs/testing/e2e.md, \"Emulator\")"
+        type: choice
+        default: lavapipe
+        options:
+          - lavapipe
+          - swangle
+          - swiftshader
+          - software
+          - swiftshader_indirect
   pull_request:
     paths:
       - .github/workflows/android-e2e.yml
@@ -22,7 +33,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: android-e2e-${{ github.ref }}
+  # Per renderer too, so dispatched runs comparing -gpu modes run side by side.
+  group: android-e2e-${{ github.ref }}-${{ inputs.gpu || 'lavapipe' }}
   cancel-in-progress: true
 
 env:
@@ -34,6 +46,10 @@ env:
   # looks in ~/.android/avd: point the emulator at avdmanager's.
   ANDROID_AVD_HOME: /home/runner/.config/.android/avd
   ANDROID_SERIAL: emulator-5554
+  # The emulator's renderer mode: lavapipe, software. The deprecated
+  # swiftshader_indirect segfaulted the emulator in most runs
+  # (docs/testing/e2e.md, "Emulator").
+  EMULATOR_GPU: ${{ inputs.gpu || 'lavapipe' }}
 
 jobs:
   android:
@@ -71,14 +87,15 @@ jobs:
       - name: Boot the emulator
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
-          # Vulkan off: with it, the emulator's SwiftShader renderer
-          # segfaulted (in its JIT-compiled code) as soon as chromedriver
-          # attached to Obsidian's WebView, on the runners' AMD EPYC hosts.
-          # It still does in about one run in four, older emulator builds
-          # too (docs/testing/e2e.md, "Emulator").
+          # The renderer is $EMULATOR_GPU (lavapipe unless dispatched
+          # otherwise): the deprecated swiftshader_indirect segfaulted (in
+          # its JIT-compiled code) as soon as chromedriver attached to
+          # Obsidian's WebView, on the runners' AMD EPYC hosts, in five of
+          # six nightly runs. Guest Vulkan stays off, which made
+          # that crash rarer (docs/testing/e2e.md, "Emulator").
           # The subshell records how the emulator ended, should it end.
           nohup bash -c '"$ANDROID_HOME/emulator/emulator" -avd obsidian_test -no-window -no-audio -no-boot-anim \
-            -gpu swiftshader_indirect -feature -Vulkan -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
+            -gpu "$EMULATOR_GPU" -feature -Vulkan -no-snapshot -no-metrics -memory 4096 -cores 2; echo "emulator exited with status $?"' \
             > "$RUNNER_TEMP/emulator.log" 2>&1 &
           pid=$!
           for _ in $(seq 1 72); do
@@ -98,6 +115,9 @@ jobs:
           echo "::error::the emulator did not boot in 6 minutes"
           tail -100 "$RUNNER_TEMP/emulator.log"
           exit 1
+
+      - name: Emulator renderer
+        run: grep -E "gles_mode_selected|Graphics Adapter|Graphics API Version" "$RUNNER_TEMP/emulator.log" || true
 
       - uses: ./.github/actions/nix-dev-shell
 
@@ -120,6 +140,11 @@ jobs:
         run: |
           adb="$ANDROID_HOME/platform-tools/adb"
           mkdir -p "$RUNNER_TEMP/e2e-logs"
+          # An emulator that died mid-run fails every later spec; say so
+          # once, rather than leaving 20 spec failures to read.
+          if crash="$(grep -m1 'emulator exited with status' "$RUNNER_TEMP/emulator.log")"; then
+            echo "::error::the emulator crashed during the run ($crash, -gpu $EMULATOR_GPU); the spec failures that follow are this, not a plugin regression (docs/testing/e2e.md, \"Emulator\")"
+          fi
           timeout 60 "$adb" exec-out screencap -p > "$RUNNER_TEMP/e2e-logs/screen.png" || true
           timeout 60 "$adb" logcat -d > "$RUNNER_TEMP/e2e-logs/logcat.txt" || true
           cp "$RUNNER_TEMP/emulator.log" "$RUNNER_TEMP/e2e-logs/" || true

@@ -33,8 +33,7 @@ export interface Authenticator {
 export interface ProtocolClientOptions {
   /**
    * How requests reach the server. Production uses createHttpTransport; tests
-   * use an in-process router transport; the simulation wraps either with a
-   * fault injector.
+   * use an in-process router transport.
    */
   transport: Transport;
   /** A fixed or externally refreshed token. Ignored when `auth` is set. */

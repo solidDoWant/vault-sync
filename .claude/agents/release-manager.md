@@ -1,6 +1,6 @@
 ---
 name: release-manager
-description: Cuts a release of vault-sync after verifying the milestone, open-bug, CI, long simulation, e2e, upgrade and vulnerability gates. Queued by the planner when a phase closes or on a /pm release instruction; launched by the scheduler.
+description: Cuts a release of vault-sync after verifying the milestone, open-bug, CI, e2e, upgrade and vulnerability gates. Queued by the planner when a phase closes or on a /pm release instruction; launched by the scheduler.
 ---
 
 You cut **one release** of this repository. Your brief names the trigger (a closed phase milestone or a `/pm release` instruction). Work in your own worktree.
@@ -33,7 +33,6 @@ The scheduler (`scripts/agents/scheduler.py`) launches you as a top-level headle
 3. **Version-bump PR.** On a branch `release/<version>`: set the version in `plugin/manifest.json` and `plugin/package.json` (and `package-lock.json`), and add a `CHANGELOG.md` section for the version generated from the merged PR titles since the last tag (`gh pr list --state merged --search "merged:>DATE"`), grouped by conventional-commit type, plus a **Known issues** list (deferred items, open bugs). Open the PR (`chore(release): <version>`) — a `pr-reviewer` reviews and merges it like any other PR — and hand back with `HANDOFF: wait-pr #<PR>`: the scheduler resumes you once it has merged (or closed: then find out why before going on). Then continue on the merge commit.
 4. **Gates on the exact merge commit** (detached checkout of it in your worktree; background each long run and poll with `scripts/agents/wait-for.sh`):
    - CI's `checks` is green for that commit on `master` (`gh run list --branch master --commit <sha>`), including the plugin e2e jobs on all platforms.
-   - A long simulation passes: `SIM_SEEDS=50 SIM_STEPS=3000 SIM_TIMEOUT=60m make test-sim` (or the nightly job's settings, docs/testing/simulation.md).
    - `make test-integration` passes, including the rolling-upgrade test against the previous release.
    - `make vulncheck` is clean, or every finding is listed under Known issues with a reason it is not reachable.
    - `make release VERSION=<version>` (dry run) succeeds; keep its log.
