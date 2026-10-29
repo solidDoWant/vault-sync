@@ -12,6 +12,8 @@ import {
   createInvitation,
   InviteCodeError,
   joinVault,
+  deleteConfirmed,
+  deleteVault,
   leaveVault,
   loadSharing,
   membershipErrorMessage,
@@ -41,7 +43,8 @@ function fakeServer(caller = ownerId) {
   ]);
   const invitations: { invitation: Invitation; code: string }[] = [];
   const requests: string[] = [];
-  const role = () => members.get(caller)?.role;
+  let deleted = false;
+  const role = () => (deleted ? undefined : members.get(caller)?.role);
   const requireOwner = (requested: string) => {
     if (requested !== vaultId || role() === undefined) throw new ConnectError("vault not found", Code.NotFound);
     if (role() !== VaultRole.OWNER) throw new ConnectError("owner role required", Code.PermissionDenied);
@@ -51,6 +54,12 @@ function fakeServer(caller = ownerId) {
   const transport = createRouterTransport(({ service }) => {
     service(VaultService, {
       listVaults: () => ({ vaults: role() === undefined ? [] : [vault()], nextPageToken: "" }),
+      deleteVault: (request) => {
+        requests.push("DeleteVault");
+        requireOwner(request.vaultId);
+        deleted = true;
+        return {};
+      },
     });
     service(MembershipService, {
       listMembers: (request) => {
@@ -254,6 +263,45 @@ describe("the Sharing section (#34)", () => {
     await leaveVault(server.client, vaultId);
 
     expect(await loadSharing(server.client, vaultId, formatDate)).toEqual({ kind: "not-member" });
+  });
+
+  it("refuses the last owner's leaving with the reason, and lets them leave once another member is an owner", async () => {
+    const server = fakeServer();
+
+    const leave = leaveVault(server.client, vaultId);
+    const error: unknown = await leave.catch((caught: unknown) => caught);
+    expect(membershipErrorMessage(error)).toBe("A vault must keep at least one owner. Make another member an owner first.");
+    expect(owned(await loadSharing(server.client, vaultId, formatDate)).members).toHaveLength(2);
+
+    await setMemberRole(server.client, vaultId, editorId, VaultRole.OWNER);
+    await leaveVault(server.client, vaultId);
+    expect(await loadSharing(server.client, vaultId, formatDate)).toEqual({ kind: "not-member" });
+  });
+});
+
+describe("deleting a vault", () => {
+  it("deletes the vault for an owner, after which it is no longer listed", async () => {
+    const server = fakeServer();
+
+    await deleteVault(server.client, vaultId);
+
+    expect(server.requests).toContain("DeleteVault");
+    expect(await loadSharing(server.client, vaultId, formatDate)).toEqual({ kind: "not-member" });
+  });
+
+  it("passes on an editor's refusal", async () => {
+    const server = fakeServer(editorId);
+
+    await expect(deleteVault(server.client, vaultId)).rejects.toMatchObject({ code: Code.PermissionDenied });
+  });
+
+  it("is confirmed only by the vault's exact name", () => {
+    expect(deleteConfirmed("Shared notes", "Shared notes")).toBe(true);
+    expect(deleteConfirmed("", "Shared notes")).toBe(false);
+    expect(deleteConfirmed("shared notes", "Shared notes")).toBe(false);
+    expect(deleteConfirmed("Shared note", "Shared notes")).toBe(false);
+    expect(deleteConfirmed("Shared notes ", "Shared notes")).toBe(false);
+    expect(deleteConfirmed("", "")).toBe(false);
   });
 });
 

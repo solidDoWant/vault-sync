@@ -270,10 +270,11 @@ describe("sharing a vault from the settings", function () {
     // The same code again: already used.
     expect(await asTestUser("RedeemInvitation", { code })).toBe(404);
 
-    // Leaving disconnects this vault and ends the membership.
+    // Leaving ends the membership: sync stops, the vault stays connected and the status says why.
     await clickButton(".vault-sync-sharing", 0, "Leave vault");
     await answerModal("Leave this vault?", "Leave vault");
-    await browser.waitUntil(async () => (await connectedVault()) === null, { timeoutMsg: "leaving never disconnected the vault" });
+    await browser.waitUntil(async () => (await syncStatus()).state === "not-member", { timeoutMsg: "leaving never showed \"no longer a member\"" });
+    expect((await connectedVault())?.name).toBe(vaultName);
     expect(await remoteVaultIds()).toEqual([]);
   });
 });

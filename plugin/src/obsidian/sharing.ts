@@ -161,6 +161,16 @@ export async function leaveVault(client: ProtocolClient, vaultId: string): Promi
   await client.membership.leaveVault({ vaultId });
 }
 
+/** Deletes `vaultId` on the server (DeleteVault, owner only). */
+export async function deleteVault(client: ProtocolClient, vaultId: string): Promise<void> {
+  await client.vaults.deleteVault({ vaultId });
+}
+
+/** Whether the name the owner typed to confirm deleting a vault is the vault's name, exactly. */
+export function deleteConfirmed(typed: string, vaultName: string): boolean {
+  return vaultName !== "" && typed === vaultName;
+}
+
 /**
  * A membership change's refusal, to show: the server's last-owner refusal
  * (FAILED_PRECONDITION) in words, anything else as errorMessage shows it.
