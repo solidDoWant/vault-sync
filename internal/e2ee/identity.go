@@ -49,6 +49,10 @@ const (
 	MaxEscrowRecipientSize = 4096
 	// MaxAnchors bounds the number of vaults in an anchor list.
 	MaxAnchors = 100_000
+	// MaxSealedAnchorListSize is the size of a sealed anchor list of
+	// MaxAnchors vaults: the suite byte, the nonce, the count, each vault id
+	// with its genesis hash, and the tag.
+	MaxSealedAnchorListSize = 1 + NonceSize + 4 + MaxAnchors*(16+HashSize) + TagSize
 
 	fingerprintDisplayBytes = 20
 	inviteSecretSize        = 16

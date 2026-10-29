@@ -262,13 +262,39 @@ jobs:
           path: ${{ runner.temp }}/e2e-logs
           retention-days: 14
 
+  # Fails a pull request that deletes or skips a checklist scenario test or
+  # removes a crypto or path vector (scripts/ci/test-guard.py), for every
+  # change, docs-only included. Plain runner Python, no Nix: it takes seconds.
+  # The PR body and labels are read when the job runs, so after adding a
+  # `Vectors-removed:` line or the owner's test-removal-approved label,
+  # re-running this job picks them up.
+  test-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The merge base with the PR's base branch.
+          fetch-depth: 0
+      - name: No scenario test or vector removed or skipped
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE: origin/${{ github.base_ref }}
+        run: |
+          TEST_GUARD_PR_BODY="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json body --jq .body)"
+          TEST_GUARD_PR_LABELS="$(gh pr view "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --json labels --jq '[.labels[].name] | join(",")')"
+          export TEST_GUARD_PR_BODY TEST_GUARD_PR_LABELS
+          make test-guard
+
   # The single required status check (it also covers the plugin-e2e matrix,
   # whose per-OS check names are not reported when the job is skipped). It
   # always runs, so docs-only changes
   # still produce a passing `checks`; it fails if any tier failed or was
   # cancelled, and passes when they succeeded or were skipped by the filter.
   checks:
-    needs: [changes, lint, unit, integration, integration-postgres14, plugin-e2e, release-artifacts, npm-audit]
+    needs: [changes, test-guard, lint, unit, integration, integration-postgres14, plugin-e2e, release-artifacts, npm-audit]
     if: always()
     runs-on: ubuntu-latest
     steps:

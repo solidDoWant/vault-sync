@@ -45,6 +45,12 @@ const (
 	// UserKeyServiceChangePassphraseProcedure is the fully-qualified name of the UserKeyService's
 	// ChangePassphrase RPC.
 	UserKeyServiceChangePassphraseProcedure = "/vaultsync.v1.UserKeyService/ChangePassphrase"
+	// UserKeyServiceGetAnchorListProcedure is the fully-qualified name of the UserKeyService's
+	// GetAnchorList RPC.
+	UserKeyServiceGetAnchorListProcedure = "/vaultsync.v1.UserKeyService/GetAnchorList"
+	// UserKeyServicePutAnchorListProcedure is the fully-qualified name of the UserKeyService's
+	// PutAnchorList RPC.
+	UserKeyServicePutAnchorListProcedure = "/vaultsync.v1.UserKeyService/PutAnchorList"
 )
 
 // UserKeyServiceClient is a client for the vaultsync.v1.UserKeyService service.
@@ -81,6 +87,21 @@ type UserKeyServiceClient interface {
 	// attempt); FAILED_PRECONDITION when public_key is not the stored public
 	// key (nothing changes); RESOURCE_EXHAUSTED when too many attempts failed.
 	ChangePassphrase(context.Context, *connect.Request[v1.ChangePassphraseRequest]) (*connect.Response[v1.ChangePassphraseResponse], error)
+	// GetAnchorList returns the caller's sealed anchor list
+	// (docs/design/encryption.md, "Trust anchors") and its version. A caller
+	// who has never stored one gets version 0 and an empty list. The server
+	// never opens the list.
+	GetAnchorList(context.Context, *connect.Request[v1.GetAnchorListRequest]) (*connect.Response[v1.GetAnchorListResponse], error)
+	// PutAnchorList replaces the caller's sealed anchor list. It is a
+	// compare-and-set on the version: the list is stored only when version is
+	// the stored version plus one (1 for a caller without a list), so of
+	// concurrent writers of the same version exactly one succeeds.
+	//
+	// Errors: INVALID_ARGUMENT when version is 0 or above 2^63 - 1, or
+	// sealed_list is empty or longer than 4800045 bytes (checked before
+	// anything is stored); FAILED_PRECONDITION when version is not the stored
+	// version plus one (nothing changes: read the list again and merge).
+	PutAnchorList(context.Context, *connect.Request[v1.PutAnchorListRequest]) (*connect.Response[v1.PutAnchorListResponse], error)
 }
 
 // NewUserKeyServiceClient constructs a client for the vaultsync.v1.UserKeyService service. By
@@ -118,6 +139,18 @@ func NewUserKeyServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(userKeyServiceMethods.ByName("ChangePassphrase")),
 			connect.WithClientOptions(opts...),
 		),
+		getAnchorList: connect.NewClient[v1.GetAnchorListRequest, v1.GetAnchorListResponse](
+			httpClient,
+			baseURL+UserKeyServiceGetAnchorListProcedure,
+			connect.WithSchema(userKeyServiceMethods.ByName("GetAnchorList")),
+			connect.WithClientOptions(opts...),
+		),
+		putAnchorList: connect.NewClient[v1.PutAnchorListRequest, v1.PutAnchorListResponse](
+			httpClient,
+			baseURL+UserKeyServicePutAnchorListProcedure,
+			connect.WithSchema(userKeyServiceMethods.ByName("PutAnchorList")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -127,6 +160,8 @@ type userKeyServiceClient struct {
 	createUserKey    *connect.Client[v1.CreateUserKeyRequest, v1.CreateUserKeyResponse]
 	unlockUserKey    *connect.Client[v1.UnlockUserKeyRequest, v1.UnlockUserKeyResponse]
 	changePassphrase *connect.Client[v1.ChangePassphraseRequest, v1.ChangePassphraseResponse]
+	getAnchorList    *connect.Client[v1.GetAnchorListRequest, v1.GetAnchorListResponse]
+	putAnchorList    *connect.Client[v1.PutAnchorListRequest, v1.PutAnchorListResponse]
 }
 
 // GetUserKeyParams calls vaultsync.v1.UserKeyService.GetUserKeyParams.
@@ -147,6 +182,16 @@ func (c *userKeyServiceClient) UnlockUserKey(ctx context.Context, req *connect.R
 // ChangePassphrase calls vaultsync.v1.UserKeyService.ChangePassphrase.
 func (c *userKeyServiceClient) ChangePassphrase(ctx context.Context, req *connect.Request[v1.ChangePassphraseRequest]) (*connect.Response[v1.ChangePassphraseResponse], error) {
 	return c.changePassphrase.CallUnary(ctx, req)
+}
+
+// GetAnchorList calls vaultsync.v1.UserKeyService.GetAnchorList.
+func (c *userKeyServiceClient) GetAnchorList(ctx context.Context, req *connect.Request[v1.GetAnchorListRequest]) (*connect.Response[v1.GetAnchorListResponse], error) {
+	return c.getAnchorList.CallUnary(ctx, req)
+}
+
+// PutAnchorList calls vaultsync.v1.UserKeyService.PutAnchorList.
+func (c *userKeyServiceClient) PutAnchorList(ctx context.Context, req *connect.Request[v1.PutAnchorListRequest]) (*connect.Response[v1.PutAnchorListResponse], error) {
+	return c.putAnchorList.CallUnary(ctx, req)
 }
 
 // UserKeyServiceHandler is an implementation of the vaultsync.v1.UserKeyService service.
@@ -183,6 +228,21 @@ type UserKeyServiceHandler interface {
 	// attempt); FAILED_PRECONDITION when public_key is not the stored public
 	// key (nothing changes); RESOURCE_EXHAUSTED when too many attempts failed.
 	ChangePassphrase(context.Context, *connect.Request[v1.ChangePassphraseRequest]) (*connect.Response[v1.ChangePassphraseResponse], error)
+	// GetAnchorList returns the caller's sealed anchor list
+	// (docs/design/encryption.md, "Trust anchors") and its version. A caller
+	// who has never stored one gets version 0 and an empty list. The server
+	// never opens the list.
+	GetAnchorList(context.Context, *connect.Request[v1.GetAnchorListRequest]) (*connect.Response[v1.GetAnchorListResponse], error)
+	// PutAnchorList replaces the caller's sealed anchor list. It is a
+	// compare-and-set on the version: the list is stored only when version is
+	// the stored version plus one (1 for a caller without a list), so of
+	// concurrent writers of the same version exactly one succeeds.
+	//
+	// Errors: INVALID_ARGUMENT when version is 0 or above 2^63 - 1, or
+	// sealed_list is empty or longer than 4800045 bytes (checked before
+	// anything is stored); FAILED_PRECONDITION when version is not the stored
+	// version plus one (nothing changes: read the list again and merge).
+	PutAnchorList(context.Context, *connect.Request[v1.PutAnchorListRequest]) (*connect.Response[v1.PutAnchorListResponse], error)
 }
 
 // NewUserKeyServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -216,6 +276,18 @@ func NewUserKeyServiceHandler(svc UserKeyServiceHandler, opts ...connect.Handler
 		connect.WithSchema(userKeyServiceMethods.ByName("ChangePassphrase")),
 		connect.WithHandlerOptions(opts...),
 	)
+	userKeyServiceGetAnchorListHandler := connect.NewUnaryHandler(
+		UserKeyServiceGetAnchorListProcedure,
+		svc.GetAnchorList,
+		connect.WithSchema(userKeyServiceMethods.ByName("GetAnchorList")),
+		connect.WithHandlerOptions(opts...),
+	)
+	userKeyServicePutAnchorListHandler := connect.NewUnaryHandler(
+		UserKeyServicePutAnchorListProcedure,
+		svc.PutAnchorList,
+		connect.WithSchema(userKeyServiceMethods.ByName("PutAnchorList")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/vaultsync.v1.UserKeyService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case UserKeyServiceGetUserKeyParamsProcedure:
@@ -226,6 +298,10 @@ func NewUserKeyServiceHandler(svc UserKeyServiceHandler, opts ...connect.Handler
 			userKeyServiceUnlockUserKeyHandler.ServeHTTP(w, r)
 		case UserKeyServiceChangePassphraseProcedure:
 			userKeyServiceChangePassphraseHandler.ServeHTTP(w, r)
+		case UserKeyServiceGetAnchorListProcedure:
+			userKeyServiceGetAnchorListHandler.ServeHTTP(w, r)
+		case UserKeyServicePutAnchorListProcedure:
+			userKeyServicePutAnchorListHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -249,4 +325,12 @@ func (UnimplementedUserKeyServiceHandler) UnlockUserKey(context.Context, *connec
 
 func (UnimplementedUserKeyServiceHandler) ChangePassphrase(context.Context, *connect.Request[v1.ChangePassphraseRequest]) (*connect.Response[v1.ChangePassphraseResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.UserKeyService.ChangePassphrase is not implemented"))
+}
+
+func (UnimplementedUserKeyServiceHandler) GetAnchorList(context.Context, *connect.Request[v1.GetAnchorListRequest]) (*connect.Response[v1.GetAnchorListResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.UserKeyService.GetAnchorList is not implemented"))
+}
+
+func (UnimplementedUserKeyServiceHandler) PutAnchorList(context.Context, *connect.Request[v1.PutAnchorListRequest]) (*connect.Response[v1.PutAnchorListResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("vaultsync.v1.UserKeyService.PutAnchorList is not implemented"))
 }

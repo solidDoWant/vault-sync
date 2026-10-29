@@ -49,3 +49,13 @@ A failing suite does not stop the others. Everything lands in `build/acceptance/
 ## CI
 
 The `acceptance` workflow (`.github/workflows/acceptance.yml`) runs `make acceptance` every night on `master` and uploads `build/acceptance/` as the `acceptance-scoreboard` artifact; the scoreboard is also in the run's summary. Before it, it downloads the `android-e2e-results` artifact of the latest completed `android-e2e` run on `master` and names that run (link, time, conclusion) in the summary; both workflows are scheduled at the same time, so that is usually the previous night's run. It is not a required check.
+
+## Removed or skipped scenario tests and vectors
+
+The `test-guard` job of the `ci` workflow, part of the required `checks`, runs `make test-guard` (`scripts/ci/test-guard.py`) on every pull request. It compares the pull request with its merge base and fails, naming each test or vector, when:
+
+- a scenario test that exists at the base is gone: every `[AC-nn]` or `[Pn-nn]` test title (`it`, `test` and `describe`, also with `.each`, and Go `t.Run` subtests) and every `func TestACnn…` must still exist as often as before, in any file. Renaming one counts as deleting it, and so does commenting it out;
+- a scenario test is newly skipped: `.skip`, `.skipIf`, `.runIf` or `.todo`, `xit` or `xdescribe`, a skipped `describe` around it, a new `.only` in its file, or more skip calls (`t.Skip`, `t.Skipf`, `t.SkipNow`, `this.skip()`, `ctx.skip()`) in its body than before, for a Go subtest also in its parent test before it. A skip the base already had, such as a platform condition, stays allowed;
+- an entry of `testdata/crypto/vectors.json` or `testdata/paths/vectors.json` is gone, rejected sets included. Entries are identified by where they are and their `name` (or `seq`, or position), so regenerated values are fine. A line `Vectors-removed: <reason>` in the pull request body allows removing vectors.
+
+The label `test-removal-approved`, which only the owner applies, turns the check off. The job reads the body and labels when it runs: after adding either, re-run the job.
