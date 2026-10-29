@@ -50,7 +50,7 @@ export class KeyCommitmentError extends Error {
   }
 }
 
-function uuidBytes(name: string, value: string): Uint8Array {
+export function uuidBytes(name: string, value: string): Uint8Array {
   if (!CANONICAL_UUID.test(value)) {
     throw new Error(`e2ee: ${name} ${JSON.stringify(value)} is not a canonical lowercase UUID`);
   }
@@ -58,7 +58,7 @@ function uuidBytes(name: string, value: string): Uint8Array {
   return Uint8Array.from({ length: 16 }, (_, index) => parseInt(hex.slice(index * 2, index * 2 + 2), 16));
 }
 
-function epochBytes(epoch: number): Uint8Array {
+export function epochBytes(epoch: number): Uint8Array {
   if (!Number.isSafeInteger(epoch) || epoch < 0) {
     throw new Error(`e2ee: epoch must be a non-negative safe integer, got ${String(epoch)}`);
   }

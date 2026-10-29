@@ -48,9 +48,21 @@ export async function uploadContent(
   if (await isComplete(api, vaultId, blobId, size)) return "complete";
   const content = await readContent();
   if (content === null || BigInt(content.length) !== size || sha256Hex(content) !== contentHash) return (await isComplete(api, vaultId, blobId, size)) ? "complete" : "missing";
+  await uploadBlob(api, vaultId, blobId, content);
+  return "complete";
+}
+
+/**
+ * Uploads `content` as blob `blobId`: BeginBlob, PutBlobChunk from the bytes
+ * the server already holds, then CommitBlob, resuming from BeginBlob a
+ * bounded number of times when another uploader of the same blob races this
+ * one (see {@link uploadContent}).
+ */
+export async function uploadBlob(api: PullApi, vaultId: string, blobId: Uint8Array, content: Uint8Array): Promise<void> {
+  const size = BigInt(content.length);
   for (let attempt = 1; ; attempt++) {
     const begin = await api.blobs.beginBlob({ vaultId, blobId, size });
-    if (begin.complete) return "complete";
+    if (begin.complete) return;
     if (begin.maxChunkSize === 0) throw new RemoteContentError("BeginBlob reported a maximum chunk size of 0");
     if (begin.receivedSize > size) throw new RemoteContentError(`BeginBlob reported ${String(begin.receivedSize)} bytes received of ${String(size)}`);
     try {
@@ -64,7 +76,7 @@ export async function uploadContent(
         offset = Number(put.receivedSize);
       }
       await api.blobs.commitBlob({ vaultId, blobId });
-      return "complete";
+      return;
     } catch (error) {
       const code = errorCode(error);
       const raced = code === Code.FailedPrecondition || code === Code.NotFound;
@@ -74,7 +86,7 @@ export async function uploadContent(
 }
 
 /** Whether the server holds the blob complete, looked up without opening an upload session or reading its content. */
-async function isComplete(api: PullApi, vaultId: string, blobId: Uint8Array, size: bigint): Promise<boolean> {
+export async function isComplete(api: PullApi, vaultId: string, blobId: Uint8Array, size: bigint): Promise<boolean> {
   try {
     // 1 byte asked for at the blob's end: the range is empty, so the reply carries no bytes, only the size.
     const response = await api.blobs.downloadBlob({ vaultId, blobId, offset: size, length: 1 });

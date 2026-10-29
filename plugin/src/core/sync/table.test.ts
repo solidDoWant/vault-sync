@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { InMemoryServer } from "./memory-server";
-import { Device } from "./testing";
+import { Device, encryptedServer } from "./testing";
 
 /**
  * The decision table of docs/design/engine.md §5, run exhaustively: every
@@ -221,12 +221,15 @@ function survivors(testCase: Case): string[] {
   return edits.flatMap((text) => (text === BASE ? [text] : text.split("\n").filter((line) => line !== "" && !BASE.split("\n").includes(line))));
 }
 
-async function run(testCase: Case): Promise<{ server: InMemoryServer; a: Device; b: Device; documentId: string }> {
+async function run(testCase: Case, encrypted: boolean): Promise<{ server: InMemoryServer; a: Device; b: Device; documentId: string }> {
   let clock = Date.UTC(2026, 9, 29, 12, 0);
   const tick = () => (clock += 60_000);
-  const server = new InMemoryServer({ now: () => new Date(clock) });
-  const a = new Device(server, "device-a", { now: () => clock, userName: "Alice" }, { now: () => clock });
-  const b = new Device(server, "device-b", { now: () => clock, userName: "Bob" }, { now: () => clock });
+  const now = () => new Date(clock);
+  const vault = encrypted ? encryptedServer({ now }) : { server: new InMemoryServer({ now }), keys: undefined };
+  const server = vault.server;
+  const keys = vault.keys === undefined ? {} : { keys: vault.keys };
+  const a = new Device(server, "device-a", { now: () => clock, userName: "Alice", ...keys }, { now: () => clock });
+  const b = new Device(server, "device-b", { now: () => clock, userName: "Bob", ...keys }, { now: () => clock });
   const { base, renamed, moved } = paths(testCase.kind);
 
   // B watches its vault from the start, so its renames are live events; nothing triggers its cycles but the test.
@@ -305,9 +308,13 @@ function name(testCase: Case): string {
   return `${testCase.local} × ${testCase.remote} × ${testCase.kind} × ${testCase.occupancy} × ${testCase.newer} newer × ${testCase.first} first`;
 }
 
-describe("decision table (docs/design/engine.md §5)", () => {
+describe.each([
+  ["a plaintext vault", false],
+  // docs/design/encryption.md, Model: merging happens on the device, and the engine is unchanged.
+  ["an end-to-end encrypted vault", true],
+])("decision table (docs/design/engine.md §5) in %s", (_vault, encrypted) => {
   it.each(cases().map((testCase) => [name(testCase), testCase] as const))("%s", async (_name, testCase) => {
-    const { server, a, b, documentId } = await run(testCase);
+    const { server, a, b, documentId } = await run(testCase, encrypted);
     const filesA = await a.files();
     const filesB = await b.files();
     // Convergence: both devices hold the server's heads, and nothing is left to push.
