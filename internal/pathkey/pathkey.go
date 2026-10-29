@@ -26,7 +26,29 @@ import (
 
 	"golang.org/x/text/cases"
 	"golang.org/x/text/unicode/norm"
+	"golang.org/x/text/unicode/rangetable"
 )
+
+// UnicodeVersion is the Unicode version whose assigned code points new names
+// and passphrases may use (docs/design/engine.md §6, docs/design/crypto.md).
+const UnicodeVersion = "15.0.0"
+
+// assigned holds the code points assigned in UnicodeVersion.
+var assigned = rangetable.Assigned(UnicodeVersion)
+
+// Assigned reports whether every code point of text is assigned in
+// UnicodeVersion. Private-use code points are assigned; noncharacters,
+// surrogates and code points added in a later version are not. Invalid UTF-8
+// bytes are not assigned.
+func Assigned(text string) bool {
+	for _, codePoint := range text {
+		if !unicode.Is(assigned, codePoint) {
+			return false
+		}
+	}
+
+	return true
+}
 
 // NFC returns the canonical composition (NFC) of text. Invalid UTF-8 bytes
 // become U+FFFD. Other packages that need the same normalization as the

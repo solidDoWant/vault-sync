@@ -22,7 +22,7 @@
 // (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, in any case, with or
 // without an extension); no part is longer than MaxNameBytes; and the
 // whole path is at most MaxNewBytes. Every code point must be assigned in
-// Unicode 15.0 (UnicodeVersion, docs/design/engine.md §6), whose
+// Unicode 15.0 (pathkey.Assigned, docs/design/engine.md §6), whose
 // normalization and case folding the Go and JavaScript libraries agree on.
 // And it must be in Unicode NFC (docs/design/engine.md §6): Obsidian stores
 // every path in NFC, so another spelling could never match a file on a
@@ -41,10 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"unicode"
 	"unicode/utf8"
-
-	"golang.org/x/text/unicode/rangetable"
 
 	"github.com/solidDoWant/vault-sync/internal/pathkey"
 	"github.com/solidDoWant/vault-sync/internal/textcheck"
@@ -102,15 +99,8 @@ var ErrNameTooLong = fmt.Errorf("%w: a file or folder name in a new path must be
 // It wraps ErrNotNew.
 var ErrNewTooLong = fmt.Errorf("%w: a new path must be at most %d bytes", ErrNotNew, MaxNewBytes)
 
-// UnicodeVersion is the Unicode version whose assigned code points a new
-// path may use.
-const UnicodeVersion = "15.0.0"
-
-// assigned holds the code points assigned in UnicodeVersion.
-var assigned = rangetable.Assigned(UnicodeVersion)
-
 // ErrUnassigned is returned by CheckNew for a path with a code point not
-// assigned in UnicodeVersion. It wraps ErrNotNew.
+// assigned in Unicode 15.0 (pathkey.Assigned). It wraps ErrNotNew.
 var ErrUnassigned = fmt.Errorf("%w: a new path may only use characters assigned in Unicode 15.0", ErrNotNew)
 
 // ErrNotNFC is returned by CheckNew for a path that is not in Unicode NFC.
@@ -194,10 +184,8 @@ func CheckNew(path string) error {
 		return ErrNewTooLong
 	}
 
-	for _, codePoint := range path {
-		if !unicode.Is(assigned, codePoint) {
-			return ErrUnassigned
-		}
+	if !pathkey.Assigned(path) {
+		return ErrUnassigned
 	}
 
 	if pathkey.NFC(path) != path {

@@ -1,5 +1,4 @@
-import unassignedInUnicode15 from "@unicode/unicode-15.0.0/General_Category/Unassigned/regex.mjs";
-import { nfc } from "../pathkey/normalize";
+import { isAssignedInUnicode15, nfc } from "../pathkey/normalize";
 import { pathKey } from "../pathkey/pathkey";
 
 /**
@@ -58,7 +57,7 @@ function newPathProblem(path: string): PathProblem | undefined {
     if (problem !== undefined) return problem;
   }
   if (encoder.encode(path).length > maxNewPathBytes) return "path-too-long";
-  if (unassignedInUnicode15.test(path)) return "unassigned";
+  if (!isAssignedInUnicode15(path)) return "unassigned";
   if (nfc(path) !== path) return "not-nfc";
   return undefined;
 }

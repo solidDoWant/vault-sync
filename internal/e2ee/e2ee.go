@@ -236,17 +236,27 @@ const (
 	passphraseAuthInfo = "vault-sync/v1/passphrase/auth"
 )
 
+// ErrUnassignedPassphrase is returned when a passphrase is set or used with a
+// code point not assigned in Unicode 15.0.
+var ErrUnassignedPassphrase = errors.New("e2ee: a passphrase may only use characters assigned in Unicode 15.0")
+
 // DerivePassphraseKeys derives the wrap and auth keys of passphrase:
 // stretched = Argon2id(UTF-8(NFC(passphrase)), salt, params, 32), then
 // HKDF-SHA256(stretched, empty salt, info) with the info
 // "vault-sync/v1/passphrase/wrap" and "vault-sync/v1/passphrase/auth". The
-// passphrase is NFC-normalized with internal/pathkey.NFC, as the TypeScript
-// client does, so every device derives the same keys from the same
-// characters assigned in Unicode 15.0, whose normalization is stable. It refuses an empty passphrase, a salt of the
-// wrong size and parameters outside the bounds before deriving.
+// passphrase may only use code points assigned in Unicode 15.0
+// (pathkey.Assigned), whose normalization Unicode keeps stable, and is
+// NFC-normalized with pathkey.NFC, as the TypeScript client does, so every
+// device derives the same keys from the same characters. It refuses an empty
+// passphrase, ErrUnassignedPassphrase, a salt of the wrong size and
+// parameters outside the bounds before deriving.
 func DerivePassphraseKeys(passphrase string, params Argon2Params, salt []byte) (PassphraseKeys, error) {
 	if passphrase == "" {
 		return PassphraseKeys{}, errors.New("e2ee: passphrase is empty")
+	}
+
+	if !pathkey.Assigned(passphrase) {
+		return PassphraseKeys{}, ErrUnassignedPassphrase
 	}
 
 	if !params.valid() {

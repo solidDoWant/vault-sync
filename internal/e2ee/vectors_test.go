@@ -402,10 +402,10 @@ func generate(t *testing.T) vectorFile {
 		{"two lanes", "correct horse battery staple", Argon2Params{Memory: MinArgon2Memory, Iterations: 2, Parallelism: 2}, nil},
 		{"precomposed passphrase", "Café über alles", minimum, nil},
 		{"decomposed passphrase", "Café über alles", minimum, nil},
-		// U+1ADD (Unicode 17) does not block the acute accent from composing
-		// with the e, which runtimes with older Unicode tables get wrong.
-		{"Unicode 17 mark, precomposed passphrase", "\u00e9\u1add pass", minimum, nil},
-		{"Unicode 17 mark, decomposed passphrase", "e\u1add\u0301 pass", minimum, nil},
+		// U+10EFD (Unicode 15.0, combining class 220) does not block the
+		// acute accent from composing with the e.
+		{"Unicode 15.0 mark, precomposed passphrase", "\u00e9\U00010EFD pass", minimum, nil},
+		{"Unicode 15.0 mark, decomposed passphrase", "e\U00010EFD\u0301 pass", minimum, nil},
 	}
 	for _, testCase := range passphraseCases {
 		// The two normalization forms share the salt and nonce, so equal
@@ -679,6 +679,13 @@ func rejected(t *testing.T, file vectorFile) []rejectedVector {
 	add("passphrase: suite 01", "passphrase", "", passVec.Passphrase, nil, wrapAs(0x01, params))
 	add("passphrase: suite 03", "passphrase", "", passVec.Passphrase, nil, wrapAs(0x03, params))
 	add("passphrase: wrong passphrase", "passphrase", "", passVec.Passphrase+" ", nil, wrapped)
+	// Sealed under the key the passphrase would derive without the Unicode
+	// 15.0 rule, so only that rule refuses it. U+1ADD is assigned in Unicode 17.
+	const unassignedPassphrase = "\u00e9\u1add pass"
+	add("passphrase: code point not assigned in Unicode 15.0", "passphrase", "", unassignedPassphrase, nil,
+		must(sealAfterHeader(wrapHeader(SuiteV2, params),
+			must(hkdf.Key(sha256.New, argon2.IDKey([]byte(unassignedPassphrase), salt, params.Iterations, params.Memory, params.Parallelism, KeySize), nil, passphraseWrapInfo, KeySize)),
+			passNonce, secret, nil)))
 	add("passphrase: sealed under the auth key", "passphrase", "", passVec.Passphrase, nil,
 		must(sealAfterHeader(wrapped[:passphraseHeaderSize], unhex(t, passVec.AuthKey), passNonce, secret, nil)))
 	add("passphrase: aad added", "passphrase", "", passVec.Passphrase, []byte("user"), wrapped)
@@ -899,7 +906,7 @@ func TestSharedVectors(t *testing.T) {
 
 		for _, pair := range [][2]string{
 			{"precomposed passphrase", "decomposed passphrase"},
-			{"Unicode 17 mark, precomposed passphrase", "Unicode 17 mark, decomposed passphrase"},
+			{"Unicode 15.0 mark, precomposed passphrase", "Unicode 15.0 mark, decomposed passphrase"},
 		} {
 			require.Contains(t, wrapped, pair[0])
 			require.Contains(t, wrapped, pair[1])
