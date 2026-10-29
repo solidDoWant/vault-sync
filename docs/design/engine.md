@@ -166,7 +166,7 @@ The operator restores PostgreSQL and S3 with the app offline. Because the server
 
 If the device crashes mid-resync, it restarts the resync from step 1. The resync is idempotent.
 
-**Markdown import** is a server-side CLI (`vault-sync-server import <vault> <dir>`). It creates one document per file, with no history.
+**Markdown import** is a CLI client of the server's API (`vault-sync-server import <server> <vault> <dir>`) that signs in and commits like any device. It creates one document per file, with no history.
 
 ## 10. Status and user interface
 

@@ -503,22 +503,19 @@ func LoadExport(lookup func(string) (string, bool)) (ExportConfig, error) {
 }
 
 // ImportConfig is the configuration of the import subcommand (engine.md
-// §9). It reads the same database, object-store and blob size variables as
-// the server.
+// §9), a client of the server's API. Every variable is optional.
 type ImportConfig struct {
-	// Database is the PostgreSQL connection configuration.
-	Database store.Config
-	// S3 is the object store that receives the imported contents.
-	S3 blobstore.Config
-	// MaxFileBytes is the largest file imported, the server's blob limit.
+	// MaxFileBytes is the largest file imported; larger files are skipped
+	// without being read. The server refuses files over its own limit.
 	MaxFileBytes int64
 	// LogLevel is the minimum level logged.
 	LogLevel slog.Level
 }
 
-// LoadImport reads the import configuration through lookup, like Load. The
-// database and the object store are both required; the API, OIDC and other
-// limit variables are ignored.
+// LoadImport reads the import configuration through lookup, like Load: the
+// log level and the blob size limit. The import reaches the database and
+// the object store only through the server, so it reads no database, S3,
+// API or OIDC variables.
 func LoadImport(lookup func(string) (string, bool)) (ImportConfig, error) {
 	get := func(name string) string {
 		value, _ := lookup(name)
@@ -527,17 +524,11 @@ func LoadImport(lookup func(string) (string, bool)) (ImportConfig, error) {
 	}
 
 	cfg := ImportConfig{
-		Database: store.Config{
-			DSN:         get(DatabaseURLEnv),
-			TLSCertFile: get(DatabaseTLSCertFileEnv),
-			TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
-			TLSCAFile:   get(DatabaseTLSCAFileEnv),
-		},
 		MaxFileBytes: DefaultBlobMaxSizeBytes,
 		LogLevel:     slog.LevelInfo,
 	}
 
-	problems := []error{checkDatabase(cfg.Database)}
+	var problems []error
 
 	if raw := get(LogLevelEnv); raw != "" {
 		if err := cfg.LogLevel.UnmarshalText([]byte(raw)); err != nil {
@@ -557,15 +548,6 @@ func LoadImport(lookup func(string) (string, bool)) (ImportConfig, error) {
 		default:
 			cfg.MaxFileBytes = value
 		}
-	}
-
-	s3, s3Problems := loadS3(get)
-	problems = append(problems, s3Problems...)
-
-	if s3 == nil {
-		problems = append(problems, fmt.Errorf("%s and the other VAULT_SYNC_S3_* variables are required: the import writes file contents to S3", S3BucketEnv))
-	} else {
-		cfg.S3 = *s3
 	}
 
 	if err := errors.Join(problems...); err != nil {
