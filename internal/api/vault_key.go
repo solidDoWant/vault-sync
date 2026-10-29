@@ -32,9 +32,9 @@ const (
 	// MaxEscrowRecipientIDBytes bounds an escrow slot's recipient id, as
 	// the key-slot format does (docs/design/crypto.md).
 	MaxEscrowRecipientIDBytes = 255
-	// MaxNextEpochSlots bounds the slots of a new epoch: one per member and
-	// one escrow slot.
-	MaxNextEpochSlots = MaxMembersPerVault + 1
+	// MaxNextEpochSlots bounds the slots of a new epoch: one per member,
+	// one per pending invitation and one escrow slot.
+	MaxNextEpochSlots = MaxMembersPerVault + MaxPendingInvitationsPerVault + 1
 	// MaxAddKeySlots bounds the slots of one AddKeySlots call.
 	MaxAddKeySlots = 1000
 	// DefaultKeyPageSize is the page size of the VaultKeyService lists when
@@ -444,6 +444,14 @@ func parseKeySlot(message *vaultsyncv1.KeySlot, withEpoch bool) (store.KeySlot, 
 
 		slot.RecipientKind = store.RecipientUser
 		slot.RecipientID = id.String()
+	case vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_INVITATION:
+		id, err := authz.ParseID(message.GetRecipientId())
+		if err != nil {
+			return store.KeySlot{}, fmt.Errorf("recipient_id: %w", err)
+		}
+
+		slot.RecipientKind = store.RecipientInvitation
+		slot.RecipientID = id.String()
 	case vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW:
 		if !printableASCII(message.GetRecipientId(), MaxEscrowRecipientIDBytes) {
 			return store.KeySlot{}, fmt.Errorf("recipient_id must be 1 to %d printable ASCII bytes", MaxEscrowRecipientIDBytes)
@@ -452,7 +460,7 @@ func parseKeySlot(message *vaultsyncv1.KeySlot, withEpoch bool) (store.KeySlot, 
 		slot.RecipientKind = store.RecipientEscrow
 		slot.RecipientID = message.GetRecipientId()
 	default:
-		return store.KeySlot{}, errors.New("recipient_kind must be KEY_RECIPIENT_KIND_USER or KEY_RECIPIENT_KIND_ESCROW")
+		return store.KeySlot{}, errors.New("recipient_kind must be KEY_RECIPIENT_KIND_USER, KEY_RECIPIENT_KIND_ESCROW or KEY_RECIPIENT_KIND_INVITATION")
 	}
 
 	if len(message.GetWrappedKey()) == 0 || len(message.GetWrappedKey()) > MaxWrappedKeyBytes {
@@ -528,6 +536,8 @@ func keySlotMessage(slot store.KeySlot) *vaultsyncv1.KeySlot {
 		message.RecipientKind = vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER
 	case store.RecipientEscrow:
 		message.RecipientKind = vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW
+	case store.RecipientInvitation:
+		message.RecipientKind = vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_INVITATION
 	}
 
 	return message

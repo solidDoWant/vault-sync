@@ -33,14 +33,14 @@ func TestDeletedVaultIsRefusedToMembersAndHiddenFromEveryone(t *testing.T) {
 	require.NoError(t, err)
 
 	codeHash := []byte("viewer-code-hash-000000000000000")
-	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, uuid.Nil, store.RoleViewer, codeHash, time.Hour, 10, nil)
+	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, uuid.Nil, store.RoleViewer, codeHash, time.Hour, 10, nil, nil)
 	require.NoError(t, err)
 
-	_, err = queries.RedeemInvitation(t.Context(), viewer, codeHash, 10, nil)
+	_, err = queries.RedeemInvitation(t.Context(), viewer, codeHash, 10, nil, nil)
 	require.NoError(t, err)
 
 	pendingHash := []byte("pending-code-hash-00000000000000")
-	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, uuid.Nil, store.RoleEditor, pendingHash, time.Hour, 10, nil)
+	_, err = queries.InVault(vault.ID).CreateInvitation(t.Context(), owner, uuid.Nil, store.RoleEditor, pendingHash, time.Hour, 10, nil, nil)
 	require.NoError(t, err)
 
 	require.NoError(t, queries.DeleteVault(t.Context(), vault.ID))
@@ -73,7 +73,7 @@ func TestDeletedVaultIsRefusedToMembersAndHiddenFromEveryone(t *testing.T) {
 	assert.Empty(t, viewerVaults)
 
 	// Its pending invitation no longer admits anyone.
-	_, err = queries.RedeemInvitation(t.Context(), outsider, pendingHash, 10, nil)
+	_, err = queries.RedeemInvitation(t.Context(), outsider, pendingHash, 10, nil, nil)
 	require.ErrorIs(t, err, store.ErrInvitationNotFound)
 
 	// The other vault is untouched.

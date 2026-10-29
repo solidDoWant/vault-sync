@@ -5,6 +5,8 @@ package server_test
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"testing"
 
 	"github.com/google/uuid"
@@ -83,27 +85,125 @@ func logRoleOf(role vaultsyncv1.VaultRole) e2ee.Role {
 }
 
 // signedInvitation is an invitation of an E2EE vault: its id, its invite
-// entry signed by inviter, and its invitation signing key.
+// entry signed by inviter, its invitation signing key, its code
+// (`<id>.<secret>`) and the key pair derived from its secret.
 type signedInvitation struct {
-	id      uuid.UUID
-	entry   *vaultsyncv1.LogEntry
-	signKey ed25519.PrivateKey
+	id         uuid.UUID
+	entry      *vaultsyncv1.LogEntry
+	signKey    ed25519.PrivateKey
+	code       string
+	codeID     string
+	idHash     []byte
+	privateKey []byte
+	publicKey  []byte
 }
 
 func (fixture *syncFixture) signedInvitation(t *testing.T, inviter *keyedMember, role vaultsyncv1.VaultRole) signedInvitation {
 	t.Helper()
 
-	signPub, signKey, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
-	_, kemPub, err := e2ee.GenerateKeyPair()
-	require.NoError(t, err)
-
 	id := uuid.Must(uuid.NewV7())
-	payload, err := e2ee.InvitePayload(id.String(), logRoleOf(role), signPub, kemPub)
+
+	rawID := make([]byte, 16)
+	_, _ = rand.Read(rawID)
+	secret := make([]byte, 16)
+	_, _ = rand.Read(secret)
+
+	signSeed, err := e2ee.InviteSignSeed(secret, inviter.vaultID, id.String())
 	require.NoError(t, err)
 
-	return signedInvitation{id: id, signKey: signKey, entry: fixture.nextEntry(t, inviter, e2ee.EntryInvite, payload, inviter.secret.SignKey())}
+	signKey := ed25519.NewKeyFromSeed(signSeed)
+
+	privateKey, kemPub, err := e2ee.InvitationKeyPair(secret, inviter.vaultID, id.String())
+	require.NoError(t, err)
+
+	payload, err := e2ee.InvitePayload(id.String(), logRoleOf(role), signKey.Public().(ed25519.PublicKey), kemPub)
+	require.NoError(t, err)
+
+	codeID := base64.RawURLEncoding.EncodeToString(rawID)
+	idHash := sha256.Sum256(rawID)
+
+	return signedInvitation{
+		id: id, signKey: signKey, entry: fixture.nextEntry(t, inviter, e2ee.EntryInvite, payload, inviter.secret.SignKey()),
+		code: codeID + "." + base64.RawURLEncoding.EncodeToString(secret), codeID: codeID, idHash: idHash[:],
+		privateKey: privateKey,
+		publicKey:  kemPub,
+	}
+}
+
+// epochKeys returns the key of every epoch of member's vault, opened from
+// member's own slots.
+func (fixture *syncFixture) epochKeys(t *testing.T, member *keyedMember) map[uint32][]byte {
+	t.Helper()
+
+	response, err := fixture.vaultKeys(0).ListKeySlots(t.Context(), authorized(&vaultsyncv1.ListKeySlotsRequest{VaultId: member.vaultID, PageSize: 1000}, member.token))
+	require.NoError(t, err)
+
+	keys := make(map[uint32][]byte, len(response.Msg.GetSlots()))
+	for _, slot := range response.Msg.GetSlots() {
+		key, err := e2ee.OpenKeySlot(member.privateKey, slot.GetWrappedKey(), slotOf(member.vaultID, slot.GetEpoch(), member))
+		require.NoError(t, err)
+
+		keys[slot.GetEpoch()] = key
+	}
+
+	return keys
+}
+
+// invitationSlot is epochKey sealed to invitation's key for epoch.
+func invitationSlot(t *testing.T, vaultID string, epoch uint32, epochKey []byte, invitation signedInvitation) *vaultsyncv1.KeySlot {
+	t.Helper()
+
+	wrapped, err := e2ee.SealKeySlot(invitation.publicKey, epochKey, e2ee.KeySlot{
+		VaultID: vaultID, Epoch: uint64(epoch), RecipientKind: e2ee.RecipientInvitation, RecipientID: invitation.id.String(),
+	})
+	require.NoError(t, err)
+
+	return &vaultsyncv1.KeySlot{
+		Epoch:         epoch,
+		RecipientKind: vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_INVITATION,
+		RecipientId:   invitation.id.String(),
+		WrappedKey:    wrapped,
+	}
+}
+
+// inviteRequest is the CreateInvitation request of invitation by inviter,
+// with a slot for every epoch inviter holds and an invite anchor.
+func (fixture *syncFixture) inviteRequest(t *testing.T, inviter *keyedMember, role vaultsyncv1.VaultRole, invitation signedInvitation) *vaultsyncv1.CreateInvitationRequest {
+	t.Helper()
+
+	request := &vaultsyncv1.CreateInvitationRequest{
+		VaultId: inviter.vaultID, Role: role, LogEntry: invitation.entry,
+		IdHash: invitation.idHash, InviteAnchor: make([]byte, 96),
+	}
+
+	for epoch, key := range fixture.epochKeys(t, inviter) {
+		request.Slots = append(request.Slots, invitationSlot(t, inviter.vaultID, epoch, key, invitation))
+	}
+
+	return request
+}
+
+// redeemSlots reads invitation's slots and returns them re-sealed to
+// newcomer, as a redeeming device does.
+func (fixture *syncFixture) redeemSlots(t *testing.T, newcomer *keyedMember, invitation signedInvitation) []*vaultsyncv1.KeySlot {
+	t.Helper()
+
+	response, err := fixture.members(0).GetInvitationSlots(t.Context(), authorized(&vaultsyncv1.GetInvitationSlotsRequest{Id: invitation.codeID}, newcomer.token))
+	require.NoError(t, err)
+
+	vaultID := response.Msg.GetVaultId()
+	slots := make([]*vaultsyncv1.KeySlot, 0, len(response.Msg.GetSlots()))
+
+	for _, slot := range response.Msg.GetSlots() {
+		key, err := e2ee.OpenKeySlot(invitation.privateKey, slot.GetWrappedKey(), e2ee.KeySlot{
+			VaultID: vaultID, Epoch: uint64(slot.GetEpoch()), RecipientKind: e2ee.RecipientInvitation, RecipientID: invitation.id.String(),
+		})
+		require.NoError(t, err)
+
+		slots = append(slots, sealedSlot(t, vaultID, slot.GetEpoch(), key, newcomer))
+	}
+
+	return slots
 }
 
 // redeemEntry is newcomer's redeem entry of invitation, on top of the log

@@ -32,6 +32,10 @@ const (
 	KeyRecipientKind_KEY_RECIPIENT_KIND_USER KeyRecipientKind = 1
 	// The deployment's escrow key (SPEC.md §9.4).
 	KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW KeyRecipientKind = 2
+	// A pending invitation's key (docs/design/crypto.md, "Invitation keys");
+	// recipient_id is the invitation id. Its slots are stored with
+	// CreateInvitation and read with MembershipService.GetInvitationSlots.
+	KeyRecipientKind_KEY_RECIPIENT_KIND_INVITATION KeyRecipientKind = 3
 )
 
 // Enum value maps for KeyRecipientKind.
@@ -40,11 +44,13 @@ var (
 		0: "KEY_RECIPIENT_KIND_UNSPECIFIED",
 		1: "KEY_RECIPIENT_KIND_USER",
 		2: "KEY_RECIPIENT_KIND_ESCROW",
+		3: "KEY_RECIPIENT_KIND_INVITATION",
 	}
 	KeyRecipientKind_value = map[string]int32{
 		"KEY_RECIPIENT_KIND_UNSPECIFIED": 0,
 		"KEY_RECIPIENT_KIND_USER":        1,
 		"KEY_RECIPIENT_KIND_ESCROW":      2,
+		"KEY_RECIPIENT_KIND_INVITATION":  3,
 	}
 )
 
@@ -83,8 +89,9 @@ type KeySlot struct {
 	Epoch uint32 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	// Whom the key is wrapped to. Must not be unspecified.
 	RecipientKind KeyRecipientKind `protobuf:"varint,2,opt,name=recipient_kind,json=recipientKind,proto3,enum=vaultsync.v1.KeyRecipientKind" json:"recipient_kind,omitempty"`
-	// For KEY_RECIPIENT_KIND_USER the user id, a canonical lowercase UUID;
-	// for KEY_RECIPIENT_KIND_ESCROW an identifier of the escrow key, 1 to 255
+	// For KEY_RECIPIENT_KIND_USER the user id, and for
+	// KEY_RECIPIENT_KIND_INVITATION the invitation id, a canonical lowercase
+	// UUID; for KEY_RECIPIENT_KIND_ESCROW an identifier of the escrow key, 1 to 255
 	// printable ASCII bytes.
 	RecipientId string `protobuf:"bytes,3,opt,name=recipient_id,json=recipientId,proto3" json:"recipient_id,omitempty"`
 	// The wrapped epoch key (an age file, docs/design/crypto.md): 1 to 2048
@@ -1357,11 +1364,12 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"page_token\x18\x03 \x01(\tR\tpageToken\"r\n" +
 	"\x16ListLogEntriesResponse\x120\n" +
 	"\aentries\x18\x01 \x03(\v2\x16.vaultsync.v1.LogEntryR\aentries\x12&\n" +
-	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*r\n" +
+	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken*\x95\x01\n" +
 	"\x10KeyRecipientKind\x12\"\n" +
 	"\x1eKEY_RECIPIENT_KIND_UNSPECIFIED\x10\x00\x12\x1b\n" +
 	"\x17KEY_RECIPIENT_KIND_USER\x10\x01\x12\x1d\n" +
-	"\x19KEY_RECIPIENT_KIND_ESCROW\x10\x022\xad\x04\n" +
+	"\x19KEY_RECIPIENT_KIND_ESCROW\x10\x02\x12!\n" +
+	"\x1dKEY_RECIPIENT_KIND_INVITATION\x10\x032\xad\x04\n" +
 	"\x0fVaultKeyService\x12W\n" +
 	"\fListKeySlots\x12!.vaultsync.v1.ListKeySlotsRequest\x1a\".vaultsync.v1.ListKeySlotsResponse\"\x00\x12Q\n" +
 	"\n" +

@@ -94,6 +94,10 @@ enum KeyRecipientKind {
   KEY_RECIPIENT_KIND_USER = 1;
   // The deployment's escrow key (SPEC.md §9.4).
   KEY_RECIPIENT_KIND_ESCROW = 2;
+  // A pending invitation's key (docs/design/crypto.md, "Invitation keys");
+  // recipient_id is the invitation id. Its slots are stored with
+  // CreateInvitation and read with MembershipService.GetInvitationSlots.
+  KEY_RECIPIENT_KIND_INVITATION = 3;
 }
 
 // KeySlot is an epoch key wrapped to one recipient.
@@ -103,8 +107,9 @@ message KeySlot {
   uint32 epoch = 1;
   // Whom the key is wrapped to. Must not be unspecified.
   KeyRecipientKind recipient_kind = 2;
-  // For KEY_RECIPIENT_KIND_USER the user id, a canonical lowercase UUID;
-  // for KEY_RECIPIENT_KIND_ESCROW an identifier of the escrow key, 1 to 255
+  // For KEY_RECIPIENT_KIND_USER the user id, and for
+  // KEY_RECIPIENT_KIND_INVITATION the invitation id, a canonical lowercase
+  // UUID; for KEY_RECIPIENT_KIND_ESCROW an identifier of the escrow key, 1 to 255
   // printable ASCII bytes.
   string recipient_id = 3;
   // The wrapped epoch key (an age file, docs/design/crypto.md): 1 to 2048

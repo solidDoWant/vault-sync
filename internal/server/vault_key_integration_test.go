@@ -112,13 +112,11 @@ func (fixture *syncFixture) join(t *testing.T, owner, member *keyedMember, role 
 
 	invitation := fixture.signedInvitation(t, owner, role)
 
-	created, err := fixture.members(0).CreateInvitation(t.Context(), authorized(&vaultsyncv1.CreateInvitationRequest{
-		VaultId: owner.vaultID, Role: role, LogEntry: invitation.entry,
-	}, owner.token))
+	_, err := fixture.members(0).CreateInvitation(t.Context(), authorized(fixture.inviteRequest(t, owner, role, invitation), owner.token))
 	require.NoError(t, err)
 
 	_, err = fixture.members(1).RedeemInvitation(t.Context(), authorized(&vaultsyncv1.RedeemInvitationRequest{
-		Code: created.Msg.GetCode(), LogEntry: fixture.redeemEntry(t, owner, member, invitation),
+		Code: invitation.code, LogEntry: fixture.redeemEntry(t, owner, member, invitation), Slots: fixture.redeemSlots(t, member, invitation),
 	}, member.token))
 	require.NoError(t, err)
 
@@ -542,8 +540,8 @@ func TestConcurrentRotationsAcrossReplicasCreateOneEpochAgainstPostgres(t *testi
 	assert.Len(t, fixture.ownSlots(t, bob), 2)
 }
 
-// Criterion 6: an added member is missing a slot for every epoch until an
-// owner grants them.
+// A member without slots (one who joined before invitations carried key
+// slots) is missing a slot for every epoch until an owner grants them.
 func TestAddedMemberIsListedAsMissingSlotsUntilGrantedAgainstPostgres(t *testing.T) {
 	fixture := newSyncFixture(t, api.SyncLimits{})
 	alice := fixture.keyedMember(t, "alice")
@@ -568,6 +566,10 @@ func TestAddedMemberIsListedAsMissingSlotsUntilGrantedAgainstPostgres(t *testing
 	assert.Empty(t, fixture.missingSlots(t, alice))
 
 	fixture.join(t, alice, dave, vaultsyncv1.VaultRole_VAULT_ROLE_VIEWER)
+	assert.Empty(t, fixture.missingSlots(t, alice), "a redeeming member stores their own slots")
+
+	_, err := fixture.pool.Exec(t.Context(), `DELETE FROM key_slots WHERE vault_id = $1 AND recipient_id = $2`, alice.vaultID, dave.userID.String())
+	require.NoError(t, err)
 
 	missing := fixture.missingSlots(t, alice)
 	require.Len(t, missing, 2)
@@ -580,7 +582,7 @@ func TestAddedMemberIsListedAsMissingSlotsUntilGrantedAgainstPostgres(t *testing
 
 	assert.Empty(t, fixture.ownSlots(t, dave))
 
-	_, err := fixture.vaultKeys(0).ListMissingSlots(t.Context(), authorized(&vaultsyncv1.ListMissingSlotsRequest{VaultId: alice.vaultID}, bob.token))
+	_, err = fixture.vaultKeys(0).ListMissingSlots(t.Context(), authorized(&vaultsyncv1.ListMissingSlotsRequest{VaultId: alice.vaultID}, bob.token))
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err), "editors do not grant keys")
 
 	_, err = fixture.vaultKeys(0).AddKeySlots(t.Context(), authorized(&vaultsyncv1.AddKeySlotsRequest{

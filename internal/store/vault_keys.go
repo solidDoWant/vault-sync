@@ -49,6 +49,9 @@ const (
 	RecipientUser RecipientKind = "user"
 	// RecipientEscrow: the deployment's escrow key (SPEC.md §9.4).
 	RecipientEscrow RecipientKind = "escrow"
+	// RecipientInvitation: a pending invitation's key; the recipient id is
+	// the invitation id. Its slots live only while the invitation is stored.
+	RecipientInvitation RecipientKind = "invitation"
 )
 
 // KeySlot is an epoch key wrapped to one recipient. The wrapped key is
@@ -56,7 +59,8 @@ const (
 type KeySlot struct {
 	Epoch         int32
 	RecipientKind RecipientKind
-	// RecipientID is the user id (canonical form) for RecipientUser.
+	// RecipientID is the user id (canonical form) for RecipientUser and the
+	// invitation id (canonical form) for RecipientInvitation.
 	RecipientID string
 	WrappedKey  []byte
 	// CreatedBy is the user who stored the slot; set by the store.
@@ -196,7 +200,8 @@ func createEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeySta
 		state.Escrow = escrow
 	}
 
-	if err := checkEpochRecipients(ctx, tx, vaultID, state, next.Slots); err != nil {
+	kept, err := checkEpochRecipients(ctx, tx, vaultID, state, next.Slots)
+	if err != nil {
 		return Epoch{}, err
 	}
 
@@ -212,15 +217,15 @@ func createEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeySta
 
 	created := Epoch{Epoch: state.CurrentEpoch + 1, Commitment: next.Commitment, Record: next.Record, CreatedBy: creatorID}
 
-	err := tx.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO vault_key_epochs (vault_id, epoch, commitment, record, created_by) VALUES ($1, $2, $3, $4, $5)
 		RETURNING created_at`, vaultID, created.Epoch, created.Commitment, created.Record, creatorID).Scan(&created.CreatedAt)
 	if err != nil {
 		return Epoch{}, fmt.Errorf("insert epoch: %w", err)
 	}
 
-	slots := make([]KeySlot, len(next.Slots))
-	for index, slot := range next.Slots {
+	slots := make([]KeySlot, len(kept))
+	for index, slot := range kept {
 		slot.Epoch = created.Epoch
 		slots[index] = slot
 	}
@@ -288,51 +293,101 @@ func keyedMembers(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID) (map[string
 	return members, nil
 }
 
+// storedInvitations returns the ids (canonical form) of the vault's stored
+// invitations, expired ones included: they stay pending in the membership
+// log until an owner revokes them, so a new epoch is wrapped to them too.
+func storedInvitations(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID) (map[string]bool, error) {
+	rows, err := tx.Query(ctx, `SELECT id FROM vault_invitations WHERE vault_id = $1`, vaultID)
+	if err != nil {
+		return nil, fmt.Errorf("list invitations: %w", err)
+	}
+
+	ids, err := pgx.CollectRows(rows, pgx.RowTo[uuid.UUID])
+	if err != nil {
+		return nil, fmt.Errorf("list invitations: %w", err)
+	}
+
+	invitations := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		invitations[id.String()] = true
+	}
+
+	return invitations, nil
+}
+
 // checkEpochRecipients returns ErrInvalidRecipients unless slots hold
-// exactly one slot per member with a user key and, in an escrow vault,
-// exactly one escrow slot (none in another).
-func checkEpochRecipients(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeyState, slots []KeySlot) error {
+// exactly one slot per member with a user key, one per stored invitation
+// and, in an escrow vault, exactly one escrow slot (none in another). It returns the slots to
+// store: an invitation slot naming an invitation that is no longer stored
+// (pending in the log, but expired and pruned) is accepted and dropped, as
+// nobody can redeem it.
+func checkEpochRecipients(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeyState, slots []KeySlot) ([]KeySlot, error) {
 	required, err := keyedMembers(ctx, tx, vaultID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+
+	invitations, err := storedInvitations(ctx, tx, vaultID)
+	if err != nil {
+		return nil, err
 	}
 
 	seen := make(map[string]bool, len(slots))
+	seenInvitations := make(map[string]bool, len(invitations))
+	kept := make([]KeySlot, 0, len(slots))
 	escrow := 0
 
 	for _, slot := range slots {
 		switch slot.RecipientKind {
+		case RecipientInvitation:
+			if seenInvitations[slot.RecipientID] {
+				return nil, fmt.Errorf("%w: invitation %s has more than one slot", ErrInvalidRecipients, slot.RecipientID)
+			}
+
+			seenInvitations[slot.RecipientID] = true
+
+			if !invitations[slot.RecipientID] {
+				continue
+			}
 		case RecipientUser:
 			if !required[slot.RecipientID] {
-				return fmt.Errorf("%w: user %s is not a member with a user key", ErrInvalidRecipients, slot.RecipientID)
+				return nil, fmt.Errorf("%w: user %s is not a member with a user key", ErrInvalidRecipients, slot.RecipientID)
 			}
 
 			if seen[slot.RecipientID] {
-				return fmt.Errorf("%w: user %s has more than one slot", ErrInvalidRecipients, slot.RecipientID)
+				return nil, fmt.Errorf("%w: user %s has more than one slot", ErrInvalidRecipients, slot.RecipientID)
 			}
 
 			seen[slot.RecipientID] = true
 		case RecipientEscrow:
 			escrow++
 			if !state.Escrow || escrow > 1 {
-				return fmt.Errorf("%w: only an escrow vault takes one escrow slot", ErrInvalidRecipients)
+				return nil, fmt.Errorf("%w: only an escrow vault takes one escrow slot", ErrInvalidRecipients)
 			}
 		default:
-			return fmt.Errorf("%w: unknown recipient kind", ErrInvalidRecipients)
+			return nil, fmt.Errorf("%w: unknown recipient kind", ErrInvalidRecipients)
 		}
+
+		kept = append(kept, slot)
 	}
 
 	for member := range required {
 		if !seen[member] {
-			return fmt.Errorf("%w: no slot for member %s", ErrInvalidRecipients, member)
+			return nil, fmt.Errorf("%w: no slot for member %s", ErrInvalidRecipients, member)
+		}
+	}
+
+	for invitation := range invitations {
+		if !seenInvitations[invitation] {
+			return nil, fmt.Errorf("%w: no slot for pending invitation %s", ErrInvalidRecipients, invitation)
 		}
 	}
 
 	if state.Escrow && escrow == 0 {
-		return fmt.Errorf("%w: an escrow vault's epoch needs its escrow slot", ErrInvalidRecipients)
+		return nil, fmt.Errorf("%w: an escrow vault's epoch needs its escrow slot", ErrInvalidRecipients)
 	}
 
-	return nil
+	return kept, nil
 }
 
 // insertKeySlots stores slots, keeping any slot already stored for the same

@@ -8,7 +8,7 @@ import type { Timestamp } from "@bufbuild/protobuf/wkt";
 import { file_google_protobuf_timestamp } from "@bufbuild/protobuf/wkt";
 import type { LogEntry, Vault, VaultRole } from "./types_pb";
 import { file_vaultsync_v1_types } from "./types_pb";
-import type { NextEpoch } from "./vault_key_pb";
+import type { KeyEpoch, KeySlot, NextEpoch } from "./vault_key_pb";
 import { file_vaultsync_v1_vault_key } from "./vault_key_pb";
 import type { Message } from "@bufbuild/protobuf";
 
@@ -16,7 +16,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/membership.proto.
  */
 export const file_vaultsync_v1_membership: GenFile = /*@__PURE__*/
-  fileDesc("Ch12YXVsdHN5bmMvdjEvbWVtYmVyc2hpcC5wcm90bxIMdmF1bHRzeW5jLnYxIroBCgpJbnZpdGF0aW9uEgoKAmlkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZXhwaXJlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIpkBCgZNZW1iZXISDwoHdXNlcl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLQoJam9pbl90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpwdWJsaWNfa2V5GAUgASgMIpIBChdDcmVhdGVJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIlCgRyb2xlGAIgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZRITCgt0dGxfc2Vjb25kcxgDIAEoDRIpCglsb2dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiVgoYQ3JlYXRlSW52aXRhdGlvblJlc3BvbnNlEiwKCmludml0YXRpb24YASABKAsyGC52YXVsdHN5bmMudjEuSW52aXRhdGlvbhIMCgRjb2RlGAIgASgJIioKFkxpc3RJbnZpdGF0aW9uc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiSAoXTGlzdEludml0YXRpb25zUmVzcG9uc2USLQoLaW52aXRhdGlvbnMYASADKAsyGC52YXVsdHN5bmMudjEuSW52aXRhdGlvbiJtChdSZXZva2VJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAIgASgJEikKCWxvZ19lbnRyeRgDIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSIaChhSZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiUgoXUmVkZWVtSW52aXRhdGlvblJlcXVlc3QSDAoEY29kZRgBIAEoCRIpCglsb2dfZW50cnkYAiABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiPgoYUmVkZWVtSW52aXRhdGlvblJlc3BvbnNlEiIKBXZhdWx0GAEgASgLMhMudmF1bHRzeW5jLnYxLlZhdWx0IiYKEkxpc3RNZW1iZXJzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCSI8ChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC52YXVsdHN5bmMudjEuTWVtYmVyIo4BChdVcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEiUKBHJvbGUYAyABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEikKCWxvZ19lbnRyeRgEIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSJAChhVcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2USJAoGbWVtYmVyGAEgASgLMhQudmF1bHRzeW5jLnYxLk1lbWJlciKQAQoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEisKCm5leHRfZXBvY2gYAyABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKCWxvZ19lbnRyeRgEIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSIWChRSZW1vdmVNZW1iZXJSZXNwb25zZSJQChFMZWF2ZVZhdWx0UmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIpCglsb2dfZW50cnkYAiABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiFAoSTGVhdmVWYXVsdFJlc3BvbnNlMosGChFNZW1iZXJzaGlwU2VydmljZRJjChBDcmVhdGVJbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXNwb25zZSIAEmAKD0xpc3RJbnZpdGF0aW9ucxIkLnZhdWx0c3luYy52MS5MaXN0SW52aXRhdGlvbnNSZXF1ZXN0GiUudmF1bHRzeW5jLnYxLkxpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlIgASYwoQUmV2b2tlSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiABJjChBSZWRlZW1JbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLlJlZGVlbUludml0YXRpb25SZXNwb25zZSIAElQKC0xpc3RNZW1iZXJzEiAudmF1bHRzeW5jLnYxLkxpc3RNZW1iZXJzUmVxdWVzdBohLnZhdWx0c3luYy52MS5MaXN0TWVtYmVyc1Jlc3BvbnNlIgASYwoQVXBkYXRlTWVtYmVyUm9sZRIlLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBomLnZhdWx0c3luYy52MS5VcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2UiABJXCgxSZW1vdmVNZW1iZXISIS52YXVsdHN5bmMudjEuUmVtb3ZlTWVtYmVyUmVxdWVzdBoiLnZhdWx0c3luYy52MS5SZW1vdmVNZW1iZXJSZXNwb25zZSIAElEKCkxlYXZlVmF1bHQSHy52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlcXVlc3QaIC52YXVsdHN5bmMudjEuTGVhdmVWYXVsdFJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw", [file_google_protobuf_timestamp, file_vaultsync_v1_types, file_vaultsync_v1_vault_key]);
+  fileDesc("Ch12YXVsdHN5bmMvdjEvbWVtYmVyc2hpcC5wcm90bxIMdmF1bHRzeW5jLnYxIroBCgpJbnZpdGF0aW9uEgoKAmlkGAEgASgJEiUKBHJvbGUYAiABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEhcKD2NyZWF0b3JfdXNlcl9pZBgDIAEoCRIvCgtjcmVhdGVfdGltZRgEIAEoCzIaLmdvb2dsZS5wcm90b2J1Zi5UaW1lc3RhbXASLwoLZXhwaXJlX3RpbWUYBSABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wIpkBCgZNZW1iZXISDwoHdXNlcl9pZBgBIAEoCRIUCgxkaXNwbGF5X25hbWUYAiABKAkSJQoEcm9sZRgDIAEoDjIXLnZhdWx0c3luYy52MS5WYXVsdFJvbGUSLQoJam9pbl90aW1lGAQgASgLMhouZ29vZ2xlLnByb3RvYnVmLlRpbWVzdGFtcBISCgpwdWJsaWNfa2V5GAUgASgMIuABChdDcmVhdGVJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIlCgRyb2xlGAIgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZRITCgt0dGxfc2Vjb25kcxgDIAEoDRIpCglsb2dfZW50cnkYBCABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkSDwoHaWRfaGFzaBgFIAEoDBIkCgVzbG90cxgGIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EhUKDWludml0ZV9hbmNob3IYByABKAwiVgoYQ3JlYXRlSW52aXRhdGlvblJlc3BvbnNlEiwKCmludml0YXRpb24YASABKAsyGC52YXVsdHN5bmMudjEuSW52aXRhdGlvbhIMCgRjb2RlGAIgASgJIioKFkxpc3RJbnZpdGF0aW9uc1JlcXVlc3QSEAoIdmF1bHRfaWQYASABKAkiSAoXTGlzdEludml0YXRpb25zUmVzcG9uc2USLQoLaW52aXRhdGlvbnMYASADKAsyGC52YXVsdHN5bmMudjEuSW52aXRhdGlvbiJtChdSZXZva2VJbnZpdGF0aW9uUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIVCg1pbnZpdGF0aW9uX2lkGAIgASgJEikKCWxvZ19lbnRyeRgDIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSIaChhSZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiJwoZR2V0SW52aXRhdGlvblNsb3RzUmVxdWVzdBIKCgJpZBgBIAEoCSLRAQoaR2V0SW52aXRhdGlvblNsb3RzUmVzcG9uc2USFQoNaW52aXRhdGlvbl9pZBgBIAEoCRIQCgh2YXVsdF9pZBgCIAEoCRIlCgRyb2xlGAMgASgOMhcudmF1bHRzeW5jLnYxLlZhdWx0Um9sZRIkCgVzbG90cxgEIAMoCzIVLnZhdWx0c3luYy52MS5LZXlTbG90EiYKBmVwb2NocxgFIAMoCzIWLnZhdWx0c3luYy52MS5LZXlFcG9jaBIVCg1pbnZpdGVfYW5jaG9yGAYgASgMIngKF1JlZGVlbUludml0YXRpb25SZXF1ZXN0EgwKBGNvZGUYASABKAkSKQoJbG9nX2VudHJ5GAIgASgLMhYudmF1bHRzeW5jLnYxLkxvZ0VudHJ5EiQKBXNsb3RzGAMgAygLMhUudmF1bHRzeW5jLnYxLktleVNsb3QiPgoYUmVkZWVtSW52aXRhdGlvblJlc3BvbnNlEiIKBXZhdWx0GAEgASgLMhMudmF1bHRzeW5jLnYxLlZhdWx0IiYKEkxpc3RNZW1iZXJzUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCSI8ChNMaXN0TWVtYmVyc1Jlc3BvbnNlEiUKB21lbWJlcnMYASADKAsyFC52YXVsdHN5bmMudjEuTWVtYmVyIo4BChdVcGRhdGVNZW1iZXJSb2xlUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEiUKBHJvbGUYAyABKA4yFy52YXVsdHN5bmMudjEuVmF1bHRSb2xlEikKCWxvZ19lbnRyeRgEIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSJAChhVcGRhdGVNZW1iZXJSb2xlUmVzcG9uc2USJAoGbWVtYmVyGAEgASgLMhQudmF1bHRzeW5jLnYxLk1lbWJlciKQAQoTUmVtb3ZlTWVtYmVyUmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIPCgd1c2VyX2lkGAIgASgJEisKCm5leHRfZXBvY2gYAyABKAsyFy52YXVsdHN5bmMudjEuTmV4dEVwb2NoEikKCWxvZ19lbnRyeRgEIAEoCzIWLnZhdWx0c3luYy52MS5Mb2dFbnRyeSIWChRSZW1vdmVNZW1iZXJSZXNwb25zZSJQChFMZWF2ZVZhdWx0UmVxdWVzdBIQCgh2YXVsdF9pZBgBIAEoCRIpCglsb2dfZW50cnkYAiABKAsyFi52YXVsdHN5bmMudjEuTG9nRW50cnkiFAoSTGVhdmVWYXVsdFJlc3BvbnNlMvYGChFNZW1iZXJzaGlwU2VydmljZRJjChBDcmVhdGVJbnZpdGF0aW9uEiUudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXF1ZXN0GiYudmF1bHRzeW5jLnYxLkNyZWF0ZUludml0YXRpb25SZXNwb25zZSIAEmAKD0xpc3RJbnZpdGF0aW9ucxIkLnZhdWx0c3luYy52MS5MaXN0SW52aXRhdGlvbnNSZXF1ZXN0GiUudmF1bHRzeW5jLnYxLkxpc3RJbnZpdGF0aW9uc1Jlc3BvbnNlIgASYwoQUmV2b2tlSW52aXRhdGlvbhIlLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVxdWVzdBomLnZhdWx0c3luYy52MS5SZXZva2VJbnZpdGF0aW9uUmVzcG9uc2UiABJpChJHZXRJbnZpdGF0aW9uU2xvdHMSJy52YXVsdHN5bmMudjEuR2V0SW52aXRhdGlvblNsb3RzUmVxdWVzdBooLnZhdWx0c3luYy52MS5HZXRJbnZpdGF0aW9uU2xvdHNSZXNwb25zZSIAEmMKEFJlZGVlbUludml0YXRpb24SJS52YXVsdHN5bmMudjEuUmVkZWVtSW52aXRhdGlvblJlcXVlc3QaJi52YXVsdHN5bmMudjEuUmVkZWVtSW52aXRhdGlvblJlc3BvbnNlIgASVAoLTGlzdE1lbWJlcnMSIC52YXVsdHN5bmMudjEuTGlzdE1lbWJlcnNSZXF1ZXN0GiEudmF1bHRzeW5jLnYxLkxpc3RNZW1iZXJzUmVzcG9uc2UiABJjChBVcGRhdGVNZW1iZXJSb2xlEiUudmF1bHRzeW5jLnYxLlVwZGF0ZU1lbWJlclJvbGVSZXF1ZXN0GiYudmF1bHRzeW5jLnYxLlVwZGF0ZU1lbWJlclJvbGVSZXNwb25zZSIAElcKDFJlbW92ZU1lbWJlchIhLnZhdWx0c3luYy52MS5SZW1vdmVNZW1iZXJSZXF1ZXN0GiIudmF1bHRzeW5jLnYxLlJlbW92ZU1lbWJlclJlc3BvbnNlIgASUQoKTGVhdmVWYXVsdBIfLnZhdWx0c3luYy52MS5MZWF2ZVZhdWx0UmVxdWVzdBogLnZhdWx0c3luYy52MS5MZWF2ZVZhdWx0UmVzcG9uc2UiAEJAWj5naXRodWIuY29tL3NvbGlkRG9XYW50L3ZhdWx0LXN5bmMvZ2VuL3ZhdWx0c3luYy92MTt2YXVsdHN5bmN2MWIGcHJvdG8z", [file_google_protobuf_timestamp, file_vaultsync_v1_types, file_vaultsync_v1_vault_key]);
 
 /**
  * Invitation is a pending invitation to a vault. It never carries the code.
@@ -155,6 +155,32 @@ export type CreateInvitationRequest = Message<"vaultsync.v1.CreateInvitationRequ
    * @generated from field: vaultsync.v1.LogEntry log_entry = 4;
    */
   logEntry?: LogEntry | undefined;
+
+  /**
+   * End-to-end encrypted vaults only: SHA-256 of the 16 bytes that `<id>`
+   * (22 characters of base64url without padding) encodes. The server stores
+   * only this hash.
+   *
+   * @generated from field: bytes id_hash = 5;
+   */
+  idHash: Uint8Array;
+
+  /**
+   * End-to-end encrypted vaults only: the vault's epoch keys wrapped to the
+   * invitation's key, exactly one slot (KEY_RECIPIENT_KIND_INVITATION, this
+   * invitation's id) for every existing epoch.
+   *
+   * @generated from field: repeated vaultsync.v1.KeySlot slots = 6;
+   */
+  slots: KeySlot[];
+
+  /**
+   * End-to-end encrypted vaults only: the invite anchor (96 bytes,
+   * docs/design/crypto.md), returned by GetInvitationSlots.
+   *
+   * @generated from field: bytes invite_anchor = 7;
+   */
+  inviteAnchor: Uint8Array;
 };
 
 /**
@@ -179,7 +205,8 @@ export type CreateInvitationResponse = Message<"vaultsync.v1.CreateInvitationRes
 
   /**
    * The secret invite code to hand to the invited user. It is shown only
-   * once and cannot be retrieved later.
+   * once and cannot be retrieved later. Empty for an end-to-end encrypted
+   * vault, whose code the inviting device generated.
    *
    * @generated from field: string code = 2;
    */
@@ -289,13 +316,92 @@ export const RevokeInvitationResponseSchema: GenMessage<RevokeInvitationResponse
   messageDesc(file_vaultsync_v1_membership, 7);
 
 /**
+ * GetInvitationSlotsRequest names an invitation by its code's `<id>`.
+ *
+ * @generated from message vaultsync.v1.GetInvitationSlotsRequest
+ */
+export type GetInvitationSlotsRequest = Message<"vaultsync.v1.GetInvitationSlotsRequest"> & {
+  /**
+   * The `<id>` part of an end-to-end encrypted vault's invite code.
+   *
+   * @generated from field: string id = 1;
+   */
+  id: string;
+};
+
+/**
+ * Describes the message vaultsync.v1.GetInvitationSlotsRequest.
+ * Use `create(GetInvitationSlotsRequestSchema)` to create a new message.
+ */
+export const GetInvitationSlotsRequestSchema: GenMessage<GetInvitationSlotsRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_membership, 8);
+
+/**
+ * GetInvitationSlotsResponse is what a newcomer needs to unwrap the vault's
+ * epoch keys and wrap them to itself.
+ *
+ * @generated from message vaultsync.v1.GetInvitationSlotsResponse
+ */
+export type GetInvitationSlotsResponse = Message<"vaultsync.v1.GetInvitationSlotsResponse"> & {
+  /**
+   * The invitation id, which the invitation's key pair is derived from.
+   *
+   * @generated from field: string invitation_id = 1;
+   */
+  invitationId: string;
+
+  /**
+   * The vault the invitation is to.
+   *
+   * @generated from field: string vault_id = 2;
+   */
+  vaultId: string;
+
+  /**
+   * The role the redeeming user receives.
+   *
+   * @generated from field: vaultsync.v1.VaultRole role = 3;
+   */
+  role: VaultRole;
+
+  /**
+   * The invitation's key slots, one per epoch, in ascending epoch order.
+   *
+   * @generated from field: repeated vaultsync.v1.KeySlot slots = 4;
+   */
+  slots: KeySlot[];
+
+  /**
+   * The vault's epochs with their commitments and records, ascending.
+   *
+   * @generated from field: repeated vaultsync.v1.KeyEpoch epochs = 5;
+   */
+  epochs: KeyEpoch[];
+
+  /**
+   * The invite anchor stored with CreateInvitation.
+   *
+   * @generated from field: bytes invite_anchor = 6;
+   */
+  inviteAnchor: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.GetInvitationSlotsResponse.
+ * Use `create(GetInvitationSlotsResponseSchema)` to create a new message.
+ */
+export const GetInvitationSlotsResponseSchema: GenMessage<GetInvitationSlotsResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_membership, 9);
+
+/**
  * RedeemInvitationRequest carries the invite code.
  *
  * @generated from message vaultsync.v1.RedeemInvitationRequest
  */
 export type RedeemInvitationRequest = Message<"vaultsync.v1.RedeemInvitationRequest"> & {
   /**
-   * The code from CreateInvitationResponse.code.
+   * The code from CreateInvitationResponse.code, or, for an end-to-end
+   * encrypted vault, the `<id>.<secret>` code the inviting device generated.
    *
    * @generated from field: string code = 1;
    */
@@ -309,6 +415,15 @@ export type RedeemInvitationRequest = Message<"vaultsync.v1.RedeemInvitationRequ
    * @generated from field: vaultsync.v1.LogEntry log_entry = 2;
    */
   logEntry?: LogEntry | undefined;
+
+  /**
+   * End-to-end encrypted vaults only: the caller's own key slots
+   * (KEY_RECIPIENT_KIND_USER, the caller's user id), exactly one for every
+   * existing epoch.
+   *
+   * @generated from field: repeated vaultsync.v1.KeySlot slots = 3;
+   */
+  slots: KeySlot[];
 };
 
 /**
@@ -316,7 +431,7 @@ export type RedeemInvitationRequest = Message<"vaultsync.v1.RedeemInvitationRequ
  * Use `create(RedeemInvitationRequestSchema)` to create a new message.
  */
 export const RedeemInvitationRequestSchema: GenMessage<RedeemInvitationRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 8);
+  messageDesc(file_vaultsync_v1_membership, 10);
 
 /**
  * RedeemInvitationResponse returns the vault the caller joined.
@@ -337,7 +452,7 @@ export type RedeemInvitationResponse = Message<"vaultsync.v1.RedeemInvitationRes
  * Use `create(RedeemInvitationResponseSchema)` to create a new message.
  */
 export const RedeemInvitationResponseSchema: GenMessage<RedeemInvitationResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 9);
+  messageDesc(file_vaultsync_v1_membership, 11);
 
 /**
  * ListMembersRequest names the vault whose members to list.
@@ -358,7 +473,7 @@ export type ListMembersRequest = Message<"vaultsync.v1.ListMembersRequest"> & {
  * Use `create(ListMembersRequestSchema)` to create a new message.
  */
 export const ListMembersRequestSchema: GenMessage<ListMembersRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 10);
+  messageDesc(file_vaultsync_v1_membership, 12);
 
 /**
  * ListMembersResponse holds the vault's members.
@@ -379,7 +494,7 @@ export type ListMembersResponse = Message<"vaultsync.v1.ListMembersResponse"> & 
  * Use `create(ListMembersResponseSchema)` to create a new message.
  */
 export const ListMembersResponseSchema: GenMessage<ListMembersResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 11);
+  messageDesc(file_vaultsync_v1_membership, 13);
 
 /**
  * UpdateMemberRoleRequest names the member and their new role.
@@ -422,7 +537,7 @@ export type UpdateMemberRoleRequest = Message<"vaultsync.v1.UpdateMemberRoleRequ
  * Use `create(UpdateMemberRoleRequestSchema)` to create a new message.
  */
 export const UpdateMemberRoleRequestSchema: GenMessage<UpdateMemberRoleRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 12);
+  messageDesc(file_vaultsync_v1_membership, 14);
 
 /**
  * UpdateMemberRoleResponse returns the updated member.
@@ -443,7 +558,7 @@ export type UpdateMemberRoleResponse = Message<"vaultsync.v1.UpdateMemberRoleRes
  * Use `create(UpdateMemberRoleResponseSchema)` to create a new message.
  */
 export const UpdateMemberRoleResponseSchema: GenMessage<UpdateMemberRoleResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 13);
+  messageDesc(file_vaultsync_v1_membership, 15);
 
 /**
  * RemoveMemberRequest names the member to remove.
@@ -490,7 +605,7 @@ export type RemoveMemberRequest = Message<"vaultsync.v1.RemoveMemberRequest"> & 
  * Use `create(RemoveMemberRequestSchema)` to create a new message.
  */
 export const RemoveMemberRequestSchema: GenMessage<RemoveMemberRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 14);
+  messageDesc(file_vaultsync_v1_membership, 16);
 
 /**
  * RemoveMemberResponse confirms the removal. It has no fields.
@@ -505,7 +620,7 @@ export type RemoveMemberResponse = Message<"vaultsync.v1.RemoveMemberResponse"> 
  * Use `create(RemoveMemberResponseSchema)` to create a new message.
  */
 export const RemoveMemberResponseSchema: GenMessage<RemoveMemberResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 15);
+  messageDesc(file_vaultsync_v1_membership, 17);
 
 /**
  * LeaveVaultRequest names the vault to leave.
@@ -534,7 +649,7 @@ export type LeaveVaultRequest = Message<"vaultsync.v1.LeaveVaultRequest"> & {
  * Use `create(LeaveVaultRequestSchema)` to create a new message.
  */
 export const LeaveVaultRequestSchema: GenMessage<LeaveVaultRequest> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 16);
+  messageDesc(file_vaultsync_v1_membership, 18);
 
 /**
  * LeaveVaultResponse confirms the caller left. It has no fields.
@@ -549,7 +664,7 @@ export type LeaveVaultResponse = Message<"vaultsync.v1.LeaveVaultResponse"> & {
  * Use `create(LeaveVaultResponseSchema)` to create a new message.
  */
 export const LeaveVaultResponseSchema: GenMessage<LeaveVaultResponse> = /*@__PURE__*/
-  messageDesc(file_vaultsync_v1_membership, 17);
+  messageDesc(file_vaultsync_v1_membership, 19);
 
 /**
  * MembershipService manages who can access a vault (SPEC.md §9.2): owners
@@ -589,9 +704,19 @@ export const MembershipService: GenService<{
    * its hash. Anyone holding the code can redeem it until it expires, is
    * revoked or is used.
    *
-   * Errors: INVALID_ARGUMENT for an unspecified role or a ttl_seconds above
-   * the server maximum (30 days); RESOURCE_EXHAUSTED when the vault already
-   * has the maximum number of pending invitations (100).
+   * In an end-to-end encrypted vault the inviting device generates the code
+   * `<id>.<secret>` itself (docs/design/encryption.md, "Invitations") and
+   * sends only id_hash, the invitation's key slots (exactly one for every
+   * existing epoch, each wrapped to the invitation's key) and its
+   * invite_anchor. The response then carries no code.
+   *
+   * Errors: INVALID_ARGUMENT for an unspecified role, a ttl_seconds above
+   * the server maximum (30 days), or, in an end-to-end encrypted vault, a
+   * missing or malformed id_hash or invite_anchor or slots that are not
+   * exactly one per existing epoch for this invitation (in a plaintext
+   * vault these fields must be unset); ALREADY_EXISTS for an id_hash that is
+   * already in use; RESOURCE_EXHAUSTED when the vault already has the
+   * maximum number of pending invitations (100).
    *
    * @generated from rpc vaultsync.v1.MembershipService.CreateInvitation
    */
@@ -627,15 +752,41 @@ export const MembershipService: GenService<{
     output: typeof RevokeInvitationResponseSchema;
   },
   /**
+   * GetInvitationSlots returns a pending invitation to an end-to-end
+   * encrypted vault, its key slots, the vault's epochs and its invite
+   * anchor, to the holder of the code's `<id>`: the first of the two
+   * redemption steps (docs/design/encryption.md, "Invitations"). Any
+   * authenticated user may call it; it names no vault.
+   *
+   * Errors: NOT_FOUND, with the same message whatever the reason, for an id
+   * that is malformed, unknown, expired, revoked or already used.
+   *
+   * @generated from rpc vaultsync.v1.MembershipService.GetInvitationSlots
+   */
+  getInvitationSlots: {
+    methodKind: "unary";
+    input: typeof GetInvitationSlotsRequestSchema;
+    output: typeof GetInvitationSlotsResponseSchema;
+  },
+  /**
    * RedeemInvitation makes the caller a member of the invitation's vault
-   * with the invitation's role, and uses the invitation up.
+   * with the invitation's role, and uses the invitation up. For an
+   * invitation to an end-to-end encrypted vault the code is `<id>.<secret>`,
+   * of which the server reads only `<id>`, and the request carries the
+   * caller's own key slots, exactly one for every existing epoch; they are
+   * stored and the invitation's slots deleted in the same transaction as the
+   * membership. The caller must have a user key.
    *
    * Errors: NOT_FOUND, with the same message whatever the reason, for a code
    * that is malformed, unknown, expired, revoked or already used, so a
    * failed redemption reveals nothing about any vault; ALREADY_EXISTS when
    * the caller is already a member of the vault (the invitation stays
    * usable); RESOURCE_EXHAUSTED when the vault already has the maximum
-   * number of members (100).
+   * number of members (100); INVALID_ARGUMENT when slots are set for a
+   * plaintext vault, or, for an end-to-end encrypted vault, the caller has no
+   * user key or slots are not exactly one per epoch wrapped to the caller;
+   * FAILED_PRECONDITION with reason ERROR_REASON_EPOCH_NOT_CURRENT when the
+   * vault gained an epoch after GetInvitationSlots (call it again).
    *
    * @generated from rpc vaultsync.v1.MembershipService.RedeemInvitation
    */

@@ -41,9 +41,19 @@ service MembershipService {
   // its hash. Anyone holding the code can redeem it until it expires, is
   // revoked or is used.
   //
-  // Errors: INVALID_ARGUMENT for an unspecified role or a ttl_seconds above
-  // the server maximum (30 days); RESOURCE_EXHAUSTED when the vault already
-  // has the maximum number of pending invitations (100).
+  // In an end-to-end encrypted vault the inviting device generates the code
+  // `<id>.<secret>` itself (docs/design/encryption.md, "Invitations") and
+  // sends only id_hash, the invitation's key slots (exactly one for every
+  // existing epoch, each wrapped to the invitation's key) and its
+  // invite_anchor. The response then carries no code.
+  //
+  // Errors: INVALID_ARGUMENT for an unspecified role, a ttl_seconds above
+  // the server maximum (30 days), or, in an end-to-end encrypted vault, a
+  // missing or malformed id_hash or invite_anchor or slots that are not
+  // exactly one per existing epoch for this invitation (in a plaintext
+  // vault these fields must be unset); ALREADY_EXISTS for an id_hash that is
+  // already in use; RESOURCE_EXHAUSTED when the vault already has the
+  // maximum number of pending invitations (100).
   rpc CreateInvitation(CreateInvitationRequest) returns (CreateInvitationResponse) {}
 
   // ListInvitations lists the vault's pending invitations (not used, not
@@ -58,15 +68,34 @@ service MembershipService {
   // UUID; NOT_FOUND when the vault has no such pending invitation.
   rpc RevokeInvitation(RevokeInvitationRequest) returns (RevokeInvitationResponse) {}
 
+  // GetInvitationSlots returns a pending invitation to an end-to-end
+  // encrypted vault, its key slots, the vault's epochs and its invite
+  // anchor, to the holder of the code's `<id>`: the first of the two
+  // redemption steps (docs/design/encryption.md, "Invitations"). Any
+  // authenticated user may call it; it names no vault.
+  //
+  // Errors: NOT_FOUND, with the same message whatever the reason, for an id
+  // that is malformed, unknown, expired, revoked or already used.
+  rpc GetInvitationSlots(GetInvitationSlotsRequest) returns (GetInvitationSlotsResponse) {}
+
   // RedeemInvitation makes the caller a member of the invitation's vault
-  // with the invitation's role, and uses the invitation up.
+  // with the invitation's role, and uses the invitation up. For an
+  // invitation to an end-to-end encrypted vault the code is `<id>.<secret>`,
+  // of which the server reads only `<id>`, and the request carries the
+  // caller's own key slots, exactly one for every existing epoch; they are
+  // stored and the invitation's slots deleted in the same transaction as the
+  // membership. The caller must have a user key.
   //
   // Errors: NOT_FOUND, with the same message whatever the reason, for a code
   // that is malformed, unknown, expired, revoked or already used, so a
   // failed redemption reveals nothing about any vault; ALREADY_EXISTS when
   // the caller is already a member of the vault (the invitation stays
   // usable); RESOURCE_EXHAUSTED when the vault already has the maximum
-  // number of members (100).
+  // number of members (100); INVALID_ARGUMENT when slots are set for a
+  // plaintext vault, or, for an end-to-end encrypted vault, the caller has no
+  // user key or slots are not exactly one per epoch wrapped to the caller;
+  // FAILED_PRECONDITION with reason ERROR_REASON_EPOCH_NOT_CURRENT when the
+  // vault gained an epoch after GetInvitationSlots (call it again).
   rpc RedeemInvitation(RedeemInvitationRequest) returns (RedeemInvitationResponse) {}
 
   // ListMembers lists the vault's members, oldest membership first. The list
@@ -156,6 +185,17 @@ message CreateInvitationRequest {
   // plaintext vault. Its invitation id becomes the invitation's id and its
   // role must be the requested role.
   LogEntry log_entry = 4;
+  // End-to-end encrypted vaults only: SHA-256 of the 16 bytes that `<id>`
+  // (22 characters of base64url without padding) encodes. The server stores
+  // only this hash.
+  bytes id_hash = 5;
+  // End-to-end encrypted vaults only: the vault's epoch keys wrapped to the
+  // invitation's key, exactly one slot (KEY_RECIPIENT_KIND_INVITATION, this
+  // invitation's id) for every existing epoch.
+  repeated KeySlot slots = 6;
+  // End-to-end encrypted vaults only: the invite anchor (96 bytes,
+  // docs/design/crypto.md), returned by GetInvitationSlots.
+  bytes invite_anchor = 7;
 }
 
 // CreateInvitationResponse returns the invitation and its code.
@@ -163,7 +203,8 @@ message CreateInvitationResponse {
   // The new invitation.
   Invitation invitation = 1;
   // The secret invite code to hand to the invited user. It is shown only
-  // once and cannot be retrieved later.
+  // once and cannot be retrieved later. Empty for an end-to-end encrypted
+  // vault, whose code the inviting device generated.
   string code = 2;
 }
 
@@ -195,14 +236,42 @@ message RevokeInvitationRequest {
 // RevokeInvitationResponse confirms the revocation. It has no fields.
 message RevokeInvitationResponse {}
 
+// GetInvitationSlotsRequest names an invitation by its code's `<id>`.
+message GetInvitationSlotsRequest {
+  // The `<id>` part of an end-to-end encrypted vault's invite code.
+  string id = 1;
+}
+
+// GetInvitationSlotsResponse is what a newcomer needs to unwrap the vault's
+// epoch keys and wrap them to itself.
+message GetInvitationSlotsResponse {
+  // The invitation id, which the invitation's key pair is derived from.
+  string invitation_id = 1;
+  // The vault the invitation is to.
+  string vault_id = 2;
+  // The role the redeeming user receives.
+  VaultRole role = 3;
+  // The invitation's key slots, one per epoch, in ascending epoch order.
+  repeated KeySlot slots = 4;
+  // The vault's epochs with their commitments and records, ascending.
+  repeated KeyEpoch epochs = 5;
+  // The invite anchor stored with CreateInvitation.
+  bytes invite_anchor = 6;
+}
+
 // RedeemInvitationRequest carries the invite code.
 message RedeemInvitationRequest {
-  // The code from CreateInvitationResponse.code.
+  // The code from CreateInvitationResponse.code, or, for an end-to-end
+  // encrypted vault, the `<id>.<secret>` code the inviting device generated.
   string code = 1;
   // The redeem entry, signed by the invitation key and then by the caller,
   // carrying the caller's bundle: required for an invitation to an
   // end-to-end encrypted vault, and must be unset for a plaintext vault.
   LogEntry log_entry = 2;
+  // End-to-end encrypted vaults only: the caller's own key slots
+  // (KEY_RECIPIENT_KIND_USER, the caller's user id), exactly one for every
+  // existing epoch.
+  repeated KeySlot slots = 3;
 }
 
 // RedeemInvitationResponse returns the vault the caller joined.
