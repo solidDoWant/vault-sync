@@ -78,7 +78,7 @@ export interface ConflictEntry {
 }
 
 /** Why a remote revision is not on this device (docs/design/engine.md §6, §7). */
-export type SkipReason = "too-large" | UnmaterializableReason;
+export type SkipReason = "too-large" | UnmaterializableReason | "refused-by-vault";
 
 /**
  * A document whose head this device skipped: it is over the size limit, or

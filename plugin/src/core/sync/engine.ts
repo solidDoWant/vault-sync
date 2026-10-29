@@ -308,7 +308,7 @@ export class SyncEngine {
       if (response.diverged) return this.resync();
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
-        const outcome = await this.apply(state, revision);
+        const outcome = await this.applyOrSkip(state, revision);
         if (outcome === undecided) return progress;
         const change: JournalChange = { ...outcome, cursor: { seq: revision.seq, anchor: revision.anchor } };
         // A revision that applied replaces an earlier skip of its document.
@@ -466,6 +466,21 @@ export class SyncEngine {
       putSkipped: skipped,
     });
     return true;
+  }
+
+  /**
+   * Applies one remote revision; a revision whose path the vault refuses to
+   * hold (§6: the platform cannot hold it, or Obsidian would store it under
+   * another name) is skipped and listed instead, and the pull continues.
+   */
+  private async applyOrSkip(state: JournalState, revision: Revision): Promise<Outcome> {
+    try {
+      return await this.apply(state, revision);
+    } catch (error) {
+      if (!isVaultError(error, "unmaterializable") && !isVaultError(error, "path-conflict")) throw error;
+      const { remote } = toIncoming(revision);
+      return { putSkipped: [{ documentId: remote.documentId, path: remote.path, reason: "refused-by-vault", size: Number(remote.size) }] };
+    }
   }
 
   /** Applies one remote revision: the file change first, then the returned journal change. */
@@ -663,18 +678,18 @@ export class SyncEngine {
         if (owner !== undefined) await this.record({ deletePending: state.pending.filter((op) => op.documentId === owner.documentId).map((op) => op.opId) });
         return "bound";
       }
-      return (await this.moveAside(state, [path])) ? "free" : undecided;
+      return (await this.moveAside(state, id, [path])) ? "free" : undecided;
     }
     // A file where a folder of the path must go.
     const parts = path.split("/");
     for (let length = 1; length < parts.length; length++) {
       const folder = parts.slice(0, length).join("/");
-      if ((await this.cache.read(this.vault, folder)) !== null) return (await this.moveAside(state, [folder])) ? "free" : undecided;
+      if ((await this.cache.read(this.vault, folder)) !== null) return (await this.moveAside(state, id, [folder])) ? "free" : undecided;
     }
     // A folder where the file must go.
     const key = pathKey(path);
     const inside = (await this.vault.list()).filter((file) => pathKey(file).startsWith(`${key}/`));
-    if (inside.length > 0) return (await this.moveAside(state, inside, path)) ? "free" : undecided;
+    if (inside.length > 0) return (await this.moveAside(state, id, inside, path)) ? "free" : undecided;
     // A document of this device whose file is missing since this cycle's detection still claims the path.
     const claimant = liveAt(state, path);
     if (claimant !== undefined && claimant.documentId !== id) return undecided;
@@ -687,9 +702,10 @@ export class SyncEngine {
    * moved file of a document stays that document's pending operation under
    * the new name; an untracked one becomes a pending create. Returns false,
    * moving nothing, if a file is a synced document's, which the server
-   * cannot also hold at the path, or no copy name fits.
+   * cannot also hold at the path, or no copy name fits. Each copy is listed
+   * as a conflict with `arriving`, the document that takes the path.
    */
-  private async moveAside(state: JournalState, files: readonly string[], folder?: string): Promise<boolean> {
+  private async moveAside(state: JournalState, arriving: string, files: readonly string[], folder?: string): Promise<boolean> {
     const owners = new Map<string, Projection>();
     for (const projection of project(state).values()) if (!projection.deleted) owners.set(pathKey(projection.path), projection);
     for (const file of files) {
@@ -714,18 +730,15 @@ export class SyncEngine {
       await this.rename(file, copy);
       const owner = owners.get(pathKey(file));
       const last = owner?.lastOp;
-      let documentId: string;
       if (owner !== undefined && last !== undefined) {
-        documentId = owner.documentId;
         // A refused commit was never applied, so an unsent operation keeps its revision id. The new name is not refused.
         const moved: PendingOp = { ...last, path: copy, sent: false, revisionId: last.sent ? uuidv7(this.now()) : last.revisionId };
         delete moved.refused;
         change.putPending.push(moved);
       } else {
-        documentId = uuidv7(this.now());
-        change.putPending.push({ ...this.newOp(state, documentId, "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
+        change.putPending.push({ ...this.newOp(state, uuidv7(this.now()), "create", copy, kindOfPath(copy), occupant.hash, occupant.size), order: order++ });
       }
-      change.putConflicts.push({ path: copy, documentId, createdAt: this.now() });
+      change.putConflicts.push({ path: copy, documentId: arriving, createdAt: this.now() });
     }
     await this.record(change);
     return true;

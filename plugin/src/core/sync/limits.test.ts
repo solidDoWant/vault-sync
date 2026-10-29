@@ -96,4 +96,21 @@ describe("device path length", () => {
     expect((await b.engine.problems()).skipped).toEqual([expect.objectContaining({ path: long, reason: "path-too-long" })]);
     expect(server.liveFiles().get(long)).toBe("far");
   });
+
+  it("a remote path the vault refuses to hold is skipped and listed, and the rest of the pull continues", async () => {
+    const server = new InMemoryServer();
+    const a = new Device(server, "device-a");
+    // The engine's rules allow the name, but the vault (its platform) refuses it.
+    const b = new Device(server, "device-b", {}, { pathRules: { platform: "windows", root: "C:\\vault" } });
+    const long = `${"d".repeat(200)}/${"n".repeat(60)}.md`;
+    await a.write(long, "too long for Windows");
+    await a.write("note.md", "hello");
+    await a.sync();
+
+    await b.sync();
+
+    expect(await b.files()).toEqual({ "note.md": "hello" });
+    expect((await b.engine.problems()).skipped).toEqual([expect.objectContaining({ path: long, reason: "refused-by-vault" })]);
+    expect(b.engine.status).toBe("idle");
+  });
 });

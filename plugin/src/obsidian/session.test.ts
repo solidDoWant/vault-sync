@@ -137,6 +137,20 @@ describe("SyncSession", () => {
     await session.stop();
   });
 
+  it("lists a local file moved aside for a remote note at its path, with that note as the one kept in place", async () => {
+    const server = new InMemoryServer();
+    server.commit({ documentId: "remote", path: "a.md", content: "remote\n" });
+    const { session, vault } = setup({}, server);
+    await vault.write("a.md", encoder.encode("local\n"));
+
+    await session.start();
+
+    const { conflicts } = await session.listProblems();
+    expect(conflicts).toEqual([{ copy: expect.stringMatching(/^a \(Conflicted copy phone \d{12}\)\.md$/u) as string, original: "a.md", createdAt: expect.any(Number) as number }]);
+    expect(await files(vault)).toEqual({ "a.md": "remote\n", [conflicts[0]?.copy ?? ""]: "local\n" });
+    await session.stop();
+  });
+
   it("lists a local file whose name the server refuses, with the reason, and says so in the status", async () => {
     const { session, vault, statuses } = setup();
     await vault.write("a?b.md", encoder.encode("text"));

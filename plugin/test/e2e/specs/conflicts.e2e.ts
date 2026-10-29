@@ -4,16 +4,16 @@ import type VaultSyncPlugin from "../../../src/main";
 import { e2eEnvironment, pluginId } from "../environment";
 import { callHarness } from "../obsidian";
 
-// The conflict view (#27) inside a real Obsidian. The harness drives
-// vault-sync's sync session against an in-memory server, so a real
-// conflict copy and a real unmaterializable document come from the engine.
+// The conflict view inside a real Obsidian. The harness drives vault-sync's
+// sync session against an in-memory server, so a real conflict copy and real
+// skipped documents come from the engine.
 // The view is opened as its command opens it, its Compare button is
 // clicked, and the copy is deleted the way a user would.
 
-/** A file name longer than the 255 bytes every platform allows (SPEC.md §8): the engine cannot write it here. */
+/** A file name longer than the 255 bytes every platform allows (docs/design/engine.md §6): the engine cannot write it here. */
 const overlongPath = `${"n".repeat(300)}.md`;
 
-/** A name with an accent typed as a separate character (NFD), which Obsidian's normalizePath would store in NFC (#417). */
+/** A name with an accent typed as a separate character (NFD), which Obsidian's normalizePath would store in NFC, so the vault refuses it. */
 const decomposedPath = `Cafe${String.fromCodePoint(0x301)}.md`;
 
 /** The text of every element of the conflict view that `selector` matches, in document order. */
@@ -65,8 +65,7 @@ describe("vault-sync conflict view", function () {
     expect(await texts(".vault-sync-conflict .vault-sync-conflict-original")).toEqual(["Clash.md"]);
     const [copyText] = await texts(".vault-sync-conflict .vault-sync-conflict-copy");
     copy = copyText ?? "";
-    expect(copy).toMatch(/^Clash \(conflict e2e-device \d{4}-\d{2}-\d{2} \d{6}\)\.md$/);
-    expect((await texts(".vault-sync-conflict .vault-sync-conflict-reason"))[0]).toMatch(/Created on this device and on another one/);
+    expect(copy).toMatch(/^Clash \(Conflicted copy e2e-device \d{12}\)\.md$/);
     // The links name real files: the other device's version stayed in place, this device's is the copy.
     const contents = await browser.executeObsidian(
       async ({ app }, paths) => Promise.all(paths.map(async (path) => {
@@ -78,18 +77,14 @@ describe("vault-sync conflict view", function () {
     expect(contents).toEqual(["the other device's version\n", "this device's version\n"]);
   });
 
-  it("lists the document this device cannot hold with its server path and why", async function () {
-    expect(await texts(".vault-sync-unmaterializable-path")).toEqual([overlongPath]);
-    expect((await texts(".vault-sync-unmaterializable-reason"))[0]).toMatch(/name in the path is too long/);
+  it("lists the documents this device cannot hold with their server paths and why", async function () {
+    expect(await texts(".vault-sync-skipped-path")).toEqual([overlongPath, decomposedPath]);
+    const reasons = await texts(".vault-sync-skipped-reason");
+    expect(reasons[0]).toMatch(/name in the path is too long/);
+    expect(reasons[1]).toMatch(/refused to create a file at this path/);
   });
 
-  it("lists a remote document whose path Obsidian would store under another name, with why (#417)", async function () {
-    await browser.waitUntil(async () => (await texts(".vault-sync-deferred-path")).length > 0, { timeoutMsg: "the conflict view lists no deferred document" });
-    expect(await texts(".vault-sync-deferred-path")).toEqual([decomposedPath]);
-    expect((await texts(".vault-sync-deferred-reason"))[0]).toMatch(/Obsidian would store its path under another name/);
-  });
-
-  it("shows a notice and draws the view again when a link's file is gone (#417)", async function () {
+  it("shows a notice and draws the view again when a link's file is gone", async function () {
     // The copy disappears between the view's drawing and the click: Obsidian no longer finds it.
     await browser.executeObsidian(({ app }, path) => {
       const vault = app.vault as unknown as { getFileByPath(path: string): unknown; e2eGetFileByPath?: (path: string) => unknown };
@@ -156,7 +151,7 @@ describe("vault-sync conflict view", function () {
 
     await browser.waitUntil(async () => (await texts(".vault-sync-conflict")).length === 0, { timeoutMsg: "the deleted copy's conflict is still listed" });
     expect(await texts(".vault-sync-conflicts-empty")).toEqual(["No conflicts."]);
-    // The document this device cannot hold is still listed: it is not a conflict.
-    expect(await texts(".vault-sync-unmaterializable-path")).toEqual([overlongPath]);
+    // The documents this device cannot hold are still listed: they are not conflicts.
+    expect(await texts(".vault-sync-skipped-path")).toEqual([overlongPath, decomposedPath]);
   });
 });
