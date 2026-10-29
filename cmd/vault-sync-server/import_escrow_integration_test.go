@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -32,6 +33,7 @@ type escrowKey struct {
 	keyID      string
 	identity   string
 	recipient  string
+	signPub    ed25519.PublicKey
 }
 
 func newEscrowKey(t *testing.T) escrowKey {
@@ -49,6 +51,9 @@ func newEscrowKey(t *testing.T) escrowKey {
 	require.NoError(t, err)
 
 	key.recipient, err = e2ee.AgeRecipient(publicKey)
+	require.NoError(t, err)
+
+	key.signPub, _, err = ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 
 	return key
@@ -71,11 +76,8 @@ func createEscrowedVault(t *testing.T, server *instance, member *encryptedMember
 	require.NoError(t, connection.Close(t.Context()))
 	require.NoError(t, err)
 
-	escrowSignPub, _, err := ed25519.GenerateKey(rand.Reader)
-	require.NoError(t, err)
-
 	vaultID := uuid.Must(uuid.NewV7())
-	log := logtest.New(t, vaultID, userID, &e2ee.EscrowBundle{SignPub: escrowSignPub, Recipient: escrow.recipient})
+	log := logtest.New(t, vaultID, userID, &e2ee.EscrowBundle{SignPub: escrow.signPub, Recipient: escrow.recipient})
 
 	response, err := server.vaults().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
 		Name: name, Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: true,
@@ -141,7 +143,8 @@ func TestImportIntoAnEscrowedVault(t *testing.T) {
 	binary := buildServer(t)
 	escrow := newEscrowKey(t)
 	server := cluster.start(t, "server", binary,
-		config.OIDCClientIDEnv+"="+authtest.DefaultAudience, config.EscrowRecipientEnv+"="+escrow.recipient)
+		config.OIDCClientIDEnv+"="+authtest.DefaultAudience, config.EscrowRecipientEnv+"="+escrow.recipient,
+		config.EscrowSigningKeyEnv+"="+base64.StdEncoding.EncodeToString(escrow.signPub))
 	member := newEncryptedMember(t, server, cluster.token(t, "alice"))
 
 	// Distinctive names and contents, so any plaintext copy is found.

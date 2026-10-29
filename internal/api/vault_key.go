@@ -84,6 +84,9 @@ type VaultKeyService struct {
 	// (KeysOf).
 	Keys   func(vaultID uuid.UUID) VaultKeyStore
 	Limits VaultKeyLimits
+	// Escrow is the deployment's escrow key, which every escrow slot must
+	// name (Escrow.AcceptsSlot).
+	Escrow Escrow
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
 }
@@ -292,7 +295,7 @@ func (service VaultKeyService) RotateEpoch(ctx context.Context, request *connect
 		return nil, err
 	}
 
-	next, err := ParseNextEpoch(request.Msg.GetNextEpoch())
+	next, err := ParseNextEpoch(request.Msg.GetNextEpoch(), service.Escrow)
 	if err != nil {
 		return nil, err
 	}
@@ -335,7 +338,7 @@ func (service VaultKeyService) AddKeySlots(ctx context.Context, request *connect
 		return nil, invalidArgument("slots must hold 1 to %d slots", MaxAddKeySlots)
 	}
 
-	slots, err := parseKeySlots("slots", messages, true)
+	slots, err := parseKeySlots("slots", messages, true, service.Escrow)
 	if err != nil {
 		return nil, err
 	}
@@ -352,9 +355,10 @@ func (service VaultKeyService) AddKeySlots(ctx context.Context, request *connect
 	return connect.NewResponse(&vaultsyncv1.AddKeySlotsResponse{Added: uint32(max(added, 0))}), nil //nolint:gosec // bounded by MaxAddKeySlots.
 }
 
-// ParseNextEpoch validates a NextEpoch's bounds (not its recipients, which
+// ParseNextEpoch validates a NextEpoch's bounds and that its escrow slot, if
+// any, names an escrow key escrow accepts (not its other recipients, which
 // the store checks against the vault's members).
-func ParseNextEpoch(message *vaultsyncv1.NextEpoch) (store.NextEpoch, error) {
+func ParseNextEpoch(message *vaultsyncv1.NextEpoch, escrow Escrow) (store.NextEpoch, error) {
 	if message == nil {
 		return store.NextEpoch{}, invalidArgument("next_epoch is required")
 	}
@@ -371,7 +375,7 @@ func ParseNextEpoch(message *vaultsyncv1.NextEpoch) (store.NextEpoch, error) {
 		return store.NextEpoch{}, invalidArgument("next_epoch.slots must hold at most %d slots", MaxNextEpochSlots)
 	}
 
-	slots, err := parseKeySlots("next_epoch.slots", message.GetSlots(), false)
+	slots, err := parseKeySlots("next_epoch.slots", message.GetSlots(), false, escrow)
 	if err != nil {
 		return store.NextEpoch{}, err
 	}
@@ -385,8 +389,9 @@ func ParseNextEpoch(message *vaultsyncv1.NextEpoch) (store.NextEpoch, error) {
 
 // parseKeySlots validates slots; withEpoch requires each to name an epoch
 // (1 to MaxInt32), otherwise their epochs are ignored. Two slots for the same
-// epoch and recipient are refused.
-func parseKeySlots(field string, messages []*vaultsyncv1.KeySlot, withEpoch bool) ([]store.KeySlot, error) {
+// epoch and recipient are refused, and so is an escrow slot naming a key
+// escrow does not accept (docs/design/encryption.md, "Escrow").
+func parseKeySlots(field string, messages []*vaultsyncv1.KeySlot, withEpoch bool, escrow Escrow) ([]store.KeySlot, error) {
 	type slotKey struct {
 		epoch int32
 		kind  store.RecipientKind
@@ -400,6 +405,10 @@ func parseKeySlots(field string, messages []*vaultsyncv1.KeySlot, withEpoch bool
 		slot, err := parseKeySlot(message, withEpoch)
 		if err != nil {
 			return nil, invalidArgument("%s[%d]: %w", field, index, err)
+		}
+
+		if slot.RecipientKind == store.RecipientEscrow && !escrow.AcceptsSlot(slot.RecipientID) {
+			return nil, invalidArgument("%s[%d]: recipient_id is neither the current escrow key id nor a retiring one", field, index)
 		}
 
 		key := slotKey{epoch: slot.Epoch, kind: slot.RecipientKind, id: slot.RecipientID}

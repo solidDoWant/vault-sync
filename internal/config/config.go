@@ -11,6 +11,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -46,6 +47,7 @@ const (
 	EscrowDefaultEnv            = "VAULT_SYNC_ESCROW_DEFAULT"
 	EscrowSigningKeyEnv         = "VAULT_SYNC_ESCROW_SIGNING_KEY"
 	EscrowIdentityFileEnv       = "VAULT_SYNC_ESCROW_IDENTITY_FILE"
+	EscrowRetiringKeyIDsEnv     = "VAULT_SYNC_ESCROW_RETIRING_KEY_IDS"
 
 	S3EndpointEnv            = "VAULT_SYNC_S3_ENDPOINT"
 	S3RegionEnv              = "VAULT_SYNC_S3_REGION"
@@ -1010,6 +1012,11 @@ func LoadVaultCommand(lookup func(string) (string, bool)) (store.Config, error) 
 // escrowConfig reads the escrow bundle, the escrow public key (an age hybrid
 // recipient, age1pq1…) with its escrow signing public key (base64 Ed25519),
 // and the escrow default, which is on unless set to false.
+// escrowKeyIDPattern matches an escrow key id as escrow key slots name it
+// (api.MaxEscrowRecipientIDBytes printable ASCII bytes at most), without
+// the comma that separates EscrowRetiringKeyIDsEnv's ids.
+var escrowKeyIDPattern = regexp.MustCompile(fmt.Sprintf(`^[\x21-\x2b\x2d-\x7e]{1,%d}$`, api.MaxEscrowRecipientIDBytes))
+
 func escrowConfig(get func(string) string) (api.Escrow, error) {
 	escrow := api.Escrow{Default: true}
 
@@ -1051,6 +1058,23 @@ func escrowConfig(get func(string) string) (api.Escrow, error) {
 			escrow.PublicKey = publicKey
 			escrow.KeyID, err = e2ee.EscrowKeyID(publicKey)
 			problems = append(problems, err)
+		}
+	}
+
+	if raw := strings.TrimSpace(get(EscrowRetiringKeyIDsEnv)); raw != "" {
+		if recipient == "" {
+			problems = append(problems, fmt.Errorf("%s needs %s", EscrowRetiringKeyIDsEnv, EscrowRecipientEnv))
+		}
+
+		for id := range strings.SplitSeq(raw, ",") {
+			id = strings.TrimSpace(id)
+			if !escrowKeyIDPattern.MatchString(id) {
+				problems = append(problems, fmt.Errorf("%s: each id must be 1 to %d printable ASCII bytes without a comma", EscrowRetiringKeyIDsEnv, api.MaxEscrowRecipientIDBytes))
+
+				continue
+			}
+
+			escrow.RetiringKeyIDs = append(escrow.RetiringKeyIDs, id)
 		}
 	}
 

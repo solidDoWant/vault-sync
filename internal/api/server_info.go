@@ -4,6 +4,7 @@ package api
 
 import (
 	"context"
+	"slices"
 
 	"connectrpc.com/connect"
 
@@ -45,6 +46,9 @@ type Escrow struct {
 	PublicKey []byte
 	// KeyID names PublicKey in escrow key slots (e2ee.EscrowKeyID).
 	KeyID string
+	// RetiringKeyIDs are the ids of escrow keys being rotated away from,
+	// which escrow slots may still name until the rotation ends.
+	RetiringKeyIDs []string
 	// Default is whether a new encrypted vault has escrow unless its owner
 	// turns it off. It is published as false without a PublicKey.
 	Default bool
@@ -63,6 +67,17 @@ type Escrow struct {
 type EscrowChain struct {
 	Root      []byte
 	Rotations []*vaultsyncv1.EscrowRotationStatement
+}
+
+// AcceptsSlot reports whether an escrow slot may name recipientID: the
+// current escrow key id, or a retiring one. Without an escrow key, no id is
+// accepted.
+func (escrow Escrow) AcceptsSlot(recipientID string) bool {
+	if !escrow.Configured() {
+		return false
+	}
+
+	return recipientID == escrow.KeyID || slices.Contains(escrow.RetiringKeyIDs, recipientID)
 }
 
 // Configured reports whether the deployment has an escrow key.

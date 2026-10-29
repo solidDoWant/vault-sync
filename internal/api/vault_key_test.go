@@ -119,8 +119,12 @@ func (recorder *keyRecorder) ListLogEntries(_ context.Context, after int64, limi
 
 var keyCaller = auth.User{ID: uuid.MustParse("01920000-0000-7000-8000-000000000001"), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "alice"}}
 
+// keyEscrow is the escrow key of keyService: its current id, and a retiring
+// id at the recipient id bound.
+var keyEscrow = api.Escrow{PublicKey: []byte{1}, KeyID: "escrow-key", RetiringKeyIDs: []string{strings.Repeat("e", 255)}}
+
 func keyService(recorder *keyRecorder) (api.VaultKeyService, context.Context) {
-	service := api.VaultKeyService{Keys: func(uuid.UUID) api.VaultKeyStore { return recorder }}
+	service := api.VaultKeyService{Keys: func(uuid.UUID) api.VaultKeyStore { return recorder }, Escrow: keyEscrow}
 	ctx := authz.WithMembership(auth.WithUser(context.Background(), keyCaller), authz.Membership{VaultID: uuid.New(), Role: store.RoleOwner})
 
 	return service, ctx
@@ -536,6 +540,64 @@ func TestKeyStoreErrorsMapToCodesAndReasons(t *testing.T) {
 
 			_, err = service.AddKeySlots(ctx, connect.NewRequest(&vaultsyncv1.AddKeySlotsRequest{Slots: []*vaultsyncv1.KeySlot{userSlot(1)}}))
 			requireCode(t, testCase.code, err)
+		})
+	}
+}
+
+func TestEscrowSlotsMustNameTheCurrentOrARetiringEscrowKey(t *testing.T) {
+	escrowSlot := func(epoch uint32, id string) *vaultsyncv1.KeySlot {
+		return &vaultsyncv1.KeySlot{
+			Epoch:         epoch,
+			RecipientKind: vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW,
+			RecipientId:   id,
+			WrappedKey:    bytes.Repeat([]byte{9}, 105),
+		}
+	}
+
+	escrow := api.Escrow{PublicKey: []byte{1}, KeyID: "current-key", RetiringKeyIDs: []string{"retiring-key", "older-key"}}
+
+	tests := []struct {
+		name     string
+		escrow   api.Escrow
+		id       string
+		accepted bool
+	}{
+		{name: "the current escrow key", escrow: escrow, id: "current-key", accepted: true},
+		{name: "a retiring escrow key", escrow: escrow, id: "retiring-key", accepted: true},
+		{name: "another retiring escrow key", escrow: escrow, id: "older-key", accepted: true},
+		{name: "an unknown escrow key", escrow: escrow, id: "unknown-key"},
+		{name: "a prefix of the current escrow key", escrow: escrow, id: "current"},
+		{name: "a deployment without an escrow key", escrow: api.Escrow{}, id: "current-key"},
+		{name: "a deployment with only a retiring id but no escrow key", escrow: api.Escrow{RetiringKeyIDs: []string{"retiring-key"}}, id: "retiring-key"},
+	}
+
+	for _, test := range tests {
+		want := connect.CodeInvalidArgument
+		if test.accepted {
+			want = 0
+		}
+
+		t.Run("RotateEpoch with "+test.name, func(t *testing.T) {
+			recorder := &keyRecorder{}
+			service, ctx := keyService(recorder)
+			service.Escrow = test.escrow
+
+			next := validNextEpoch()
+			next.Slots = append(next.Slots, escrowSlot(0, test.id))
+
+			_, err := service.RotateEpoch(ctx, connect.NewRequest(&vaultsyncv1.RotateEpochRequest{NextEpoch: next}))
+			requireCode(t, want, err)
+			assert.Equal(t, test.accepted, recorder.calls == 1, "the store is reached only for an accepted escrow slot")
+		})
+
+		t.Run("AddKeySlots with "+test.name, func(t *testing.T) {
+			recorder := &keyRecorder{}
+			service, ctx := keyService(recorder)
+			service.Escrow = test.escrow
+
+			_, err := service.AddKeySlots(ctx, connect.NewRequest(&vaultsyncv1.AddKeySlotsRequest{Slots: []*vaultsyncv1.KeySlot{userSlot(1), escrowSlot(1, test.id)}}))
+			requireCode(t, want, err)
+			assert.Equal(t, test.accepted, recorder.calls == 1, "the store is reached only for an accepted escrow slot")
 		})
 	}
 }

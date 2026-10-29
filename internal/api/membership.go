@@ -50,6 +50,9 @@ var errInvitationNotFound = errors.New("invitation not found or no longer valid"
 // interceptor before it runs: owners only, except LeaveVault (any member).
 type MembershipService struct {
 	Store *store.Store
+	// Escrow is the deployment's escrow key, which the escrow slot of a
+	// removal's next epoch must name (Escrow.AcceptsSlot).
+	Escrow Escrow
 	// Logger receives internal errors, which are not returned to callers.
 	Logger *slog.Logger
 }
@@ -391,7 +394,7 @@ func (service MembershipService) RemoveMember(ctx context.Context, request *conn
 	var next *store.NextEpoch
 
 	if request.Msg.GetNextEpoch() != nil {
-		parsed, err := ParseNextEpoch(request.Msg.GetNextEpoch())
+		parsed, err := ParseNextEpoch(request.Msg.GetNextEpoch(), service.Escrow)
 		if err != nil {
 			return nil, err
 		}
