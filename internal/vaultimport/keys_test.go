@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -85,13 +86,71 @@ func TestReadPrivateKeyFile(t *testing.T) {
 	}
 }
 
-func TestMainRefusesBothSecretFiles(t *testing.T) {
-	var stdout, stderr bytes.Buffer
+func TestMainRefusesMoreThanOneSecret(t *testing.T) {
+	for _, flags := range [][]string{
+		{"-passphrase-file", "a", "-private-key-file", "b"},
+		{"-passphrase-file", "a", "-escrow-identity-file", "b"},
+		{"-private-key-file", "a", "-escrow"},
+		{"-escrow-identity-file", "a", "-escrow"},
+	} {
+		t.Run(strings.Join(flags, " "), func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
 
-	code := vaultimport.Main(t.Context(), []string{
-		"-passphrase-file", "a", "-private-key-file", "b", "https://sync.example.com", "0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12", t.TempDir(),
-	}, func(string) (string, bool) { return "", false }, &stdout, &stderr)
+			code := vaultimport.Main(t.Context(), append(flags, "https://sync.example.com", "0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12", t.TempDir()),
+				func(string) (string, bool) { return "", false }, &stdout, &stderr)
 
-	assert.Equal(t, 2, code)
-	assert.Contains(t, stderr.String(), "not both")
+			assert.Equal(t, 2, code)
+			assert.Contains(t, stderr.String(), "at most one")
+		})
+	}
+}
+
+func TestReadEscrowIdentityFile(t *testing.T) {
+	var (
+		identities []string
+		keyIDs     []string
+	)
+
+	for range 2 {
+		privateKey, publicKey, err := e2ee.GenerateKeyPair()
+		require.NoError(t, err)
+
+		identity, err := e2ee.AgeIdentity(privateKey)
+		require.NoError(t, err)
+
+		keyID, err := e2ee.EscrowKeyID(publicKey)
+		require.NoError(t, err)
+
+		identities = append(identities, identity)
+		keyIDs = append(keyIDs, keyID)
+	}
+
+	t.Run("every identity of an age identity file, with comments", func(t *testing.T) {
+		read, err := vaultimport.ReadEscrowIdentityFile(writeSecret(t, "# created: today\n"+identities[0]+"\n\n# retiring\n"+identities[1]+"\n"))
+		require.NoError(t, err)
+		require.Len(t, read, 2)
+
+		for index, identity := range read {
+			assert.Equal(t, keyIDs[index], identity.KeyID, "identity %d is named by its public key's id", index)
+
+			parsed, err := e2ee.ParseAgeIdentity(identities[index])
+			require.NoError(t, err)
+			assert.Equal(t, parsed, identity.PrivateKey)
+		}
+	})
+
+	for _, test := range []struct {
+		name    string
+		content string
+	}{
+		{name: "no identity", content: "# nothing\n"},
+		{name: "not an identity", content: identities[0] + "\nhunter2 is not a key\n"},
+	} {
+		t.Run(test.name+" is refused without quoting the file", func(t *testing.T) {
+			_, err := vaultimport.ReadEscrowIdentityFile(writeSecret(t, test.content))
+			require.Error(t, err)
+			assert.NotContains(t, err.Error(), "hunter2")
+			assert.NotContains(t, err.Error(), identities[0])
+		})
+	}
 }
