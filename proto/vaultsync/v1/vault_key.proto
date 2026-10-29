@@ -30,9 +30,13 @@ option go_package = "github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyn
 // RotateEpoch and AddKeySlots are FAILED_PRECONDITION.
 service VaultKeyService {
   // ListKeySlots lists the caller's own key slots in the vault, in
-  // ascending epoch order. No call returns another member's slots.
+  // ascending epoch order, or with recipient_kind KEY_RECIPIENT_KIND_ESCROW
+  // the vault's escrow slots (one per epoch of an escrow vault), which a
+  // client holding the escrow identity opens. No call returns another
+  // member's slots.
   //
-  // Errors: INVALID_ARGUMENT for a malformed page_token.
+  // Errors: INVALID_ARGUMENT for a malformed page_token or recipient_kind;
+  // PERMISSION_DENIED for escrow slots requested by a viewer.
   rpc ListKeySlots(ListKeySlotsRequest) returns (ListKeySlotsResponse) {}
 
   // ListEpochs lists the vault's epochs with their key commitments, in
@@ -148,11 +152,16 @@ message ListKeySlotsRequest {
   uint32 page_size = 2;
   // Opaque token from a previous response. Empty for the first page.
   string page_token = 3;
+  // Whose slots to list: unspecified or KEY_RECIPIENT_KIND_USER for the
+  // caller's own; KEY_RECIPIENT_KIND_ESCROW for the vault's escrow slots,
+  // open to editors and owners only. An escrow slot opens only with the
+  // escrow identity.
+  KeyRecipientKind recipient_kind = 4;
 }
 
-// ListKeySlotsResponse is one page of the caller's slots.
+// ListKeySlotsResponse is one page of the requested slots.
 message ListKeySlotsResponse {
-  // The caller's slots, in ascending epoch order.
+  // The requested slots, in ascending epoch order.
   repeated KeySlot slots = 1;
   // Token for the next page; empty when there are no more.
   string next_page_token = 2;

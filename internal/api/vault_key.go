@@ -63,6 +63,7 @@ type VaultKeyStore interface {
 	KeyState(ctx context.Context) (store.KeyState, error)
 	ListEpochs(ctx context.Context, after int32, limit int) ([]store.Epoch, error)
 	ListKeySlots(ctx context.Context, kind store.RecipientKind, recipientID string, after int32, limit int) ([]store.KeySlot, error)
+	ListEscrowSlots(ctx context.Context, after int32, limit int) ([]store.KeySlot, error)
 	ListMissingSlots(ctx context.Context, afterEpoch int32, afterUser uuid.UUID, limit int) ([]store.MissingSlot, error)
 	RotateEpoch(ctx context.Context, creatorID uuid.UUID, next store.NextEpoch) (store.Epoch, error)
 	AddKeySlots(ctx context.Context, creatorID uuid.UUID, slots []store.KeySlot) (int, error)
@@ -130,11 +131,25 @@ func KeyError(err error) error {
 	}
 }
 
-// ListKeySlots lists the caller's own key slots.
+// ListKeySlots lists the caller's own key slots, or, for an editor or
+// owner who asks for them, the vault's escrow slots.
 func (service VaultKeyService) ListKeySlots(ctx context.Context, request *connect.Request[vaultsyncv1.ListKeySlotsRequest]) (*connect.Response[vaultsyncv1.ListKeySlotsResponse], error) {
 	vault, user, err := service.vault(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	kind := request.Msg.GetRecipientKind()
+
+	switch kind {
+	case vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_UNSPECIFIED, vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER:
+	case vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW:
+		// The membership is present: service.vault checked it.
+		if membership, _ := authz.MembershipFromContext(ctx); membership.Role != store.RoleOwner && membership.Role != store.RoleEditor {
+			return nil, connect.NewError(connect.CodePermissionDenied, errors.New("escrow slots are listed to editors and owners only"))
+		}
+	default:
+		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("recipient_kind must be unspecified, KEY_RECIPIENT_KIND_USER or KEY_RECIPIENT_KIND_ESCROW"))
 	}
 
 	after, _, err := decodeKeyToken(request.Msg.GetPageToken(), false)
@@ -144,7 +159,13 @@ func (service VaultKeyService) ListKeySlots(ctx context.Context, request *connec
 
 	limit := pageSize(request.Msg.GetPageSize(), DefaultKeyPageSize, MaxKeyPageSize)
 
-	slots, err := vault.ListKeySlots(ctx, store.RecipientUser, user.ID.String(), after, limit)
+	var slots []store.KeySlot
+	if kind == vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW {
+		slots, err = vault.ListEscrowSlots(ctx, after, limit)
+	} else {
+		slots, err = vault.ListKeySlots(ctx, store.RecipientUser, user.ID.String(), after, limit)
+	}
+
 	if err != nil {
 		return nil, service.internal(ctx, "cannot list key slots", err)
 	}

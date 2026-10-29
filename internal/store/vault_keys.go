@@ -397,6 +397,32 @@ func (vault *VaultStore) ListKeySlots(ctx context.Context, kind RecipientKind, r
 	return slots, nil
 }
 
+// ListEscrowSlots returns up to limit of the vault's escrow slots for
+// epochs after epoch after, in ascending epoch order. An escrow vault has
+// one escrow slot per epoch, whichever escrow key it is wrapped to.
+func (vault *VaultStore) ListEscrowSlots(ctx context.Context, after int32, limit int) ([]KeySlot, error) {
+	rows, err := vault.store.pool.Query(ctx, `
+		SELECT epoch, recipient_kind, recipient_id, wrapped_key, created_by, created_at FROM key_slots
+		WHERE vault_id = $1 AND recipient_kind = $2 AND epoch > $3
+		ORDER BY epoch, recipient_id LIMIT $4`, vault.vaultID, RecipientEscrow, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list escrow slots: %w", err)
+	}
+
+	slots, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (KeySlot, error) {
+		var slot KeySlot
+
+		err := row.Scan(&slot.Epoch, &slot.RecipientKind, &slot.RecipientID, &slot.WrappedKey, &slot.CreatedBy, &slot.CreatedAt)
+
+		return slot, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list escrow slots: %w", err)
+	}
+
+	return slots, nil
+}
+
 // ListMissingSlots returns up to limit of the slots the vault's members
 // with a user key lack, one per (epoch, member), ordered by epoch and then
 // user id, after (afterEpoch, afterUser).

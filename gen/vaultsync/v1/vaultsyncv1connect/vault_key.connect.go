@@ -53,9 +53,13 @@ const (
 // VaultKeyServiceClient is a client for the vaultsync.v1.VaultKeyService service.
 type VaultKeyServiceClient interface {
 	// ListKeySlots lists the caller's own key slots in the vault, in
-	// ascending epoch order. No call returns another member's slots.
+	// ascending epoch order, or with recipient_kind KEY_RECIPIENT_KIND_ESCROW
+	// the vault's escrow slots (one per epoch of an escrow vault), which a
+	// client holding the escrow identity opens. No call returns another
+	// member's slots.
 	//
-	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	// Errors: INVALID_ARGUMENT for a malformed page_token or recipient_kind;
+	// PERMISSION_DENIED for escrow slots requested by a viewer.
 	ListKeySlots(context.Context, *connect.Request[v1.ListKeySlotsRequest]) (*connect.Response[v1.ListKeySlotsResponse], error)
 	// ListEpochs lists the vault's epochs with their key commitments, in
 	// ascending order, and returns the vault's key state.
@@ -173,9 +177,13 @@ func (c *vaultKeyServiceClient) AddKeySlots(ctx context.Context, req *connect.Re
 // VaultKeyServiceHandler is an implementation of the vaultsync.v1.VaultKeyService service.
 type VaultKeyServiceHandler interface {
 	// ListKeySlots lists the caller's own key slots in the vault, in
-	// ascending epoch order. No call returns another member's slots.
+	// ascending epoch order, or with recipient_kind KEY_RECIPIENT_KIND_ESCROW
+	// the vault's escrow slots (one per epoch of an escrow vault), which a
+	// client holding the escrow identity opens. No call returns another
+	// member's slots.
 	//
-	// Errors: INVALID_ARGUMENT for a malformed page_token.
+	// Errors: INVALID_ARGUMENT for a malformed page_token or recipient_kind;
+	// PERMISSION_DENIED for escrow slots requested by a viewer.
 	ListKeySlots(context.Context, *connect.Request[v1.ListKeySlotsRequest]) (*connect.Response[v1.ListKeySlotsResponse], error)
 	// ListEpochs lists the vault's epochs with their key commitments, in
 	// ascending order, and returns the vault's key state.
