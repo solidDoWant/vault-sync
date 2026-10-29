@@ -141,9 +141,9 @@ func slotCases() []struct {
 		accepted bool
 	}{
 		{"wrapped key of 1 byte", func(slot *vaultsyncv1.KeySlot) { slot.WrappedKey = []byte{1} }, true},
-		{"wrapped key of 256 bytes", func(slot *vaultsyncv1.KeySlot) { slot.WrappedKey = make([]byte, 256) }, true},
+		{"wrapped key of 2048 bytes", func(slot *vaultsyncv1.KeySlot) { slot.WrappedKey = make([]byte, 2048) }, true},
 		{"empty wrapped key", func(slot *vaultsyncv1.KeySlot) { slot.WrappedKey = nil }, false},
-		{"wrapped key of 257 bytes", func(slot *vaultsyncv1.KeySlot) { slot.WrappedKey = make([]byte, 257) }, false},
+		{"wrapped key of 2049 bytes", func(slot *vaultsyncv1.KeySlot) { slot.WrappedKey = make([]byte, 2049) }, false},
 		{"unspecified recipient kind", func(slot *vaultsyncv1.KeySlot) {
 			slot.RecipientKind = vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_UNSPECIFIED
 		}, false},

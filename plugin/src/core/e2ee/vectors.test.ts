@@ -13,17 +13,15 @@ import {
   derivePassphraseKeys,
   deriveSubkey,
   open,
-  openFrom,
   pathKey,
-  publicKey,
-  sealToWith,
   sealWithNonce,
   type SubkeyLabel,
   unwrapWithKey,
   unwrapWithPassphrase,
   wrapWith,
 } from "./e2ee";
-import { KeyCommitmentError, keyCommitment, keySlotAd, openKeySlot, sealKeySlotWith, type KeySlot, type RecipientKind, verifyKeyCommitment } from "./keyslot";
+import { ageIdentity, ageRecipient, openFrom, publicKey } from "./hybrid";
+import { KeyCommitmentError, keyCommitment, keySlotAd, openKeySlot, type KeySlot, type RecipientKind, verifyKeyCommitment } from "./keyslot";
 
 interface SlotFields {
   vault_id: string;
@@ -70,7 +68,7 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
     }
     for (const vector of shared.standards.x25519) {
       it(`X25519: ${vector.name}`, () => {
-        expect(bytesToHex(publicKey(hexToBytes(vector.private_key)))).toBe(vector.public_key);
+        expect(bytesToHex(x25519.getPublicKey(hexToBytes(vector.private_key)))).toBe(vector.public_key);
         const secret = x25519.getSharedSecret(hexToBytes(vector.private_key), hexToBytes(vector.peer_public_key));
         expect(bytesToHex(secret)).toBe(vector.shared_secret);
       });
@@ -78,7 +76,7 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   });
 
   it("has vectors of every kind", () => {
-    for (const kind of [shared.subkeys, shared.aead, shared.sealed_box, shared.path_key, shared.blob_id, shared.passphrase, shared.rejected, shared.key_slot, shared.key_commitment, shared.rejected_key_slots, shared.rejected_key_commitments]) {
+    for (const kind of [shared.subkeys, shared.aead, shared.hybrid, shared.path_key, shared.blob_id, shared.passphrase, shared.rejected, shared.key_slot, shared.key_commitment, shared.rejected_key_slots, shared.rejected_key_commitments]) {
       expect(kind.length).toBeGreaterThan(0);
     }
   });
@@ -99,20 +97,15 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
     });
   }
 
-  for (const vector of shared.sealed_box) {
-    it(`seals to and opens from a recipient: ${vector.name}`, () => {
+  // Hybrid sealing is randomized inside age, so these vectors are opened, not
+  // reproduced; the Go generator pins their bytes.
+  for (const vector of shared.hybrid) {
+    it(`opens from a hybrid recipient: ${vector.name}`, async () => {
       const recipient = hexToBytes(vector.recipient_private_key);
-      const aad = hexToBytes(vector.aad);
       expect(bytesToHex(publicKey(recipient))).toBe(vector.recipient_public_key);
-      const sealed = sealToWith(
-        hexToBytes(vector.recipient_public_key),
-        hexToBytes(vector.ephemeral_private_key),
-        hexToBytes(vector.nonce),
-        hexToBytes(vector.plaintext),
-        aad,
-      );
-      expect(bytesToHex(sealed)).toBe(vector.sealed);
-      expect(bytesToHex(openFrom(recipient, hexToBytes(vector.sealed), aad))).toBe(vector.plaintext);
+      expect(ageIdentity(recipient)).toBe(vector.age_identity);
+      expect(ageRecipient(hexToBytes(vector.recipient_public_key))).toBe(vector.age_recipient);
+      expect(bytesToHex(await openFrom(recipient, hexToBytes(vector.sealed)))).toBe(vector.plaintext);
     });
   }
 
@@ -165,21 +158,16 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   });
 
   for (const vector of shared.key_slot) {
-    it(`seals and opens a key slot: ${vector.name}`, () => {
+    it(`opens a key slot: ${vector.name}`, async () => {
       const slot = slotOf(vector);
       expect(documentedSlotAd(vector)).toBe(vector.ad);
       expect(bytesToHex(keySlotAd(slot))).toBe(vector.ad);
-      const sealed = sealKeySlotWith(
-        hexToBytes(vector.recipient_public_key),
-        hexToBytes(vector.ephemeral_private_key),
-        hexToBytes(vector.nonce),
-        hexToBytes(vector.epoch_key),
-        slot,
-      );
-      expect(bytesToHex(sealed)).toBe(vector.sealed);
       const recipient = hexToBytes(vector.recipient_private_key);
-      expect(bytesToHex(openFrom(recipient, hexToBytes(vector.sealed), hexToBytes(vector.ad)))).toBe(vector.epoch_key);
-      expect(bytesToHex(openKeySlot(recipient, hexToBytes(vector.sealed), slot))).toBe(vector.epoch_key);
+      expect(bytesToHex(publicKey(recipient))).toBe(vector.recipient_public_key);
+      // The slot is an age file whose payload is the epoch key followed by
+      // the documented associated data.
+      expect(bytesToHex(await openFrom(recipient, hexToBytes(vector.sealed)))).toBe(vector.epoch_key + vector.ad);
+      expect(bytesToHex(await openKeySlot(recipient, hexToBytes(vector.sealed), slot))).toBe(vector.epoch_key);
     });
   }
 
@@ -196,8 +184,8 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
   }
 
   for (const vector of shared.rejected_key_slots) {
-    it(`refuses the key slot: ${vector.name}`, () => {
-      expect(() => openKeySlot(hexToBytes(vector.recipient_private_key), hexToBytes(vector.sealed), slotOf(vector))).toThrow(DecryptError);
+    it(`refuses the key slot: ${vector.name}`, async () => {
+      await expect(openKeySlot(hexToBytes(vector.recipient_private_key), hexToBytes(vector.sealed), slotOf(vector))).rejects.toThrow(DecryptError);
     });
   }
 
@@ -217,8 +205,9 @@ describe("shared crypto vectors", { timeout: 60_000 }, () => {
         switch (vector.kind) {
           case "aead":
             return open(hexToBytes(vector.key ?? ""), sealed, aad);
-          case "sealed_box":
-            return openFrom(hexToBytes(vector.key ?? ""), sealed, aad);
+          case "hybrid":
+            expect(aad).toHaveLength(0);
+            return openFrom(hexToBytes(vector.key ?? ""), sealed);
           case "passphrase":
             return unwrapWithPassphrase(vector.passphrase ?? "", sealed, aad);
           default:

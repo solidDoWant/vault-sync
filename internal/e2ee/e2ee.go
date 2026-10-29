@@ -1,9 +1,10 @@
 // Package e2ee implements the end-to-end encryption primitives of SPEC.md §9.3
-// as cipher suite 1: HKDF-SHA256 sub-keys, XChaCha20-Poly1305 with associated
-// data, an X25519 sealed box for key slots, HMAC-SHA256 path_key and blob_id,
-// and Argon2id passphrase wrapping.
+// as cipher suite 2: HKDF-SHA256 sub-keys, XChaCha20-Poly1305 with associated
+// data, hybrid post-quantum (ML-KEM-768 + X25519) key wrapping in age's
+// format for key slots (hybrid.go), HMAC-SHA256 path_key and blob_id, and
+// Argon2id passphrase wrapping.
 //
-// Every ciphertext starts with its suite version byte, and every open
+// Every symmetric ciphertext starts with its suite version byte, and every open
 // authenticates the whole header together with the caller's associated data,
 // so a ciphertext with an unknown suite, a changed header or associated data,
 // or a truncated tag fails closed with ErrDecrypt. The formats are described
@@ -16,7 +17,6 @@
 package e2ee
 
 import (
-	"crypto/ecdh"
 	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
@@ -33,10 +33,11 @@ import (
 )
 
 const (
-	// SuiteV1 is the suite version byte of every suite 1 ciphertext.
-	SuiteV1 byte = 0x01
+	// SuiteV2 is the suite version byte of every suite 2 symmetric
+	// ciphertext and passphrase-wrapped secret.
+	SuiteV2 byte = 0x02
 
-	// KeySize is the size of every symmetric key, sub-key and X25519 key.
+	// KeySize is the size of every symmetric key and sub-key.
 	KeySize = 32
 	// NonceSize is the XChaCha20-Poly1305 nonce size.
 	NonceSize = chacha20poly1305.NonceSizeX
@@ -47,7 +48,6 @@ const (
 	// MACSize is the size of a path_key or blob_id HMAC.
 	MACSize = sha256.Size
 
-	sealedHeaderSize     = 1 + KeySize
 	passphraseHeaderSize = 1 + 4 + 4 + 1 + SaltSize
 )
 
@@ -69,7 +69,6 @@ const (
 
 const (
 	subkeyInfoPrefix = "vault-sync/v1/subkey/"
-	sealedBoxInfo    = "vault-sync/v1/sealed-box"
 )
 
 // DeriveSubkey derives the sub-key named by label from a 32-byte epoch key:
@@ -89,8 +88,8 @@ func DeriveSubkey(epochKey []byte, label Label) ([]byte, error) {
 }
 
 // Seal encrypts plaintext under a 32-byte key with a fresh random nonce and
-// binds aad: SuiteV1 || nonce || XChaCha20-Poly1305(plaintext), the
-// associated data being SuiteV1 || aad.
+// binds aad: SuiteV2 || nonce || XChaCha20-Poly1305(plaintext), the
+// associated data being SuiteV2 || aad.
 func Seal(key, plaintext, aad []byte) ([]byte, error) {
 	nonce, err := randomBytes(NonceSize)
 	if err != nil {
@@ -101,7 +100,7 @@ func Seal(key, plaintext, aad []byte) ([]byte, error) {
 }
 
 func sealWithNonce(key, nonce, plaintext, aad []byte) ([]byte, error) {
-	header := []byte{SuiteV1}
+	header := []byte{SuiteV2}
 
 	return sealAfterHeader(header, key, nonce, plaintext, aad)
 }
@@ -125,10 +124,10 @@ func sealAfterHeader(header, key, nonce, plaintext, aad []byte) ([]byte, error) 
 	return aead.Seal(out, nonce, plaintext, slices.Concat(header, aad)), nil
 }
 
-// Open reverses Seal. It returns ErrDecrypt unless sealed is a suite 1
+// Open reverses Seal. It returns ErrDecrypt unless sealed is a suite 2
 // ciphertext under key with exactly this aad.
 func Open(key, sealed, aad []byte) ([]byte, error) {
-	if len(sealed) < 1 || sealed[0] != SuiteV1 {
+	if len(sealed) < 1 || sealed[0] != SuiteV2 {
 		return nil, ErrDecrypt
 	}
 
@@ -161,104 +160,6 @@ func openAfterHeader(header, key, rest, aad []byte) ([]byte, error) {
 // GenerateKey returns a new random 32-byte symmetric key (an epoch key).
 func GenerateKey() ([]byte, error) {
 	return randomBytes(KeySize)
-}
-
-// GenerateKeyPair returns a new X25519 private key and its public key.
-func GenerateKeyPair() (privateKey, publicKey []byte, err error) {
-	key, err := ecdh.X25519().GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, nil, fmt.Errorf("e2ee: %w", err)
-	}
-
-	return key.Bytes(), key.PublicKey().Bytes(), nil
-}
-
-// PublicKey returns the X25519 public key of a 32-byte private key.
-func PublicKey(privateKey []byte) ([]byte, error) {
-	key, err := ecdh.X25519().NewPrivateKey(privateKey)
-	if err != nil {
-		return nil, fmt.Errorf("e2ee: %w", err)
-	}
-
-	return key.PublicKey().Bytes(), nil
-}
-
-// SealTo encrypts plaintext (an epoch key) to an X25519 public key, binding
-// aad: SuiteV1 || ephemeral public key || nonce || ciphertext. The key is
-// HKDF-SHA256 of the X25519 shared secret, salted with the ephemeral and
-// recipient public keys; the associated data is the header || aad.
-func SealTo(recipientPublicKey, plaintext, aad []byte) ([]byte, error) {
-	ephemeral, err := randomBytes(KeySize)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce, err := randomBytes(NonceSize)
-	if err != nil {
-		return nil, err
-	}
-
-	return sealToWith(recipientPublicKey, ephemeral, nonce, plaintext, aad)
-}
-
-func sealToWith(recipientPublicKey, ephemeralPrivateKey, nonce, plaintext, aad []byte) ([]byte, error) {
-	ephemeral, err := ecdh.X25519().NewPrivateKey(ephemeralPrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("e2ee: %w", err)
-	}
-
-	recipient, err := ecdh.X25519().NewPublicKey(recipientPublicKey)
-	if err != nil {
-		return nil, fmt.Errorf("e2ee: %w", err)
-	}
-
-	ephemeralPublicKey := ephemeral.PublicKey().Bytes()
-
-	key, err := sealedBoxKey(ephemeral, recipient, ephemeralPublicKey, recipient.Bytes())
-	if err != nil {
-		return nil, err
-	}
-
-	return sealAfterHeader(slices.Concat([]byte{SuiteV1}, ephemeralPublicKey), key, nonce, plaintext, aad)
-}
-
-// OpenFrom reverses SealTo with the recipient's X25519 private key. It
-// returns ErrDecrypt unless sealed is a suite 1 sealed box to this key with
-// exactly this aad.
-func OpenFrom(recipientPrivateKey, sealed, aad []byte) ([]byte, error) {
-	recipient, err := ecdh.X25519().NewPrivateKey(recipientPrivateKey)
-	if err != nil {
-		return nil, fmt.Errorf("e2ee: %w", err)
-	}
-
-	if len(sealed) < sealedHeaderSize || sealed[0] != SuiteV1 {
-		return nil, ErrDecrypt
-	}
-
-	ephemeralPublicKey := sealed[1:sealedHeaderSize]
-
-	ephemeral, err := ecdh.X25519().NewPublicKey(ephemeralPublicKey)
-	if err != nil {
-		return nil, ErrDecrypt
-	}
-
-	key, err := sealedBoxKey(recipient, ephemeral, ephemeralPublicKey, recipient.PublicKey().Bytes())
-	if err != nil {
-		return nil, ErrDecrypt
-	}
-
-	return openAfterHeader(sealed[:sealedHeaderSize], key, sealed[sealedHeaderSize:], aad)
-}
-
-func sealedBoxKey(private *ecdh.PrivateKey, public *ecdh.PublicKey, ephemeralPublicKey, recipientPublicKey []byte) ([]byte, error) {
-	// ECDH refuses an all-zero shared secret, which a low-order public key
-	// produces.
-	shared, err := private.ECDH(public)
-	if err != nil {
-		return nil, fmt.Errorf("e2ee: %w", err)
-	}
-
-	return hkdf.Key(sha256.New, shared, slices.Concat(ephemeralPublicKey, recipientPublicKey), sealedBoxInfo, KeySize)
 }
 
 // PathKey returns the E2EE path_key of a path (SPEC.md §5):
@@ -371,9 +272,9 @@ func DerivePassphraseKeys(passphrase string, params Argon2Params, salt []byte) (
 	return PassphraseKeys{WrapKey: wrapKey, AuthKey: authKey}, nil
 }
 
-// WrapWithPassphrase encrypts secret (a user's X25519 private key) under the
+// WrapWithPassphrase encrypts secret (a user's hybrid private key) under the
 // wrap key of passphrase (DerivePassphraseKeys) with a fresh salt and binds
-// aad: SuiteV1 || memory (u32 BE) || iterations (u32 BE) || parallelism (u8)
+// aad: SuiteV2 || memory (u32 BE) || iterations (u32 BE) || parallelism (u8)
 // || salt (16) || nonce || ciphertext, the associated data being the header
 // || aad. It also returns the auth key, for the server's verifier.
 func WrapWithPassphrase(passphrase string, secret, aad []byte) (wrapped, authKey []byte, err error) {
@@ -408,7 +309,7 @@ func wrapWith(passphrase string, params Argon2Params, salt, nonce, secret, aad [
 	}
 
 	header := make([]byte, 0, passphraseHeaderSize)
-	header = append(header, SuiteV1)
+	header = append(header, SuiteV2)
 	header = binary.BigEndian.AppendUint32(header, params.Memory)
 	header = binary.BigEndian.AppendUint32(header, params.Iterations)
 	header = append(header, params.Parallelism)
@@ -428,7 +329,7 @@ func wrapWith(passphrase string, params Argon2Params, salt, nonce, secret, aad [
 // ErrDecrypt for an unknown suite, a short header or parameters outside the
 // bounds.
 func ParsePassphraseHeader(wrapped []byte) (Argon2Params, []byte, error) {
-	if len(wrapped) < passphraseHeaderSize || wrapped[0] != SuiteV1 {
+	if len(wrapped) < passphraseHeaderSize || wrapped[0] != SuiteV2 {
 		return Argon2Params{}, nil, ErrDecrypt
 	}
 

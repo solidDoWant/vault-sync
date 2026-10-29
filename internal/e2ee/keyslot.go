@@ -2,6 +2,7 @@ package e2ee
 
 import (
 	"crypto/hmac"
+	"crypto/subtle"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -96,24 +97,12 @@ func (slot KeySlot) AD() ([]byte, error) {
 	return append(ad, recipientID...), nil
 }
 
-// SealKeySlot wraps a 32-byte epoch key to a recipient's X25519 public key
-// with a sealed box (SealTo) binding the slot's associated data (KeySlot.AD).
+// SealKeySlot wraps a 32-byte epoch key to a recipient's hybrid public key:
+// an age file to the recipient (SealTo) whose payload is the epoch key
+// followed by the slot's associated data (KeySlot.AD). The standard age tool
+// opens it with the recipient's identity (AgeIdentity); the first 32 bytes
+// of what it prints are the epoch key.
 func SealKeySlot(recipientPublicKey, epochKey []byte, slot KeySlot) ([]byte, error) {
-	ephemeral, err := randomBytes(KeySize)
-	if err != nil {
-		return nil, err
-	}
-
-	nonce, err := randomBytes(NonceSize)
-	if err != nil {
-		return nil, err
-	}
-
-	return sealKeySlotWith(recipientPublicKey, ephemeral, nonce, epochKey, slot)
-}
-
-// sealKeySlotWith is SealKeySlot with fixed random inputs, for the vectors.
-func sealKeySlotWith(recipientPublicKey, ephemeralPrivateKey, nonce, epochKey []byte, slot KeySlot) ([]byte, error) {
 	if len(epochKey) != KeySize {
 		return nil, fmt.Errorf("e2ee: epoch key must be %d bytes, got %d", KeySize, len(epochKey))
 	}
@@ -123,30 +112,30 @@ func sealKeySlotWith(recipientPublicKey, ephemeralPrivateKey, nonce, epochKey []
 		return nil, err
 	}
 
-	return sealToWith(recipientPublicKey, ephemeralPrivateKey, nonce, epochKey, ad)
+	return SealTo(recipientPublicKey, slices.Concat(epochKey, ad))
 }
 
-// OpenKeySlot reverses SealKeySlot with the recipient's X25519 private key.
-// It returns ErrDecrypt unless wrapped is a sealed box to this key binding
-// exactly this slot (vault, epoch, recipient kind and recipient id) and holds
-// a 32-byte key. The caller then checks the key against the epoch's
-// commitment (VerifyKeyCommitment).
+// OpenKeySlot reverses SealKeySlot with the recipient's hybrid private key.
+// It returns ErrDecrypt unless wrapped is an age file to this key whose
+// payload is a 32-byte key followed by exactly this slot's associated data
+// (vault, epoch, recipient kind and recipient id). The caller then checks
+// the key against the epoch's commitment (VerifyKeyCommitment).
 func OpenKeySlot(recipientPrivateKey, wrapped []byte, slot KeySlot) ([]byte, error) {
 	ad, err := slot.AD()
 	if err != nil {
 		return nil, err
 	}
 
-	epochKey, err := OpenFrom(recipientPrivateKey, wrapped, ad)
+	payload, err := OpenFrom(recipientPrivateKey, wrapped)
 	if err != nil {
 		return nil, err
 	}
 
-	if len(epochKey) != KeySize {
+	if len(payload) != KeySize+len(ad) || subtle.ConstantTimeCompare(payload[KeySize:], ad) != 1 {
 		return nil, ErrDecrypt
 	}
 
-	return epochKey, nil
+	return payload[:KeySize], nil
 }
 
 // KeyCommitment returns the key commitment of an epoch:

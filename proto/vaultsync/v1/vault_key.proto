@@ -94,7 +94,8 @@ message KeySlot {
   // for KEY_RECIPIENT_KIND_ESCROW an identifier of the escrow key, 1 to 255
   // printable ASCII bytes.
   string recipient_id = 3;
-  // The wrapped epoch key: 1 to 256 bytes, opaque to the server.
+  // The wrapped epoch key (an age file, docs/design/crypto.md): 1 to 2048
+  // bytes, opaque to the server.
   bytes wrapped_key = 4;
   // The user who stored the slot. Output only.
   string creator_user_id = 5;
@@ -133,8 +134,8 @@ message MissingSlot {
   uint32 epoch = 1;
   // The member's user id.
   string user_id = 2;
-  // The member's X25519 user public key (32 bytes) to wrap the epoch key
-  // to.
+  // The member's hybrid ML-KEM-768 + X25519 user public key (1216 bytes)
+  // to wrap the epoch key to.
   bytes public_key = 3;
 }
 

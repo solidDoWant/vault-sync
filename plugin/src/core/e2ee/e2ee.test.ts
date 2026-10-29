@@ -7,17 +7,14 @@ import {
   derivePassphraseKeys,
   deriveSubkey,
   generateKey,
-  generateKeyPair,
   KEY_SIZE,
   NONCE_SIZE,
   open,
-  openFrom,
   parsePassphraseHeader,
   pathKey,
   SALT_SIZE,
   seal,
-  sealTo,
-  SUITE_V1,
+  SUITE_V2,
   type SubkeyLabel,
   TAG_SIZE,
   unwrapWithKey,
@@ -47,7 +44,6 @@ async function expectDecryptError(attempt: () => Uint8Array | Promise<Uint8Array
 
 function constructions(): Construction[] {
   const key = generateKey();
-  const recipient = generateKeyPair();
   const passphrase = "correct horse battery staple";
   // The minimum parameters keep the many derivations below cheap.
   const params = { memory: ARGON2_BOUNDS.minMemory, iterations: ARGON2_BOUNDS.minIterations, parallelism: 1 };
@@ -58,12 +54,6 @@ function constructions(): Construction[] {
       headerSize: 1,
       seal: (aad) => seal(key, plaintext, aad),
       open: (sealed, aad) => open(key, sealed, aad),
-    },
-    {
-      name: "sealed box",
-      headerSize: 1 + KEY_SIZE,
-      seal: (aad) => sealTo(recipient.publicKey, plaintext, aad),
-      open: (sealed, aad) => openFrom(recipient.privateKey, sealed, aad),
     },
     {
       name: "passphrase",
@@ -83,7 +73,7 @@ describe("seal and open", () => {
     const plaintext = encoder.encode("# Note\n");
     const aad = encoder.encode("document 1, epoch 1");
     const sealed = seal(key, plaintext, aad);
-    expect(sealed[0]).toBe(SUITE_V1);
+    expect(sealed[0]).toBe(SUITE_V2);
     expect(sealed.length).toBe(1 + NONCE_SIZE + plaintext.length + TAG_SIZE);
     expect(open(key, sealed, aad)).toEqual(plaintext);
     expect(() => open(generateKey(), sealed, aad)).toThrow(DecryptError);
@@ -105,7 +95,7 @@ describe("opening fails closed", ARGON2_TIMEOUT, () => {
       });
 
       it("refuses an unknown suite version", async () => {
-        for (const version of [0x00, 0x02, 0x80, 0xff]) {
+        for (const version of [0x00, 0x01, 0x03, 0x80, 0xff]) {
           const tampered = sealed.slice();
           tampered[0] = version;
           await expectDecryptError(() => construction.open(tampered, aad));
@@ -155,27 +145,6 @@ describe("randomness", ARGON2_TIMEOUT, () => {
     }
     expect(nonces.size).toBe(samples);
   });
-
-  it("draws a fresh ephemeral key and nonce for every sealed box", () => {
-    const samples = 500;
-    const { publicKey } = generateKeyPair();
-    const empty = new Uint8Array(0);
-    const ephemeralKeys = new Set<string>();
-    const nonces = new Set<string>();
-    for (let index = 0; index < samples; index++) {
-      const sealed = sealTo(publicKey, empty, empty);
-      ephemeralKeys.add(bytesToHex(sealed.subarray(1, 1 + KEY_SIZE)));
-      nonces.add(bytesToHex(sealed.subarray(1 + KEY_SIZE, 1 + KEY_SIZE + NONCE_SIZE)));
-    }
-    expect(ephemeralKeys.size).toBe(samples);
-    expect(nonces.size).toBe(samples);
-  });
-});
-
-describe("sealTo", () => {
-  it("refuses a low-order recipient key", () => {
-    expect(() => sealTo(new Uint8Array(KEY_SIZE), encoder.encode("epoch key"), new Uint8Array(0))).toThrow();
-  });
 });
 
 describe("wrapWithPassphrase", ARGON2_TIMEOUT, () => {
@@ -188,7 +157,7 @@ describe("wrapWithPassphrase", ARGON2_TIMEOUT, () => {
     const first = await wrapWithPassphrase("passphrase", secret, empty);
     const second = await wrapWithPassphrase("passphrase", secret, empty);
     // memory 65536 KiB, 3 iterations, 1 lane.
-    expect(Array.from(first.wrapped.subarray(0, 10))).toEqual([SUITE_V1, 0, 1, 0, 0, 0, 0, 0, 3, 1]);
+    expect(Array.from(first.wrapped.subarray(0, 10))).toEqual([SUITE_V2, 0, 1, 0, 0, 0, 0, 0, 3, 1]);
     expect(bytesToHex(first.wrapped.subarray(10, 10 + SALT_SIZE))).not.toBe(bytesToHex(second.wrapped.subarray(10, 10 + SALT_SIZE)));
     expect(bytesToHex(first.authKey)).not.toBe(bytesToHex(second.authKey));
     expect(await unwrapWithPassphrase("passphrase", first.wrapped, empty)).toEqual(secret);
@@ -228,10 +197,10 @@ describe("wrapWithPassphrase", ARGON2_TIMEOUT, () => {
   });
 
   it("refuses a bad header before deriving", () => {
-    const header = Uint8Array.of(SUITE_V1, 0, 0, 0x4c, 0, 0, 0, 0, 2, 1, ...new Uint8Array(SALT_SIZE));
+    const header = Uint8Array.of(SUITE_V2, 0, 0, 0x4c, 0, 0, 0, 0, 2, 1, ...new Uint8Array(SALT_SIZE));
     expect(parsePassphraseHeader(header).params).toEqual(minimum);
     expect(() => parsePassphraseHeader(header.subarray(0, header.length - 1))).toThrow(DecryptError);
-    expect(() => parsePassphraseHeader(Uint8Array.of(0x02, ...header.subarray(1)))).toThrow(DecryptError);
+    expect(() => parsePassphraseHeader(Uint8Array.of(0x01, ...header.subarray(1)))).toThrow(DecryptError);
     expect(() => parsePassphraseHeader(Uint8Array.of(...header.subarray(0, 9), 0, ...header.subarray(10)))).toThrow(DecryptError);
   });
 

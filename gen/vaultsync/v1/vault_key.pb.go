@@ -87,7 +87,8 @@ type KeySlot struct {
 	// for KEY_RECIPIENT_KIND_ESCROW an identifier of the escrow key, 1 to 255
 	// printable ASCII bytes.
 	RecipientId string `protobuf:"bytes,3,opt,name=recipient_id,json=recipientId,proto3" json:"recipient_id,omitempty"`
-	// The wrapped epoch key: 1 to 256 bytes, opaque to the server.
+	// The wrapped epoch key (an age file, docs/design/crypto.md): 1 to 2048
+	// bytes, opaque to the server.
 	WrappedKey []byte `protobuf:"bytes,4,opt,name=wrapped_key,json=wrappedKey,proto3" json:"wrapped_key,omitempty"`
 	// The user who stored the slot. Output only.
 	CreatorUserId string `protobuf:"bytes,5,opt,name=creator_user_id,json=creatorUserId,proto3" json:"creator_user_id,omitempty"`
@@ -316,8 +317,8 @@ type MissingSlot struct {
 	Epoch uint32 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	// The member's user id.
 	UserId string `protobuf:"bytes,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	// The member's X25519 user public key (32 bytes) to wrap the epoch key
-	// to.
+	// The member's hybrid ML-KEM-768 + X25519 user public key (1216 bytes)
+	// to wrap the epoch key to.
 	PublicKey     []byte `protobuf:"bytes,3,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache

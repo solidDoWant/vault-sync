@@ -256,7 +256,7 @@ export class MemoryVaultKeyServer {
 }
 
 function checkWrappedKey(wrappedKey: Uint8Array): void {
-  if (wrappedKey.length < 1 || wrappedKey.length > 256) throw new ConnectError("wrapped key must be 1 to 256 bytes", Code.InvalidArgument);
+  if (wrappedKey.length < 1 || wrappedKey.length > 2048) throw new ConnectError("wrapped key must be 1 to 2048 bytes", Code.InvalidArgument);
 }
 
 /** `transport`, recording each unary request's caller and serialized bytes into `requests`. */

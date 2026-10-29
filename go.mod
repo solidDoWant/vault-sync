@@ -7,6 +7,8 @@ toolchain go1.26.10
 require (
 	connectrpc.com/connect v1.21.1
 	connectrpc.com/cors v0.1.0
+	filippo.io/age v1.3.2
+	filippo.io/hpke v0.4.0
 	github.com/aws/aws-sdk-go-v2 v1.47.3
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.114.3
 	github.com/aws/smithy-go v1.28.5
@@ -26,6 +28,8 @@ require (
 )
 
 require (
+	filippo.io/edwards25519 v1.2.0 // indirect
+	filippo.io/nistec v0.0.4 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.22 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.5.6 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.8.6 // indirect
@@ -46,4 +50,7 @@ require (
 	github.com/prometheus/procfs v0.22.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/oauth2 v0.37.0 // indirect
+	golang.org/x/term v0.47.0 // indirect
 )
+
+tool filippo.io/age/cmd/age

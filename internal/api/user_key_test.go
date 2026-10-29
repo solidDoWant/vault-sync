@@ -61,7 +61,7 @@ func (recorder *userKeyRecorder) ChangePassphrase(_ context.Context, _ uuid.UUID
 
 func validParams() *vaultsyncv1.PassphraseParams {
 	return &vaultsyncv1.PassphraseParams{
-		Suite: 1, MemoryKib: 65536, Iterations: 3, Parallelism: 1, Salt: bytes.Repeat([]byte{7}, 16),
+		Suite: 2, MemoryKib: 65536, Iterations: 3, Parallelism: 1, Salt: bytes.Repeat([]byte{7}, 16),
 	}
 }
 
@@ -80,7 +80,8 @@ func paramsCases() []struct {
 	}{
 		{name: "defaults", mutate: func(*vaultsyncv1.PassphraseParams) {}, accepted: true},
 		{name: "suite 0", mutate: func(params *vaultsyncv1.PassphraseParams) { params.Suite = 0 }},
-		{name: "suite 2", mutate: func(params *vaultsyncv1.PassphraseParams) { params.Suite = 2 }},
+		{name: "suite 1", mutate: func(params *vaultsyncv1.PassphraseParams) { params.Suite = 1 }},
+		{name: "suite 3", mutate: func(params *vaultsyncv1.PassphraseParams) { params.Suite = 3 }},
 		{name: "memory 19456 KiB", mutate: func(params *vaultsyncv1.PassphraseParams) { params.MemoryKib = 19456 }, accepted: true},
 		{name: "memory 19455 KiB", mutate: func(params *vaultsyncv1.PassphraseParams) { params.MemoryKib = 19455 }},
 		{name: "memory 131072 KiB", mutate: func(params *vaultsyncv1.PassphraseParams) { params.MemoryKib = 131072 }, accepted: true},
@@ -105,7 +106,7 @@ func userKeyContext(t *testing.T) context.Context {
 
 func validCreateRequest() *vaultsyncv1.CreateUserKeyRequest {
 	return &vaultsyncv1.CreateUserKeyRequest{
-		PublicKey:         bytes.Repeat([]byte{1}, 32),
+		PublicKey:         bytes.Repeat([]byte{1}, 1216),
 		WrappedPrivateKey: bytes.Repeat([]byte{2}, 98),
 		Params:            validParams(),
 		AuthKey:           bytes.Repeat([]byte{3}, 32),
@@ -115,7 +116,7 @@ func validCreateRequest() *vaultsyncv1.CreateUserKeyRequest {
 func validChangeRequest() *vaultsyncv1.ChangePassphraseRequest {
 	return &vaultsyncv1.ChangePassphraseRequest{
 		AuthKey:              bytes.Repeat([]byte{3}, 32),
-		PublicKey:            bytes.Repeat([]byte{1}, 32),
+		PublicKey:            bytes.Repeat([]byte{1}, 1216),
 		NewWrappedPrivateKey: bytes.Repeat([]byte{4}, 98),
 		NewParams:            validParams(),
 		NewAuthKey:           bytes.Repeat([]byte{5}, 32),
@@ -145,8 +146,9 @@ func TestCreateUserKeyBoundsEveryInputBeforeTheStore(t *testing.T) {
 		mutate   func(*vaultsyncv1.CreateUserKeyRequest)
 		accepted bool
 	}{
-		{name: "31-byte public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.PublicKey = request.PublicKey[:31] }},
-		{name: "33-byte public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.PublicKey = append(request.PublicKey, 0) }},
+		{name: "1215-byte public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.PublicKey = request.PublicKey[:1215] }},
+		{name: "32-byte (X25519) public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.PublicKey = request.PublicKey[:32] }},
+		{name: "1217-byte public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.PublicKey = append(request.PublicKey, 0) }},
 		{name: "empty public key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.PublicKey = nil }},
 		{name: "empty wrapped key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.WrappedPrivateKey = nil }},
 		{name: "1-byte wrapped key", mutate: func(request *vaultsyncv1.CreateUserKeyRequest) { request.WrappedPrivateKey = []byte{1} }, accepted: true},
@@ -191,8 +193,9 @@ func TestChangePassphraseBoundsEveryInputBeforeTheStore(t *testing.T) {
 		{name: "valid", mutate: func(*vaultsyncv1.ChangePassphraseRequest) {}, accepted: true},
 		{name: "31-byte auth key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.AuthKey = request.AuthKey[:31] }},
 		{name: "33-byte auth key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.AuthKey = append(request.AuthKey, 0) }},
-		{name: "31-byte public key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.PublicKey = request.PublicKey[:31] }},
-		{name: "33-byte public key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.PublicKey = append(request.PublicKey, 0) }},
+		{name: "1215-byte public key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.PublicKey = request.PublicKey[:1215] }},
+		{name: "32-byte (X25519) public key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.PublicKey = request.PublicKey[:32] }},
+		{name: "1217-byte public key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.PublicKey = append(request.PublicKey, 0) }},
 		{name: "empty new wrapped key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) { request.NewWrappedPrivateKey = nil }},
 		{name: "256-byte new wrapped key", mutate: func(request *vaultsyncv1.ChangePassphraseRequest) {
 			request.NewWrappedPrivateKey = make([]byte, 256)

@@ -28,7 +28,7 @@ func TestSealOpensOnlyWithItsKeyAndAAD(t *testing.T) {
 
 	sealed, err := e2ee.Seal(key, plaintext, aad)
 	require.NoError(t, err)
-	assert.Equal(t, e2ee.SuiteV1, sealed[0])
+	assert.Equal(t, e2ee.SuiteV2, sealed[0])
 	assert.Len(t, sealed, 1+e2ee.NonceSize+len(plaintext)+e2ee.TagSize)
 
 	opened, err := e2ee.Open(key, sealed, aad)
@@ -56,9 +56,6 @@ func constructions(t *testing.T) []construction {
 
 	key := newKey(t)
 
-	private, public, err := e2ee.GenerateKeyPair()
-	require.NoError(t, err)
-
 	const passphrase = "correct horse battery staple"
 
 	plaintext := []byte("k")
@@ -76,19 +73,6 @@ func constructions(t *testing.T) []construction {
 				return sealed
 			},
 			open: func(sealed, aad []byte) ([]byte, error) { return e2ee.Open(key, sealed, aad) },
-		},
-		{
-			name:   "sealed box",
-			header: 1 + e2ee.KeySize,
-			seal: func(t *testing.T, aad []byte) []byte {
-				t.Helper()
-
-				sealed, err := e2ee.SealTo(public, plaintext, aad)
-				require.NoError(t, err)
-
-				return sealed
-			},
-			open: func(sealed, aad []byte) ([]byte, error) { return e2ee.OpenFrom(private, sealed, aad) },
 		},
 		{
 			name:   "passphrase",
@@ -121,7 +105,7 @@ func TestOpenFailsClosed(t *testing.T) {
 			require.NotEmpty(t, opened)
 
 			t.Run("unknown suite version", func(t *testing.T) {
-				for _, version := range []byte{0x00, 0x02, 0x80, 0xff} {
+				for _, version := range []byte{0x00, 0x01, 0x03, 0x80, 0xff} {
 					tampered := slices.Clone(sealed)
 					tampered[0] = version
 
@@ -180,32 +164,6 @@ func TestSealDrawsAFreshNonceEveryTime(t *testing.T) {
 	}
 }
 
-func TestSealToDrawsAFreshEphemeralKeyAndNonceEveryTime(t *testing.T) {
-	const samples = 2_000
-
-	_, public, err := e2ee.GenerateKeyPair()
-	require.NoError(t, err)
-
-	ephemeralKeys := make(map[[e2ee.KeySize]byte]struct{}, samples)
-	nonces := make(map[[e2ee.NonceSize]byte]struct{}, samples)
-
-	for range samples {
-		sealed, err := e2ee.SealTo(public, nil, nil)
-		require.NoError(t, err)
-
-		ephemeralKeys[[e2ee.KeySize]byte(sealed[1:1+e2ee.KeySize])] = struct{}{}
-		nonces[[e2ee.NonceSize]byte(sealed[1+e2ee.KeySize:1+e2ee.KeySize+e2ee.NonceSize])] = struct{}{}
-	}
-
-	assert.Len(t, ephemeralKeys, samples)
-	assert.Len(t, nonces, samples)
-}
-
-func TestSealToRefusesALowOrderRecipient(t *testing.T) {
-	_, err := e2ee.SealTo(make([]byte, e2ee.KeySize), []byte("epoch key"), nil)
-	require.Error(t, err)
-}
-
 func TestWrapWithPassphraseUsesTheDefaultParametersAndAFreshSalt(t *testing.T) {
 	first, firstAuthKey, err := e2ee.WrapWithPassphrase("passphrase", []byte("secret"), nil)
 	require.NoError(t, err)
@@ -214,7 +172,7 @@ func TestWrapWithPassphraseUsesTheDefaultParametersAndAFreshSalt(t *testing.T) {
 	require.NoError(t, err)
 
 	// memory 65536 KiB, 3 iterations, 1 lane.
-	assert.Equal(t, []byte{e2ee.SuiteV1, 0, 1, 0, 0, 0, 0, 0, 3, 1}, first[:10])
+	assert.Equal(t, []byte{e2ee.SuiteV2, 0, 1, 0, 0, 0, 0, 0, 3, 1}, first[:10])
 	assert.NotEqual(t, first[10:10+e2ee.SaltSize], second[10:10+e2ee.SaltSize])
 	assert.NotEqual(t, firstAuthKey, secondAuthKey, "a fresh salt gives a fresh verifier")
 
@@ -284,7 +242,7 @@ func TestParsePassphraseHeaderRefusesBadHeaders(t *testing.T) {
 	header := wrapped[:1+4+4+1+e2ee.SaltSize]
 
 	otherSuite := slices.Clone(header)
-	otherSuite[0] = 0x02
+	otherSuite[0] = 0x01
 
 	zeroLanes := slices.Clone(header)
 	zeroLanes[9] = 0

@@ -65,7 +65,7 @@ service UserKeyService {
 // (docs/design/crypto.md), which a device needs before it can derive
 // anything from the passphrase.
 message PassphraseParams {
-  // The crypto suite of the wrapping. Only 1 is accepted.
+  // The crypto suite of the wrapping. Only 2 is accepted.
   uint32 suite = 1;
   // Argon2id memory in KiB: 19456 to 131072.
   uint32 memory_kib = 2;
@@ -83,7 +83,8 @@ message GetUserKeyParamsRequest {}
 // GetUserKeyParamsResponse holds the caller's public key and wrapping
 // parameters.
 message GetUserKeyParamsResponse {
-  // The caller's X25519 public key (32 bytes).
+  // The caller's public key: a hybrid ML-KEM-768 + X25519 key (1216 bytes)
+  // for suite 2, an X25519 key (32 bytes) for a key stored under suite 1.
   bytes public_key = 1;
   // The parameters of the current wrapping.
   PassphraseParams params = 2;
@@ -91,7 +92,7 @@ message GetUserKeyParamsResponse {
 
 // CreateUserKeyRequest holds a new key pair, its private key wrapped.
 message CreateUserKeyRequest {
-  // The X25519 public key: exactly 32 bytes.
+  // The hybrid ML-KEM-768 + X25519 public key: exactly 1216 bytes.
   bytes public_key = 1;
   // The private key wrapped under the passphrase: 1 to 256 bytes, opaque to
   // the server.
@@ -114,7 +115,7 @@ message UnlockUserKeyRequest {
 
 // UnlockUserKeyResponse releases the caller's wrapped key.
 message UnlockUserKeyResponse {
-  // The caller's X25519 public key.
+  // The caller's public key, as in GetUserKeyParamsResponse.
   bytes public_key = 1;
   // The private key wrapped under the passphrase.
   bytes wrapped_private_key = 2;

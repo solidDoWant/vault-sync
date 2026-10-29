@@ -23,8 +23,11 @@ import (
 const (
 	// AuthKeyBytes is the size of an auth_key.
 	AuthKeyBytes = 32
-	// MaxWrappedPrivateKeyBytes bounds a wrapped private key. A suite 1
-	// wrapping of an X25519 private key is 98 bytes.
+	// UserPublicKeyBytes is the size of a user's hybrid ML-KEM-768 + X25519
+	// public key.
+	UserPublicKeyBytes = e2ee.PublicKeySize
+	// MaxWrappedPrivateKeyBytes bounds a wrapped private key. A suite 2
+	// wrapping of a 32-byte hybrid private key seed is 98 bytes.
 	MaxWrappedPrivateKeyBytes = 256
 	// MaxFailedUnlockAttempts is how many wrong auth_keys a user may present
 	// within FailedUnlockWindow before every attempt is refused until the
@@ -193,8 +196,8 @@ func (service UserKeyService) storeError(ctx context.Context, message string, er
 }
 
 func checkPublicKey(field string, publicKey []byte) error {
-	if len(publicKey) != PublicKeyBytes {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s must be exactly %d bytes", field, PublicKeyBytes))
+	if len(publicKey) != UserPublicKeyBytes {
+		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("%s must be exactly %d bytes", field, UserPublicKeyBytes))
 	}
 
 	return nil
@@ -246,8 +249,8 @@ func checkParams(field string, params *vaultsyncv1.PassphraseParams) error {
 	}
 
 	switch {
-	case params.GetSuite() != uint32(e2ee.SuiteV1):
-		return invalid("suite must be %d", e2ee.SuiteV1)
+	case params.GetSuite() != uint32(e2ee.SuiteV2):
+		return invalid("suite must be %d", e2ee.SuiteV2)
 	case params.GetMemoryKib() < e2ee.MinArgon2Memory || params.GetMemoryKib() > e2ee.MaxArgon2Memory:
 		return invalid("memory_kib must be %d to %d", e2ee.MinArgon2Memory, e2ee.MaxArgon2Memory)
 	case params.GetIterations() < e2ee.MinArgon2Iterations || params.GetIterations() > e2ee.MaxArgon2Iterations:

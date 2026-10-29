@@ -26,7 +26,7 @@ const (
 // anything from the passphrase.
 type PassphraseParams struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The crypto suite of the wrapping. Only 1 is accepted.
+	// The crypto suite of the wrapping. Only 2 is accepted.
 	Suite uint32 `protobuf:"varint,1,opt,name=suite,proto3" json:"suite,omitempty"`
 	// Argon2id memory in KiB: 19456 to 131072.
 	MemoryKib uint32 `protobuf:"varint,2,opt,name=memory_kib,json=memoryKib,proto3" json:"memory_kib,omitempty"`
@@ -146,7 +146,8 @@ func (*GetUserKeyParamsRequest) Descriptor() ([]byte, []int) {
 // parameters.
 type GetUserKeyParamsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The caller's X25519 public key (32 bytes).
+	// The caller's public key: a hybrid ML-KEM-768 + X25519 key (1216 bytes)
+	// for suite 2, an X25519 key (32 bytes) for a key stored under suite 1.
 	PublicKey []byte `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	// The parameters of the current wrapping.
 	Params        *PassphraseParams `protobuf:"bytes,2,opt,name=params,proto3" json:"params,omitempty"`
@@ -201,7 +202,7 @@ func (x *GetUserKeyParamsResponse) GetParams() *PassphraseParams {
 // CreateUserKeyRequest holds a new key pair, its private key wrapped.
 type CreateUserKeyRequest struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The X25519 public key: exactly 32 bytes.
+	// The hybrid ML-KEM-768 + X25519 public key: exactly 1216 bytes.
 	PublicKey []byte `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	// The private key wrapped under the passphrase: 1 to 256 bytes, opaque to
 	// the server.
@@ -359,7 +360,7 @@ func (x *UnlockUserKeyRequest) GetAuthKey() []byte {
 // UnlockUserKeyResponse releases the caller's wrapped key.
 type UnlockUserKeyResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The caller's X25519 public key.
+	// The caller's public key, as in GetUserKeyParamsResponse.
 	PublicKey []byte `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	// The private key wrapped under the passphrase.
 	WrappedPrivateKey []byte `protobuf:"bytes,2,opt,name=wrapped_private_key,json=wrappedPrivateKey,proto3" json:"wrapped_private_key,omitempty"`
