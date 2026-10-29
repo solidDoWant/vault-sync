@@ -17,7 +17,7 @@ var ErrVaultNotDeleted = errors.New("vault is not deleted")
 // vaultPurgeTables are the tables holding a vault's rows, in an order that
 // deletes every row before the rows it references.
 var vaultPurgeTables = []string{
-	"key_slots", "vault_key_epochs", "vault_invitations", "vault_members", "vault_retention",
+	"vault_log_entries", "key_slots", "vault_key_epochs", "vault_invitations", "vault_members", "vault_retention",
 	"purged_revisions", "blob_upload_chunks", "blob_uploads", "blob_deletions",
 	"revisions", "documents", "blobs",
 }

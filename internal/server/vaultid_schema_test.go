@@ -98,6 +98,15 @@ func misplacedVaultFields(input protoreflect.MessageDescriptor) []string {
 	return misplaced
 }
 
+// newVaultIDs are the fields that name a vault that does not exist yet: the
+// id the creator's device chooses for a new E2EE vault, which it signs into
+// the vault's genesis entry. CreateVault is not vault-scoped and refuses an
+// id that names an existing vault, so the field never reaches another
+// vault's data.
+var newVaultIDs = map[string]string{
+	"/vaultsync.v1.VaultService/CreateVault": "new_vault_id",
+}
+
 // TestRequestsNameTheirVaultOnlyAtTheTopLevel fails, naming the procedure and
 // field path, when an RPC input message carries a vault-identifying field
 // anywhere but the top-level vault_id.
@@ -113,6 +122,10 @@ func TestRequestsNameTheirVaultOnlyAtTheTopLevel(t *testing.T) {
 				methods++
 
 				for _, path := range misplacedVaultFields(method.Input()) {
+					if newVaultIDs[procedure] == path {
+						continue
+					}
+
 					assert.Fail(t, "vault-identifying field outside the top-level vault_id",
 						"%s: %s.%s; the authz interceptor only reads the top-level vault_id (SPEC.md §9.2)",
 						procedure, method.Input().FullName(), path)

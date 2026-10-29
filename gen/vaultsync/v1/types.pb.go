@@ -683,6 +683,95 @@ func (x *Revision) GetEpoch() uint32 {
 	return 0
 }
 
+// LogEntry is one entry of an end-to-end encrypted vault's membership log
+// (docs/design/crypto.md, "Identity keys, the membership log and signed
+// epochs"). Its vault is the vault it belongs to. The server verifies an
+// entry before storing it; devices replay the whole log themselves and
+// trust only that replay.
+type LogEntry struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The entry's sequence number, from 1 (the genesis entry).
+	Seq uint64 `protobuf:"varint,1,opt,name=seq,proto3" json:"seq,omitempty"`
+	// SHA-256 of the previous entry's body: exactly 32 bytes, all zero for
+	// the genesis entry.
+	PrevHash []byte `protobuf:"bytes,2,opt,name=prev_hash,json=prevHash,proto3" json:"prev_hash,omitempty"`
+	// The entry type byte: 1 (genesis) to 8 (escrow).
+	Type uint32 `protobuf:"varint,3,opt,name=type,proto3" json:"type,omitempty"`
+	// The type's payload, at most the size of a genesis with an escrow
+	// bundle.
+	Payload []byte `protobuf:"bytes,4,opt,name=payload,proto3" json:"payload,omitempty"`
+	// The Ed25519 signatures of the entry body: two for a redeem entry (the
+	// invitation key's, then the newcomer's), one for every other entry.
+	Signatures    [][]byte `protobuf:"bytes,5,rep,name=signatures,proto3" json:"signatures,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LogEntry) Reset() {
+	*x = LogEntry{}
+	mi := &file_vaultsync_v1_types_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LogEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LogEntry) ProtoMessage() {}
+
+func (x *LogEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_vaultsync_v1_types_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LogEntry.ProtoReflect.Descriptor instead.
+func (*LogEntry) Descriptor() ([]byte, []int) {
+	return file_vaultsync_v1_types_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *LogEntry) GetSeq() uint64 {
+	if x != nil {
+		return x.Seq
+	}
+	return 0
+}
+
+func (x *LogEntry) GetPrevHash() []byte {
+	if x != nil {
+		return x.PrevHash
+	}
+	return nil
+}
+
+func (x *LogEntry) GetType() uint32 {
+	if x != nil {
+		return x.Type
+	}
+	return 0
+}
+
+func (x *LogEntry) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *LogEntry) GetSignatures() [][]byte {
+	if x != nil {
+		return x.Signatures
+	}
+	return nil
+}
+
 var File_vaultsync_v1_types_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_types_proto_rawDesc = "" +
@@ -732,7 +821,15 @@ const file_vaultsync_v1_types_proto_rawDesc = "" +
 	"\vcreate_time\x18\f \x01(\v2\x1a.google.protobuf.TimestampR\n" +
 	"createTime\x12\x16\n" +
 	"\x06anchor\x18\r \x01(\fR\x06anchor\x12\x14\n" +
-	"\x05epoch\x18\x0e \x01(\rR\x05epoch*\x8e\x01\n" +
+	"\x05epoch\x18\x0e \x01(\rR\x05epoch\"\x87\x01\n" +
+	"\bLogEntry\x12\x10\n" +
+	"\x03seq\x18\x01 \x01(\x04R\x03seq\x12\x1b\n" +
+	"\tprev_hash\x18\x02 \x01(\fR\bprevHash\x12\x12\n" +
+	"\x04type\x18\x03 \x01(\rR\x04type\x12\x18\n" +
+	"\apayload\x18\x04 \x01(\fR\apayload\x12\x1e\n" +
+	"\n" +
+	"signatures\x18\x05 \x03(\fR\n" +
+	"signatures*\x8e\x01\n" +
 	"\fDocumentKind\x12\x1d\n" +
 	"\x19DOCUMENT_KIND_UNSPECIFIED\x10\x00\x12\x16\n" +
 	"\x12DOCUMENT_KIND_BLOB\x10\x01\x12\x16\n" +
@@ -762,7 +859,7 @@ func file_vaultsync_v1_types_proto_rawDescGZIP() []byte {
 }
 
 var file_vaultsync_v1_types_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_vaultsync_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_vaultsync_v1_types_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
 var file_vaultsync_v1_types_proto_goTypes = []any{
 	(DocumentKind)(0),             // 0: vaultsync.v1.DocumentKind
 	(VaultEncryption)(0),          // 1: vaultsync.v1.VaultEncryption
@@ -772,18 +869,19 @@ var file_vaultsync_v1_types_proto_goTypes = []any{
 	(*ContentRef)(nil),            // 5: vaultsync.v1.ContentRef
 	(*Document)(nil),              // 6: vaultsync.v1.Document
 	(*Revision)(nil),              // 7: vaultsync.v1.Revision
-	(*timestamppb.Timestamp)(nil), // 8: google.protobuf.Timestamp
+	(*LogEntry)(nil),              // 8: vaultsync.v1.LogEntry
+	(*timestamppb.Timestamp)(nil), // 9: google.protobuf.Timestamp
 }
 var file_vaultsync_v1_types_proto_depIdxs = []int32{
 	1, // 0: vaultsync.v1.Vault.encryption:type_name -> vaultsync.v1.VaultEncryption
 	2, // 1: vaultsync.v1.Vault.role:type_name -> vaultsync.v1.VaultRole
-	8, // 2: vaultsync.v1.Vault.create_time:type_name -> google.protobuf.Timestamp
-	8, // 3: vaultsync.v1.Device.create_time:type_name -> google.protobuf.Timestamp
-	8, // 4: vaultsync.v1.Device.last_activity_time:type_name -> google.protobuf.Timestamp
+	9, // 2: vaultsync.v1.Vault.create_time:type_name -> google.protobuf.Timestamp
+	9, // 3: vaultsync.v1.Device.create_time:type_name -> google.protobuf.Timestamp
+	9, // 4: vaultsync.v1.Device.last_activity_time:type_name -> google.protobuf.Timestamp
 	0, // 5: vaultsync.v1.Document.kind:type_name -> vaultsync.v1.DocumentKind
 	0, // 6: vaultsync.v1.Revision.kind:type_name -> vaultsync.v1.DocumentKind
 	5, // 7: vaultsync.v1.Revision.content_ref:type_name -> vaultsync.v1.ContentRef
-	8, // 8: vaultsync.v1.Revision.create_time:type_name -> google.protobuf.Timestamp
+	9, // 8: vaultsync.v1.Revision.create_time:type_name -> google.protobuf.Timestamp
 	9, // [9:9] is the sub-list for method output_type
 	9, // [9:9] is the sub-list for method input_type
 	9, // [9:9] is the sub-list for extension type_name
@@ -802,7 +900,7 @@ func file_vaultsync_v1_types_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vaultsync_v1_types_proto_rawDesc), len(file_vaultsync_v1_types_proto_rawDesc)),
 			NumEnums:      3,
-			NumMessages:   5,
+			NumMessages:   6,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

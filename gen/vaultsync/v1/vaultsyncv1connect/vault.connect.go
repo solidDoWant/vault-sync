@@ -48,10 +48,18 @@ type VaultServiceClient interface {
 	// CreateVault creates a vault owned by the caller.
 	//
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
-	// a control character (such as U+0000), an unspecified encryption mode, or
-	// escrow requested for a plaintext vault; FAILED_PRECONDITION for escrow
-	// on a server without an escrow key (GetServerInfo's escrow_public_key
-	// is empty).
+	// a control character (such as U+0000), an unspecified encryption mode,
+	// escrow requested for a plaintext vault, a new_vault_id or genesis on a
+	// plaintext vault, or a missing or invalid new_vault_id or genesis on an E2EE
+	// vault; FAILED_PRECONDITION for escrow on a server without an escrow key
+	// (GetServerInfo's escrow_public_key is empty); ALREADY_EXISTS when
+	// new_vault_id names an existing vault. A refused request creates no vault.
+	//
+	// A VAULT_ENCRYPTION_E2EE vault starts its membership log with the
+	// genesis entry, which the creator's device signs over the vault id it
+	// chose (docs/design/crypto.md). The server stores it after checking that
+	// it verifies as the log's first entry, names the caller as its creator,
+	// and records escrow exactly when escrow is requested.
 	//
 	// A new VAULT_ENCRYPTION_E2EE vault has no key epoch and a pending
 	// rotation: the owner's client creates epoch 1 with VaultKeyService's
@@ -130,10 +138,18 @@ type VaultServiceHandler interface {
 	// CreateVault creates a vault owned by the caller.
 	//
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
-	// a control character (such as U+0000), an unspecified encryption mode, or
-	// escrow requested for a plaintext vault; FAILED_PRECONDITION for escrow
-	// on a server without an escrow key (GetServerInfo's escrow_public_key
-	// is empty).
+	// a control character (such as U+0000), an unspecified encryption mode,
+	// escrow requested for a plaintext vault, a new_vault_id or genesis on a
+	// plaintext vault, or a missing or invalid new_vault_id or genesis on an E2EE
+	// vault; FAILED_PRECONDITION for escrow on a server without an escrow key
+	// (GetServerInfo's escrow_public_key is empty); ALREADY_EXISTS when
+	// new_vault_id names an existing vault. A refused request creates no vault.
+	//
+	// A VAULT_ENCRYPTION_E2EE vault starts its membership log with the
+	// genesis entry, which the creator's device signs over the vault id it
+	// chose (docs/design/crypto.md). The server stores it after checking that
+	// it verifies as the log's first entry, names the caller as its creator,
+	// and records escrow exactly when escrow is requested.
 	//
 	// A new VAULT_ENCRYPTION_E2EE vault has no key epoch and a pending
 	// rotation: the owner's client creates epoch 1 with VaultKeyService's

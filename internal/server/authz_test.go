@@ -65,8 +65,13 @@ func (memory *memoryVaults) CreateVault(_ context.Context, ownerID uuid.UUID, va
 		return store.Vault{}, store.ErrVaultLimit
 	}
 
+	id := vault.ID
+	if id == uuid.Nil {
+		id = uuid.Must(uuid.NewV7())
+	}
+
 	created := store.Vault{
-		ID:         uuid.Must(uuid.NewV7()),
+		ID:         id,
 		Name:       vault.Name,
 		Encryption: vault.Encryption,
 		Escrow:     vault.Escrow,
@@ -337,8 +342,10 @@ var expectedAccess = map[string]authz.Access{
 	"/vaultsync.v1.MembershipService/LeaveVault": authz.Read,
 	// Every member, viewers included, reads the epochs and their own key
 	// slots; only owners wrap and grant keys (#694).
-	"/vaultsync.v1.VaultKeyService/ListKeySlots":     authz.Read,
-	"/vaultsync.v1.VaultKeyService/ListEpochs":       authz.Read,
+	"/vaultsync.v1.VaultKeyService/ListKeySlots": authz.Read,
+	"/vaultsync.v1.VaultKeyService/ListEpochs":   authz.Read,
+	// Every member replays the membership log.
+	"/vaultsync.v1.VaultKeyService/ListLogEntries":   authz.Read,
 	"/vaultsync.v1.VaultKeyService/ListMissingSlots": authz.Manage,
 	"/vaultsync.v1.VaultKeyService/RotateEpoch":      authz.Manage,
 	"/vaultsync.v1.VaultKeyService/AddKeySlots":      authz.Manage,
@@ -515,8 +522,17 @@ func TestCreatedVaultIsOwnedAndListedOnlyForItsCreator(t *testing.T) {
 }
 
 func TestCreateVaultValidatesInput(t *testing.T) {
-	fixture := newVaultFixture(t, newMemoryStore(), newMemoryVaults(), nil)
+	users := newMemoryStore()
+	fixture := newVaultFixture(t, users, newMemoryVaults(), nil)
 	token := fixture.token(t, "alice")
+	fixture.listVaults(t, token)
+	aliceID := users.userID(t, "alice")
+
+	_, escrowKey, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	withoutGenesis := e2eeCreateRequest(t, "Secret", aliceID, nil)
+	withoutGenesis.Genesis = nil
 
 	none := vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_NONE
 	encrypted := vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE
@@ -528,9 +544,11 @@ func TestCreateVaultValidatesInput(t *testing.T) {
 		wantVault *vaultsyncv1.Vault
 	}{
 		{name: "plaintext", request: &vaultsyncv1.CreateVaultRequest{Name: "Notes", Encryption: none}},
-		{name: "e2ee", request: &vaultsyncv1.CreateVaultRequest{Name: "Secret", Encryption: encrypted}},
+		{name: "e2ee", request: e2eeCreateRequest(t, "Secret", aliceID, nil)},
+		{name: "e2ee without genesis", request: withoutGenesis, wantCode: connect.CodeInvalidArgument},
+		{name: "e2ee without vault id or genesis", request: &vaultsyncv1.CreateVaultRequest{Name: "Secret", Encryption: encrypted}, wantCode: connect.CodeInvalidArgument},
 		// This server has no escrow key.
-		{name: "e2ee with escrow", request: &vaultsyncv1.CreateVaultRequest{Name: "Backed up", Encryption: encrypted, Escrow: true}, wantCode: connect.CodeFailedPrecondition},
+		{name: "e2ee with escrow", request: e2eeCreateRequest(t, "Backed up", aliceID, escrowBundleOf(t, escrowKey)), wantCode: connect.CodeFailedPrecondition},
 		{name: "longest name", request: &vaultsyncv1.CreateVaultRequest{Name: strings.Repeat("n", api.MaxVaultNameBytes), Encryption: none}},
 		{name: "empty name", request: &vaultsyncv1.CreateVaultRequest{Encryption: none}, wantCode: connect.CodeInvalidArgument},
 		{name: "blank name", request: &vaultsyncv1.CreateVaultRequest{Name: " \t\n", Encryption: none}, wantCode: connect.CodeInvalidArgument},
@@ -593,12 +611,17 @@ func TestCreateVaultEndToEndEncryptedFollowsTheEscrowKey(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			fixture := newVaultFixtureWithOptions(t, newMemoryStore(), newMemoryVaults(), nil, 0, test.escrow)
+			users := newMemoryStore()
+			fixture := newVaultFixtureWithOptions(t, users, newMemoryVaults(), nil, 0, test.escrow)
 			token := fixture.token(t, "alice")
+			fixture.listVaults(t, token)
 
-			response, err := fixture.vaultClient().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
-				Name: "Secret", Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: test.request,
-			}, token))
+			var escrow *e2ee.EscrowBundle
+			if test.request {
+				escrow = escrowBundleOf(t, publicKey)
+			}
+
+			response, err := fixture.vaultClient().CreateVault(t.Context(), authorized(e2eeCreateRequest(t, "Secret", users.userID(t, "alice"), escrow), token))
 			if test.wantCode != 0 {
 				require.Error(t, err)
 				assert.Equal(t, test.wantCode, connect.CodeOf(err))

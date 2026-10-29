@@ -68,7 +68,7 @@ func TestMigrateCreatesSchemaOnEmptyDatabase(t *testing.T) {
 	assert.ElementsMatch(t, []string{
 		"users", "devices", "vaults", "vault_members", "documents", "revisions", "blobs",
 		"blob_uploads", "blob_upload_chunks", "blob_deletions", "retention_scans", "purged_revisions", "vault_retention",
-		"vault_invitations", "user_keys", "vault_key_epochs", "key_slots", "schema_migrations",
+		"vault_invitations", "user_keys", "vault_key_epochs", "key_slots", "vault_log_entries", "schema_migrations",
 	}, tables)
 }
 

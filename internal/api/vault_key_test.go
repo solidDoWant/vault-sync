@@ -93,6 +93,18 @@ func (recorder *keyRecorder) AddKeySlots(_ context.Context, _ uuid.UUID, slots [
 	return len(slots), recorder.err
 }
 
+func (recorder *keyRecorder) ListLogEntries(_ context.Context, after int64, limit int) ([]store.LogEntry, error) {
+	recorder.calls++
+	recorder.after, recorder.limit = int32(after), limit //nolint:gosec // small test values.
+
+	entries := make([]store.LogEntry, recorder.listed)
+	for index := range entries {
+		entries[index] = store.LogEntry{Seq: after + int64(index) + 1, PrevHash: make([]byte, 32), Type: 1, Signatures: [][]byte{{byte(after) + byte(index) + 1}}} //nolint:gosec // small test values.
+	}
+
+	return entries, recorder.err
+}
+
 var keyCaller = auth.User{ID: uuid.MustParse("01920000-0000-7000-8000-000000000001"), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "alice"}}
 
 func keyService(recorder *keyRecorder) (api.VaultKeyService, context.Context) {
@@ -350,6 +362,14 @@ func TestVaultKeyListsArePaginated(t *testing.T) {
 
 			return response.Msg.GetNextPageToken(), len(response.Msg.GetMissingSlots()), nil
 		},
+		"ListLogEntries": func(service api.VaultKeyService, ctx context.Context, pageSize uint32, token string) (string, int, error) {
+			response, err := service.ListLogEntries(ctx, connect.NewRequest(&vaultsyncv1.ListLogEntriesRequest{PageSize: pageSize, PageToken: token}))
+			if err != nil {
+				return "", 0, err
+			}
+
+			return response.Msg.GetNextPageToken(), len(response.Msg.GetEntries()), nil
+		},
 	}
 
 	for name, call := range lists {
@@ -386,7 +406,7 @@ func TestVaultKeyListsArePaginated(t *testing.T) {
 
 		t.Run(name+" malformed tokens", func(t *testing.T) {
 			for _, token := range []string{"!!", base64.RawURLEncoding.EncodeToString([]byte{0, 0, 1}), base64.RawURLEncoding.EncodeToString(make([]byte, 40)),
-				base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 20))} {
+				base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 20)), base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{0xff}, 8))} {
 				recorder := &keyRecorder{}
 				service, ctx := keyService(recorder)
 
