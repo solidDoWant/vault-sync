@@ -36,7 +36,7 @@ When you enable end-to-end encryption, your device creates your **key pair**. Th
 
 To unlock on a new device, you enter the passphrase. The device derives two keys from it: one that opens the wrapped private key and never leaves the device, and one that proves to the server you know the passphrase, so that the server hands over the wrapped key. Neither can be computed from the other, so the server cannot open your private key. Wrong passphrases are counted, and after 10 failures in an hour the server refuses every attempt until the hour is up, so someone who steals your login can only guess slowly. Even someone with a copy of the whole database still has to pay the full Argon2id cost for every guess, so choose a long passphrase that you don't use anywhere else.
 
-Unlocking takes a few seconds on a phone and less on a desktop. You unlock once per device: the device then keeps your key in the plugin's own settings file (`data.json`), which vault-sync never syncs, until you sign out. One unlock opens every encrypted vault you belong to.
+Unlocking takes a few seconds on a phone and less on a desktop. You unlock once per device: the device then keeps your key in Obsidian's local storage on that device, outside the vault folder and never in the plugin's `data.json`, so no other sync or backup tool copies it, until you sign out. One unlock opens every encrypted vault you belong to.
 
 **Changing your passphrase** rewraps the same private key under the new passphrase. Devices that are already unlocked keep working; a new device needs the new passphrase.
 

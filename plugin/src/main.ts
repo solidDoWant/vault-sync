@@ -9,7 +9,7 @@ import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
 import { connectedVault, connectNeedsConfirmation, connectProblem, currentAccount, listRemoteVaults, SyncController } from "./obsidian/controller";
-import { loadRefreshToken, refreshTokenLost, savePluginData } from "./obsidian/token-storage";
+import { loadDeviceSecrets, refreshTokenLost, savePluginData } from "./obsidian/device-storage";
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
@@ -61,11 +61,11 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   override async onload(): Promise<void> {
     console.debug(`vault-sync loaded (protocol v${String(PROTOCOL_VERSION)})`);
     this.data = parsePluginData(await this.loadData());
-    if (loadRefreshToken(this.data, this.app)) {
-      // data.json still holds the refresh token: move it to local storage.
-      // If this fails, the token stays in memory and the next save moves it.
+    if (loadDeviceSecrets(this.data, this.app)) {
+      // data.json still holds a secret (refresh token or keys): move it to local storage.
+      // If this fails, it stays in memory and the next save moves it.
       await this.saveSettings().catch((error: unknown) => {
-        console.warn(`vault-sync: could not move the refresh token out of data.json: ${error instanceof Error ? error.message : String(error)}`);
+        console.warn(`vault-sync: could not move secrets out of data.json: ${error instanceof Error ? error.message : String(error)}`);
       });
     }
     this.tokens = this.createTokenManager();
