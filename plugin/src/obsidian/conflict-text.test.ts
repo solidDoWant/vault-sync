@@ -36,6 +36,7 @@ describe("conflict view wording", () => {
   it("explains a skipped remote document by its reason", () => {
     expect(skippedReasonText("too-large", 2048)).toBe("Its newest version is 2.0 KiB, more than the size limit.");
     expect(skippedReasonText("path-too-long", 10)).toMatch(/path is too long/);
+    expect(skippedReasonText("temporary-name", 10)).toMatch(/temporary files/);
   });
 
   it("explains that a local file is too large to upload, with its size", () => {

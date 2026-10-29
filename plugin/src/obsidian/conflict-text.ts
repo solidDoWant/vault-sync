@@ -26,8 +26,13 @@ export function unmaterializableReasonText(reason: UnmaterializableCause): strin
 
 /** Why a remote document is not on this device (docs/design/engine.md §6, §7), in the user's words. */
 export function skippedReasonText(reason: SkipReason, size: number): string {
-  return reason === "too-large" ? tooLargeText(BigInt(size)) : unmaterializableReasonText(reason);
+  if (reason === "too-large") return tooLargeText(BigInt(size));
+  if (reason === "temporary-name") return temporaryNameText;
+  return unmaterializableReasonText(reason);
 }
+
+/** Why a document named like Vault Sync's temporary files is not written on this device. */
+const temporaryNameText = "The name ends like Vault Sync's temporary files (.vault-sync-tmp or .vault-sync-new), which this device removes. Rename it on another device to sync it here.";
 
 /** Why a document is not downloaded on this device: its size, in the user's words. */
 export function tooLargeText(size: bigint): string {

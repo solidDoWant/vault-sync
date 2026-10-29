@@ -460,7 +460,7 @@ export class SyncEngine {
         // A folder this device cannot hold is skipped and listed, as a pull does (§6).
         const pendingDelete = projection?.deleted === true && projection.base !== undefined;
         if (!pendingDelete && (localPath === null || !(await this.folderExists(localPath)))) {
-          const skip = this.skipReason(remote.path, remote.size);
+          const skip = this.skipReason(remote.path, remote.size, entry.kind);
           if (skip !== undefined) {
             skipped.push({ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) });
             continue;
@@ -518,7 +518,7 @@ export class SyncEngine {
         continue;
       }
       // Unknown to the journal, or missing with no pending delete: write the head, unless this device skips it (§6, §7).
-      const skip = this.skipReason(remote.path, remote.size);
+      const skip = this.skipReason(remote.path, remote.size, entry.kind);
       if (skip !== undefined) {
         skipped.push({ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) });
         continue;
@@ -582,7 +582,7 @@ export class SyncEngine {
     // A path the protocol does not allow never reaches the disk.
     if (!incoming.pathAllowed) return {};
     // §6, §7: a file over the size limit, or at a path this device cannot hold, is skipped here and listed.
-    const skip = remote.deleted ? undefined : this.skipReason(remote.path, remote.size);
+    const skip = remote.deleted ? undefined : this.skipReason(remote.path, remote.size, entry?.kind ?? syncKind(revision.kind));
     if (skip !== undefined) return { putSkipped: [{ documentId: id, path: remote.path, reason: skip, size: Number(remote.size) }] };
     const target: Omit<DocEntry, "path"> = {
       documentId: id,
@@ -1019,7 +1019,9 @@ export class SyncEngine {
   }
 
   /** Why this device skips a revision at `path` of `size` bytes, if it does (§6, §7). */
-  private skipReason(path: string, size: bigint): SkipReason | undefined {
+  private skipReason(path: string, size: bigint, kind: SyncKind): SkipReason | undefined {
+    // A file named like the engine's own temporary files (§8) would be removed at startup and its delete pushed.
+    if (kind !== "folder" && isTemporaryPath(path)) return "temporary-name";
     if (Number(size) > this.maxFileBytes) return "too-large";
     return unmaterializableReason(path, this.pathRules);
   }
