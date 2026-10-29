@@ -91,6 +91,7 @@ The worktree-isolation guard rejects many compound shell commands, and failed to
 
 ## Security Rules
 
+- **Never roll your own cryptography.** Every cipher, hash, MAC, KDF (including password hashing such as Argon2), KEM, signature and random-number source comes from an established, maintained library (`@noble/*`, Go's standard library and `golang.org/x/crypto`, age, or a vetted WebAssembly package). Never implement or port a primitive, hand-encode WebAssembly for one, or tweak a library's internals. Our code only composes library calls in documented formats. If no suitable library exists, stop and hand back `HANDOFF: question`.
 - Every RPC/WebSocket handler resolves the caller's vault role before touching data; add a test proving a non-member and a `viewer` are rejected where appropriate.
 - Bound all inputs: request and chunk sizes, decompression, pagination, path lengths.
 - Never log secrets, tokens, note content, or (for E2EE vaults) plaintext paths.
