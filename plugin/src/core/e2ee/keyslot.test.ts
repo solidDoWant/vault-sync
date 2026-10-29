@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { DecryptError, generateKey, generateKeyPair, KEY_SIZE } from "./e2ee";
+import { DecryptError, generateKey, KEY_SIZE } from "./e2ee";
+import { generateKeyPair } from "./hybrid";
 import { KeyCommitmentError, keyCommitment, keySlotAd, MAX_RECIPIENT_ID_SIZE, openKeySlot, sealKeySlot, type KeySlot, verifyKeyCommitment } from "./keyslot";
 
 const VAULT_ID = "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e";
@@ -11,12 +12,12 @@ const OTHER_USER_ID = "0190d6e5-1a2b-7c3d-8e4f-5a6b7c8d9e10";
 const userSlot: KeySlot = { vaultId: VAULT_ID, epoch: 7, recipientKind: "user", recipientId: USER_ID };
 
 describe("key slots", () => {
-  it("opens a slot only as the slot it was sealed for", () => {
+  it("opens a slot only as the slot it was sealed for", async () => {
     const recipient = generateKeyPair();
     const epochKey = generateKey();
-    const wrapped = sealKeySlot(recipient.publicKey, epochKey, userSlot);
-    expect(sealKeySlot(recipient.publicKey, epochKey, userSlot)).not.toEqual(wrapped);
-    expect(openKeySlot(recipient.privateKey, wrapped, userSlot)).toEqual(epochKey);
+    const wrapped = await sealKeySlot(recipient.publicKey, epochKey, userSlot);
+    expect(await sealKeySlot(recipient.publicKey, epochKey, userSlot)).not.toEqual(wrapped);
+    expect(await openKeySlot(recipient.privateKey, wrapped, userSlot)).toEqual(epochKey);
 
     for (const other of [
       { ...userSlot, vaultId: OTHER_VAULT_ID },
@@ -25,9 +26,9 @@ describe("key slots", () => {
       { ...userSlot, recipientId: OTHER_USER_ID },
       { ...userSlot, recipientKind: "escrow" as const },
     ]) {
-      expect(() => openKeySlot(recipient.privateKey, wrapped, other)).toThrow(DecryptError);
+      await expect(openKeySlot(recipient.privateKey, wrapped, other)).rejects.toThrow(DecryptError);
     }
-    expect(() => openKeySlot(generateKeyPair().privateKey, wrapped, userSlot)).toThrow(DecryptError);
+    await expect(openKeySlot(generateKeyPair().privateKey, wrapped, userSlot)).rejects.toThrow(DecryptError);
   });
 
   it("encodes the slot fields at their documented sizes", () => {
@@ -38,7 +39,7 @@ describe("key slots", () => {
     expect(keySlotAd({ ...userSlot, epoch: Number.MAX_SAFE_INTEGER })).toHaveLength(64);
   });
 
-  it("refuses slots that are not in canonical form", () => {
+  it("refuses slots that are not in canonical form", async () => {
     const { publicKey } = generateKeyPair();
     for (const slot of [
       { ...userSlot, vaultId: VAULT_ID.toUpperCase() },
@@ -56,14 +57,14 @@ describe("key slots", () => {
       { ...userSlot, epoch: Number.MAX_SAFE_INTEGER + 1 },
     ]) {
       expect(() => keySlotAd(slot)).toThrow();
-      expect(() => sealKeySlot(publicKey, new Uint8Array(KEY_SIZE), slot)).toThrow();
+      await expect(sealKeySlot(publicKey, new Uint8Array(KEY_SIZE), slot)).rejects.toThrow();
     }
   });
 
-  it("refuses to seal a key of the wrong size", () => {
+  it("refuses to seal a key of the wrong size", async () => {
     const { publicKey } = generateKeyPair();
     for (const size of [0, KEY_SIZE - 1, KEY_SIZE + 1]) {
-      expect(() => sealKeySlot(publicKey, new Uint8Array(size), userSlot)).toThrow();
+      await expect(sealKeySlot(publicKey, new Uint8Array(size), userSlot)).rejects.toThrow();
     }
   });
 });

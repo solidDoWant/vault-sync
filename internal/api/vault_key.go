@@ -17,6 +17,7 @@ import (
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
 	"github.com/solidDoWant/vault-sync/internal/auth"
 	"github.com/solidDoWant/vault-sync/internal/authz"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -25,9 +26,9 @@ const (
 	// KeyCommitmentBytes is the size of an epoch's key commitment
 	// (HMAC-SHA256).
 	KeyCommitmentBytes = 32
-	// MaxWrappedKeyBytes bounds a key slot's wrapped key; a sealed 32-byte
-	// epoch key takes 105.
-	MaxWrappedKeyBytes = 256
+	// MaxWrappedKeyBytes bounds a key slot's wrapped key: an age file to a
+	// hybrid recipient, about 1750 bytes for a user slot.
+	MaxWrappedKeyBytes = e2ee.MaxSealedSize
 	// MaxEscrowRecipientIDBytes bounds an escrow slot's recipient id, as
 	// the key-slot format does (docs/design/crypto.md).
 	MaxEscrowRecipientIDBytes = 255

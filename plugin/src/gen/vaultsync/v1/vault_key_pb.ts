@@ -45,7 +45,8 @@ export type KeySlot = Message<"vaultsync.v1.KeySlot"> & {
   recipientId: string;
 
   /**
-   * The wrapped epoch key: 1 to 256 bytes, opaque to the server.
+   * The wrapped epoch key (an age file, docs/design/crypto.md): 1 to 2048
+   * bytes, opaque to the server.
    *
    * @generated from field: bytes wrapped_key = 4;
    */
@@ -174,8 +175,8 @@ export type MissingSlot = Message<"vaultsync.v1.MissingSlot"> & {
   userId: string;
 
   /**
-   * The member's X25519 user public key (32 bytes) to wrap the epoch key
-   * to.
+   * The member's hybrid ML-KEM-768 + X25519 user public key (1216 bytes)
+   * to wrap the epoch key to.
    *
    * @generated from field: bytes public_key = 3;
    */

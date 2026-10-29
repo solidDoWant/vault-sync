@@ -39,7 +39,10 @@
     "@connectrpc/connect-web": "^2.2.0",
     "@noble/ciphers": "^2.4.0",
     "@noble/curves": "^2.4.0",
-    "@noble/hashes": "^2.4.0"
+    "@noble/hashes": "^2.4.0",
+    "@noble/post-quantum": "^0.5.4",
+    "@scure/base": "^2.4.0",
+    "age-encryption": "^0.3.1"
   },
   "allowScripts": {
     "esbuild@0.28.2": true

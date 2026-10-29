@@ -2,7 +2,8 @@ import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { createProtocolClient } from "../protocol/client";
-import { generateKeyPair, parsePassphraseHeader, SUITE_V1, unwrapWithPassphrase, wrapWithPassphrase, type Argon2Params } from "../e2ee/e2ee";
+import { parsePassphraseHeader, SUITE_V2, unwrapWithPassphrase, wrapWithPassphrase, type Argon2Params } from "../e2ee/e2ee";
+import { generateKeyPair } from "../e2ee/hybrid";
 import { ATTEMPT_WINDOW_MS, MAX_FAILED_ATTEMPTS, MemoryUserKeyServer } from "./memory-user-keys";
 import { enableEncryption, NoUserKeyError, PassphraseAttemptsExhaustedError, passphraseProblem, storedPublicKey, unlockUserKey, userKeyAad, WrongPassphraseError } from "./user-key";
 
@@ -156,7 +157,7 @@ describe("unlocking on another device", ARGON2_TIMEOUT, () => {
       publicKey: claimed.publicKey,
       wrappedPrivateKey: wrapped,
       params: {
-        suite: SUITE_V1,
+        suite: SUITE_V2,
         memoryKib: header.params.memory,
         iterations: header.params.iterations,
         parallelism: header.params.parallelism,

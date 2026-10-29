@@ -102,8 +102,8 @@ export type Member = Message<"vaultsync.v1.Member"> & {
   joinTime?: Timestamp | undefined;
 
   /**
-   * The member's X25519 user public key (32 bytes) for wrapping vault
-   * epoch keys to them, or empty when they have no user key
+   * The member's hybrid ML-KEM-768 + X25519 user public key (1216 bytes,
+   * docs/design/crypto.md) for wrapping vault epoch keys to them, or empty when they have no user key
    * (UserKeyService).
    *
    * @generated from field: bytes public_key = 5;

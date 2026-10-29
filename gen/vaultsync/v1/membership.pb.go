@@ -115,8 +115,8 @@ type Member struct {
 	Role VaultRole `protobuf:"varint,3,opt,name=role,proto3,enum=vaultsync.v1.VaultRole" json:"role,omitempty"`
 	// When the user became a member.
 	JoinTime *timestamppb.Timestamp `protobuf:"bytes,4,opt,name=join_time,json=joinTime,proto3" json:"join_time,omitempty"`
-	// The member's X25519 user public key (32 bytes) for wrapping vault
-	// epoch keys to them, or empty when they have no user key
+	// The member's hybrid ML-KEM-768 + X25519 user public key (1216 bytes,
+	// docs/design/crypto.md) for wrapping vault epoch keys to them, or empty when they have no user key
 	// (UserKeyService).
 	PublicKey     []byte `protobuf:"bytes,5,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields

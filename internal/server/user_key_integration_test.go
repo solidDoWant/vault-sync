@@ -49,10 +49,10 @@ func newUserKeyMaterial(t *testing.T) userKeyMaterial {
 	t.Helper()
 
 	return userKeyMaterial{
-		publicKey: randomBytes(t, 32),
+		publicKey: randomBytes(t, 1216),
 		wrapped:   randomBytes(t, 98),
 		params: &vaultsyncv1.PassphraseParams{
-			Suite: 1, MemoryKib: 65536, Iterations: 3, Parallelism: 1, Salt: randomBytes(t, 16),
+			Suite: 2, MemoryKib: 65536, Iterations: 3, Parallelism: 1, Salt: randomBytes(t, 16),
 		},
 		authKey: randomBytes(t, 32),
 	}
@@ -454,7 +454,7 @@ func TestDatabaseHoldsNoUnwrappedKeyMaterialAgainstPostgres(t *testing.T) {
 		publicKey: publicKey,
 		wrapped:   wrapped,
 		params: &vaultsyncv1.PassphraseParams{
-			Suite: 1, MemoryKib: params.Memory, Iterations: params.Iterations, Parallelism: uint32(params.Parallelism), Salt: salt,
+			Suite: 2, MemoryKib: params.Memory, Iterations: params.Iterations, Parallelism: uint32(params.Parallelism), Salt: salt,
 		},
 		authKey: authKey,
 	}

@@ -206,16 +206,18 @@ export class VaultKeyManager {
     const epoch = expected + 1;
     const members = (await this.options.membership.listMembers({ vaultId })).members;
     const epochKey = generateKey();
-    const slots = members
-      .filter((member) => member.userId !== removed && member.publicKey.length > 0)
-      .map(
-        (member): SlotInit => ({
-          epoch,
-          recipientKind: KeyRecipientKind.USER,
-          recipientId: member.userId,
-          wrappedKey: sealKeySlot(member.publicKey, epochKey, { vaultId, epoch, recipientKind: "user", recipientId: member.userId }),
-        }),
-      );
+    const slots = await Promise.all(
+      members
+        .filter((member) => member.userId !== removed && member.publicKey.length > 0)
+        .map(
+          async (member): Promise<SlotInit> => ({
+            epoch,
+            recipientKind: KeyRecipientKind.USER,
+            recipientId: member.userId,
+            wrappedKey: await sealKeySlot(member.publicKey, epochKey, { vaultId, epoch, recipientKind: "user", recipientId: member.userId }),
+          }),
+        ),
+    );
     await send({ expectedEpoch: expected, commitment: keyCommitment(epochKey, vaultId, epoch), slots });
     const keys = await this.loaded();
     keys.set(epoch, epochKey);
@@ -237,7 +239,7 @@ export class VaultKeyManager {
         epoch: entry.epoch,
         recipientKind: KeyRecipientKind.USER,
         recipientId: entry.userId,
-        wrappedKey: sealKeySlot(entry.publicKey, epochKey, { vaultId, epoch: entry.epoch, recipientKind: "user", recipientId: entry.userId }),
+        wrappedKey: await sealKeySlot(entry.publicKey, epochKey, { vaultId, epoch: entry.epoch, recipientKind: "user", recipientId: entry.userId }),
       });
     }
     let granted = 0;
@@ -289,7 +291,7 @@ export class VaultKeyManager {
       }
       let epochKey: Uint8Array;
       try {
-        epochKey = openKeySlot(userKey.privateKey, slot.wrappedKey, { vaultId, epoch: slot.epoch, recipientKind: "user", recipientId: slot.recipientId });
+        epochKey = await openKeySlot(userKey.privateKey, slot.wrappedKey, { vaultId, epoch: slot.epoch, recipientKind: "user", recipientId: slot.recipientId });
       } catch (error) {
         if (!(error instanceof Error)) throw error;
         refused.push(new VaultKeyRefusedError(slot.epoch, error instanceof DecryptError ? "it does not open with this device's encryption key" : "the slot is malformed", { cause: error }));

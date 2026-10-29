@@ -53,7 +53,7 @@ export class MemoryUserKeyServer {
           return { publicKey: stored.publicKey, params: stored.params };
         },
         createUserKey: (request) => {
-          if (request.publicKey.length !== 32 || request.authKey.length !== 32 || request.params === undefined) {
+          if (request.publicKey.length !== 1216 || request.authKey.length !== 32 || request.params === undefined) {
             throw new ConnectError("invalid key", Code.InvalidArgument);
           }
           if (request.wrappedPrivateKey.length < 1 || request.wrappedPrivateKey.length > 256) throw new ConnectError("invalid wrapped key", Code.InvalidArgument);

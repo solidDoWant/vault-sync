@@ -17,14 +17,13 @@ import {
   DEFAULT_ARGON2_PARAMS,
   DecryptError,
   derivePassphraseKeys,
-  generateKeyPair,
   parsePassphraseHeader,
-  publicKey as publicKeyOf,
-  SUITE_V1,
+  SUITE_V2,
   unwrapWithKey,
   wrapWithPassphrase,
   type Argon2Params,
 } from "../e2ee/e2ee";
+import { generateKeyPair, publicKey as publicKeyOf } from "../e2ee/hybrid";
 
 /** The calls the key manager makes: UserKeyService (ProtocolClient.userKeys). */
 export type UserKeyClient = Pick<Client<typeof UserKeyService>, "getUserKeyParams" | "createUserKey" | "unlockUserKey">;
@@ -112,7 +111,7 @@ export async function enableEncryption(client: UserKeyClient, passphrase: string
       publicKey: key.publicKey,
       wrappedPrivateKey: wrapped,
       params: {
-        suite: SUITE_V1,
+        suite: SUITE_V2,
         memoryKib: header.params.memory,
         iterations: header.params.iterations,
         parallelism: header.params.parallelism,
@@ -159,7 +158,7 @@ function argon2Params(params: PassphraseParams | undefined): {
   argon2: Argon2Params;
   salt: Uint8Array;
 } {
-  if (params?.suite !== SUITE_V1) throw new Error("the server's key uses an unknown crypto suite; update Vault Sync");
+  if (params?.suite !== SUITE_V2) throw new Error("the server's key uses an unknown crypto suite; update Vault Sync");
   return {
     argon2: {
       memory: params.memoryKib,

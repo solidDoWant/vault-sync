@@ -1,16 +1,17 @@
 /**
  * Key slots and key commitments of vault key epochs (SPEC.md §9.3, byte
  * formats in docs/design/crypto.md): an epoch key wrapped to a recipient's
- * X25519 public key with a sealed box that binds the vault, the epoch and the
- * recipient, and the HMAC-SHA256 commitment every epoch stores so that a
+ * hybrid ML-KEM-768 + X25519 public key as an age file that binds the vault,
+ * the epoch and the recipient, and the HMAC-SHA256 commitment every epoch stores so that a
  * recipient can check the key it unwrapped. The Go implementation
  * (internal/e2ee) must agree with testdata/crypto/vectors.json.
  */
-import { randomBytes } from "@noble/ciphers/utils.js";
+import { equalBytes } from "@noble/ciphers/utils.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 
-import { DecryptError, KEY_SIZE, NONCE_SIZE, openFrom, sealToWith } from "./e2ee";
+import { DecryptError, KEY_SIZE } from "./e2ee";
+import { openFrom, sealTo } from "./hybrid";
 
 /** Who a key slot is wrapped to (SPEC.md §5 key_slots). */
 export type RecipientKind = "user" | "escrow";
@@ -110,43 +111,33 @@ export function keySlotAd(slot: KeySlot): Uint8Array {
 }
 
 /**
- * Wraps a 32-byte epoch key to a recipient's X25519 public key with a sealed
- * box binding the slot's associated data ({@link keySlotAd}).
+ * Wraps a 32-byte epoch key to a recipient's hybrid public key: an age file
+ * to the recipient ({@link sealTo}) whose payload is the epoch key followed by
+ * the slot's associated data ({@link keySlotAd}). The standard age tool opens
+ * it with the recipient's identity; the first 32 bytes it prints are the
+ * epoch key.
  */
-export function sealKeySlot(recipientPublicKey: Uint8Array, epochKey: Uint8Array, slot: KeySlot): Uint8Array {
-  return sealKeySlotWith(recipientPublicKey, randomBytes(KEY_SIZE), randomBytes(NONCE_SIZE), epochKey, slot);
-}
-
-/**
- * {@link sealKeySlot} with a given ephemeral private key and nonce. Only for
- * the shared test vectors.
- */
-export function sealKeySlotWith(
-  recipientPublicKey: Uint8Array,
-  ephemeralPrivateKey: Uint8Array,
-  nonce: Uint8Array,
-  epochKey: Uint8Array,
-  slot: KeySlot,
-): Uint8Array {
+export async function sealKeySlot(recipientPublicKey: Uint8Array, epochKey: Uint8Array, slot: KeySlot): Promise<Uint8Array> {
   if (epochKey.length !== KEY_SIZE) {
     throw new Error(`e2ee: epoch key must be ${String(KEY_SIZE)} bytes, got ${String(epochKey.length)}`);
   }
-  return sealToWith(recipientPublicKey, ephemeralPrivateKey, nonce, epochKey, keySlotAd(slot));
+  return sealTo(recipientPublicKey, concat(epochKey, keySlotAd(slot)));
 }
 
 /**
- * Reverses {@link sealKeySlot} with the recipient's X25519 private key.
- * Throws {@link DecryptError} unless `wrapped` is a sealed box to this key
- * binding exactly this slot (vault, epoch, recipient kind and recipient id)
- * and holds a 32-byte key. The caller then checks the key against the
- * epoch's commitment ({@link verifyKeyCommitment}).
+ * Reverses {@link sealKeySlot} with the recipient's hybrid private key.
+ * Throws {@link DecryptError} unless `wrapped` is an age file to this key
+ * whose payload is a 32-byte key followed by exactly this slot's associated
+ * data (vault, epoch, recipient kind and recipient id). The caller then
+ * checks the key against the epoch's commitment ({@link verifyKeyCommitment}).
  */
-export function openKeySlot(recipientPrivateKey: Uint8Array, wrapped: Uint8Array, slot: KeySlot): Uint8Array {
-  const epochKey = openFrom(recipientPrivateKey, wrapped, keySlotAd(slot));
-  if (epochKey.length !== KEY_SIZE) {
+export async function openKeySlot(recipientPrivateKey: Uint8Array, wrapped: Uint8Array, slot: KeySlot): Promise<Uint8Array> {
+  const ad = keySlotAd(slot);
+  const payload = await openFrom(recipientPrivateKey, wrapped);
+  if (payload.length !== KEY_SIZE + ad.length || !equalBytes(payload.subarray(KEY_SIZE), ad)) {
     throw new DecryptError();
   }
-  return epochKey;
+  return payload.slice(0, KEY_SIZE);
 }
 
 /**

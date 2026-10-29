@@ -21,7 +21,7 @@ export const file_vaultsync_v1_user_key: GenFile = /*@__PURE__*/
  */
 export type PassphraseParams = Message<"vaultsync.v1.PassphraseParams"> & {
   /**
-   * The crypto suite of the wrapping. Only 1 is accepted.
+   * The crypto suite of the wrapping. Only 2 is accepted.
    *
    * @generated from field: uint32 suite = 1;
    */
@@ -86,7 +86,8 @@ export const GetUserKeyParamsRequestSchema: GenMessage<GetUserKeyParamsRequest> 
  */
 export type GetUserKeyParamsResponse = Message<"vaultsync.v1.GetUserKeyParamsResponse"> & {
   /**
-   * The caller's X25519 public key (32 bytes).
+   * The caller's public key: a hybrid ML-KEM-768 + X25519 key (1216 bytes)
+   * for suite 2, an X25519 key (32 bytes) for a key stored under suite 1.
    *
    * @generated from field: bytes public_key = 1;
    */
@@ -114,7 +115,7 @@ export const GetUserKeyParamsResponseSchema: GenMessage<GetUserKeyParamsResponse
  */
 export type CreateUserKeyRequest = Message<"vaultsync.v1.CreateUserKeyRequest"> & {
   /**
-   * The X25519 public key: exactly 32 bytes.
+   * The hybrid ML-KEM-768 + X25519 public key: exactly 1216 bytes.
    *
    * @generated from field: bytes public_key = 1;
    */
@@ -194,7 +195,7 @@ export const UnlockUserKeyRequestSchema: GenMessage<UnlockUserKeyRequest> = /*@_
  */
 export type UnlockUserKeyResponse = Message<"vaultsync.v1.UnlockUserKeyResponse"> & {
   /**
-   * The caller's X25519 public key.
+   * The caller's public key, as in GetUserKeyParamsResponse.
    *
    * @generated from field: bytes public_key = 1;
    */

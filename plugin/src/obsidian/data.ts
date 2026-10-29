@@ -152,7 +152,7 @@ export function parsePluginData(raw: unknown): PluginData {
   const configSync = parseConfigSync(stored.configSync);
   if (configSync !== undefined) data.configSync = configSync;
   const userKey = record(stored.userKey, ["publicKey", "privateKey", "serverUrl", "issuer", "subject"]);
-  if (userKey !== undefined && hexKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey)) data.userKey = userKey;
+  if (userKey !== undefined && hexPublicKey.test(userKey.publicKey) && hexKey.test(userKey.privateKey)) data.userKey = userKey;
   const vaultKeys = parseVaultKeys(stored.vaultKeys);
   if (vaultKeys !== undefined) data.vaultKeys = vaultKeys;
   return data;
@@ -160,6 +160,13 @@ export function parsePluginData(raw: unknown): PluginData {
 
 /** A 32-byte key in lowercase hex. */
 const hexKey = /^[0-9a-f]{64}$/;
+
+/**
+ * A user public key in lowercase hex: a 1216-byte hybrid key, or a 32-byte
+ * X25519 key cached under suite 1, which stays cached rather than being
+ * dropped.
+ */
+const hexPublicKey = /^(?:[0-9a-f]{64}|[0-9a-f]{2432})$/;
 
 /** A positive epoch number in decimal, without leading zeros. */
 const epochNumber = /^[1-9][0-9]{0,9}$/;
