@@ -155,7 +155,9 @@ func TestSchemaEveryDocumentCarriesKind(t *testing.T) {
 // publicServerInfoFields in cmd/vault-sync-server/server_info_integration_test.go
 // in step.
 func TestSchemaServerInfoResponseHasOnlyPublicFields(t *testing.T) {
-	public := []string{"version", "protocol_version", "max_realtime_subscriptions", "oidc_issuer_url", "oidc_client_id"}
+	// The escrow fields are the escrow public key (never its private key),
+	// its id and the escrow default (SPEC.md §9.4).
+	public := []string{"version", "protocol_version", "max_realtime_subscriptions", "oidc_issuer_url", "oidc_client_id", "escrow_public_key", "escrow_key_id", "escrow_default"}
 
 	fields := findMessage(t, "GetServerInfoResponse").Fields()
 

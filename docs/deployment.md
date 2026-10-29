@@ -267,6 +267,8 @@ The listen addresses are fixed by the chart: `VAULT_SYNC_LISTEN_ADDRESS` is `:80
 | `config.server.realtime.maxConnections` | `VAULT_SYNC_REALTIME_MAX_CONNECTIONS` |
 | `config.server.realtime.maxConnectionsPerUser` | `VAULT_SYNC_REALTIME_MAX_CONNECTIONS_PER_USER` |
 | `config.server.realtime.maxSubscriptions` | `VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS` |
+| `config.server.escrow.recipient` | `VAULT_SYNC_ESCROW_RECIPIENT` (the escrow public key; the private key goes into `config.export.escrow` only) |
+| `config.server.escrow.default` | `VAULT_SYNC_ESCROW_DEFAULT` |
 
 | Value | Default | Description |
 |---|---|---|

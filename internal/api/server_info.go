@@ -29,6 +29,29 @@ type ServerInfoService struct {
 	// OIDCClientID is the public OAuth client id the plugin signs in as, or
 	// empty when none is advertised.
 	OIDCClientID string
+	// Escrow is the deployment's escrow key and default, published to
+	// clients (SPEC.md §9.4).
+	Escrow Escrow
+}
+
+// Escrow is the deployment's escrow public key (SPEC.md §9.4), which
+// clients wrap every epoch key of an escrow vault to, and whether new
+// end-to-end encrypted vaults have escrow by default. The escrow private key
+// is never part of the server's configuration.
+type Escrow struct {
+	// PublicKey is the 1216-byte hybrid public key, or nil when the
+	// deployment has no escrow key.
+	PublicKey []byte
+	// KeyID names PublicKey in escrow key slots (e2ee.EscrowKeyID).
+	KeyID string
+	// Default is whether a new encrypted vault has escrow unless its owner
+	// turns it off. It is published as false without a PublicKey.
+	Default bool
+}
+
+// Configured reports whether the deployment has an escrow key.
+func (escrow Escrow) Configured() bool {
+	return len(escrow.PublicKey) > 0
 }
 
 var _ vaultsyncv1connect.ServerInfoServiceHandler = ServerInfoService{}
@@ -42,5 +65,8 @@ func (service ServerInfoService) GetServerInfo(context.Context, *connect.Request
 		MaxRealtimeSubscriptions: service.MaxRealtimeSubscriptions,
 		OidcIssuerUrl:            service.OIDCIssuerURL,
 		OidcClientId:             service.OIDCClientID,
+		EscrowPublicKey:          service.Escrow.PublicKey,
+		EscrowKeyId:              service.Escrow.KeyID,
+		EscrowDefault:            service.Escrow.Configured() && service.Escrow.Default,
 	}), nil
 }

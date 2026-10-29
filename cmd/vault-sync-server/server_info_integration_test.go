@@ -23,7 +23,7 @@ import (
 // design; this list is maintained by hand so that adding one is a reviewed
 // decision, in step with TestSchemaServerInfoResponseHasOnlyPublicFields in
 // internal/api/schema_test.go, which pins the schema's full field set.
-var publicServerInfoFields = []string{"version", "protocolVersion", "maxRealtimeSubscriptions", "oidcIssuerUrl", "oidcClientId"}
+var publicServerInfoFields = []string{"version", "protocolVersion", "maxRealtimeSubscriptions", "oidcIssuerUrl", "oidcClientId", "escrowPublicKey", "escrowKeyId", "escrowDefault"}
 
 // Every replica advertises, without authentication, the identity provider
 // clients sign in with, and nothing secret from its configuration.

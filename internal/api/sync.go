@@ -69,8 +69,9 @@ type SyncService struct {
 	Logger *slog.Logger
 	// AllowE2EE lets CommitRevision write to end-to-end encrypted vaults,
 	// under the vault's current key epoch, with the plaintext vaults' path
-	// rules. Test-only: until issue #39 defines E2EE paths and lifts the
-	// CreateVault guard (SPEC.md §9.3), no production server sets it.
+	// rules. Test-only: until the engine encrypts contents and paths and
+	// E2EE path keys are defined (SPEC.md §9.3), no production server sets
+	// it, so no plaintext reaches an encrypted vault.
 	AllowE2EE bool
 }
 
@@ -359,9 +360,9 @@ func (service SyncService) CommitRevision(ctx context.Context, request *connect.
 		return nil, service.internal(ctx, "cannot commit revision", err)
 	}
 
-	// End-to-end encrypted vaults cannot be created until key management
-	// exists (SPEC.md §9.3); their path keys are client-computed HMACs and
-	// their paths ciphertext, which this server does not accept yet.
+	// The path keys of end-to-end encrypted vaults are client-computed
+	// HMACs and their paths ciphertext, which this server does not accept
+	// yet (SPEC.md §9.3): refusing the commit keeps plaintext out of them.
 	if encryption != store.EncryptionNone && !service.AllowE2EE {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("end-to-end encrypted vaults are not supported yet"))
 	}

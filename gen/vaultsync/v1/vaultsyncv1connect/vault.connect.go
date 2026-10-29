@@ -49,9 +49,14 @@ type VaultServiceClient interface {
 	//
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
 	// a control character (such as U+0000), an unspecified encryption mode, or
-	// escrow requested for a plaintext vault; FAILED_PRECONDITION for
-	// VAULT_ENCRYPTION_E2EE until the server supports end-to-end encryption
-	// (SPEC.md §15, Phase 4).
+	// escrow requested for a plaintext vault; FAILED_PRECONDITION for escrow
+	// on a server without an escrow key (GetServerInfo's escrow_public_key
+	// is empty).
+	//
+	// A new VAULT_ENCRYPTION_E2EE vault has no key epoch and a pending
+	// rotation: the owner's client creates epoch 1 with VaultKeyService's
+	// RotateEpoch, wrapping its key to the owner and, with escrow, to the
+	// escrow public key.
 	CreateVault(context.Context, *connect.Request[v1.CreateVaultRequest]) (*connect.Response[v1.CreateVaultResponse], error)
 	// ListVaults lists the vaults the caller is a member of.
 	ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error)
@@ -126,9 +131,14 @@ type VaultServiceHandler interface {
 	//
 	// Errors: INVALID_ARGUMENT for an empty or over-long name, a name containing
 	// a control character (such as U+0000), an unspecified encryption mode, or
-	// escrow requested for a plaintext vault; FAILED_PRECONDITION for
-	// VAULT_ENCRYPTION_E2EE until the server supports end-to-end encryption
-	// (SPEC.md §15, Phase 4).
+	// escrow requested for a plaintext vault; FAILED_PRECONDITION for escrow
+	// on a server without an escrow key (GetServerInfo's escrow_public_key
+	// is empty).
+	//
+	// A new VAULT_ENCRYPTION_E2EE vault has no key epoch and a pending
+	// rotation: the owner's client creates epoch 1 with VaultKeyService's
+	// RotateEpoch, wrapping its key to the owner and, with escrow, to the
+	// escrow public key.
 	CreateVault(context.Context, *connect.Request[v1.CreateVaultRequest]) (*connect.Response[v1.CreateVaultResponse], error)
 	// ListVaults lists the vaults the caller is a member of.
 	ListVaults(context.Context, *connect.Request[v1.ListVaultsRequest]) (*connect.Response[v1.ListVaultsResponse], error)

@@ -6,7 +6,9 @@
  * #694): epochs from 1, created only as a compare-and-set on the current
  * epoch; an epoch's recipients exactly the members with a user key; slots
  * listed only to their recipient; AddKeySlots keeping an existing slot;
- * owner-only management. Each member gets their own transport, so the server
+ * owner-only management; at most one escrow slot per epoch, only in a vault
+ * with escrow. It also serves VaultService's CreateVault for this one vault,
+ * making the caller its owner. Each member gets their own transport, so the server
  * knows who calls. Every request is recorded serialized, as it would cross
  * the network.
  */
@@ -15,7 +17,8 @@ import { Code, ConnectError, createRouterTransport, type Transport } from "@conn
 
 import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
-import { VaultRole } from "../../gen/vaultsync/v1/types_pb";
+import { VaultEncryption, VaultRole } from "../../gen/vaultsync/v1/types_pb";
+import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
 import { KeyRecipientKind, VaultKeyService, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
 
 /** A member as the server stores them. */
@@ -32,9 +35,10 @@ export interface StoredEpoch {
   creator: string;
 }
 
-/** A stored user key slot. */
+/** A stored key slot, to a member or to the escrow key. */
 export interface StoredSlot {
   epoch: number;
+  recipientKind: KeyRecipientKind;
   recipientId: string;
   wrappedKey: Uint8Array;
   creator: string;
@@ -59,6 +63,12 @@ export class MemoryVaultKeyServer {
   currentEpoch = 0;
   /** A new E2EE vault starts with a pending rotation. */
   rotationPending = true;
+  /** Whether the vault has escrow: its epochs may carry one escrow slot. */
+  escrow = false;
+  /** Whether CreateVault created the vault (it can be created once). */
+  created = false;
+  /** Users' public keys (UserKeyService), which CreateVault's caller is listed with. */
+  readonly userKeys = new Map<string, Uint8Array>();
   /** Every request any member sent, in order. */
   readonly requests: RecordedRequest[] = [];
   /** Page size of every list; small by default so that clients must page. */
@@ -99,10 +109,20 @@ export class MemoryVaultKeyServer {
     return recording(
       userId,
       createRouterTransport(({ service }) => {
+        service(VaultService, {
+          createVault: (request) => {
+            if (this.created) throw new ConnectError("this memory server holds one vault", Code.ResourceExhausted);
+            if (request.encryption !== VaultEncryption.E2EE) throw new ConnectError("this memory server holds an E2EE vault", Code.InvalidArgument);
+            this.created = true;
+            this.escrow = request.escrow;
+            this.addMember(userId, VaultRole.OWNER, this.userKeys.get(userId));
+            return { vault: { id: this.vaultId, name: request.name, encryption: request.encryption, escrow: request.escrow, role: VaultRole.OWNER } };
+          },
+        });
         service(VaultKeyService, {
           listKeySlots: (request) => {
             this.member(userId, request.vaultId);
-            const mine = this.slots.filter((slot) => slot.recipientId === userId).sort((a, b) => a.epoch - b.epoch);
+            const mine = this.slots.filter((slot) => slot.recipientKind === KeyRecipientKind.USER && slot.recipientId === userId).sort((a, b) => a.epoch - b.epoch);
             const { items, next } = this.page(mine, request.pageToken);
             return {
               slots: items.map((slot) => ({ epoch: slot.epoch, recipientKind: KeyRecipientKind.USER, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creatorUserId: slot.creator })),
@@ -125,7 +145,7 @@ export class MemoryVaultKeyServer {
             for (const epoch of this.epochs) {
               for (const [memberId, member] of [...this.members].sort(([a], [b]) => a.localeCompare(b))) {
                 if (member.publicKey === undefined) continue;
-                if (this.slots.some((slot) => slot.epoch === epoch.epoch && slot.recipientId === memberId)) continue;
+                if (this.slots.some((slot) => slot.epoch === epoch.epoch && slot.recipientKind === KeyRecipientKind.USER && slot.recipientId === memberId)) continue;
                 missing.push({ epoch: epoch.epoch, userId: memberId, publicKey: member.publicKey });
               }
             }
@@ -155,7 +175,7 @@ export class MemoryVaultKeyServer {
             let added = 0;
             for (const slot of request.slots) {
               if (this.slots.some((stored) => stored.epoch === slot.epoch && stored.recipientId === slot.recipientId)) continue;
-              this.slots.push({ epoch: slot.epoch, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator: userId });
+              this.slots.push({ epoch: slot.epoch, recipientKind: KeyRecipientKind.USER, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator: userId });
               added++;
             }
             return { added };
@@ -211,10 +231,16 @@ export class MemoryVaultKeyServer {
     return nextEpoch;
   }
 
-  /** The slots must be exactly the members with a user key, but `removed`. */
+  /** The slots must be exactly the members with a user key, but `removed`, plus at most one escrow slot in a vault with escrow. */
   private checkRecipients(nextEpoch: NextEpoch, removed: string | undefined): void {
     const seen = new Set<string>();
+    let escrowSlots = 0;
     for (const slot of nextEpoch.slots) {
+      if (slot.recipientKind === KeyRecipientKind.ESCROW && this.escrow) {
+        if (++escrowSlots > 1) throw new ConnectError("at most one escrow slot", Code.InvalidArgument);
+        if (slot.recipientId.length < 1 || slot.recipientId.length > 255) throw new ConnectError("escrow recipient id must be 1 to 255 bytes", Code.InvalidArgument);
+        continue;
+      }
       if (slot.recipientKind !== KeyRecipientKind.USER) throw new ConnectError("no escrow in this vault", Code.InvalidArgument);
       if (slot.recipientId === removed || this.members.get(slot.recipientId)?.publicKey === undefined) {
         throw new ConnectError(`user ${slot.recipientId} is not a recipient`, Code.InvalidArgument);
@@ -235,7 +261,7 @@ export class MemoryVaultKeyServer {
     }
     const epoch: StoredEpoch = { epoch: this.currentEpoch + 1, commitment: nextEpoch.commitment, creator };
     this.epochs.push(epoch);
-    for (const slot of nextEpoch.slots) this.slots.push({ epoch: epoch.epoch, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator });
+    for (const slot of nextEpoch.slots) this.slots.push({ epoch: epoch.epoch, recipientKind: slot.recipientKind, recipientId: slot.recipientId, wrappedKey: slot.wrappedKey, creator });
     this.currentEpoch = epoch.epoch;
     this.rotationPending = false;
     return epoch;

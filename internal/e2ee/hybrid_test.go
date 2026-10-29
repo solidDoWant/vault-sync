@@ -2,6 +2,8 @@ package e2ee_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -140,4 +142,76 @@ func TestTheAgeToolOpensAnEscrowSlot(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, slices.Concat(epochKey, ad), output)
 	assert.Equal(t, epochKey, output[:e2ee.KeySize])
+}
+
+func TestParseAgeRecipientReturnsTheHybridPublicKey(t *testing.T) {
+	identity, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+
+	public, err := e2ee.ParseAgeRecipient(identity.Recipient().String())
+	require.NoError(t, err)
+	require.Len(t, public, e2ee.PublicKeySize)
+
+	// The key seals to the identity age generated.
+	sealed, err := e2ee.SealTo(public, []byte("epoch key"))
+	require.NoError(t, err)
+
+	reader, err := age.Decrypt(bytes.NewReader(sealed), identity)
+	require.NoError(t, err)
+
+	opened := new(bytes.Buffer)
+	_, err = opened.ReadFrom(reader)
+	require.NoError(t, err)
+	assert.Equal(t, "epoch key", opened.String())
+}
+
+func TestParseAgeRecipientRefusesOtherStrings(t *testing.T) {
+	classic, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	hybrid, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+
+	encoded := hybrid.Recipient().String()
+	flipped := []byte(encoded)
+
+	if flipped[20] == 'q' {
+		flipped[20] = 'p'
+	} else {
+		flipped[20] = 'q'
+	}
+
+	for _, input := range []string{
+		"",
+		"age1pq",
+		classic.Recipient().String(),
+		hybrid.String(),
+		string(flipped),
+		encoded[:len(encoded)-1],
+		encoded + "q",
+	} {
+		_, err := e2ee.ParseAgeRecipient(input)
+		assert.Error(t, err, "%.40q", input)
+	}
+}
+
+func TestEscrowKeyIDNamesTheKeyByItsSHA256(t *testing.T) {
+	_, public, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	id, err := e2ee.EscrowKeyID(public)
+	require.NoError(t, err)
+
+	sum := sha256.Sum256(public)
+	assert.Equal(t, "sha256:"+hex.EncodeToString(sum[:]), id)
+
+	_, other, err := e2ee.GenerateKeyPair()
+	require.NoError(t, err)
+
+	otherID, err := e2ee.EscrowKeyID(other)
+	require.NoError(t, err)
+	assert.NotEqual(t, id, otherID)
+
+	_, err = e2ee.EscrowKeyID(public[1:])
+	require.Error(t, err)
 }

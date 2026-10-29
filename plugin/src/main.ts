@@ -8,12 +8,13 @@ import type { PathRules } from "./core/vaultpath/platform";
 import type { VaultAdapter } from "./core/vault/adapter";
 import { PROTOCOL_VERSION } from "./core/version";
 import { ConflictView, conflictViewType } from "./obsidian/conflict-view";
-import { connectedVault, connectNeedsConfirmation, connectProblem, listRemoteVaults, SyncController } from "./obsidian/controller";
+import { connectedVault, connectNeedsConfirmation, connectProblem, currentAccount, listRemoteVaults, SyncController } from "./obsidian/controller";
 import { loadRefreshToken, refreshTokenLost, savePluginData } from "./obsidian/token-storage";
 import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBaseUrl, signInProblem, type ConnectedVault, type IdentityProvider, type PluginData } from "./obsidian/data";
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
-import { enableOnDevice, encryptionState, forgetEncryptionKeys, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
+import { createEncryptedVault, escrowOffer, type EscrowOffer } from "./core/keys/encrypted-vault";
+import { enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
@@ -353,11 +354,41 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     return listRemoteVaults(this.protocolClient());
   }
 
-  /** Creates a plaintext vault on the server, owned by the signed-in user. */
-  async createRemoteVault(name: string): Promise<Vault> {
+  /** The server's escrow key and default, for the escrow choice of a new encrypted vault. */
+  async escrowOffer(): Promise<EscrowOffer> {
+    return escrowOffer(await this.protocolClient().serverInfo.getServerInfo({}));
+  }
+
+  /**
+   * Creates a vault on the server, owned by the signed-in user: plaintext,
+   * or end-to-end encrypted when `encryption` is given. An encrypted vault
+   * needs the account's key unlocked on this device, which wraps its first
+   * epoch key to the user and, with `encryption.escrow`, to the server's
+   * escrow key.
+   */
+  async createRemoteVault(name: string, encryption?: { escrow: boolean }): Promise<Vault> {
+    if (encryption !== undefined) return this.createEncryptedRemoteVault(name, encryption.escrow);
     const response = await this.protocolClient().vaults.createVault({ name: name.trim(), encryption: VaultEncryption.NONE });
     if (response.vault === undefined) throw new Error("the server created the vault but returned none");
     return response.vault;
+  }
+
+  private async createEncryptedRemoteVault(name: string, escrow: boolean): Promise<Vault> {
+    const options = this.encryptionOptions();
+    const userKey = await unlockedUserKey(options);
+    const account = await currentAccount(this.data, options.accessToken);
+    const client = this.protocolClient();
+    const recipient = escrow ? (await this.escrowOffer()).recipient : undefined;
+    if (escrow && recipient === undefined) throw new Error("this server has no escrow key");
+    return createEncryptedVault({
+      name: name.trim(),
+      escrow: recipient,
+      userKey,
+      vaults: client.vaults,
+      keys: client.vaultKeys,
+      membership: client.membership,
+      store: (vaultId) => pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),
+    });
   }
 
   /**

@@ -9,11 +9,14 @@ import (
 	"testing"
 	"time"
 
+	"filippo.io/age"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/solidDoWant/vault-sync/internal/api"
 	"github.com/solidDoWant/vault-sync/internal/blobstore"
 	"github.com/solidDoWant/vault-sync/internal/config"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 	"github.com/solidDoWant/vault-sync/internal/store"
 )
 
@@ -70,7 +73,81 @@ func TestLoadDefaults(t *testing.T) {
 		},
 		Realtime:  config.RealtimeConfig{MaxConnections: 10000, MaxConnectionsPerUser: 32, MaxSubscriptions: 128},
 		Retention: config.RetentionConfig{KeepAll: 90 * 24 * time.Hour, KeepDaily: 365 * 24 * time.Hour, BlobGrace: 24 * time.Hour, PurgeMarkerHorizon: 365 * 24 * time.Hour},
+		// Escrow is on by default, though no key is configured.
+		Escrow: api.Escrow{Default: true},
 	}, cfg)
+}
+
+func TestLoadEscrowSettings(t *testing.T) {
+	identity, err := age.GenerateHybridIdentity()
+	require.NoError(t, err)
+
+	recipient := identity.Recipient().String()
+	publicKey, err := e2ee.ParseAgeRecipient(recipient)
+	require.NoError(t, err)
+
+	keyID, err := e2ee.EscrowKeyID(publicKey)
+	require.NoError(t, err)
+
+	classic, err := age.GenerateX25519Identity()
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		env        map[string]string
+		wantEscrow api.Escrow
+		assertErr  require.ErrorAssertionFunc
+	}{
+		{name: "no escrow key, default on", env: withRequired(nil), wantEscrow: api.Escrow{Default: true}},
+		{
+			name:       "escrow key, default on",
+			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true},
+		},
+		{
+			name:       "escrow key, default off",
+			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient, config.EscrowDefaultEnv: "false"}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: false},
+		},
+		{
+			name:       "escrow key with a trailing newline, default explicitly on",
+			env:        withRequired(map[string]string{config.EscrowRecipientEnv: recipient + "\n", config.EscrowDefaultEnv: "true"}),
+			wantEscrow: api.Escrow{PublicKey: publicKey, KeyID: keyID, Default: true},
+		},
+		{
+			name:      "classic X25519 recipient",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: classic.Recipient().String()}),
+			assertErr: errorContaining(config.EscrowRecipientEnv),
+		},
+		{
+			name:      "an identity instead of a recipient",
+			env:       withRequired(map[string]string{config.EscrowRecipientEnv: identity.String()}),
+			assertErr: errorContaining(config.EscrowRecipientEnv),
+		},
+		{
+			name:      "default not a boolean",
+			env:       withRequired(map[string]string{config.EscrowDefaultEnv: "maybe"}),
+			assertErr: errorContaining(config.EscrowDefaultEnv),
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			assertErr := test.assertErr
+			if assertErr == nil {
+				assertErr = require.NoError
+			}
+
+			cfg, err := config.Load(lookup(test.env))
+			assertErr(t, err)
+
+			if test.assertErr == nil {
+				assert.Equal(t, test.wantEscrow, cfg.Escrow)
+			} else {
+				assert.NotContains(t, err.Error(), identity.String(), "the identity is never echoed")
+			}
+		})
+	}
 }
 
 // writeFile writes content to a new file in a test directory.

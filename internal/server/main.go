@@ -122,6 +122,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		Authenticator:            authenticator,
 		OIDCIssuerURL:            cfg.OIDC.IssuerURL,
 		OIDCClientID:             cfg.OIDC.ClientID,
+		Escrow:                   cfg.Escrow,
 		Devices:                  queries,
 		Vaults:                   queries,
 		Memberships:              queries,

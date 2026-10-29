@@ -80,7 +80,20 @@ type GetServerInfoResponse struct {
 	// authorization grant (VAULT_SYNC_OIDC_CLIENT_ID, by default the
 	// audience). A public client has no secret. Empty when the server
 	// advertises none; the user then enters it.
-	OidcClientId  string `protobuf:"bytes,5,opt,name=oidc_client_id,json=oidcClientId,proto3" json:"oidc_client_id,omitempty"`
+	OidcClientId string `protobuf:"bytes,5,opt,name=oidc_client_id,json=oidcClientId,proto3" json:"oidc_client_id,omitempty"`
+	// The deployment's escrow public key (SPEC.md §9.4): the 1216-byte
+	// hybrid ML-KEM-768 + X25519 public key that clients wrap every epoch key
+	// of an escrow vault to (VAULT_SYNC_ESCROW_RECIPIENT). Empty when the
+	// server has no escrow key; escrow vaults cannot be created then.
+	EscrowPublicKey []byte `protobuf:"bytes,6,opt,name=escrow_public_key,json=escrowPublicKey,proto3" json:"escrow_public_key,omitempty"`
+	// The id that names escrow_public_key in escrow key slots (their
+	// recipient_id): "sha256:" and the lowercase hex SHA-256 of the key.
+	// Empty when the server has no escrow key.
+	EscrowKeyId string `protobuf:"bytes,7,opt,name=escrow_key_id,json=escrowKeyId,proto3" json:"escrow_key_id,omitempty"`
+	// Whether a new end-to-end encrypted vault has escrow unless its owner
+	// turns it off (VAULT_SYNC_ESCROW_DEFAULT, on by default). Always false
+	// when the server has no escrow key.
+	EscrowDefault bool `protobuf:"varint,8,opt,name=escrow_default,json=escrowDefault,proto3" json:"escrow_default,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -150,18 +163,42 @@ func (x *GetServerInfoResponse) GetOidcClientId() string {
 	return ""
 }
 
+func (x *GetServerInfoResponse) GetEscrowPublicKey() []byte {
+	if x != nil {
+		return x.EscrowPublicKey
+	}
+	return nil
+}
+
+func (x *GetServerInfoResponse) GetEscrowKeyId() string {
+	if x != nil {
+		return x.EscrowKeyId
+	}
+	return ""
+}
+
+func (x *GetServerInfoResponse) GetEscrowDefault() bool {
+	if x != nil {
+		return x.EscrowDefault
+	}
+	return false
+}
+
 var File_vaultsync_v1_server_info_proto protoreflect.FileDescriptor
 
 const file_vaultsync_v1_server_info_proto_rawDesc = "" +
 	"\n" +
 	"\x1evaultsync/v1/server_info.proto\x12\fvaultsync.v1\"\x16\n" +
-	"\x14GetServerInfoRequest\"\xe8\x01\n" +
+	"\x14GetServerInfoRequest\"\xdf\x02\n" +
 	"\x15GetServerInfoResponse\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\tR\aversion\x12)\n" +
 	"\x10protocol_version\x18\x02 \x01(\rR\x0fprotocolVersion\x12<\n" +
 	"\x1amax_realtime_subscriptions\x18\x03 \x01(\rR\x18maxRealtimeSubscriptions\x12&\n" +
 	"\x0foidc_issuer_url\x18\x04 \x01(\tR\roidcIssuerUrl\x12$\n" +
-	"\x0eoidc_client_id\x18\x05 \x01(\tR\foidcClientId2o\n" +
+	"\x0eoidc_client_id\x18\x05 \x01(\tR\foidcClientId\x12*\n" +
+	"\x11escrow_public_key\x18\x06 \x01(\fR\x0fescrowPublicKey\x12\"\n" +
+	"\rescrow_key_id\x18\a \x01(\tR\vescrowKeyId\x12%\n" +
+	"\x0eescrow_default\x18\b \x01(\bR\rescrowDefault2o\n" +
 	"\x11ServerInfoService\x12Z\n" +
 	"\rGetServerInfo\x12\".vaultsync.v1.GetServerInfoRequest\x1a#.vaultsync.v1.GetServerInfoResponse\"\x00B@Z>github.com/solidDoWant/vault-sync/gen/vaultsync/v1;vaultsyncv1b\x06proto3"
 

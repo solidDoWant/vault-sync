@@ -150,6 +150,14 @@ config:
       maxConnectionsPerUser: ""
       # VAULT_SYNC_REALTIME_MAX_SUBSCRIPTIONS.
       maxSubscriptions: ""
+    escrow:
+      # VAULT_SYNC_ESCROW_RECIPIENT: the escrow public key, an age hybrid
+      # recipient (age1pq1…). Public; the escrow private key goes into the
+      # export job only (config.export.escrow).
+      recipient: ""
+      # VAULT_SYNC_ESCROW_DEFAULT: whether new encrypted vaults have escrow
+      # unless their owner turns it off (true when unset).
+      default: ""
     metrics:
       # serviceMonitor creates a prometheus-operator ServiceMonitor scraping
       # /metrics on the "metrics" Service (port 9090). Needs the
