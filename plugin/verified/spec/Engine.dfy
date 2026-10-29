@@ -364,7 +364,7 @@ abstract module EngineModel {
     && (forall i :: 0 <= i < |input.freshDocs| ==> !DocIdUsed(state, input.freshDocs[i]))
   }
 
-  // A sync round, or a crash that cut one short (#1094): a step whose
+  // A sync round, or a crash that cut one short: a step whose
   // effects are a sync round's, all of them or the prefix the shell
   // performed before the crash (CrashCutsShort). The guarantees' readings
   // of a round's own earlier effects apply to both, over the effects the

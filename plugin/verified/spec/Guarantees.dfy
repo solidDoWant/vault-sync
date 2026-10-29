@@ -35,7 +35,7 @@ abstract module Guarantees refines EngineModel {
   }
 
   // ---------------------------------------------------------------------
-  // What a sync round itself left at a path (verified-core.md §2.4, #1094)
+  // What a sync round itself left at a path (verified-core.md §2.4)
   // ---------------------------------------------------------------------
 
   // A sync round settles several revisions in one step, so a later effect
@@ -129,7 +129,11 @@ abstract module Guarantees refines EngineModel {
   // or the writer's file after a restore from backup lost the version).
   // Versions are compared by content: a file anywhere that holds exactly the
   // version's bytes gives the version back, whatever its name, so any such
-  // file counts, not only one with a conflict-copy name.
+  // file counts, not only one with a conflict-copy name. For the same reason
+  // a live revision still in the server's history with the version's bytes
+  // gives it back (a revert's version, say, that a restore lost while the
+  // revision it reverted to stays): G1 is about losing bytes, and those are
+  // still on the server.
   ghost predicate Retrievable(state: State, rev: RevId)
     requires rev in state.server.accepted
   {
@@ -138,6 +142,8 @@ abstract module Guarantees refines EngineModel {
     || (!version.deleted
         && ((exists doc :: Head(state.server, doc).Some? && !Head(state.server, doc).value.deleted
                          && Head(state.server, doc).value.content == version.content)
+            || (exists other :: InHistory(state.server, other) && !state.server.revisions[other].deleted
+                             && state.server.revisions[other].content == version.content)
             || (exists d :: d in state.devices && OnDisk(state.devices[d], version.content))))
   }
 
@@ -182,7 +188,7 @@ abstract module Guarantees refines EngineModel {
   //   what a round read (ReadKept: what the document sends, saved next to
   //   it, or merged into what it sends). A lost version a device still
   //   holds is that device's unsynced change, and the round keeps it as it
-  //   keeps any local change (#1094).
+  //   keeps any local change.
   ghost predicate G1_OnlyRetentionRemoves(step: Step) {
     forall rev :: (rev in step.pre.server.accepted && rev in step.post.server.accepted
       && Retrievable(step.pre, rev) && !Retrievable(step.post, rev)) ==>
@@ -230,7 +236,7 @@ abstract module Guarantees refines EngineModel {
   }
 
   // In a sync round, an effect may also act on a file the round's own
-  // earlier effects left (#1094): effect `i` overwrites or removes `doc`'s
+  // earlier effects left: effect `i` overwrites or removes `doc`'s
   // file at `path`, expecting `content`.
   ghost predicate RoundSawEffect(step: Step, effect: Effect) {
     (effect.Write? && effect.target.Some? && effect.precondition.Some?
@@ -290,7 +296,7 @@ abstract module Guarantees refines EngineModel {
   // an untracked file on the device, or the step settles another device's
   // live note revision of doc against it and the document sends their merge
   // (G6's combined edits), or the round settles several of doc's revisions
-  // in turn and the content is one link of that chain (RoundChain, #1094).
+  // in turn and the content is one link of that chain (RoundChain).
   // Settling a remote delete keeps the read content
   // only by the first two: an edit beats a delete with the edit itself.
   ghost predicate ReadKept(step: Step, doc: DocId, content: Hash)
@@ -348,7 +354,7 @@ abstract module Guarantees refines EngineModel {
                && RoundTracked(step, i, effect.doc, effect.path, effect.expected))
   }
 
-  // In a sync round (#1094), a remove before effect `i` of `doc`'s file at
+  // In a sync round, a remove before effect `i` of `doc`'s file at
   // `p`, expecting `content`, is also one of a tracked file where an
   // earlier effect of the round wrote or moved a file there for a
   // document, or where the file holds exactly a live revision of `doc` the
@@ -625,7 +631,7 @@ abstract module Guarantees refines EngineModel {
   // In (c), (d) and (f) contents or names decide, and only these
   // owner-approved rules let them. In a sync round, "the file was
   // untracked" in (d), (e) and (f) also covers a file the round's own
-  // effects left there for no document (UntrackedThen, #1094), and (d)
+  // effects left there for no document (UntrackedThen), and (d)
   // does not ask that the document had no file: a round may drop the
   // document's file (remove it, move it aside, or let it go) before a
   // later revision of the same document adopts another, as if the drop
@@ -833,7 +839,7 @@ abstract module Guarantees refines EngineModel {
   // A step settles a concurrent change as G6_Settle says, or, in a sync
   // round that settles several of doc's revisions in turn, as a chain of
   // G6_Settle's outcomes ending in `remote`, from the content it read in
-  // doc's file or from no file (#1094).
+  // doc's file or from no file.
   ghost predicate G6_Step(step: Step, d: DeviceId, doc: DocId, remote: Revision)
     requires SettlesConcurrent(step, d, doc, remote)
   {
@@ -850,8 +856,7 @@ abstract module Guarantees refines EngineModel {
   // One link of a round's chain on device d: settling revision `r` of the
   // document against its local side `l` (the content and kind of its file
   // here, or none) on base content `b` (`bd`: the base is a tombstone)
-  // leaves the local side `x`, as a step that settles `r` alone would
-  // (#1094):
+  // leaves the local side `x`, as a step that settles `r` alone would:
   // - the device's own revision (its outbox's acknowledgement) settles
   //   nothing: the local side stays, and the revision is the next base;
   // - a tombstone against a file: an edit beats a delete, so the file
@@ -883,7 +888,7 @@ abstract module Guarantees refines EngineModel {
 
   // A content a round's chain saved is on the device it leaves, saved next
   // to it (SavedNextToIt), or it is the content of a live revision the
-  // server accepted (#1094). A conflict copy written early in a round can be
+  // server accepted. A conflict copy written early in a round can be
   // adopted later in the same round by another document's revision that
   // holds the same content at that name, and a still later revision of
   // that document can then replace the file: the content is then the
@@ -905,8 +910,7 @@ abstract module Guarantees refines EngineModel {
   // result). Before any link, and after the last, the local side may be let
   // go where its content is saved (SavedInRound): rule W(b) can let the
   // document's file go untracked in the round, and a later revision of the
-  // document then finds no file here, as a later step of its own would
-  // (#1094).
+  // document then finds no file here, as a later step of its own would.
   ghost predicate ChainThrough(post: State, d: DeviceId, b: Hash, bd: bool, l: Option<(Hash, Kind)>, rs: seq<Revision>,
                                out: Option<Hash>, c: Option<Hash>)
     decreases |rs|, if l.Some? then 1 else 0
@@ -927,7 +931,7 @@ abstract module Guarantees refines EngineModel {
   // G6_Settle's both-sides-live case. A document with no base before the
   // round (its creation in flight) starts its chain with its own revision
   // (the creation's acknowledgement, which settles nothing, so it reads no
-  // base content), and its order holds from that link on (#1094).
+  // base content), and its order holds from that link on.
   ghost predicate RoundChain(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>, c: Hash) {
     RoundEvent(step.event) && step.event.device == d
     && d in step.pre.devices && d in step.post.devices && |rs| > 0
@@ -952,7 +956,7 @@ abstract module Guarantees refines EngineModel {
 
   // A document with no file here before the round (the user deleted it, or
   // its file is missing) settles doc's revisions `rs` as a chain too, from
-  // no local side, with RoundChain's order (#1094): a live revision brings
+  // no local side, with RoundChain's order: a live revision brings
   // the file back (an edit beats a delete), and rule W(b) can let it go
   // later in the round, saved, as a later step of its own would.
   ghost predicate RoundChainNoFile(step: Step, d: DeviceId, doc: DocId, rs: seq<Revision>) {
@@ -978,7 +982,7 @@ abstract module Guarantees refines EngineModel {
 
   // A chain ends in what the document sends, or, where the document sends
   // nothing and has no file after the round, in a file left untracked on
-  // the device (#1094): later in the round, after its last settle, rule
+  // the device: later in the round, after its last settle, rule
   // W(b) let the document's file go, as a later step of its own would.
   ghost predicate ChainEnds(post: State, d: DeviceId, doc: DocId, out: Option<Hash>)
     requires d in post.devices
@@ -1022,7 +1026,7 @@ abstract module Guarantees refines EngineModel {
     || (RoundEvent(step.event) && RoundMovesKeepContents(step))
   }
 
-  // In a sync round (#1094), a move whose precondition held on the disk
+  // In a sync round, a move whose precondition held on the disk
   // the round's earlier effects left (`mid`, on the way to the disk after
   // the step) arrives at its new name with
   // its content, unless a later effect of the round acts on it there
@@ -1043,7 +1047,7 @@ abstract module Guarantees refines EngineModel {
 
   // In a sync round, a later effect of the same round acts on the moved
   // file at its new name, conditional on exactly the content moved: it
-  // overwrites it, removes it, or moves it on, each under G2 (#1094).
+  // overwrites it, removes it, or moves it on, each under G2.
   ghost predicate RoundMovesOn(step: Step, i: nat)
     requires i < |step.effects| && step.effects[i].Move?
   {

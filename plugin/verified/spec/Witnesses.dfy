@@ -1617,6 +1617,56 @@ abstract module GuaranteeWitnesses refines Guarantees {
     assert !Retrievable(post, rev.id);
   }
 
+  // G1: a version a restore lost is still retrievable while a live
+  // revision in the server's history has its bytes (a revert's version,
+  // whose content an older revision holds). A sync round that overwrites
+  // the last device's copy of it passes G1_OnlyRetentionRemoves.
+  lemma G1KeepsLostVersionWithContentInHistory(v1: Revision, v2: Revision, v3: Revision, d: DeviceId, platform: Platform, p: Path, f: DiskFile, g: DiskFile)
+    requires v1.id != v3.id && v2.id != v1.id && v2.id != v3.id && v1.doc == v3.doc && v2.doc == v1.doc
+    requires v2.content != v1.content
+    requires !v1.deleted && !v3.deleted && v1.content == v3.content && f.content == v3.content
+    ensures
+      var server := Server(map[v1.id := v1, v2.id := v2], map[v1.doc := [v1.id, v2.id]], [v1.id, v2.id], {}, map[v1.id := v1, v2.id := v2, v3.id := v3], {v3.id});
+      var pre := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := f], {}, {})], server);
+      var post := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := g], {}, {})], server);
+      Retrievable(post, v3.id) && G1_OnlyRetentionRemoves(Step(pre, SyncRound(d), [], post))
+  {
+    var server := Server(map[v1.id := v1, v2.id := v2], map[v1.doc := [v1.id, v2.id]], [v1.id, v2.id], {}, map[v1.id := v1, v2.id := v2, v3.id := v3], {v3.id});
+    var post := State(map[d := Device(platform, true, Journal(map[], 0, [], []), map[p := g], {}, {})], server);
+    assert server.history[v1.doc][0] == v1.id;
+    forall x ensures Head(server, x).Some? ==> x == v1.doc && Head(server, x).value == v2 {}
+    assert !InHistory(server, v3.id);
+    assert InHistory(server, v1.id);
+    assert Retrievable(post, v1.id);
+    assert Retrievable(post, v3.id);
+  }
+
+  // G1: when the only revision in history with a lost version's bytes
+  // leaves the server's history, the lost version stops being retrievable
+  // too: only the excuses of G1_OnlyRetentionRemoves (here: a lost version
+  // no device holds) pass that. A sync round that drops the revision from
+  // the server still fails G1_OnlyRetentionRemoves.
+  lemma G1RejectsDroppingOnlyRevisionWithLostContent(v1: Revision, v2: Revision, v3: Revision, d: DeviceId)
+    requires v1.id != v3.id && v2.id != v1.id && v2.id != v3.id && v1.doc == v3.doc && v2.doc == v1.doc
+    requires v2.content != v1.content
+    requires !v1.deleted && !v3.deleted && v1.content == v3.content
+    ensures
+      var pre := State(map[], Server(map[v1.id := v1, v2.id := v2], map[v1.doc := [v1.id, v2.id]], [v1.id, v2.id], {}, map[v1.id := v1, v2.id := v2, v3.id := v3], {v3.id}));
+      var post := State(map[], Server(map[], map[], [], {}, map[v1.id := v1, v2.id := v2, v3.id := v3], {v3.id}));
+      Retrievable(pre, v3.id) && !Retrievable(post, v3.id)
+      && !G1_OnlyRetentionRemoves(Step(pre, SyncRound(d), [], post))
+  {
+    var pre := State(map[], Server(map[v1.id := v1, v2.id := v2], map[v1.doc := [v1.id, v2.id]], [v1.id, v2.id], {}, map[v1.id := v1, v2.id := v2, v3.id := v3], {v3.id}));
+    var post := State(map[], Server(map[], map[], [], {}, map[v1.id := v1, v2.id := v2, v3.id := v3], {v3.id}));
+    assert pre.server.history[v1.doc][0] == v1.id;
+    forall x ensures Head(pre.server, x).Some? ==> x == v1.doc && Head(pre.server, x).value == v2 {}
+    assert !InHistory(pre.server, v3.id);
+    assert InHistory(pre.server, v1.id);
+    assert Retrievable(pre, v3.id);
+    forall x ensures Head(post.server, x).None? {}
+    assert !Retrievable(post, v3.id);
+  }
+
   // G1 (#1015): a restore from backup to before a version was accepted
   // loses it, and no device holds its bytes. The restore follows the
   // server's semantics, records the version in `lost`, and the run keeps G1.
