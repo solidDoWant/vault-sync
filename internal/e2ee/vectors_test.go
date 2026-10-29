@@ -221,6 +221,14 @@ func must[T any](value T, err error) T {
 	return value
 }
 
+func must2[T, U any](first T, second U, err error) (T, U) {
+	if err != nil {
+		panic(err)
+	}
+
+	return first, second
+}
+
 func unhex(t *testing.T, value string) []byte {
 	t.Helper()
 
@@ -463,9 +471,18 @@ func generateKeySlots(file *vectorFile) {
 		{"user, epoch 1", KeySlot{VaultID: vectorVaultID, Epoch: 1, RecipientKind: RecipientUser, RecipientID: vectorUserID}},
 		{"escrow, epoch 2", KeySlot{VaultID: vectorVaultID, Epoch: 2, RecipientKind: RecipientEscrow, RecipientID: vectorEscrowID}},
 		{"user, epoch above 32 bits", KeySlot{VaultID: vectorVaultID, Epoch: 1 << 32, RecipientKind: RecipientUser, RecipientID: vectorUserID}},
+		{"invitation, epoch 3", KeySlot{VaultID: vectorVaultID, Epoch: 3, RecipientKind: RecipientInvitation, RecipientID: vectorInvitationOne}},
 	}
+	invitationSecret := fixed("key slot invitation secret", inviteSecretSize)
+
 	for _, testCase := range slotCases {
 		recipient := fixed("key slot recipient "+testCase.name, PrivateKeySize)
+		if testCase.slot.RecipientKind == RecipientInvitation {
+			// An invitation slot is sealed to the key pair derived from the
+			// invitation secret.
+			recipient, _ = must2(InvitationKeyPair(invitationSecret, testCase.slot.VaultID, testCase.slot.RecipientID))
+		}
+
 		epochKey := fixed("key slot epoch key "+testCase.name, KeySize)
 		recipientPublicKey := must(PublicKey(recipient))
 		file.KeySlot = append(file.KeySlot, keySlotVector{
@@ -539,6 +556,28 @@ func generateKeySlots(file *vectorFile) {
 	escrowSealed := must(hex.DecodeString(escrowVec.Sealed))
 	rejectSlot("escrow slot as a user slot", KeySlot{VaultID: escrowVec.VaultID, Epoch: escrowVec.Epoch, RecipientKind: RecipientUser, RecipientID: vectorUserID}, escrowVec.RecipientPrivateKey, escrowSealed)
 	rejectSlot("escrow slot, other escrow id", KeySlot{VaultID: escrowVec.VaultID, Epoch: escrowVec.Epoch, RecipientKind: RecipientEscrow, RecipientID: vectorEscrowID + "x"}, escrowVec.RecipientPrivateKey, escrowSealed)
+
+	// The invitation slot opened as any other vault, epoch, recipient kind or
+	// invitation, and with the key of another invitation.
+	invitationVec := file.KeySlot[3]
+	invitationSlot := invitationVec.slot()
+	invitationSealed := must(hex.DecodeString(invitationVec.Sealed))
+	withInvitationSlot := func(change func(*KeySlot)) KeySlot {
+		slot := invitationSlot
+		change(&slot)
+
+		return slot
+	}
+	otherInvitationKey, _ := must2(InvitationKeyPair(invitationSecret, vectorVaultID, vectorInvitationTwo))
+	otherSecretKey, _ := must2(InvitationKeyPair(fixed("key slot other invitation secret", inviteSecretSize), vectorVaultID, vectorInvitationOne))
+
+	rejectSlot("invitation slot, other vault", withInvitationSlot(func(slot *KeySlot) { slot.VaultID = vectorOtherVaultID }), invitationVec.RecipientPrivateKey, invitationSealed)
+	rejectSlot("invitation slot, other epoch", withInvitationSlot(func(slot *KeySlot) { slot.Epoch = 4 }), invitationVec.RecipientPrivateKey, invitationSealed)
+	rejectSlot("invitation slot as a user slot, same id", withInvitationSlot(func(slot *KeySlot) { slot.RecipientKind = RecipientUser }), invitationVec.RecipientPrivateKey, invitationSealed)
+	rejectSlot("invitation slot, other invitation id", withInvitationSlot(func(slot *KeySlot) { slot.RecipientID = vectorInvitationTwo }), invitationVec.RecipientPrivateKey, invitationSealed)
+	rejectSlot("invitation slot, key of another invitation", invitationSlot, hex.EncodeToString(otherInvitationKey), invitationSealed)
+	rejectSlot("invitation slot, key of another invitation secret", invitationSlot, hex.EncodeToString(otherSecretKey), invitationSealed)
+	rejectSlot("user slot as an invitation slot, same id", withSlot(func(slot *KeySlot) { slot.RecipientKind = RecipientInvitation }), userVec.RecipientPrivateKey, userSealed)
 
 	// Age files to the recipient whose payload is not a 32-byte key followed
 	// by exactly the slot's associated data.
@@ -1035,6 +1074,11 @@ func documentedSlotAD(t *testing.T, vector keySlotVector) []byte {
 	case "user":
 		id := uuidBytes(t, vector.RecipientID)
 		ad = append(ad, 0x01, byte(len(id)))
+
+		return append(ad, id...)
+	case "invitation":
+		id := uuidBytes(t, vector.RecipientID)
+		ad = append(ad, 0x03, byte(len(id)))
 
 		return append(ad, id...)
 	case "escrow":
