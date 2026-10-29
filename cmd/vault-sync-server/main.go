@@ -5,6 +5,9 @@
 // `vault-sync-server export -out DIR` instead writes a plaintext copy of
 // every vault to DIR and exits (docs/export.md, SPEC.md §4).
 //
+// `vault-sync-server import VAULT_ID DIR` loads a folder of Markdown notes
+// and attachments into an empty vault and exits (docs/import.md).
+//
 // `vault-sync-server retention set|unset|list` manages per-vault retention
 // overrides and exits (docs/configuration.md, SPEC.md §11).
 package main
@@ -18,6 +21,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/export"
 	"github.com/solidDoWant/vault-sync/internal/retentioncmd"
 	"github.com/solidDoWant/vault-sync/internal/server"
+	"github.com/solidDoWant/vault-sync/internal/vaultimport"
 )
 
 func main() {
@@ -28,6 +32,8 @@ func main() {
 	switch {
 	case len(os.Args) > 1 && os.Args[1] == "export":
 		code = export.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
+	case len(os.Args) > 1 && os.Args[1] == "import":
+		code = vaultimport.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
 	case len(os.Args) > 1 && os.Args[1] == "retention":
 		code = retentioncmd.Main(ctx, os.Args[2:], os.LookupEnv, os.Stdout, os.Stderr)
 	default:

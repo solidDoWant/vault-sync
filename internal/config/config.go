@@ -491,6 +491,79 @@ func LoadExport(lookup func(string) (string, bool)) (ExportConfig, error) {
 	return cfg, nil
 }
 
+// ImportConfig is the configuration of the import subcommand (engine.md
+// §9). It reads the same database, object-store and blob size variables as
+// the server.
+type ImportConfig struct {
+	// Database is the PostgreSQL connection configuration.
+	Database store.Config
+	// S3 is the object store that receives the imported contents.
+	S3 blobstore.Config
+	// MaxFileBytes is the largest file imported, the server's blob limit.
+	MaxFileBytes int64
+	// LogLevel is the minimum level logged.
+	LogLevel slog.Level
+}
+
+// LoadImport reads the import configuration through lookup, like Load. The
+// database and the object store are both required; the API, OIDC and other
+// limit variables are ignored.
+func LoadImport(lookup func(string) (string, bool)) (ImportConfig, error) {
+	get := func(name string) string {
+		value, _ := lookup(name)
+
+		return strings.TrimSpace(value)
+	}
+
+	cfg := ImportConfig{
+		Database: store.Config{
+			DSN:         get(DatabaseURLEnv),
+			TLSCertFile: get(DatabaseTLSCertFileEnv),
+			TLSKeyFile:  get(DatabaseTLSKeyFileEnv),
+			TLSCAFile:   get(DatabaseTLSCAFileEnv),
+		},
+		MaxFileBytes: DefaultBlobMaxSizeBytes,
+		LogLevel:     slog.LevelInfo,
+	}
+
+	problems := []error{checkDatabase(cfg.Database)}
+
+	if raw := get(LogLevelEnv); raw != "" {
+		if err := cfg.LogLevel.UnmarshalText([]byte(raw)); err != nil {
+			problems = append(problems, fmt.Errorf("%s: %q is not one of debug, info, warn, error", LogLevelEnv, raw))
+		}
+	}
+
+	if raw := get(BlobMaxSizeBytesEnv); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+
+		switch {
+		case err != nil:
+			problems = append(problems, fmt.Errorf("%s: %q is not an integer", BlobMaxSizeBytesEnv, raw))
+		case value < 1 || value > blobstore.MaxBlobBytes:
+			problems = append(problems, fmt.Errorf("%s: %d is outside the allowed range %d to %d",
+				BlobMaxSizeBytesEnv, value, 1, int64(blobstore.MaxBlobBytes)))
+		default:
+			cfg.MaxFileBytes = value
+		}
+	}
+
+	s3, s3Problems := loadS3(get)
+	problems = append(problems, s3Problems...)
+
+	if s3 == nil {
+		problems = append(problems, fmt.Errorf("%s and the other VAULT_SYNC_S3_* variables are required: the import writes file contents to S3", S3BucketEnv))
+	} else {
+		cfg.S3 = *s3
+	}
+
+	if err := errors.Join(problems...); err != nil {
+		return ImportConfig{}, err
+	}
+
+	return cfg, nil
+}
+
 // RetentionCommandConfig is the configuration of the retention subcommand,
 // which manages per-vault retention overrides (SPEC.md §11).
 type RetentionCommandConfig struct {
