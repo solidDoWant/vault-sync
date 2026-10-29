@@ -64,6 +64,13 @@ export interface PendingOp {
    */
   sent: boolean;
   /**
+   * Revision ids of earlier commits of this document that may have reached
+   * the server before rule W moved its file to a conflict copy name (a sent
+   * operation whose reply was lost). Such a revision, when it arrives, is
+   * this device's own commit.
+   */
+  earlierRevisionIds?: string[];
+  /**
    * The server refused the operation's path as unportable or taken by a
    * document this device already holds (rules P2, P3), with its reason. The
    * operation is not retried until the file is renamed.

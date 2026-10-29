@@ -559,6 +559,9 @@ export class SyncEngine {
     // This device's commit, whose reply was lost: it is acknowledged now.
     const acknowledged = ops.find((op) => op.sent && op.revisionId === remote.revisionId);
     if (acknowledged !== undefined) return this.acknowledge(acknowledged, revision);
+    // This device's commit, whose reply was lost, made before rule W moved the file aside: it is the base of the move.
+    const moved = ops.find((op) => op.earlierRevisionIds?.includes(remote.revisionId) === true);
+    if (moved !== undefined && !remote.deleted) return this.acknowledgeEarlier(moved, revision);
     // A path the protocol does not allow never reaches the disk.
     if (!incoming.pathAllowed) return {};
     // §6, §7: a file over the size limit, or at a path this device cannot hold, is skipped here and listed.
@@ -907,7 +910,10 @@ export class SyncEngine {
       const last = owner?.lastOp;
       if (owner !== undefined && last !== undefined) {
         // A refused commit was never applied, so an unsent operation keeps its revision id. The new name is not refused.
-        const moved: PendingOp = { ...last, path: copy, sent: false, revisionId: last.sent ? uuidv7(this.now()) : last.revisionId };
+        // A sent one may have landed: the move is a new commit, and the earlier one is recognised when it arrives.
+        const moved: PendingOp = last.sent
+          ? { ...last, path: copy, sent: false, revisionId: uuidv7(this.now()), earlierRevisionIds: [...(last.earlierRevisionIds ?? []), last.revisionId] }
+          : { ...last, path: copy };
         delete moved.refused;
         change.putPending.push(moved);
       } else {
@@ -1016,6 +1022,29 @@ export class SyncEngine {
       baseSize: contentRef === undefined ? op.contentSize : Number(contentRef.size),
     };
     return revision.deleted ? { deleteDocs: [op.documentId], deletePending: [op.opId] } : { putDocs: [entry], deletePending: [op.opId] };
+  }
+
+  /**
+   * Records an earlier commit of `op`'s document, made before rule W moved
+   * its file aside, as the document's base. An unsent `op` stays pending on
+   * top of it (a rename to the copy name, or an edit), or is dropped when it
+   * changes nothing; a sent one is left to be acknowledged.
+   */
+  private acknowledgeEarlier(op: PendingOp, revision: Revision): JournalChange {
+    const { remote } = toIncoming(revision);
+    const entry: DocEntry = {
+      documentId: op.documentId,
+      path: remote.path,
+      kind: op.docKind,
+      baseRevId: revision.id,
+      baseHash: remote.contentHash,
+      baseSize: Number(remote.size),
+    };
+    if (op.sent) return { putDocs: [entry] };
+    if (op.kind !== "delete" && op.path === entry.path && op.contentHash === entry.baseHash) return { putDocs: [entry], deletePending: [op.opId] };
+    const rest: PendingOp = { ...op, kind: op.kind === "delete" ? "delete" : op.path !== entry.path ? "rename" : "edit" };
+    delete rest.earlierRevisionIds;
+    return { putDocs: [entry], putPending: [rest] };
   }
 
   // Read-only devices -------------------------------------------------------
