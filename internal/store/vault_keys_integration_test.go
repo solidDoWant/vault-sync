@@ -578,3 +578,42 @@ func TestRemoveMemberLetsAnOwnerRemoveThemselvesFromAPlaintextVault(t *testing.T
 	require.NoError(t, pool.QueryRow(t.Context(), `SELECT EXISTS (SELECT 1 FROM vault_members WHERE vault_id = $1 AND user_id = $2)`, created.ID, owner).Scan(&member))
 	assert.False(t, member)
 }
+
+func TestListEscrowSlotsListsEveryEpochsEscrowSlot(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+	fixture := &keyFixture{pool: pool, queries: queries}
+	fixture.owner = fixture.keyedUser(t, "owner")
+
+	vault, err := queries.CreateVault(t.Context(), fixture.owner, store.NewVault{Name: "Escrowed", Encryption: store.EncryptionE2EE, Escrow: true}, 10)
+	require.NoError(t, err)
+
+	fixture.vault = queries.InVault(vault.ID)
+
+	var wrapped [][]byte
+
+	for epoch := range int32(3) {
+		next := fixture.nextEpoch(t, epoch, fixture.owner)
+		escrow := store.KeySlot{RecipientKind: store.RecipientEscrow, RecipientID: "escrow-key", WrappedKey: randomBytes(t, 105)}
+		next.Slots = append(next.Slots, escrow)
+		wrapped = append(wrapped, escrow.WrappedKey)
+
+		_, err := fixture.vault.RotateEpoch(t.Context(), fixture.owner, next)
+		require.NoError(t, err)
+	}
+
+	slots, err := fixture.vault.ListEscrowSlots(t.Context(), 0, 2)
+	require.NoError(t, err)
+	require.Len(t, slots, 2)
+
+	rest, err := fixture.vault.ListEscrowSlots(t.Context(), slots[1].Epoch, 2)
+	require.NoError(t, err)
+	require.Len(t, rest, 1)
+
+	for index, slot := range append(slots, rest...) {
+		assert.Equal(t, int32(index+1), slot.Epoch) //nolint:gosec // small test values.
+		assert.Equal(t, store.RecipientEscrow, slot.RecipientKind)
+		assert.Equal(t, "escrow-key", slot.RecipientID)
+		assert.True(t, bytes.Equal(wrapped[index], slot.WrappedKey), "epoch %d's escrow slot", index+1)
+	}
+}

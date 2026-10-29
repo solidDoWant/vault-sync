@@ -538,7 +538,12 @@ type ListKeySlotsRequest struct {
 	// (100); larger values are capped at 1000.
 	PageSize uint32 `protobuf:"varint,2,opt,name=page_size,json=pageSize,proto3" json:"page_size,omitempty"`
 	// Opaque token from a previous response. Empty for the first page.
-	PageToken     string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	PageToken string `protobuf:"bytes,3,opt,name=page_token,json=pageToken,proto3" json:"page_token,omitempty"`
+	// Whose slots to list: unspecified or KEY_RECIPIENT_KIND_USER for the
+	// caller's own; KEY_RECIPIENT_KIND_ESCROW for the vault's escrow slots,
+	// open to editors and owners only. An escrow slot opens only with the
+	// escrow identity.
+	RecipientKind KeyRecipientKind `protobuf:"varint,4,opt,name=recipient_kind,json=recipientKind,proto3,enum=vaultsync.v1.KeyRecipientKind" json:"recipient_kind,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -594,10 +599,17 @@ func (x *ListKeySlotsRequest) GetPageToken() string {
 	return ""
 }
 
-// ListKeySlotsResponse is one page of the caller's slots.
+func (x *ListKeySlotsRequest) GetRecipientKind() KeyRecipientKind {
+	if x != nil {
+		return x.RecipientKind
+	}
+	return KeyRecipientKind_KEY_RECIPIENT_KIND_UNSPECIFIED
+}
+
+// ListKeySlotsResponse is one page of the requested slots.
 type ListKeySlotsResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// The caller's slots, in ascending epoch order.
+	// The requested slots, in ascending epoch order.
 	Slots []*KeySlot `protobuf:"bytes,1,rep,name=slots,proto3" json:"slots,omitempty"`
 	// Token for the next page; empty when there are no more.
 	NextPageToken string `protobuf:"bytes,2,opt,name=next_page_token,json=nextPageToken,proto3" json:"next_page_token,omitempty"`
@@ -1297,12 +1309,13 @@ const file_vaultsync_v1_vault_key_proto_rawDesc = "" +
 	"\x05epoch\x18\x01 \x01(\rR\x05epoch\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\tR\x06userId\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x03 \x01(\fR\tpublicKey\"l\n" +
+	"public_key\x18\x03 \x01(\fR\tpublicKey\"\xb3\x01\n" +
 	"\x13ListKeySlotsRequest\x12\x19\n" +
 	"\bvault_id\x18\x01 \x01(\tR\avaultId\x12\x1b\n" +
 	"\tpage_size\x18\x02 \x01(\rR\bpageSize\x12\x1d\n" +
 	"\n" +
-	"page_token\x18\x03 \x01(\tR\tpageToken\"k\n" +
+	"page_token\x18\x03 \x01(\tR\tpageToken\x12E\n" +
+	"\x0erecipient_kind\x18\x04 \x01(\x0e2\x1e.vaultsync.v1.KeyRecipientKindR\rrecipientKind\"k\n" +
 	"\x14ListKeySlotsResponse\x12+\n" +
 	"\x05slots\x18\x01 \x03(\v2\x15.vaultsync.v1.KeySlotR\x05slots\x12&\n" +
 	"\x0fnext_page_token\x18\x02 \x01(\tR\rnextPageToken\"j\n" +
@@ -1402,32 +1415,33 @@ var file_vaultsync_v1_vault_key_proto_depIdxs = []int32{
 	4,  // 3: vaultsync.v1.KeyEpoch.record:type_name -> vaultsync.v1.EpochRecord
 	3,  // 4: vaultsync.v1.EpochRecord.recipients:type_name -> vaultsync.v1.EpochRecipient
 	1,  // 5: vaultsync.v1.NextEpoch.slots:type_name -> vaultsync.v1.KeySlot
-	1,  // 6: vaultsync.v1.ListKeySlotsResponse.slots:type_name -> vaultsync.v1.KeySlot
-	2,  // 7: vaultsync.v1.ListEpochsResponse.epochs:type_name -> vaultsync.v1.KeyEpoch
-	6,  // 8: vaultsync.v1.ListMissingSlotsResponse.missing_slots:type_name -> vaultsync.v1.MissingSlot
-	5,  // 9: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
-	4,  // 10: vaultsync.v1.RotateEpochRequest.record:type_name -> vaultsync.v1.EpochRecord
-	20, // 11: vaultsync.v1.RotateEpochRequest.escrow_entry:type_name -> vaultsync.v1.LogEntry
-	2,  // 12: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
-	1,  // 13: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
-	20, // 14: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
-	7,  // 15: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
-	9,  // 16: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
-	11, // 17: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
-	13, // 18: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
-	15, // 19: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
-	17, // 20: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
-	8,  // 21: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
-	10, // 22: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
-	12, // 23: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
-	14, // 24: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
-	16, // 25: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
-	18, // 26: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
-	21, // [21:27] is the sub-list for method output_type
-	15, // [15:21] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	0,  // 6: vaultsync.v1.ListKeySlotsRequest.recipient_kind:type_name -> vaultsync.v1.KeyRecipientKind
+	1,  // 7: vaultsync.v1.ListKeySlotsResponse.slots:type_name -> vaultsync.v1.KeySlot
+	2,  // 8: vaultsync.v1.ListEpochsResponse.epochs:type_name -> vaultsync.v1.KeyEpoch
+	6,  // 9: vaultsync.v1.ListMissingSlotsResponse.missing_slots:type_name -> vaultsync.v1.MissingSlot
+	5,  // 10: vaultsync.v1.RotateEpochRequest.next_epoch:type_name -> vaultsync.v1.NextEpoch
+	4,  // 11: vaultsync.v1.RotateEpochRequest.record:type_name -> vaultsync.v1.EpochRecord
+	20, // 12: vaultsync.v1.RotateEpochRequest.escrow_entry:type_name -> vaultsync.v1.LogEntry
+	2,  // 13: vaultsync.v1.RotateEpochResponse.epoch:type_name -> vaultsync.v1.KeyEpoch
+	1,  // 14: vaultsync.v1.AddKeySlotsRequest.slots:type_name -> vaultsync.v1.KeySlot
+	20, // 15: vaultsync.v1.ListLogEntriesResponse.entries:type_name -> vaultsync.v1.LogEntry
+	7,  // 16: vaultsync.v1.VaultKeyService.ListKeySlots:input_type -> vaultsync.v1.ListKeySlotsRequest
+	9,  // 17: vaultsync.v1.VaultKeyService.ListEpochs:input_type -> vaultsync.v1.ListEpochsRequest
+	11, // 18: vaultsync.v1.VaultKeyService.ListMissingSlots:input_type -> vaultsync.v1.ListMissingSlotsRequest
+	13, // 19: vaultsync.v1.VaultKeyService.RotateEpoch:input_type -> vaultsync.v1.RotateEpochRequest
+	15, // 20: vaultsync.v1.VaultKeyService.AddKeySlots:input_type -> vaultsync.v1.AddKeySlotsRequest
+	17, // 21: vaultsync.v1.VaultKeyService.ListLogEntries:input_type -> vaultsync.v1.ListLogEntriesRequest
+	8,  // 22: vaultsync.v1.VaultKeyService.ListKeySlots:output_type -> vaultsync.v1.ListKeySlotsResponse
+	10, // 23: vaultsync.v1.VaultKeyService.ListEpochs:output_type -> vaultsync.v1.ListEpochsResponse
+	12, // 24: vaultsync.v1.VaultKeyService.ListMissingSlots:output_type -> vaultsync.v1.ListMissingSlotsResponse
+	14, // 25: vaultsync.v1.VaultKeyService.RotateEpoch:output_type -> vaultsync.v1.RotateEpochResponse
+	16, // 26: vaultsync.v1.VaultKeyService.AddKeySlots:output_type -> vaultsync.v1.AddKeySlotsResponse
+	18, // 27: vaultsync.v1.VaultKeyService.ListLogEntries:output_type -> vaultsync.v1.ListLogEntriesResponse
+	22, // [22:28] is the sub-list for method output_type
+	16, // [16:22] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_vaultsync_v1_vault_key_proto_init() }

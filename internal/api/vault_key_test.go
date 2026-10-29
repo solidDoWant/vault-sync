@@ -67,6 +67,18 @@ func (recorder *keyRecorder) ListKeySlots(_ context.Context, kind store.Recipien
 	return slots, recorder.err
 }
 
+func (recorder *keyRecorder) ListEscrowSlots(_ context.Context, after int32, limit int) ([]store.KeySlot, error) {
+	recorder.calls++
+	recorder.kind, recorder.recipientID, recorder.after, recorder.limit = store.RecipientEscrow, "", after, limit
+
+	slots := make([]store.KeySlot, recorder.listed)
+	for index := range slots {
+		slots[index] = store.KeySlot{Epoch: after + int32(index) + 1, RecipientKind: store.RecipientEscrow, RecipientID: "escrow-key", WrappedKey: []byte{1}} //nolint:gosec // small test values.
+	}
+
+	return slots, recorder.err
+}
+
 func (recorder *keyRecorder) ListMissingSlots(_ context.Context, afterEpoch int32, afterUser uuid.UUID, limit int) ([]store.MissingSlot, error) {
 	recorder.calls++
 	recorder.after, recorder.afterUser, recorder.limit = afterEpoch, afterUser, limit
@@ -430,6 +442,65 @@ func TestListKeySlotsListsTheCallersSlotsOnly(t *testing.T) {
 	assert.Equal(t, keyCaller.ID.String(), recorder.recipientID)
 	require.Len(t, response.Msg.GetSlots(), 1)
 	assert.Equal(t, vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER, response.Msg.GetSlots()[0].GetRecipientKind())
+}
+
+func TestListKeySlotsListsEscrowSlotsToEditorsAndOwnersOnly(t *testing.T) {
+	escrowRequest := func() *connect.Request[vaultsyncv1.ListKeySlotsRequest] {
+		return connect.NewRequest(&vaultsyncv1.ListKeySlotsRequest{RecipientKind: vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW})
+	}
+
+	for _, role := range []store.Role{store.RoleOwner, store.RoleEditor} {
+		t.Run(string(role), func(t *testing.T) {
+			recorder := &keyRecorder{listed: 2}
+			service := api.VaultKeyService{Keys: func(uuid.UUID) api.VaultKeyStore { return recorder }}
+			ctx := authz.WithMembership(auth.WithUser(t.Context(), keyCaller), authz.Membership{VaultID: uuid.New(), Role: role})
+
+			response, err := service.ListKeySlots(ctx, escrowRequest())
+			require.NoError(t, err)
+			assert.Equal(t, store.RecipientEscrow, recorder.kind)
+			require.Len(t, response.Msg.GetSlots(), 2)
+
+			for index, slot := range response.Msg.GetSlots() {
+				assert.Equal(t, uint32(index+1), slot.GetEpoch()) //nolint:gosec // small test values.
+				assert.Equal(t, vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_ESCROW, slot.GetRecipientKind())
+				assert.Equal(t, "escrow-key", slot.GetRecipientId())
+			}
+		})
+	}
+
+	t.Run("viewer", func(t *testing.T) {
+		recorder := &keyRecorder{listed: 2}
+		service := api.VaultKeyService{Keys: func(uuid.UUID) api.VaultKeyStore { return recorder }}
+		ctx := authz.WithMembership(auth.WithUser(t.Context(), keyCaller), authz.Membership{VaultID: uuid.New(), Role: store.RoleViewer})
+
+		_, err := service.ListKeySlots(ctx, escrowRequest())
+		requireCode(t, connect.CodePermissionDenied, err)
+		assert.Zero(t, recorder.calls)
+
+		response, err := service.ListKeySlots(ctx, connect.NewRequest(&vaultsyncv1.ListKeySlotsRequest{}))
+		require.NoError(t, err, "a viewer still lists their own slots")
+		assert.Len(t, response.Msg.GetSlots(), 2)
+		assert.Equal(t, store.RecipientUser, recorder.kind)
+	})
+
+	t.Run("unknown recipient kind", func(t *testing.T) {
+		recorder := &keyRecorder{listed: 2}
+		service, ctx := keyService(recorder)
+
+		_, err := service.ListKeySlots(ctx, connect.NewRequest(&vaultsyncv1.ListKeySlotsRequest{RecipientKind: vaultsyncv1.KeyRecipientKind(99)}))
+		requireCode(t, connect.CodeInvalidArgument, err)
+		assert.Zero(t, recorder.calls)
+	})
+
+	t.Run("explicit user kind lists the caller's own slots", func(t *testing.T) {
+		recorder := &keyRecorder{listed: 1}
+		service, ctx := keyService(recorder)
+
+		_, err := service.ListKeySlots(ctx, connect.NewRequest(&vaultsyncv1.ListKeySlotsRequest{RecipientKind: vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER}))
+		require.NoError(t, err)
+		assert.Equal(t, store.RecipientUser, recorder.kind)
+		assert.Equal(t, keyCaller.ID.String(), recorder.recipientID)
+	})
 }
 
 func TestListEpochsReportsTheKeyState(t *testing.T) {

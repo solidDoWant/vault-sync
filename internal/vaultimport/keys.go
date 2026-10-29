@@ -184,10 +184,44 @@ type vaultKeys struct {
 	pathKeySecret []byte
 }
 
-// vaultKeys opens the user's key slots for epoch 1 and the vault's current
-// epoch with the user's private key, and checks each key against its
-// epoch's key commitment before it is used.
-func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, privateKey []byte) (*vaultKeys, error) {
+// slotOpener opens the key slots an import reads the vault's keys from:
+// the user's own slots, or the vault's escrow slots.
+type slotOpener struct {
+	// kind is the recipient kind of the slots ListKeySlots is asked for.
+	kind vaultsyncv1.KeyRecipientKind
+	// whose names the slots in errors ("your", "the escrow").
+	whose string
+	// missing is the error format, with the epoch, for an epoch whose key
+	// no slot holds.
+	missing string
+	// open opens a slot of kind and returns the epoch key it holds. It is
+	// checked against the key commitment afterwards.
+	open func(vaultID uuid.UUID, slot *vaultsyncv1.KeySlot) ([]byte, error)
+}
+
+// userSlots opens the user's own key slots with the user's private key.
+func userSlots(privateKey []byte) slotOpener {
+	return slotOpener{
+		kind:    vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER,
+		whose:   "your",
+		missing: "you hold no key for the vault's epoch %d yet: wait until an owner's device shares it",
+		open: func(vaultID uuid.UUID, slot *vaultsyncv1.KeySlot) ([]byte, error) {
+			key, err := e2ee.OpenKeySlot(privateKey, slot.GetWrappedKey(), e2ee.KeySlot{
+				VaultID: vaultID.String(), Epoch: uint64(slot.GetEpoch()), RecipientKind: e2ee.RecipientUser, RecipientID: slot.GetRecipientId(),
+			})
+			if err != nil {
+				return nil, fmt.Errorf("your key slot for epoch %d does not open with your key", slot.GetEpoch())
+			}
+
+			return key, nil
+		},
+	}
+}
+
+// vaultKeys opens the key slots of epoch 1 and of the vault's current
+// epoch with opener, and checks each key against its epoch's key
+// commitment before it is used.
+func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, opener slotOpener) (*vaultKeys, error) {
 	commitments := map[uint64][]byte{}
 
 	var current uint64
@@ -219,20 +253,26 @@ func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, priva
 	pageToken = ""
 
 	for range maxListPages {
-		response, err := client.keys.ListKeySlots(ctx, connect.NewRequest(&vaultsyncv1.ListKeySlotsRequest{VaultId: vaultID.String(), PageToken: pageToken}))
+		response, err := client.keys.ListKeySlots(ctx, connect.NewRequest(&vaultsyncv1.ListKeySlotsRequest{
+			VaultId: vaultID.String(), PageToken: pageToken, RecipientKind: opener.kind,
+		}))
 		if err != nil {
-			return nil, fmt.Errorf("list your key slots: %w", err)
+			return nil, fmt.Errorf("list %s key slots: %w", opener.whose, err)
 		}
 
 		for _, slot := range response.Msg.GetSlots() {
 			epoch := uint64(slot.GetEpoch())
-			if (epoch != 1 && epoch != current) || slot.GetRecipientKind() != vaultsyncv1.KeyRecipientKind_KEY_RECIPIENT_KIND_USER {
+			if (epoch != 1 && epoch != current) || slot.GetRecipientKind() != opener.kind || epochKeys[epoch] != nil {
 				continue
 			}
 
-			key, err := openUserSlot(privateKey, vaultID, slot, commitments[epoch])
+			key, err := opener.open(vaultID, slot)
 			if err != nil {
 				return nil, err
+			}
+
+			if err := e2ee.VerifyKeyCommitment(key, commitments[epoch], vaultID.String(), epoch); err != nil {
+				return nil, fmt.Errorf("%s key slot for epoch %d fails the epoch's key commitment", opener.whose, epoch)
 			}
 
 			epochKeys[epoch] = key
@@ -245,28 +285,11 @@ func (client *apiClient) vaultKeys(ctx context.Context, vaultID uuid.UUID, priva
 
 	for _, epoch := range []uint64{1, current} {
 		if epochKeys[epoch] == nil {
-			return nil, fmt.Errorf("you hold no key for the vault's epoch %d yet: wait until an owner's device shares it", epoch)
+			return nil, fmt.Errorf(opener.missing, epoch)
 		}
 	}
 
 	return deriveVaultKeys(current, epochKeys[current], epochKeys[1])
-}
-
-func openUserSlot(privateKey []byte, vaultID uuid.UUID, slot *vaultsyncv1.KeySlot, commitment []byte) ([]byte, error) {
-	epoch := uint64(slot.GetEpoch())
-
-	key, err := e2ee.OpenKeySlot(privateKey, slot.GetWrappedKey(), e2ee.KeySlot{
-		VaultID: vaultID.String(), Epoch: epoch, RecipientKind: e2ee.RecipientUser, RecipientID: slot.GetRecipientId(),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("your key slot for epoch %d does not open with your key", epoch)
-	}
-
-	if err := e2ee.VerifyKeyCommitment(key, commitment, vaultID.String(), epoch); err != nil {
-		return nil, fmt.Errorf("your key slot for epoch %d fails the epoch's key commitment", epoch)
-	}
-
-	return key, nil
 }
 
 func deriveVaultKeys(epoch uint64, currentKey, firstKey []byte) (*vaultKeys, error) {

@@ -19,7 +19,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
 
-const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE] SERVER_URL VAULT_ID DIR"
+const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE | -escrow-identity-file FILE | -escrow] SERVER_URL VAULT_ID DIR"
 
 // DeviceName names the device the import's revisions are attributed to. It
 // is registered for the signed-in user for the run and removed afterwards.
@@ -57,6 +57,8 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	flags.Usage = func() { _, _ = fmt.Fprintln(stderr, usage) }
 	passphraseFile := flags.String("passphrase-file", "", "file holding your recovery passphrase, for an end-to-end encrypted vault")
 	privateKeyFile := flags.String("private-key-file", "", "file holding your private key as an age identity, for an end-to-end encrypted vault")
+	escrowIdentityFile := flags.String("escrow-identity-file", "", "file holding the deployment's escrow identity (age identity file), for an escrowed end-to-end encrypted vault")
+	escrowPrompt := flags.Bool("escrow", false, "type the deployment's escrow identity at the terminal, for an escrowed end-to-end encrypted vault")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -72,8 +74,16 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 		return 2
 	}
 
-	if *passphraseFile != "" && *privateKeyFile != "" {
-		_, _ = fmt.Fprintf(stderr, "give -passphrase-file or -private-key-file, not both\n%s\n", usage)
+	given := 0
+
+	for _, set := range []bool{*passphraseFile != "", *privateKeyFile != "", *escrowIdentityFile != "", *escrowPrompt} {
+		if set {
+			given++
+		}
+	}
+
+	if given > 1 {
+		_, _ = fmt.Fprintf(stderr, "give at most one of -passphrase-file, -private-key-file, -escrow-identity-file and -escrow\n%s\n", usage)
 
 		return 2
 	}
@@ -94,7 +104,13 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 
 	report := Report{VaultID: vaultID, Source: flags.Arg(2), Result: Result{Skipped: []Skip{}}}
 
-	secrets := secretSource{passphraseFile: *passphraseFile, privateKeyFile: *privateKeyFile, prompt: stderr}
+	secrets := secretSource{
+		passphraseFile:     *passphraseFile,
+		privateKeyFile:     *privateKeyFile,
+		escrowIdentityFile: *escrowIdentityFile,
+		escrowPrompt:       *escrowPrompt,
+		prompt:             stderr,
+	}
 
 	result, err := run(ctx, strings.TrimSuffix(serverURL.String(), "/"), vaultID, report.Source, secrets, lookup, stderr)
 	report.Result = result
@@ -149,17 +165,12 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 	target := &APITarget{client: client, vaultID: vaultID}
 
 	if encrypted {
-		secret, err := secrets.read()
+		opener, err := secrets.opener(ctx, client)
 		if err != nil {
 			return empty, err
 		}
 
-		privateKey, err := client.userPrivateKey(ctx, secret)
-		if err != nil {
-			return empty, err
-		}
-
-		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, privateKey) }
+		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, opener) }
 		if target.keys, err = target.refreshKeys(ctx); err != nil {
 			return empty, err
 		}
@@ -195,13 +206,16 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 	return result, err
 }
 
-// secretSource is where the import reads what unlocks the user's key for an
-// end-to-end encrypted vault: a passphrase file, a private key file, or else
-// a passphrase typed at the terminal. The secret itself is never an
+// secretSource is where the import reads what unlocks an end-to-end
+// encrypted vault's keys: the escrow identity from a file or typed at the
+// terminal, or the user's key from a passphrase file, a private key file,
+// or else a passphrase typed at the terminal. The secret itself is never an
 // argument.
 type secretSource struct {
-	passphraseFile string
-	privateKeyFile string
+	passphraseFile     string
+	privateKeyFile     string
+	escrowIdentityFile string
+	escrowPrompt       bool
 	// prompt is where the terminal prompt is written.
 	prompt io.Writer
 }
@@ -209,20 +223,71 @@ type secretSource struct {
 // readTerminalPassphrase reads a passphrase from the terminal without
 // echoing it; it fails when standard input is not a terminal.
 var readTerminalPassphrase = func(prompt io.Writer) (string, error) {
+	return readTerminalSecret(prompt, "Recovery passphrase: ", "the passphrase",
+		"the vault is end-to-end encrypted: give -passphrase-file, -private-key-file or -escrow-identity-file, or run the import at a terminal to type the passphrase")
+}
+
+// readTerminalEscrowIdentity reads an escrow identity from the terminal
+// without echoing it; it fails when standard input is not a terminal.
+var readTerminalEscrowIdentity = func(prompt io.Writer) (string, error) {
+	return readTerminalSecret(prompt, "Escrow identity (AGE-SECRET-KEY-PQ-1…): ", "the escrow identity",
+		"-escrow reads the escrow identity at a terminal; give -escrow-identity-file instead")
+}
+
+func readTerminalSecret(prompt io.Writer, label, what, notTerminal string) (string, error) {
 	fd := int(os.Stdin.Fd()) //nolint:gosec // a file descriptor fits an int.
 	if !term.IsTerminal(fd) {
-		return "", errors.New("the vault is end-to-end encrypted: give -passphrase-file or -private-key-file, or run the import at a terminal to type the passphrase")
+		return "", errors.New(notTerminal)
 	}
 
-	_, _ = fmt.Fprint(prompt, "Recovery passphrase: ")
-	passphrase, err := term.ReadPassword(fd)
+	_, _ = fmt.Fprint(prompt, label)
+	secret, err := term.ReadPassword(fd)
 	_, _ = fmt.Fprintln(prompt)
 
 	if err != nil {
-		return "", fmt.Errorf("read the passphrase: %w", err)
+		return "", fmt.Errorf("read %s: %w", what, err)
 	}
 
-	return string(passphrase), nil
+	return string(secret), nil
+}
+
+// opener returns what opens the vault's key slots: the escrow identity for
+// the escrow slots, or else the user's private key, unlocked through the
+// server, for the user's own slots.
+func (source secretSource) opener(ctx context.Context, client *apiClient) (slotOpener, error) {
+	switch {
+	case source.escrowIdentityFile != "":
+		identities, err := ReadEscrowIdentityFile(source.escrowIdentityFile)
+		if err != nil {
+			return slotOpener{}, err
+		}
+
+		return escrowSlots(identities), nil
+	case source.escrowPrompt:
+		typed, err := readTerminalEscrowIdentity(source.prompt)
+		if err != nil {
+			return slotOpener{}, err
+		}
+
+		identities, err := ParseEscrowIdentities(typed)
+		if err != nil {
+			return slotOpener{}, fmt.Errorf("the escrow identity: %w", err)
+		}
+
+		return escrowSlots(identities), nil
+	}
+
+	secret, err := source.read()
+	if err != nil {
+		return slotOpener{}, err
+	}
+
+	privateKey, err := client.userPrivateKey(ctx, secret)
+	if err != nil {
+		return slotOpener{}, err
+	}
+
+	return userSlots(privateKey), nil
 }
 
 func (source secretSource) read() (UserSecret, error) {
