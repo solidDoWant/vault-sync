@@ -376,3 +376,58 @@ export async function waitForServer(device: Device, check: (heads: Record<string
     timeoutMsg: `${what} never reached the server from ${device.name}`,
   });
 }
+
+/**
+ * Starts recording, in `device`'s window, what vault-sync sees and does: the
+ * vault's file events, every sync status it shows, the window's visibility
+ * and vault-sync's debug lines, each with its time. `syncRecording` returns
+ * the record; a later call starts it over.
+ */
+export async function startSyncRecording(device: Device): Promise<void> {
+  await use(device);
+  await browser.executeObsidian(({ app }, id) => {
+    const state = window as unknown as { vaultSyncRecording?: string[] };
+    const installed = state.vaultSyncRecording !== undefined;
+    state.vaultSyncRecording = [];
+    const note = (what: string) => {
+      state.vaultSyncRecording?.push(`${new Date().toISOString()} ${what}`);
+    };
+    note(`visibility ${document.visibilityState}`);
+    if (installed) return;
+    app.vault.on("create", (file) => {
+      note(`vault create ${file.path}`);
+    });
+    app.vault.on("modify", (file) => {
+      note(`vault modify ${file.path}`);
+    });
+    app.vault.on("delete", (file) => {
+      note(`vault delete ${file.path}`);
+    });
+    app.vault.on("rename", (file, oldPath) => {
+      note(`vault rename ${oldPath} -> ${file.path}`);
+    });
+    document.addEventListener("visibilitychange", () => {
+      note(`visibility ${document.visibilityState}`);
+    });
+    const plugin = (app as unknown as { plugins: { plugins: Record<string, { showStatus(status: unknown): void } | undefined> } }).plugins.plugins[id];
+    if (plugin !== undefined) {
+      const show = plugin.showStatus.bind(plugin);
+      plugin.showStatus = (status) => {
+        note(`status ${JSON.stringify(status)}`);
+        show(status);
+      };
+    }
+    const debug = console.debug.bind(console);
+    console.debug = (...args: unknown[]) => {
+      note(`debug ${args.map(String).join(" ")}`);
+      debug(...args);
+    };
+  }, pluginId);
+}
+
+/** What `startSyncRecording` recorded on `device` so far, one line per entry. */
+export async function syncRecording(device: Device): Promise<string> {
+  await use(device);
+  const lines = await browser.executeObsidian(() => (window as unknown as { vaultSyncRecording?: string[] }).vaultSyncRecording ?? []);
+  return `${device.name} (now ${new Date().toISOString()}):\n${lines.join("\n")}`;
+}

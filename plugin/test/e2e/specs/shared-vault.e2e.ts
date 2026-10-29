@@ -16,6 +16,8 @@ import {
   openSecondDevice,
   serverHeads,
   setUpDevice,
+  startSyncRecording,
+  syncRecording,
   syncStatus,
   use,
   vaultFiles,
@@ -394,6 +396,8 @@ describe("a vault shared by two users", function () {
     await use(a);
     const vaultId = await connectedVaultId();
     const { code } = await invite(VaultRole.EDITOR);
+    await startSyncRecording(a);
+    await startSyncRecording(b);
 
     await use(b);
     await join(code);
@@ -406,8 +410,18 @@ describe("a vault shared by two users", function () {
     await use(b);
     await writeNote("Shared.md", "written by the owner\nand by the member\n");
     await writeNote("From the member.md", "a note of the member's\n");
-    await waitForText(a, "Shared.md", "written by the owner\nand by the member\n");
-    await waitForText(a, "From the member.md", "a note of the member's\n");
+    // What both devices did while the member's edits travelled: the e2e
+    // output shows it on every run, and a failure carries it.
+    const travelled = (async () => {
+      await waitForText(a, "Shared.md", "written by the owner\nand by the member\n");
+      await waitForText(a, "From the member.md", "a note of the member's\n");
+    })();
+    await travelled.catch(() => undefined);
+    const recorded = `${await syncRecording(b)}\n${await syncRecording(a)}`;
+    console.log(`[P3-01] the member's edits on their way to the owner:\n${recorded}`);
+    await travelled.catch((error: unknown) => {
+      throw new Error(`${String(error)}\n${recorded}`);
+    });
 
     await use(a);
     await writeNote("Shared.md", "written by the owner\nand by the member\nand the owner again\n");
