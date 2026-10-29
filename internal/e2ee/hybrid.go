@@ -10,6 +10,7 @@ import (
 
 	"filippo.io/age"
 	"filippo.io/hpke"
+	"github.com/btcsuite/btcd/btcutil/bech32"
 )
 
 const (
@@ -67,7 +68,7 @@ func AgeRecipient(publicKey []byte) (string, error) {
 		return "", fmt.Errorf("e2ee: public key must be %d bytes, got %d", PublicKeySize, len(publicKey))
 	}
 
-	return bech32Encode(ageRecipientHRP, publicKey), nil
+	return bech32Encode(ageRecipientHRP, publicKey)
 }
 
 // ParseAgeRecipient returns the hybrid public key of an age hybrid
@@ -79,36 +80,14 @@ func ParseAgeRecipient(encoded string) ([]byte, error) {
 		return nil, fmt.Errorf("e2ee: %w", err)
 	}
 
-	lower := strings.ToLower(encoded)
-	separator := strings.LastIndexByte(lower, '1')
-	// The data part ends with a six-character checksum.
-	words := lower[separator+1 : len(lower)-6]
-	publicKey := make([]byte, 0, len(words)*5/8)
-
-	var (
-		accumulator uint32
-		bits        uint
-	)
-
-	for index := range len(words) {
-		value := strings.IndexByte(bech32Charset, words[index])
-		if value < 0 {
-			return nil, fmt.Errorf("e2ee: invalid age recipient")
-		}
-
-		accumulator = accumulator<<5 | uint32(value)
-		bits += 5
-
-		if bits >= 8 {
-			bits -= 8
-			publicKey = append(publicKey, byte(accumulator>>bits))
-		}
+	_, words, err := bech32.DecodeNoLimit(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: invalid age recipient: %w", err)
 	}
 
-	// age accepted it, but check the round trip rather than trust the
-	// arithmetic above.
-	if again, err := AgeRecipient(publicKey); err != nil || again != lower {
-		return nil, fmt.Errorf("e2ee: invalid age recipient")
+	publicKey, err := bech32.ConvertBits(words, 5, 8, false)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: invalid age recipient: %w", err)
 	}
 
 	return publicKey, nil
@@ -135,7 +114,12 @@ func AgeIdentity(privateKey []byte) (string, error) {
 		return "", fmt.Errorf("e2ee: private key must be %d bytes, got %d", PrivateKeySize, len(privateKey))
 	}
 
-	return strings.ToUpper(bech32Encode(ageIdentityHRP, privateKey)), nil
+	encoded, err := bech32Encode(ageIdentityHRP, privateKey)
+	if err != nil {
+		return "", err
+	}
+
+	return strings.ToUpper(encoded), nil
 }
 
 // SealTo encrypts plaintext to a hybrid public key as a binary age file with
@@ -201,75 +185,15 @@ func OpenFrom(recipientPrivateKey, sealed []byte) ([]byte, error) {
 	return plaintext, nil
 }
 
-const bech32Charset = "qpzry9x8gf2tvdw0s3jn54khce6mua7l"
-
 // bech32Encode encodes data as Bech32 (BIP 173) under a lowercase
-// human-readable part, without BIP 173's 90-character limit, as age does.
-func bech32Encode(hrp string, data []byte) string {
-	words := make([]byte, 0, (len(data)*8+4)/5+6)
-
-	var (
-		accumulator uint32
-		bits        uint
-	)
-
-	for _, value := range data {
-		accumulator = accumulator<<8 | uint32(value)
-		bits += 8
-
-		for bits >= 5 {
-			bits -= 5
-			words = append(words, byte(accumulator>>bits)&31)
-		}
+// human-readable part. The library's encoder has no 90-character limit,
+// which age's hybrid keys exceed; ParseAgeRecipient decodes with
+// DecodeNoLimit for the same reason.
+func bech32Encode(hrp string, data []byte) (string, error) {
+	encoded, err := bech32.EncodeFromBase256(hrp, data)
+	if err != nil {
+		return "", fmt.Errorf("e2ee: %w", err)
 	}
 
-	if bits > 0 {
-		words = append(words, byte(accumulator<<(5-bits))&31)
-	}
-
-	values := make([]byte, 0, 2*len(hrp)+1+len(words)+6)
-	for index := range len(hrp) {
-		values = append(values, hrp[index]>>5)
-	}
-
-	values = append(values, 0)
-	for index := range len(hrp) {
-		values = append(values, hrp[index]&31)
-	}
-
-	values = append(values, words...)
-	checksum := bech32Polymod(append(values, 0, 0, 0, 0, 0, 0)) ^ 1
-
-	for index := range 6 {
-		words = append(words, byte(checksum>>(5*(5-index)))&31)
-	}
-
-	var out strings.Builder
-
-	out.WriteString(hrp)
-	out.WriteByte('1')
-
-	for _, word := range words {
-		out.WriteByte(bech32Charset[word])
-	}
-
-	return out.String()
-}
-
-func bech32Polymod(values []byte) uint32 {
-	generator := [5]uint32{0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3}
-	checksum := uint32(1)
-
-	for _, value := range values {
-		top := checksum >> 25
-		checksum = (checksum&0x1ffffff)<<5 ^ uint32(value)
-
-		for index := range 5 {
-			if (top>>index)&1 == 1 {
-				checksum ^= generator[index]
-			}
-		}
-	}
-
-	return checksum
+	return encoded, nil
 }

@@ -35,7 +35,7 @@ buildGoModule {
   # Hash of the vendored Go module dependencies. Refresh it whenever go.mod or
   # go.sum change with `make update-vendor-hash` (scripts/update-vendor-hash.sh),
   # which rewrites this line; it expects exactly one `vendorHash = "...";` line.
-  vendorHash = "sha256-n/lOuBZf7YNX+5At9VB0gyCsfLBZw4lxpk2Mve114Qo=";
+  vendorHash = "sha256-KY5poDfT1WyROS7XupyDeUk9dc6CM3extgoPB7vVlLI=";
 
   subPackages = [ "cmd/vault-sync-server" ];
 
