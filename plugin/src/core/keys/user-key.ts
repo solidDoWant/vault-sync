@@ -26,7 +26,7 @@ import {
 import { generateKeyPair, publicKey as publicKeyOf } from "../e2ee/hybrid";
 
 /** The calls the key manager makes: UserKeyService (ProtocolClient.userKeys). */
-export type UserKeyClient = Pick<Client<typeof UserKeyService>, "getUserKeyParams" | "createUserKey" | "unlockUserKey">;
+export type UserKeyClient = Pick<Client<typeof UserKeyService>, "getUserKeyParams" | "createUserKey" | "unlockUserKey" | "changePassphrase">;
 
 /** An unlocked user key pair. `privateKey` must stay on the device. */
 export interface UserKeyPair {
@@ -140,7 +140,11 @@ export async function enableEncryption(client: UserKeyClient, passphrase: string
 export async function unlockUserKey(client: UserKeyClient, passphrase: string): Promise<UserKeyPair> {
   const stored = await call(() => client.getUserKeyParams({}));
   const params = argon2Params(stored.params);
-  const keys = await derivePassphraseKeys(passphrase, params.argon2, params.salt);
+  return release(client, await derivePassphraseKeys(passphrase, params.argon2, params.salt));
+}
+
+/** Has the server release the wrapped private key for `keys.authKey`, and unwraps it with `keys.wrapKey`. */
+async function release(client: UserKeyClient, keys: { wrapKey: Uint8Array; authKey: Uint8Array }): Promise<UserKeyPair> {
   const released = await call(() => client.unlockUserKey({ authKey: keys.authKey }));
   let privateKey: Uint8Array;
   try {
@@ -151,6 +155,40 @@ export async function unlockUserKey(client: UserKeyClient, passphrase: string): 
   }
   if (!equalBytes(publicKeyOf(privateKey), released.publicKey)) throw new Error("the key the server released does not match its public key");
   return { publicKey: released.publicKey, privateKey };
+}
+
+/**
+ * Changes the recovery passphrase: unlocks the key pair with `current` (so a
+ * wrong one fails as {@link unlockUserKey} does, and counts against the
+ * limit), wraps the same private key under `next`, and has the server replace
+ * the wrapping and the verifier in one compare-and-swap on the public key
+ * (ChangePassphrase). The key pair never changes, so devices that hold it
+ * keep working; a new device needs `next`. Resolves the key pair.
+ */
+export async function changePassphrase(client: UserKeyClient, current: string, next: string, params: Argon2Params = DEFAULT_ARGON2_PARAMS): Promise<UserKeyPair> {
+  const problem = passphraseProblem(next);
+  if (problem !== undefined) throw new Error(problem);
+  const stored = argon2Params((await call(() => client.getUserKeyParams({}))).params);
+  const currentKeys = await derivePassphraseKeys(current, stored.argon2, stored.salt);
+  const key = await release(client, currentKeys);
+  const { wrapped, authKey } = await wrapWithPassphrase(next, key.privateKey, userKeyAad(key.publicKey), params);
+  const header = parsePassphraseHeader(wrapped);
+  await call(() =>
+    client.changePassphrase({
+      authKey: currentKeys.authKey,
+      publicKey: key.publicKey,
+      newWrappedPrivateKey: wrapped,
+      newParams: {
+        suite: SUITE_V2,
+        memoryKib: header.params.memory,
+        iterations: header.params.iterations,
+        parallelism: header.params.parallelism,
+        salt: header.salt,
+      },
+      newAuthKey: authKey,
+    }),
+  );
+  return key;
 }
 
 /** The Argon2id parameters and salt of a stored wrapping; refuses a suite this device does not know. */

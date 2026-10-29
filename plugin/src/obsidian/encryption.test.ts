@@ -6,7 +6,7 @@ import { MAX_FAILED_ATTEMPTS, MemoryUserKeyServer } from "../core/keys/memory-us
 import { WrongPassphraseError } from "../core/keys/user-key";
 import { createProtocolClient } from "../core/protocol/client";
 import { parsePluginData, type PluginData } from "./data";
-import { enableOnDevice, encryptionState, forgetEncryptionKeys, passphraseErrorMessage, pluginDataEpochKeyStore, unlockOnDevice, type EncryptionOptions } from "./encryption";
+import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, passphraseErrorMessage, pluginDataEpochKeyStore, unlockedUserKey, unlockOnDevice, type EncryptionOptions } from "./encryption";
 
 const cheap: Argon2Params = {
   memory: 19 * 1024,
@@ -145,8 +145,9 @@ describe("end-to-end encryption on a device", ARGON2_TIMEOUT, () => {
     expect(parsePluginData(stored).userKey).toBeUndefined();
   });
 
-  it(`shows the server's retry time once ${String(MAX_FAILED_ATTEMPTS)} wrong passphrases were tried`, async () => {
-    const server = new MemoryUserKeyServer(() => Date.parse("2026-10-21T12:00:00Z"));
+  it(`[P4-03] refuses a wrong passphrase, and once ${String(MAX_FAILED_ATTEMPTS)} were tried refuses even the right one until the server's retry time`, async () => {
+    let now = Date.parse("2026-10-21T12:00:00Z");
+    const server = new MemoryUserKeyServer(() => now);
     await enableOnDevice(device(server).options, passphrase);
     const other = device(server);
     const formatTime = (time: Date) => `at ${time.toISOString()}`;
@@ -159,6 +160,45 @@ describe("end-to-end encryption on a device", ARGON2_TIMEOUT, () => {
 
     expect(passphraseErrorMessage(error, formatTime)).toBe("Too many wrong passphrases. Try again after at 2026-10-21T13:00:00.000Z.");
     expect(other.data.userKey).toBeUndefined();
+    expect(await encryptionState(other.options)).toBe("locked");
+
+    now = Date.parse("2026-10-21T13:00:00Z");
+    await unlockOnDevice(other.options, passphrase);
+    expect(await encryptionState(other.options)).toBe("unlocked");
+  });
+
+  it("[P4-04] after a passphrase change, unlocked devices keep their key and a new device needs the new passphrase", async () => {
+    const server = new MemoryUserKeyServer();
+    const first = device(server);
+    await enableOnDevice(first.options, passphrase);
+    const second = device(server);
+    await unlockOnDevice(second.options, passphrase);
+    const key = await unlockedUserKey(second.options);
+    const newPassphrase = "a different passphrase entirely";
+
+    await changePassphraseOnDevice(first.options, passphrase, newPassphrase);
+
+    for (const unlocked of [first, second]) {
+      expect(await encryptionState(unlocked.options)).toBe("unlocked");
+      expect(await unlockedUserKey(unlocked.options)).toEqual(key);
+    }
+    const fresh = device(server);
+    await expect(unlockOnDevice(fresh.options, passphrase)).rejects.toBeInstanceOf(WrongPassphraseError);
+    expect(await encryptionState(fresh.options)).toBe("locked");
+    await unlockOnDevice(fresh.options, newPassphrase);
+    expect(await unlockedUserKey(fresh.options)).toEqual(key);
+  });
+
+  it("refuses a passphrase change with a wrong current passphrase and keeps the old one", async () => {
+    const server = new MemoryUserKeyServer();
+    const first = device(server);
+    await enableOnDevice(first.options, passphrase);
+
+    await expect(changePassphraseOnDevice(first.options, "not the passphrase", "a different passphrase entirely")).rejects.toBeInstanceOf(WrongPassphraseError);
+
+    const fresh = device(server);
+    await unlockOnDevice(fresh.options, passphrase);
+    expect(await encryptionState(fresh.options)).toBe("unlocked");
   });
 });
 

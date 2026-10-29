@@ -14,7 +14,7 @@ import { oidcConfig, parsePluginData, persistRefreshToken, serialized, serverBas
 import { currentDeviceId, deviceRows, listDevices, removeOtherDevice, type DeviceRow } from "./obsidian/devices";
 import { discoverIdentityProvider } from "./obsidian/discovery";
 import { createEncryptedVault, escrowOffer, type EscrowOffer } from "./core/keys/encrypted-vault";
-import { enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
+import { changePassphraseOnDevice, enableOnDevice, encryptionState, forgetEncryptionKeys, pluginDataEpochKeyStore, unlockedUserKey, unlockOnDevice, type EncryptionOptions, type EncryptionState } from "./obsidian/encryption";
 import { HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
@@ -338,6 +338,11 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   /** Unlocks the signed-in account's encryption key on this device. */
   unlockEncryption(passphrase: string): Promise<void> {
     return unlockOnDevice(this.encryptionOptions(), passphrase);
+  }
+
+  /** Changes the signed-in account's recovery passphrase (docs/plugin.md). */
+  changePassphrase(current: string, next: string): Promise<void> {
+    return changePassphraseOnDevice(this.encryptionOptions(), current, next);
   }
 
   private encryptionOptions(): EncryptionOptions {

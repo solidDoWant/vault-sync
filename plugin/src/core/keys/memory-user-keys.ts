@@ -2,7 +2,7 @@
  * An in-memory UserKeyService for tests, following the contract of
  * proto/vaultsync/v1/user_key.proto (and the Go server, #665) for one user:
  * create-only storage, release of the wrapped key only for the right
- * auth_key, and the failed-attempt limit with its retry time. Every request
+ * auth_key, re-wrapping on a passphrase change, and the failed-attempt limit with its retry time. Every request
  * is also recorded serialized, as it would cross the network.
  */
 import { create, toBinary, type DescMessage } from "@bufbuild/protobuf";
@@ -76,6 +76,24 @@ export class MemoryUserKeyServer {
             wrappedPrivateKey: stored.wrappedPrivateKey,
             params: stored.params,
           };
+        },
+        changePassphrase: (request) => {
+          if (request.authKey.length !== 32 || request.newAuthKey.length !== 32 || request.publicKey.length !== 1216 || request.newParams === undefined) {
+            throw new ConnectError("invalid request", Code.InvalidArgument);
+          }
+          if (request.newWrappedPrivateKey.length < 1 || request.newWrappedPrivateKey.length > 256) throw new ConnectError("invalid wrapped key", Code.InvalidArgument);
+          const stored = this.require();
+          this.checkAttempt(request.authKey, stored);
+          if (!request.publicKey.every((byte, index) => byte === stored.publicKey[index])) {
+            throw new ConnectError("public_key is not the stored public key", Code.FailedPrecondition);
+          }
+          this.stored = {
+            publicKey: stored.publicKey,
+            wrappedPrivateKey: request.newWrappedPrivateKey,
+            params: request.newParams,
+            authKeyHash: sha256(request.newAuthKey),
+          };
+          return {};
         },
       });
     }),
