@@ -70,7 +70,7 @@ describe("Unsaved keystrokes in a note a sync deletes", function () {
     expect(result.editor).toBe(typed);
     expect(result.files["Landing.md"]).toBe("the synced note\n");
     const files = await waitForFileWith(typed);
-    expect(Object.entries(files).find(([, text]) => text === typed)?.[0]).toMatch(/^Landing \(Conflicted copy e2e-device \d{12}\)\.md$/u);
+    expect(Object.entries(files).find(([, text]) => text === typed)?.[0]).toMatch(/^Landing \(Conflicted copy user e2e-device \d{12}\)\.md$/u);
   });
 
   it("survive a remote document arriving at the note's path", async function () {
@@ -88,7 +88,7 @@ describe("Unsaved keystrokes in a note a sync deletes", function () {
     expect(result.editor).toBe(typed);
     expect(result.files["Fresh.md"]).toBe(lines("# Fresh", "written on another device"));
     const files = await waitForFileWith(typed);
-    expect(Object.entries(files).find(([, text]) => text === typed)?.[0]).toMatch(/^Fresh \(Conflicted copy e2e-device \d{12}\)\.md$/u);
+    expect(Object.entries(files).find(([, text]) => text === typed)?.[0]).toMatch(/^Fresh \(Conflicted copy user e2e-device \d{12}\)\.md$/u);
 
     // The saved keystrokes sync as the copy's content.
     await callHarness("syncSession");

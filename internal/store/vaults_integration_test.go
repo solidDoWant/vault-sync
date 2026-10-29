@@ -25,10 +25,10 @@ func vaultIDs(vaults []store.Vault) []uuid.UUID {
 func TestCreateVaultMakesTheCreatorItsOnlyMember(t *testing.T) {
 	queries := store.New(migratedPool(t))
 
-	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
-	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob")
+	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob", "")
 	require.NoError(t, err)
 
 	created, err := queries.CreateVault(t.Context(), alice, store.NewVault{Name: "Notes", Encryption: store.EncryptionE2EE, Escrow: true}, 10)
@@ -63,10 +63,10 @@ func TestListVaultsReportsEachMembersRoleAndPaginates(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
-	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob")
+	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob", "")
 	require.NoError(t, err)
 
 	var owned []uuid.UUID
@@ -118,7 +118,7 @@ func TestListVaultsReportsEachMembersRoleAndPaginates(t *testing.T) {
 func TestCreateVaultEnforcesTheLimitUnderConcurrency(t *testing.T) {
 	queries := store.New(migratedPool(t))
 
-	user, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	user, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
 	const (
@@ -168,13 +168,13 @@ func TestVaultMembersReturnsOnlyTheMembersAmongTheGivenUsers(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
-	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob")
+	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob", "")
 	require.NoError(t, err)
 
-	carol, err := queries.UpsertUser(t.Context(), testIssuer, "carol")
+	carol, err := queries.UpsertUser(t.Context(), testIssuer, "carol", "")
 	require.NoError(t, err)
 
 	vault, err := queries.CreateVault(t.Context(), alice, store.NewVault{Name: "Vault", Encryption: store.EncryptionNone}, 10)

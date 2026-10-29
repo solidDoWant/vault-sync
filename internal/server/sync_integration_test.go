@@ -7,11 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	jose "github.com/go-jose/go-jose/v4"
@@ -1086,6 +1088,70 @@ func TestDocumentHistoryNamesDevices(t *testing.T) {
 	page, err := mallory.historyPage(t, theirs.GetDocumentId(), 0, "")
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{mallory.deviceID: "mallory's laptop"}, names(page))
+}
+
+// History names the user and the device of every revision: a user's
+// display name is the token's name claim, falling back to its
+// preferred_username, and follows the latest token.
+func TestDocumentHistoryNamesUsersAndDevices(t *testing.T) {
+	fixture := newSyncFixture(t, api.SyncLimits{})
+
+	named := func(subject string, claims map[string]any) *syncClient {
+		values := fixture.issuer.Claims(subject, time.Now())
+		maps.Copy(values, claims)
+		token := authtest.Sign(t, fixture.key, values)
+
+		device, err := fixture.registerDevice(t, token, &vaultsyncv1.RegisterDeviceRequest{Name: subject + "'s laptop"})
+		require.NoError(t, err)
+
+		return &syncClient{fixture: fixture, token: token, deviceID: device.GetId()}
+	}
+
+	alice := named("alice", map[string]any{"name": "Alice Example", "preferred_username": "alice"})
+	alice.vaultID = fixture.createVault(t, alice.token, "Notes").GetId()
+	content := alice.content(t, "content")
+	created := alice.mustCommit(t, alice.create(t, "note.md", content))
+
+	bob := named("bob", map[string]any{"preferred_username": "bob"})
+	bob.vaultID = alice.vaultID
+	fixture.addMember(t, alice.vaultID, "bob", store.RoleEditor)
+	edited := bob.mustCommit(t, bob.next(t, created, "note.md", content, false))
+
+	page, err := alice.historyPage(t, created.GetDocumentId(), 0, "")
+	require.NoError(t, err)
+	require.Equal(t, []string{edited.GetId(), created.GetId()}, revisionIDs(page.GetRevisions()))
+
+	users := make(map[string]string)
+	for _, user := range page.GetUserNames() {
+		users[user.GetUserId()] = user.GetName()
+	}
+
+	devices := make(map[string]string)
+	for _, device := range page.GetDeviceNames() {
+		devices[device.GetDeviceId()] = device.GetName()
+	}
+
+	attribution := func(revision *vaultsyncv1.Revision) [2]string {
+		return [2]string{users[revision.GetUserId()], devices[revision.GetDeviceId()]}
+	}
+
+	assert.Len(t, page.GetUserNames(), 2, "each user is named once")
+	assert.Equal(t, [2]string{"bob", "bob's laptop"}, attribution(page.GetRevisions()[0]))
+	assert.Equal(t, [2]string{"Alice Example", "alice's laptop"}, attribution(page.GetRevisions()[1]))
+
+	// A renamed user is shown with the name of their latest token.
+	renamed := fixture.issuer.Claims("alice", time.Now())
+	renamed["name"] = "Alice Renamed"
+	alice.token = authtest.Sign(t, fixture.key, renamed)
+
+	page, err = alice.historyPage(t, created.GetDocumentId(), 0, "")
+	require.NoError(t, err)
+
+	for _, user := range page.GetUserNames() {
+		users[user.GetUserId()] = user.GetName()
+	}
+
+	assert.Equal(t, [2]string{"Alice Renamed", "alice's laptop"}, attribution(page.GetRevisions()[1]))
 }
 
 // TestDeviceNamedBeforeTheFormatRuleKeepsWorking: RegisterDevice now refuses

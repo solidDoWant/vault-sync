@@ -10,11 +10,11 @@ const utf8Length = (text: string) => encoder.encode(text).length;
 function setup(): { server: InMemoryServer; a: Device; b: Device; tick: () => void } {
   let clock = Date.UTC(2026, 9, 29, 12, 0);
   const server = new InMemoryServer({ now: () => new Date(clock) });
-  const device = (id: string) => new Device(server, id, { now: () => clock }, { now: () => clock });
+  const device = (id: string, userName: string) => new Device(server, id, { now: () => clock, userName }, { now: () => clock });
   return {
     server,
-    a: device("device-a"),
-    b: device("device-b"),
+    a: device("device-a", "Alice"),
+    b: device("device-b", "Bob"),
     tick: () => {
       clock += 60_000;
     },
@@ -60,7 +60,7 @@ describe("rule M: content merge", () => {
     await b.write("a.md", "one, local\n");
     await b.sync();
     await a.sync();
-    expect(await b.files()).toEqual({ "a.md": "one, remote\n", "a (Conflicted copy device-b 202610291200).md": "one, local\n" });
+    expect(await b.files()).toEqual({ "a.md": "one, remote\n", "a (Conflicted copy Bob device-b 202610291200).md": "one, local\n" });
     expect(await a.files()).toEqual(await b.files());
   });
 
@@ -83,7 +83,7 @@ describe("rule M: content merge", () => {
     await a.sync();
     await b.write("a.png", "local");
     await b.sync();
-    expect(await b.files()).toEqual({ "a.png": "remote", "a (Conflicted copy device-b 202610291200).png": "local" });
+    expect(await b.files()).toEqual({ "a.png": "remote", "a (Conflicted copy Bob device-b 202610291200).png": "local" });
   });
 });
 
@@ -91,31 +91,36 @@ describe("rule C: conflict copy names", () => {
   const date = new Date(Date.UTC(2026, 9, 29, 7, 5));
   const free = () => false;
 
-  it("names the copy after the file, the device and the minute, in the same folder", () => {
-    expect(conflictCopyName("notes/plan.md", "Laptop", date, free)).toBe("notes/plan (Conflicted copy Laptop 202610290705).md");
-    expect(conflictCopyName("README", "Laptop", date, free)).toBe("README (Conflicted copy Laptop 202610290705)");
+  it("names the copy after the file, the local user, the device and the minute, in the same folder", () => {
+    expect(conflictCopyName("notes/plan.md", "Alice", "Laptop", date, free)).toBe("notes/plan (Conflicted copy Alice Laptop 202610290705).md");
+    expect(conflictCopyName("README", "Alice", "Laptop", date, free)).toBe("README (Conflicted copy Alice Laptop 202610290705)");
+  });
+
+  it("reduces the user name to portable characters, and names an unnamed user \"user\"", () => {
+    expect(conflictCopyName("plan.md", "Ann: R/D (ops)", "Laptop", date, free)).toBe("plan (Conflicted copy Ann- R-D -ops- Laptop 202610290705).md");
+    expect(conflictCopyName("plan.md", " ", "Laptop", date, free)).toBe("plan (Conflicted copy user Laptop 202610290705).md");
   });
 
   it("appends 2, 3 and so on while the name is taken", () => {
-    const taken = new Set(["plan (Conflicted copy Laptop 202610290705).md", "plan (Conflicted copy Laptop 202610290705) 2.md"]);
-    expect(conflictCopyName("plan.md", "Laptop", date, (path) => taken.has(path))).toBe("plan (Conflicted copy Laptop 202610290705) 3.md");
+    const taken = new Set(["plan (Conflicted copy Alice Laptop 202610290705).md", "plan (Conflicted copy Alice Laptop 202610290705) 2.md"]);
+    expect(conflictCopyName("plan.md", "Alice", "Laptop", date, (path) => taken.has(path))).toBe("plan (Conflicted copy Alice Laptop 202610290705) 3.md");
   });
 
   it("shortens the name to fit a 255-byte part, and keeps one that fits exactly", () => {
-    const suffix = " (Conflicted copy Laptop 202610290705).md";
+    const suffix = " (Conflicted copy Alice Laptop 202610290705).md";
     const fits = "x".repeat(maxPartBytes - suffix.length);
-    expect(conflictCopyName(`${fits}.md`, "Laptop", date, free)).toBe(`${fits}${suffix}`);
-    const copy = conflictCopyName(`${fits}y.md`, "Laptop", date, free);
+    expect(conflictCopyName(`${fits}.md`, "Alice", "Laptop", date, free)).toBe(`${fits}${suffix}`);
+    const copy = conflictCopyName(`${fits}y.md`, "Alice", "Laptop", date, free);
     expect(copy).toBe(`${fits}${suffix}`);
   });
 
   it("shortens the name to fit a 1024-byte path", () => {
     const folder = `${"f".repeat(200)}/`.repeat(4);
-    const copy = conflictCopyName(`${folder}${"n".repeat(200)}.md`, "Laptop", date, free);
+    const copy = conflictCopyName(`${folder}${"n".repeat(200)}.md`, "Alice", "Laptop", date, free);
     expect(copy).not.toBeNull();
     expect(utf8Length(copy ?? "")).toBeLessThanOrEqual(maxPathBytes);
     expect(copy?.startsWith(`${folder}n`)).toBe(true);
-    expect(copy?.endsWith(" (Conflicted copy Laptop 202610290705).md")).toBe(true);
+    expect(copy?.endsWith(" (Conflicted copy Alice Laptop 202610290705).md")).toBe(true);
   });
 });
 
@@ -166,7 +171,7 @@ describe("push rules", () => {
       server.commit({ documentId: "doc-other", path: "a.md", content: "remote", deviceId: "device-a" });
     };
     await b.sync();
-    const copy = "a (Conflicted copy device-b 202610291200).md";
+    const copy = "a (Conflicted copy Bob device-b 202610291200).md";
     expect(await b.files()).toEqual({ "a.md": "remote", [copy]: "local" });
     expect(server.liveFiles()).toEqual(new Map([["a.md", "remote"], [copy, "local"]]));
     expect((await b.journal.load()).conflicts.has(copy)).toBe(true);

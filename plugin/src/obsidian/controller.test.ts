@@ -24,7 +24,7 @@ import type { SyncStatus } from "./status";
 const bytes = (value: string) => new TextEncoder().encode(value);
 
 /** An unsigned JWT for `subject`: the plugin only reads its claims. */
-const tokenFor = (subject: string) => `e30.${btoa(JSON.stringify({ sub: subject, exp: 4_000_000_000 })).replace(/=+$/, "")}.sig`;
+const tokenFor = (subject: string) => `e30.${btoa(JSON.stringify({ sub: subject, exp: 4_000_000_000, preferred_username: subject, name: `${subject} Example` })).replace(/=+$/, "")}.sig`;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -103,7 +103,7 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
     devices: createClient(DeviceService, transport),
     vaults: createClient(VaultService, transport),
   };
-  return { sync, client, registered, registrationIds, devices, removed };
+  return { sync, client, registered, registrationIds, devices, removed, vaults };
 }
 
 function revisionById(server: InMemoryServer, revisionId: string): Revision | undefined {
@@ -559,7 +559,7 @@ describe("SyncController", () => {
     expect((await f.controller.session?.listProblems())?.skipped.map(({ path, reason }) => ({ path, reason }))).toEqual([{ path: "CON.md", reason: "reserved-name" }]);
   });
 
-  it("names conflict copies after the Device name setting without its invisible characters (#557)", async () => {
+  it("names conflict copies after the signed-in user's name and the Device name setting, without its invisible characters (#557)", async () => {
     const server = fakeServer();
     server.sync.commit({ documentId: "remote", path: "a.md", content: "remote version\n" });
     const f = fixture(server, connected({ ...settings, deviceName: "\u202eWork\u200b lap\u2066top\u2069\u200d" }, server.sync.vaultId));
@@ -570,7 +570,7 @@ describe("SyncController", () => {
 
     const copies = (await f.vault.list()).filter((path) => path !== "a.md");
     expect(copies).toHaveLength(1);
-    expect(copies[0]).toMatch(/^a \(Conflicted copy Work laptop \d{12}\)\.md$/u);
+    expect(copies[0]).toMatch(/^a \(Conflicted copy alice Example Work laptop \d{12}\)\.md$/u);
     await f.controller.stop();
   });
 
@@ -819,6 +819,43 @@ describe("SyncController", () => {
       expect(await history.canRestore()).toBe(true);
       await f.controller.stop();
     });
+  });
+});
+
+describe("a viewer device", () => {
+  it("reads its role every sync cycle: as a viewer it pushes nothing and keeps a local copy, and as an editor it syncs on the next cycle", async () => {
+    const server = fakeServer({ role: VaultRole.VIEWER });
+    server.sync.commit({ documentId: "doc-a", path: "a.md", content: "shared" });
+    const copies: [string, string][] = [];
+    const readOnly: boolean[] = [];
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      onReadOnly: (value) => readOnly.push(value),
+      keepLocalCopy: (path, content) => {
+        copies.push([path, new TextDecoder().decode(content)]);
+        return Promise.resolve();
+      },
+    });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    expect(f.controller.readOnly).toBe(true);
+    expect(readOnly).toEqual([true]);
+    const head = server.sync.currentHeadSeq;
+
+    await f.vault.write("a.md", new TextEncoder().encode("changed outside Obsidian"));
+    await f.controller.syncNow();
+    expect(server.sync.currentHeadSeq).toBe(head);
+    expect(copies).toEqual([["a.md", "changed outside Obsidian"]]);
+    expect(new TextDecoder().decode(await f.vault.read("a.md"))).toBe("shared");
+
+    const member = server.vaults[0];
+    if (member === undefined) throw new Error("no vault");
+    member.role = VaultRole.EDITOR;
+    await f.vault.write("a.md", new TextEncoder().encode("an editor's edit"));
+    await f.controller.syncNow();
+    expect(f.controller.readOnly).toBe(false);
+    expect(readOnly).toEqual([true, false]);
+    expect(server.sync.liveFiles().get("a.md")).toBe("an editor's edit");
+    await f.controller.stop();
   });
 });
 

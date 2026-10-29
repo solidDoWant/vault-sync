@@ -58,10 +58,10 @@ func TestRedeemInvitationLocksTheVaultBeforeTheInvitation(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
 	require.NoError(t, err)
 
-	guest, err := queries.UpsertUser(t.Context(), testIssuer, "guest")
+	guest, err := queries.UpsertUser(t.Context(), testIssuer, "guest", "")
 	require.NoError(t, err)
 
 	vault, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: "Shared", Encryption: store.EncryptionNone}, 10)
@@ -119,7 +119,7 @@ func TestConcurrentRedemptionsOfOneCodeAdmitOneMember(t *testing.T) {
 
 	const racers = 8
 
-	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner")
+	owner, err := queries.UpsertUser(t.Context(), testIssuer, "owner", "")
 	require.NoError(t, err)
 
 	vault, err := queries.CreateVault(t.Context(), owner, store.NewVault{Name: "Shared", Encryption: store.EncryptionNone}, 10)
@@ -132,7 +132,7 @@ func TestConcurrentRedemptionsOfOneCodeAdmitOneMember(t *testing.T) {
 	users := make([]uuid.UUID, racers)
 
 	for racer := range racers {
-		users[racer], err = queries.UpsertUser(t.Context(), testIssuer, uuid.NewString())
+		users[racer], err = queries.UpsertUser(t.Context(), testIssuer, uuid.NewString(), "")
 		require.NoError(t, err)
 	}
 

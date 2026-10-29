@@ -22,6 +22,10 @@ export interface HistoryEntry {
   kind: DocumentKindName;
   contentHash: string;
   size: bigint;
+  /** The user that committed the revision. */
+  userId: string;
+  /** That user's display name, if the server named them (docs/design/sharing.md, Attribution). */
+  userName: string | undefined;
   /** The device that committed the revision. */
   deviceId: string;
   /** That device's registered name, if the server named it. */
@@ -71,15 +75,16 @@ export async function documentHistory(api: PullApi, vaultId: string, deviceId: s
   const response = await api.sync.getDocumentHistory({ vaultId, documentId, pageToken, pageSize });
   if (response.document === undefined) throw new RemoteContentError(`GetDocumentHistory for ${documentId} returned no document`);
   const names = new Map(response.deviceNames.map((device) => [device.deviceId, device.name]));
+  const users = new Map(response.userNames.map((user) => [user.userId, user.name]));
   return {
     documentId: response.document.id,
     headRevisionId: response.document.headRevId,
-    entries: response.revisions.map((revision) => historyEntry(revision, deviceId, names.get(revision.deviceId))),
+    entries: response.revisions.map((revision) => historyEntry(revision, deviceId, names.get(revision.deviceId), users.get(revision.userId))),
     nextPageToken: response.nextPageToken,
   };
 }
 
-function historyEntry(revision: Revision, deviceId: string, deviceName: string | undefined): HistoryEntry {
+function historyEntry(revision: Revision, deviceId: string, deviceName: string | undefined, userName: string | undefined): HistoryEntry {
   const { remote } = toIncoming(revision);
   return {
     revisionId: remote.revisionId,
@@ -90,6 +95,8 @@ function historyEntry(revision: Revision, deviceId: string, deviceName: string |
     kind: remote.kind,
     contentHash: remote.contentHash,
     size: remote.size,
+    userId: revision.userId,
+    userName,
     deviceId: revision.deviceId,
     deviceName,
     thisDevice: revision.deviceId !== "" && revision.deviceId === deviceId,

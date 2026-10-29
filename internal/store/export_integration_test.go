@@ -23,7 +23,7 @@ func TestAllVaultsListsEveryVaultRegardlessOfMembership(t *testing.T) {
 	var want []uuid.UUID
 
 	for _, subject := range []string{"alice", "bob", "carol"} {
-		user, err := queries.UpsertUser(t.Context(), testIssuer, subject)
+		user, err := queries.UpsertUser(t.Context(), testIssuer, subject, "")
 		require.NoError(t, err)
 
 		vault, err := queries.CreateVault(t.Context(), user, store.NewVault{Name: subject + "'s", Encryption: store.EncryptionNone}, 10)
@@ -163,7 +163,7 @@ func TestReadOnlyPoolRefusesWrites(t *testing.T) {
 	var count int
 	require.NoError(t, readOnly.QueryRow(t.Context(), "SELECT count(*) FROM vaults").Scan(&count), "reads work")
 
-	_, err = store.New(readOnly).UpsertUser(t.Context(), testIssuer, "alice")
+	_, err = store.New(readOnly).UpsertUser(t.Context(), testIssuer, "alice", "")
 
 	var pgErr *pgconn.PgError
 	require.True(t, errors.As(err, &pgErr), "got %v", err)

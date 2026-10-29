@@ -110,7 +110,7 @@ After every row, set `base = R` (rows A2, A5 and A11 drop the document instead).
 | P3 | The name is refused as unportable (§6) | Keep the file untouched, list it in the conflict view with the reason, and don't retry until it is renamed. |
 
 **Rule C: conflict copies.**
-- The name is `<name> (Conflicted copy <device name> <YYYYMMDDHHMM>).<ext>`, in the same folder. If that is taken, append ` 2`, ` 3`, and so on.
+- The name is `<name> (Conflicted copy <user> <device name> <YYYYMMDDHHMM>).<ext>`, in the same folder, after the local user and device (`sharing.md`, Attribution). If that is taken, append ` 2`, ` 3`, and so on.
 - If the name would exceed the path limits (§6), shorten `<name>`. The copy is never dropped.
 - A conflict copy is an ordinary new document. It syncs everywhere and is listed in the conflict view until the user deletes or renames it.
 - Only the device that resolves the conflict creates the copy, so there is one copy per conflict.

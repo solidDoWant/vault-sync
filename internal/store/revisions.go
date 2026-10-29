@@ -630,11 +630,14 @@ type History struct {
 	// DeviceNames maps the id of each device that committed one of
 	// Revisions to its registered name.
 	DeviceNames map[uuid.UUID]string
+	// UserNames maps the id of each user that committed one of Revisions
+	// to its display name.
+	UserNames map[uuid.UUID]string
 }
 
 // DocumentHistory returns the document documentID and up to limit of its
 // revisions with seq < before (all of them if before is zero), newest first,
-// and the names of the devices that committed them, read from one snapshot. It returns ErrNotFound if the document does not
+// and the names of the devices and users that committed them, read from one snapshot. It returns ErrNotFound if the document does not
 // exist in this vault.
 func (vault *VaultStore) DocumentHistory(ctx context.Context, documentID uuid.UUID, before int64, limit int) (History, error) {
 	var history History
@@ -661,6 +664,11 @@ func (vault *VaultStore) DocumentHistory(ctx context.Context, documentID uuid.UU
 		history.Revisions = revisions[:min(len(revisions), limit)]
 
 		history.DeviceNames, err = deviceNames(ctx, tx, history.Revisions)
+		if err != nil {
+			return err
+		}
+
+		history.UserNames, err = userNames(ctx, tx, history.Revisions)
 
 		return err
 	})
@@ -669,6 +677,38 @@ func (vault *VaultStore) DocumentHistory(ctx context.Context, documentID uuid.UU
 	}
 
 	return history, nil
+}
+
+// userNames returns the display names of the users that committed
+// revisions. It reads only those users, so it names no user without a
+// revision the caller may read.
+func userNames(ctx context.Context, tx pgx.Tx, revisions []Revision) (map[uuid.UUID]string, error) {
+	ids := make([]uuid.UUID, 0, len(revisions))
+	for _, revision := range revisions {
+		ids = append(ids, revision.UserID)
+	}
+
+	rows, err := tx.Query(ctx, `SELECT id, display_name FROM users WHERE id = ANY($1)`, ids)
+	if err != nil {
+		return nil, fmt.Errorf("read user names: %w", err)
+	}
+
+	type userName struct {
+		ID   uuid.UUID
+		Name string
+	}
+
+	users, err := pgx.CollectRows(rows, pgx.RowToStructByPos[userName])
+	if err != nil {
+		return nil, fmt.Errorf("read user names: %w", err)
+	}
+
+	names := make(map[uuid.UUID]string, len(users))
+	for _, user := range users {
+		names[user.ID] = user.Name
+	}
+
+	return names, nil
 }
 
 // deviceNames returns the names of the devices that committed revisions.

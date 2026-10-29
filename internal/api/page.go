@@ -12,7 +12,8 @@ import (
 // MinResponseLimitBytes is the smallest send limit the server may run with:
 // a ListChanges or GetDocumentHistory response carrying one revision, with
 // a MaxPathBytes path and every other field at its largest (in history,
-// with its device's MaxDeviceNameBytes name), and a
+// with its device's MaxDeviceNameBytes name and its user's
+// auth.MaxDisplayNameBytes name), and a
 // ListVaults response carrying one vault, with a MaxVaultNameBytes name,
 // fit it in either encoding (binary protobuf or JSON), compressed or not.
 // Every page holds at least one entry, so a smaller limit could make a page

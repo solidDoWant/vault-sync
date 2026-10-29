@@ -65,7 +65,7 @@ describe("vault-sync conflict view", function () {
     expect(await texts(".vault-sync-conflict .vault-sync-conflict-original")).toEqual(["Clash.md"]);
     const [copyText] = await texts(".vault-sync-conflict .vault-sync-conflict-copy");
     copy = copyText ?? "";
-    expect(copy).toMatch(/^Clash \(Conflicted copy e2e-device \d{12}\)\.md$/);
+    expect(copy).toMatch(/^Clash \(Conflicted copy user e2e-device \d{12}\)\.md$/);
     // The links name real files: the other device's version stayed in place, this device's is the copy.
     const contents = await browser.executeObsidian(
       async ({ app }, paths) => Promise.all(paths.map(async (path) => {

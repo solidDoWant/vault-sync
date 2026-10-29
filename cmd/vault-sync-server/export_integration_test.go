@@ -35,7 +35,7 @@ func TestExportSubcommand(t *testing.T) {
 	require.NoError(t, err)
 
 	queries := store.New(pool)
-	user, err := queries.UpsertUser(t.Context(), "https://auth.example/", "alice")
+	user, err := queries.UpsertUser(t.Context(), "https://auth.example/", "alice", "")
 	require.NoError(t, err)
 
 	vault, err := queries.CreateVault(t.Context(), user, store.NewVault{Name: "Notes", Encryption: store.EncryptionNone}, 10)

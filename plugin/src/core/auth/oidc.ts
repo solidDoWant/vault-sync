@@ -338,6 +338,20 @@ export function jwtSubject(token: string): string | undefined {
   return typeof sub === "string" && sub !== "" ? sub : undefined;
 }
 
+/**
+ * The display name a JWT access token asserts, without verifying it: its
+ * `name` claim, falling back to `preferred_username` (docs/design/sharing.md,
+ * Attribution), the claims the server records as the user's name. Undefined
+ * if it has neither.
+ */
+export function jwtDisplayName(token: string): string | undefined {
+  const claims = jwtClaims(token);
+  for (const claim of [claims?.name, claims?.preferred_username]) {
+    if (typeof claim === "string" && claim.trim() !== "") return claim.trim();
+  }
+  return undefined;
+}
+
 function jwtClaims(token: string): Record<string, unknown> | undefined {
   const parts = token.split(".");
   if (parts.length !== 3 || parts[1] === undefined) return undefined;

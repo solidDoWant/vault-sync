@@ -52,11 +52,11 @@ func TestPerUserLimitsUnderConcurrentWritesReferencingTheUser(t *testing.T) {
 		unboundedHost = 1 << 20
 	)
 
-	host, err := queries.UpsertUser(t.Context(), testIssuer, "host")
+	host, err := queries.UpsertUser(t.Context(), testIssuer, "host", "")
 	require.NoError(t, err)
 
 	for round := range rounds {
-		user, err := queries.UpsertUser(t.Context(), testIssuer, uuid.NewString())
+		user, err := queries.UpsertUser(t.Context(), testIssuer, uuid.NewString(), "")
 		require.NoError(t, err)
 
 		// Vaults owned by another user that the child writers add user to.

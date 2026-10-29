@@ -18,6 +18,8 @@ export interface SyncSessionOptions {
   deviceId: string;
   /** The device's name in conflict-copy names (docs/design/engine.md §5, rule C); the engine falls back to the device id. */
   deviceName?: string;
+  /** The signed-in user's display name in conflict-copy names (docs/design/sharing.md, Attribution). */
+  userName?: string;
   api: SyncApi;
   /**
    * The device's durable journal for this vault and server vault
@@ -39,6 +41,10 @@ export interface SyncSessionOptions {
   maxDownloadBytes?: number;
   /** Receives every change of the session's status. */
   onStatus?: (status: SessionStatus) => void;
+  /** Whether the device may only pull, read at the start of every sync cycle (SyncEngineOptions.readOnly). */
+  readOnly?: () => Promise<boolean>;
+  /** Keeps a local version a read-only device does not push (SyncEngineOptions.keepLocalCopy). */
+  keepLocalCopy?: (path: string, content: Uint8Array) => Promise<void>;
   /**
    * The realtime channel (SPEC.md §6.4). When set, the started session
    * subscribes to the vault and syncs after every (re)subscribe and every
@@ -198,6 +204,7 @@ export class SyncSession {
       vaultId: options.vaultId,
       deviceId: options.deviceId,
       ...(options.deviceName === undefined ? {} : { deviceName: options.deviceName }),
+      ...(options.userName === undefined ? {} : { userName: options.userName }),
       api: this.gatedApi(),
       vault: this.gateLocal(options.vault, ["list", "read", "write", "rename", "delete", "stat", "replace"]),
       journal: this.gateLocal(options.journal),
@@ -205,6 +212,8 @@ export class SyncSession {
       intervalMs: options.syncIntervalMs,
       ...(options.pathRules === undefined ? {} : { pathRules: options.pathRules }),
       ...(options.maxDownloadBytes === undefined ? {} : { maxFileBytes: options.maxDownloadBytes }),
+      ...(options.readOnly === undefined ? {} : { readOnly: options.readOnly }),
+      ...(options.keepLocalCopy === undefined ? {} : { keepLocalCopy: options.keepLocalCopy }),
       onChange: () => {
         void this.report();
       },

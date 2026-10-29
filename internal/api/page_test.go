@@ -16,6 +16,7 @@ import (
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/internal/api"
+	"github.com/solidDoWant/vault-sync/internal/auth"
 )
 
 // Startup requires the send limit to be at least MinResponseLimitBytes, and
@@ -60,6 +61,8 @@ func TestOneRevisionResponsesFitTheMinimumLimit(t *testing.T) {
 			NextPageToken: strings.Repeat("A", 64),
 			// The revision's device, with the name JSON expands most.
 			DeviceNames: []*vaultsyncv1.DeviceName{{DeviceId: id, Name: strings.Repeat(`"`, api.MaxDeviceNameBytes)}},
+			// The revision's user, likewise.
+			UserNames: []*vaultsyncv1.UserName{{UserId: id, Name: strings.Repeat(`"`, auth.MaxDisplayNameBytes)}},
 		},
 		"ListVaultsResponse": &vaultsyncv1.ListVaultsResponse{
 			Vaults: []*vaultsyncv1.Vault{{
