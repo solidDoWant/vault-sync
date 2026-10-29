@@ -210,7 +210,7 @@ describe("the resync after a server restore", () => {
       expect((await b.journal.load()).pending).toEqual([]);
     }
 
-    it("keeps a note re-created at a deleted note's name once, and its later edits sync", async () => {
+    it("keeps a note re-created at a deleted note's name, and its later edits sync", async () => {
       const server = new InMemoryServer();
       const a = new Device(server, "device-a");
       const b = new Device(server, "device-b");
