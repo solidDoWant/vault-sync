@@ -5208,6 +5208,9 @@ abstract module RoundG6 refines RoundGuarantees {
     assert PassNUD(platform, device, accepted, start);
     var rows0 := journal.documents;
     var listing0 := input.listing;
+    assert start.journal.documents == rows0 && start.listing == listing0;
+    assert forall i | 0 <= i < |start.effects| :: start.effects[i] == Pull(journal.cursor);
+    assert forall e | e in rows0 :: AheadAboveBase(rows0[e]);
     PassKeptStart(platform, d, accepted, start);
     RetryKeepsKept(platform, device, d, accepted, rows0, listing0, start, WaitingRows(journal.documents), input, revs, first);
     RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
