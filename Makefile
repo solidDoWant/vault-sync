@@ -27,7 +27,7 @@ vet: ## Run go vet against code.
 	go vet ./...
 
 .PHONY: lint
-lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin and sim/).
+lint: plugin-lint ## Run golangci-lint, buf lint and buf breaking vs master (Go/proto) plus eslint + tsc (plugin).
 	golangci-lint run ./...
 	buf lint
 	./scripts/buf-breaking.sh
@@ -37,11 +37,10 @@ lint-fix: ## Run golangci-lint and perform fixes.
 	golangci-lint run --fix ./...
 
 .PHONY: test
-test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + nightly-simulation report tests + acceptance scoreboard tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
+test: fmt vet plugin-test ## Run unit tests: Go (race detector) + plugin vitest + buf breaking check tests + flake source check + acceptance scoreboard tests + release script tests + test-image pull/cache script tests + agent wait-ci script and scheduler tests + native versitygw pin check.
 	go test -race -count=1 ./...
 	./scripts/buf-breaking_test.sh
 	./scripts/flake-source_test.sh
-	./scripts/sim-nightly-report_test.sh
 	./scripts/acceptance-scoreboard_test.py
 	./scripts/npm-audit_test.sh
 	./scripts/test-images_test.sh
@@ -57,17 +56,6 @@ test-integration: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run integrati
 .PHONY: test-integration-postgres14
 test-integration-postgres14: ## Run the store/migration integration tests and the rolling-upgrade test against PostgreSQL 14, the minimum supported version (docker compose; needs Docker).
 	./scripts/test-integration-postgres14.sh
-
-.PHONY: test-sim
-test-sim: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the multi-client sync simulation against a real server on PostgreSQL + S3 (docker compose; tune with SIM_SEEDS, SIM_STEPS, SIM_CLIENTS, SIM_ENGINES, SIM_SEED, SIM_FAITHFUL_FS, SIM_REGRESSION_DIR).
-	./scripts/test-sim.sh
-
-PROPERTY_RUNS ?= 100000
-PROPERTY_SEED ?= 563
-
-.PHONY: test-properties
-test-properties: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the engine property suite (plugin/src/core/engine/properties.test.ts) at nightly size: PROPERTY_RUNS cases per property (default 100000) from PROPERTY_SEED (default 563).
-	cd $(PLUGIN_DIR) && VAULT_SYNC_PROPERTY_RUNS="$(PROPERTY_RUNS)" VAULT_SYNC_PROPERTY_SEED="$(PROPERTY_SEED)" npx vitest run src/core/engine/properties.test.ts
 
 .PHONY: test-e2e
 test-e2e: plugin-build ## Run the plugin e2e suite in a pinned real Obsidian (wdio-obsidian-service; headless via xvfb) against a real server (docker compose; VAULT_SYNC_E2E_MOBILE=1 emulates mobile).
@@ -113,7 +101,7 @@ plugin-test: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run the plugin's v
 	cd $(PLUGIN_DIR) && npm test
 
 .PHONY: plugin-lint
-plugin-lint: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run eslint and tsc --noEmit over the plugin and the simulation harness (sim/).
+plugin-lint: $(PLUGIN_DIR)/node_modules/.package-lock.json ## Run eslint and tsc --noEmit over the plugin.
 	cd $(PLUGIN_DIR) && npm run lint
 	cd $(PLUGIN_DIR) && npm run typecheck
 

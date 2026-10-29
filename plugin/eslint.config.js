@@ -18,8 +18,7 @@ const MAIN_MESSAGE = "src/core must not import the plugin entry point (src/main.
 
 // The import fence of the platform-independent sync engine: no Obsidian, no
 // src/obsidian adapter, no plugin entry point, no globals. Applied to src/core
-// below and to the simulation harness by sim/eslint.config.js, which drives
-// the engine in Node.
+// below.
 export const coreFenceRules = {
   // Static imports, re-exports and `import x = require(...)`.
   "no-restricted-imports": [
@@ -61,7 +60,7 @@ export const coreFenceRules = {
 };
 
 export default tseslint.config(
-  { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts", "vitest.integration.config.ts", "vitest.sim.config.ts", "wdio.conf.mts", "wdio.android.conf.mts", "test/e2e/harness/dist/"] },
+  { ignores: ["dist/", "node_modules/", "src/gen/", "*.config.*js", "vitest.config.ts", "vitest.integration.config.ts", "wdio.conf.mts", "wdio.android.conf.mts", "test/e2e/harness/dist/"] },
   js.configs.recommended,
   ...tseslint.configs.strictTypeChecked,
   {
@@ -73,8 +72,8 @@ export default tseslint.config(
     },
   },
   {
-    // The sync engine must stay platform-independent so the simulation
-    // harness can drive it against an in-memory vault (SPEC.md §4).
+    // The sync engine must stay platform-independent so its tests can drive
+    // it against an in-memory vault (SPEC.md §4).
     // test/core-import-fence.test.ts proves each form below is rejected.
     // `src/core/**` (rather than an extension list) applies the fence to
     // every file eslint lints there, whatever its extension (.ts, .mts, .cts,

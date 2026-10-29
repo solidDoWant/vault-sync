@@ -6,13 +6,13 @@
 //   soon as one file reaches obsidian.d.ts, whether through an import, a
 //   `/// <reference>` or a transitive import of src/main.ts or src/obsidian.
 //   So every source file of the program must come from an allowed place
-//   (src/core, sim/, generated code, dependencies other than obsidian).
-// - Code in src/core and sim/ is what the eslint fence and this check police,
+//   (src/core, generated code, dependencies other than obsidian).
+// - Code in src/core is what the eslint fence and this check police,
 //   so it must be plain `.ts` modules: no other extensions eslint might not
 //   fence, no declaration files, no triple-slash directives, no
 //   `declare global`, and no imports that resolve to JavaScript (which the
 //   bundler would ship without any of these checks).
-// - Packages imported by src/core and sim/ must be declared in package.json
+// - Packages imported by src/core must be declared in package.json
 //   (dependencies or devDependencies, or their @types package), and never be
 //   obsidian: node_modules also holds obsidian's own dependencies, such as
 //   @codemirror/view and moment, whose APIs are DOM- or Obsidian-only. Only
@@ -34,7 +34,7 @@ export const pluginDir = fileURLToPath(new URL("..", import.meta.url));
 export const coreConfig = "tsconfig.core.json";
 
 /** Directories (relative to plugin/, `/`-separated) whose code this check and the eslint fence police. */
-const ownedDirs = ["src/core/", "../sim/"];
+const ownedDirs = ["src/core/"];
 /** Directories the program may additionally read from. */
 const dependencyDirs = ["src/gen/", "node_modules/"];
 const obsidianPattern = /(^|\/)node_modules\/obsidian\//;
@@ -152,7 +152,7 @@ function ownedFileProblems(sourceFile: ts.SourceFile, program: ts.Program, host:
   const options = program.getCompilerOptions();
   for (const imported of ts.preProcessFile(sourceFile.text, true, true).importedFiles) {
     if (packageOf(imported.fileName) === "obsidian") {
-      problems.push(`${fileName}: import "${imported.fileName}" is not allowed; src/core and sim/ must not depend on Obsidian.`);
+      problems.push(`${fileName}: import "${imported.fileName}" is not allowed; src/core must not depend on Obsidian.`);
     } else if (!isDeclaredImport(imported.fileName, declared)) {
       problems.push(`${fileName}: import "${imported.fileName}" is not a declared dependency; add it to package.json dependencies or devDependencies.`);
     }
@@ -201,7 +201,7 @@ export function checkCoreProgram(extraRootFiles: readonly string[] = [], virtual
     if (isOwned(fileName)) {
       problems.push(...ownedFileProblems(sourceFile, program, host, declared));
     } else if (!leaked.has(fileName) && !dependencyDirs.some((dir) => fileName.startsWith(dir)) && !fileName.endsWith(".json")) {
-      problems.push(`${coreConfig}: ${fileName} is part of the src/core program but outside src/core, sim/, src/gen and dependencies, so it is not fenced.`);
+      problems.push(`${coreConfig}: ${fileName} is part of the src/core program but outside src/core, src/gen and dependencies, so it is not fenced.`);
     }
   }
   problems.push(...coreDirectoryProblems(virtualFiles));

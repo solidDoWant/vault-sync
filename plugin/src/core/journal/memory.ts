@@ -13,7 +13,7 @@ interface State {
   nextIntentId: number;
 }
 
-/** A non-durable Journal for unit tests and the simulation harness. */
+/** A non-durable Journal for unit tests. */
 export class InMemoryJournal implements Journal {
   private state: State = {
     cursor: 0n,
