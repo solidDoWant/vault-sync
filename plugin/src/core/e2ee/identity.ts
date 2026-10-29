@@ -9,11 +9,12 @@
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { equalBytes, randomBytes } from "@noble/ciphers/utils.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
+import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { base32crockford, bech32 } from "@scure/base";
 
 import { DecryptError, KEY_SIZE, NONCE_SIZE, open, sealWithNonce } from "./e2ee";
-import { openFrom, PRIVATE_KEY_SIZE, PUBLIC_KEY_SIZE, publicKey, sealTo } from "./hybrid";
+import { PRIVATE_KEY_SIZE, PUBLIC_KEY_SIZE, publicKey } from "./hybrid";
 import { concat, uuidBytes } from "./keyslot";
 
 /** The size of a user secret: kem_seed (32) || sign_seed (32). */
@@ -185,35 +186,58 @@ export function formatFingerprint(value: Uint8Array): string {
   return (encoded.match(/.{1,4}/g) ?? []).join(" ");
 }
 
-/** The Ed25519 seed of an invitation's signing key, from its 16-byte secret. */
-export function inviteSignSeed(secret: Uint8Array, vaultId: string, invitationId: string): Uint8Array {
+function inviteKey(secret: Uint8Array, vaultId: string, invitationId: string, info: string): Uint8Array {
   requireLength("invitation secret", secret, 16);
-  return hkdf(sha256, secret, uuidBytes("vault id", vaultId), concat(label(INVITE_SIGN_LABEL), uuidBytes("invitation id", invitationId)), 32);
+  return hkdf(sha256, secret, uuidBytes("vault id", vaultId), concat(label(info), uuidBytes("invitation id", invitationId)), 32);
 }
 
-/** What an inviting device seals to an invitation. */
+/** The Ed25519 seed of an invitation's signing key, from its 16-byte secret. */
+export function inviteSignSeed(secret: Uint8Array, vaultId: string, invitationId: string): Uint8Array {
+  return inviteKey(secret, vaultId, invitationId, INVITE_SIGN_LABEL);
+}
+
+/** The key that authenticates an invitation's anchor, from its 16-byte secret. */
+export function inviteMacKey(secret: Uint8Array, vaultId: string, invitationId: string): Uint8Array {
+  return inviteKey(secret, vaultId, invitationId, INVITE_ANCHOR_LABEL);
+}
+
+/** The size of an invite anchor: genesis hash, inviter fingerprint and their MAC. */
+export const INVITE_ANCHOR_SIZE = 3 * HASH_SIZE;
+
+/** What an inviting device gives an invitation: the genesis hash and its own fingerprint. */
 export interface InviteAnchor {
-  vaultId: string;
   genesisHash: Uint8Array;
   inviterFingerprint: Uint8Array;
 }
 
-/** Seals the anchor to the invitation's hybrid public key. */
-export async function sealInviteAnchor(invitationPublicKey: Uint8Array, anchor: InviteAnchor): Promise<Uint8Array> {
-  requireLength("genesis hash", anchor.genesisHash, HASH_SIZE);
-  requireLength("inviter fingerprint", anchor.inviterFingerprint, HASH_SIZE);
-  return sealTo(invitationPublicKey, concat(label(INVITE_ANCHOR_LABEL), uuidBytes("vault id", anchor.vaultId), anchor.genesisHash, anchor.inviterFingerprint));
+function inviteAnchorMac(macKey: Uint8Array, vaultId: string, invitationId: string, genesisHash: Uint8Array, inviterFingerprint: Uint8Array): Uint8Array {
+  return hmac(sha256, macKey, concat(label(INVITE_ANCHOR_LABEL), uuidBytes("vault id", vaultId), uuidBytes("invitation id", invitationId), genesisHash, inviterFingerprint));
 }
 
-/** Opens an invite anchor of `vaultId`; throws {@link DecryptError} for any other vault or format. */
-export async function openInviteAnchor(invitationPrivateKey: Uint8Array, sealed: Uint8Array, vaultId: string): Promise<InviteAnchor> {
-  const prefix = concat(label(INVITE_ANCHOR_LABEL), uuidBytes("vault id", vaultId));
-  const plaintext = await openFrom(invitationPrivateKey, sealed);
-  if (plaintext.length !== prefix.length + 2 * HASH_SIZE || !hasPrefix(plaintext, prefix)) {
-    throw new DecryptError();
-  }
-  const rest = plaintext.subarray(prefix.length);
-  return { vaultId, genesisHash: rest.slice(0, HASH_SIZE), inviterFingerprint: rest.slice(HASH_SIZE) };
+/**
+ * genesis_hash (32) || inviter_fingerprint (32) || HMAC-SHA256(invite_mac_key,
+ * "vault-sync/v1/invite-anchor" || uuid(vault_id) || uuid(invitation_id) || genesis_hash || inviter_fingerprint).
+ */
+export function makeInviteAnchor(secret: Uint8Array, vaultId: string, invitationId: string, anchor: InviteAnchor): Uint8Array {
+  requireLength("genesis hash", anchor.genesisHash, HASH_SIZE);
+  requireLength("inviter fingerprint", anchor.inviterFingerprint, HASH_SIZE);
+  const tag = inviteAnchorMac(inviteMacKey(secret, vaultId, invitationId), vaultId, invitationId, anchor.genesisHash, anchor.inviterFingerprint);
+  return concat(anchor.genesisHash, anchor.inviterFingerprint, tag);
+}
+
+/**
+ * Checks an invite anchor of `vaultId` and `invitationId` against the
+ * invitation secret, comparing the MAC in constant time, and returns what it
+ * holds. Throws {@link SignatureError} for any other vault, invitation,
+ * secret, or a changed or malformed anchor.
+ */
+export function verifyInviteAnchor(secret: Uint8Array, vaultId: string, invitationId: string, encoded: Uint8Array): InviteAnchor {
+  if (encoded.length !== INVITE_ANCHOR_SIZE) throw new SignatureError();
+  const genesisHash = encoded.slice(0, HASH_SIZE);
+  const inviterFingerprint = encoded.slice(HASH_SIZE, 2 * HASH_SIZE);
+  const expected = inviteAnchorMac(inviteMacKey(secret, vaultId, invitationId), vaultId, invitationId, genesisHash, inviterFingerprint);
+  if (!equalBytes(expected, encoded.subarray(2 * HASH_SIZE))) throw new SignatureError();
+  return { genesisHash, inviterFingerprint };
 }
 
 /** One entry of an anchor list. */

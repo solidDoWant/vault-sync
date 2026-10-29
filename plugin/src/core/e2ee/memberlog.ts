@@ -29,6 +29,7 @@ import {
   uuidString,
   verifySignature,
 } from "./identity";
+import { PUBLIC_KEY_SIZE } from "./hybrid";
 import { concat, MAX_RECIPIENT_ID_SIZE, uuidBytes } from "./keyslot";
 
 const LOG_ENTRY_LABEL = "vault-sync/v1/log-entry";
@@ -111,10 +112,10 @@ export function genesisPayload(creator: Bundle, escrow: EscrowBundle | undefined
   return concat(encodeBundle(creator), escrowPayload(escrow));
 }
 
-/** uuid(invitation_id) || role || invite_sign_pub. */
-export function invitePayload(invitationId: string, role: number, inviteSignPub: Uint8Array): Uint8Array {
-  if (!validRole(role) || inviteSignPub.length !== SIGN_PUBLIC_KEY_SIZE) throw new Error("e2ee: malformed invite");
-  return concat(uuidBytes("invitation id", invitationId), Uint8Array.of(role), inviteSignPub);
+/** uuid(invitation_id) || role || invite_sign_pub (32) || invitation_kem_pub (1216). */
+export function invitePayload(invitationId: string, role: number, inviteSignPub: Uint8Array, invitationKemPub: Uint8Array): Uint8Array {
+  if (!validRole(role) || inviteSignPub.length !== SIGN_PUBLIC_KEY_SIZE || invitationKemPub.length !== PUBLIC_KEY_SIZE) throw new Error("e2ee: malformed invite");
+  return concat(uuidBytes("invitation id", invitationId), Uint8Array.of(role), inviteSignPub, invitationKemPub);
 }
 
 /** uuid(id): the payload of revoke invitation, remove member and leave. */
@@ -156,6 +157,8 @@ export interface Invitation {
   id: string;
   role: number;
   signPub: Uint8Array;
+  /** The invitation's hybrid public key, the recipient of its slots. */
+  kemPub: Uint8Array;
 }
 
 /** The membership after the entry at `seq`. */
@@ -243,14 +246,14 @@ function applyEntry(vaultId: string, state: LogState, used: Set<string>, entry: 
       break;
     }
     case EntryType.invite: {
-      if (payload.length !== 16 + 1 + SIGN_PUBLIC_KEY_SIZE) throw new Error("malformed invite");
+      if (payload.length !== 16 + 1 + SIGN_PUBLIC_KEY_SIZE + PUBLIC_KEY_SIZE) throw new Error("malformed invite");
       const id = uuidString(payload.subarray(0, 16));
       const role = payload[16] ?? 0;
       if (!validRole(role)) throw new Error("unknown role");
       requireOwner();
       if (used.has(id)) throw new Error("invitation id already used");
       used.add(id);
-      invitations.set(id, { id, role, signPub: payload.slice(17) });
+      invitations.set(id, { id, role, signPub: payload.slice(17, 17 + SIGN_PUBLIC_KEY_SIZE), kemPub: payload.slice(17 + SIGN_PUBLIC_KEY_SIZE) });
       break;
     }
     case EntryType.revokeInvitation: {
@@ -375,18 +378,16 @@ function compareBytes(left: Uint8Array, right: Uint8Array): number {
 
 /**
  * The sorted recipients an epoch at `state` must list: every member, every
- * pending invitation and the escrow key if escrow is on. `invitationKeys`
- * gives each pending invitation's hybrid public key by invitation id.
+ * pending invitation and the escrow key if escrow is on, each with the hash
+ * of its public key from the log.
  */
-export function epochRecipients(state: LogState, invitationKeys: ReadonlyMap<string, Uint8Array>): EpochRecipient[] {
+export function epochRecipients(state: LogState): EpochRecipient[] {
   const recipients: EpochRecipient[] = [];
   for (const [userId, member] of state.members) {
     recipients.push({ kind: 0x01, id: uuidBytes("user id", userId), keyHash: sha256(member.bundle.kemPub) });
   }
-  for (const id of state.invitations.keys()) {
-    const key = invitationKeys.get(id);
-    if (key === undefined) throw new Error(`e2ee: no public key for invitation ${id}`);
-    recipients.push({ kind: 0x03, id: uuidBytes("invitation id", id), keyHash: sha256(key) });
+  for (const [id, invitation] of state.invitations) {
+    recipients.push({ kind: 0x03, id: uuidBytes("invitation id", id), keyHash: sha256(invitation.kemPub) });
   }
   if (state.escrow !== undefined) {
     recipients.push({ kind: 0x02, id: encoder.encode(escrowKeyId(state.escrow)), keyHash: sha256(encoder.encode(state.escrow.recipient)) });
@@ -400,7 +401,7 @@ export function epochRecipients(state: LogState, invitationKeys: ReadonlyMap<str
  * are exactly {@link epochRecipients} there in sorted order, and epoch 1 has
  * an all-zero previous commitment. Throws {@link EpochRecordError}.
  */
-export function verifyEpochRecord(vaultId: string, states: readonly LogState[], invitationKeys: ReadonlyMap<string, Uint8Array>, record: EpochRecord): void {
+export function verifyEpochRecord(vaultId: string, states: readonly LogState[], record: EpochRecord): void {
   if (record.vaultId !== vaultId || record.epoch === 0 || record.logSeq === 0 || record.logSeq > states.length) throw new EpochRecordError();
   const state = states[record.logSeq - 1];
   if (state === undefined || !equalBytes(state.hash, record.logHash)) throw new EpochRecordError();
@@ -408,7 +409,7 @@ export function verifyEpochRecord(vaultId: string, states: readonly LogState[], 
   let expected: EpochRecipient[];
   try {
     if (!ownerSigned(state, epochRecordBody(record), record.signature)) throw new EpochRecordError();
-    expected = epochRecipients(state, invitationKeys);
+    expected = epochRecipients(state);
   } catch {
     throw new EpochRecordError();
   }

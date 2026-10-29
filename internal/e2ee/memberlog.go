@@ -21,6 +21,8 @@ const (
 	// MaxEntryPayloadSize bounds the payload of a log entry. The largest is a
 	// genesis with an escrow bundle.
 	MaxEntryPayloadSize = BundleSize + 1 + len(escrowBundleLabel) + SignPublicKeySize + 4 + MaxEscrowRecipientSize
+
+	invitePayloadSize = 16 + 1 + SignPublicKeySize + PublicKeySize
 )
 
 // ErrLog is returned when a membership log does not verify: a broken link, a
@@ -131,18 +133,18 @@ func GenesisPayload(creator Bundle, escrow *EscrowBundle) ([]byte, error) {
 	return slices.Concat(bundle, escrowPart), nil
 }
 
-// InvitePayload returns uuid(invitation_id) || role || invite_sign_pub.
-func InvitePayload(invitationID string, role Role, inviteSignPub []byte) ([]byte, error) {
+// InvitePayload returns uuid(invitation_id) || role || invite_sign_pub (32) || invitation_kem_pub (1216).
+func InvitePayload(invitationID string, role Role, inviteSignPub, invitationKEMPub []byte) ([]byte, error) {
 	invitation, err := canonicalUUID(invitationID)
 	if err != nil {
 		return nil, fmt.Errorf("e2ee: invitation id: %w", err)
 	}
 
-	if !role.valid() || len(inviteSignPub) != SignPublicKeySize {
+	if !role.valid() || len(inviteSignPub) != SignPublicKeySize || len(invitationKEMPub) != PublicKeySize {
 		return nil, errors.New("e2ee: malformed invite")
 	}
 
-	return slices.Concat(invitation, []byte{byte(role)}, inviteSignPub), nil
+	return slices.Concat(invitation, []byte{byte(role)}, inviteSignPub, invitationKEMPub), nil
 }
 
 // IDPayload returns uuid(id), the payload of revoke invitation, remove member and leave.
@@ -220,6 +222,8 @@ type Invitation struct {
 	ID      string
 	Role    Role
 	SignPub []byte
+	// KEMPub is the invitation's hybrid public key, the recipient of its slots.
+	KEMPub []byte
 }
 
 // LogState is the membership after the entry at Seq.
@@ -356,7 +360,7 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 		next.Members[creator.UserID] = Member{Bundle: creator, Role: RoleOwner}
 		next.Escrow, next.lastEscrow = escrow, escrow
 	case EntryInvite:
-		if len(payload) != 16+1+SignPublicKeySize {
+		if len(payload) != invitePayloadSize {
 			return LogState{}, errors.New("malformed invite")
 		}
 
@@ -379,7 +383,9 @@ func applyEntry(vaultID string, state LogState, used map[string]bool, entry Entr
 		}
 
 		used[id] = true
-		next.Invitations[id] = Invitation{ID: id, Role: role, SignPub: slices.Clone(payload[17:])}
+		next.Invitations[id] = Invitation{
+			ID: id, Role: role, SignPub: slices.Clone(payload[17 : 17+SignPublicKeySize]), KEMPub: slices.Clone(payload[17+SignPublicKeySize:]),
+		}
 	case EntryRevokeInvitation:
 		id, err := uuidString(payload)
 		if err != nil {

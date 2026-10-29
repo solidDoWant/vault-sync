@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base32"
 	"encoding/binary"
@@ -171,9 +172,9 @@ func FormatFingerprint(fingerprint []byte) string {
 	return strings.Join(groups, " ")
 }
 
-// InviteSignSeed derives the Ed25519 seed of an invitation's signing key
-// from the 16-byte invitation secret.
-func InviteSignSeed(secret []byte, vaultID, invitationID string) ([]byte, error) {
+// inviteKey derives a 32-byte key from the 16-byte invitation secret:
+// HKDF-SHA256(secret, salt = uuid(vault_id), info = label || uuid(invitation_id)).
+func inviteKey(secret []byte, vaultID, invitationID, label string) ([]byte, error) {
 	if len(secret) != inviteSecretSize {
 		return nil, fmt.Errorf("e2ee: invitation secret must be %d bytes, got %d", inviteSecretSize, len(secret))
 	}
@@ -188,70 +189,98 @@ func InviteSignSeed(secret []byte, vaultID, invitationID string) ([]byte, error)
 		return nil, fmt.Errorf("e2ee: invitation id: %w", err)
 	}
 
-	seed, err := hkdf.Key(sha256.New, secret, vault, inviteSignLabel+string(invitation), ed25519.SeedSize)
+	key, err := hkdf.Key(sha256.New, secret, vault, label+string(invitation), KeySize)
 	if err != nil {
 		return nil, fmt.Errorf("e2ee: %w", err)
 	}
 
-	return seed, nil
+	return key, nil
 }
 
-// InviteAnchor is what an inviting device seals to an invitation: the
-// vault's genesis hash and the inviter's fingerprint.
+// InviteSignSeed derives the Ed25519 seed of an invitation's signing key
+// from the 16-byte invitation secret.
+func InviteSignSeed(secret []byte, vaultID, invitationID string) ([]byte, error) {
+	return inviteKey(secret, vaultID, invitationID, inviteSignLabel)
+}
+
+// InviteMACKey derives the key that authenticates an invitation's anchor
+// from the 16-byte invitation secret.
+func InviteMACKey(secret []byte, vaultID, invitationID string) ([]byte, error) {
+	return inviteKey(secret, vaultID, invitationID, inviteAnchorLabel)
+}
+
+// InviteAnchorSize is the size of an invite anchor: genesis hash, inviter
+// fingerprint and their MAC.
+const InviteAnchorSize = HashSize + FingerprintSize + MACSize
+
+// InviteAnchor is what an inviting device gives an invitation: the vault's
+// genesis hash and the inviter's fingerprint.
 type InviteAnchor struct {
-	VaultID            string
 	GenesisHash        []byte
 	InviterFingerprint []byte
 }
 
-func (anchor InviteAnchor) encode() ([]byte, error) {
-	vault, err := canonicalUUID(anchor.VaultID)
+func inviteAnchorMAC(macKey []byte, vaultID, invitationID string, genesisHash, inviterFingerprint []byte) ([]byte, error) {
+	vault, err := canonicalUUID(vaultID)
 	if err != nil {
 		return nil, fmt.Errorf("e2ee: vault id: %w", err)
 	}
 
+	invitation, err := canonicalUUID(invitationID)
+	if err != nil {
+		return nil, fmt.Errorf("e2ee: invitation id: %w", err)
+	}
+
+	return mac(macKey, slices.Concat([]byte(inviteAnchorLabel), vault, invitation, genesisHash, inviterFingerprint))
+}
+
+// MakeInviteAnchor returns genesis_hash (32) || inviter_fingerprint (32) ||
+// HMAC-SHA256(invite_mac_key, "vault-sync/v1/invite-anchor" || uuid(vault_id) ||
+// uuid(invitation_id) || genesis_hash || inviter_fingerprint).
+func MakeInviteAnchor(secret []byte, vaultID, invitationID string, anchor InviteAnchor) ([]byte, error) {
 	if len(anchor.GenesisHash) != HashSize || len(anchor.InviterFingerprint) != FingerprintSize {
 		return nil, errors.New("e2ee: invite anchor hash of the wrong size")
 	}
 
-	return slices.Concat([]byte(inviteAnchorLabel), vault, anchor.GenesisHash, anchor.InviterFingerprint), nil
-}
-
-// SealInviteAnchor seals the anchor to the invitation's hybrid public key.
-func SealInviteAnchor(invitationPublicKey []byte, anchor InviteAnchor) ([]byte, error) {
-	plaintext, err := anchor.encode()
+	macKey, err := InviteMACKey(secret, vaultID, invitationID)
 	if err != nil {
 		return nil, err
 	}
 
-	return SealTo(invitationPublicKey, plaintext)
-}
-
-// OpenInviteAnchor opens an invite anchor of vaultID with the invitation's
-// private key. It fails with ErrDecrypt for any other vault or format.
-func OpenInviteAnchor(invitationPrivateKey, sealed []byte, vaultID string) (InviteAnchor, error) {
-	vault, err := canonicalUUID(vaultID)
+	tag, err := inviteAnchorMAC(macKey, vaultID, invitationID, anchor.GenesisHash, anchor.InviterFingerprint)
 	if err != nil {
-		return InviteAnchor{}, fmt.Errorf("e2ee: vault id: %w", err)
+		return nil, err
 	}
 
-	plaintext, err := OpenFrom(invitationPrivateKey, sealed)
+	return slices.Concat(anchor.GenesisHash, anchor.InviterFingerprint, tag), nil
+}
+
+// VerifyInviteAnchor checks an invite anchor of vaultID and invitationID
+// against the invitation secret, comparing the MAC in constant time, and
+// returns what it holds. It fails with ErrSignature for any other vault,
+// invitation, secret or a changed or malformed anchor.
+func VerifyInviteAnchor(secret []byte, vaultID, invitationID string, encoded []byte) (InviteAnchor, error) {
+	if len(encoded) != InviteAnchorSize {
+		return InviteAnchor{}, ErrSignature
+	}
+
+	macKey, err := InviteMACKey(secret, vaultID, invitationID)
 	if err != nil {
 		return InviteAnchor{}, err
 	}
 
-	prefix := slices.Concat([]byte(inviteAnchorLabel), vault)
-	if len(plaintext) != len(prefix)+HashSize+FingerprintSize || !bytes.HasPrefix(plaintext, prefix) {
-		return InviteAnchor{}, ErrDecrypt
+	genesisHash, inviterFingerprint := encoded[:HashSize], encoded[HashSize:HashSize+FingerprintSize]
+
+	expected, err := inviteAnchorMAC(macKey, vaultID, invitationID, genesisHash, inviterFingerprint)
+	if err != nil {
+		return InviteAnchor{}, err
 	}
 
-	rest := plaintext[len(prefix):]
+	if !hmac.Equal(expected, encoded[HashSize+FingerprintSize:]) {
+		return InviteAnchor{}, ErrSignature
+	}
 
-	return InviteAnchor{
-		VaultID:            vaultID,
-		GenesisHash:        slices.Clone(rest[:HashSize]),
-		InviterFingerprint: slices.Clone(rest[HashSize:]),
-	}, nil
+	return InviteAnchor{GenesisHash: slices.Clone(genesisHash), InviterFingerprint: slices.Clone(inviterFingerprint)}, nil
 }
 
 // Anchor is one entry of an anchor list: a vault and its genesis hash.

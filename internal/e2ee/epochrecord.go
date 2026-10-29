@@ -102,10 +102,9 @@ func (record EpochRecord) Sign(ownerSignKey ed25519.PrivateKey) (EpochRecord, er
 }
 
 // EpochRecipients returns the sorted recipients an epoch at state must list:
-// every member, every pending invitation and the escrow key if escrow is on.
-// invitationKeys gives each pending invitation's hybrid public key by
-// invitation id.
-func EpochRecipients(state LogState, invitationKeys map[string][]byte) ([]EpochRecipient, error) {
+// every member, every pending invitation and the escrow key if escrow is on,
+// each with the hash of its public key from the log.
+func EpochRecipients(state LogState) ([]EpochRecipient, error) {
 	recipients := make([]EpochRecipient, 0, len(state.Members)+len(state.Invitations)+1)
 
 	for userID, member := range state.Members {
@@ -117,18 +116,13 @@ func EpochRecipients(state LogState, invitationKeys map[string][]byte) ([]EpochR
 		recipients = append(recipients, EpochRecipient{Kind: recipientKindUserByte, ID: id, KeyHash: keyHash(member.Bundle.KEMPub)})
 	}
 
-	for invitationID := range state.Invitations {
+	for invitationID, invitation := range state.Invitations {
 		id, err := canonicalUUID(invitationID)
 		if err != nil {
 			return nil, err
 		}
 
-		key, ok := invitationKeys[invitationID]
-		if !ok {
-			return nil, fmt.Errorf("e2ee: no public key for invitation %s", invitationID)
-		}
-
-		recipients = append(recipients, EpochRecipient{Kind: recipientKindInvitationByte, ID: id, KeyHash: keyHash(key)})
+		recipients = append(recipients, EpochRecipient{Kind: recipientKindInvitationByte, ID: id, KeyHash: keyHash(invitation.KEMPub)})
 	}
 
 	if state.Escrow != nil {
@@ -163,7 +157,7 @@ func keyHash(publicKey []byte) []byte {
 // an owner at that position signed it, its recipients are exactly
 // EpochRecipients at that position in sorted order, and epoch 1 has an
 // all-zero previous commitment. It fails with ErrEpochRecord.
-func VerifyEpochRecord(vaultID string, states []LogState, invitationKeys map[string][]byte, record EpochRecord) error {
+func VerifyEpochRecord(vaultID string, states []LogState, record EpochRecord) error {
 	if record.VaultID != vaultID || record.Epoch == 0 || record.LogSeq == 0 || record.LogSeq > uint64(len(states)) {
 		return ErrEpochRecord
 	}
@@ -186,7 +180,7 @@ func VerifyEpochRecord(vaultID string, states []LogState, invitationKeys map[str
 		return ErrEpochRecord
 	}
 
-	expected, err := EpochRecipients(state, invitationKeys)
+	expected, err := EpochRecipients(state)
 	if err != nil {
 		return ErrEpochRecord
 	}

@@ -38,12 +38,14 @@ type inviteSignVector struct {
 }
 
 type inviteAnchorVector struct {
-	Name                 string `json:"name"`
-	InvitationPrivateKey string `json:"invitation_private_key"`
-	VaultID              string `json:"vault_id"`
-	GenesisHash          string `json:"genesis_hash"`
-	InviterFingerprint   string `json:"inviter_fingerprint"`
-	Sealed               string `json:"sealed"`
+	Name               string `json:"name"`
+	Secret             string `json:"secret"`
+	VaultID            string `json:"vault_id"`
+	InvitationID       string `json:"invitation_id"`
+	GenesisHash        string `json:"genesis_hash,omitempty"`
+	InviterFingerprint string `json:"inviter_fingerprint,omitempty"`
+	MACKey             string `json:"mac_key,omitempty"`
+	Anchor             string `json:"anchor"`
 }
 
 type anchorJSON struct {
@@ -109,9 +111,10 @@ type memberJSON struct {
 }
 
 type invitationJSON struct {
-	ID      string `json:"id"`
-	Role    uint8  `json:"role"`
-	SignPub string `json:"sign_pub"`
+	ID         string `json:"id"`
+	Role       uint8  `json:"role"`
+	SignPub    string `json:"sign_pub"`
+	KEMPubHash string `json:"kem_pub_hash"`
 }
 
 type logStateJSON struct {
@@ -147,9 +150,7 @@ type membershipLogVector struct {
 	EscrowRotations []escrowRotationJSON `json:"escrow_rotations"`
 	Entries         []entryJSON          `json:"entries"`
 	States          []logStateJSON       `json:"states"`
-	// InvitationKeys are the hybrid public keys of the invitations, by id.
-	InvitationKeys map[string]string `json:"invitation_keys"`
-	EpochRecords   []epochRecordJSON `json:"epoch_records"`
+	EpochRecords    []epochRecordJSON    `json:"epoch_records"`
 }
 
 type rejectedLogVector struct {
@@ -161,17 +162,18 @@ type rejectedLogVector struct {
 }
 
 type identityVectors struct {
-	Identity             []identityVector           `json:"identity"`
-	InviteSign           []inviteSignVector         `json:"invite_sign"`
-	InviteAnchor         []inviteAnchorVector       `json:"invite_anchor"`
-	AnchorList           []anchorListVector         `json:"anchor_list"`
-	RejectedAnchorLists  []rejectedAnchorListVector `json:"rejected_anchor_lists"`
-	EscrowBundles        []escrowBundleVector       `json:"escrow_bundles"`
-	EscrowChains         []escrowChainVector        `json:"escrow_chains"`
-	RejectedEscrowChains []escrowChainVector        `json:"rejected_escrow_chains"`
-	MembershipLog        membershipLogVector        `json:"membership_log"`
-	RejectedLogs         []rejectedLogVector        `json:"rejected_logs"`
-	RejectedEpochRecords []epochRecordJSON          `json:"rejected_epoch_records"`
+	Identity              []identityVector           `json:"identity"`
+	InviteSign            []inviteSignVector         `json:"invite_sign"`
+	InviteAnchor          []inviteAnchorVector       `json:"invite_anchor"`
+	RejectedInviteAnchors []inviteAnchorVector       `json:"rejected_invite_anchors"`
+	AnchorList            []anchorListVector         `json:"anchor_list"`
+	RejectedAnchorLists   []rejectedAnchorListVector `json:"rejected_anchor_lists"`
+	EscrowBundles         []escrowBundleVector       `json:"escrow_bundles"`
+	EscrowChains          []escrowChainVector        `json:"escrow_chains"`
+	RejectedEscrowChains  []escrowChainVector        `json:"rejected_escrow_chains"`
+	MembershipLog         membershipLogVector        `json:"membership_log"`
+	RejectedLogs          []rejectedLogVector        `json:"rejected_logs"`
+	RejectedEpochRecords  []epochRecordJSON          `json:"rejected_epoch_records"`
 }
 
 const (
@@ -295,7 +297,9 @@ func stateJSON(state LogState) logStateJSON {
 
 	for _, id := range slices.Sorted(maps.Keys(state.Invitations)) {
 		invitation := state.Invitations[id]
-		out.Invitations = append(out.Invitations, invitationJSON{ID: id, Role: uint8(invitation.Role), SignPub: hex.EncodeToString(invitation.SignPub)})
+		out.Invitations = append(out.Invitations, invitationJSON{
+			ID: id, Role: uint8(invitation.Role), SignPub: hex.EncodeToString(invitation.SignPub), KEMPubHash: hex.EncodeToString(keyHash(invitation.KEMPub)),
+		})
 	}
 
 	if state.Escrow != nil {
@@ -368,14 +372,16 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	// Invitation signing keys.
 	inviteSeeds := map[string][]byte{}
 	invitePubs := map[string][]byte{}
-	invitationKeys := map[string]string{}
+	inviteSecrets := map[string][]byte{}
+	invitationKeys := map[string][]byte{}
 
 	for _, id := range []string{vectorInvitationOne, vectorInvitationTwo, vectorInvitationSix} {
 		secret := fixed("invitation secret "+id, 16)
 		seed := must(InviteSignSeed(secret, vectorVaultID, id))
 		signPub, _ := ed25519.NewKeyFromSeed(seed).Public().(ed25519.PublicKey)
 		inviteSeeds[id], invitePubs[id] = seed, signPub
-		invitationKeys[id] = hex.EncodeToString(must(PublicKey(fixed("invitation kem "+id, PrivateKeySize))))
+		inviteSecrets[id] = secret
+		invitationKeys[id] = must(PublicKey(fixed("invitation kem "+id, PrivateKeySize)))
 		vectors.InviteSign = append(vectors.InviteSign, inviteSignVector{
 			Name: id, Secret: hex.EncodeToString(secret), VaultID: vectorVaultID, InvitationID: id,
 			Seed: hex.EncodeToString(seed), SignPub: hex.EncodeToString(signPub),
@@ -427,13 +433,13 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	builder := &logBuilder{vaultID: vectorVaultID}
 	aliceSeed, bobSeed, carolSeed := alice.secret.SignSeed, bob.secret.SignSeed, carol.secret.SignSeed
 
-	builder.add(EntryGenesis, must(GenesisPayload(alice.bundle, &escrowOne)), aliceSeed)                                       // 1
-	builder.add(EntryInvite, must(InvitePayload(vectorInvitationOne, RoleEditor, invitePubs[vectorInvitationOne])), aliceSeed) // 2
-	builder.add(EntryRedeem, must(RedeemPayload(vectorInvitationOne, bob.bundle)), inviteSeeds[vectorInvitationOne], bobSeed)  // 3
-	builder.add(EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), aliceSeed)                                         // 4
-	builder.add(EntryInvite, must(InvitePayload(vectorInvitationTwo, RoleViewer, invitePubs[vectorInvitationTwo])), bobSeed)   // 5
-	builder.add(EntryInvite, must(InvitePayload(vectorInvitationSix, RoleEditor, invitePubs[vectorInvitationSix])), aliceSeed) // 6
-	builder.add(EntryRevokeInvitation, must(IDPayload(vectorInvitationSix)), bobSeed)                                          // 7
+	builder.add(EntryGenesis, must(GenesisPayload(alice.bundle, &escrowOne)), aliceSeed)                                                                            // 1
+	builder.add(EntryInvite, must(InvitePayload(vectorInvitationOne, RoleEditor, invitePubs[vectorInvitationOne], invitationKeys[vectorInvitationOne])), aliceSeed) // 2
+	builder.add(EntryRedeem, must(RedeemPayload(vectorInvitationOne, bob.bundle)), inviteSeeds[vectorInvitationOne], bobSeed)                                       // 3
+	builder.add(EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), aliceSeed)                                                                              // 4
+	builder.add(EntryInvite, must(InvitePayload(vectorInvitationTwo, RoleViewer, invitePubs[vectorInvitationTwo], invitationKeys[vectorInvitationTwo])), bobSeed)   // 5
+	builder.add(EntryInvite, must(InvitePayload(vectorInvitationSix, RoleEditor, invitePubs[vectorInvitationSix], invitationKeys[vectorInvitationSix])), aliceSeed) // 6
+	builder.add(EntryRevokeInvitation, must(IDPayload(vectorInvitationSix)), bobSeed)                                                                               // 7
 	builder.add(EntryRedeem, must(RedeemPayload(vectorInvitationTwo, carol.bundle)), inviteSeeds[vectorInvitationTwo], carolSeed)
 	builder.add(EntryEscrow, must(EscrowPayload(&escrowTwo)), aliceSeed) // 9
 	builder.add(EntryRemoveMember, must(IDPayload(vectorCarolID)), aliceSeed)
@@ -447,15 +453,10 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	require.NoError(t, err)
 
 	logVector := membershipLogVector{
-		VaultID: vectorVaultID, EscrowRotations: rotations, Entries: builder.entries, InvitationKeys: invitationKeys,
+		VaultID: vectorVaultID, EscrowRotations: rotations, Entries: builder.entries,
 	}
 	for _, state := range states {
 		logVector.States = append(logVector.States, stateJSON(state))
-	}
-
-	decodedKeys := map[string][]byte{}
-	for id, key := range invitationKeys {
-		decodedKeys[id] = must(hex.DecodeString(key))
 	}
 
 	recordAt := func(epoch, seq uint64, prevCommitment []byte) EpochRecord {
@@ -463,7 +464,7 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 
 		return EpochRecord{
 			VaultID: vectorVaultID, Epoch: epoch, Commitment: must(KeyCommitment(fixed("log epoch key", KeySize), vectorVaultID, epoch)),
-			PrevCommitment: prevCommitment, LogSeq: seq, LogHash: state.Hash, Recipients: must(EpochRecipients(state, decodedKeys)),
+			PrevCommitment: prevCommitment, LogSeq: seq, LogHash: state.Hash, Recipients: must(EpochRecipients(state)),
 		}
 	}
 
@@ -486,6 +487,9 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	swappedKey := epochTwo
 	swappedKey.Recipients = slices.Clone(epochTwo.Recipients)
 	swappedKey.Recipients[0].KeyHash = keyHash(fixed("server key", PublicKeySize))
+	swappedInvitationKey := epochTwo
+	swappedInvitationKey.Recipients = slices.Clone(epochTwo.Recipients)
+	swappedInvitationKey.Recipients[len(swappedInvitationKey.Recipients)-1].KeyHash = keyHash(fixed("server key", PublicKeySize))
 	extra := epochThree
 	extra.Recipients = slices.Clone(epochTwo.Recipients)
 	wrongHash := epochTwo
@@ -501,6 +505,7 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 		signedEpochRecordJSON("omitted recipient", omitted, bobSeed),
 		signedEpochRecordJSON("reordered recipients", reordered, bobSeed),
 		signedEpochRecordJSON("recipient with another key", swappedKey, bobSeed),
+		signedEpochRecordJSON("invitation recipient with another key than the log's", swappedInvitationKey, bobSeed),
 		signedEpochRecordJSON("removed member still listed", extra, aliceSeed),
 		signedEpochRecordJSON("wrong signer: an editor", recordAt(2, 3, epochOne.Commitment), bobSeed),
 		signedEpochRecordJSON("wrong signer: an owner only later", recordAt(2, 2, epochOne.Commitment), bobSeed),
@@ -561,7 +566,7 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 
 		return entries
 	})
-	reject("wrong signer: invite by an editor", rebuild(3, EntryInvite, must(InvitePayload(vectorInvitationTwo, RoleViewer, invitePubs[vectorInvitationTwo])), bobSeed))
+	reject("wrong signer: invite by an editor", rebuild(3, EntryInvite, must(InvitePayload(vectorInvitationTwo, RoleViewer, invitePubs[vectorInvitationTwo], invitationKeys[vectorInvitationTwo])), bobSeed))
 	reject("wrong signer: set role by the member itself", rebuild(3, EntrySetRole, must(SetRolePayload(vectorBobID, RoleOwner)), bobSeed))
 	reject("wrong signer: genesis not by the creator", func([]entryJSON) []entryJSON {
 		rebuilt := &logBuilder{vaultID: vectorVaultID}
@@ -576,11 +581,13 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	reject("redeem of a revoked invitation", rebuild(7, EntryRedeem, must(RedeemPayload(vectorInvitationSix, carol.bundle)), inviteSeeds[vectorInvitationSix], carolSeed))
 	reject("unchained escrow key", rebuild(8, EntryEscrow, must(EscrowPayload(&EscrowBundle{SignPub: escrowTwo.SignPub, Recipient: escrowThree.Recipient})), aliceSeed))
 	reject("unchained escrow key after escrow was off", rebuild(12, EntryEscrow, must(EscrowPayload(&escrowThreeUnchained)), aliceSeed))
+	reject("invite without the invitation KEM key", rebuild(3, EntryInvite,
+		slices.Concat(must(canonicalUUID(vectorInvitationTwo)), []byte{byte(RoleViewer)}, invitePubs[vectorInvitationTwo]), aliceSeed))
 	reject("second genesis", rebuild(2, EntryGenesis, must(GenesisPayload(alice.bundle, nil)), aliceSeed))
 	reject("removing the last owner", rebuild(1, EntryRemoveMember, must(IDPayload(vectorAliceID)), aliceSeed))
 	reject("entry of another vault", func(entries []entryJSON) []entryJSON {
 		other := &logBuilder{vaultID: vectorOtherVaultID, entries: slices.Clone(entries[:1])}
-		other.add(EntryInvite, must(InvitePayload(vectorInvitationOne, RoleEditor, invitePubs[vectorInvitationOne])), aliceSeed)
+		other.add(EntryInvite, must(InvitePayload(vectorInvitationOne, RoleEditor, invitePubs[vectorInvitationOne], invitationKeys[vectorInvitationOne])), aliceSeed)
 
 		return other.entries
 	})
@@ -595,15 +602,37 @@ func generateIdentityVectors(t *testing.T) identityVectors {
 	})
 
 	// Invite anchor and anchor lists.
-	invitationPrivate := fixed("invitation kem "+vectorInvitationOne, PrivateKeySize)
 	genesisHash := must(hex.DecodeString(builder.entries[0].Hash))
+	inviteSecret := inviteSecrets[vectorInvitationOne]
+	anchor := must(MakeInviteAnchor(inviteSecret, vectorVaultID, vectorInvitationOne, InviteAnchor{
+		GenesisHash: genesisHash, InviterFingerprint: alice.bundle.Fingerprint(),
+	}))
 	vectors.InviteAnchor = []inviteAnchorVector{{
-		Name: "invitation one", InvitationPrivateKey: hex.EncodeToString(invitationPrivate), VaultID: vectorVaultID,
+		Name: "invitation one", Secret: hex.EncodeToString(inviteSecret), VaultID: vectorVaultID, InvitationID: vectorInvitationOne,
 		GenesisHash: hex.EncodeToString(genesisHash), InviterFingerprint: hex.EncodeToString(alice.bundle.Fingerprint()),
-		Sealed: hex.EncodeToString(must(SealInviteAnchor(must(PublicKey(invitationPrivate)), InviteAnchor{
-			VaultID: vectorVaultID, GenesisHash: genesisHash, InviterFingerprint: alice.bundle.Fingerprint(),
-		}))),
+		MACKey: hex.EncodeToString(must(InviteMACKey(inviteSecret, vectorVaultID, vectorInvitationOne))), Anchor: hex.EncodeToString(anchor),
 	}}
+
+	// A server that knows the invitation's public key forges an anchor
+	// for another genesis; it cannot compute the MAC without the secret.
+	forged := slices.Concat(fixed("forged genesis", HashSize), alice.bundle.Fingerprint(), anchor[HashSize+FingerprintSize:])
+	rejectAnchor := func(name, secret, vaultID, invitationID string, encoded []byte) {
+		vectors.RejectedInviteAnchors = append(vectors.RejectedInviteAnchors, inviteAnchorVector{
+			Name: name, Secret: secret, VaultID: vaultID, InvitationID: invitationID, Anchor: hex.EncodeToString(encoded),
+		})
+	}
+	secretHex := hex.EncodeToString(inviteSecret)
+	rejectAnchor("other genesis hash with the original MAC", secretHex, vectorVaultID, vectorInvitationOne, forged)
+	rejectAnchor("flipped fingerprint bit", secretHex, vectorVaultID, vectorInvitationOne, flip(anchor, HashSize+3))
+	rejectAnchor("flipped MAC bit", secretHex, vectorVaultID, vectorInvitationOne, flip(anchor, InviteAnchorSize-1))
+	rejectAnchor("other vault", secretHex, vectorOtherVaultID, vectorInvitationOne, anchor)
+	rejectAnchor("other invitation", secretHex, vectorVaultID, vectorInvitationTwo, anchor)
+	rejectAnchor("other secret", hex.EncodeToString(inviteSecrets[vectorInvitationTwo]), vectorVaultID, vectorInvitationOne, anchor)
+	rejectAnchor("MAC truncated by one byte", secretHex, vectorVaultID, vectorInvitationOne, anchor[:InviteAnchorSize-1])
+	rejectAnchor("trailing byte", secretHex, vectorVaultID, vectorInvitationOne, append(slices.Clone(anchor), 0))
+	rejectAnchor("MAC under a key the server could derive: HMAC keyed by the invitation public key hash", secretHex, vectorVaultID, vectorInvitationOne,
+		slices.Concat(fixed("forged genesis", HashSize), alice.bundle.Fingerprint(),
+			must(inviteAnchorMAC(keyHash(invitationKeys[vectorInvitationOne]), vectorVaultID, vectorInvitationOne, fixed("forged genesis", HashSize), alice.bundle.Fingerprint()))))
 
 	anchorKey := must(AnchorKey(alice.secret.KEMSeed))
 
@@ -677,13 +706,24 @@ func TestIdentityVectors(t *testing.T) {
 
 	t.Run("invite anchor", func(t *testing.T) {
 		for _, vector := range vectors.InviteAnchor {
-			anchor, err := OpenInviteAnchor(unhex(t, vector.InvitationPrivateKey), unhex(t, vector.Sealed), vector.VaultID)
+			secret := unhex(t, vector.Secret)
+			assert.Equal(t, vector.MACKey, hex.EncodeToString(must(InviteMACKey(secret, vector.VaultID, vector.InvitationID))))
+
+			made, err := MakeInviteAnchor(secret, vector.VaultID, vector.InvitationID, InviteAnchor{
+				GenesisHash: unhex(t, vector.GenesisHash), InviterFingerprint: unhex(t, vector.InviterFingerprint),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, vector.Anchor, hex.EncodeToString(made))
+
+			anchor, err := VerifyInviteAnchor(secret, vector.VaultID, vector.InvitationID, unhex(t, vector.Anchor))
 			require.NoError(t, err)
 			assert.Equal(t, vector.GenesisHash, hex.EncodeToString(anchor.GenesisHash))
 			assert.Equal(t, vector.InviterFingerprint, hex.EncodeToString(anchor.InviterFingerprint))
+		}
 
-			_, err = OpenInviteAnchor(unhex(t, vector.InvitationPrivateKey), unhex(t, vector.Sealed), vectorOtherVaultID)
-			require.ErrorIs(t, err, ErrDecrypt)
+		for _, vector := range vectors.RejectedInviteAnchors {
+			_, err := VerifyInviteAnchor(unhex(t, vector.Secret), vector.VaultID, vector.InvitationID, unhex(t, vector.Anchor))
+			require.ErrorIs(t, err, ErrSignature, vector.Name)
 		}
 	})
 
@@ -726,11 +766,6 @@ func TestIdentityVectors(t *testing.T) {
 	})
 
 	logVector := vectors.MembershipLog
-	invitationKeys := map[string][]byte{}
-
-	for id, key := range logVector.InvitationKeys {
-		invitationKeys[id] = unhex(t, key)
-	}
 
 	t.Run("membership log", func(t *testing.T) {
 		entries := decodeEntries(t, logVector.VaultID, logVector.Entries)
@@ -766,12 +801,12 @@ func TestIdentityVectors(t *testing.T) {
 			assert.Equal(t, vector.Body, hex.EncodeToString(must(record.Body())), vector.Name)
 			signed := must(record.Sign(ed25519.NewKeyFromSeed(unhex(t, vector.SignerSeed))))
 			assert.Equal(t, vector.Signature, hex.EncodeToString(signed.Signature), vector.Name)
-			require.NoError(t, VerifyEpochRecord(logVector.VaultID, states, invitationKeys, record), vector.Name)
+			require.NoError(t, VerifyEpochRecord(logVector.VaultID, states, record), vector.Name)
 		}
 
 		for _, vector := range vectors.RejectedEpochRecords {
 			record := decodeEpochRecord(t, logVector.VaultID, vector)
-			require.ErrorIs(t, VerifyEpochRecord(logVector.VaultID, states, invitationKeys, record), ErrEpochRecord, vector.Name)
+			require.ErrorIs(t, VerifyEpochRecord(logVector.VaultID, states, record), ErrEpochRecord, vector.Name)
 		}
 	})
 

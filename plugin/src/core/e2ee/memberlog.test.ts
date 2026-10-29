@@ -1,3 +1,4 @@
+import { sha256 } from "@noble/hashes/sha2.js";
 import { bytesToHex, hexToBytes } from "@noble/hashes/utils.js";
 import { describe, expect, it } from "vitest";
 
@@ -11,9 +12,11 @@ import {
   type EscrowRotation,
   fingerprint,
   formatFingerprint,
+  inviteMacKey,
   inviteSignSeed,
+  makeInviteAnchor,
+  verifyInviteAnchor,
   openAnchorList,
-  openInviteAnchor,
   parseBundle,
   parseEscrowBundle,
   parseUserSecret,
@@ -84,7 +87,12 @@ function stateJson(state: LogState): unknown {
     seq: state.seq,
     hash: bytesToHex(state.hash),
     members: sorted(state.members).map(([userId, member]) => ({ user_id: userId, role: member.role, fingerprint: bytesToHex(fingerprint(member.bundle)) })),
-    invitations: sorted(state.invitations).map(([id, invitation]) => ({ id, role: invitation.role, sign_pub: bytesToHex(invitation.signPub) })),
+    invitations: sorted(state.invitations).map(([id, invitation]) => ({
+      id,
+      role: invitation.role,
+      sign_pub: bytesToHex(invitation.signPub),
+      kem_pub_hash: bytesToHex(sha256(invitation.kemPub)),
+    })),
     escrow: state.escrow === undefined ? "" : bytesToHex(encodeEscrowBundle(state.escrow)),
   };
 }
@@ -112,12 +120,21 @@ describe("identity keys match the shared vectors", () => {
     }
   });
 
-  it("opens invite anchors, only as their vault's", async () => {
+  it("makes and verifies invite anchors, and refuses the rejected ones", () => {
     for (const vector of vectors.invite_anchor) {
-      const anchor = await openInviteAnchor(hexToBytes(vector.invitation_private_key), hexToBytes(vector.sealed), vector.vault_id);
+      const secret = hexToBytes(vector.secret);
+      expect(bytesToHex(inviteMacKey(secret, vector.vault_id, vector.invitation_id))).toBe(vector.mac_key);
+      const made = makeInviteAnchor(secret, vector.vault_id, vector.invitation_id, {
+        genesisHash: hexToBytes(vector.genesis_hash),
+        inviterFingerprint: hexToBytes(vector.inviter_fingerprint),
+      });
+      expect(bytesToHex(made)).toBe(vector.anchor);
+      const anchor = verifyInviteAnchor(secret, vector.vault_id, vector.invitation_id, hexToBytes(vector.anchor));
       expect(bytesToHex(anchor.genesisHash)).toBe(vector.genesis_hash);
       expect(bytesToHex(anchor.inviterFingerprint)).toBe(vector.inviter_fingerprint);
-      await expect(openInviteAnchor(hexToBytes(vector.invitation_private_key), hexToBytes(vector.sealed), "0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0f")).rejects.toThrow(DecryptError);
+    }
+    for (const vector of vectors.rejected_invite_anchors) {
+      expect(() => verifyInviteAnchor(hexToBytes(vector.secret), vector.vault_id, vector.invitation_id, hexToBytes(vector.anchor)), vector.name).toThrow(SignatureError);
     }
   });
 
@@ -149,7 +166,6 @@ describe("identity keys match the shared vectors", () => {
 describe("the membership log matches the shared vectors", () => {
   const log = vectors.membership_log;
   const entries = entriesOf(log.vault_id, log.entries);
-  const invitationKeys = new Map(Object.entries(log.invitation_keys).map(([id, key]) => [id, hexToBytes(key)]));
 
   it("signs and hashes every entry to exactly the vector bytes", () => {
     entries.forEach((entry, index) => {
@@ -177,10 +193,10 @@ describe("the membership log matches the shared vectors", () => {
       const record = recordOf(log.vault_id, vector);
       expect(bytesToHex(epochRecordBody(record)), vector.name).toBe(vector.body);
       expect(bytesToHex(signEpochRecord(record, hexToBytes(vector.signer_seed)).signature), vector.name).toBe(vector.signature);
-      expect(() => { verifyEpochRecord(log.vault_id, states, invitationKeys, record); }, vector.name).not.toThrow();
+      expect(() => { verifyEpochRecord(log.vault_id, states, record); }, vector.name).not.toThrow();
     }
     for (const vector of vectors.rejected_epoch_records) {
-      expect(() => { verifyEpochRecord(log.vault_id, states, invitationKeys, recordOf(log.vault_id, vector)); }, vector.name).toThrow(EpochRecordError);
+      expect(() => { verifyEpochRecord(log.vault_id, states, recordOf(log.vault_id, vector)); }, vector.name).toThrow(EpochRecordError);
     }
   });
 
