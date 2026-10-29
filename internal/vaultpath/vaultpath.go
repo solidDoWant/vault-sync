@@ -21,8 +21,11 @@
 // starts or ends with a space, ends in a dot or is a Windows reserved name
 // (CON, PRN, AUX, NUL, COM1 to COM9, LPT1 to LPT9, in any case, with or
 // without an extension); no part is longer than MaxNameBytes; and the
-// whole path is at most MaxNewBytes. Documents committed before these rules
-// keep their paths, which still pass Check.
+// whole path is at most MaxNewBytes. And it must be in Unicode NFC
+// (docs/design/engine.md §6), under the pinned tables of internal/pathkey:
+// Obsidian stores every path in NFC, so another spelling could never match a
+// file on a device. Documents committed before these rules keep their
+// paths, which still pass Check.
 //
 // CheckText is the length and character-set rule every plaintext path must
 // also pass.
@@ -38,6 +41,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/solidDoWant/vault-sync/internal/pathkey"
 	"github.com/solidDoWant/vault-sync/internal/textcheck"
 )
 
@@ -93,6 +97,10 @@ var ErrNameTooLong = fmt.Errorf("%w: a file or folder name in a new path must be
 // It wraps ErrNotNew.
 var ErrNewTooLong = fmt.Errorf("%w: a new path must be at most %d bytes", ErrNotNew, MaxNewBytes)
 
+// ErrNotNFC is returned by CheckNew for a path that is not in Unicode NFC.
+// It wraps ErrNotNew.
+var ErrNotNFC = fmt.Errorf("%w: a new path must be in Unicode NFC (composed characters, as Obsidian stores them)", ErrNotNew)
+
 // ErrLength is returned by CheckText for an empty path or one longer than
 // MaxBytes.
 var ErrLength = fmt.Errorf("path must be 1 to %d bytes", MaxBytes)
@@ -145,7 +153,7 @@ func Check(path string) error {
 // CheckNew returns ErrNotRelative unless path is vault-relative, and an
 // error wrapping ErrNotNew if it is but breaks a new-path rule: ErrBackslash,
 // ErrDrivePrefix, ErrForbiddenCharacter, ErrEdgeSpace, ErrTrailingDot,
-// ErrReservedName, ErrNameTooLong or ErrNewTooLong. A commit may create or
+// ErrReservedName, ErrNameTooLong, ErrNewTooLong or ErrNotNFC. A commit may create or
 // rename a document only into a path that passes CheckNew.
 func CheckNew(path string) error {
 	if err := Check(path); err != nil {
@@ -168,6 +176,10 @@ func CheckNew(path string) error {
 
 	if len(path) > MaxNewBytes {
 		return ErrNewTooLong
+	}
+
+	if pathkey.NFC(path) != path {
+		return ErrNotNFC
 	}
 
 	return nil

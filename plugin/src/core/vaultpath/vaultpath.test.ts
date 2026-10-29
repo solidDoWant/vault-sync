@@ -118,12 +118,15 @@ describe("pathProblem", () => {
     ["a reserved name without an extension", "notes/NUL", "reserved-name"],
     ["a name of 256 bytes", "a".repeat(256), "name-too-long"],
     ["a path of 1025 bytes", `${"a".repeat(254)}/`.repeat(4) + "abcde", "path-too-long"],
+    ["a decomposed accent", "Cafe\u0301.md", "not-nfc"],
+    ["a decomposed accent in a folder", "Re\u0301sume\u0301/a.md", "not-nfc"],
   ])("names %s", (_, path, problem) => {
     expect(pathProblem(path)).toBe(problem);
   });
 
   it("accepts a valid new path", () => {
     expect(pathProblem("notes/a.md")).toBeUndefined();
+    expect(pathProblem("Caf\u00e9.md")).toBeUndefined();
     expect(pathProblem("a".repeat(255))).toBeUndefined();
     expect(pathProblem(`${"a".repeat(254)}/`.repeat(4) + "abcd")).toBeUndefined();
   });
@@ -132,6 +135,7 @@ describe("pathProblem", () => {
     expect(pathProblem("old\\note.md", true)).toBeUndefined();
     expect(pathProblem("1:x.md", true)).toBeUndefined();
     expect(pathProblem("CON.md", true)).toBeUndefined();
+    expect(pathProblem("Cafe\u0301.md", true)).toBeUndefined();
     expect(pathProblem("a".repeat(4096), true)).toBeUndefined();
     expect(pathProblem("a\u0001b.md", true)).toBe("invalid-character");
     expect(pathProblem("../a.md", true)).toBe("not-vault-relative");

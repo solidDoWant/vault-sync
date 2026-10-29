@@ -510,3 +510,30 @@ func waitBackendGone(t *testing.T, database *pgx.Conn, pid uint32) {
 		time.Sleep(pollInterval)
 	}
 }
+
+// A path is stored in Unicode NFC (docs/design/engine.md §6): a commit that
+// creates or renames a document into another spelling, such as a decomposed
+// accent, is refused with the rule it breaks, and nothing is stored.
+func TestCommitRevisionRefusesAPathNotInNFC(t *testing.T) {
+	cluster := newDeployment(t)
+	server := cluster.start(t, "server", buildServer(t))
+	token := cluster.token(t, "alice")
+	vault := createVault(t, server, token, "NFD")
+	device := newSyncClient(t, server, token, vault.GetId())
+
+	const decomposed = "Café.md"
+
+	_, err := device.commit(t, server, device.create(t, decomposed, device.content(t, server, "nfd")))
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "create at a decomposed path: %v", err)
+	assert.ErrorContains(t, err, "NFC")
+
+	head := device.mustCommit(t, server, device.create(t, "Café.md", device.content(t, server, "nfc")))
+	assert.Equal(t, []byte("Café.md"), head.GetPath())
+
+	_, err = device.commit(t, server, device.next(t, head, "Résumé.md", head.GetContentRef(), false))
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err), "rename to a decomposed path: %v", err)
+
+	revisions, _ := device.changes(t, 0, server)
+	require.Len(t, revisions, 1)
+	assert.Equal(t, head.GetId(), revisions[0].GetId())
+}
