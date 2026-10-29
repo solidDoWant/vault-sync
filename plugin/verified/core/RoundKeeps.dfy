@@ -1017,6 +1017,94 @@ abstract module RoundKeeps refines RoundWhatItSaw {
          ServerHoldsContent(step.pre.server, c) || exists doc :: ReadKept(step, doc, c)
   }
 
+  // A disk holds content `c` in some file.
+  ghost predicate DiskHolds(disk: map<Path, DiskFile>, c: Hash) {
+    exists p :: p in disk && disk[p].content == c
+  }
+
+  // Effect `effect` overwrites or removes a file conditional on content `c`.
+  ghost predicate ExpectsContent(effect: Effect, c: Hash) {
+    (effect.Write? && effect.precondition == Some(c)) || (effect.Remove? && effect.expected == c)
+  }
+
+  // One effect that leaves no file holding `c`, where one did, is an
+  // overwrite or remove conditional on `c`: a write where no file is and a
+  // move keep every file's content. Holds for any effect.
+  lemma EffectDropsOnlyExpected(platform: Platform, disk: map<Path, DiskFile>, effect: Effect, disk': map<Path, DiskFile>, c: Hash)
+    requires EffectTakes(platform, disk, effect, disk')
+    requires DiskHolds(disk, c) && !DiskHolds(disk', c)
+    ensures ExpectsContent(effect, c)
+  {
+    var p :| p in disk && disk[p].content == c;
+    SameFIsEquivalence(platform, p, p, p);
+    match effect
+    case Write(_, path, content, kind, precondition) =>
+      if precondition.Some? {
+        if exists q :: Holds(platform, disk, q, path, precondition.value) {
+          var q :| Holds(platform, disk, q, path, precondition.value)
+                   && disk' == disk[q := DiskFile(content, kind, disk[q].identity)];
+          if p != q { assert disk'[p] == disk[p]; }
+        } else {
+          assert disk'[p] == disk[p];
+        }
+      } else {
+        if FreeOn(platform, disk, path) {
+          assert CollideF(platform, p, p);
+          var identity: FileIdentity :| (forall q :: q in disk ==> disk[q].identity != identity)
+                                        && disk' == disk[path := DiskFile(content, kind, identity)];
+          assert p != path;
+          assert disk'[p] == disk[p];
+        } else {
+          assert disk'[p] == disk[p];
+        }
+      }
+    case Remove(_, path, expected) =>
+      if exists q :: Holds(platform, disk, q, path, expected) {
+        var q :| Holds(platform, disk, q, path, expected) && disk' == disk - {q};
+        if p != q { assert disk'[p] == disk[p]; }
+      } else {
+        assert disk'[p] == disk[p];
+      }
+    case Move(_, from, to, expected) =>
+      if exists q :: MovableTo(platform, disk, q, from, to, expected) {
+        var q :| MovableTo(platform, disk, q, from, to, expected) && disk' == (disk - {q})[to := disk[q]];
+        if p == q {
+          assert disk'[to] == disk[p];
+        } else {
+          assert p in disk - {q};
+          assert CollideF(platform, p, p);
+          assert p != to;
+          assert disk'[p] == disk[p];
+        }
+      } else {
+        assert disk'[p] == disk[p];
+      }
+    case _ =>
+      assert disk'[p] == disk[p];
+  }
+
+  // Effects that leave no file holding `c`, where one did, include an
+  // overwrite or remove conditional on `c`. Holds for any effect sequence.
+  lemma EffectsDropOnlyExpected(platform: Platform, disk: map<Path, DiskFile>, effects: seq<Effect>, disk': map<Path, DiskFile>, c: Hash)
+    requires EffectsTake(platform, disk, effects, disk')
+    requires DiskHolds(disk, c) && !DiskHolds(disk', c)
+    ensures exists i :: 0 <= i < |effects| && ExpectsContent(effects[i], c)
+    decreases |effects|
+  {
+    if |effects| == 0 {
+      assert disk' == disk;
+    } else {
+      var mid :| EffectTakes(platform, disk, effects[0], mid) && EffectsTake(platform, mid, effects[1..], disk');
+      if DiskHolds(mid, c) {
+        EffectsDropOnlyExpected(platform, mid, effects[1..], disk', c);
+        var i :| 0 <= i < |effects[1..]| && ExpectsContent(effects[1..][i], c);
+        assert effects[i + 1] == effects[1..][i];
+      } else {
+        EffectDropsOnlyExpected(platform, disk, effects[0], mid, c);
+      }
+    }
+  }
+
   // G1_OnlyRetentionRemoves of the round, where every accepted revision is
   // accounted for and the round drops only contents it keeps or the server
   // holds. The round changes neither the server nor another device, so a

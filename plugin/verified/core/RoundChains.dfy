@@ -360,10 +360,10 @@ abstract module RoundChains refines RoundLinks {
     ensures PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others', e, pass)
   {
     if Distinct(platform, pass.listing) {
-      var rs := var rs :| exists saved, x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
-                            && (others ==> OthersIn(d, rs)); rs;
-      var saved := var saved :| exists x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
-                            && (others ==> OthersIn(d, rs)); saved;
+      var rs := var rs :| exists saved, x :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
+                            && (others ==> OthersIn(d, rs))); rs;
+      var saved := var saved :| exists x :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
+                            && (others ==> OthersIn(d, rs))); saved;
       var x := var x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
                             && (others ==> OthersIn(d, rs)); x;
       assert ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, pass.journal.documents, pass.listing, rs, saved, x)
@@ -590,10 +590,10 @@ abstract module RoundChains refines RoundLinks {
     var row := if doc in documents then documents[doc] else NoRow();
     var settled := SettleRevision(platform, pass, doc, r, input, revs, first);
     if !Distinct(platform, pass.listing) { return; }
-    var rs := var rs :| exists saved, x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
-                          && (others ==> OthersIn(d, rs)); rs;
-    var saved := var saved :| exists x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
-                          && (others ==> OthersIn(d, rs)); saved;
+    var rs := var rs :| exists saved, x :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                          && (others ==> OthersIn(d, rs))); rs;
+    var saved := var saved :| exists x :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                          && (others ==> OthersIn(d, rs))); saved;
     var x := var x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
                           && (others ==> OthersIn(d, rs)); x;
     var flag := others || LinksOther(d, pass, doc, r, settled, e);
@@ -638,12 +638,12 @@ abstract module RoundChains refines RoundLinks {
     if !Distinct(platform, settled.listing) { return; }
     if e == doc {
       RuleChainOwn(platform, d, accepted, base0, b0, bd0, read0, c0, rows, doc, r, inner, revs', first, rs, saved, x);
-      var rs' := var rs' :| exists saved', x' :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
+      var rs' := var rs' :| exists saved', x' :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
           && (OthersIn(d, rs) ==> OthersIn(d, rs'))
-          && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs')); rs';
-      var saved' := var saved' :| exists x' :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
+          && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs'))); rs';
+      var saved' := var saved' :| exists x' :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
           && (OthersIn(d, rs) ==> OthersIn(d, rs'))
-          && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs')); saved';
+          && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs'))); saved';
       var x' := var x' :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, doc, ruled.documents, settled.listing, rs', saved', x')
           && (OthersIn(d, rs) ==> OthersIn(d, rs'))
           && (r.device != d && ruled.documents[doc].base != rows[doc].base ==> OthersIn(d, rs')); x';
@@ -720,10 +720,10 @@ abstract module RoundChains refines RoundLinks {
         assert PassNUD(platform, device0, accepted, cleared);
         assert PassChain(platform, d, accepted, base0, b0, bd0, read0, c0, others, e, cleared) by {
           if Distinct(platform, pass.listing) {
-            var rs := var rs :| exists saved, x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
-                                  && (others ==> OthersIn(d, rs)); rs;
-            var saved := var saved :| exists x :: ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
-                                  && (others ==> OthersIn(d, rs)); saved;
+            var rs := var rs :| exists saved, x :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                                  && (others ==> OthersIn(d, rs))); rs;
+            var saved := var saved :| exists x :: (ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
+                                  && (others ==> OthersIn(d, rs))); saved;
             var x := var x :| ChainRows(platform, d, accepted, base0, b0, bd0, read0, c0, e, documents, pass.listing, rs, saved, x)
                                   && (others ==> OthersIn(d, rs)); x;
             var rows' := cleared.journal.documents;
