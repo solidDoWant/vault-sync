@@ -1105,6 +1105,98 @@ abstract module RoundKeeps refines RoundWhatItSaw {
     }
   }
 
+  // Before the round, `doc`'s binding on the round's device recorded `c`
+  // as what it last saw.
+  ghost predicate SeenBefore(step: Step, doc: DocId, c: Hash)
+    requires RoundEvent(step.event)
+  {
+    var d := step.event.device;
+    d in step.pre.devices && doc in step.pre.devices[d].journal.documents
+    && step.pre.devices[d].journal.documents[doc].binding.Some?
+    && step.pre.devices[d].journal.documents[doc].binding.value.seen == c
+  }
+
+  // What the round saw before an effect is kept, a live accepted version of
+  // the document, or what its binding saw before the round.
+  lemma RoundSawKeptOrSeen(step: Step, i: nat, doc: DocId, p: Path, c: Hash)
+    requires i <= |step.effects| && RoundSaw(step, i, doc, p, c)
+    ensures ReadKept(step, doc, c) || DocVersion(step, doc, c) || SeenBefore(step, doc, c)
+    decreases i
+  {
+    var device := step.pre.devices[step.event.device];
+    match RoundPut(device.platform, step.effects[..i], p)
+    case Untouched =>
+    case Freed =>
+    case By(j) =>
+      var effect := step.effects[j];
+      if !(effect.Write? && effect.target == Some(doc) && effect.content == c
+           && (ReadKept(step, doc, c) || DocVersion(step, doc, c)))
+         && !DocVersion(step, doc, c) {
+        RoundSawKeptOrSeen(step, j, doc, effect.from, c);
+      }
+  }
+
+  // Every content a round's overwrite or remove expects is kept, a live
+  // accepted version of some document, or what some binding saw before the
+  // round.
+  lemma ExpectedKeptOrSeen(step: Step, i: nat, c: Hash)
+    requires RoundEvent(step.event) && step.event.SyncRound? && G2_OnlyWhatItSaw(step)
+    requires i < |step.effects| && ExpectsContent(step.effects[i], c)
+    ensures exists doc :: ReadKept(step, doc, c) || DocVersion(step, doc, c) || SeenBefore(step, doc, c)
+  {
+    var effect := step.effects[i];
+    assert effect in step.effects;
+    var device := step.pre.devices[step.event.device];
+    var doc := if effect.Write? then effect.target.value else effect.doc;
+    if (effect.Write? && BoundTo(device, doc, effect.path) && LastSaw(step, device, doc, effect.path, c))
+       || (effect.Remove? && BoundTo(device, doc, effect.path) && LastSaw(step, device, doc, effect.path, c)) {
+      assert ReadKept(step, doc, c) || SeenBefore(step, doc, c);
+    } else {
+      assert RoundSawEffect(step, effect);
+      var k :| 0 <= k < |step.effects| && step.effects[k] == effect && RoundSaw(step, k, doc, effect.path, c);
+      RoundSawKeptOrSeen(step, k, doc, effect.path, c);
+    }
+  }
+
+  // Every content the round's device stops holding that is a live accepted
+  // version of a document or what a binding saw before the round is held by
+  // the server or kept.
+  ghost predicate DroppedVersionsHeld(step: Step)
+    requires RoundEvent(step.event)
+  {
+    var d := step.event.device;
+    d in step.pre.devices && d in step.post.devices
+    && forall c, doc :: OnDisk(step.pre.devices[d], c) && !OnDisk(step.post.devices[d], c)
+                        && (DocVersion(step, doc, c) || SeenBefore(step, doc, c))
+                        ==> ServerHoldsContent(step.pre.server, c) || exists doc' :: ReadKept(step, doc', c)
+  }
+
+  // RoundDropsOnlyKept of the round, where every content the round's device
+  // stops holding that is a live accepted version or a binding's `seen` is
+  // held by the server or kept. Each such content was expected by an
+  // overwrite or remove (EffectsDropOnlyExpected), which G2_OnlyWhatItSaw
+  // ties to what the round kept or saw (ExpectedKeptOrSeen).
+  lemma RoundDropsOnlyKeptFrom(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices
+    requires G2_OnlyWhatItSaw(RoundStepOf(pre, d, input, revs))
+    requires DroppedVersionsHeld(RoundStepOf(pre, d, input, revs))
+    ensures RoundDropsOnlyKept(RoundStepOf(pre, d, input, revs))
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundDisksFollowEffects(pre, d, input, revs);
+    var device := pre.devices[d];
+    assert EffectsTake(device.platform, device.disk, step.effects, step.post.devices[d].disk);
+    forall c | OnDisk(pre.devices[d], c) && !OnDisk(step.post.devices[d], c)
+      ensures ServerHoldsContent(pre.server, c) || exists doc :: ReadKept(step, doc, c)
+    {
+      assert DiskHolds(device.disk, c) && !DiskHolds(step.post.devices[d].disk, c);
+      EffectsDropOnlyExpected(device.platform, device.disk, step.effects, step.post.devices[d].disk, c);
+      var i :| 0 <= i < |step.effects| && ExpectsContent(step.effects[i], c);
+      ExpectedKeptOrSeen(step, i, c);
+    }
+  }
+
   // G1_OnlyRetentionRemoves of the round, where every accepted revision is
   // accounted for and the round drops only contents it keeps or the server
   // holds. The round changes neither the server nor another device, so a
@@ -1140,5 +1232,28 @@ abstract module RoundKeeps refines RoundWhatItSaw {
       }
       assert !OnDisk(step.post.devices[d], c);
     }
+  }
+
+  // G1_OnlyRetentionRemoves of the round, under G2_OnlyWhatItSaw's
+  // hypotheses and two more: every accepted revision is in history, purged
+  // or lost (AcceptedAccounted), and every live version or `seen` content
+  // the round's device stops holding is held by the server or kept
+  // (DroppedVersionsHeld).
+  lemma RoundG1OnlyRetentionRemoves(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    // Proof obligations of the state before the round, which its caller discharges.
+    requires RoundPulledBy(pre, d, input, revs)
+    requires forall e | e in pre.devices[d].journal.documents :: AheadAboveBase(pre.devices[d].journal.documents[e])
+    requires AcceptedAccounted(pre.server)
+    // Proof obligations of the round.
+    requires UnreadWritesAccepted(RoundStepOf(pre, d, input, revs))
+    requires DroppedVersionsHeld(RoundStepOf(pre, d, input, revs))
+    ensures G1_OnlyRetentionRemoves(RoundStepOf(pre, d, input, revs))
+  {
+    RoundG2OnlyWhatItSaw(pre, d, input, revs);
+    RoundDropsOnlyKeptFrom(pre, d, input, revs);
+    RoundG1FromDrops(pre, d, input, revs);
   }
 }
