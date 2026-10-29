@@ -33,6 +33,8 @@ Its journal is kept, so it can reconnect if access comes back. Leaving is availa
 - **On the server:** the vault is marked deleted and becomes invisible to everyone.
 - **Purge:** a background job purges a deleted vault 30 days after deletion: rows, then blobs.
 - **Undo:** `vault-sync-server vault undelete <vault-id>` restores a vault that hasn't been purged yet. There is no undo in the plugin.
+- **Owned-vault limit:** a deleted vault doesn't count toward the owner's 100-vault limit. `vault undelete` is an operator action and is allowed even above the limit.
+- **Export:** the export keeps writing a deleted vault until it is purged, with a `DELETED` marker file holding the deletion time.
 
 ## Attribution
 
