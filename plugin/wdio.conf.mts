@@ -40,7 +40,8 @@ const logDir = process.env.VAULT_SYNC_E2E_LOG_DIR;
 
 // VAULT_SYNC_ACCEPTANCE_RESULTS (`make acceptance`, scripts/acceptance.sh)
 // runs only the spec files with an acceptance test, a test whose title starts
-// with its checklist id (`[AC-04] ...`, docs/acceptance/phase-2.md), and
+// with its checklist id (`[AC-04] ...`, docs/acceptance/phase-2.md, or
+// `[P3-01] ...`, docs/acceptance/phase-3.md), and
 // appends each test's result to e2e.jsonl in that directory for the
 // scoreboard. Whole files run, not just the tagged tests: a spec's tests build
 // on the ones before them.
@@ -48,7 +49,7 @@ const acceptanceResults = process.env.VAULT_SYNC_ACCEPTANCE_RESULTS;
 const specDir = path.join(root, "test", "e2e", "specs");
 const acceptanceSpecs = readdirSync(specDir)
   .filter((name) => name.endsWith(".e2e.ts") && !name.endsWith(".android.e2e.ts"))
-  .filter((name) => /\bit\(\s*["'`]\[AC-\d+\]/.test(readFileSync(path.join(specDir, name), "utf8")))
+  .filter((name) => /\bit\(\s*["'`]\[(?:AC|P3)-\d+\]/.test(readFileSync(path.join(specDir, name), "utf8")))
   .map((name) => `./test/e2e/specs/${name}`);
 
 // Windows: render in software inside Obsidian's main process. On a loaded

@@ -13,10 +13,13 @@ import unittest
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "acceptance-scoreboard.py"
 CHECKLIST = ROOT / "docs" / "acceptance" / "phase-2.md"
+PHASE_3_CHECKLIST = ROOT / "docs" / "acceptance" / "phase-3.md"
 
 # The checklist's scenarios, written out here rather than read the way the
 # script reads them: AC-02 to AC-26, AC-01 having been removed by the owner.
 SCENARIOS = [f"AC-{number:02d}" for number in range(2, 27)]
+# The Phase 3 checklist's scenarios, a table of P3-01 to P3-13.
+PHASE_3_SCENARIOS = [f"P3-{number:02d}" for number in range(1, 14)]
 
 
 class Scoreboard(unittest.TestCase):
@@ -28,9 +31,9 @@ class Scoreboard(unittest.TestCase):
         (self.sources / "plugin" / "test" / "e2e" / "specs").mkdir(parents=True)
         (self.sources / "internal" / "store").mkdir(parents=True)
 
-    def run_scoreboard(self):
+    def run_scoreboard(self, checklist=CHECKLIST):
         completed = subprocess.run(
-            [sys.executable, "-I", str(SCRIPT), "--checklist", str(CHECKLIST), "--results", str(self.results), "--sources", str(self.sources)],
+            [sys.executable, "-I", str(SCRIPT), "--checklist", str(checklist), "--results", str(self.results), "--sources", str(self.sources)],
             capture_output=True,
             text=True,
             check=True,
@@ -40,7 +43,7 @@ class Scoreboard(unittest.TestCase):
     def statuses(self, output):
         lines = {}
         for line in output.splitlines():
-            match = re.match(r"^(AC-\d\d)\s+(.+?)\s*$", line)
+            match = re.match(r"^((?:AC|P3)-\d\d)\s+(.+?)\s*$", line)
             if match:
                 lines[match.group(1)] = match.group(2)
         return lines
@@ -177,6 +180,41 @@ class Scoreboard(unittest.TestCase):
             self.assertTrue(pattern.fullmatch(name), name)
         for name in ("TestUntagged", "TestImportSubcommandOther", "TestPluginProtocolClientExtra"):
             self.assertFalse(pattern.fullmatch(name), name)
+
+    def test_reads_the_phase_3_table_and_its_tagged_tests(self):
+        self.write_e2e(("[P3-01] an invited user syncs both ways", True), ("[P3-02] history names user and device", False), ("[AC-04] a note created on A appears on B", True))
+        (self.sources / "internal" / "store" / "role_integration_test.go").write_text(
+            'package store\n\nfunc TestRoles(t *testing.T) {\n\tt.Run("[P3-13] a viewer is refused", func(t *testing.T) {})\n}\n',
+            encoding="utf-8",
+        )
+        (self.sources / "plugin" / "test" / "e2e" / "specs" / "shared.e2e.ts").write_text('it("[P3-04] a revoked code is refused", async () => {});\n', encoding="utf-8")
+        events = [{"Action": "pass", "Test": "TestRoles/[P3-05]_a_role_change_takes_effect"}]
+        (self.results / "go-test.json").write_text("".join(json.dumps(event) + "\n" for event in events), encoding="utf-8")
+        output = self.run_scoreboard(PHASE_3_CHECKLIST)
+        statuses = self.statuses(output)
+
+        self.assertEqual(sorted(statuses), PHASE_3_SCENARIOS)
+        self.assertEqual(statuses["P3-01"], "pass")
+        self.assertEqual(statuses["P3-02"], "fail")
+        self.assertEqual(statuses["P3-04"], "not run")
+        self.assertEqual(statuses["P3-05"], "pass")
+        self.assertEqual(statuses["P3-13"], "not run")
+        self.assertEqual(statuses["P3-06"], "no test")
+        self.assertNotIn("AC-04", output)
+        self.assertEqual(output.strip().splitlines()[-1], "passing 2/13")
+
+    def test_the_go_run_pattern_selects_the_tests_holding_phase_3_subtests(self):
+        (self.sources / "internal" / "store" / "role_integration_test.go").write_text(
+            'package store\n\nfunc TestRoles(t *testing.T) {\n\tt.Run("[P3-13] a viewer is refused", func(t *testing.T) {})\n}\n',
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [sys.executable, "-I", str(SCRIPT), "--go-run-pattern", "--sources", str(self.sources)],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        self.assertTrue(re.compile(completed.stdout.strip()).fullmatch("TestRoles"))
 
 
 if __name__ == "__main__":

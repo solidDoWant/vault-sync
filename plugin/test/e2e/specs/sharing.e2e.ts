@@ -3,6 +3,7 @@ import { browser, expect } from "@wdio/globals";
 import type VaultSyncPlugin from "../../../src/main";
 import { VaultRole } from "../../../src/gen/vaultsync/v1/types_pb";
 import { e2eEnvironment, pluginId } from "../environment";
+import { answerModal, clickButton, notices, openSettings, recordNotices, type, type SettingsApp } from "../settings-ui";
 import { configure, signInAs } from "../signin";
 
 // The settings' Sharing section and joining by invite code (#34), driven
@@ -23,8 +24,6 @@ interface Row {
   /** The row's dropdown value, or null when it has none. */
   select: string | null;
 }
-
-type SettingsApp = { setting: { activeTab?: { containerEl: HTMLElement }; open(): void; openTabById(id: string): void; close(): void } };
 
 /** The sync status of vault-sync in the running Obsidian. */
 function syncStatus() {
@@ -78,14 +77,6 @@ function renderSettings() {
   }, pluginId);
 }
 
-function openSettings() {
-  return browser.executeObsidian(({ app }, id) => {
-    const setting = (app as unknown as SettingsApp).setting;
-    setting.open();
-    setting.openTabById(id);
-  }, pluginId);
-}
-
 /** The setting rows inside the open settings tab's element matching `selector`. */
 function rows(selector: string): Promise<Row[]> {
   return browser.executeObsidian(({ app }, within) => {
@@ -104,21 +95,6 @@ function roleLine(): Promise<string | null> {
   return browser.executeObsidian(({ app }) => (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelector(".vault-sync-sharing-role .setting-item-description")?.textContent ?? null);
 }
 
-/** Clicks the button labelled `text` in the `index`th row matching `selector`. */
-function clickButton(selector: string, index: number, text: string) {
-  return browser.executeObsidian(
-    ({ app }, within, at, label) => {
-      const item = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelectorAll(`${within} .setting-item`)[at];
-      const button = [...(item?.querySelectorAll<HTMLButtonElement>(".setting-item-control button") ?? [])].find((candidate) => candidate.textContent === label);
-      if (button === undefined) throw new Error(`no ${label} button in row ${String(at)} of ${within}`);
-      button.click();
-    },
-    selector,
-    index,
-    text,
-  );
-}
-
 /** Chooses `value` in the dropdown of the `index`th row matching `selector`, as the user does. */
 function choose(selector: string, index: number, value: string) {
   return browser.executeObsidian(
@@ -132,48 +108,6 @@ function choose(selector: string, index: number, value: string) {
     index,
     value,
   );
-}
-
-/** Types `value` into the text field of the first row matching `selector`. */
-function type(selector: string, value: string) {
-  return browser.executeObsidian(
-    ({ app }, within, text) => {
-      const input = (app as unknown as SettingsApp).setting.activeTab?.containerEl.querySelector<HTMLInputElement>(`${within} input[type=text]`);
-      if (input === null || input === undefined) throw new Error(`no text field in ${within}`);
-      input.value = text;
-      input.dispatchEvent(new Event("input"));
-    },
-    selector,
-    value,
-  );
-}
-
-/** The open modals titled `title`: their texts. */
-function modals(title: string): Promise<string[]> {
-  return browser.executeObsidian(
-    ({ app }, wanted) =>
-      [...((app as unknown as SettingsApp).setting.activeTab?.containerEl.ownerDocument ?? document).querySelectorAll(".modal")]
-        .filter((modal) => modal.querySelector(".modal-title")?.textContent === wanted)
-        .map((modal) => modal.textContent),
-    title,
-  );
-}
-
-/** Clicks `text` in the open modal titled `title`, and waits for the modal to close. */
-async function answerModal(title: string, text: string): Promise<void> {
-  await browser.waitUntil(async () => (await modals(title)).length === 1, { timeoutMsg: `no "${title}" modal opened` });
-  await browser.executeObsidian(
-    ({ app }, wanted, label) => {
-      const modal = [...((app as unknown as SettingsApp).setting.activeTab?.containerEl.ownerDocument ?? document).querySelectorAll(".modal")].find((candidate) => candidate.querySelector(".modal-title")?.textContent === wanted);
-      const button = [...(modal?.querySelectorAll<HTMLButtonElement>("button") ?? [])].find((candidate) => candidate.textContent === label);
-      if (button === undefined) throw new Error(`the "${wanted}" modal has no ${label} button`);
-      button.click();
-    },
-    title,
-    text,
-  );
-  // In mobile mode Obsidian removes a modal only after an animation.
-  await browser.waitUntil(async () => (await modals(title)).length === 0, { timeoutMsg: `the "${title}" modal never closed` });
 }
 
 /** The code and buttons of the open "Invitation created" modal, or null while none is open. */
@@ -196,30 +130,6 @@ async function createInvitation(role: VaultRole, days: string): Promise<string> 
   expect(shown?.buttons).toEqual(["Copy code", "Done"]);
   await answerModal("Invitation created", "Done");
   return shown?.code ?? "";
-}
-
-/** Records the text of every notice shown from now on. */
-function recordNotices() {
-  return browser.executeObsidian(({ app }) => {
-    const state = window as unknown as { vaultSyncNotices?: Set<Element> };
-    if (state.vaultSyncNotices !== undefined) return;
-    const shown = new Set<Element>();
-    state.vaultSyncNotices = shown;
-    const observer = new MutationObserver((records) => {
-      for (const record of records) {
-        for (const node of record.addedNodes) {
-          if (!(node instanceof Element)) continue;
-          if (node.matches(".notice")) shown.add(node);
-          for (const notice of node.querySelectorAll(".notice")) shown.add(notice);
-        }
-      }
-    });
-    for (const shownIn of new Set([document, (app as unknown as SettingsApp).setting.activeTab?.containerEl.ownerDocument ?? document])) observer.observe(shownIn.body, { childList: true, subtree: true });
-  });
-}
-
-async function notices(): Promise<string[]> {
-  return (await browser.executeObsidian(() => [...((window as unknown as { vaultSyncNotices?: Set<Element> }).vaultSyncNotices ?? [])].map((notice) => notice.textContent))).filter((text) => text !== "");
 }
 
 /** Calls a MembershipService procedure as the e2e test token's user (Connect JSON) and returns the HTTP status. */

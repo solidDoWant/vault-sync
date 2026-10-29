@@ -29,6 +29,10 @@ type DeviceFlowOptions struct {
 	// Subject is the sub of the access tokens of an authorization approved
 	// without a subject of its own. Defaults to "device-flow-user".
 	Subject string
+	// Names maps a subject to the name claim of its access tokens, the
+	// display name a user has on the identity provider. A subject not in it
+	// gets no name claim.
+	Names map[string]string
 	// AccessTokenLifetime defaults to an hour.
 	AccessTokenLifetime time.Duration
 	// Interval is the polling interval the device authorization asks for, in
@@ -248,6 +252,10 @@ func (flow *DeviceFlow) issueTokens(writer http.ResponseWriter, subject string) 
 	now := time.Now()
 	claims := flow.issuer.Claims(subject, now)
 	claims["exp"] = now.Add(flow.options.AccessTokenLifetime).Unix()
+
+	if name, ok := flow.options.Names[subject]; ok {
+		claims["name"] = name
+	}
 
 	accessToken, err := signClaims(flow.key, claims)
 	if err != nil {

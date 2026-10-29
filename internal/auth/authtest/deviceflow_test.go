@@ -93,15 +93,16 @@ func TestDeviceFlow(t *testing.T) {
 func TestDeviceFlowApprovesAsSubject(t *testing.T) {
 	issuer := authtest.NewIssuer(t)
 	key := issuer.AddKey(t, jose.ES256)
-	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "default-user"})
+	issuer.EnableDeviceFlow(t, key, authtest.DeviceFlowOptions{Subject: "default-user", Names: map[string]string{"second-user": "Second User"}})
 
 	tests := []struct {
-		name    string
-		subject string
-		want    string
+		name     string
+		subject  string
+		want     string
+		wantName string
 	}{
-		{name: "named subject", subject: "second-user", want: "second-user"},
-		{name: "default subject", subject: "", want: "default-user"},
+		{name: "named subject", subject: "second-user", want: "second-user", wantName: "Second User"},
+		{name: "default subject", subject: "", want: "default-user", wantName: ""},
 	}
 
 	for _, test := range tests {
@@ -118,6 +119,7 @@ func TestDeviceFlowApprovesAsSubject(t *testing.T) {
 			status, tokens := postForm(t, issuer.URL+"/token", poll)
 			require.Equal(t, http.StatusOK, status)
 			assert.Equal(t, test.want, subjectOf(t, tokens["access_token"]))
+			assert.Equal(t, test.wantName, claimOf(t, tokens["access_token"], "name"))
 
 			// A refresh keeps the subject the authorization was approved as.
 			refreshToken, _ := tokens["refresh_token"].(string)
@@ -125,11 +127,19 @@ func TestDeviceFlowApprovesAsSubject(t *testing.T) {
 			status, refreshed := postForm(t, issuer.URL+"/token", refresh)
 			require.Equal(t, http.StatusOK, status)
 			assert.Equal(t, test.want, subjectOf(t, refreshed["access_token"]))
+			assert.Equal(t, test.wantName, claimOf(t, refreshed["access_token"], "name"))
 		})
 	}
 }
 
 func subjectOf(t *testing.T, token any) string {
+	t.Helper()
+
+	return claimOf(t, token, "sub")
+}
+
+// claimOf returns the string claim of the JWT token, or "" if it has none.
+func claimOf(t *testing.T, token any, claim string) string {
 	t.Helper()
 
 	raw, ok := token.(string)
@@ -141,7 +151,7 @@ func subjectOf(t *testing.T, token any) string {
 	claims := map[string]any{}
 	require.NoError(t, json.Unmarshal(parsed.UnsafePayloadWithoutVerification(), &claims))
 
-	subject, _ := claims["sub"].(string)
+	value, _ := claims[claim].(string)
 
-	return subject
+	return value
 }
