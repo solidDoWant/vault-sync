@@ -26,7 +26,7 @@ const (
 	keySlotLabel       = "vault-sync/v1/key-slot"
 	keyCommitmentLabel = "vault-sync/v1/key-commitment"
 
-	recipientKindUserByte   byte = 0x01
+	recipientKindUserByte       byte = 0x01
 	recipientKindEscrowByte     byte = 0x02
 	recipientKindInvitationByte byte = 0x03
 
