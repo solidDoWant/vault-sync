@@ -16,6 +16,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,11 +45,13 @@ type encryptedMember struct {
 	allEpochKeys [][]byte
 }
 
-// newEncryptedMember creates a user key for the user of token, wrapped under
-// a fresh recovery passphrase, as the plugin does when the user enables
-// encryption (CreateUserKey).
-func newEncryptedMember(t *testing.T, server *instance, token string) *encryptedMember {
+// newEncryptedMember creates a user key for subject, wrapped under a fresh
+// recovery passphrase, as the plugin does when the user enables encryption
+// (CreateUserKey), and reads the user id the server gave subject.
+func newEncryptedMember(t *testing.T, cluster *deployment, server *instance, subject string) *encryptedMember {
 	t.Helper()
+
+	token := cluster.token(t, subject)
 
 	privateKey, publicKey, err := e2ee.GenerateKeyPair()
 	require.NoError(t, err)
@@ -71,28 +74,34 @@ func newEncryptedMember(t *testing.T, server *instance, token string) *encrypted
 	}, token))
 	require.NoError(t, err)
 
-	return &encryptedMember{token: token, passphrase: passphrase, privateKey: privateKey, publicKey: publicKey, epochKeys: map[uint64][]byte{}}
+	var userID uuid.UUID
+
+	require.NoError(t, cluster.connectDatabase(t).QueryRow(t.Context(),
+		`SELECT id FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2`, cluster.issuer.URL, subject).Scan(&userID))
+
+	return &encryptedMember{
+		token: token, userID: userID.String(), passphrase: passphrase, privateKey: privateKey, publicKey: publicKey, epochKeys: map[uint64][]byte{},
+	}
 }
 
 // createEncryptedVault creates an end-to-end encrypted vault without escrow
-// owned by member and gives it epochs 1 to epochs, each wrapped to member,
-// as the owner's plugin device does (RotateEpoch).
+// owned by member, with the vault id and signed genesis entry the owner's
+// plugin device chooses (CreateVault), and gives it epochs 1 to epochs, each
+// wrapped to member, as that device does (RotateEpoch).
 func createEncryptedVault(t *testing.T, server *instance, member *encryptedMember, name string, epochs uint64) *vaultsyncv1.Vault {
 	t.Helper()
 
+	vaultID := uuid.Must(uuid.NewV7()).String()
+
 	response, err := server.vaults().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
 		Name: name, Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE,
+		NewVaultId: vaultID, Genesis: member.signedGenesis(t, vaultID),
 	}, member.token))
 	require.NoError(t, err)
 
 	vault := response.Msg.GetVault()
+	require.Equal(t, vaultID, vault.GetId())
 
-	members, err := vaultsyncv1connect.NewMembershipServiceClient(httpClient, server.apiURL).ListMembers(t.Context(),
-		authorized(&vaultsyncv1.ListMembersRequest{VaultId: vault.GetId()}, member.token))
-	require.NoError(t, err)
-	require.Len(t, members.Msg.GetMembers(), 1)
-
-	member.userID = members.Msg.GetMembers()[0].GetUserId()
 	member.epochKeys = map[uint64][]byte{}
 
 	keys := vaultsyncv1connect.NewVaultKeyServiceClient(httpClient, server.apiURL)
@@ -126,6 +135,28 @@ func createEncryptedVault(t *testing.T, server *instance, member *encryptedMembe
 	}
 
 	return vault
+}
+
+// signedGenesis is the genesis entry of vaultID, created by member and signed
+// with a fresh user secret of member, without escrow.
+func (member *encryptedMember) signedGenesis(t *testing.T, vaultID string) *vaultsyncv1.LogEntry {
+	t.Helper()
+
+	secret, err := e2ee.GenerateUserSecret()
+	require.NoError(t, err)
+
+	bundle, err := secret.Bundle(member.userID)
+	require.NoError(t, err)
+
+	payload, err := e2ee.GenesisPayload(bundle, nil)
+	require.NoError(t, err)
+
+	entry, err := e2ee.Entry{
+		VaultID: vaultID, Seq: 1, PrevHash: make([]byte, e2ee.HashSize), Type: e2ee.EntryGenesis, Payload: payload,
+	}.Sign(secret.SignKey())
+	require.NoError(t, err)
+
+	return &vaultsyncv1.LogEntry{Seq: entry.Seq, PrevHash: entry.PrevHash, Type: uint32(entry.Type), Payload: entry.Payload, Signatures: entry.Signatures}
 }
 
 // decryptAll pulls the whole change feed of an encrypted vault as a fresh
@@ -336,7 +367,7 @@ func TestImportIntoAnEncryptedVault(t *testing.T) {
 	flow := cluster.issuer.EnableDeviceFlow(t, cluster.key, authtest.DeviceFlowOptions{})
 	binary := buildServer(t)
 	server := cluster.start(t, "server", binary, config.OIDCClientIDEnv+"="+authtest.DefaultAudience)
-	member := newEncryptedMember(t, server, cluster.token(t, "alice"))
+	member := newEncryptedMember(t, cluster, server, "alice")
 
 	// Distinctive names and contents, so any plaintext copy is found.
 	marker := strings.ToLower(rand.Text())
