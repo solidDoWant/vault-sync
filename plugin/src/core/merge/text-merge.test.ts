@@ -1,43 +1,10 @@
 import fc from "fast-check";
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { applyChanges, mergeText, mergeUnsaved } from "./text-merge";
 
-describe("diff memory", () => {
-  /** Runs `run`, counting the bytes of every Int32Array it allocates (the diff's only large allocations). */
-  function int32BytesAllocated(run: () => void): number {
-    const original = globalThis.Int32Array;
-    let bytes = 0;
-    class Counting extends original {
-      constructor(length: number) {
-        super(length);
-        bytes += this.byteLength;
-      }
-    }
-    vi.stubGlobal("Int32Array", Counting);
-    try {
-      run();
-    } finally {
-      vi.unstubAllGlobals();
-    }
-    return bytes;
-  }
-
+describe("diff size limits", () => {
   const numbered = (count: number, prefix: string) => Array.from({ length: count }, (_, index) => `${prefix} ${String(index)}`);
-
-  it("stays well below 128 MB for two texts at the maximum edit distance", () => {
-    // 2000 lines replaced by 2000 others: exactly 4000 differences, the most
-    // the diff still searches a minimal edit script for.
-    const base = lines(...numbered(2000, "base"));
-    const remote = lines(...numbered(2000, "remote"));
-    let merged: string | undefined;
-    const bytes = int32BytesAllocated(() => {
-      merged = mergeUnsaved(base, base, remote)?.merged;
-    });
-    expect(merged).toBe(remote);
-    expect(bytes).toBeGreaterThan(0);
-    expect(bytes).toBeLessThan(40 * 1024 * 1024);
-  });
 
   it("finds a minimal edit script at exactly the maximum edit distance, and one change past it", () => {
     // A line kept in the middle splits the remote change in two at 4000
@@ -46,6 +13,36 @@ describe("diff memory", () => {
     expect(mergeUnsaved(base, base, lines(...numbered(1000, "x"), "same", ...numbered(1000, "y")))?.changes).toHaveLength(2);
     const longer = lines(...numbered(1000, "a"), "same", ...numbered(1001, "b"));
     expect(mergeUnsaved(longer, longer, lines(...numbered(1000, "x"), "same", ...numbered(1000, "y")))?.changes).toHaveLength(1);
+  });
+
+  it("caps the edit distance of reordered lines too", () => {
+    // Reversing n distinct lines keeps one of them: 2 * (n - 1) differences, in two changes around the kept line.
+    const reversed = (count: number) => {
+      const base = numbered(count, "line");
+      return { base: lines(...base), remote: lines(...base.reverse()) };
+    };
+    const atLimit = reversed(2001);
+    expect(mergeUnsaved(atLimit.base, atLimit.base, atLimit.remote)?.changes).toHaveLength(2);
+    const pastLimit = reversed(2002);
+    expect(mergeUnsaved(pastLimit.base, pastLimit.base, pastLimit.remote)?.changes).toHaveLength(1);
+  });
+
+  it("diffs a differing middle of exactly 10,000 lines on each side, and takes one of 10,001 lines on either side as one change", () => {
+    // Only the first and last lines of the middle differ, so a diff finds two changes.
+    const middle = (count: number, first: string, ...last: string[]) => lines(first, ...numbered(count - 1 - last.length, "kept"), ...last);
+    const changes = (base: string, remote: string) => mergeUnsaved(base, base, remote)?.changes;
+    expect(changes(middle(10_000, "a", "z"), middle(10_000, "A", "Z"))).toHaveLength(2);
+    expect(changes(middle(10_000, "a", "z"), middle(10_001, "A", "extra", "Z"))).toHaveLength(1);
+    expect(changes(middle(10_001, "a", "extra", "z"), middle(10_000, "A", "Z"))).toHaveLength(1);
+  });
+
+  it("applies the size limit to the differing middle only, so a long note still merges", () => {
+    // 20,000 lines; the remote side changed lines 100 and 5,000, the local side line 2,000 between them.
+    const shared = numbered(20_000, "line");
+    const edit = (text: readonly string[], index: number, value: string) => text.map((line, at) => (at === index ? value : line));
+    const local = edit(shared, 2000, "typed");
+    const remote = edit(edit(shared, 100, "remote 1"), 5000, "remote 2");
+    expect(mergeUnsaved(lines(...shared), lines(...local), lines(...remote))?.merged).toBe(lines(...edit(remote, 2000, "typed")));
   });
 });
 

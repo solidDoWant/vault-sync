@@ -30,12 +30,20 @@ interface Hunk {
 }
 
 /**
- * Above this many differing lines between two texts, the diff is not used and
- * the merge reports the whole differing middle as one change.
- * That is never wrong, only coarser (more merges are refused as overlapping),
+ * Above this many line differences between two texts, the merge reports the
+ * whole differing middle as one change instead of the diff's. That is never wrong, only coarser (more merges are refused as overlapping),
  * and it bounds time and memory for large, very different notes.
  */
 const maxEditDistance = 4000;
+
+/**
+ * A differing middle longer than this many lines on either side is not diffed
+ * and counts as one change, like one past maxEditDistance. The diff takes time
+ * proportional to the lines times their differences, and it runs on the UI
+ * thread for editor writes. Being deterministic, the limit makes whether a
+ * merge is clean independent of the device's speed.
+ */
+const maxDiffedLines = 10_000;
 
 /**
  * Merges `remote` into `local`, both derived from `base`: the editor case,
@@ -200,21 +208,40 @@ function offsetAt(offsets: readonly number[], line: number): number {
 
 /**
  * The changed regions between two texts, line by line, in ascending order of
- * the `before` lines. The diff is diff-match-patch's, in line mode.
+ * the `before` lines. The diff is diff-match-patch's, in line mode, run on
+ * the differing middle between the common first and last lines.
  */
 function diffLines(before: string, after: string): Hunk[] {
+  const beforeLines = splitLines(before);
+  const afterLines = splitLines(after);
+  let prefix = 0;
+  while (prefix < beforeLines.length && prefix < afterLines.length && beforeLines[prefix] === afterLines[prefix]) prefix++;
+  let suffix = 0;
+  while (
+    suffix < beforeLines.length - prefix &&
+    suffix < afterLines.length - prefix &&
+    beforeLines[beforeLines.length - 1 - suffix] === afterLines[afterLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  const left = beforeLines.slice(prefix, beforeLines.length - suffix);
+  const right = afterLines.slice(prefix, afterLines.length - suffix);
+  if (left.length === 0 && right.length === 0) return [];
+  const wholeMiddle: Hunk[] = [{ baseStart: prefix, baseEnd: prefix + left.length, lines: right }];
+  if (left.length > maxDiffedLines || right.length > maxDiffedLines) return wholeMiddle;
+
   const lineDiff = new DiffMatchPatch();
   // No time limit: the result must not depend on how fast the device is.
   lineDiff.Diff_Timeout = 0;
-  const { chars1, chars2, lineArray } = lineDiff.diff_linesToChars_(before, after);
+  const { chars1, chars2, lineArray } = lineDiff.diff_linesToChars_(left.join(""), right.join(""));
   // Every line only one side has is at least one difference, so past
   // maxEditDistance of them no diff is needed to know the answer.
-  if (unmatchedLines(chars1, chars2) > maxEditDistance) return wholeMiddle(splitLines(before), splitLines(after));
+  if (unmatchedLines(chars1, chars2) > maxEditDistance) return wholeMiddle;
   const diffs = lineDiff.diff_main(chars1, chars2, false);
   lineDiff.diff_charsToLines_(diffs, lineArray);
 
   const hunks: Hunk[] = [];
-  let baseLine = 0;
+  let baseLine = prefix;
   let distance = 0;
   let open: Hunk | null = null;
   for (const [operation, text] of diffs) {
@@ -235,8 +262,7 @@ function diffLines(before: string, after: string): Hunk[] {
     }
   }
   if (open !== null) hunks.push(open);
-  if (distance > maxEditDistance) return wholeMiddle(splitLines(before), splitLines(after));
-  return hunks;
+  return distance > maxEditDistance ? wholeMiddle : hunks;
 }
 
 /** How many lines (as diff_linesToChars_ characters) one text has more of than the other, summed over all lines. */
@@ -247,20 +273,4 @@ function unmatchedLines(left: string, right: string): number {
   let unmatched = 0;
   for (const count of counts.values()) unmatched += Math.abs(count);
   return unmatched;
-}
-
-/** The whole differing middle of two line arrays, between their common first and last lines, as one change. */
-function wholeMiddle(before: readonly string[], after: readonly string[]): Hunk[] {
-  let prefix = 0;
-  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
-  let suffix = 0;
-  while (
-    suffix < before.length - prefix &&
-    suffix < after.length - prefix &&
-    before[before.length - 1 - suffix] === after[after.length - 1 - suffix]
-  ) {
-    suffix++;
-  }
-  if (prefix === before.length && prefix === after.length) return [];
-  return [{ baseStart: prefix, baseEnd: before.length - suffix, lines: after.slice(prefix, after.length - suffix) }];
 }
