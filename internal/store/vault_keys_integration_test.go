@@ -617,3 +617,84 @@ func TestListEscrowSlotsListsEveryEpochsEscrowSlot(t *testing.T) {
 		assert.True(t, bytes.Equal(wrapped[index], slot.WrappedKey), "epoch %d's escrow slot", index+1)
 	}
 }
+
+func TestEveryEpochOfAnEscrowVaultHasExactlyOneEscrowSlot(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+	fixture := &keyFixture{pool: pool, queries: queries}
+	fixture.owner = fixture.keyedUser(t, "owner")
+
+	vault, err := queries.CreateVault(t.Context(), fixture.owner, store.NewVault{Name: "Escrowed", Encryption: store.EncryptionE2EE, Escrow: true}, 10)
+	require.NoError(t, err)
+
+	fixture.vault = queries.InVault(vault.ID)
+
+	escrowSlot := func(epoch int32, id string) store.KeySlot {
+		return store.KeySlot{Epoch: epoch, RecipientKind: store.RecipientEscrow, RecipientID: id, WrappedKey: randomBytes(t, 105)}
+	}
+
+	refused := []struct {
+		name   string
+		escrow []store.KeySlot
+	}{
+		{"no escrow slot", nil},
+		{"two escrow slots", []store.KeySlot{escrowSlot(0, "escrow-key"), escrowSlot(0, "retiring-key")}},
+	}
+
+	for _, refusal := range refused {
+		next := fixture.nextEpoch(t, 0, fixture.owner)
+		next.Slots = append(next.Slots, refusal.escrow...)
+
+		_, err := fixture.vault.RotateEpoch(t.Context(), fixture.owner, next)
+		require.ErrorIs(t, err, store.ErrInvalidRecipients, refusal.name)
+		assert.Equal(t, int32(0), fixture.state(t).CurrentEpoch, "%s: no epoch is created", refusal.name)
+	}
+
+	next := fixture.nextEpoch(t, 0, fixture.owner)
+	next.Slots = append(next.Slots, escrowSlot(0, "escrow-key"))
+	_, err = fixture.vault.RotateEpoch(t.Context(), fixture.owner, next)
+	require.NoError(t, err, "one escrow slot")
+
+	_, err = fixture.vault.AddKeySlots(t.Context(), fixture.owner, []store.KeySlot{escrowSlot(1, "retiring-key")})
+	require.ErrorIs(t, err, store.ErrInvalidRecipients, "a second escrow slot for a stored epoch")
+
+	added, err := fixture.vault.AddKeySlots(t.Context(), fixture.owner, []store.KeySlot{escrowSlot(1, "escrow-key")})
+	require.NoError(t, err, "the epoch's own escrow slot again")
+	assert.Equal(t, 0, added, "a stored slot is kept")
+
+	slots, err := fixture.vault.ListEscrowSlots(t.Context(), 0, 10)
+	require.NoError(t, err)
+	require.Len(t, slots, 1)
+	assert.Equal(t, "escrow-key", slots[0].RecipientID)
+}
+
+func TestAddKeySlotsTakesOneEscrowSlotPerEpoch(t *testing.T) {
+	pool := migratedPool(t)
+	queries := store.New(pool)
+	fixture := &keyFixture{pool: pool, queries: queries}
+	fixture.owner = fixture.keyedUser(t, "owner")
+
+	vault, err := queries.CreateVault(t.Context(), fixture.owner, store.NewVault{Name: "Escrowed", Encryption: store.EncryptionE2EE, Escrow: true}, 10)
+	require.NoError(t, err)
+
+	fixture.vault = queries.InVault(vault.ID)
+
+	// An epoch without an escrow slot, as one made before escrow was on.
+	_, err = pool.Exec(t.Context(), `UPDATE vaults SET escrow = false WHERE id = $1`, vault.ID)
+	require.NoError(t, err)
+	_, err = fixture.vault.RotateEpoch(t.Context(), fixture.owner, fixture.nextEpoch(t, 0, fixture.owner))
+	require.NoError(t, err)
+	_, err = pool.Exec(t.Context(), `UPDATE vaults SET escrow = true WHERE id = $1`, vault.ID)
+	require.NoError(t, err)
+
+	escrowSlot := func(id string) store.KeySlot {
+		return store.KeySlot{Epoch: 1, RecipientKind: store.RecipientEscrow, RecipientID: id, WrappedKey: randomBytes(t, 105)}
+	}
+
+	_, err = fixture.vault.AddKeySlots(t.Context(), fixture.owner, []store.KeySlot{escrowSlot("escrow-key"), escrowSlot("retiring-key")})
+	require.ErrorIs(t, err, store.ErrInvalidRecipients, "two escrow slots for one epoch")
+
+	added, err := fixture.vault.AddKeySlots(t.Context(), fixture.owner, []store.KeySlot{escrowSlot("escrow-key")})
+	require.NoError(t, err)
+	assert.Equal(t, 1, added)
+}
