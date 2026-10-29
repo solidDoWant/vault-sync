@@ -1,6 +1,6 @@
 # E2EE cipher suite 2
 
-This document fixes the byte formats of the end-to-end encryption primitives of `SPEC.md` §9.3. They are implemented twice, in `internal/e2ee` (Go, `golang.org/x/crypto`, the standard library and `filippo.io/age`) and `plugin/src/core/e2ee` (TypeScript, `@noble/ciphers`, `@noble/hashes`, `@noble/post-quantum` and `age-encryption`, the TypeScript age implementation, which is built on the same `@noble` packages), and both must pass every vector in `testdata/crypto/vectors.json`. Suite 2 replaces suite 1, whose key wrapping was a classic X25519 sealed box: every key wrapping is now hybrid post-quantum (ML-KEM-768 + X25519, `docs/design/encryption.md` *Suite 2*), and contents, paths and passphrase wrapping keep XChaCha20-Poly1305 and Argon2id. The key-slot and key-commitment formats of vault key epochs are fixed here too (Key slots and key commitments). The rest of key management (storing epochs and slots, rotation, recovery, which associated data content and paths bind) is built on top of these primitives and is not described here.
+This document fixes the byte formats of the end-to-end encryption primitives of `SPEC.md` §9.3. They are implemented twice, in `internal/e2ee` (Go, `golang.org/x/crypto`, the standard library and `filippo.io/age`) and `plugin/src/core/e2ee` (TypeScript, `@noble/ciphers`, `@noble/hashes`, `@noble/post-quantum` and `age-encryption`, the TypeScript age implementation, which is built on the same `@noble` packages), and both must pass every vector in `testdata/crypto/vectors.json`. Suite 2 replaces suite 1, whose key wrapping was a classic X25519 sealed box: every key wrapping is now hybrid post-quantum (ML-KEM-768 + X25519, `docs/design/encryption.md` *Suite 2*), and contents, paths and passphrase wrapping keep XChaCha20-Poly1305 and Argon2id. The key-slot and key-commitment formats of vault key epochs are fixed here too (Key slots and key commitments). The associated data of contents and paths, and invitation keys, are fixed here too. The rest of key management (storing epochs and slots, rotation, recovery) is in `docs/design/encryption.md`.
 
 ## Principles
 
@@ -49,8 +49,8 @@ commitment = HMAC-SHA256(key = epoch_key, "vault-sync/v1/key-commitment" || vaul
 - The labels are ASCII, without a terminator (both have a fixed length).
 - `vault_id` is the 16 bytes of the vault's UUID, which callers give in canonical lowercase form (`0190d6e4-8c1e-7a3b-9d2f-5e6a7b8c9d0e`). Any other spelling is refused before anything is sealed, opened or computed, so a slot has exactly one encoding.
 - `epoch` is an unsigned 64-bit integer. TypeScript accepts epochs up to `Number.MAX_SAFE_INTEGER` (2^53 − 1).
-- `recipient_kind` is `0x01` for `user` and `0x02` for `escrow`. No other value is defined.
-- `recipient_id` is the 16 bytes of the member's user id (a canonical lowercase UUID) for `user`. For `escrow` it is the UTF-8 bytes of the escrow key's id, 1 to 255 bytes. #40 defines that id. The one-byte length prefix keeps the encoding unambiguous for both.
+- `recipient_kind` is `0x01` for `user`, `0x02` for `escrow` and `0x03` for `invitation`. No other value is defined.
+- `recipient_id` is the 16 bytes of the member's user id (a canonical lowercase UUID) for `user`, and of the invitation's id for `invitation`. For `escrow` it is the UTF-8 bytes of the escrow key's id, 1 to 255 bytes. #40 defines that id. The one-byte length prefix keeps the encoding unambiguous for both.
 
 Opening a slot (`OpenKeySlot` / `openKeySlot`) opens the age file and fails with `ErrDecrypt` / `DecryptError` unless the payload is exactly 32 bytes followed by this slot's `slot_ad` (compared in constant time), so it refuses any other vault, epoch, recipient kind or recipient id, and a key of any other size. A user slot is about 1750 bytes; an escrow slot with a 255-byte id stays under the 2048-byte bound.
 
@@ -58,8 +58,26 @@ Opening a slot (`OpenKeySlot` / `openKeySlot`) opens the age file and fails with
 
 Every epoch stores its **key commitment**. A recipient that unwraps an epoch key checks it against the commitment (`VerifyKeyCommitment` / `verifyKeyCommitment`, a constant-time comparison that refuses with `ErrKeyCommitment` / `KeyCommitmentError`) before using it. The wrapping only proves that someone sealed this key to the recipient, and anyone who knows the recipient's public key can do that. The commitment ties the key to the epoch: every recipient checks against the same commitment, stored once when the epoch is created, so a slot that holds any other key (sealed by the server, or by a member who wraps a different key for a new member) is refused, and all members of an epoch end up with the same key. This check alone does not stop a server that replaces an epoch's commitment together with its slots. The commitment is an HMAC under the epoch key itself, so it reveals nothing about the key. It binds the vault and the epoch, so one epoch's commitment cannot be reused for another.
 
+## Associated data of contents and paths
+
+```
+path_aad    = "vault-sync/v1/path"    || vault_id (16) || document_id (16) || epoch (u64)
+content_aad = "vault-sync/v1/content" || vault_id (16) || epoch (u64)
+```
+
+A path is sealed with `subkey(epoch_key, "path")` and `path_aad`, content with `subkey(epoch_key, "content")` and `content_aad`, where `epoch` is the revision's epoch. The labels are ASCII without a terminator; ids are the 16 bytes of canonical lowercase UUIDs.
+
+## Invitation keys
+
+```
+seed = HKDF-SHA256(ikm = secret (16), salt = vault_id (16), info = "vault-sync/v1/invitation-key" || invitation_id (16), length = 32)
+```
+
+`seed` is the private key of the invitation's MLKEM768-X25519 key pair (Hybrid wrapping), derived by the library's key generation from a seed. `secret` is the decoded `<secret>` of the invitation code.
+
 ## path_key and blob_id
 
+- `path_key_secret` is `subkey(epoch_1_key, "path_key_secret")` for the vault's whole life, whatever the current epoch. `blob_id_secret` is `subkey(epoch_key, "blob_id_secret")` of the revision's epoch.
 - `path_key = HMAC-SHA256(path_key_secret, UTF-8(normalize(path)))`, with `normalize` the plaintext `path_key` normalization of `SPEC.md` §5 (`internal/pathkey`, `plugin/src/core/pathkey`), so paths differing only in case or Unicode normalization share a `path_key`.
 - `blob_id = HMAC-SHA256(blob_id_secret, plaintext)`.
 
@@ -75,7 +93,7 @@ auth_key  = HKDF-SHA256(ikm = stretched, salt = empty, info = "vault-sync/v1/pas
 wrapped   = header || nonce (24) || XChaCha20-Poly1305(wrap_key, nonce, secret, ad = header || aad)
 ```
 
-The parameters travel with the ciphertext so that they can be raised later without a new suite. The header is not secret. A device that unlocks gets the parameters and salt before the wrapped key is released, from `GetUserKeyParams` (the server stores them alongside the wrapped key), and derives both keys with one Argon2id run; `ParsePassphraseHeader` / `parsePassphraseHeader` read the same values from a wrapped key. It then presents `auth_key` to have the wrapped key released and opens it with `wrap_key` (`UnwrapWithKey` / `unwrapWithKey`). The passphrase is NFC-normalized with the pinned Unicode 17.0.0 tables of the `path_key` normalization (`pathkey.NFC` in Go, `nfc` in `plugin/src/core/pathkey/normalize.ts`), never the runtime's, so that the same characters typed on any device derive the same key whatever Unicode version the device has. The `passphrase` vectors include a pair that differs only by a Unicode 17 combining mark's effect on composition. An empty passphrase is refused.
+The parameters travel with the ciphertext so that they can be raised later without a new suite. The header is not secret. A device that unlocks gets the parameters and salt before the wrapped key is released, from `GetUserKeyParams` (the server stores them alongside the wrapped key), and derives both keys with one Argon2id run; `ParsePassphraseHeader` / `parsePassphraseHeader` read the same values from a wrapped key. It then presents `auth_key` to have the wrapped key released and opens it with `wrap_key` (`UnwrapWithKey` / `unwrapWithKey`). The passphrase may contain only code points assigned in Unicode 15.0; any other is refused when it is set or used. It is NFC-normalized by the library (`golang.org/x/text/unicode/norm`, `String.prototype.normalize`). Unicode's normalization stability policy makes the result identical on every runtime for assigned characters, so the same characters typed on any device derive the same key. The `passphrase` vectors include a decomposed and precomposed pair, and a refused unassigned code point. An empty passphrase is refused.
 
 Parameters are bounded on wrap and on unwrap; unwrap refuses out-of-bounds parameters **before** deriving, so a hostile stored value cannot make a device allocate or compute without limit, and a downgrade below the minimum is refused:
 
