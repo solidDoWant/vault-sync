@@ -114,3 +114,59 @@ describe("device path length", () => {
     expect(b.engine.status).toBe("idle");
   });
 });
+
+describe("a remote file named like the engine's temporary files", () => {
+  // The server accepts any portable name, so another client or the import CLI
+  // can commit a document named like a temporary file (§8). This device cannot
+  // hold it: the startup cleanup would remove it and detection would push its
+  // delete.
+  const temporaryNames = ["Report.pdf.vault-sync-tmp", "draft.md.vault-sync-new", "taken.md.vault-sync-new"];
+
+  async function seeded(): Promise<{ server: InMemoryServer; b: Device }> {
+    const server = new InMemoryServer();
+    const a = new Device(server, "device-a");
+    await a.write("keep.md", "a note");
+    await a.write("taken.md", "a note whose replacement name is taken");
+    await a.sync();
+    for (const [index, path] of temporaryNames.entries()) server.commit({ documentId: `temporary-${String(index)}`, path, content: `user file ${path}` });
+    return { server, b: new Device(server, "device-b") };
+  }
+
+  it("is not written, is listed, and stays on the server through syncs and a restart", async () => {
+    const { server, b } = await seeded();
+    const before = new Map(server.liveFiles());
+
+    await b.sync();
+    await b.sync();
+    b.restart();
+    await b.sync();
+    await b.sync();
+
+    expect(await b.files()).toEqual({ "keep.md": "a note", "taken.md": "a note whose replacement name is taken" });
+    expect(server.liveFiles()).toEqual(before);
+    expect((await b.engine.problems()).skipped).toEqual(
+      expect.arrayContaining(temporaryNames.map((path) => expect.objectContaining({ path, reason: "temporary-name" }) as unknown)),
+    );
+    expect((await b.journal.load()).pending).toEqual([]);
+  });
+
+  it("is not written by the resync after a server restore, and stays on the server", async () => {
+    const { server, b } = await seeded();
+    await b.sync();
+    const backupSeq = server.currentHeadSeq;
+    const before = new Map(server.liveFiles());
+    await b.write("after.md", "after the backup");
+    await b.sync();
+    server.restoreTo(backupSeq);
+
+    await b.sync();
+    b.restart();
+    await b.sync();
+
+    expect(await b.files()).toEqual({ "after.md": "after the backup", "keep.md": "a note", "taken.md": "a note whose replacement name is taken" });
+    expect(server.liveFiles()).toEqual(new Map([...before, ["after.md", "after the backup"]]));
+    expect((await b.engine.problems()).skipped).toEqual(
+      expect.arrayContaining(temporaryNames.map((path) => expect.objectContaining({ path, reason: "temporary-name" }) as unknown)),
+    );
+  });
+});

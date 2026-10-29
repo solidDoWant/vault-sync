@@ -162,6 +162,7 @@ The view also lists **files not on this device**: files that are synced, but tha
 
 - a file larger than this device's size limit, 1 GiB on desktop and 256 MiB on a phone or tablet (the server has its own limit, `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`). A smaller version of the file, saved on another device, arrives as usual and removes the entry;
 - a file whose path is not valid on this device's platform, such as a path longer than Windows allows (260 characters including the vault folder, unless long paths are enabled), or a name longer than 255 bytes. Rename it on another device and it arrives here.
+- a file whose name ends in `.vault-sync-tmp` or `.vault-sync-new`, the names of Vault Sync's own temporary files, which it removes at startup (`docs/design/engine.md` §8). Such a file can come from another client or from `vault-sync-server import`. Rename it on another device and it arrives here.
 
 When a file first joins this list, a notice names it and says why it is not on this device; it shows once per file and reason each time Obsidian starts.
 
