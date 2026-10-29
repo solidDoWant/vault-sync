@@ -10,7 +10,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file vaultsync/v1/user_key.proto.
  */
 export const file_vaultsync_v1_user_key: GenFile = /*@__PURE__*/
-  fileDesc("Cht2YXVsdHN5bmMvdjEvdXNlcl9rZXkucHJvdG8SDHZhdWx0c3luYy52MSJsChBQYXNzcGhyYXNlUGFyYW1zEg0KBXN1aXRlGAEgASgNEhIKCm1lbW9yeV9raWIYAiABKA0SEgoKaXRlcmF0aW9ucxgDIAEoDRITCgtwYXJhbGxlbGlzbRgEIAEoDRIMCgRzYWx0GAUgASgMIhkKF0dldFVzZXJLZXlQYXJhbXNSZXF1ZXN0Il4KGEdldFVzZXJLZXlQYXJhbXNSZXNwb25zZRISCgpwdWJsaWNfa2V5GAEgASgMEi4KBnBhcmFtcxgCIAEoCzIeLnZhdWx0c3luYy52MS5QYXNzcGhyYXNlUGFyYW1zIokBChRDcmVhdGVVc2VyS2V5UmVxdWVzdBISCgpwdWJsaWNfa2V5GAEgASgMEhsKE3dyYXBwZWRfcHJpdmF0ZV9rZXkYAiABKAwSLgoGcGFyYW1zGAMgASgLMh4udmF1bHRzeW5jLnYxLlBhc3NwaHJhc2VQYXJhbXMSEAoIYXV0aF9rZXkYBCABKAwiFwoVQ3JlYXRlVXNlcktleVJlc3BvbnNlIigKFFVubG9ja1VzZXJLZXlSZXF1ZXN0EhAKCGF1dGhfa2V5GAEgASgMIngKFVVubG9ja1VzZXJLZXlSZXNwb25zZRISCgpwdWJsaWNfa2V5GAEgASgMEhsKE3dyYXBwZWRfcHJpdmF0ZV9rZXkYAiABKAwSLgoGcGFyYW1zGAMgASgLMh4udmF1bHRzeW5jLnYxLlBhc3NwaHJhc2VQYXJhbXMiqgEKF0NoYW5nZVBhc3NwaHJhc2VSZXF1ZXN0EhAKCGF1dGhfa2V5GAEgASgMEhIKCnB1YmxpY19rZXkYAiABKAwSHwoXbmV3X3dyYXBwZWRfcHJpdmF0ZV9rZXkYAyABKAwSMgoKbmV3X3BhcmFtcxgEIAEoCzIeLnZhdWx0c3luYy52MS5QYXNzcGhyYXNlUGFyYW1zEhQKDG5ld19hdXRoX2tleRgFIAEoDCIaChhDaGFuZ2VQYXNzcGhyYXNlUmVzcG9uc2UykgMKDlVzZXJLZXlTZXJ2aWNlEmMKEEdldFVzZXJLZXlQYXJhbXMSJS52YXVsdHN5bmMudjEuR2V0VXNlcktleVBhcmFtc1JlcXVlc3QaJi52YXVsdHN5bmMudjEuR2V0VXNlcktleVBhcmFtc1Jlc3BvbnNlIgASWgoNQ3JlYXRlVXNlcktleRIiLnZhdWx0c3luYy52MS5DcmVhdGVVc2VyS2V5UmVxdWVzdBojLnZhdWx0c3luYy52MS5DcmVhdGVVc2VyS2V5UmVzcG9uc2UiABJaCg1VbmxvY2tVc2VyS2V5EiIudmF1bHRzeW5jLnYxLlVubG9ja1VzZXJLZXlSZXF1ZXN0GiMudmF1bHRzeW5jLnYxLlVubG9ja1VzZXJLZXlSZXNwb25zZSIAEmMKEENoYW5nZVBhc3NwaHJhc2USJS52YXVsdHN5bmMudjEuQ2hhbmdlUGFzc3BocmFzZVJlcXVlc3QaJi52YXVsdHN5bmMudjEuQ2hhbmdlUGFzc3BocmFzZVJlc3BvbnNlIgBCQFo+Z2l0aHViLmNvbS9zb2xpZERvV2FudC92YXVsdC1zeW5jL2dlbi92YXVsdHN5bmMvdjE7dmF1bHRzeW5jdjFiBnByb3RvMw");
+  fileDesc("Cht2YXVsdHN5bmMvdjEvdXNlcl9rZXkucHJvdG8SDHZhdWx0c3luYy52MSJsChBQYXNzcGhyYXNlUGFyYW1zEg0KBXN1aXRlGAEgASgNEhIKCm1lbW9yeV9raWIYAiABKA0SEgoKaXRlcmF0aW9ucxgDIAEoDRITCgtwYXJhbGxlbGlzbRgEIAEoDRIMCgRzYWx0GAUgASgMIhkKF0dldFVzZXJLZXlQYXJhbXNSZXF1ZXN0Il4KGEdldFVzZXJLZXlQYXJhbXNSZXNwb25zZRISCgpwdWJsaWNfa2V5GAEgASgMEi4KBnBhcmFtcxgCIAEoCzIeLnZhdWx0c3luYy52MS5QYXNzcGhyYXNlUGFyYW1zIokBChRDcmVhdGVVc2VyS2V5UmVxdWVzdBISCgpwdWJsaWNfa2V5GAEgASgMEhsKE3dyYXBwZWRfcHJpdmF0ZV9rZXkYAiABKAwSLgoGcGFyYW1zGAMgASgLMh4udmF1bHRzeW5jLnYxLlBhc3NwaHJhc2VQYXJhbXMSEAoIYXV0aF9rZXkYBCABKAwiFwoVQ3JlYXRlVXNlcktleVJlc3BvbnNlIigKFFVubG9ja1VzZXJLZXlSZXF1ZXN0EhAKCGF1dGhfa2V5GAEgASgMIngKFVVubG9ja1VzZXJLZXlSZXNwb25zZRISCgpwdWJsaWNfa2V5GAEgASgMEhsKE3dyYXBwZWRfcHJpdmF0ZV9rZXkYAiABKAwSLgoGcGFyYW1zGAMgASgLMh4udmF1bHRzeW5jLnYxLlBhc3NwaHJhc2VQYXJhbXMiqgEKF0NoYW5nZVBhc3NwaHJhc2VSZXF1ZXN0EhAKCGF1dGhfa2V5GAEgASgMEhIKCnB1YmxpY19rZXkYAiABKAwSHwoXbmV3X3dyYXBwZWRfcHJpdmF0ZV9rZXkYAyABKAwSMgoKbmV3X3BhcmFtcxgEIAEoCzIeLnZhdWx0c3luYy52MS5QYXNzcGhyYXNlUGFyYW1zEhQKDG5ld19hdXRoX2tleRgFIAEoDCIaChhDaGFuZ2VQYXNzcGhyYXNlUmVzcG9uc2UiFgoUR2V0QW5jaG9yTGlzdFJlcXVlc3QiPQoVR2V0QW5jaG9yTGlzdFJlc3BvbnNlEg8KB3ZlcnNpb24YASABKAQSEwoLc2VhbGVkX2xpc3QYAiABKAwiPAoUUHV0QW5jaG9yTGlzdFJlcXVlc3QSDwoHdmVyc2lvbhgBIAEoBBITCgtzZWFsZWRfbGlzdBgCIAEoDCIXChVQdXRBbmNob3JMaXN0UmVzcG9uc2UyygQKDlVzZXJLZXlTZXJ2aWNlEmMKEEdldFVzZXJLZXlQYXJhbXMSJS52YXVsdHN5bmMudjEuR2V0VXNlcktleVBhcmFtc1JlcXVlc3QaJi52YXVsdHN5bmMudjEuR2V0VXNlcktleVBhcmFtc1Jlc3BvbnNlIgASWgoNQ3JlYXRlVXNlcktleRIiLnZhdWx0c3luYy52MS5DcmVhdGVVc2VyS2V5UmVxdWVzdBojLnZhdWx0c3luYy52MS5DcmVhdGVVc2VyS2V5UmVzcG9uc2UiABJaCg1VbmxvY2tVc2VyS2V5EiIudmF1bHRzeW5jLnYxLlVubG9ja1VzZXJLZXlSZXF1ZXN0GiMudmF1bHRzeW5jLnYxLlVubG9ja1VzZXJLZXlSZXNwb25zZSIAEmMKEENoYW5nZVBhc3NwaHJhc2USJS52YXVsdHN5bmMudjEuQ2hhbmdlUGFzc3BocmFzZVJlcXVlc3QaJi52YXVsdHN5bmMudjEuQ2hhbmdlUGFzc3BocmFzZVJlc3BvbnNlIgASWgoNR2V0QW5jaG9yTGlzdBIiLnZhdWx0c3luYy52MS5HZXRBbmNob3JMaXN0UmVxdWVzdBojLnZhdWx0c3luYy52MS5HZXRBbmNob3JMaXN0UmVzcG9uc2UiABJaCg1QdXRBbmNob3JMaXN0EiIudmF1bHRzeW5jLnYxLlB1dEFuY2hvckxpc3RSZXF1ZXN0GiMudmF1bHRzeW5jLnYxLlB1dEFuY2hvckxpc3RSZXNwb25zZSIAQkBaPmdpdGh1Yi5jb20vc29saWREb1dhbnQvdmF1bHQtc3luYy9nZW4vdmF1bHRzeW5jL3YxO3ZhdWx0c3luY3YxYgZwcm90bzM");
 
 /**
  * PassphraseParams are the public parameters of a passphrase wrapping
@@ -288,6 +288,94 @@ export const ChangePassphraseResponseSchema: GenMessage<ChangePassphraseResponse
   messageDesc(file_vaultsync_v1_user_key, 8);
 
 /**
+ * GetAnchorListRequest has no fields: it names the caller's list.
+ *
+ * @generated from message vaultsync.v1.GetAnchorListRequest
+ */
+export type GetAnchorListRequest = Message<"vaultsync.v1.GetAnchorListRequest"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.GetAnchorListRequest.
+ * Use `create(GetAnchorListRequestSchema)` to create a new message.
+ */
+export const GetAnchorListRequestSchema: GenMessage<GetAnchorListRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_user_key, 9);
+
+/**
+ * GetAnchorListResponse holds the caller's sealed anchor list.
+ *
+ * @generated from message vaultsync.v1.GetAnchorListResponse
+ */
+export type GetAnchorListResponse = Message<"vaultsync.v1.GetAnchorListResponse"> & {
+  /**
+   * The version of the stored list; 0 when the caller has none.
+   *
+   * @generated from field: uint64 version = 1;
+   */
+  version: bigint;
+
+  /**
+   * The anchor list sealed at version (docs/design/crypto.md, anchor_list),
+   * opaque to the server; empty when version is 0.
+   *
+   * @generated from field: bytes sealed_list = 2;
+   */
+  sealedList: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.GetAnchorListResponse.
+ * Use `create(GetAnchorListResponseSchema)` to create a new message.
+ */
+export const GetAnchorListResponseSchema: GenMessage<GetAnchorListResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_user_key, 10);
+
+/**
+ * PutAnchorListRequest holds a new version of the caller's anchor list.
+ *
+ * @generated from message vaultsync.v1.PutAnchorListRequest
+ */
+export type PutAnchorListRequest = Message<"vaultsync.v1.PutAnchorListRequest"> & {
+  /**
+   * The new version: the stored version plus one, 1 to 2^63 - 1.
+   *
+   * @generated from field: uint64 version = 1;
+   */
+  version: bigint;
+
+  /**
+   * The anchor list sealed at version: 1 to 4800045 bytes (the sealed size
+   * of 100000 anchors), opaque to the server.
+   *
+   * @generated from field: bytes sealed_list = 2;
+   */
+  sealedList: Uint8Array;
+};
+
+/**
+ * Describes the message vaultsync.v1.PutAnchorListRequest.
+ * Use `create(PutAnchorListRequestSchema)` to create a new message.
+ */
+export const PutAnchorListRequestSchema: GenMessage<PutAnchorListRequest> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_user_key, 11);
+
+/**
+ * PutAnchorListResponse confirms the list was stored. It has no fields.
+ *
+ * @generated from message vaultsync.v1.PutAnchorListResponse
+ */
+export type PutAnchorListResponse = Message<"vaultsync.v1.PutAnchorListResponse"> & {
+};
+
+/**
+ * Describes the message vaultsync.v1.PutAnchorListResponse.
+ * Use `create(PutAnchorListResponseSchema)` to create a new message.
+ */
+export const PutAnchorListResponseSchema: GenMessage<PutAnchorListResponse> = /*@__PURE__*/
+  messageDesc(file_vaultsync_v1_user_key, 12);
+
+/**
  * UserKeyService stores the calling user's end-to-end encryption key pair
  * (SPEC.md §9.3). The private key is stored only wrapped under a key the
  * user's device derives from the recovery passphrase with Argon2id. From the
@@ -374,6 +462,37 @@ export const UserKeyService: GenService<{
     methodKind: "unary";
     input: typeof ChangePassphraseRequestSchema;
     output: typeof ChangePassphraseResponseSchema;
+  },
+  /**
+   * GetAnchorList returns the caller's sealed anchor list
+   * (docs/design/encryption.md, "Trust anchors") and its version. A caller
+   * who has never stored one gets version 0 and an empty list. The server
+   * never opens the list.
+   *
+   * @generated from rpc vaultsync.v1.UserKeyService.GetAnchorList
+   */
+  getAnchorList: {
+    methodKind: "unary";
+    input: typeof GetAnchorListRequestSchema;
+    output: typeof GetAnchorListResponseSchema;
+  },
+  /**
+   * PutAnchorList replaces the caller's sealed anchor list. It is a
+   * compare-and-set on the version: the list is stored only when version is
+   * the stored version plus one (1 for a caller without a list), so of
+   * concurrent writers of the same version exactly one succeeds.
+   *
+   * Errors: INVALID_ARGUMENT when version is 0 or above 2^63 - 1, or
+   * sealed_list is empty or longer than 4800045 bytes (checked before
+   * anything is stored); FAILED_PRECONDITION when version is not the stored
+   * version plus one (nothing changes: read the list again and merge).
+   *
+   * @generated from rpc vaultsync.v1.UserKeyService.PutAnchorList
+   */
+  putAnchorList: {
+    methodKind: "unary";
+    input: typeof PutAnchorListRequestSchema;
+    output: typeof PutAnchorListResponseSchema;
   },
 }> = /*@__PURE__*/
   serviceDesc(file_vaultsync_v1_user_key, 0);

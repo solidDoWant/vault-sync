@@ -44,6 +44,8 @@ type UserKeyStore interface {
 	UserKeyParams(ctx context.Context, userID uuid.UUID) (store.UserKey, error)
 	UnlockUserKey(ctx context.Context, userID uuid.UUID, authKeyHash []byte, limit store.AttemptLimit) (store.UserKey, error)
 	ChangePassphrase(ctx context.Context, userID uuid.UUID, authKeyHash, expectedPublicKey []byte, replacement store.Wrapping, limit store.AttemptLimit) error
+	AnchorList(ctx context.Context, userID uuid.UUID) (store.AnchorList, error)
+	PutAnchorList(ctx context.Context, userID uuid.UUID, version uint64, sealed []byte) error
 }
 
 // UserKeyService implements vaultsync.v1.UserKeyService for the
