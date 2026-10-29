@@ -49,7 +49,7 @@ func newFixture(t *testing.T) *fixture {
 
 	queries := store.New(pool)
 
-	user, err := queries.UpsertUser(t.Context(), "https://issuer.example", "alice")
+	user, err := queries.UpsertUser(t.Context(), "https://issuer.example", "alice", "")
 	require.NoError(t, err)
 
 	device, err := queries.RegisterDevice(t.Context(), user, "laptop", nil, 10)

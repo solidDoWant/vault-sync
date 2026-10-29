@@ -375,7 +375,7 @@ func TestVaultScopedProceduresEnforceRoles(t *testing.T) {
 	vaultID := uuid.MustParse(vault.GetId())
 
 	for _, role := range []store.Role{store.RoleEditor, store.RoleViewer} {
-		userID, err := users.UpsertUser(t.Context(), fixture.issuer.URL, string(role))
+		userID, err := users.UpsertUser(t.Context(), fixture.issuer.URL, string(role), "")
 		require.NoError(t, err)
 		vaults.addMember(vaultID, userID, role)
 	}

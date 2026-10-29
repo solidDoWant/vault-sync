@@ -42,10 +42,10 @@ func newFairnessFixture(t *testing.T) (*fairnessFixture, *cleanupFixture) {
 
 	alice := newCleanupFixture(t)
 
-	aliceID, err := alice.store.UpsertUser(t.Context(), "https://issuer.example", "alice")
+	aliceID, err := alice.store.UpsertUser(t.Context(), "https://issuer.example", "alice", "")
 	require.NoError(t, err)
 
-	bobID, err := alice.store.UpsertUser(t.Context(), "https://issuer.example", "bob")
+	bobID, err := alice.store.UpsertUser(t.Context(), "https://issuer.example", "bob", "")
 	require.NoError(t, err)
 
 	bobVault, err := alice.store.CreateVault(t.Context(), bobID, store.NewVault{Name: "Bob", Encryption: store.EncryptionNone}, 10)

@@ -31,16 +31,21 @@ func New(pool *pgxpool.Pool) *Store {
 }
 
 // UpsertUser returns the id of the user with the OIDC identity (issuer,
-// subject), creating the user on first sight (SPEC.md §5). Concurrent calls
-// for the same new identity create exactly one user and all return its id.
-func (store *Store) UpsertUser(ctx context.Context, issuer, subject string) (uuid.UUID, error) {
-	const selectUser = `SELECT id FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2`
+// subject), creating the user on first sight (SPEC.md §5), and records
+// displayName (the token's name, docs/design/sharing.md "Attribution") as the
+// user's display name when it changed. Concurrent calls for the same new
+// identity create exactly one user and all return its id.
+func (store *Store) UpsertUser(ctx context.Context, issuer, subject, displayName string) (uuid.UUID, error) {
+	const selectUser = `SELECT id, display_name FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2`
 
-	var id uuid.UUID
+	var (
+		id      uuid.UUID
+		current string
+	)
 
-	err := store.pool.QueryRow(ctx, selectUser, issuer, subject).Scan(&id)
+	err := store.pool.QueryRow(ctx, selectUser, issuer, subject).Scan(&id, &current)
 	if err == nil {
-		return id, nil
+		return id, store.updateDisplayName(ctx, id, current, displayName)
 	}
 
 	if !errors.Is(err, pgx.ErrNoRows) {
@@ -55,9 +60,9 @@ func (store *Store) UpsertUser(ctx context.Context, issuer, subject string) (uui
 	// DO NOTHING returns no row when a concurrent request inserted the user
 	// first. That insert has committed by then, so a fresh statement sees it.
 	err = store.pool.QueryRow(ctx, `
-		INSERT INTO users (id, oidc_issuer, oidc_subject) VALUES ($1, $2, $3)
+		INSERT INTO users (id, oidc_issuer, oidc_subject, display_name) VALUES ($1, $2, $3, $4)
 		ON CONFLICT (oidc_issuer, oidc_subject) DO NOTHING
-		RETURNING id`, newID, issuer, subject).Scan(&id)
+		RETURNING id`, newID, issuer, subject, displayName).Scan(&id)
 	if err == nil {
 		return id, nil
 	}
@@ -66,11 +71,25 @@ func (store *Store) UpsertUser(ctx context.Context, issuer, subject string) (uui
 		return uuid.Nil, fmt.Errorf("create user: %w", err)
 	}
 
-	if err := store.pool.QueryRow(ctx, selectUser, issuer, subject).Scan(&id); err != nil {
+	if err := store.pool.QueryRow(ctx, selectUser, issuer, subject).Scan(&id, &current); err != nil {
 		return uuid.Nil, fmt.Errorf("look up concurrently created user: %w", err)
 	}
 
-	return id, nil
+	return id, store.updateDisplayName(ctx, id, current, displayName)
+}
+
+// updateDisplayName sets the display name of user id to displayName if it is
+// not current already, so an unchanged name costs no write.
+func (store *Store) updateDisplayName(ctx context.Context, id uuid.UUID, current, displayName string) error {
+	if current == displayName {
+		return nil
+	}
+
+	if _, err := store.pool.Exec(ctx, `UPDATE users SET display_name = $2 WHERE id = $1`, id, displayName); err != nil {
+		return fmt.Errorf("update display name: %w", err)
+	}
+
+	return nil
 }
 
 // Device is a registered plugin installation.

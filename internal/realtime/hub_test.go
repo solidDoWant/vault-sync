@@ -42,7 +42,7 @@ func userID(subject string) uuid.UUID {
 
 type users struct{}
 
-func (users) UpsertUser(_ context.Context, _, subject string) (uuid.UUID, error) {
+func (users) UpsertUser(_ context.Context, _, subject, _ string) (uuid.UUID, error) {
 	return userID(subject), nil
 }
 

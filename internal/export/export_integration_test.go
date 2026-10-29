@@ -58,7 +58,7 @@ func newDeployment(t *testing.T) *deployment {
 
 	queries := store.New(pool)
 
-	user, err := queries.UpsertUser(t.Context(), "https://auth.example/", "alice")
+	user, err := queries.UpsertUser(t.Context(), "https://auth.example/", "alice", "")
 	require.NoError(t, err)
 
 	device, err := queries.RegisterDevice(t.Context(), user, "laptop", nil, 10)

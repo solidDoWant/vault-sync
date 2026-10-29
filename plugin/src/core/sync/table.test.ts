@@ -121,8 +121,8 @@ function cases(): Case[] {
   return all;
 }
 
-/** A file the row leaves: the document's own file at an exact path, or a conflict copy of `copyOf` made by `device`. */
-type Expected = { path: string; content: string } | { copyOf: string; folder?: string; device: string; content: string };
+/** A file the row leaves: the document's own file at an exact path, or a conflict copy of `copyOf` made by `user` on `device`. */
+type Expected = { path: string; content: string } | { copyOf: string; folder?: string; user: string; device: string; content: string };
 
 /**
  * The files every device holds once B resolved A's revision (A committed
@@ -132,7 +132,7 @@ function expectedFiles(testCase: Case): Expected[] {
   const { local, remote, kind, occupancy, newer } = testCase;
   const { base, renamed, moved } = paths(kind);
   const files: Expected[] = [];
-  const copy = (of: string, content: string) => files.push({ copyOf: of, device: "device-b", content });
+  const copy = (of: string, content: string) => files.push({ copyOf: of, user: "Bob", device: "device-b", content });
   const localText = localContent(local);
   const edited = local === "edited" || local === "edited-same-lines" || local === "renamed-edited";
   const renamedHere = local === "renamed" || local === "renamed-edited";
@@ -145,7 +145,7 @@ function expectedFiles(testCase: Case): Expected[] {
   const target = writtenPath(testCase);
   if (target !== null) {
     if (occupancy === "other-content") copy(target, OCCUPANT);
-    if (occupancy === "folder") files.push({ copyOf: target, folder: "inner.md", device: "device-b", content: INNER });
+    if (occupancy === "folder") files.push({ copyOf: target, folder: "inner.md", user: "Bob", device: "device-b", content: INNER });
   }
   const remoteText = remoteContent(remote) ?? "";
   if (local === "absent" || local === "clean" || local === "deleted") {
@@ -188,7 +188,7 @@ function matches(expected: Expected, path: string, content: string): boolean {
   const name = expected.copyOf.slice(slash + 1);
   const dot = expected.folder === undefined ? name.lastIndexOf(".") : -1;
   const [stem, ext] = dot > 0 ? [name.slice(0, dot), name.slice(dot)] : [name, ""];
-  const suffix = ` \\(Conflicted copy ${escape(expected.device)} \\d{12}\\)(?: \\d+)?`;
+  const suffix = ` \\(Conflicted copy ${escape(expected.user)} ${escape(expected.device)} \\d{12}\\)(?: \\d+)?`;
   const tail = expected.folder === undefined ? "" : `/${escape(expected.folder)}`;
   return new RegExp(`^${escape(expected.copyOf.slice(0, slash + 1) + stem)}${suffix}${escape(ext)}${tail}$`, "u").test(path);
 }
@@ -225,8 +225,8 @@ async function run(testCase: Case): Promise<{ server: InMemoryServer; a: Device;
   let clock = Date.UTC(2026, 9, 29, 12, 0);
   const tick = () => (clock += 60_000);
   const server = new InMemoryServer({ now: () => new Date(clock) });
-  const a = new Device(server, "device-a", { now: () => clock }, { now: () => clock });
-  const b = new Device(server, "device-b", { now: () => clock }, { now: () => clock });
+  const a = new Device(server, "device-a", { now: () => clock, userName: "Alice" }, { now: () => clock });
+  const b = new Device(server, "device-b", { now: () => clock, userName: "Bob" }, { now: () => clock });
   const { base, renamed, moved } = paths(testCase.kind);
 
   // B watches its vault from the start, so its renames are live events; nothing triggers its cycles but the test.

@@ -28,6 +28,9 @@ const (
 	MaxTokenBytes = 16 << 10
 	// MaxSubjectBytes bounds the sub claim stored for a user.
 	MaxSubjectBytes = 255
+	// MaxDisplayNameBytes bounds the display name taken from a token's name
+	// or preferred_username claim; a longer claim is not used.
+	MaxDisplayNameBytes = 256
 	// NotBeforeLeeway tolerates issuer clock skew on the nbf claim. exp is
 	// checked without leeway.
 	NotBeforeLeeway = time.Minute
@@ -48,6 +51,11 @@ var ErrUnauthenticated = errors.New("missing or invalid bearer token")
 type Identity struct {
 	Issuer  string
 	Subject string
+	// DisplayName is the token's name claim, falling back to its
+	// preferred_username claim (docs/design/sharing.md "Attribution"); empty
+	// if neither is a usable display name. It is not part of the identity:
+	// it may change from one token to the next.
+	DisplayName string
 }
 
 // VerifierOptions configures a Verifier.
@@ -146,7 +154,9 @@ func (verifier *Verifier) VerifyExpiring(ctx context.Context, token string) (Ide
 
 	// go-oidc tolerates five minutes of nbf skew; enforce a tighter bound.
 	var claims struct {
-		NotBefore *json.Number `json:"nbf"`
+		NotBefore         *json.Number `json:"nbf"`
+		Name              any          `json:"name"`
+		PreferredUsername any          `json:"preferred_username"`
 	}
 
 	if err := verified.Claims(&claims); err != nil {
@@ -172,7 +182,25 @@ func (verifier *Verifier) VerifyExpiring(ctx context.Context, token string) (Ide
 		return Identity{}, time.Time{}, fmt.Errorf("%w: sub claim contains control characters", ErrUnauthenticated)
 	}
 
-	return Identity{Issuer: verified.Issuer, Subject: verified.Subject}, verified.Expiry, nil
+	identity := Identity{Issuer: verified.Issuer, Subject: verified.Subject, DisplayName: displayName(claims.Name, claims.PreferredUsername)}
+
+	return identity, verified.Expiry, nil
+}
+
+// displayName returns the first of claims that is a usable display name: a
+// non-empty string of at most MaxDisplayNameBytes that textcheck.DisplayName
+// accepts. It returns "" if none is.
+func displayName(claims ...any) string {
+	for _, claim := range claims {
+		name, ok := claim.(string)
+		name = strings.TrimSpace(name)
+
+		if ok && name != "" && len(name) <= MaxDisplayNameBytes && textcheck.DisplayName(name) {
+			return name
+		}
+	}
+
+	return ""
 }
 
 // TokenVerifier validates a token. *Verifier implements it.
@@ -189,9 +217,10 @@ type expiringVerifier interface {
 // UserStore provisions users. *store.Store implements it.
 type UserStore interface {
 	// UpsertUser returns the id of the user with the given OIDC identity,
-	// creating the user if it does not exist. It is safe to call
-	// concurrently for the same new identity.
-	UpsertUser(ctx context.Context, issuer, subject string) (uuid.UUID, error)
+	// creating the user if it does not exist, and records displayName as
+	// the user's display name. It is safe to call concurrently for the same
+	// new identity.
+	UpsertUser(ctx context.Context, issuer, subject, displayName string) (uuid.UUID, error)
 }
 
 // User is an authenticated caller.
@@ -240,7 +269,7 @@ func (authenticator *Authenticator) AuthenticateToken(ctx context.Context, token
 		return User{}, err
 	}
 
-	id, err := authenticator.users.UpsertUser(ctx, identity.Issuer, identity.Subject)
+	id, err := authenticator.users.UpsertUser(ctx, identity.Issuer, identity.Subject, identity.DisplayName)
 	if err != nil {
 		return User{}, fmt.Errorf("load user: %w", err)
 	}

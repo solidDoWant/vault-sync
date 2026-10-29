@@ -95,6 +95,10 @@ export class InMemoryServer {
   private revisions: Revision[] = [];
   /** Registered device names, by device id: GetDocumentHistory names the devices of its revisions (SPEC.md §11). */
   readonly deviceNames = new Map<string, string>();
+  /** The user each device belongs to, by device id: a commit is attributed to its device's user (empty: none). */
+  readonly deviceUsers = new Map<string, string>();
+  /** Users' display names, by user id: GetDocumentHistory names the users of its revisions. */
+  readonly userNames = new Map<string, string>();
   /** Purge markers: the anchor of each purged revision, by seq (SPEC.md §11). */
   private purged = new Map<bigint, string>();
   private readonly purgeMarkers: boolean;
@@ -172,6 +176,7 @@ export class InMemoryServer {
           const page = older.slice(0, limit);
           const last = page.at(-1);
           const devices = [...new Set(page.map((revision) => revision.deviceId))];
+          const users = [...new Set(page.map((revision) => revision.userId))];
           return {
             document: { id: head.documentId, vaultId: this.vaultId, kind: head.kind, headRevId: head.id },
             revisions: page,
@@ -179,6 +184,10 @@ export class InMemoryServer {
             deviceNames: devices.flatMap((deviceId) => {
               const name = this.deviceNames.get(deviceId);
               return name === undefined ? [] : [{ deviceId, name }];
+            }),
+            userNames: users.flatMap((userId) => {
+              const name = this.userNames.get(userId);
+              return name === undefined ? [] : [{ userId, name }];
             }),
           };
         },
@@ -549,6 +558,7 @@ export class InMemoryServer {
       path: request.path,
       deleted: request.deleted,
       deviceId: request.deviceId,
+      userId: this.deviceUsers.get(request.deviceId) ?? "",
       createTime: timestampFromDate(this.now()),
       anchor: this.nextAnchor(),
     });

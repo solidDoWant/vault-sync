@@ -102,7 +102,7 @@ describe("folder documents", () => {
     expect(await folders(b)).toEqual(["Name"]);
     const files = await b.files();
     expect(Object.values(files)).toEqual(["a file\n"]);
-    expect(Object.keys(files)[0]).toMatch(/^Name \(Conflicted copy device-b \d{12}\)$/u);
+    expect(Object.keys(files)[0]).toMatch(/^Name \(Conflicted copy user device-b \d{12}\)$/u);
   });
 
   it("A4: a folder renamed on A, with and without files, is renamed on B, and the old folder goes", async () => {

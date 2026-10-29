@@ -20,16 +20,16 @@ func TestUpsertUserIsKeyedByIssuerAndSubject(t *testing.T) {
 	pool := migratedPool(t)
 	queries := store.New(pool)
 
-	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
-	again, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	again, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
-	otherIssuer, err := queries.UpsertUser(t.Context(), "https://other.example/", "alice")
+	otherIssuer, err := queries.UpsertUser(t.Context(), "https://other.example/", "alice", "")
 	require.NoError(t, err)
 
-	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob")
+	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob", "")
 	require.NoError(t, err)
 
 	assert.Equal(t, alice, again)
@@ -67,7 +67,7 @@ func TestUpsertUserConcurrentFirstRequests(t *testing.T) {
 			group.Go(func() {
 				<-start
 
-				ids[racer], errs[racer] = queries.UpsertUser(t.Context(), testIssuer, subject)
+				ids[racer], errs[racer] = queries.UpsertUser(t.Context(), testIssuer, subject, "")
 			})
 		}
 
@@ -90,10 +90,10 @@ func TestUpsertUserConcurrentFirstRequests(t *testing.T) {
 func TestDevicesAreListedForTheirUserOnly(t *testing.T) {
 	queries := store.New(migratedPool(t))
 
-	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	alice, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
-	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob")
+	bob, err := queries.UpsertUser(t.Context(), testIssuer, "bob", "")
 	require.NoError(t, err)
 
 	publicKey := bytes.Repeat([]byte{7}, 32)
@@ -138,7 +138,7 @@ func deviceIDs(devices []store.Device) []uuid.UUID {
 func TestRegisterDeviceEnforcesTheLimitUnderConcurrency(t *testing.T) {
 	queries := store.New(migratedPool(t))
 
-	user, err := queries.UpsertUser(t.Context(), testIssuer, "alice")
+	user, err := queries.UpsertUser(t.Context(), testIssuer, "alice", "")
 	require.NoError(t, err)
 
 	const (

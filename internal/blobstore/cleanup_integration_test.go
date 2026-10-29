@@ -50,7 +50,7 @@ func newCleanupFixture(t *testing.T) *cleanupFixture {
 
 	queries := store.New(pool)
 
-	userID, err := queries.UpsertUser(t.Context(), "https://issuer.example", "alice")
+	userID, err := queries.UpsertUser(t.Context(), "https://issuer.example", "alice", "")
 	require.NoError(t, err)
 
 	vault, err := queries.CreateVault(t.Context(), userID, store.NewVault{Name: "Notes", Encryption: store.EncryptionNone}, 10)

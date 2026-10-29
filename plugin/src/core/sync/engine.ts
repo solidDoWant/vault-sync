@@ -27,6 +27,8 @@ export interface SyncEngineOptions {
   deviceId: string;
   /** The device's name, in the names of its conflict copies (rule C). Defaults to the device id. */
   deviceName?: string;
+  /** The signed-in user's display name, in the names of conflict copies (rule C; docs/design/sharing.md, Attribution). Empty or absent: "user". */
+  userName?: string;
   vault: VaultAdapter;
   journal: SyncJournal;
   /** ListChanges page size; 0 lets the server choose. */
@@ -131,6 +133,7 @@ export class SyncEngine {
   private readonly vaultId: string;
   private readonly deviceId: string;
   private readonly deviceName: string;
+  private readonly userName: string;
   private readonly vault: VaultAdapter;
   private readonly journal: SyncJournal;
   private readonly pageSize: number;
@@ -175,6 +178,7 @@ export class SyncEngine {
     this.vaultId = options.vaultId;
     this.deviceId = options.deviceId;
     this.deviceName = options.deviceName ?? options.deviceId;
+    this.userName = options.userName ?? "";
     this.vault = options.vault;
     this.journal = options.journal;
     this.pageSize = options.pageSize ?? 0;
@@ -397,7 +401,7 @@ export class SyncEngine {
       sent: false,
     });
     const copyName = (path: string): string => {
-      const copy = conflictCopyName(path, this.deviceName, new Date(this.now()), taken);
+      const copy = conflictCopyName(path, this.userName, this.deviceName, new Date(this.now()), taken);
       if (copy === null) throw new Error(`no conflict copy name fits for ${path}`);
       return copy;
     };
@@ -660,7 +664,7 @@ export class SyncEngine {
 
     // Rule C: the losing side is on disk under its copy name before anything is overwritten.
     if (merged.copy !== null) {
-      const copyPath = conflictCopyName(finalPath, this.deviceName, new Date(this.now()), await this.taken(state));
+      const copyPath = conflictCopyName(finalPath, this.userName, this.deviceName, new Date(this.now()), await this.taken(state));
       // No copy name fits: nothing is overwritten.
       if (copyPath === null) return undecided;
       if (!(await this.write(copyPath, merged.copy, null))) return undecided;
@@ -863,11 +867,11 @@ export class SyncEngine {
     }
     const taken = await this.taken(state);
     const date = new Date(this.now());
-    const copyFolder = folder === undefined ? undefined : conflictCopyName(folder, this.deviceName, date, taken, true);
+    const copyFolder = folder === undefined ? undefined : conflictCopyName(folder, this.userName, this.deviceName, date, taken, true);
     if (copyFolder === null) return false;
     const copies: [string, string][] = [];
     for (const file of files) {
-      const copy = folder !== undefined && copyFolder !== undefined ? `${copyFolder}${file.slice(folder.length)}` : conflictCopyName(file, this.deviceName, date, taken);
+      const copy = folder !== undefined && copyFolder !== undefined ? `${copyFolder}${file.slice(folder.length)}` : conflictCopyName(file, this.userName, this.deviceName, date, taken);
       if (copy === null) return false;
       copies.push([file, copy]);
     }
