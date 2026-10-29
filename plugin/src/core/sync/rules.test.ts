@@ -1,3 +1,4 @@
+import { Code, ConnectError } from "@connectrpc/connect";
 import { describe, expect, it } from "vitest";
 
 import { InMemoryServer } from "./memory-server";
@@ -183,6 +184,38 @@ describe("push rules", () => {
     expect(await b.files()).toEqual({ "a.md": "remote", [copy]: "local" });
     expect(server.liveFiles()).toEqual(new Map([["a.md", "remote"], [copy, "local"]]));
     expect((await b.journal.load()).conflicts.has(copy)).toBe(true);
+  });
+
+  it("W: a create whose commit landed with the reply lost, then moved to a conflict copy, is acknowledged and the pull goes on", async () => {
+    const { server, b } = setup();
+    await b.write("a.md", "B's note\n");
+    // Between B's pull and its push, another document takes a.md and moves on to c.md.
+    let injected = false;
+    server.interceptor = (method) => {
+      if (method !== "CommitRevision" || injected) return;
+      injected = true;
+      server.commit({ documentId: "doc-other", path: "a.md", content: "A's note\n", deviceId: "device-a" });
+      server.commit({ documentId: "doc-other", path: "c.md", deviceId: "device-a" });
+    };
+    // B's create of a.md is committed, but the reply is lost.
+    let lost = false;
+    server.responseInterceptor = (method) => {
+      if (method !== "CommitRevision" || lost) return;
+      lost = true;
+      throw new ConnectError("connection reset", Code.Unavailable);
+    };
+    await expect(b.sync()).rejects.toThrow("connection reset");
+    server.interceptor = undefined;
+    server.responseInterceptor = undefined;
+    await b.sync();
+    server.commit({ documentId: "doc-other", path: "c.md", content: "A's note, edited\n", deviceId: "device-a" });
+    await b.sync();
+    const copy = "a (Conflicted copy Bob device-b 202610291200).md";
+    expect(await b.files()).toEqual({ "c.md": "A's note, edited\n", [copy]: "B's note\n" });
+    expect(server.liveFiles()).toEqual(new Map([["c.md", "A's note, edited\n"], [copy, "B's note\n"]]));
+    const state = await b.journal.load();
+    expect(state.cursor.seq).toBe(server.currentHeadSeq);
+    expect(state.pending).toEqual([]);
   });
 
   it("P2: a name that differs from a document this device holds only by case is refused with a reason until it is renamed", async () => {

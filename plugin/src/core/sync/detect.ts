@@ -319,6 +319,8 @@ function record(projection: Projection, next: State, nextOrder: number, now: () 
     contentHash: content.hash,
     contentSize: content.size,
     sent: false,
+    // An earlier commit that may have landed is still recognised when it arrives.
+    ...(unsent?.earlierRevisionIds !== undefined ? { earlierRevisionIds: unsent.earlierRevisionIds } : {}),
     // A refused path stays refused until the file is renamed.
     ...(unsent?.refused !== undefined && unsent.path === next.path ? { refused: unsent.refused } : {}),
   };
