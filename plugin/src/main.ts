@@ -1,4 +1,4 @@
-import { FileSystemAdapter, Notice, Platform, Plugin, setIcon, TFile, type App } from "obsidian";
+import { FileSystemAdapter, Notice, Platform, Plugin, setIcon, TFile, type App, type TAbstractFile } from "obsidian";
 
 import { VaultEncryption, type Vault, type VaultRole } from "./gen/vaultsync/v1/types_pb";
 import { oidcRefresher, signInWithDeviceFlow } from "./core/auth/oidc";
@@ -16,6 +16,7 @@ import { enableOnDevice, encryptionState, forgetEncryptionKeys, unlockOnDevice, 
 import { HistoryModal } from "./obsidian/history-modal";
 import { requestUrlFetch, requestUrlHttpClient } from "./obsidian/http";
 import { openVaultJournal } from "./obsidian/journal";
+import { longPathWarning, SkipNotices } from "./obsidian/path-notices";
 import { pathRulesFor } from "./obsidian/platform-rules";
 import { webSocketConnector } from "./obsidian/realtime-socket";
 import { SyncSession, type SyncSessionOptions, type VaultHistory } from "./obsidian/session";
@@ -51,6 +52,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
   private statusRibbon: HTMLElement | undefined;
   private signingIn = false;
   private status: SyncStatus = initialStatus;
+  private readonly skipNotices = new SkipNotices();
 
   override async onload(): Promise<void> {
     console.debug(`vault-sync loaded (protocol v${String(PROTOCOL_VERSION)})`);
@@ -130,6 +132,16 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
         );
       }),
     );
+    // A long new path may not fit on every device (docs/design/engine.md §6).
+    // Registered once the vault is indexed, so the files already there are not new.
+    this.app.workspace.onLayoutReady(() => {
+      const warn = (file: TAbstractFile) => {
+        const warning = longPathWarning(file.path);
+        if (warning !== undefined) new Notice(warning, 0);
+      };
+      this.registerEvent(this.app.vault.on("create", warn));
+      this.registerEvent(this.app.vault.on("rename", warn));
+    });
     this.showStatus(this.status);
     // Not awaited: registering the device and opening the journal may wait
     // for the network, and Obsidian waits for onload.
@@ -475,6 +487,20 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
     if (changed) this.settingTab?.render();
     else this.settingTab?.showStatus();
     this.refreshConflictViews();
+    if (status.state === "idle" || status.state === "error") void this.noticeSkipped();
+  }
+
+  /** A notice for each remote document this device newly skipped (§6, §7). */
+  private async noticeSkipped(): Promise<void> {
+    const session = this.controller?.session;
+    if (session === undefined) return;
+    let skipped;
+    try {
+      ({ skipped } = await session.listProblems());
+    } catch {
+      return;
+    }
+    for (const notice of this.skipNotices.fresh(skipped)) new Notice(notice, 0);
   }
 
   private noticeStatus(): void {

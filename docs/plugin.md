@@ -160,6 +160,10 @@ The view also lists **files not on this device**: files that are synced, but tha
 - a file larger than this device's size limit, 1 GiB on desktop and 256 MiB on a phone or tablet (the server has its own limit, `VAULT_SYNC_BLOB_MAX_SIZE_BYTES`). A smaller version of the file, saved on another device, arrives as usual and removes the entry;
 - a file whose path is not valid on this device's platform, such as a path longer than Windows allows (260 characters including the vault folder, unless long paths are enabled), or a name longer than 255 bytes. Rename it on another device and it arrives here.
 
+When a file first joins this list, a notice names it and says why it is not on this device; it shows once per file and reason each time Obsidian starts.
+
+When you create or rename a file or folder to a path longer than 200 characters (relative to the vault, counted in UTF-16 code units as Windows counts them), a notice warns that devices with a shorter path limit, such as Windows, may not be able to store it. The file still syncs, and a device that cannot hold it lists it here.
+
 Finally, it lists **files that are not synced**: local files that stay on this device only, each with the reason. A file larger than the size limit is not uploaded; a smaller version of it syncs. A file whose name the server refuses is never retried until you rename it: names must be portable, so a file or folder name may not contain `< > : " / \ | ? *` or a control character, start or end with a space, end in a dot, be a Windows reserved name (`CON`, `PRN`, `AUX`, `NUL`, `COM1` to `COM9`, `LPT1` to `LPT9`, with or without an extension), or be longer than 255 bytes, and the whole path may not be longer than 1024 bytes. A name that differs from an existing note's only by letter case is refused too. The status shows `error` and names the file (or the first of several). Rename or move the file to a valid name and it syncs like any other.
 
 A link in the view whose file no longer exists (removed since the view was drawn) shows a notice and redraws the view.

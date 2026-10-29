@@ -224,7 +224,7 @@ describe("vault-sync on an Android device", function () {
     }
   });
 
-  it("resumes a sync after Obsidian's process is killed mid-push, with the vault equal to the server and no duplicate revision (section 5)", async function () {
+  it("[AC-17] resumes a sync after Obsidian's process is killed mid-push, with the vault equal to the server and no duplicate revision (section 5)", async function () {
     await configure(serverOverDeviceNetwork);
     expect(await signInAs(subject)).toBe(true);
     const notes = ["Killed/One.md", "Killed/Two.md", "Killed/Three.md", "Killed/Four.md"];
@@ -265,7 +265,7 @@ describe("vault-sync on an Android device", function () {
     expect(new Set(revisions.map((revision) => revision.documentId)).size).toBe(revisions.length);
   });
 
-  it("pushes an edit made just before Obsidian went to the background, once it is back (section 6)", async function () {
+  it("[AC-21] pushes an edit made just before Obsidian went to the background, once it is back (section 6)", async function () {
     const note = "Background.md";
     const text = "edited, then switched away\n";
     await markWebView();
@@ -283,6 +283,32 @@ describe("vault-sync on an Android device", function () {
       timeoutMsg: "the edit never reached the server",
     });
     expect((await callHarness("vaultDigests"))[note]).toBe(sha256(text));
+  });
+
+  it("[AC-21] receives an edit made on another device while Obsidian was closed, once it is reopened", async function () {
+    await waitForIdle("sync was not idle before the app was closed");
+    const note = "From another device.md";
+    const text = "written on another device while the app was closed\n";
+    // vault-sync's network is cut before the other device commits, so the
+    // edit cannot arrive before the process dies; the harness commits over
+    // `adb reverse`, which does not use the device's network.
+    shell("cmd", "connectivity", "airplane-mode", "enable");
+    try {
+      await callHarness("commitFromAnotherDevice", note, text, e2eEnvironment.serverUrl);
+      shell("am", "force-stop", appId);
+      expect(shell("pidof", appId, "||", "true").trim()).toBe("");
+    } finally {
+      shell("cmd", "connectivity", "airplane-mode", "disable");
+    }
+    await foregroundObsidian();
+
+    await browser.waitUntil(async () => (await callHarness("vaultDigests"))[note] === sha256(text), {
+      timeout: 120_000,
+      interval: 1_000,
+      timeoutMsg: "the other device's edit never arrived after the app was reopened",
+    });
+    await waitForIdle("sync never became idle after the app was reopened");
+    expect(await callHarness("vaultDigests")).toEqual(liveServerFiles(await serverRevisions()));
   });
 
   it("keeps and pushes an edit when Android destroys the activity on the switch (\"Don't keep activities\", section 6)", async function () {
