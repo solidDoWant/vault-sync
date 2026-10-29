@@ -49,6 +49,8 @@ export type UserKeyClient = Pick<
  * on the device.
  */
 export interface UserKeyPair {
+  /** The server's user id of the key's owner (Member.user_id), which their bundle names. */
+  userId: string;
   publicKey: Uint8Array;
   privateKey: Uint8Array;
   signSeed: Uint8Array;
@@ -137,6 +139,7 @@ export async function enableEncryption(
   if (problem !== undefined) throw new Error(problem);
   const secret = generateUserSecret();
   const key: UserKeyPair = {
+    userId: "",
     publicKey: publicKeyOf(secret.kemSeed),
     privateKey: secret.kemSeed,
     signSeed: secret.signSeed,
@@ -149,7 +152,7 @@ export async function enableEncryption(
   );
   const header = parsePassphraseHeader(wrapped);
   try {
-    await client.createUserKey({
+    const response = await client.createUserKey({
       publicKey: key.publicKey,
       wrappedPrivateKey: wrapped,
       params: {
@@ -161,6 +164,7 @@ export async function enableEncryption(
       },
       authKey,
     });
+    key.userId = serverUserId(response.userId);
   } catch (error) {
     if (error instanceof ConnectError && error.code === Code.AlreadyExists) {
       return { key: await unlockUserKey(client, passphrase), created: false };
@@ -168,6 +172,14 @@ export async function enableEncryption(
     throw error;
   }
   return { key, created: true };
+}
+
+const canonicalUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+/** The caller's user id as the server returned it with their key; anything but a canonical lowercase UUID is refused. */
+function serverUserId(userId: string): string {
+  if (!canonicalUuid.test(userId)) throw new Error("the server returned no valid user id with the user key");
+  return userId;
 }
 
 /**
@@ -222,6 +234,7 @@ async function release(
       "the key the server released does not match its public key",
     );
   return {
+    userId: serverUserId(released.userId),
     publicKey: released.publicKey,
     privateKey: secret.kemSeed,
     signSeed: secret.signSeed,

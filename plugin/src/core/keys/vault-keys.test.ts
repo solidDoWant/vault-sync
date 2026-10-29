@@ -24,10 +24,8 @@ interface User {
 }
 
 function user(n: number): User {
-  return {
-    id: `0190a5b4-0000-7000-8000-0000000001${String(n).padStart(2, "0")}`,
-    key: { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(n) },
-  };
+  const id = `0190a5b4-0000-7000-8000-0000000001${String(n).padStart(2, "0")}`;
+  return { id, key: { ...generateKeyPair(), signSeed: new Uint8Array(32).fill(n), userId: id } };
 }
 
 const alice = user(1); // owner

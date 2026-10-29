@@ -42,7 +42,11 @@ export class MemoryUserKeyServer {
   private windowStart = 0;
 
   /** `now` is the server clock. */
-  constructor(private readonly now: () => number = () => Date.now()) {}
+  constructor(
+    private readonly now: () => number = () => Date.now(),
+    /** The server's user id of the one user this server serves. */
+    readonly userId = "0190a000-0000-7000-8000-000000000001",
+  ) {}
 
   /** A transport to this server; each device can have its own. */
   readonly transport: Transport = recording(
@@ -50,7 +54,7 @@ export class MemoryUserKeyServer {
       service(UserKeyService, {
         getUserKeyParams: () => {
           const stored = this.require();
-          return { publicKey: stored.publicKey, params: stored.params };
+          return { publicKey: stored.publicKey, params: stored.params, userId: this.userId };
         },
         createUserKey: (request) => {
           if (request.publicKey.length !== 1216 || request.authKey.length !== 32 || request.params === undefined) {
@@ -65,7 +69,7 @@ export class MemoryUserKeyServer {
             authKeyHash: sha256(request.authKey),
           };
           this.created++;
-          return {};
+          return { userId: this.userId };
         },
         unlockUserKey: (request) => {
           if (request.authKey.length !== 32) throw new ConnectError("invalid auth key", Code.InvalidArgument);
@@ -75,6 +79,7 @@ export class MemoryUserKeyServer {
             publicKey: stored.publicKey,
             wrappedPrivateKey: stored.wrappedPrivateKey,
             params: stored.params,
+            userId: this.userId,
           };
         },
         changePassphrase: (request) => {

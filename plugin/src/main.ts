@@ -390,6 +390,7 @@ export default class VaultSyncPlugin extends Plugin implements SettingsHost {
       escrow: recipient,
       userKey,
       vaults: client.vaults,
+      anchors: client.userKeys,
       keys: client.vaultKeys,
       membership: client.membership,
       store: (vaultId) => pluginDataEpochKeyStore(this.data, () => this.saveSettings(), account, vaultId),

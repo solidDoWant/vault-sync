@@ -76,6 +76,8 @@ export interface CachedVaultKeys {
 
 /** The user's key pair as cached on the device, hex-encoded, with the account it belongs to. */
 export interface CachedUserKey {
+  /** The server's user id of the key's owner, which signed membership entries name. */
+  userId: string;
   publicKey: string;
   privateKey: string;
   /** The Ed25519 signing seed that signs membership log entries. */
@@ -202,9 +204,13 @@ const hexPublicKey = /^(?:[0-9a-f]{64}|[0-9a-f]{2432})$/;
 /** A positive epoch number in decimal, without leading zeros. */
 const epochNumber = /^[1-9][0-9]{0,9}$/;
 
+/** A server user id: a canonical lowercase UUID. */
+const canonicalUserId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 /** A stored user key pair, or undefined if it is malformed (the device is then locked). */
 export function parseUserKey(raw: unknown): CachedUserKey | undefined {
   const userKey = record(raw, [
+    "userId",
     "publicKey",
     "privateKey",
     "signSeed",
@@ -215,7 +221,8 @@ export function parseUserKey(raw: unknown): CachedUserKey | undefined {
   return userKey !== undefined &&
     hexPublicKey.test(userKey.publicKey) &&
     hexKey.test(userKey.privateKey) &&
-    hexKey.test(userKey.signSeed)
+    hexKey.test(userKey.signSeed) &&
+    canonicalUserId.test(userKey.userId)
     ? userKey
     : undefined;
 }

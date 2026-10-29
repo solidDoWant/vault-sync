@@ -87,6 +87,7 @@ export async function unlockedUserKey(
   if (state !== "unlocked" || cached === undefined)
     throw new Error("Unlock end-to-end encryption on this device first.");
   return {
+    userId: cached.userId,
     publicKey: hexToBytes(cached.publicKey),
     privateKey: hexToBytes(cached.privateKey),
     signSeed: hexToBytes(cached.signSeed),
@@ -130,6 +131,7 @@ async function cache(
   key: UserKeyPair,
 ): Promise<void> {
   options.data.userKey = {
+    userId: key.userId,
     publicKey: bytesToHex(key.publicKey),
     privateKey: bytesToHex(key.privateKey),
     signSeed: bytesToHex(key.signSeed),

@@ -152,6 +152,7 @@ const userKey = {
   publicKey: "ab".repeat(1216),
   privateKey: "cd".repeat(32),
   signSeed: "ef".repeat(32),
+  userId: "0190a5b4-0000-7000-8000-000000000101",
   ...account,
 };
 const vaultKeys = {

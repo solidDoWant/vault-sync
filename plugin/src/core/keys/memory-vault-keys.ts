@@ -18,8 +18,13 @@ import { Code, ConnectError, createRouterTransport, type Transport } from "@conn
 import { ErrorDetailSchema, ErrorReason } from "../../gen/vaultsync/v1/errors_pb";
 import { MembershipService } from "../../gen/vaultsync/v1/membership_pb";
 import { VaultEncryption, VaultRole } from "../../gen/vaultsync/v1/types_pb";
+import { UserKeyService } from "../../gen/vaultsync/v1/user_key_pb";
 import { VaultService } from "../../gen/vaultsync/v1/vault_pb";
 import { KeyRecipientKind, VaultKeyService, type NextEpoch } from "../../gen/vaultsync/v1/vault_key_pb";
+import type { LogEntry } from "../../gen/vaultsync/v1/types_pb";
+import { equalBytes } from "@noble/ciphers/utils.js";
+import { EntryType, LogError, replayLog, type Entry, type LogState } from "../e2ee/memberlog";
+import { fromLogEntry, toLogEntry } from "./member-log";
 
 /** A member as the server stores them. */
 export interface StoredMember {
@@ -69,6 +74,10 @@ export class MemoryVaultKeyServer {
   created = false;
   /** Users' public keys (UserKeyService), which CreateVault's caller is listed with. */
   readonly userKeys = new Map<string, Uint8Array>();
+  /** The vault's membership log, from genesis. */
+  readonly log: Entry[] = [];
+  /** Users' sealed anchor lists (UserKeyService) and their versions. */
+  readonly anchorLists = new Map<string, { version: number; sealed: Uint8Array }>();
   /** Every request any member sent, in order. */
   readonly requests: RecordedRequest[] = [];
   /** Page size of every list; small by default so that clients must page. */
@@ -81,7 +90,41 @@ export class MemoryVaultKeyServer {
   holdEpochChanges: number | undefined;
   private held: (() => void)[] = [];
 
-  constructor(readonly vaultId: string) {}
+  /** The vault's id: the one CreateVault's caller chose, once it created the vault. */
+  constructor(public vaultId: string) {}
+
+  /** The membership after the whole log, replayed as the server checks it. */
+  logState(): LogState {
+    const states = replayLog(this.vaultId, this.log);
+    const last = states.at(-1);
+    if (last === undefined) throw new Error("empty log");
+    return last;
+  }
+
+  /**
+   * Checks `sent` as the server checks a membership change's entry: the
+   * log's next position (ABORTED otherwise), verifying on top of the log,
+   * of the expected type; `matches` checks it records the requested change.
+   * Appends it and returns the state after it.
+   */
+  appendEntry(sent: LogEntry | undefined, type: number, matches: (entry: Entry, before: LogState, after: LogState) => boolean): LogState {
+    if (sent === undefined) throw new ConnectError("log_entry is required in an E2EE vault", Code.InvalidArgument);
+    const entry = fromLogEntry(this.vaultId, sent);
+    if (entry.seq !== this.log.length + 1) throw new ConnectError("the entry's seq is not the log's next", Code.Aborted);
+    if (entry.type !== type) throw new ConnectError("the entry does not record this change", Code.InvalidArgument);
+    let states: LogState[];
+    try {
+      states = replayLog(this.vaultId, [...this.log, entry]);
+    } catch (error) {
+      if (error instanceof LogError) throw new ConnectError(`the entry does not verify: ${error.message}`, Code.InvalidArgument);
+      throw error;
+    }
+    const after = states[states.length - 1];
+    const before = states[states.length - 2];
+    if (after === undefined || before === undefined || !matches(entry, before, after)) throw new ConnectError("the entry does not record this change", Code.InvalidArgument);
+    this.log.push(entry);
+    return after;
+  }
 
   /** Adds a member; `publicKey` is their user key, if they have one. */
   addMember(userId: string, role: VaultRole, publicKey?: Uint8Array): void {
@@ -113,13 +156,47 @@ export class MemoryVaultKeyServer {
           createVault: (request) => {
             if (this.created) throw new ConnectError("this memory server holds one vault", Code.ResourceExhausted);
             if (request.encryption !== VaultEncryption.E2EE) throw new ConnectError("this memory server holds an E2EE vault", Code.InvalidArgument);
+            if (request.genesis === undefined) throw new ConnectError("genesis is required in an E2EE vault", Code.InvalidArgument);
+            const genesis = fromLogEntry(request.newVaultId, request.genesis);
+            let state: LogState | undefined;
+            try {
+              state = replayLog(request.newVaultId, [genesis])[0];
+            } catch (error) {
+              throw new ConnectError(`invalid genesis: ${error instanceof Error ? error.message : String(error)}`, Code.InvalidArgument);
+            }
+            const creator = state?.members.get(userId);
+            const userKey = this.userKeys.get(userId);
+            if (state === undefined || creator === undefined || userKey === undefined || !equalBytes(creator.bundle.kemPub, userKey)) {
+              throw new ConnectError("the genesis does not name the caller", Code.InvalidArgument);
+            }
+            if ((state.escrow !== undefined) !== request.escrow) throw new ConnectError("the genesis does not record the requested escrow", Code.InvalidArgument);
+            this.vaultId = request.newVaultId;
+            this.log.push(genesis);
             this.created = true;
             this.escrow = request.escrow;
             this.addMember(userId, VaultRole.OWNER, this.userKeys.get(userId));
             return { vault: { id: this.vaultId, name: request.name, encryption: request.encryption, escrow: request.escrow, role: VaultRole.OWNER } };
           },
         });
+        service(UserKeyService, {
+          getAnchorList: () => {
+            const stored = this.anchorLists.get(userId);
+            return { version: BigInt(stored?.version ?? 0), sealedList: stored?.sealed ?? new Uint8Array() };
+          },
+          putAnchorList: (request) => {
+            const version = Number(request.version);
+            if (version < 1 || request.sealedList.length === 0) throw new ConnectError("invalid anchor list", Code.InvalidArgument);
+            if (version !== (this.anchorLists.get(userId)?.version ?? 0) + 1) throw new ConnectError("not the stored version plus one", Code.FailedPrecondition);
+            this.anchorLists.set(userId, { version, sealed: request.sealedList });
+            return {};
+          },
+        });
         service(VaultKeyService, {
+          listLogEntries: (request) => {
+            this.member(userId, request.vaultId);
+            const { items, next } = this.page(this.log, request.pageToken);
+            return { entries: items.map(toLogEntry), nextPageToken: next };
+          },
           listKeySlots: (request) => {
             this.member(userId, request.vaultId);
             const mine = this.slots.filter((slot) => slot.recipientKind === KeyRecipientKind.USER && slot.recipientId === userId).sort((a, b) => a.epoch - b.epoch);
