@@ -4,6 +4,8 @@ name: acceptance
 # every night on master, runs each scenario's tests and uploads the
 # scoreboard. Informational: it is not a required check and files nothing; a
 # scenario without a passing test is a line on the scoreboard, not a red run.
+# The Android device checks (AC-21) need an emulator: the scoreboard takes
+# their results from the latest completed android-e2e run on master.
 
 on:
   schedule:
@@ -12,6 +14,8 @@ on:
 
 permissions:
   contents: read
+  # Downloading the latest android-e2e run's results artifact.
+  actions: read
 
 concurrency:
   group: acceptance
@@ -33,7 +37,25 @@ jobs:
           key: obsidian-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('plugin/wdio.conf.mts') }}
       - uses: ./.github/actions/nix-dev-shell
       - uses: ./.github/actions/test-images
+      - name: Download the latest Android device checks' results
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/android-results"
+          run=$(gh run list --workflow android-e2e.yml --branch master --status completed --limit 1 --json databaseId,url,createdAt,conclusion \
+            --jq '.[0] // empty | "\(.databaseId) \(.url) \(.createdAt) \(.conclusion)"')
+          if [[ -z "$run" ]]; then
+            echo "no completed android-e2e run on master; the Android device checks show as not run" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          read -r id url created conclusion <<<"$run"
+          echo "Android device checks from android-e2e run $url ($created, $conclusion)" | tee -a "$GITHUB_STEP_SUMMARY"
+          gh run download "$id" --name android-e2e-results --dir "$RUNNER_TEMP/android-results" ||
+            echo "that run uploaded no results; the Android device checks show as not run" | tee -a "$GITHUB_STEP_SUMMARY"
       - name: Acceptance scoreboard
+        env:
+          VAULT_SYNC_ACCEPTANCE_ANDROID_RESULTS: ${{ runner.temp }}/android-results
         run: |
           nix develop -c make acceptance
           { echo '```'; cat build/acceptance/scoreboard.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"

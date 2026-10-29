@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { appendFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -60,6 +61,15 @@ async function verifiedApk(): Promise<string> {
   return apk;
 }
 
+// VAULT_SYNC_ACCEPTANCE_RESULTS appends the result of each device check (the
+// tests in `*.android.e2e.ts`, which only this configuration runs) to
+// android-e2e.jsonl in that directory, for the acceptance scoreboard
+// (scripts/acceptance.sh): the android-e2e workflow uploads it, and the
+// acceptance workflow reads the latest one from master. Unlike the desktop
+// configuration, every spec still runs, and the shared specs' results stay
+// out of it: the desktop run reports those.
+const acceptanceResults = process.env.VAULT_SYNC_ACCEPTANCE_RESULTS;
+
 const apk = await verifiedApk();
 const baseCapability = (base.capabilities as WebdriverIO.Capabilities[])[0] ?? {};
 const baseOptions = baseCapability["wdio:obsidianOptions"] ?? {};
@@ -67,7 +77,16 @@ const baseOptions = baseCapability["wdio:obsidianOptions"] ?? {};
 export const config: WebdriverIO.Config = {
   ...base,
   // Every spec, including the device checks the desktop configuration excludes.
+  specs: ["./test/e2e/specs/**/*.e2e.ts"],
   exclude: [],
+  ...(acceptanceResults === undefined
+    ? {}
+    : {
+        afterTest(test: { title: string; file: string }, _context: unknown, result: { passed: boolean }) {
+          if (!test.file.endsWith(".android.e2e.ts")) return;
+          appendFileSync(path.join(acceptanceResults, "android-e2e.jsonl"), `${JSON.stringify({ title: test.title, passed: result.passed })}\n`);
+        },
+      }),
   capabilities: [
     {
       browserName: "obsidian",
