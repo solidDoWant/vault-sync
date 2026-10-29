@@ -4,12 +4,15 @@ package main_test
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"crypto/rand"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/solidDoWant/vault-sync/internal/auth/authtest"
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/e2ee"
+	"github.com/solidDoWant/vault-sync/internal/e2ee/logtest"
 	"github.com/solidDoWant/vault-sync/internal/vaultimport"
 )
 
@@ -56,23 +60,38 @@ func newEscrowKey(t *testing.T) escrowKey {
 func createEscrowedVault(t *testing.T, server *instance, member *encryptedMember, escrow escrowKey, name string, epochs uint64) *vaultsyncv1.Vault {
 	t.Helper()
 
+	// The genesis entry names its creator and records the escrow key, so
+	// the user id comes first: the user key's row names it.
+	connection, err := pgx.Connect(t.Context(), server.databaseDSN)
+	require.NoError(t, err)
+
+	var userID uuid.UUID
+
+	err = connection.QueryRow(t.Context(), `SELECT user_id FROM user_keys WHERE public_key = $1`, member.publicKey).Scan(&userID)
+	require.NoError(t, connection.Close(t.Context()))
+	require.NoError(t, err)
+
+	escrowSignPub, _, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+
+	vaultID := uuid.Must(uuid.NewV7())
+	log := logtest.New(t, vaultID, userID, &e2ee.EscrowBundle{SignPub: escrowSignPub, Recipient: escrow.recipient})
+
 	response, err := server.vaults().CreateVault(t.Context(), authorized(&vaultsyncv1.CreateVaultRequest{
 		Name: name, Encryption: vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE, Escrow: true,
+		NewVaultId: vaultID.String(), Genesis: logtest.EntryMessage(log.Entries[0]),
 	}, member.token))
 	require.NoError(t, err)
 
 	vault := response.Msg.GetVault()
 	require.True(t, vault.GetEscrow())
 
-	members, err := vaultsyncv1connect.NewMembershipServiceClient(httpClient, server.apiURL).ListMembers(t.Context(),
-		authorized(&vaultsyncv1.ListMembersRequest{VaultId: vault.GetId()}, member.token))
-	require.NoError(t, err)
-	require.Len(t, members.Msg.GetMembers(), 1)
-
-	member.userID = members.Msg.GetMembers()[0].GetUserId()
+	member.userID = userID.String()
 	member.epochKeys = map[uint64][]byte{}
 
 	keys := vaultsyncv1connect.NewVaultKeyServiceClient(httpClient, server.apiURL)
+
+	var previous []byte
 
 	for epoch := uint64(1); epoch <= epochs; epoch++ {
 		epochKey, err := e2ee.GenerateKey()
@@ -91,7 +110,11 @@ func createEscrowedVault(t *testing.T, server *instance, member *encryptedMember
 		})
 		require.NoError(t, err)
 
+		record := log.Record(t, userID, epoch, commitment, previous)
+		previous = commitment
+
 		_, err = keys.RotateEpoch(t.Context(), authorized(&vaultsyncv1.RotateEpochRequest{
+			Record:  logtest.RecordMessage(record),
 			VaultId: vault.GetId(),
 			NextEpoch: &vaultsyncv1.NextEpoch{
 				ExpectedEpoch: uint32(epoch - 1),
