@@ -33,6 +33,10 @@ var (
 	// ErrEpochNotFound is returned for a key slot whose epoch the vault
 	// does not have.
 	ErrEpochNotFound = errors.New("the vault has no such epoch")
+	// ErrEpochRecord is returned when a new epoch's signed record, or the
+	// escrow entry that comes with it, does not verify against the vault's
+	// membership log.
+	ErrEpochRecord = errors.New("the epoch record does not verify against the vault's membership log")
 )
 
 // RecipientKind is whom a key slot wraps an epoch key to, as stored in
@@ -65,8 +69,11 @@ type KeySlot struct {
 type Epoch struct {
 	Epoch      int32
 	Commitment []byte
-	CreatedBy  uuid.UUID
-	CreatedAt  time.Time
+	// Record is the epoch's signed record as received, opaque to the store;
+	// nil for an epoch created without one.
+	Record    []byte
+	CreatedBy uuid.UUID
+	CreatedAt time.Time
 }
 
 // KeyState is a vault's key state.
@@ -86,7 +93,22 @@ type NextEpoch struct {
 	ExpectedEpoch int32
 	Commitment    []byte
 	Slots         []KeySlot
+	// Record is the epoch's signed record, stored with the epoch.
+	Record []byte
+	// EscrowEntry is a membership log entry to append in the same
+	// transaction as the epoch (the escrow on/off entry), or nil.
+	EscrowEntry *LogEntry
+	// Check, when set, verifies the new epoch against the vault's log under
+	// the vault row lock, before anything is written (see EpochCheck).
+	Check EpochCheck
 }
+
+// EpochCheck verifies a new epoch of an E2EE vault. log is the vault's
+// membership log in seq order, followed by the NextEpoch's EscrowEntry if
+// it has one; prevCommitment is the current epoch's commitment (nil before
+// the first epoch). It returns whether escrow is on at the head of log, and
+// an error wrapping ErrEpochRecord when the epoch does not verify.
+type EpochCheck func(log []LogEntry, prevCommitment []byte) (escrow bool, err error)
 
 // MissingSlot is a member's missing key slot for an epoch, with the
 // member's public key to wrap the epoch key to.
@@ -164,15 +186,34 @@ func createEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeySta
 		return Epoch{}, errors.New("epoch counter exhausted")
 	}
 
+	if next.Check != nil {
+		escrow, err := checkSignedEpoch(ctx, tx, vaultID, state, next)
+		if err != nil {
+			return Epoch{}, err
+		}
+
+		state.Escrow = escrow
+	}
+
 	if err := checkEpochRecipients(ctx, tx, vaultID, state, next.Slots); err != nil {
 		return Epoch{}, err
 	}
 
-	created := Epoch{Epoch: state.CurrentEpoch + 1, Commitment: next.Commitment, CreatedBy: creatorID}
+	if next.EscrowEntry != nil {
+		if err := insertLogEntry(ctx, tx, vaultID, *next.EscrowEntry); err != nil {
+			return Epoch{}, err
+		}
+
+		if _, err := tx.Exec(ctx, `UPDATE vaults SET escrow = $2 WHERE id = $1`, vaultID, state.Escrow); err != nil {
+			return Epoch{}, fmt.Errorf("set escrow: %w", err)
+		}
+	}
+
+	created := Epoch{Epoch: state.CurrentEpoch + 1, Commitment: next.Commitment, Record: next.Record, CreatedBy: creatorID}
 
 	err := tx.QueryRow(ctx, `
-		INSERT INTO vault_key_epochs (vault_id, epoch, commitment, created_by) VALUES ($1, $2, $3, $4)
-		RETURNING created_at`, vaultID, created.Epoch, created.Commitment, creatorID).Scan(&created.CreatedAt)
+		INSERT INTO vault_key_epochs (vault_id, epoch, commitment, record, created_by) VALUES ($1, $2, $3, $4, $5)
+		RETURNING created_at`, vaultID, created.Epoch, created.Commitment, created.Record, creatorID).Scan(&created.CreatedAt)
 	if err != nil {
 		return Epoch{}, fmt.Errorf("insert epoch: %w", err)
 	}
@@ -193,6 +234,32 @@ func createEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeySta
 	}
 
 	return created, nil
+}
+
+// checkSignedEpoch runs next.Check on the vault's log (with next's escrow
+// entry appended) and the current epoch's commitment, under the vault row
+// lock held by tx, and returns whether escrow is on afterwards.
+func checkSignedEpoch(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, state KeyState, next NextEpoch) (bool, error) {
+	log, err := listLogEntries(ctx, tx, vaultID, 0, math.MaxInt32)
+	if err != nil {
+		return false, err
+	}
+
+	if next.EscrowEntry != nil {
+		log = append(log, *next.EscrowEntry)
+	}
+
+	var prevCommitment []byte
+
+	if state.CurrentEpoch > 0 {
+		err := tx.QueryRow(ctx, `SELECT commitment FROM vault_key_epochs WHERE vault_id = $1 AND epoch = $2`,
+			vaultID, state.CurrentEpoch).Scan(&prevCommitment)
+		if err != nil {
+			return false, fmt.Errorf("read current epoch: %w", err)
+		}
+	}
+
+	return next.Check(log, prevCommitment)
 }
 
 // keyedMembers returns the ids (canonical form) of the vault's members who
@@ -351,7 +418,7 @@ func (vault *VaultStore) AddKeySlots(ctx context.Context, creatorID uuid.UUID, s
 // in ascending order.
 func (vault *VaultStore) ListEpochs(ctx context.Context, after int32, limit int) ([]Epoch, error) {
 	rows, err := vault.store.pool.Query(ctx, `
-		SELECT epoch, commitment, created_by, created_at FROM vault_key_epochs
+		SELECT epoch, commitment, record, created_by, created_at FROM vault_key_epochs
 		WHERE vault_id = $1 AND epoch > $2
 		ORDER BY epoch LIMIT $3`, vault.vaultID, after, limit)
 	if err != nil {
@@ -361,7 +428,7 @@ func (vault *VaultStore) ListEpochs(ctx context.Context, after int32, limit int)
 	epochs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (Epoch, error) {
 		var epoch Epoch
 
-		err := row.Scan(&epoch.Epoch, &epoch.Commitment, &epoch.CreatedBy, &epoch.CreatedAt)
+		err := row.Scan(&epoch.Epoch, &epoch.Commitment, &epoch.Record, &epoch.CreatedBy, &epoch.CreatedAt)
 
 		return epoch, err
 	})

@@ -36,10 +36,14 @@ func insertLogEntry(ctx context.Context, tx pgx.Tx, vaultID uuid.UUID, entry Log
 // ListLogEntries returns up to limit of the vault's log entries after seq
 // after, in ascending seq order.
 func (vault *VaultStore) ListLogEntries(ctx context.Context, after int64, limit int) ([]LogEntry, error) {
-	rows, err := vault.store.pool.Query(ctx, `
+	return listLogEntries(ctx, vault.store.pool, vault.vaultID, after, limit)
+}
+
+func listLogEntries(ctx context.Context, db querier, vaultID uuid.UUID, after int64, limit int) ([]LogEntry, error) {
+	rows, err := db.Query(ctx, `
 		SELECT seq, prev_hash, entry_type, payload, signatures, created_at FROM vault_log_entries
 		WHERE vault_id = $1 AND seq > $2
-		ORDER BY seq LIMIT $3`, vault.vaultID, after, limit)
+		ORDER BY seq LIMIT $3`, vaultID, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list log entries: %w", err)
 	}
