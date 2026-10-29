@@ -16,6 +16,7 @@ import (
 
 	vaultsyncv1 "github.com/solidDoWant/vault-sync/gen/vaultsync/v1"
 	"github.com/solidDoWant/vault-sync/gen/vaultsync/v1/vaultsyncv1connect"
+	"github.com/solidDoWant/vault-sync/internal/e2ee"
 )
 
 // requestTimeout bounds every HTTP request the import makes, so a stalled
@@ -33,6 +34,10 @@ type apiClient struct {
 	devices vaultsyncv1connect.DeviceServiceClient
 	blobs   vaultsyncv1connect.BlobServiceClient
 	sync    vaultsyncv1connect.SyncServiceClient
+	// userKeys and keys reach the user's key and the vault's key slots,
+	// for an encrypted vault.
+	userKeys vaultsyncv1connect.UserKeyServiceClient
+	keys     vaultsyncv1connect.VaultKeyServiceClient
 }
 
 // signIn signs in to the identity provider the server at serverURL names,
@@ -93,23 +98,25 @@ func signIn(ctx context.Context, serverURL string, prompt io.Writer) (*apiClient
 	}
 
 	return &apiClient{
-		vaults:  vaultsyncv1connect.NewVaultServiceClient(authorized, serverURL),
-		devices: vaultsyncv1connect.NewDeviceServiceClient(authorized, serverURL),
-		blobs:   vaultsyncv1connect.NewBlobServiceClient(authorized, serverURL),
-		sync:    vaultsyncv1connect.NewSyncServiceClient(authorized, serverURL),
+		vaults:   vaultsyncv1connect.NewVaultServiceClient(authorized, serverURL),
+		devices:  vaultsyncv1connect.NewDeviceServiceClient(authorized, serverURL),
+		blobs:    vaultsyncv1connect.NewBlobServiceClient(authorized, serverURL),
+		sync:     vaultsyncv1connect.NewSyncServiceClient(authorized, serverURL),
+		userKeys: vaultsyncv1connect.NewUserKeyServiceClient(authorized, serverURL),
+		keys:     vaultsyncv1connect.NewVaultKeyServiceClient(authorized, serverURL),
 	}, nil
 }
 
 // checkVault checks that the signed-in user may import into vaultID: they
-// are an owner or editor of it, and it is a plaintext vault that has never
-// had a document.
-func (client *apiClient) checkVault(ctx context.Context, vaultID uuid.UUID) error {
+// are an owner or editor of it, and it has never had a document. It reports
+// whether the vault is end-to-end encrypted.
+func (client *apiClient) checkVault(ctx context.Context, vaultID uuid.UUID) (encrypted bool, err error) {
 	var vault *vaultsyncv1.Vault
 
 	for pageToken := ""; vault == nil; {
 		response, err := client.vaults.ListVaults(ctx, connect.NewRequest(&vaultsyncv1.ListVaultsRequest{PageToken: pageToken}))
 		if err != nil {
-			return fmt.Errorf("list your vaults: %w", err)
+			return false, fmt.Errorf("list your vaults: %w", err)
 		}
 
 		for _, candidate := range response.Msg.GetVaults() {
@@ -126,16 +133,21 @@ func (client *apiClient) checkVault(ctx context.Context, vaultID uuid.UUID) erro
 
 	switch {
 	case vault == nil:
-		return fmt.Errorf("vault %s does not exist or you are not a member of it", vaultID)
+		return false, fmt.Errorf("vault %s does not exist or you are not a member of it", vaultID)
 	case vault.GetRole() != vaultsyncv1.VaultRole_VAULT_ROLE_OWNER && vault.GetRole() != vaultsyncv1.VaultRole_VAULT_ROLE_EDITOR:
-		return fmt.Errorf("you are a viewer of vault %s; importing needs the editor or owner role", vaultID)
-	case vault.GetEncryption() != vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_NONE:
-		return fmt.Errorf("vault %s is end-to-end encrypted; only plaintext vaults can be imported into", vaultID)
+		return false, fmt.Errorf("you are a viewer of vault %s; importing needs the editor or owner role", vaultID)
 	case vault.GetHeadSeq() != 0:
-		return fmt.Errorf("vault %s is not empty; import only into a new vault", vaultID)
+		return false, fmt.Errorf("vault %s is not empty; import only into a new vault", vaultID)
 	}
 
-	return nil
+	switch vault.GetEncryption() {
+	case vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_NONE:
+		return false, nil
+	case vaultsyncv1.VaultEncryption_VAULT_ENCRYPTION_E2EE:
+		return true, nil
+	default:
+		return false, fmt.Errorf("vault %s uses an encryption mode this version does not know; update vault-sync-server", vaultID)
+	}
 }
 
 // registerDevice registers the device the import commits as.
@@ -155,13 +167,24 @@ func (client *apiClient) removeDevice(ctx context.Context, deviceID string) erro
 	return err
 }
 
+// maxEpochRetries bounds how often one document is sealed again after a
+// rotation replaced the epoch it was sealed under.
+const maxEpochRetries = 5
+
 // APITarget creates documents through the server's API, as a device does:
-// it uploads the content as a blob under its SHA-256, then commits one
-// revision that creates the document.
+// it uploads the content as a blob, then commits one revision that creates
+// the document. In an end-to-end encrypted vault it seals the content and
+// the path under the vault's current epoch first, as the plugin's engine
+// does (docs/design/crypto.md).
 type APITarget struct {
 	client   *apiClient
 	vaultID  uuid.UUID
 	deviceID string
+	// keys seals an encrypted vault's contents and paths; nil for a
+	// plaintext vault.
+	keys *vaultKeys
+	// refreshKeys reads the vault's keys again after a rotation.
+	refreshKeys func(context.Context) (*vaultKeys, error)
 }
 
 // Create implements Target.
@@ -176,6 +199,20 @@ func (target *APITarget) Create(ctx context.Context, entry Entry) error {
 		return err
 	}
 
+	for attempt := 0; ; attempt++ {
+		err := target.commit(ctx, documentID, revisionID, entry)
+		if target.keys == nil || attempt >= maxEpochRetries || !hasReason(err, vaultsyncv1.ErrorReason_ERROR_REASON_EPOCH_NOT_CURRENT) {
+			return err
+		}
+
+		// A rotation replaced the epoch: seal again under the new one.
+		if target.keys, err = target.refreshKeys(ctx); err != nil {
+			return err
+		}
+	}
+}
+
+func (target *APITarget) commit(ctx context.Context, documentID, revisionID uuid.UUID, entry Entry) error {
 	request := &vaultsyncv1.CommitRevisionRequest{
 		VaultId:    target.vaultID.String(),
 		DocumentId: documentID.String(),
@@ -183,6 +220,23 @@ func (target *APITarget) Create(ctx context.Context, entry Entry) error {
 		// A plaintext vault's path key is derived by the server.
 		Path:     []byte(entry.Path),
 		DeviceId: target.deviceID,
+	}
+
+	if keys := target.keys; keys != nil {
+		ad, err := e2ee.PathAD(request.GetVaultId(), request.GetDocumentId(), keys.epoch)
+		if err != nil {
+			return err
+		}
+
+		if request.Path, err = e2ee.Seal(keys.path, []byte(entry.Path), ad); err != nil {
+			return err
+		}
+
+		if request.PathKey, err = e2ee.PathKey(keys.pathKeySecret, entry.Path); err != nil {
+			return err
+		}
+
+		request.Epoch = uint32(keys.epoch) //nolint:gosec // the server's epochs are uint32.
 	}
 
 	switch entry.Kind {
@@ -195,15 +249,19 @@ func (target *APITarget) Create(ctx context.Context, entry Entry) error {
 	}
 
 	if entry.Kind != KindFolder {
-		blobID, err := target.upload(ctx, entry.Content)
+		blobID, stored, err := target.blob(entry.Content)
 		if err != nil {
 			return err
 		}
 
-		request.ContentRef = &vaultsyncv1.ContentRef{BlobId: blobID, Size: uint64(len(entry.Content))}
+		if err := target.upload(ctx, blobID, stored); err != nil {
+			return err
+		}
+
+		request.ContentRef = &vaultsyncv1.ContentRef{BlobId: blobID, Size: uint64(len(stored))}
 	}
 
-	_, err = target.client.sync.CommitRevision(ctx, connect.NewRequest(request))
+	_, err := target.client.sync.CommitRevision(ctx, connect.NewRequest(request))
 	if connect.CodeOf(err) == connect.CodeAlreadyExists {
 		return &SkipError{Reason: "the server refused the name: " + connectMessage(err)}
 	}
@@ -215,11 +273,36 @@ func (target *APITarget) Create(ctx context.Context, entry Entry) error {
 	return nil
 }
 
-// upload stores content as a blob, resuming an earlier partial upload of
-// the same content, and returns its id.
-func (target *APITarget) upload(ctx context.Context, content []byte) ([]byte, error) {
-	sum := sha256.Sum256(content)
-	blobID := sum[:]
+// blob returns the id and the bytes of the blob that stores content: the
+// content under its SHA-256 in a plaintext vault; in an encrypted vault the
+// content sealed under the current epoch, under its HMAC blob id.
+func (target *APITarget) blob(content []byte) (blobID, stored []byte, err error) {
+	keys := target.keys
+	if keys == nil {
+		sum := sha256.Sum256(content)
+
+		return sum[:], content, nil
+	}
+
+	if blobID, err = e2ee.BlobID(keys.blobID, content); err != nil {
+		return nil, nil, err
+	}
+
+	ad, err := e2ee.ContentAD(target.vaultID.String(), keys.epoch)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if stored, err = e2ee.Seal(keys.content, content, ad); err != nil {
+		return nil, nil, err
+	}
+
+	return blobID, stored, nil
+}
+
+// upload stores content as the blob blobID, resuming an earlier partial
+// upload of the same blob.
+func (target *APITarget) upload(ctx context.Context, blobID, content []byte) error {
 	vaultID := target.vaultID.String()
 
 	begun, err := target.client.blobs.BeginBlob(ctx, connect.NewRequest(&vaultsyncv1.BeginBlobRequest{
@@ -227,20 +310,20 @@ func (target *APITarget) upload(ctx context.Context, content []byte) ([]byte, er
 	}))
 	if connect.CodeOf(err) == connect.CodeInvalidArgument {
 		// The request is well formed, so the server refuses the size.
-		return nil, &SkipError{Reason: "the server refused the file: " + connectMessage(err)}
+		return &SkipError{Reason: "the server refused the file: " + connectMessage(err)}
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("begin the upload: %w", err)
+		return fmt.Errorf("begin the upload: %w", err)
 	}
 
 	if begun.Msg.GetComplete() {
-		return blobID, nil
+		return nil
 	}
 
 	chunkSize := uint64(begun.Msg.GetMaxChunkSize())
 	if chunkSize == 0 {
-		return nil, errors.New("the server sets no chunk size for uploads")
+		return errors.New("the server sets no chunk size for uploads")
 	}
 
 	for offset := begun.Msg.GetReceivedSize(); offset < uint64(len(content)); {
@@ -250,11 +333,11 @@ func (target *APITarget) upload(ctx context.Context, content []byte) ([]byte, er
 			VaultId: vaultID, BlobId: blobID, Offset: offset, Data: content[offset:end],
 		}))
 		if err != nil {
-			return nil, fmt.Errorf("upload: %w", err)
+			return fmt.Errorf("upload: %w", err)
 		}
 
 		if put.Msg.GetReceivedSize() <= offset {
-			return nil, fmt.Errorf("upload: the server received nothing at offset %d", offset)
+			return fmt.Errorf("upload: the server received nothing at offset %d", offset)
 		}
 
 		offset = put.Msg.GetReceivedSize()
@@ -263,10 +346,10 @@ func (target *APITarget) upload(ctx context.Context, content []byte) ([]byte, er
 	if _, err := target.client.blobs.CommitBlob(ctx, connect.NewRequest(&vaultsyncv1.CommitBlobRequest{
 		VaultId: vaultID, BlobId: blobID,
 	})); err != nil {
-		return nil, fmt.Errorf("finish the upload: %w", err)
+		return fmt.Errorf("finish the upload: %w", err)
 	}
 
-	return blobID, nil
+	return nil
 }
 
 // connectMessage returns the server's message in err, without the code.

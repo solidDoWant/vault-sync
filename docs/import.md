@@ -19,7 +19,24 @@ Two variables are optional: `VAULT_SYNC_BLOB_MAX_SIZE_BYTES` (default 1 GiB) ski
 - Names are converted to Unicode NFC, which covers names a Mac wrote in NFD.
 - The revisions are attributed to the signed-in user and a device named `vault-sync-server import`, which is registered for the user for the run and removed when it ends.
 
-The vault must be a plaintext vault that has never had a document; the subcommand refuses any other. Hidden files and folders, including Obsidian's `.obsidian` configuration folder, are files like any others: remove what you don't want imported from the folder first.
+The vault must never have had a document; the subcommand refuses any other. Hidden files and folders, including Obsidian's `.obsidian` configuration folder, are files like any others: remove what you don't want imported from the folder first.
+
+## Importing into an end-to-end encrypted vault
+
+The subcommand also imports into an end-to-end encrypted vault (`docs/encryption.md`) with your own key. It encrypts on the machine it runs on, exactly as the plugin does, so the server only ever receives ciphertext: paths and contents are sealed under the vault's current key epoch, and nothing readable, no passphrase and no key reaches the server or the logs. You unlock your key with your recovery passphrase or with your private key:
+
+```sh
+vault-sync-server import -passphrase-file ~/passphrase.txt https://sync.example.com 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 /path/to/notes
+vault-sync-server import -private-key-file ~/identity.txt https://sync.example.com 0192f2c4-7a1e-7c3d-9f0a-2b4c6d8e0f12 /path/to/notes
+```
+
+- `-passphrase-file FILE`: a file holding your recovery passphrase. The whole file is the passphrase, without one trailing line ending.
+- `-private-key-file FILE`: a file holding your private key as an age hybrid identity (`AGE-SECRET-KEY-PQ-1…`), with blank lines and `#` comments ignored.
+- With neither, the subcommand asks for the passphrase at the terminal without echoing it. When standard input is not a terminal, it fails instead.
+
+The secret itself is never a command-line argument. Give one of the two flags, not both. Files may be at most 64 KiB. With the passphrase, the subcommand unlocks your key the way a new device does (`GetUserKeyParams`, then `UnlockUserKey`): a wrong passphrase counts against the server's limit of attempts. With either secret, it opens your key slots for the vault's first and current epochs and checks each key against its epoch's key commitment before using it. If a key rotation replaces the epoch during the import, it re-encrypts under the new epoch and retries.
+
+You must have enabled encryption in the plugin, and the vault must already have a key: open it in the plugin on an owner's device first, and as an editor, wait until an owner's device has shared the vault key with you. Otherwise the subcommand refuses the import and imports nothing.
 
 ## What it skips
 

@@ -9,15 +9,17 @@ import (
 	"io"
 	"log/slog"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/google/uuid"
+	"golang.org/x/term"
 
 	"github.com/solidDoWant/vault-sync/internal/config"
 	"github.com/solidDoWant/vault-sync/internal/version"
 )
 
-const usage = "usage: vault-sync-server import SERVER_URL VAULT_ID DIR"
+const usage = "usage: vault-sync-server import [-passphrase-file FILE | -private-key-file FILE] SERVER_URL VAULT_ID DIR"
 
 // DeviceName names the device the import's revisions are attributed to. It
 // is registered for the signed-in user for the run and removed afterwards.
@@ -53,6 +55,8 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	flags := flag.NewFlagSet("vault-sync-server import", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() { _, _ = fmt.Fprintln(stderr, usage) }
+	passphraseFile := flags.String("passphrase-file", "", "file holding your recovery passphrase, for an end-to-end encrypted vault")
+	privateKeyFile := flags.String("private-key-file", "", "file holding your private key as an age identity, for an end-to-end encrypted vault")
 
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -64,6 +68,12 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 
 	if flags.NArg() != 3 {
 		_, _ = fmt.Fprintln(stderr, usage)
+
+		return 2
+	}
+
+	if *passphraseFile != "" && *privateKeyFile != "" {
+		_, _ = fmt.Fprintf(stderr, "give -passphrase-file or -private-key-file, not both\n%s\n", usage)
 
 		return 2
 	}
@@ -84,7 +94,9 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 
 	report := Report{VaultID: vaultID, Source: flags.Arg(2), Result: Result{Skipped: []Skip{}}}
 
-	result, err := run(ctx, strings.TrimSuffix(serverURL.String(), "/"), vaultID, report.Source, lookup, stderr)
+	secrets := secretSource{passphraseFile: *passphraseFile, privateKeyFile: *privateKeyFile, prompt: stderr}
+
+	result, err := run(ctx, strings.TrimSuffix(serverURL.String(), "/"), vaultID, report.Source, secrets, lookup, stderr)
 	report.Result = result
 
 	switch {
@@ -113,7 +125,7 @@ func Main(ctx context.Context, args []string, lookup func(string) (string, bool)
 	return 0
 }
 
-func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string, lookup func(string) (string, bool), stderr io.Writer) (Result, error) {
+func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string, secrets secretSource, lookup func(string) (string, bool), stderr io.Writer) (Result, error) {
 	empty := Result{Skipped: []Skip{}}
 
 	cfg, err := config.LoadImport(lookup)
@@ -129,14 +141,38 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 		return empty, err
 	}
 
-	if err := client.checkVault(ctx, vaultID); err != nil {
-		return empty, err
-	}
-
-	deviceID, err := client.registerDevice(ctx)
+	encrypted, err := client.checkVault(ctx, vaultID)
 	if err != nil {
 		return empty, err
 	}
+
+	target := &APITarget{client: client, vaultID: vaultID}
+
+	if encrypted {
+		secret, err := secrets.read()
+		if err != nil {
+			return empty, err
+		}
+
+		privateKey, err := client.userPrivateKey(ctx, secret)
+		if err != nil {
+			return empty, err
+		}
+
+		target.refreshKeys = func(ctx context.Context) (*vaultKeys, error) { return client.vaultKeys(ctx, vaultID, privateKey) }
+		if target.keys, err = target.refreshKeys(ctx); err != nil {
+			return empty, err
+		}
+
+		logger.InfoContext(ctx, "unlocked the vault's keys", "epoch", target.keys.epoch)
+	}
+
+	target.deviceID, err = client.registerDevice(ctx)
+	if err != nil {
+		return empty, err
+	}
+
+	deviceID := target.deviceID
 
 	defer func() {
 		if err := client.removeDevice(context.WithoutCancel(ctx), deviceID); err != nil {
@@ -147,7 +183,7 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 	result, err := Import(ctx, Options{
 		Source:       source,
 		MaxFileBytes: cfg.MaxFileBytes,
-		Target:       &APITarget{client: client, vaultID: vaultID, deviceID: deviceID},
+		Target:       target,
 	})
 	if err != nil {
 		logger.ErrorContext(ctx, "import failed", "error", err)
@@ -157,4 +193,54 @@ func run(ctx context.Context, serverURL string, vaultID uuid.UUID, source string
 	}
 
 	return result, err
+}
+
+// secretSource is where the import reads what unlocks the user's key for an
+// end-to-end encrypted vault: a passphrase file, a private key file, or else
+// a passphrase typed at the terminal. The secret itself is never an
+// argument.
+type secretSource struct {
+	passphraseFile string
+	privateKeyFile string
+	// prompt is where the terminal prompt is written.
+	prompt io.Writer
+}
+
+// readTerminalPassphrase reads a passphrase from the terminal without
+// echoing it; it fails when standard input is not a terminal.
+var readTerminalPassphrase = func(prompt io.Writer) (string, error) {
+	fd := int(os.Stdin.Fd()) //nolint:gosec // a file descriptor fits an int.
+	if !term.IsTerminal(fd) {
+		return "", errors.New("the vault is end-to-end encrypted: give -passphrase-file or -private-key-file, or run the import at a terminal to type the passphrase")
+	}
+
+	_, _ = fmt.Fprint(prompt, "Recovery passphrase: ")
+	passphrase, err := term.ReadPassword(fd)
+	_, _ = fmt.Fprintln(prompt)
+
+	if err != nil {
+		return "", fmt.Errorf("read the passphrase: %w", err)
+	}
+
+	return string(passphrase), nil
+}
+
+func (source secretSource) read() (UserSecret, error) {
+	switch {
+	case source.privateKeyFile != "":
+		privateKey, err := ReadPrivateKeyFile(source.privateKeyFile)
+
+		return UserSecret{PrivateKey: privateKey}, err
+	case source.passphraseFile != "":
+		passphrase, err := ReadPassphraseFile(source.passphraseFile)
+
+		return UserSecret{Passphrase: passphrase}, err
+	}
+
+	passphrase, err := readTerminalPassphrase(source.prompt)
+	if err == nil && passphrase == "" {
+		err = errors.New("the passphrase is empty")
+	}
+
+	return UserSecret{Passphrase: passphrase}, err
 }
