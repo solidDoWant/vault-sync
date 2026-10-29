@@ -150,7 +150,11 @@ type GetUserKeyParamsResponse struct {
 	// for suite 2, an X25519 key (32 bytes) for a key stored under suite 1.
 	PublicKey []byte `protobuf:"bytes,1,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	// The parameters of the current wrapping.
-	Params        *PassphraseParams `protobuf:"bytes,2,opt,name=params,proto3" json:"params,omitempty"`
+	Params *PassphraseParams `protobuf:"bytes,2,opt,name=params,proto3" json:"params,omitempty"`
+	// The caller's server user id (Member.user_id), a canonical lowercase
+	// UUID: the id a signed log entry must name for the caller. The token's
+	// subject is the OIDC subject, not this id.
+	UserId        string `protobuf:"bytes,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -197,6 +201,13 @@ func (x *GetUserKeyParamsResponse) GetParams() *PassphraseParams {
 		return x.Params
 	}
 	return nil
+}
+
+func (x *GetUserKeyParamsResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
 }
 
 // CreateUserKeyRequest holds a new key pair, its private key wrapped.
@@ -274,9 +285,11 @@ func (x *CreateUserKeyRequest) GetAuthKey() []byte {
 	return nil
 }
 
-// CreateUserKeyResponse confirms the key was stored. It has no fields.
+// CreateUserKeyResponse confirms the key was stored.
 type CreateUserKeyResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// The caller's user id, as in GetUserKeyParamsResponse.
+	UserId        string `protobuf:"bytes,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -309,6 +322,13 @@ func (x *CreateUserKeyResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CreateUserKeyResponse.ProtoReflect.Descriptor instead.
 func (*CreateUserKeyResponse) Descriptor() ([]byte, []int) {
 	return file_vaultsync_v1_user_key_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *CreateUserKeyResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
 }
 
 // UnlockUserKeyRequest presents the verifier.
@@ -365,7 +385,9 @@ type UnlockUserKeyResponse struct {
 	// The private key wrapped under the passphrase.
 	WrappedPrivateKey []byte `protobuf:"bytes,2,opt,name=wrapped_private_key,json=wrappedPrivateKey,proto3" json:"wrapped_private_key,omitempty"`
 	// The parameters of the wrapping.
-	Params        *PassphraseParams `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
+	Params *PassphraseParams `protobuf:"bytes,3,opt,name=params,proto3" json:"params,omitempty"`
+	// The caller's user id, as in GetUserKeyParamsResponse.
+	UserId        string `protobuf:"bytes,4,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -419,6 +441,13 @@ func (x *UnlockUserKeyResponse) GetParams() *PassphraseParams {
 		return x.Params
 	}
 	return nil
+}
+
+func (x *UnlockUserKeyResponse) GetUserId() string {
+	if x != nil {
+		return x.UserId
+	}
+	return ""
 }
 
 // ChangePassphraseRequest re-wraps the caller's private key.
@@ -740,25 +769,28 @@ const file_vaultsync_v1_user_key_proto_rawDesc = "" +
 	"iterations\x12 \n" +
 	"\vparallelism\x18\x04 \x01(\rR\vparallelism\x12\x12\n" +
 	"\x04salt\x18\x05 \x01(\fR\x04salt\"\x19\n" +
-	"\x17GetUserKeyParamsRequest\"q\n" +
+	"\x17GetUserKeyParamsRequest\"\x8a\x01\n" +
 	"\x18GetUserKeyParamsResponse\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\fR\tpublicKey\x126\n" +
-	"\x06params\x18\x02 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\"\xb8\x01\n" +
+	"\x06params\x18\x02 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\tR\x06userId\"\xb8\x01\n" +
 	"\x14CreateUserKeyRequest\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\fR\tpublicKey\x12.\n" +
 	"\x13wrapped_private_key\x18\x02 \x01(\fR\x11wrappedPrivateKey\x126\n" +
 	"\x06params\x18\x03 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\x12\x19\n" +
-	"\bauth_key\x18\x04 \x01(\fR\aauthKey\"\x17\n" +
-	"\x15CreateUserKeyResponse\"1\n" +
+	"\bauth_key\x18\x04 \x01(\fR\aauthKey\"0\n" +
+	"\x15CreateUserKeyResponse\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\tR\x06userId\"1\n" +
 	"\x14UnlockUserKeyRequest\x12\x19\n" +
-	"\bauth_key\x18\x01 \x01(\fR\aauthKey\"\x9e\x01\n" +
+	"\bauth_key\x18\x01 \x01(\fR\aauthKey\"\xb7\x01\n" +
 	"\x15UnlockUserKeyResponse\x12\x1d\n" +
 	"\n" +
 	"public_key\x18\x01 \x01(\fR\tpublicKey\x12.\n" +
 	"\x13wrapped_private_key\x18\x02 \x01(\fR\x11wrappedPrivateKey\x126\n" +
-	"\x06params\x18\x03 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\"\xeb\x01\n" +
+	"\x06params\x18\x03 \x01(\v2\x1e.vaultsync.v1.PassphraseParamsR\x06params\x12\x17\n" +
+	"\auser_id\x18\x04 \x01(\tR\x06userId\"\xeb\x01\n" +
 	"\x17ChangePassphraseRequest\x12\x19\n" +
 	"\bauth_key\x18\x01 \x01(\fR\aauthKey\x12\x1d\n" +
 	"\n" +

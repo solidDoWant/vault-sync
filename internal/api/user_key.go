@@ -75,6 +75,7 @@ func (service UserKeyService) GetUserKeyParams(ctx context.Context, _ *connect.R
 	return connect.NewResponse(&vaultsyncv1.GetUserKeyParamsResponse{
 		PublicKey: key.PublicKey,
 		Params:    paramsMessage(key.Params),
+		UserId:    user.ID.String(),
 	}), nil
 }
 
@@ -103,7 +104,7 @@ func (service UserKeyService) CreateUserKey(ctx context.Context, request *connec
 		return nil, service.storeError(ctx, "cannot create user key", err)
 	}
 
-	return connect.NewResponse(&vaultsyncv1.CreateUserKeyResponse{}), nil
+	return connect.NewResponse(&vaultsyncv1.CreateUserKeyResponse{UserId: user.ID.String()}), nil
 }
 
 // UnlockUserKey releases the caller's wrapped key for the right auth_key.
@@ -127,6 +128,7 @@ func (service UserKeyService) UnlockUserKey(ctx context.Context, request *connec
 		PublicKey:         key.PublicKey,
 		WrappedPrivateKey: key.WrappedPrivateKey,
 		Params:            paramsMessage(key.Params),
+		UserId:            user.ID.String(),
 	}), nil
 }
 

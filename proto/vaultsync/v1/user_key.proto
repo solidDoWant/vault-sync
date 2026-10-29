@@ -105,6 +105,10 @@ message GetUserKeyParamsResponse {
   bytes public_key = 1;
   // The parameters of the current wrapping.
   PassphraseParams params = 2;
+  // The caller's server user id (Member.user_id), a canonical lowercase
+  // UUID: the id a signed log entry must name for the caller. The token's
+  // subject is the OIDC subject, not this id.
+  string user_id = 3;
 }
 
 // CreateUserKeyRequest holds a new key pair, its private key wrapped.
@@ -121,8 +125,11 @@ message CreateUserKeyRequest {
   bytes auth_key = 4;
 }
 
-// CreateUserKeyResponse confirms the key was stored. It has no fields.
-message CreateUserKeyResponse {}
+// CreateUserKeyResponse confirms the key was stored.
+message CreateUserKeyResponse {
+  // The caller's user id, as in GetUserKeyParamsResponse.
+  string user_id = 1;
+}
 
 // UnlockUserKeyRequest presents the verifier.
 message UnlockUserKeyRequest {
@@ -138,6 +145,8 @@ message UnlockUserKeyResponse {
   bytes wrapped_private_key = 2;
   // The parameters of the wrapping.
   PassphraseParams params = 3;
+  // The caller's user id, as in GetUserKeyParamsResponse.
+  string user_id = 4;
 }
 
 // ChangePassphraseRequest re-wraps the caller's private key.

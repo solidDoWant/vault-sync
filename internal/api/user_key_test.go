@@ -285,3 +285,33 @@ func TestOnlyTheHashOfAnAuthKeyReachesTheStore(t *testing.T) {
 	unlockHash := sha256.Sum256(unlockKey)
 	assert.Equal(t, unlockHash[:], recorder.authKeyHash)
 }
+
+// Every user-key response names the caller's own server user id, the id a
+// signed log entry must name, and only that caller's.
+func TestUserKeyResponsesNameTheCallersUserID(t *testing.T) {
+	service := api.UserKeyService{Store: &userKeyRecorder{}, Logger: slog.New(slog.DiscardHandler)}
+
+	callers := []auth.User{
+		{ID: uuid.MustParse("0192a3b4-c5d6-7e8f-9a0b-1c2d3e4f5a6b"), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "alice"}},
+		{ID: uuid.MustParse("0192a3b4-c5d6-7e8f-9a0b-ffffffffffff"), Identity: auth.Identity{Issuer: "https://issuer.example", Subject: "bob"}},
+	}
+
+	for _, caller := range callers {
+		t.Run(caller.Identity.Subject, func(t *testing.T) {
+			ctx := auth.WithUser(t.Context(), caller)
+			want := caller.ID.String()
+
+			params, err := service.GetUserKeyParams(ctx, connect.NewRequest(&vaultsyncv1.GetUserKeyParamsRequest{}))
+			require.NoError(t, err)
+			assert.Equal(t, want, params.Msg.GetUserId())
+
+			created, err := service.CreateUserKey(ctx, connect.NewRequest(validCreateRequest()))
+			require.NoError(t, err)
+			assert.Equal(t, want, created.Msg.GetUserId())
+
+			unlocked, err := service.UnlockUserKey(ctx, connect.NewRequest(&vaultsyncv1.UnlockUserKeyRequest{AuthKey: bytes.Repeat([]byte{9}, 32)}))
+			require.NoError(t, err)
+			assert.Equal(t, want, unlocked.Msg.GetUserId())
+		})
+	}
+}
