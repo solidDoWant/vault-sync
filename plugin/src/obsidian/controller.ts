@@ -233,6 +233,14 @@ export interface SyncControllerOptions {
   /** The realtime channel to the session's server (serverBaseUrl), if any (SyncSessionOptions.realtime). */
   realtime?: (serverUrl: string) => SyncSessionOptions["realtime"];
   onStatus: (status: SyncStatus) => void;
+  /**
+   * Hears whether the device is read-only in the connected vault (the user
+   * is a `viewer`, docs/design/sharing.md), when that changes. Read from
+   * ListVaults at the start of every sync cycle.
+   */
+  onReadOnly?: (readOnly: boolean) => void;
+  /** Keeps a local version a read-only device does not push (SyncSessionOptions.keepLocalCopy). */
+  keepLocalCopy?: (path: string, content: Uint8Array) => Promise<void>;
   /** Builds the session; tests replace it to observe sessions. Defaults to `new SyncSession(options)`. */
   createSession?: (options: SyncSessionOptions) => SyncSession;
 }
@@ -263,6 +271,8 @@ export class SyncController {
     pending: 0,
   };
   private retry: ReturnType<typeof setTimeout> | undefined;
+  /** The connected vault the device last read its role in, and whether it is read-only there. */
+  private role: { key: string; readOnly: boolean } | undefined;
 
   constructor(private readonly options: SyncControllerOptions) {}
 
@@ -303,6 +313,17 @@ export class SyncController {
     const run = this.queue.then(() => this.stopRunning());
     this.queue = run.catch(() => undefined);
     return run;
+  }
+
+  /**
+   * Whether the device is read-only (a `viewer`) in the connected vault, as
+   * last read from ListVaults; false until it was read. It is kept while the
+   * session is stopped (offline, signed out), until another vault is connected.
+   */
+  get readOnly(): boolean {
+    const vault = connectedVault(this.options.data());
+    const key = vault === undefined ? undefined : `${serverBaseUrl(this.options.data())}\n${vault.id}`;
+    return this.role !== undefined && this.role.key === key && this.role.readOnly;
   }
 
   /** The running session, if any. */
@@ -409,6 +430,8 @@ export class SyncController {
         syncIntervalMs: this.options.syncIntervalMs,
         ...(this.options.pathRules === undefined ? {} : { pathRules: this.options.pathRules }),
         ...(this.options.maxDownloadBytes === undefined ? {} : { maxDownloadBytes: this.options.maxDownloadBytes }),
+        readOnly: () => this.readRole(client, wanted.key, wanted.vault.id, live),
+        ...(this.options.keepLocalCopy === undefined ? {} : { keepLocalCopy: this.options.keepLocalCopy }),
         onStatus: (status) => {
           if (this.running?.session === session) this.publish(status);
         },
@@ -437,6 +460,23 @@ export class SyncController {
         }, this.options.syncIntervalMs);
       }
     }
+  }
+
+  /**
+   * Whether the signed-in user is a `viewer` of vault `vaultId`, from
+   * ListVaults; called by the session at the start of every sync cycle
+   * (docs/design/sharing.md, Viewer devices). A vault missing from the list
+   * is not read-only here: the server refuses that device's requests anyway.
+   */
+  private async readRole(client: ProtocolClient, key: string, vaultId: string, live: () => boolean): Promise<boolean> {
+    const member = (await listRemoteVaults(client)).find((candidate) => candidate.id === vaultId);
+    const readOnly = member?.role === VaultRole.VIEWER;
+    if (live() && (this.role?.key !== key || this.role.readOnly !== readOnly)) {
+      const changed = this.readOnly !== readOnly;
+      this.role = { key, readOnly };
+      if (changed) this.options.onReadOnly?.(readOnly);
+    }
+    return readOnly;
   }
 
   /**

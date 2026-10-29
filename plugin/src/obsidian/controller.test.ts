@@ -103,7 +103,7 @@ function fakeServer(options: { registerDevice?: (name: string, registrationId: s
     devices: createClient(DeviceService, transport),
     vaults: createClient(VaultService, transport),
   };
-  return { sync, client, registered, registrationIds, devices, removed };
+  return { sync, client, registered, registrationIds, devices, removed, vaults };
 }
 
 function revisionById(server: InMemoryServer, revisionId: string): Revision | undefined {
@@ -819,6 +819,43 @@ describe("SyncController", () => {
       expect(await history.canRestore()).toBe(true);
       await f.controller.stop();
     });
+  });
+});
+
+describe("a viewer device", () => {
+  it("reads its role every sync cycle: as a viewer it pushes nothing and keeps a local copy, and as an editor it syncs on the next cycle", async () => {
+    const server = fakeServer({ role: VaultRole.VIEWER });
+    server.sync.commit({ documentId: "doc-a", path: "a.md", content: "shared" });
+    const copies: [string, string][] = [];
+    const readOnly: boolean[] = [];
+    const f = fixture(server, connected({ ...settings }, server.sync.vaultId), {
+      onReadOnly: (value) => readOnly.push(value),
+      keepLocalCopy: (path, content) => {
+        copies.push([path, new TextDecoder().decode(content)]);
+        return Promise.resolve();
+      },
+    });
+    await f.controller.update();
+    await statusBecomes(f.statuses, "idle");
+    expect(f.controller.readOnly).toBe(true);
+    expect(readOnly).toEqual([true]);
+    const head = server.sync.currentHeadSeq;
+
+    await f.vault.write("a.md", new TextEncoder().encode("changed outside Obsidian"));
+    await f.controller.syncNow();
+    expect(server.sync.currentHeadSeq).toBe(head);
+    expect(copies).toEqual([["a.md", "changed outside Obsidian"]]);
+    expect(new TextDecoder().decode(await f.vault.read("a.md"))).toBe("shared");
+
+    const member = server.vaults[0];
+    if (member === undefined) throw new Error("no vault");
+    member.role = VaultRole.EDITOR;
+    await f.vault.write("a.md", new TextEncoder().encode("an editor's edit"));
+    await f.controller.syncNow();
+    expect(f.controller.readOnly).toBe(false);
+    expect(readOnly).toEqual([true, false]);
+    expect(server.sync.liveFiles().get("a.md")).toBe("an editor's edit");
+    await f.controller.stop();
   });
 });
 
