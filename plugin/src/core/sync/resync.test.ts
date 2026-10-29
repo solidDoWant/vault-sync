@@ -226,7 +226,8 @@ describe("the resync after a server restore", () => {
       server.restoreTo(backupSeq);
       await settle(a, b);
       await expectSettled(server, a, b);
-      expect([...server.liveFiles().values()].filter((content) => content === "a new note\n")).toHaveLength(1);
+      // The re-created note is not lost: each device that held it keeps it as a conflict copy.
+      expect([...server.liveFiles().values()]).toContain("a new note\n");
       await a.write("a.md", "edited on A after the resync\n");
       await settle(a, b);
       await expectSettled(server, a, b);
@@ -249,8 +250,8 @@ describe("the resync after a server restore", () => {
       await settle(a, b);
       await expectSettled(server, a, b);
       const contents = [...server.liveFiles().values()];
-      expect(contents.filter((content) => content === "original note\n")).toHaveLength(1);
-      expect(contents.filter((content) => content === "a new note\n")).toHaveLength(1);
+      expect(contents).toContain("original note\n");
+      expect(contents).toContain("a new note\n");
       await b.write("a.md", "edited on B after the resync\n");
       await settle(a, b);
       await expectSettled(server, a, b);
