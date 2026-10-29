@@ -4,7 +4,7 @@ Status: approved by the owner on 2026-10-29. It adds to `engine.md`, and the sam
 
 ## Roles
 
-`owner`, `editor` and `viewer`, as in SPEC §9.2. The server enforces every role on every request: viewers get `PERMISSION_DENIED` for `CommitRevision` and the blob upload procedures, whatever the client sends. Any user who can sign in may redeem an invitation code. There are any number of owners, and always at least one: the last owner can't be demoted, removed, or leave. Ownership moves by promoting someone and then leaving.
+`owner`, `editor` and `viewer`, as in SPEC §9.2. The server enforces every role on every request: viewers get `PERMISSION_DENIED` for `CommitRevision` and the blob upload procedures, whatever the client sends. Any user who can sign in may redeem an invitation code. There are any number of owners, and always at least one: the last owner can't be demoted, removed, or leave. Ownership moves by promoting someone and then leaving. A member's pending invitations end with their ownership: removing a member, a member leaving, or demoting an owner deletes the invitations they created, so their codes no longer redeem.
 
 ## Sync is unchanged
 

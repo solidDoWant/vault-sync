@@ -298,6 +298,19 @@ func (vault *VaultStore) ListMembers(ctx context.Context) ([]Member, error) {
 	return members, nil
 }
 
+// deleteInvitationsBy deletes the vault's invitations created by userID, in
+// tx. It runs whenever userID stops being an owner (removed, left or
+// demoted): only owners can invite, so a former owner's pending codes would
+// otherwise let them back in with the invitation's role.
+func deleteInvitationsBy(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID) error {
+	_, err := tx.Exec(ctx, `DELETE FROM vault_invitations WHERE vault_id = $1 AND created_by = $2`, vaultID, userID)
+	if err != nil {
+		return fmt.Errorf("delete member's invitations: %w", err)
+	}
+
+	return nil
+}
+
 // lockMember returns userID's role in the vault, under lockVault. It returns
 // ErrMemberNotFound when the user is not a member, and the other owners'
 // count in otherOwners.
@@ -324,7 +337,8 @@ func lockMember(ctx context.Context, tx pgx.Tx, vaultID, userID uuid.UUID) (role
 	return *current, otherOwners, headSeq, nil
 }
 
-// UpdateMemberRole sets userID's role in the vault. It returns
+// UpdateMemberRole sets userID's role in the vault; demoting an owner also
+// deletes the invitations they created. It returns
 // ErrMemberNotFound when the user is not a member and ErrLastOwner when it
 // would demote the vault's last owner.
 func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID, role Role) (Member, error) {
@@ -346,6 +360,10 @@ func (vault *VaultStore) UpdateMemberRole(ctx context.Context, userID uuid.UUID,
 			RETURNING u.display_name, m.created_at`, vault.vaultID, userID, role).Scan(&member.DisplayName, &member.JoinedAt)
 		if err != nil {
 			return fmt.Errorf("update role: %w", err)
+		}
+
+		if role != RoleOwner {
+			return deleteInvitationsBy(ctx, tx, vault.vaultID, userID)
 		}
 
 		return nil
@@ -410,8 +428,8 @@ func (vault *VaultStore) LeaveVault(ctx context.Context, userID uuid.UUID) error
 	})
 }
 
-// removeMember removes userID and then runs rekey, in one transaction under
-// the vault row lock.
+// removeMember removes userID and the invitations they created and then runs
+// rekey, in one transaction under the vault row lock.
 func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, rekey func(context.Context, pgx.Tx, KeyState) error) error {
 	return pgx.BeginFunc(ctx, vault.store.pool, func(tx pgx.Tx) error {
 		current, otherOwners, headSeq, err := lockMember(ctx, tx, vault.vaultID, userID)
@@ -426,6 +444,10 @@ func (vault *VaultStore) removeMember(ctx context.Context, userID uuid.UUID, rek
 		_, err = tx.Exec(ctx, `DELETE FROM vault_members WHERE vault_id = $1 AND user_id = $2`, vault.vaultID, userID)
 		if err != nil {
 			return fmt.Errorf("remove member: %w", err)
+		}
+
+		if err := deleteInvitationsBy(ctx, tx, vault.vaultID, userID); err != nil {
+			return err
 		}
 
 		// The vault row is already locked; this reads its key state.
