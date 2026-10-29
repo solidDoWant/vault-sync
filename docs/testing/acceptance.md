@@ -26,7 +26,7 @@ A scenario may have several tests.
 1. the `integration`-tagged Go tests named `TestAC…`, the top-level Go tests that hold an `[AC-nn]` subtest (run whole, with their other subtests), and the plugin integration suite (`TestPluginProtocolClient`), whose report it keeps. `TestAC22OfflineRestore` and `TestAC25Convergence` (`cmd/vault-sync-server/acceptance_integration_test.go`) each start the server and run one plugin acceptance suite (`plugin/test/acceptance/*.acceptance.test.ts`, `vitest.acceptance.config.ts`): the real sync engine on in-memory vaults against that server. For AC-22 the Go test also plays the operator, stopping the server, snapshotting and restoring PostgreSQL and S3, and starting it again behind a proxy at a fixed address. AC-25 runs ten fixed seeds; `VAULT_SYNC_AC25_SEED=n` runs only seed `n`, for example to replay a failure (`VAULT_SYNC_AC25_SEED=7 ./scripts/test-integration.sh -run TestAC25 ./cmd/vault-sync-server/`);
 2. the desktop e2e spec files that hold an `[AC-nn]` test. Whole files run, because a spec's tests build on the ones before them; `plugin/wdio.conf.mts` records each test's result when `VAULT_SYNC_ACCEPTANCE_RESULTS` names a directory.
 
-Android-only specs (`*.android.e2e.ts`) need a device and run only in the `android-e2e` workflow, so their scenarios show as `not run` here.
+Android-only specs (`*.android.e2e.ts`) need a device and run only in the `android-e2e` workflow. With `VAULT_SYNC_ACCEPTANCE_RESULTS` set, `plugin/wdio.android.conf.mts` records their tests' results (not those of the specs shared with desktop, which the desktop run reports) in `android-e2e.jsonl`; the workflow uploads it as the `android-e2e-results` artifact. When `VAULT_SYNC_ACCEPTANCE_ANDROID_RESULTS` names a directory holding that file, `scripts/acceptance.sh` adds it to the results, so the scoreboard shows that run's outcome for AC-21. Without it, those scenarios show as `not run`.
 
 A failing suite does not stop the others. Everything lands in `build/acceptance/`: `scoreboard.txt`, the suites' logs and the raw results.
 
@@ -39,4 +39,4 @@ A failing suite does not stop the others. Everything lands in `build/acceptance/
 
 ## CI
 
-The `acceptance` workflow (`.github/workflows/acceptance.yml`) runs `make acceptance` every night on `master` and uploads `build/acceptance/` as the `acceptance-scoreboard` artifact; the scoreboard is also in the run's summary. It is not a required check.
+The `acceptance` workflow (`.github/workflows/acceptance.yml`) runs `make acceptance` every night on `master` and uploads `build/acceptance/` as the `acceptance-scoreboard` artifact; the scoreboard is also in the run's summary. Before it, it downloads the `android-e2e-results` artifact of the latest completed `android-e2e` run on `master` and names that run (link, time, conclusion) in the summary; both workflows are scheduled at the same time, so that is usually the previous night's run. It is not a required check.

@@ -18,7 +18,7 @@ import {
   writeNote,
   type Device,
 } from "../devices";
-import { pluginId } from "../environment";
+import { e2eEnvironment, pluginId } from "../environment";
 
 // Basic sync between two devices (docs/acceptance/phase-2.md, AC-04 to
 // AC-09): A is the primary test vault, B a second vault open in its own
@@ -71,6 +71,10 @@ describe("basic sync between two devices", function () {
   let b: Device;
 
   before(async function () {
+    // The second device is a second vault on disk opened in the same desktop
+    // Obsidian (devices.ts), which needs the vault's file-system path: the
+    // Android app has none. Desktop and emulated mobile run this spec.
+    if (e2eEnvironment.android) this.skip();
     a = await currentDevice("A");
     await setUpDevice(a, subject, remoteVaultName, true);
     await waitForIdle(a);
