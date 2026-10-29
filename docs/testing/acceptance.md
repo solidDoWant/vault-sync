@@ -15,7 +15,7 @@ passing 1/25
 A test belongs to a scenario by its name:
 
 - e2e (`plugin/test/e2e/specs/`) and plugin integration (`plugin/test/integration/`) tests: the `it` title starts with the id, `it("[AC-04] a note created on A appears on B", …)`;
-- Go integration tests: the function name starts with `TestAC` and the number, `func TestAC22OfflineRestore(t *testing.T)` (Go names cannot hold brackets).
+- Go integration tests: the function name starts with `TestAC` and the number, `func TestAC22OfflineRestore(t *testing.T)` (Go function names cannot hold brackets), or a subtest's name starts with the id, `t.Run("[AC-23] a device syncs exactly the imported notes", …)`. A tagged subtest counts by its own result.
 
 A scenario may have several tests.
 
@@ -23,7 +23,7 @@ A scenario may have several tests.
 
 `scripts/acceptance.sh` runs, each against a real server on PostgreSQL and S3 (docker compose, so it needs Docker):
 
-1. the `integration`-tagged Go tests named `TestAC…`, and the plugin integration suite (`TestPluginProtocolClient`), whose report it keeps;
+1. the `integration`-tagged Go tests named `TestAC…`, the top-level Go tests that hold an `[AC-nn]` subtest (run whole, with their other subtests), and the plugin integration suite (`TestPluginProtocolClient`), whose report it keeps;
 2. the desktop e2e spec files that hold an `[AC-nn]` test. Whole files run, because a spec's tests build on the ones before them; `plugin/wdio.conf.mts` records each test's result when `VAULT_SYNC_ACCEPTANCE_RESULTS` names a directory.
 
 Android-only specs (`*.android.e2e.ts`) need a device and run only in the `android-e2e` workflow, so their scenarios show as `not run` here.
