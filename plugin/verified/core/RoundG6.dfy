@@ -5087,4 +5087,301 @@ abstract module RoundG6 refines RoundGuarantees {
       PassChainStart(platform, d, accepted, e, start, B0(rows0[e], read0), rows0[e].base.Some? && rows0[e].base.value.deleted);
     }
   }
+
+  // ---------------------------------------------------------------------
+  // G2 of the round: RoundKept
+  // ---------------------------------------------------------------------
+
+  // Document `e` was bound before the step to a file the round read.
+  ghost predicate RoundReadOf(step: Step, e: DocId)
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices
+  {
+    var device := step.pre.devices[step.event.device];
+    e in device.journal.documents && device.journal.documents[e].binding.Some?
+    && RoundRead(step, device.journal.documents[e].binding.value.spelling).Some?
+  }
+
+  // Every write of the round for a document with no file the round read
+  // before it writes a live version of it the server accepted. A proof
+  // obligation of the round (#1094): its merges are of a file it read.
+  ghost predicate UnreadWritesAccepted(step: Step)
+    requires RoundEvent(step.event) && step.event.device in step.pre.devices
+  {
+    forall j | 0 <= j < |step.effects| && step.effects[j].Write? && step.effects[j].target.Some?
+                 && !RoundReadOf(step, step.effects[j].target.value) ::
+      DocVersion(step, step.effects[j].target.value, step.effects[j].content)
+  }
+
+  // RoundKept from the round's chains: every content a conditional effect
+  // expects in the file the round read, and every write, holds a live
+  // accepted version, or lies on the document's chain (RoundChain).
+  lemma RoundKeptFrom(step: Step)
+    requires step.event.SyncRound? && step.event.device in step.pre.devices
+    requires UnreadWritesAccepted(step)
+    requires forall i | 0 <= i < |step.effects| && IsCond(step.effects[i]) && !step.effects[i].Move?
+                        && RoundReadOf(step, CondDoc(step.effects[i]))
+                        && RoundRead(step, step.pre.devices[step.event.device].journal.documents[CondDoc(step.effects[i])].binding.value.spelling).value.0
+                           == CondExpect(step.effects[i])
+                        && !DocVersion(step, CondDoc(step.effects[i]), CondExpect(step.effects[i])) ::
+               exists rs :: RoundChain(step, step.event.device, CondDoc(step.effects[i]), rs, CondExpect(step.effects[i]))
+    requires forall j | 0 <= j < |step.effects| && step.effects[j].Write? && step.effects[j].target.Some?
+                        && RoundReadOf(step, step.effects[j].target.value)
+                        && !DocVersion(step, step.effects[j].target.value, step.effects[j].content) ::
+               exists rs :: RoundChain(step, step.event.device, step.effects[j].target.value, rs, step.effects[j].content)
+    ensures RoundKept(step)
+  {
+    forall i | 0 <= i < |step.effects| && IsCond(step.effects[i]) && !step.effects[i].Move?
+      ensures KeptBase(step, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
+              && KeptWrites(step, i, CondDoc(step.effects[i]), CondExpect(step.effects[i]))
+    {
+      var e := CondDoc(step.effects[i]);
+      var c := CondExpect(step.effects[i]);
+      if RoundReadOf(step, e)
+         && RoundRead(step, step.pre.devices[step.event.device].journal.documents[e].binding.value.spelling).value.0 == c
+         && !DocVersion(step, e, c) {
+        var rs :| RoundChain(step, step.event.device, e, rs, c);
+        assert ReadKept(step, e, c);
+      }
+      forall j | 0 <= j < i && step.effects[j].Write? && step.effects[j].target == Some(e) && step.effects[j].content == c
+        ensures ReadKept(step, e, c) || DocVersion(step, e, c)
+      {
+        if !DocVersion(step, e, c) {
+          var rs :| RoundChain(step, step.event.device, e, rs, c);
+          assert ReadKept(step, e, c);
+        }
+      }
+    }
+  }
+
+  // RoundKept of the round: what each conditional overwrite and remove
+  // expects in the file the round read, and each write, is a live accepted
+  // version or lies on the document's chain.
+  lemma {:isolate_assertions} RoundKeptHolds(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    // Proof obligations of the state before the round (#1034).
+    requires RoundPulledBy(pre, d, input, revs)
+    requires forall e | e in pre.devices[d].journal.documents :: AheadAboveBase(pre.devices[d].journal.documents[e])
+    // A proof obligation of the round (#1094).
+    requires UnreadWritesAccepted(RoundStepOf(pre, d, input, revs))
+    ensures RoundKept(RoundStepOf(pre, d, input, revs))
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var accepted := pre.server.accepted;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundStepJournal(pre, d, input, revs);
+    if !(forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs) {
+      assert step.post.devices[d] == device;
+      assert step.effects == [];
+      return;
+    }
+    var after := step.post.devices[d];
+    var feed := pre.server.feed;
+    var behind := journal.cursor < |feed|;
+    var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var cursor' := if behind then |feed| else journal.cursor;
+    var anchor' := if behind then Some(feed[|feed| - 1]) else journal.anchor;
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    assert step.effects == settled.effects + push.1;
+    assert after.journal == push.0;
+    assert OneFilePerName(platform, device.disk);
+    assert input.listing == ListingOf(device);
+    OneFileDistinct(platform, device.disk);
+    assert NeverJoinedRows(platform, journal.documents);
+    assert RowsNameAccepted(accepted, journal.documents);
+    forall e | e in start.journal.documents
+      ensures RowOrigin(platform, device, accepted, start.effects, start.listing, e, start.journal.documents[e])
+    {
+      if journal.documents[e].binding.Some? {
+        assert SameF(platform, journal.documents[e].binding.value.spelling, journal.documents[e].binding.value.spelling);
+        assert BoundTo(device, e, journal.documents[e].binding.value.spelling);
+      }
+    }
+    assert PassNUD(platform, device, accepted, start);
+    var rows0 := journal.documents;
+    var listing0 := input.listing;
+    PassKeptStart(platform, d, accepted, start);
+    RetryKeepsKept(platform, device, d, accepted, rows0, listing0, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    if behind {
+      var ids := feed[journal.cursor..];
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |pulled| ensures AcceptedAs(accepted, pulled[i]) {
+        assert pulled[i] in pulled;
+      }
+    }
+    SettlePulledKeepsKept(platform, device, d, accepted, rows0, listing0, retried, pulled, input, revs, first);
+    PushTouchesNoFile(platform, read, input', revs);
+    // The pass's chains end in the round's.
+    forall e: DocId, c: Hash | ReadBefore(platform, rows0, listing0, e)
+        && KeptChain(platform, d, accepted, rows0[e], LocalSide(platform, listing0, rows0[e]), c, true, e, settled)
+      ensures RoundReadOf(step, e) && exists rs :: RoundChain(step, d, e, rs, c)
+    {
+      assert settled == RoundSettledPass(pre, d, input, revs) by { reveal RoundSettledPass(); }
+      KeptChainEnds(pre, d, input, revs, e, c);
+    }
+    // What the round read in a document's file is its local side.
+    forall e | RoundReadOf(step, e)
+      ensures ReadBefore(platform, rows0, listing0, e)
+              && RoundRead(step, rows0[e].binding.value.spelling) == LocalSide(platform, listing0, rows0[e])
+    {
+      ReadAtListed(device, rows0[e].binding.value.spelling);
+    }
+    forall c, e | AcceptedContent(accepted, e, c) ensures DocVersion(step, e, c) {
+      var rev :| rev in accepted && accepted[rev].doc == e && !accepted[rev].deleted && accepted[rev].content == c;
+    }
+    // Push effects are neither conditional nor writes.
+    forall k | |settled.effects| <= k < |step.effects|
+      ensures !step.effects[k].Write? && !step.effects[k].Remove? && !step.effects[k].Move?
+    {
+      assert step.effects[k] in push.1;
+    }
+    RoundKeptFrom(step);
+  }
+
+  // The pass of the round, before its push.
+  opaque ghost function RoundSettledPass(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs): RoundPass
+    requires d in pre.devices
+  {
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var feed := pre.server.feed;
+    var pulled := if journal.cursor < |feed| then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    SettlePulled(platform, retried, pulled, input, revs, first)
+  }
+
+  // A chain of the pass that settled another device's revision ends as
+  // the round's chain (RoundG6Chain's end).
+  lemma {:isolate_assertions} KeptChainEnds(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs, e: DocId, c: Hash)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    requires forall i :: 0 <= i < |input.freshDocs| ==> input.freshDocs[i] in revs
+    requires ListingDistinct(pre.devices[d].platform, input.listing)
+    requires ReadBefore(pre.devices[d].platform, pre.devices[d].journal.documents, input.listing, e)
+    requires var rows0 := pre.devices[d].journal.documents;
+      KeptChain(pre.devices[d].platform, d, pre.server.accepted, rows0[e], LocalSide(pre.devices[d].platform, input.listing, rows0[e]), c, true, e,
+                RoundSettledPass(pre, d, input, revs))
+    ensures RoundReadOf(RoundStepOf(pre, d, input, revs), e)
+    ensures exists rs :: RoundChain(RoundStepOf(pre, d, input, revs), d, e, rs, c)
+  {
+    var step := RoundStepOf(pre, d, input, revs);
+    var device := pre.devices[d];
+    var platform := device.platform;
+    var journal := device.journal;
+    var accepted := pre.server.accepted;
+    RoundOnlyTouchesDevice(pre, d, input, revs);
+    RoundStepJournal(pre, d, input, revs);
+    var row0 := journal.documents[e];
+    var after := step.post.devices[d];
+    var feed := pre.server.feed;
+    var behind := journal.cursor < |feed|;
+    var pulled := if behind then Revisions(pre.server, feed[journal.cursor..]) else [];
+    var cursor' := if behind then |feed| else journal.cursor;
+    var anchor' := if behind then Some(feed[|feed| - 1]) else journal.anchor;
+    var start := RoundPass(journal.(intents := []), input.listing, [Pull(journal.cursor)], 0);
+    var first := RoundClaims(platform, journal, input);
+    var retried := RetryWaiting(platform, start, WaitingRows(journal.documents), input, revs, first);
+    var settled := SettlePulled(platform, retried, pulled, input, revs, first);
+    assert settled == RoundSettledPass(pre, d, input, revs) by { reveal RoundSettledPass(); }
+    var read := settled.journal.(cursor := cursor', anchor := anchor');
+    var input' := input.(listing := InScope(settled.listing, input.outOfScope));
+    var push := OnPush(platform, read, input', revs);
+    assert step.effects == settled.effects + push.1;
+    assert after.journal == push.0;
+    assert OneFilePerName(platform, device.disk);
+    assert input.listing == ListingOf(device);
+    OneFileDistinct(platform, device.disk);
+    assert NeverJoinedRows(platform, journal.documents);
+    assert RowsNameAccepted(accepted, journal.documents);
+    forall f | f in start.journal.documents
+      ensures RowOrigin(platform, device, accepted, start.effects, start.listing, f, start.journal.documents[f])
+    {
+      if journal.documents[f].binding.Some? {
+        assert SameF(platform, journal.documents[f].binding.value.spelling, journal.documents[f].binding.value.spelling);
+        assert BoundTo(device, f, journal.documents[f].binding.value.spelling);
+      }
+    }
+    assert PassNUD(platform, device, accepted, start);
+    PassG5Start(device, start, journal.cursor);
+    RetryKeepsG5(platform, device, start, WaitingRows(journal.documents), input, revs, first);
+    RetryKeepsNUD(platform, device, accepted, start, WaitingRows(journal.documents), input, revs, first);
+    if behind {
+      var ids := feed[journal.cursor..];
+      RevisionsHeld(pre.server, ids);
+      forall i | 0 <= i < |pulled| ensures AcceptedAs(accepted, pulled[i]) {
+        assert pulled[i] in pulled;
+      }
+    }
+    SettlePulledKeepsG5(platform, device, retried, pulled, input, revs, first);
+    var read0 := LocalSide(platform, input.listing, row0);
+    ReadAtListed(device, row0.binding.value.spelling);
+    assert RoundRead(step, row0.binding.value.spelling) == read0;
+    PushTouchesNoFile(platform, read, input', revs);
+    RoundDisksFollowEffects(pre, d, input, revs);
+    assert EffectsTake(platform, device.disk, step.effects, after.disk);
+    EffectsTakeSplit(platform, device.disk, settled.effects, push.1, after.disk);
+    var mid := var mid :| EffectsTake(platform, device.disk, settled.effects, mid) && EffectsTake(platform, mid, push.1, after.disk); mid;
+    PushKeepsDisk(platform, mid, push.1, after.disk);
+    assert DiskMap(after.disk) == settled.listing && OneFilePerName(platform, after.disk);
+    assert DiskMap(after.disk) == ListingOf(after);
+    OneFileDistinct(platform, after.disk);
+    assert Distinct(platform, settled.listing);
+    var rows := settled.journal.documents;
+    var b0 := B0(row0, read0);
+    var bd0 := row0.base.Some? && row0.base.value.deleted;
+    var rs: seq<Revision>, saved: set<Hash>, x: Option<(Hash, Kind)> :|
+      ChainRows(platform, d, accepted, row0.base, b0, bd0, read0, Some(c), e, rows, settled.listing, rs, saved, x) && OthersIn(d, rs);
+    var created := Created(platform, read, input', revs);
+    assert created[e] == rows[e];
+    assert after.journal.documents[e] == Seal(rows[e]);
+    assert after.journal.documents[e].base == rows[e].base;
+    assert |rs| > 0;
+    var last := rs[|rs| - 1];
+    assert AcceptedAs(accepted, last);
+    forall h | h in saved ensures SavedInRound(step.post, d, h) {
+      if !AcceptedLive(accepted, h) {
+        PushKeepsUntracked(platform, read, input', revs, settled.listing, after, h);
+      }
+    }
+    ChainSavedIsThrough(step.post, saved, d, b0, bd0, read0, rs, x, Some(c));
+    PushSends(platform, read, input', revs, settled.listing, after, e);
+    assert ChainEnds(step.post, d, e, LocalContent(x));
+    forall k | 0 <= k < |rs| ensures rs[k].id in step.post.server.accepted && step.post.server.accepted[rs[k].id] == rs[k] && rs[k].doc == e {
+      assert AcceptedAs(accepted, rs[k]);
+    }
+    assert ChainThrough(step.post, d, b0, bd0, read0, rs, LocalContent(x), Some(c));
+    assert row0.base.Some? || rs[0].device == d;
+    assert RoundChain(step, d, e, rs, c);
+  }
+
+  // G2_OnlyWhatItSaw of the round.
+  lemma RoundG2OnlyWhatItSaw(pre: State, d: DeviceId, input: RoundInput, revs: FreshRevs)
+    requires d in pre.devices && RoundInputOf(pre, d, input)
+    requires G5_NeverJoined(pre) && JournalsNameAccepted(pre) && G7_OneFilePerName(pre)
+    requires RevisionsKeyed(pre.server) && RevisionsAccepted(pre.server)
+    // Proof obligations of the state before the round (#1034).
+    requires RoundPulledBy(pre, d, input, revs)
+    requires forall e | e in pre.devices[d].journal.documents :: AheadAboveBase(pre.devices[d].journal.documents[e])
+    // A proof obligation of the round (#1094).
+    requires UnreadWritesAccepted(RoundStepOf(pre, d, input, revs))
+    ensures G2_OnlyWhatItSaw(RoundStepOf(pre, d, input, revs))
+  {
+    RoundKeptHolds(pre, d, input, revs);
+    RoundG2OnlyWhatItSawKept(pre, d, input, revs);
+  }
 }
