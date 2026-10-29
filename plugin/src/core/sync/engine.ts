@@ -9,11 +9,11 @@ import { baseContent, downloadContent, toIncoming, type PullApi } from "../engin
 import { uploadContent } from "../engine/upload";
 import { sha256Hex } from "../hash";
 import { pathKey } from "../pathkey/pathkey";
-import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { uuidv7 } from "../uuid";
+import { isVaultError, type VaultAdapter, type VaultEvent } from "../vault/adapter";
 import { conflictCopyName } from "./conflict-name";
-import { detectChanges, HashCache, kindOfPath, project, type Projection, type RenameHint } from "./detect";
-import { applyChange, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SyncJournal, type SyncKind } from "./journal";
+import { detectChanges, HashCache, isTemporaryPath, kindOfPath, project, replacementPath, replacementTarget, temporaryPath, type Projection, type RenameHint } from "./detect";
+import { applyChange, type ConflictEntry, type Cursor, type DocEntry, type JournalChange, type JournalState, type PendingKind, type PendingOp, type SyncJournal, type SyncKind } from "./journal";
 import { mergeContent } from "./merge-rules";
 
 /** The protocol calls the engine makes. */
@@ -105,6 +105,8 @@ export class SyncEngine {
   private readonly ownRenames = new Map<string, number>();
   private readonly ownDeletes = new Map<string, number>();
 
+  /** Whether this engine has deleted the temporary files a crash left behind. */
+  private cleaned = false;
   private running: Promise<void> | undefined;
   private again = false;
   private failures = 0;
@@ -198,6 +200,7 @@ export class SyncEngine {
 
   /** One cycle: detect, pull, push. Returns whether the pull or the push made progress. */
   private async cycle(): Promise<boolean> {
+    if (!this.cleaned) await this.removeTemporaryFiles();
     const state = await this.loadState();
     const renames = this.renames;
     this.renames = [];
@@ -240,7 +243,8 @@ export class SyncEngine {
         sinceAnchor: state.cursor.anchor,
         pageSize: this.pageSize,
       });
-      if (response.diverged) throw new DivergedError("the server's change list diverged from this device's cursor");
+      // The server was restored to before this device's cursor: resync (docs/design/engine.md §9).
+      if (response.diverged) return this.resync();
       for (const revision of response.revisions) {
         if (revision.seq <= state.cursor.seq) continue;
         const outcome = await this.apply(state, revision);
@@ -250,6 +254,146 @@ export class SyncEngine {
       }
       if (!response.hasMore || response.revisions.length === 0) return progress;
     }
+  }
+
+  // Resync -----------------------------------------------------------------
+
+  /**
+   * The resync after a server restore (docs/design/engine.md §9). It reads
+   * the whole change list, brings every file in line with the restored
+   * heads, and records the result and the new cursor in one journal change.
+   * The cursor moves only then, so a crash before it restarts the resync
+   * from the start; every step finds its own earlier result and repeats
+   * nothing. Returns true: the next cycle pushes what only this device holds.
+   */
+  private async resync(): Promise<boolean> {
+    const state = await this.loadState();
+    // Step 1: every document's head on the restored server.
+    const heads = new Map<string, Revision>();
+    let cursor: Cursor = { seq: 0n, anchor: new Uint8Array() };
+    for (;;) {
+      const response = await this.api.sync.listChanges({ vaultId: this.vaultId, sinceSeq: cursor.seq, sinceAnchor: cursor.anchor, pageSize: this.pageSize });
+      if (response.diverged) throw new DivergedError("the server's change list changed during a resync");
+      for (const revision of response.revisions) {
+        if (revision.seq <= cursor.seq) continue;
+        heads.set(revision.documentId, revision);
+        cursor = { seq: revision.seq, anchor: revision.anchor };
+      }
+      if (!response.hasMore || response.revisions.length === 0) break;
+    }
+
+    const projections = project(state);
+    const docs: DocEntry[] = [];
+    const pending: PendingOp[] = [];
+    const conflicts: ConflictEntry[] = [];
+    const taken = await this.taken(state);
+    let order = nextOrder(state);
+    const newOp = (documentId: string, path: string, docKind: SyncKind, contentHash: string, contentSize: number): PendingOp => ({
+      opId: uuidv7(this.now()),
+      order: order++,
+      documentId,
+      kind: "create",
+      path,
+      docKind,
+      revisionId: uuidv7(this.now()),
+      contentHash,
+      contentSize,
+      sent: false,
+    });
+    const copyName = (path: string): string => {
+      const copy = conflictCopyName(path, this.deviceName, new Date(this.now()), taken);
+      if (copy === null) throw new Error(`no conflict copy name fits for ${path}`);
+      return copy;
+    };
+    /** Moves the local file at `path` to a conflict copy name (rule C), a new document to push. */
+    const moveToCopy = async (path: string, documentId: string, hash: string, size: number): Promise<void> => {
+      const copy = copyName(path);
+      await this.rename(path, copy);
+      pending.push(newOp(uuidv7(this.now()), copy, kindOfPath(copy), hash, size));
+      conflicts.push({ path: copy, documentId, createdAt: this.now() });
+    };
+    /** Writes `content` at the free or freed `path`: a file there with the same content is taken as is, a different one moves to a copy. */
+    const placeHead = async (path: string, content: Uint8Array, documentId: string): Promise<boolean> => {
+      const occupant = await this.cache.read(this.vault, path);
+      if (occupant !== null) {
+        if (occupant.hash === sha256Hex(content)) return true;
+        await moveToCopy(path, documentId, occupant.hash, occupant.size);
+      }
+      return this.write(path, content, null);
+    };
+
+    // Step 2: every document on the server.
+    for (const [id, head] of heads) {
+      const incoming = toIncoming(head);
+      const remote = incoming.remote;
+      // A tombstone (or a path that may not reach the disk) drops the document; a file this device still holds is pushed as a new one.
+      if (remote.deleted || !incoming.pathAllowed) continue;
+      const projection = projections.get(id);
+      const localPath = projection !== undefined && !projection.deleted ? projection.path : null;
+      const local = localPath === null ? null : await this.cache.read(this.vault, localPath);
+      const entry: DocEntry = { documentId: id, path: remote.path, kind: projection?.kind ?? syncKind(head.kind), baseRevId: remote.revisionId, baseHash: remote.contentHash, baseSize: Number(remote.size) };
+      if (localPath !== null && local !== null) {
+        if (local.hash !== remote.contentHash) {
+          const localContent = await this.readFile(localPath);
+          if (localContent === null) continue;
+          const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+          // Rule M against the head, with no base.
+          const outcome = await mergeContent({
+            kind: entry.kind,
+            local: localContent,
+            localHash: local.hash,
+            localTime: local.mtime,
+            remote: content,
+            remoteHash: remote.contentHash,
+            remoteTime: head.createTime === undefined ? 0 : timestampMs(head.createTime),
+            baseHash: "",
+            base: () => Promise.resolve(null),
+          });
+          if (outcome.copy === null) {
+            if (!(await this.write(localPath, outcome.content, local.hash))) continue;
+          } else if (outcome.content === content) {
+            await moveToCopy(localPath, id, local.hash, local.size);
+            if (!(await placeHead(remote.path, content, id))) continue;
+          } else {
+            // The newer local file stays (a pending edit on top of the head, found by the next detection); the head is the copy.
+            const copy = copyName(localPath);
+            if (!(await this.write(copy, content, null))) continue;
+            pending.push(newOp(uuidv7(this.now()), copy, kindOfPath(copy), remote.contentHash, Number(remote.size)));
+            conflicts.push({ path: copy, documentId: id, createdAt: this.now() });
+          }
+        }
+        // At another path than the head's, the next detection records the rename again, on top of the head (step 4).
+        docs.push(entry);
+        continue;
+      }
+      if (projection?.deleted === true && projection.base !== undefined) {
+        // A pending delete: the next detection records it again, on top of the head (step 4).
+        docs.push(entry);
+        continue;
+      }
+      // Unknown to the journal, or missing with no pending delete: write the head.
+      const content = await downloadContent(this.api, this.vaultId, remote.contentHash, remote.size);
+      if (await placeHead(remote.path, content, id)) docs.push(entry);
+    }
+
+    // Step 3: what the server doesn't know is created again, with its document id and an empty base.
+    for (const projection of projections.values()) {
+      if (heads.has(projection.documentId) || projection.deleted) continue;
+      const local = await this.cache.read(this.vault, projection.path);
+      if (local === null) continue;
+      pending.push(newOp(projection.documentId, projection.path, projection.kind, local.hash, local.size));
+    }
+
+    const keptDocs = new Set(docs.map((entry) => entry.documentId));
+    await this.record({
+      cursor,
+      deleteDocs: [...state.docs.keys()].filter((id) => !keptDocs.has(id)),
+      putDocs: docs,
+      deletePending: state.pending.map((op) => op.opId),
+      putPending: pending,
+      putConflicts: conflicts,
+    });
+    return true;
   }
 
   /** Applies one remote revision: the file change first, then the returned journal change. */
@@ -660,18 +804,101 @@ export class SyncEngine {
 
   // Vault effects ----------------------------------------------------------
 
-  /** Writes `content` if the file still holds `expectedHash` (null: no file). Returns false if it changed. */
+  /**
+   * Writes `content` if the file still holds `expectedHash` (null: no file).
+   * Returns false if it changed. A crash leaves the old file or the new one,
+   * never half of one (docs/design/engine.md §8):
+   * - a file open in the editor: the editor-safe write in place (§4);
+   * - with an atomic replace (desktop): a temporary file, then the replace;
+   * - without one (mobile): a new file is a temporary file renamed into
+   *   place; an existing one is replaced by a complete replacement file, a
+   *   delete of the target and a rename.
+   */
   private async write(path: string, content: Uint8Array, expectedHash: string | null): Promise<boolean> {
-    this.ownWrites.set(path, sha256Hex(content));
     // A rewrite can keep the size and the mtime, which the cache trusts.
     this.cache.invalidate(path);
+    this.ownWrites.set(path, sha256Hex(content));
+    let written = false;
     try {
-      await this.vault.write(path, content, { expectedHash });
+      written = await this.replaceFile(path, content, expectedHash);
+      return written;
+    } finally {
+      if (!written) this.ownWrites.delete(path);
+    }
+  }
+
+  private async replaceFile(path: string, content: Uint8Array, expectedHash: string | null): Promise<boolean> {
+    const precondition = { expectedHash };
+    if (expectedHash !== null && this.vault.isOpenInEditor?.(path) === true) return this.unlessChanged(this.vault.write(path, content, precondition));
+    if (this.vault.replace !== undefined) {
+      const temporary = temporaryPath(path);
+      await this.vault.write(temporary, content);
+      // The vault may report the replace as a rename of the temporary file or as a change of the target.
+      const key = `${temporary}\0${path}`;
+      count(this.ownRenames, key, 1);
+      let replaced = false;
+      try {
+        replaced = await this.unlessChanged(this.vault.replace(temporary, path, precondition));
+      } finally {
+        if (!replaced) count(this.ownRenames, key, -1);
+      }
+      if (!replaced) await this.removeTemporary(temporary);
+      return replaced;
+    }
+    if (expectedHash === null) {
+      const temporary = temporaryPath(path);
+      await this.vault.write(temporary, content);
+      try {
+        await this.rename(temporary, path);
+        return true;
+      } catch (error) {
+        await this.removeTemporary(temporary);
+        if (isVaultError(error, "already-exists")) return false;
+        throw error;
+      }
+    }
+    const replacement = replacementPath(path);
+    await this.vault.write(replacement, content);
+    if (!(await this.delete(path, expectedHash))) {
+      await this.removeTemporary(replacement);
+      return false;
+    }
+    await this.rename(replacement, path);
+    return true;
+  }
+
+  /** Resolves true when `change` succeeds, false when it rejects with "changed". */
+  private async unlessChanged(change: Promise<void>): Promise<boolean> {
+    try {
+      await change;
       return true;
     } catch (error) {
-      this.ownWrites.delete(path);
       if (isVaultError(error, "changed")) return false;
       throw error;
+    }
+  }
+
+  /**
+   * Recovers from the temporary files a crash left behind
+   * (docs/design/engine.md §8). A replacement file whose target is missing is
+   * complete, so it is renamed into place; every other one may be partial and
+   * is deleted.
+   */
+  private async removeTemporaryFiles(): Promise<void> {
+    for (const path of await this.vault.list()) {
+      if (!isTemporaryPath(path)) continue;
+      const target = replacementTarget(path);
+      if (target !== null && (await this.vault.stat(target)) === null) await this.rename(path, target);
+      else await this.removeTemporary(path);
+    }
+    this.cleaned = true;
+  }
+
+  private async removeTemporary(path: string): Promise<void> {
+    try {
+      await this.vault.delete(path);
+    } catch (error) {
+      if (!isVaultError(error, "not-found")) throw error;
     }
   }
 
@@ -706,6 +933,7 @@ export class SyncEngine {
 
   /** A vault event: a hint that something changed. The engine's own changes are recognised and start no cycle. */
   private onVaultEvent(event: VaultEvent): void {
+    if (isTemporaryPath(event.path)) return;
     switch (event.type) {
       case "rename": {
         this.cache.invalidate(event.oldPath);

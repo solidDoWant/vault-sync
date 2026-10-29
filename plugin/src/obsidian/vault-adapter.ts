@@ -1,4 +1,4 @@
-import { EditableFileView, MarkdownView, normalizePath, TextFileView, TFile, TFolder, type App, type EventRef, type TAbstractFile } from "obsidian";
+import { EditableFileView, FileSystemAdapter, MarkdownView, normalizePath, TextFileView, TFile, TFolder, type App, type EventRef, type TAbstractFile } from "obsidian";
 
 import { sha256Hex } from "../core/hash";
 import { VaultError, type DeletePrecondition, type FileStat, type VaultAdapter, type VaultEvent, type VaultListener, type WritePrecondition } from "../core/vault/adapter";
@@ -70,7 +70,48 @@ export const syncEditOrigin = "vault-sync";
  *   are the engine's to find by content hash.
  */
 export class ObsidianVaultAdapter implements VaultAdapter {
-  constructor(private readonly app: App) {}
+  /** The file system's atomic rename over a file, on desktop only (docs/design/engine.md §8). */
+  readonly replace?: (from: string, to: string, precondition: WritePrecondition) => Promise<void>;
+
+  constructor(private readonly app: App) {
+    const disk = desktopDisk(app);
+    if (disk !== undefined) this.replace = (from, to, precondition) => this.replaceOnDisk(disk, from, to, precondition);
+  }
+
+  /** Whether `path` is open in a view that may hold unsaved state: anything but a read-only viewer. */
+  isOpenInEditor(path: string): boolean {
+    const file = this.fileAt(path);
+    return file !== null && this.openViews(file).some((view) => !isReadOnlyViewer(view));
+  }
+
+  /**
+   * Moves `from` over `to` with the file system's rename, which replaces the
+   * target atomically, and waits until Obsidian's index shows the result.
+   * The precondition is checked by reading the target just before the
+   * rename, a window of one read as for binary writes (SPEC.md §8).
+   */
+  private async replaceOnDisk(disk: DesktopDisk, from: string, to: string, precondition: WritePrecondition): Promise<void> {
+    const file = this.requireFile(from);
+    if (!inScope(to)) throw new VaultError("path-conflict", to);
+    const target = this.vault.getAbstractFileByPath(to);
+    if (target instanceof TFolder) throw new VaultError("path-conflict", to);
+    if (precondition.expectedHash === null ? target !== null : !(target instanceof TFile) || sha256Hex(new Uint8Array(await this.vault.readBinary(target))) !== precondition.expectedHash) {
+      throw new VaultError("changed", to);
+    }
+    if (target === null) await this.ensureParentFolders(to);
+    const size = file.stat.size;
+    try {
+      await disk.rename(`${disk.base}/${from}`, `${disk.base}/${to}`);
+    } catch (error) {
+      throw await this.unmaterializableOr(error, to, to, from);
+    }
+    // Obsidian learns of the rename from its file watcher.
+    for (let waited = 0; waited < indexWaitMs; waited += indexPollMs) {
+      const moved = this.vault.getFileByPath(to);
+      if (this.vault.getFileByPath(from) === null && moved !== null && moved.stat.size === size) return;
+      await new Promise((resolve) => setTimeout(resolve, indexPollMs));
+    }
+  }
 
   private get vault() {
     return this.app.vault;
@@ -220,7 +261,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     const view = views.find((candidate) => candidate instanceof MarkdownView);
     const text = view === undefined ? undefined : decodeText(data);
     if (view === undefined || text === undefined) {
-      await this.replace(file, data, expectedHash);
+      await this.replaceContent(file, data, expectedHash);
       return;
     }
     const outcome = { overlapping: false, changed: false };
@@ -252,7 +293,7 @@ export class ObsidianVaultAdapter implements VaultAdapter {
   }
 
   /** The overwrite() case of a file open in no editing view: written as is. */
-  private async replace(file: TFile, data: Uint8Array, expectedHash: string | undefined): Promise<void> {
+  private async replaceContent(file: TFile, data: Uint8Array, expectedHash: string | undefined): Promise<void> {
     if (expectedHash === undefined) {
       await this.vault.modifyBinary(file, toArrayBuffer(data));
       return;
@@ -360,6 +401,31 @@ export class ObsidianVaultAdapter implements VaultAdapter {
     if (file === null) throw new VaultError("not-found", path);
     return file;
   }
+}
+
+/** How long replaceOnDisk waits for Obsidian's index to show a rename, and how often it looks. */
+const indexWaitMs = 5_000;
+const indexPollMs = 10;
+
+/** The desktop file system under the vault: its folder and Node's rename. */
+interface DesktopDisk {
+  base: string;
+  rename(from: string, to: string): Promise<void>;
+}
+
+/**
+ * The vault's file system on desktop, where Obsidian runs on Node: its
+ * FileSystemAdapter and `fs`. Undefined on mobile, which has neither. `fs`
+ * is looked up at runtime, so the mobile bundle never imports it.
+ */
+function desktopDisk(app: App): DesktopDisk | undefined {
+  const adapter = app.vault.adapter;
+  if (!(adapter instanceof FileSystemAdapter)) return undefined;
+  const load = (globalThis as { require?: (id: string) => unknown }).require;
+  const fs = typeof load === "function" ? (load("fs") as { promises?: { rename?: (from: string, to: string) => Promise<void> } } | undefined) : undefined;
+  const rename = fs?.promises?.rename;
+  if (rename === undefined) return undefined;
+  return { base: adapter.getBasePath(), rename: (from, to) => rename(from, to) };
 }
 
 /** Whether `path` is a non-hidden path that Obsidian stores under exactly this name. */
