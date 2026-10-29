@@ -28,6 +28,14 @@ async function shared(a: Device, b: Device, path: string, content: string): Prom
   await b.sync();
 }
 
+/** Syncs A then B until both have met each other's changes. */
+async function converge(a: Device, b: Device): Promise<void> {
+  for (let round = 0; round < 3; round++) {
+    await a.sync();
+    await b.sync();
+  }
+}
+
 function commitCalls(server: InMemoryServer): { count: number } {
   const calls = { count: 0 };
   server.interceptor = (method) => {
@@ -190,6 +198,49 @@ describe("push rules", () => {
     await b.sync();
     expect(server.liveFiles()).toEqual(new Map([["Note.md", "one"], ["other.md", "two"]]));
     expect(await b.engine.refusedNames()).toEqual([]);
+  });
+
+  describe("P2: a name this device vacated with a rename the server refused first (P1)", () => {
+    /** A and B both hold x.md and y.md, with their engines watching the vault. */
+    async function started(): Promise<{ server: InMemoryServer; a: Device; b: Device }> {
+      const { server, a, b } = setup();
+      await a.engine.start();
+      await b.engine.start();
+      await a.write("x.md", "note x\n");
+      await a.write("y.md", "note y\n");
+      await converge(a, b);
+      return { server, a, b };
+    }
+
+    it("a rename onto the name is pushed once the vacating rename lands", async () => {
+      const { server, a, b } = await started();
+      await b.vault.rename("x.md", "z.md");
+      await b.vault.rename("y.md", "x.md");
+      await a.write("x.md", "note x\nedited on A\n");
+      await a.sync();
+      await converge(a, b);
+      const expected = { "x.md": "note y\n", "z.md": "note x\nedited on A\n" };
+      expect(await b.files()).toEqual(expected);
+      expect(await a.files()).toEqual(expected);
+      expect(server.liveFiles()).toEqual(new Map(Object.entries(expected)));
+      expect(await b.engine.refusedNames()).toEqual([]);
+      expect((await b.journal.load()).pending).toEqual([]);
+    });
+
+    it("a new note at the name reaches the server and the other device", async () => {
+      const { server, a, b } = await started();
+      await b.vault.rename("x.md", "z.md");
+      await b.write("x.md", "new note\n");
+      await a.write("x.md", "note x\nedited on A\n");
+      await a.sync();
+      await converge(a, b);
+      const expected = { "x.md": "new note\n", "y.md": "note y\n", "z.md": "note x\nedited on A\n" };
+      expect(await b.files()).toEqual(expected);
+      expect(await a.files()).toEqual(expected);
+      expect(server.liveFiles()).toEqual(new Map(Object.entries(expected)));
+      expect(await b.engine.refusedNames()).toEqual([]);
+      expect((await b.journal.load()).pending).toEqual([]);
+    });
   });
 
   it("P3: an unportable name is refused with a reason, left untouched and not retried until it is renamed", async () => {

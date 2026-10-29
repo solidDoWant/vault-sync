@@ -85,6 +85,21 @@ class Scoreboard(unittest.TestCase):
         self.assertEqual(statuses["AC-22"], "not run")
         self.assertEqual(statuses["AC-23"], "no test")
 
+    def test_reads_the_android_device_checks_next_to_the_desktop_results(self):
+        (self.sources / "plugin" / "test" / "e2e" / "specs" / "device.android.e2e.ts").write_text(
+            'it("[AC-21] pushes an edit made before the app went to the background", async function () {});\n', encoding="utf-8"
+        )
+        self.write_e2e(("[AC-04] a note created on A appears on B", True))
+        with open(self.results / "android-e2e.jsonl", "w", encoding="utf-8") as file:
+            file.write(json.dumps({"title": "[AC-21] pushes an edit made before the app went to the background", "passed": True}) + "\n")
+            file.write(json.dumps({"title": "[AC-21] receives an edit made while the app was closed", "passed": True}) + "\n")
+        output = self.run_scoreboard()
+        statuses = self.statuses(output)
+
+        self.assertEqual(statuses["AC-21"], "pass")
+        self.assertEqual(statuses["AC-04"], "pass")
+        self.assertEqual(output.strip().splitlines()[-1], "passing 2/25")
+
     def test_reads_go_and_vitest_results(self):
         events = [
             {"Action": "run", "Test": "TestAC22OfflineRestore"},

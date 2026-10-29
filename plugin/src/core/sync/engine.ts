@@ -1149,8 +1149,8 @@ export class SyncEngine {
    * How a refused commit is handled: pull for P1 (the head moved) and P2
    * (another document holds the path, and the pull brings it to meet the
    * file through rule W), the reason for P3 (an unportable name) and for a
-   * P2 whose other document this device already holds (a name that differs
-   * from it only by case, say), and undefined for any other error.
+   * P2 whose other document this device already holds and keeps there (a
+   * name that differs from it only by case, say), and undefined for any other error.
    */
   private refusal(state: JournalState, op: PendingOp, error: unknown): { pull: true } | { reason: string } | undefined {
     if (headMoved(error)) return { pull: true };
@@ -1162,8 +1162,12 @@ export class SyncEngine {
     if (code === Code.InvalidArgument) return { reason };
     if (code !== Code.AlreadyExists) return undefined;
     const key = pathKey(op.path);
+    const projections = project(state);
     for (const entry of state.docs.values()) {
       if (entry.documentId === op.documentId || entry.deleted === true) continue;
+      // A document this device moves off its path with a pending rename or delete holds it only until that operation is pushed.
+      const projection = projections.get(entry.documentId);
+      if (projection !== undefined && (projection.deleted || pathKey(projection.path) !== pathKey(entry.path))) continue;
       const other = pathKey(entry.path);
       // A folder document may hold other documents (SPEC.md §5).
       if (other === key || (op.docKind !== "folder" && other.startsWith(`${key}/`)) || (entry.kind !== "folder" && key.startsWith(`${other}/`))) return { reason };

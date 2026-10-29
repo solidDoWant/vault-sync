@@ -8,7 +8,7 @@ import { browser, expect } from "@wdio/globals";
 import { DocumentKind } from "../../../src/gen/vaultsync/v1/types_pb";
 import type VaultSyncPlugin from "../../../src/main";
 import { openSecondDevice, syncStatus, use, vaultFiles, vaultFolders, waitForIdle, type Device } from "../devices";
-import { pluginId } from "../environment";
+import { e2eEnvironment, pluginId } from "../environment";
 import { configure, signInAs } from "../signin";
 
 // Connecting a vault (docs/acceptance/phase-2.md, AC-02). Each vault is a
@@ -102,6 +102,13 @@ function serverFiles() {
 }
 
 describe("connecting a vault", function () {
+  before(function () {
+    // Each test's device is a vault on disk opened in the same desktop
+    // Obsidian (devices.ts), which needs the vault's file-system path: the
+    // Android app has none. Desktop and emulated mobile run this spec.
+    if (e2eEnvironment.android) this.skip();
+  });
+
   it("[AC-02] connects an empty vault", async function () {
     const device = await openSecondDevice("empty", await vaultOnDisk({}));
     await configure();
